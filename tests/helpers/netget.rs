@@ -10,10 +10,82 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::{sleep, timeout};
 
+/// A spawned `netget` that kills itself and releases its death tie when dropped.
+///
+/// This exists so that `NetGetInstance` needs no `Drop` of its own, which is what lets
+/// `start_netget_server` / `start_netget_client` take one apart with an ordinary destructuring
+/// pattern. Rust forbids moving a field out of a type that implements `Drop`, and the way round
+/// that used to be `ManuallyDrop` plus one `ptr::read` per field — correct for the fields it
+/// named and a **silent leak for every field it did not**, which is every field added afterwards.
+/// Putting the teardown in the fields instead makes the compiler enforce exhaustiveness: a new
+/// field breaks the destructuring pattern until somebody handles it.
+///
+/// `Deref`/`DerefMut` to the inner `Child` so every existing `self.child.wait()`,
+/// `self.child.id()` and `child.stdout.take()` reads the same as before.
+pub(crate) struct ManagedChild(Child);
+
+impl std::ops::Deref for ManagedChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ManagedChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        // `kill()` is async and cannot be awaited here; `start_kill` is not — it sends the
+        // signal synchronously. Explicit rather than relying on `kill_on_drop`, so the death
+        // tie is released in the same breath: a tie released *before* the child is signalled
+        // leaves nothing watching, and one never released could act on a recycled pid.
+        let pid = self.0.id();
+        let _ = self.0.start_kill();
+        if let Some(pid) = pid {
+            super::child_guard::untie_child(pid);
+        }
+    }
+}
+
+/// A background reader task that is aborted when dropped.
+///
+/// Same reasoning as [`ManagedChild`]: the teardown belongs to the field so the struct holding
+/// it does not need a `Drop`. A bare `JoinHandle` detaches on drop rather than aborting, and
+/// these tasks are parked on a pipe that may never close cleanly.
+pub(crate) struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl std::ops::Deref for AbortOnDrop {
+    type Target = tokio::task::JoinHandle<()>;
+    fn deref(&self) -> &tokio::task::JoinHandle<()> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for AbortOnDrop {
+    fn deref_mut(&mut self) -> &mut tokio::task::JoinHandle<()> {
+        &mut self.0
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Represents a running NetGet process with 0+ servers and 0+ clients
+///
+/// **Deliberately has no `Drop` impl.** Teardown lives in [`ManagedChild`] and [`AbortOnDrop`]
+/// so that `start_netget_server` / `start_netget_client` can destructure this struct by value.
+/// Do not add one without reading those two types' docs first: adding it re-breaks the
+/// destructuring and the only way back is the `ManuallyDrop` + `ptr::read` that leaked.
 pub struct NetGetInstance {
-    /// The child process
-    pub child: Child,
+    /// The child process. Killed, and its death tie released, when this struct is dropped.
+    pub child: ManagedChild,
     /// Servers that were started
     pub servers: Vec<NetGetServer>,
     /// Clients that were started
@@ -31,8 +103,8 @@ pub struct NetGetInstance {
     /// Mock configuration (DEPRECATED - kept for backward compat, use mock_ollama_server for verification)
     pub mock_config: Option<MockLlmConfig>,
     /// Abort handles for background reader tasks
-    pub(crate) stdout_reader_handle: tokio::task::JoinHandle<()>,
-    pub(crate) stderr_reader_handle: tokio::task::JoinHandle<()>,
+    pub(crate) stdout_reader_handle: AbortOnDrop,
+    pub(crate) stderr_reader_handle: AbortOnDrop,
 }
 
 /// Information about a server that was started
@@ -499,15 +571,15 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
     });
 
     Ok(NetGetInstance {
-        child,
+        child: ManagedChild(child),
         servers,
         clients,
         output_lines,
         mock_ollama_server,
         mock_temp_file: None,
         mock_config: config.mock_config.clone(),
-        stdout_reader_handle,
-        stderr_reader_handle,
+        stdout_reader_handle: AbortOnDrop(stdout_reader_handle),
+        stderr_reader_handle: AbortOnDrop(stderr_reader_handle),
     })
 }
 
@@ -886,28 +958,6 @@ async fn wait_for_netget_startup_with_capture(
     })?
 }
 
-impl Drop for NetGetInstance {
-    fn drop(&mut self) {
-        // Abort background reader tasks to prevent hanging
-        // These tasks will be waiting on pipes that may not close cleanly
-        self.stdout_reader_handle.abort();
-        self.stderr_reader_handle.abort();
-
-        // `child.kill()` is async and cannot be awaited here, but `start_kill`
-        // is not: it sends the signal synchronously. Send it explicitly rather
-        // than relying on `kill_on_drop`, so the death tie can be released in
-        // the same breath — a tie released before the child is signalled would
-        // leave nothing watching, and one never released at all could act on a
-        // recycled pid at process exit.
-        let pid = self.child.id();
-        let _ = self.child.start_kill();
-        if let Some(pid) = pid {
-            super::child_guard::untie_child(pid);
-        }
-        println!("[DEBUG] NetGetInstance dropped, background tasks aborted");
-    }
-}
-
 impl NetGetInstance {
     /// Wait until every mock expectation is satisfied, or `timeout_secs` elapses.
     ///
@@ -1165,8 +1215,8 @@ impl NetGetInstance {
 
         // Wait briefly for tasks to abort
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
-            let _ = (&mut self.stdout_reader_handle).await;
-            let _ = (&mut self.stderr_reader_handle).await;
+            let _ = (&mut *self.stdout_reader_handle).await;
+            let _ = (&mut *self.stderr_reader_handle).await;
         })
         .await;
 

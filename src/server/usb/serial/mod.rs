@@ -34,8 +34,14 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "usb-serial")]
 use crate::{
-    console_error, llm::action_helper::call_llm, llm::OllamaClient, protocol::Event,
-    server::connection::ConnectionId, state::app_state::AppState,
+    console_error,
+    llm::action_helper::call_llm,
+    llm::OllamaClient,
+    protocol::Event,
+    server::accept_bounded::{accept_bounded, ConnectionLimiter},
+    server::connection::ConnectionId,
+    server::usb::guard::{MAX_USBIP_CONNECTIONS, USBIP_NO_REFUSAL},
+    state::app_state::AppState,
 };
 
 #[cfg(feature = "usb-serial")]
@@ -89,10 +95,20 @@ impl UsbSerialServer {
         let protocol = Arc::new(UsbSerialProtocol::new());
 
         let task_registrar = app_state.clone();
+        // One emulated device per connection, so the cap is small and lives with the screen.
+        let limiter = ConnectionLimiter::new(MAX_USBIP_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match accept_bounded(
+                    &listener,
+                    &limiter,
+                    USBIP_NO_REFUSAL,
+                    "USB serial",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         info!(
@@ -136,6 +152,9 @@ impl UsbSerialServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the device is still exported.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -226,7 +245,10 @@ impl UsbSerialServer {
         // `transfer_buffer_length` and `number_of_packets` without checking either, on a socket
         // USB/IP never authenticates. `run_guarded_usbip` screens both before a byte reaches it
         // -- see `src/server/usb/guard.rs`.
+        //
+        // The attach event hangs off `import_rx`, not off the accept: see the loop below.
         let guard_status_tx = status_tx.clone();
+        let (import_tx, mut import_rx) = tokio::sync::oneshot::channel();
         let mut usbip_task = tokio::spawn(async move {
             match crate::server::usb::guard::run_guarded_usbip(
                 stream,
@@ -234,6 +256,7 @@ impl UsbSerialServer {
                 "USB serial",
                 connection_id.to_string(),
                 guard_status_tx,
+                Some(import_tx),
             )
             .await
             {
@@ -248,27 +271,41 @@ impl UsbSerialServer {
             }
         });
 
-        Self::call_llm_for_event(
-            connection_id,
-            &llm_client,
-            &app_state,
-            &connections,
-            &protocol,
-            &status_tx,
-            server_id,
-            Event::new(
-                &USB_SERIAL_ATTACHED_EVENT,
-                serde_json::json!({ "connection_id": connection_id.to_string() }),
-            ),
-            "attach",
-        )
-        .await;
-
         // Serve host writes until the USB/IP session ends. This loop is why the detach event
         // exists at all: the rest of the USB family parks on `sleep(u64::MAX)` here and never
         // notices the host going away.
+        //
+        // It is also where the attach event is raised. USB/IP authenticates nothing, so a bare
+        // TCP connect must cost nothing: `import_rx` fires only once the screen has admitted an
+        // `OP_REQ_IMPORT`, which is the first moment the peer has asked for the port.
+        // `import_pending` is the select! guard — a `oneshot::Receiver` must not be polled again
+        // once it has resolved — and `imported` is the record, because the detach event is the
+        // other half of an attachment and must not fire without one.
+        let mut import_pending = true;
+        let mut imported = false;
         loop {
             tokio::select! {
+                asked = &mut import_rx, if import_pending => {
+                    import_pending = false;
+                    if asked.is_ok() {
+                        imported = true;
+                        Self::call_llm_for_event(
+                            connection_id,
+                            &llm_client,
+                            &app_state,
+                            &connections,
+                            &protocol,
+                            &status_tx,
+                            server_id,
+                            Event::new(
+                                &USB_SERIAL_ATTACHED_EVENT,
+                                serde_json::json!({ "connection_id": connection_id.to_string() }),
+                            ),
+                            "attach",
+                        )
+                        .await;
+                    }
+                }
                 received = rx_rx.recv() => {
                     let Some(mut data) = received else { break };
 
@@ -343,21 +380,25 @@ impl UsbSerialServer {
             connection_id, remote_addr
         );
 
-        Self::call_llm_for_event(
-            connection_id,
-            &llm_client,
-            &app_state,
-            &connections,
-            &protocol,
-            &status_tx,
-            server_id,
-            Event::new(
-                &USB_SERIAL_DETACHED_EVENT,
-                serde_json::json!({ "connection_id": connection_id.to_string() }),
-            ),
-            "detach",
-        )
-        .await;
+        // Only for a host that actually attached: a peer that opened a socket and closed it
+        // again detached nothing.
+        if imported {
+            Self::call_llm_for_event(
+                connection_id,
+                &llm_client,
+                &app_state,
+                &connections,
+                &protocol,
+                &status_tx,
+                server_id,
+                Event::new(
+                    &USB_SERIAL_DETACHED_EVENT,
+                    serde_json::json!({ "connection_id": connection_id.to_string() }),
+                ),
+                "detach",
+            )
+            .await;
+        }
 
         // The session owned this handler; drop it so a later action cannot write to a port
         // that no longer exists.

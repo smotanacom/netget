@@ -3,8 +3,22 @@
 //! These tests demonstrate the LLM using tools (read_file, web_search) to gather
 //! information and use it in network protocol responses.
 
+/// The death tie that keeps a spawned `netget` from outliving this binary.
+///
+/// Pulled in by path rather than through `mod helpers;` because this file needs exactly one
+/// module out of the shared harness and nothing else in it: `child_guard.rs` depends only on
+/// `std` and `libc`, so it compiles standalone. `Drop` alone is not enough — it does not run
+/// when the test binary is `SIGKILL`ed, aborts, or is interrupted, which is precisely how 78
+/// orphaned `netget` processes accumulated on one machine in ten hours. These tests are the
+/// worst case for it: they wait a fixed sixty seconds against a real model, so an interrupted
+/// run leaves a netget holding a MySQL port for as long as the machine stays up.
+#[cfg(all(test, feature = "mysql"))]
+#[path = "helpers/child_guard.rs"]
+mod child_guard;
+
 #[cfg(all(test, feature = "mysql"))]
 mod tool_call_integration_tests {
+    use super::child_guard;
     use mysql_async::prelude::*;
     use std::process::{Command, Stdio};
     use std::time::Duration;
@@ -55,6 +69,8 @@ mod tool_call_integration_tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("Failed to start netget");
+        let pid = child.id();
+        child_guard::tie_child(pid);
 
         // 2. Wait for server to start (give it time for LLM processing and server startup)
         println!("Waiting for server to start (this takes time with real LLM)...");
@@ -65,6 +81,9 @@ mod tool_call_integration_tests {
             Ok(Some(status)) => {
                 // Process exited - capture output for debugging
                 let output = child.wait_with_output().unwrap();
+                // Exited on its own, so the pid is free; release the tie before it is
+                // recycled onto some other process.
+                child_guard::untie_child(pid);
                 eprintln!(
                     "NetGet stdout:\n{}",
                     String::from_utf8_lossy(&output.stdout)
@@ -103,6 +122,8 @@ mod tool_call_integration_tests {
         // 5. Kill the NetGet process
         let _ = child.kill();
         let _ = child.wait();
+        // After the kill, never before: a tie released first leaves nothing watching.
+        child_guard::untie_child(pid);
 
         // 6. Assert the query succeeded and count is correct
         match result {
@@ -171,6 +192,8 @@ mod tool_call_integration_tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("Failed to start netget");
+        let pid = child.id();
+        child_guard::tie_child(pid);
 
         // 2. Wait for server to start and process the file instructions
         println!(
@@ -182,6 +205,9 @@ mod tool_call_integration_tests {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let output = child.wait_with_output().unwrap();
+                // Exited on its own, so the pid is free; release the tie before it is
+                // recycled onto some other process.
+                child_guard::untie_child(pid);
                 eprintln!(
                     "NetGet stdout:\n{}",
                     String::from_utf8_lossy(&output.stdout)
@@ -224,6 +250,8 @@ mod tool_call_integration_tests {
         // 5. Kill the NetGet process
         let _ = child.kill();
         let _ = child.wait();
+        // After the kill, never before: a tie released first leaves nothing watching.
+        child_guard::untie_child(pid);
 
         // 6. Assert the query succeeded and returned data from file prompt
         match result {

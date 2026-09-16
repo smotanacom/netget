@@ -2,15 +2,16 @@
 
 use super::common::*;
 use super::mock_config::MockLlmConfig;
+use super::netget::{AbortOnDrop, ManagedChild, NetGetInstance};
 use std::time::Duration;
-use tokio::process::Child;
 use tokio::time::sleep;
 
 /// A running NetGet server process (backward compatible)
 /// This wrapper maintains compatibility with the original NetGetServer struct
 pub struct NetGetServer {
-    /// The child process
-    child: Child,
+    /// The child process. Killed, and its death tie released, when this struct is dropped —
+    /// see `ManagedChild`.
+    child: ManagedChild,
     /// The port the server is listening on
     pub port: u16,
     /// The actual protocol stack that was started
@@ -28,23 +29,23 @@ pub struct NetGetServer {
     /// IMPORTANT: Must NOT have underscore prefix - field must be kept alive for entire test duration
     #[allow(dead_code)]
     mock_temp_file: Option<tempfile::TempPath>,
-    /// Abort handles for background reader tasks
-    stdout_reader_handle: tokio::task::JoinHandle<()>,
-    stderr_reader_handle: tokio::task::JoinHandle<()>,
+    /// Background reader tasks, aborted when this struct is dropped.
+    stdout_reader_handle: AbortOnDrop,
+    stderr_reader_handle: AbortOnDrop,
 }
 
 impl NetGetServer {
     /// Create a new NetGetServer instance
     pub(crate) fn new(
-        child: Child,
+        child: ManagedChild,
         port: u16,
         stack: String,
         output_lines: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
         mock_ollama_server: Option<super::mock_ollama::MockOllamaServer>,
         mock_config: Option<MockLlmConfig>,
         mock_temp_file: Option<tempfile::TempPath>,
-        stdout_reader_handle: tokio::task::JoinHandle<()>,
-        stderr_reader_handle: tokio::task::JoinHandle<()>,
+        stdout_reader_handle: AbortOnDrop,
+        stderr_reader_handle: AbortOnDrop,
     ) -> Self {
         Self {
             child,
@@ -99,8 +100,8 @@ impl NetGetServer {
 
         // Wait briefly for tasks to abort
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
-            let _ = (&mut self.stdout_reader_handle).await;
-            let _ = (&mut self.stderr_reader_handle).await;
+            let _ = (&mut *self.stdout_reader_handle).await;
+            let _ = (&mut *self.stderr_reader_handle).await;
         })
         .await;
 
@@ -266,6 +267,20 @@ impl NetGetServer {
         }
     }
 
+    /// How many LLM calls reached the mock model so far, or `None` when no mock server is in
+    /// use (real-Ollama mode).
+    ///
+    /// `verify_mocks` asserts against *rule expectations*; this answers the blunter question a
+    /// test of cost has to ask — "was the model consulted at all?" A zero proves something only
+    /// beside a control that shows a non-zero, which is why every caller here pairs the two.
+    #[allow(dead_code)]
+    pub async fn llm_call_count(&self) -> Option<usize> {
+        match self.mock_ollama_server {
+            Some(ref server) => Some(server.call_count().await),
+            None => None,
+        }
+    }
+
     pub async fn verify_mocks(&self) -> E2EResult<()> {
         // Prefer mock Ollama server if available (new approach)
         if let Some(ref server) = self.mock_ollama_server {
@@ -427,18 +442,10 @@ impl NetGetServer {
 
 impl Drop for NetGetServer {
     fn drop(&mut self) {
-        // Signal the child here rather than leaving it to `kill_on_drop`, so the
-        // death tie is released only once the signal is on its way.
-        let pid = self.child.id();
-        let _ = self.child.start_kill();
-        if let Some(pid) = pid {
-            super::child_guard::untie_child(pid);
-        }
-
-        // Abort background reader tasks to prevent hanging
-        self.stdout_reader_handle.abort();
-        self.stderr_reader_handle.abort();
-
+        // Killing the child, releasing its death tie and aborting the reader tasks all happen
+        // in the fields' own `Drop` (`ManagedChild`, `AbortOnDrop`), which is what lets
+        // `NetGetInstance` be destructured into this struct without `ManuallyDrop`. All that is
+        // left here is the diagnostic.
         if let Some(ref mock_config) = self.mock_config {
             if !mock_config.is_verified() {
                 super::mock_config::report_unverified_on_drop("server", mock_config);
@@ -472,22 +479,33 @@ pub async fn start_netget_server(config: ServerConfig) -> E2EResult<NetGetServer
         .into());
     }
 
-    // Use ManuallyDrop to prevent Drop from running when we move fields out
-    let mut instance = std::mem::ManuallyDrop::new(instance);
-    let server = instance.servers.drain(..).next().unwrap();
+    // Take the instance apart by value. Every field is named and there is no `..`, so adding a
+    // field to `NetGetInstance` fails to compile *here* until somebody decides what happens to
+    // it — which is the whole point. This used to be `ManuallyDrop` plus one `ptr::read` per
+    // field, which moved exactly the fields it named and silently leaked the rest.
+    let NetGetInstance {
+        child,
+        servers,
+        clients: _,
+        output_lines,
+        mock_ollama_server,
+        mock_temp_file,
+        mock_config,
+        stdout_reader_handle,
+        stderr_reader_handle,
+    } = instance;
+    let server = servers.into_iter().next().expect("checked non-empty above");
 
-    // SAFETY: We're manually managing the lifecycle. The fields are moved to NetGetServer
-    // which has its own Drop implementation that will clean them up.
     Ok(NetGetServer::new(
-        unsafe { std::ptr::read(&instance.child) },
+        child,
         server.port,
         server.stack,
-        instance.output_lines.clone(),
-        unsafe { std::ptr::read(&instance.mock_ollama_server) },
-        unsafe { std::ptr::read(&instance.mock_config) },
-        unsafe { std::ptr::read(&instance.mock_temp_file) },
-        unsafe { std::ptr::read(&instance.stdout_reader_handle) },
-        unsafe { std::ptr::read(&instance.stderr_reader_handle) },
+        output_lines,
+        mock_ollama_server,
+        mock_config,
+        mock_temp_file,
+        stdout_reader_handle,
+        stderr_reader_handle,
     ))
 }
 

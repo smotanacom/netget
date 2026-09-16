@@ -6,6 +6,16 @@
 use clap::Parser;
 use netget::cli::Args;
 
+/// The death tie that keeps a spawned `netget` from outliving this binary.
+///
+/// Pulled in by path rather than through `mod helpers;` because this file needs exactly one
+/// module out of the shared harness and nothing else in it: `child_guard.rs` depends only on
+/// `std` and `libc`, so it compiles standalone. `Drop` alone is not enough — it does not run
+/// when the test binary is `SIGKILL`ed, aborts, or is interrupted, which is precisely how 78
+/// orphaned `netget` processes accumulated on one machine in ten hours.
+#[path = "helpers/child_guard.rs"]
+mod child_guard;
+
 /// `--log-level` defaults to `debug` in development builds, `info` in release.
 ///
 /// Dev builds used to default to `trace`, the level at which NetGet writes
@@ -118,6 +128,8 @@ fn piped_stdin_prompt_is_not_swallowed() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn netget");
+    let pid = child.id();
+    child_guard::tie_child(pid);
 
     child
         .stdin
@@ -128,6 +140,8 @@ fn piped_stdin_prompt_is_not_swallowed() {
     drop(child.stdin.take());
 
     let out = child.wait_with_output().expect("wait for netget");
+    // Waited for, so it is gone; release the tie before its pid can be recycled.
+    child_guard::untie_child(pid);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

@@ -138,7 +138,8 @@ mod usb_keyboard_e2e {
             "the interface must advertise the HID class"
         );
 
-        // 2. Attach. The attach event fires on connect, before the import.
+        // 2. Attach. The attach event follows this import — a bare TCP connect raises nothing
+        //    (`attach_on_import_test.rs`), so the log line below is the import being answered.
         client.import("0-0-0").await?;
         server.wait_for_log(ATTACH_LOG, 10).await?;
 
