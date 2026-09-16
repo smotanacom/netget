@@ -124,7 +124,7 @@ Findings, not test bugs:
 
 ## Not Covered
 
-Stratum 16 (unsynchronized), Kiss-o'-Death, NTPv1/v2 requests, extension fields and authentication
+Stratum 16 (unsynchronized), NTPv1/v2 requests, extension fields and authentication
 MACs (`bytes_received > 48` is reported to the model but never exercised), the `send_ntp_response`
 raw-hex action, and script-mode handling.
 
@@ -141,20 +141,26 @@ LLM call (7 total).
 
 ## `decision_tag_test.rs`
 
-`test_ntp_llm_failure_is_tagged_static_default_not_fail_closed` — 1 LLM call (the startup
+`test_ntp_llm_failure_is_tagged_fail_closed_and_denies_on_the_wire` — 1 LLM call (the startup
 instruction); the `ntp_request` event has no rule, so the mock answers 500 and `call_llm`
 returns `Err`.
 
-It asserts **both** halves of NTP's awkward failure contract, and the negative assertion is
-the substantive one:
+It asserts **both** halves of NTP's failure contract:
 
-- the wire carries a real stratum-2 reply with the client's transmit timestamp echoed — an
-  affirmative, usable time sample, not a denial;
-- the log carries `decision=static_default_llm_error`;
-- the log does **not** carry `decision=fail_closed_llm*`, because the peer was not denied
-  anything and `grep decision=fail_closed` must not report a denial that never happened.
+- the wire carries a **Kiss-o'-Death** — LI 3, stratum 0, the client's transmit timestamp
+  echoed — which no client will take time from;
+- the log carries `decision=fail_closed_llm_error`;
+- the log does **not** carry `decision=static_default_llm_error`, the token that named the
+  old behaviour where a backend outage still answered with a usable stratum-2 time sample.
 
-If the wire behaviour is ever changed to a Kiss-o'-Death (`actions::build_kod_packet` exists
-and is currently called by nothing), the stratum assertion fails first — deliberately, so the
-token has to be revisited in the same change. See `src/server/ntp/CLAUDE.md`,
-"Failure behaviour".
+The stratum assertion is the substantive one. `fail_closed_*` is a claim that the peer was
+denied, and `grep decision=fail_closed` is only worth running if that claim is true — so a
+change back to an affirmative answer fails on the wire before it reaches the token.
+
+**This file previously asserted the exact opposite**, and its own header said that if the
+behaviour ever became a KoD the stratum assertion would fail first so the token had to be
+revisited in the same change. That is what happened: `build_kod_packet` was wired up and the
+fail-open closed. `llm_failure_test.rs` asserts the same pair from the other direction
+(including the `INIT` kiss code), so neither the wire nor the token can move alone.
+
+See `src/server/ntp/CLAUDE.md`, "Failure behaviour".

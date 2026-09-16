@@ -480,7 +480,7 @@ quietly back to reading, so the log is the only place those three differ.
 | Outcome | On the wire | Log |
 |---|---|---|
 | Model answered with any `send_irc_*` | that line, CRLF-terminated | INFO `decision=model_answer` |
-| Model answered `close_connection` only | nothing (see the defect below) | INFO `decision=model_reject` |
+| Model answered `close_connection` only | nothing, then the link is closed | INFO `decision=model_reject` |
 | Model answered with no usable action | **nothing** | WARN `decision=model_silent` |
 | Model answered but every action failed | **nothing** | ERROR `decision=fail_closed_bad_action` |
 | Backend failed / retries exhausted | `:netget 400 * <CMD> :netget: request could not be processed` then `ERROR :Closing link` and a close | ERROR `decision=fail_closed_llm_error` |
@@ -494,17 +494,20 @@ numeric's trailing parameter is a `WireFailure` category, never the error — th
 here than in most protocols, because a real IRC client prints a numeric's trailing parameter
 verbatim to a human.
 
-**Two things that are not fail-opens but are worth knowing:**
+**`model_silent` writes nothing at all**, and that is worth knowing though it is not a
+fail-open. A client that sent NICK/USER and got no answer waits out its own connection
+timeout. This is not a fabricated success, but it is not a reply either; fixing it means
+answering 400 on that path too, which is a wire change the tagging pass deliberately did not
+make.
 
-- **`model_silent` writes nothing at all.** A client that sent NICK/USER and got no answer
-  waits out its own connection timeout. This is not a fabricated success, but it is not a
-  reply either; fixing it means answering 400 on that path too, which is a wire change this
-  tagging pass deliberately did not make.
-- **`close_connection` does not close the connection.** In the LLM path
-  `ActionResult::CloseConnection => { … break; }` breaks the `for` over `protocol_results`,
-  not the read loop, so the link survives and the server reads the next line. The
-  `decision=model_reject` token above is therefore honest about the model's *intent* and not
-  about the socket. Dashboard-injected `close_connection` goes through `peer_support` and does
-  half-close, which is why this has gone unnoticed.
+**`close_connection` now actually closes the connection.** It did not for a long time: in the
+LLM path `ActionResult::CloseConnection => { … break; }` breaks the `for` over
+`protocol_results`, not the read loop, so the link survived and the server read the next line
+while logging a hang-up. The `for`-level `break` is still correct — it stops executing further
+actions — so the fix is a second `break` after the decision line, guarded by the same
+`asked_to_close` flag the log reads. Placing it after the log rather than inside the `for`
+arm is deliberate: a refusal is recorded before the link goes. Dashboard-injected
+`close_connection` goes through `peer_support` and always did half-close, which is why this
+went unnoticed.
 
 Tested by `tests/server/irc/decision_tag_test.rs`.

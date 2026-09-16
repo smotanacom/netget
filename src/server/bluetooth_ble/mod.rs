@@ -448,7 +448,10 @@ impl BluetoothBle {
         {
             Ok(llm_result) => {
                 // Execute initial actions (add services, start advertising, etc.)
+                let mut failed = 0usize;
+                let mut attempted = 0usize;
                 for action in llm_result.raw_actions {
+                    attempted += 1;
                     debug!(
                         "Executing initial Bluetooth action: {:?}",
                         action.get("type")
@@ -456,20 +459,57 @@ impl BluetoothBle {
                     if let Err(e) =
                         Self::execute_action(&server_data, &device_name, action, &status_tx).await
                     {
-                        Log::new(Some(&status_tx))
-                            .error(format!("Initial Bluetooth action failed: {e}"));
+                        failed += 1;
+                        Log::new(Some(&status_tx)).error(format!(
+                            "Bluetooth startup for '{device_name}' \
+                             decision=fail_closed_bad_action: initial action failed: {e}"
+                        ));
                     }
+                }
+
+                // Startup is the one BLE outcome no per-event tag can reach, and it is the
+                // one that leaves the server looking healthy while it is not: a powered
+                // adapter with no services and no advertisement, reported as `Running`.
+                // Tagging it is what lets `grep decision=` find that state at all.
+                let log = Log::new(Some(&status_tx));
+                if attempted == 0 {
+                    log.warn(format!(
+                        "Bluetooth startup for '{device_name}' decision=model_silent: the \
+                         model configured nothing, so the adapter is powered with no services \
+                         and is NOT advertising"
+                    ));
+                } else if failed == attempted {
+                    log.error(format!(
+                        "Bluetooth startup for '{device_name}' \
+                         decision=fail_closed_no_action: every initial action failed; the \
+                         adapter is powered with no services and is NOT advertising"
+                    ));
+                } else {
+                    log.info(format!(
+                        "Bluetooth startup for '{device_name}' decision=model_answer: \
+                         {} of {attempted} initial action(s) applied",
+                        attempted - failed
+                    ));
                 }
             }
             Err(e) => {
+                // Deliberately not fatal — the adapter is up and the event loop below can
+                // still answer reads — but the server reports `Running` with nothing on air,
+                // so this must be greppable as a backend failure rather than as a decision
+                // anybody took.
+                let decision = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                    "fail_closed_llm_overloaded"
+                } else {
+                    "fail_closed_llm_error"
+                };
                 error!(
-                    "Bluetooth startup configuration failed ({}); the adapter for '{}' is \
-                     powered but has no services and is NOT advertising",
-                    e, device_name
+                    "Bluetooth startup configuration failed for '{}' decision={}: {}; the \
+                     adapter is powered but has no services and is NOT advertising",
+                    device_name, decision, e
                 );
                 Log::new(Some(&status_tx)).error(format!(
-                    "Bluetooth startup configuration failed: {e}. The adapter is up but \
-                     no services were added and it is not advertising."
+                    "Bluetooth startup for '{device_name}' decision={decision}: the adapter \
+                     is up but no services were added and it is not advertising."
                 ));
             }
         }

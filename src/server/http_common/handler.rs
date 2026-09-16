@@ -239,6 +239,45 @@ pub fn build_safe_response(
     }
 }
 
+/// Walk `results` in order, handing every `Output` payload to `visit`.
+///
+/// `ActionResult::Multiple` nests, and flattening it is not cosmetic: an `Output` inside a
+/// `Multiple` used to be skipped outright, so the request fell through to the fallback as
+/// though the model had said nothing. HTTP's own executor never produces `Multiple` today —
+/// which is why this went unnoticed — but nine protocols elsewhere in the tree do, and
+/// `src/server/vnc/mod.rs`, `jsonrpc`, `openvpn` and `usb/smartcard` each hand-rolled a
+/// flatten for exactly this reason.
+fn for_each_output(results: &[ActionResult], visit: &mut impl FnMut(&[u8])) {
+    for result in results {
+        match result {
+            ActionResult::Output(data) => visit(data),
+            ActionResult::Multiple(inner) => for_each_output(inner, visit),
+            _ => {}
+        }
+    }
+}
+
+/// Did the model produce a usable `send_http_response`?
+///
+/// True when some `Output` payload parses as JSON — the same condition [`build_response`]
+/// uses to decide whether to answer from the model or fall back to the server's
+/// `default_response` (or a blank `200`).
+///
+/// It is public because the *caller* is where that outcome has to be logged: `build_response`
+/// is shared by every HTTP-shaped protocol and cannot know what any one of them wants to say
+/// about it. Callers use this rather than re-deriving the predicate, so the log line and the
+/// bytes on the wire cannot drift apart — a tag claiming the model answered while the peer
+/// received the fallback would be worse than no tag at all.
+pub fn produced_http_response(results: &[ActionResult]) -> bool {
+    let mut produced = false;
+    for_each_output(results, &mut |data| {
+        if serde_json::from_slice::<serde_json::Value>(data).is_ok() {
+            produced = true;
+        }
+    });
+    produced
+}
+
 /// Build HTTP response from LLM execution results
 pub fn build_response(
     protocol_results: Vec<ActionResult>,
@@ -257,27 +296,31 @@ pub fn build_response(
     let mut response_body = String::new();
     let mut produced_response = false;
 
-    for protocol_result in protocol_results {
-        if let ActionResult::Output(output_data) = protocol_result {
-            // Parse the output as JSON containing HTTP response fields
-            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&output_data) {
-                produced_response = true;
-                if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
-                    status_code = status as u16;
-                }
-                if let Some(headers_obj) = json_value.get("headers").and_then(|v| v.as_object()) {
-                    for (k, v) in headers_obj {
-                        if let Some(v_str) = v.as_str() {
-                            response_headers.insert(k.clone(), v_str.to_string());
-                        }
+    // Nested `Multiple` results are walked too — see `for_each_output`. An `Output` buried in
+    // one used to be dropped, which read to the caller as a silent model.
+    for_each_output(&protocol_results, &mut |output_data| {
+        // Parse the output as JSON containing HTTP response fields
+        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(output_data) {
+            produced_response = true;
+            if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
+                // `status as u16` truncates, and `65736 as u16` is `200` — a nonsense status
+                // silently becoming a success. `build_safe_response` below rejects anything
+                // outside 100-599, so keep the value out of range rather than wrapping it
+                // into a plausible one.
+                status_code = u16::try_from(status).unwrap_or(500);
+            }
+            if let Some(headers_obj) = json_value.get("headers").and_then(|v| v.as_object()) {
+                for (k, v) in headers_obj {
+                    if let Some(v_str) = v.as_str() {
+                        response_headers.insert(k.clone(), v_str.to_string());
                     }
                 }
-                if let Some(body) = json_value.get("body").and_then(|v| v.as_str()) {
-                    response_body = body.to_string();
-                }
+            }
+            if let Some(body) = json_value.get("body").and_then(|v| v.as_str()) {
+                response_body = body.to_string();
             }
         }
-    }
+    });
 
     // The model was consulted but returned no send_http_response. Use the server's
     // configured default_response if it set one, instead of a bare (blank) 200.
@@ -336,9 +379,12 @@ pub fn build_error_response(
         "{} {} {} decision={} status={}: {}",
         protocol_label, method, uri, decision, status, error
     );
+    // The token goes on both sinks. It used to be on the `error!` alone, so `netget.log`
+    // could tell a saturated backend from a broken one and the TUI/MCP status stream — which
+    // is what an operator is actually watching, and what the e2e harness reads — could not.
     let _ = status_tx.send(format!(
-        "✗ LLM error for {} {} → {}: {}",
-        method, uri, status, error
+        "[ERROR] ✗ LLM error for {} {} → {} decision={}: {}",
+        method, uri, status, decision, error
     ));
 
     if status == 503 {

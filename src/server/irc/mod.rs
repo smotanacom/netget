@@ -335,6 +335,21 @@ impl IrcServer {
                                             let _ =
                                                 status_clone.send(format!("[INFO] {}", summary));
                                         }
+
+                                        // Actually end the link the model asked to end.
+                                        //
+                                        // The `break` that sets `asked_to_close` leaves the
+                                        // `for` over `protocol_results` — it stops executing
+                                        // further actions, which is right — but it does not
+                                        // leave the read loop, so for a long time
+                                        // `close_connection` logged a hang-up and then went
+                                        // back to reading the next line. This break is the one
+                                        // that closes, and it is placed after the decision
+                                        // line so a refusal is still logged before the link
+                                        // goes.
+                                        if asked_to_close {
+                                            break;
+                                        }
                                     }
                                     Err(e) => {
                                         // Silence here is worse than it looks: a client that

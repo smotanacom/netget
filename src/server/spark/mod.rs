@@ -36,6 +36,29 @@ use crate::server::spark::actions::SparkProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
 
+/// Narrow a model-supplied HTTP status to `u16` without wrapping.
+///
+/// `status as u16` on a `u64` truncates, and the truncation runs in the dangerous
+/// direction: `65736 as u16` is `200`, so a nonsense status becomes a success the client
+/// believes. Anything outside the real status range falls back to `default`.
+///
+/// This is `oauth2`'s `status_or` in Spark's vocabulary. The payoff here is a bogus
+/// monitoring answer rather than a credential, but the shape is the one the root
+/// `CLAUDE.md` catalogues under narrowing casts, and a monitoring client that records a
+/// fabricated `200` is exactly what a monitoring API must not do.
+fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
+    match value.and_then(|v| v.as_u64()) {
+        Some(raw) => u16::try_from(raw)
+            .ok()
+            .filter(|s| (100..=599).contains(s))
+            .unwrap_or_else(|| {
+                tracing::warn!("Spark: ignoring out-of-range status {raw}, using {default}");
+                default
+            }),
+        None => default,
+    }
+}
+
 /// Largest request body this server will buffer.
 ///
 /// The monitoring API is read-only, so a body is never needed — but it was read with an
@@ -291,29 +314,19 @@ async fn handle_spark_request_inner(
             for result in execution_result.protocol_results {
                 if let ActionResult::Custom { name, data } = result {
                     if name == "spark_response" {
-                        // Two defects in one expression, and they compound. `unwrap_or(200)`
-                        // makes an omitted status a success, so a model that produced a
-                        // `spark_response` without deciding one tells the client the job
-                        // succeeded. And `as u16` narrows without a range check, so
-                        // `65736 as u16 == 200` turns a nonsense status into that same
-                        // success - the LDAP `result_code as u8` shape.
+                        // Two defects in one expression, and they compounded.
+                        // `unwrap_or(200)` made an omitted status a success, so a model that
+                        // produced a `spark_response` without deciding one told the client
+                        // the job succeeded; and `as u16` narrowed without a range check, so
+                        // `65736 as u16 == 200` reached that same success — the LDAP
+                        // `result_code as u8` shape.
                         //
-                        // 500 is the honest default: a response the model did not finish
-                        // describing is a server-side failure, not an "OK". Out-of-range is
-                        // logged and refused rather than truncated, because truncation turns
-                        // an obvious error into a believable answer.
-                        let status = match data.get("status").and_then(|v| v.as_u64()) {
-                            Some(raw) => u16::try_from(raw)
-                                .ok()
-                                .filter(|s| (100..=599).contains(s))
-                                .unwrap_or_else(|| {
-                                    warn!(
-                                        "Spark: ignoring out-of-range status {raw},                                          answering 500"
-                                    );
-                                    500
-                                }),
-                            None => 500,
-                        };
+                        // `status_or` is oauth2's helper, shared so the idiom is greppable
+                        // rather than reinvented. The default is **500, not 200**: a response
+                        // the model did not finish describing is a server-side failure, and a
+                        // monitoring client recording a fabricated success is exactly what a
+                        // monitoring API must not do.
+                        let status = status_or(data.get("status"), 500);
                         let body = data
                             .get("body")
                             .and_then(|v| v.as_str())

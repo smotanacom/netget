@@ -1,11 +1,17 @@
 //! What an NTP client gets when the LLM backend fails while the operator opted into LLM
-//! control: the correct static time response, not silence and not a fabricated clock.
+//! control: a Kiss-o'-Death, not silence and not a usable time sample.
 //!
-//! A normal NTP time response is fully determined by the request plus the server's own clock,
-//! so the mechanical answer is the safe fallback here. Falling back to the TRUE current time
-//! fails *closed*, not open: an operator who opted into the LLM to skew the clock simply gets
-//! the truth instead of a lie in their favour, and a client is never handed a fabricated
-//! reading. Silence, by contrast, looks like a merely slow server and the client keeps polling.
+//! This test used to assert the opposite — a stratum-2 answer carrying the true current time —
+//! on the reasoning that the truth cannot be a lie in the operator's favour. That argument is
+//! about the *content* of the reply and misses what the reply *is*: a stratum-2 packet is an
+//! affirmative assertion that this server is a usable time source, and the client steps its
+//! clock from it. An operator who pointed NTP at a model asked for the model to decide; when
+//! the backend is unreachable, answering anyway on the server's own authority is a fail-open.
+//!
+//! RFC 5905 §7.4 gives NTP the one thing it needs here: a Kiss-o'-Death (stratum 0, LI 3, a
+//! four-character kiss code) can never be mistaken for a time sample, so it fails closed —
+//! while still being a *reply*, so the client backs off instead of polling a server it thinks
+//! is merely slow. `RATE` says the backend is saturated, `INIT` that it is unavailable.
 //!
 //! The packet is decoded here byte by byte against the RFC's field layout rather than through
 //! the server's own builder, so the test is evidence and not a tautology.
@@ -23,9 +29,9 @@ const CLIENT_TRANSMIT: u64 = 0xE5F1_2345_89AB_CDEF;
 const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
 
 #[tokio::test]
-async fn test_ntp_answers_static_time_when_llm_fails() -> E2EResult<()> {
+async fn test_ntp_answers_kiss_of_death_when_llm_fails() -> E2EResult<()> {
     // The instruction opts this server into LLM control; the mock then fails every request
-    // (no matching rule -> HTTP 500), forcing the static fallback.
+    // (no matching rule -> HTTP 500), forcing the fail-closed path.
     let prompt = "listen on port {AVAILABLE_PORT} via ntp. Answer with the current time";
 
     let server_config = NetGetConfig::new_no_scripts(prompt).with_mock(|mock| {
@@ -80,12 +86,23 @@ async fn test_ntp_answers_static_time_when_llm_fails() -> E2EResult<()> {
     assert_eq!(mode, 4, "mode must be 4 (server)");
     assert_eq!(version, 4, "the reply must use the client's NTP version");
     assert_eq!(
-        leap_indicator, 0,
-        "LI must be 0 (no warning): the static fallback is a usable time answer"
+        leap_indicator, 3,
+        "LI must be 3 (unsynchronised): together with stratum 0 this is what marks the packet \
+         as a Kiss-o'-Death rather than a time sample"
     );
     assert_eq!(
-        buf[1], 2,
-        "the static default answers as stratum 2, not a Kiss-o'-Death (stratum 0)"
+        buf[1], 0,
+        "stratum must be 0 - a Kiss-o'-Death. A stratum-2 reply here would be an affirmative, \
+         usable time sample produced by a backend outage, which is the fail-open this test \
+         exists to catch"
+    );
+
+    // The kiss code lives in the reference identifier (bytes 12-15). The mock returns HTTP
+    // 500, which classifies as Unavailable rather than Overloaded, so INIT is the code.
+    let kiss_code = std::str::from_utf8(&buf[12..16]).unwrap_or("????");
+    assert_eq!(
+        kiss_code, "INIT",
+        "an unavailable backend must send the INIT kiss code (RATE is for saturation)"
     );
 
     // Origin timestamp (bytes 24-31) must be the client's transmit timestamp verbatim, or the
@@ -110,8 +127,30 @@ async fn test_ntp_answers_static_time_when_llm_fails() -> E2EResult<()> {
         + NTP_UNIX_OFFSET;
     assert!(
         transmit_secs.abs_diff(now_ntp) < 300,
-        "the static fallback must report the true current time, not a fabricated one \
+        "the timestamps must still be real - a KoD with a garbage transmit time is a malformed \
+         packet, and a client may drop it before reading the stratum \
          (transmit {transmit_secs} vs now {now_ntp})"
+    );
+
+    // The distinction has to survive in the log too: the wire says "do not use me" but not
+    // *why*, so only the tag separates a saturated backend from a broken one.
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")),
+        "the backend failure must be tagged fail_closed_llm_error. Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("decision=static_default_llm_error")),
+        "static_default_llm_error named the old fail-open and must not reappear: the server no \
+         longer answers a backend failure with a usable time sample"
     );
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed

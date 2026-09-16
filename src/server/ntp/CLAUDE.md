@@ -370,29 +370,39 @@ When scripting enabled:
 
 ## Failure behaviour
 
-**This section previously described a Kiss-o'-Death failure path. The code does not do that,
-and has not for some time.** `actions::build_kod_packet` exists, compiles and is correct —
-and is called by nothing: `grep -rn build_kod_packet src/` finds the definition and this
-file's old claim, no call site. What `mod.rs` actually does on `call_llm` returning `Err` is
-send the **mechanical static time response** — LI 0, stratum 2, LOCL, true current time — and
-`tests/server/ntp/llm_failure_test.rs` asserts exactly that, down to
-`assert_eq!(buf[1], 2, "… not a Kiss-o'-Death (stratum 0)")`. The doc and the test have
-contradicted each other in this directory; the test is the one that runs.
+On `call_llm` returning `Err`, NTP sends a **Kiss-o'-Death** (RFC 5905 §7.4): LI 3, stratum 0,
+and a four-character kiss code in the reference identifier — `RATE` when the backend is
+saturated, `INIT` when it is unavailable. The client's transmit timestamp is echoed as the
+origin timestamp, without which the reply is discarded as unrelated and we are back at
+silence.
 
-### The honest name for the LLM-failure path is not "fail closed"
+### Why this is a KoD and not the mechanical time response
 
-A stratum-2 reply is a **positive assertion**: the client takes it as a usable time sample and
-sets its clock. So on backend failure the peer gets an affirmative answer, which is why that
-path is tagged `decision=static_default_llm_error` and **not** `decision=fail_closed_*` —
-`grep decision=fail_closed` will not find an NTP backend outage, deliberately, because the
-server did not deny anything.
+For a long time this path sent the **static stratum-2 answer** — LI 0, LOCL, true current
+time — and that was a fail-open. The argument for it was that the fallback is the server's
+*own clock*, so it cannot be a lie in the operator's favour: an operator who opted into the
+model in order to skew the time simply gets the truth instead.
 
-The argument for the behaviour is that the mechanical answer is the server's *own clock*, so
-it cannot be a lie in the operator's favour: an operator who opted into the model in order to
-skew the time simply gets the truth instead. That is a real argument and the behaviour is
-left as it is. It is not the same as failing closed, and the log must not pretend otherwise.
-If it is ever revisited, `build_kod_packet` is the alternative already sitting in
-`actions.rs`, and a KoD is the one reply NTP defines that is not a time sample.
+That argument is about the *content* of the reply and misses what the reply **is**. A
+stratum-2 packet is a positive assertion that this server is a usable time source, and the
+client steps its clock from it. An operator who pointed NTP at a model asked for the model to
+decide; answering anyway on the server's own authority when the backend is unreachable is
+exactly the fail-open shape the root `CLAUDE.md` calls the most dangerous pattern in this
+codebase.
+
+A KoD is the one reply NTP defines that is **not** a time sample. `chrony`, `ntpd` and
+`ntpdate` all recognise it, refuse to take time from it, and back off — so it fails closed
+while still being a *reply*, which matters: silence looks like a merely slow server and the
+client keeps polling. `decision=fail_closed_*` is therefore honest here, and
+`grep decision=fail_closed` finds an NTP backend outage.
+
+This directory previously had the doc and the test contradicting each other — the doc
+described a KoD the code did not send, `build_kod_packet` sat called by nothing, and
+`llm_failure_test.rs` asserted `buf[1] == 2` with the comment "not a Kiss-o'-Death". The doc
+was rewritten to match the code, and then the code was changed to match what the doc had
+always said. **Both tests now assert the stratum, so the wire and the token cannot drift
+apart again**: a change back to an affirmative answer fails the stratum assertion before it
+reaches the token.
 
 ### Every terminal outcome
 
@@ -403,11 +413,15 @@ If it is ever revisited, `build_kod_packet` is the alternative already sitting i
 | Model answered `ignore_request` | **nothing** | INFO `decision=model_reject` |
 | Model answered with no usable action | **nothing**; the client keeps polling | WARN `decision=model_silent` |
 | Executor refused the model's action (bad hex, short packet, unknown action) | **nothing** | ERROR `decision=fail_closed_bad_action` naming the action and the reason |
-| Backend failed or was saturated | mechanical stratum-2 time response — **an affirmative answer**, see above | ERROR `decision=static_default_llm_error category=overloaded\|unavailable` with the full error |
+| Backend was saturated | **Kiss-o'-Death**, kiss code `RATE` | ERROR `decision=fail_closed_llm_overloaded category=overloaded` with the full error |
+| Backend failed | **Kiss-o'-Death**, kiss code `INIT` | ERROR `decision=fail_closed_llm_error category=unavailable` with the full error |
+| The KoD itself could not be sent | nothing | ERROR `decision=fail_closed_write_error` |
 | The server's own static action failed to encode | nothing | ERROR/WARN `decision=fail_closed_action_error` |
 
-Both static sends carry the token on their own line too
-(`NTP static time response to <peer> (48 bytes) decision=…`), so the two are never conflated.
+The static send carries the token on its own line too
+(`NTP static time response to <peer> (48 bytes) decision=static_default`), as does the KoD
+(`NTP Kiss-o'-Death (INIT) to <peer> (48 bytes) decision=…`), so a no-policy answer and a
+backend failure are never conflated.
 
 The error text never reaches the wire: an NTP reply is 48 fixed binary bytes with no free-text
 field, so there is nothing to leak into. `WireFailure::classify` is used only to put
