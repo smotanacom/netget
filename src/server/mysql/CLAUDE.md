@@ -106,11 +106,14 @@ back. Verified: `mysql_error_response` with 1146 arrives as
 ## Dashboard injection & connection counters
 
 **No peer handle — the dashboard cannot message or disconnect a MySQL peer.**
-`AsyncMysqlIntermediary::run_on(handler, reader, writer)` *moves* both stream
-halves into opensrv's internal `PacketReader`/`PacketWriter` and never exposes
-the write half, so there is no `Arc<Mutex<WriteHalf>>` to hand to
-`peer_support::spawn_peer_command_task`. Three things make this a hard limit,
-not a missing wire-up:
+
+A correction to what this section used to say, because the reason matters elsewhere in
+this file: `run_on` does **not** have to be given the write half. Its `W` is only
+`AsyncWrite + Send + Unpin`, which `&mut WriteHalf<TcpStream>` satisfies, so the write
+half can be *lent* for the session and taken back when the crate's loop gives up. That
+is exactly what the packet bound below does to answer with an ERR packet. What it does
+not do is make a peer handle possible, and the three reasons are unchanged — they are
+about writing *during* a session, not after one:
 
 1. opensrv owns the socket and the packet **sequence-id counter** for the whole
    session; an unsolicited packet written from outside would desync it.
@@ -231,6 +234,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `HANDSHAKE_RESPONSE_TIMEOUT` | 30s | MySQL is server-speaks-first: `opensrv-mysql` writes the initial handshake and a real client answers at once, with the credentials already in hand. This bounds "connected, took the greeting, said nothing". |
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | Real MySQL's `wait_timeout` defaults to **eight hours**, a bound in name only, so copying it was not an option the way copying Kafka's was. Ten minutes is safe because of what this server is: it holds no session state a reconnect would lose (the no-storage rule), so a reaped pooled connection costs `mysql_async` or a JDBC pool one transparent reconnect. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **an ERR packet carrying error 1040 `ER_CON_COUNT_ERROR`, SQLSTATE `08004`** — precisely what a real MySQL server sends, in precisely this position, in place of the initial handshake as packet sequence 0. `mysql_async` surfaces "Too many connections" and the CLI prints `ERROR 1040 (08004)`. |
+| `packet_limit::MAX_PACKET_BYTES` | 67108864 | The number the server **publishes**. `opensrv-mysql` answers `SELECT @@max_allowed_packet` with 67108864 itself, without consulting the shim, and never compared anything against it — a published ceiling that is not applied is worse than none, because a client sizes its writes by it. Enforcing anything *smaller* would leave the same mismatch pointing the other way. Refusal: **error 1153 `ER_NET_PACKET_TOO_LARGE`, SQLSTATE `08S01`**, with the message text mysqld itself uses. |
 
 **The deadline covers the read and nothing else.** `AsyncMysqlIntermediary::run_on` owns the protocol loop, so there is no `read()` of ours to wrap — but it takes a *generic* reader, which is the seam. `IdleTimeoutReader` arms its clock only while a read is actually outstanding, so while `MysqlHandler` is working the reader is not being polled and no clock runs. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
@@ -241,3 +245,41 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+### The packet bound: where it sits, and the seam that lets it answer
+
+`opensrv-mysql` 0.7.0 has **no maximum-packet check anywhere**. `PacketReader::next_async`
+grows its buffer by `max(1 MiB, len * 2)` until a whole *logical* packet fits, and `packet()`
+assembles that logical packet with `nom::multi::fold_many0(fullpacket, …)` — an unbounded fold
+over 16 MiB continuation fragments. So the peer decided how much this process allocated, and it
+decided **before authentication and before any model call**: the first thing a client sends is
+its handshake response, read through exactly this path.
+
+Two seams make the repair possible, and neither is obvious from the crate's docs:
+
+- **The reader.** `run_on` takes a *generic* `R: AsyncRead`, so
+  `packet_limit::PacketLimitReader` sits beneath the crate and decides each packet from the
+  length the peer **declared** in its 4-byte header — before the payload behind it is read, and
+  therefore before anything is allocated for it. For a chain of `0xFFFFFF` fragments the bound
+  is on the running sum, because that is what a logical packet's declared size *is*; a
+  per-fragment check would pass every fragment forever.
+- **The writer.** `run_on`'s `W` is `AsyncWrite + Send + Unpin`, which `&mut WriteHalf` meets,
+  so the connection task lends the write half instead of giving it away. When the limiter trips,
+  the crate's loop returns and the task still owns the socket — which is the only moment at
+  which a refusal decided *beneath* the crate can be expressed *in* the crate's protocol.
+
+The ERR packet carries sequence `refused + 1`. That is not a detail: MySQL numbers packets
+within a command and a conforming client discards a reply out of sequence, so getting it wrong
+turns a clear refusal back into the silence the bound exists to replace.
+
+**It then drains before it closes** (`LINGER_DRAIN_BYTES` / `LINGER_DRAIN_TIMEOUT`, nginx's
+`lingering_close`). A peer refused here is by definition still writing, and closing a socket
+with unread data in the receive queue sends `RST`, which discards the bytes already written —
+so without the drain the peer's `write` fails with `ECONNRESET` and it never reads the error
+number, the SQLSTATE or the message.
+
+`tests/server/mysql/packet_limit_test.rs` covers all of it: the framing decision at an exact
+boundary and across a legitimate chain, an oversized packet sent **as the handshake response**
+(so the bound is demonstrably pre-auth) answered 1153 with zero model calls, and an ordinary
+query still working. Verified by removing the check, at which point three of the four fail and
+the ordinary-query control still passes.

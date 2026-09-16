@@ -55,6 +55,32 @@ const MAX_ALLOCATIONS: usize = 256;
 /// Permission lifetime (RFC 8656 section 9: fixed at 5 minutes).
 const PERMISSION_LIFETIME: Duration = Duration::from_secs(300);
 
+/// Most peer addresses one allocation may hold permissions for at once.
+///
+/// The permission map is keyed by an IP address **the client chooses**, and expiry was
+/// filter-on-read: `is_permitted` and `permitted_ips` skipped a stale entry, and nothing ever
+/// removed one. So the map only ever grew, and over IPv6 a single client has 2^128 distinct
+/// keys to grow it with — the same shape as the OSPF neighbour map, where the key was a Router
+/// ID the sender picked and a peer spraying Hellos grew the table until the server stopped.
+///
+/// The repair is the same two-part one OSPF took, and the order matters: **expiry is enforced
+/// on write**, so the map holds only permissions that are actually live, and *then* a hard cap
+/// bounds how many can be live at once. Ageing alone is not a bound here the way it is for
+/// OSPF — one CreatePermission may name many peers (RFC 8656 section 9.1 allows repeated
+/// XOR-PEER-ADDRESS attributes), so five minutes is long enough to ask for a great many.
+///
+/// 256 is the same order as [`MAX_ALLOCATIONS`] and far above any real client: a WebRTC peer
+/// creates one permission per remote ICE candidate, which is tens at the outside.
+const MAX_PERMISSIONS: usize = 256;
+
+/// Most channel bindings one allocation may hold at once.
+///
+/// RFC 8656 section 11 restricts channel numbers to 0x4000–0x7FFF, so the number space already
+/// bounds this at 16384 — but 16384 live entries per allocation across [`MAX_ALLOCATIONS`]
+/// allocations is not a bound anybody chose. As with permissions, expiry is enforced on write
+/// so the map holds only live bindings, and the cap says what "many" means.
+const MAX_CHANNELS: usize = 256;
+
 /// Channel binding lifetime (RFC 8656 section 11: 10 minutes).
 const CHANNEL_LIFETIME: Duration = Duration::from_secs(600);
 
@@ -182,9 +208,43 @@ impl AllocationState {
         self.lifetime_seconds = lifetime_seconds;
     }
 
-    fn permit(&mut self, ip: IpAddr) {
-        self.permissions
-            .insert(ip, Instant::now() + PERMISSION_LIFETIME);
+    /// Grant a permission, ageing out expired ones first.
+    ///
+    /// Returns `false` and changes nothing when the allocation is already at
+    /// [`MAX_PERMISSIONS`] live permissions. The prune is what makes the cap a cap rather than
+    /// a permanent ceiling: without it, a client that used up its 256 over an hour would be
+    /// refused forever even though none of them was still valid.
+    fn permit(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        self.permissions.retain(|_, expiry| *expiry > now);
+        if !self.permissions.contains_key(&ip) && self.permissions.len() >= MAX_PERMISSIONS {
+            return false;
+        }
+        self.permissions.insert(ip, now + PERMISSION_LIFETIME);
+        true
+    }
+
+    /// How many permissions are live right now, expired ones removed.
+    ///
+    /// Takes `&mut self` deliberately: asking the question is the moment to drop what has
+    /// expired, so a caller that checks capacity can never be told "full" on the strength of
+    /// entries that are already dead.
+    fn live_permissions(&mut self) -> usize {
+        let now = Instant::now();
+        self.permissions.retain(|_, expiry| *expiry > now);
+        self.permissions.len()
+    }
+
+    /// How many further peer addresses would fit inside [`MAX_PERMISSIONS`].
+    fn permission_headroom(&mut self) -> usize {
+        MAX_PERMISSIONS.saturating_sub(self.live_permissions())
+    }
+
+    /// How many channel bindings are live right now, expired ones removed.
+    fn live_channels(&mut self) -> usize {
+        let now = Instant::now();
+        self.channels.retain(|_, (_, expiry)| *expiry > now);
+        self.channels.len()
     }
 
     fn is_permitted(&self, ip: &IpAddr) -> bool {
@@ -193,10 +253,22 @@ impl AllocationState {
             .is_some_and(|expiry| *expiry > Instant::now())
     }
 
-    fn bind_channel(&mut self, number: u16, peer: SocketAddr) {
-        self.channels
-            .insert(number, (peer, Instant::now() + CHANNEL_LIFETIME));
-        self.permit(peer.ip());
+    /// Bind a channel, ageing out expired bindings first.
+    ///
+    /// Returns `false` and changes nothing when the allocation is at [`MAX_CHANNELS`] live
+    /// bindings, or when the implied permission would not fit. A binding without its
+    /// permission would relay nothing, so the two succeed or fail together.
+    fn bind_channel(&mut self, number: u16, peer: SocketAddr) -> bool {
+        let now = Instant::now();
+        self.channels.retain(|_, (_, expiry)| *expiry > now);
+        if !self.channels.contains_key(&number) && self.channels.len() >= MAX_CHANNELS {
+            return false;
+        }
+        if !self.permit(peer.ip()) {
+            return false;
+        }
+        self.channels.insert(number, (peer, now + CHANNEL_LIFETIME));
+        true
     }
 
     /// Peer bound to `number`, if the binding has not expired.
@@ -1225,6 +1297,40 @@ async fn handle_create_permission_request(
 ) {
     let requested_peers = msg.peer_addresses();
 
+    // Capacity is decided from the number of peers the request **declares**, before the model
+    // is asked and before a single entry is inserted. Two reasons it is checked here and not
+    // at the insert:
+    //
+    // * Resource exhaustion is not a policy question — the same reasoning `MAX_ALLOCATIONS`
+    //   states a few functions up. Asking the model whether to exceed a hard limit invites it
+    //   to say yes.
+    // * A request naming 10 000 peers must cost nothing. Inserting until the map filled and
+    //   then stopping would still have spent a model round-trip on it, and the whole point of
+    //   bounding the declared size is that the oversized thing never reaches the prompt.
+    if let Some((_, _, state)) = ctx.server.allocation_for_client(peer_addr).await {
+        let headroom = state.lock().await.permission_headroom();
+        if requested_peers.len() > headroom {
+            Log::new(Some(&ctx.status_tx)).warn(format!(
+                "TURN create_permission decision=fail_closed_permission_capacity for {}: asked \
+                 for {} peer(s) with {} of {} slots free; answering 508",
+                peer_addr,
+                requested_peers.len(),
+                headroom,
+                MAX_PERMISSIONS
+            ));
+            send_local_error(
+                ctx,
+                &msg.transaction_id,
+                8,
+                508,
+                "Insufficient Capacity",
+                peer_addr,
+            )
+            .await;
+            return;
+        }
+    }
+
     let mut event_data = base_event_data(ctx, msg, raw.len(), peer_addr).await;
     if let Some(obj) = event_data.as_object_mut() {
         obj.insert(
@@ -1303,8 +1409,22 @@ async fn handle_create_permission_request(
 
         if let Some((id, _, state)) = ctx.server.allocation_for_client(peer_addr).await {
             let mut state = state.lock().await;
+            let mut refused = 0usize;
             for ip in &chosen {
-                state.permit(*ip);
+                if !state.permit(*ip) {
+                    refused += 1;
+                }
+            }
+            // The declared count was checked against the headroom before the model was asked,
+            // so this can only fire if another request filled the map while this one was in
+            // flight. It is still not allowed to be silent: a permission the client believes
+            // it holds and does not is a relay that drops its traffic for no stated reason.
+            if refused > 0 {
+                Log::new(Some(&ctx.status_tx)).warn(format!(
+                    "TURN allocation {id} decision=fail_closed_permission_capacity: {refused} of \
+                     {} permission(s) for {peer_addr} did not fit under the {MAX_PERMISSIONS} cap",
+                    chosen.len()
+                ));
             }
             Log::new(Some(&ctx.status_tx)).info(format!(
                 "TURN allocation {} permits {:?} for {} ({} peer(s))",
@@ -1379,6 +1499,32 @@ async fn handle_channel_bind_request(
         return;
     }
 
+    // Same rule as CreatePermission: capacity before the model, not after. A binding also
+    // grants a permission, so a request that cannot have one cannot have the other either.
+    if let Some((_, _, state)) = ctx.server.allocation_for_client(peer_addr).await {
+        let mut state = state.lock().await;
+        let channel_is_new = state.channel_peer(channel_number).is_none();
+        if (channel_is_new && state.live_channels() >= MAX_CHANNELS)
+            || state.permission_headroom() == 0
+        {
+            Log::new(Some(&ctx.status_tx)).warn(format!(
+                "TURN channel_bind decision=fail_closed_permission_capacity: {peer_addr} is at \
+                 the {MAX_CHANNELS}-channel / {MAX_PERMISSIONS}-permission cap; answering 508"
+            ));
+            drop(state);
+            send_local_error(
+                ctx,
+                &msg.transaction_id,
+                9,
+                508,
+                "Insufficient Capacity",
+                peer_addr,
+            )
+            .await;
+            return;
+        }
+    }
+
     let mut event_data = base_event_data(ctx, msg, raw.len(), peer_addr).await;
     if let Some(obj) = event_data.as_object_mut() {
         obj.insert(
@@ -1414,11 +1560,21 @@ async fn handle_channel_bind_request(
 
     if find_action(&result, "send_turn_channel_bind_response").is_some() {
         if let Some((id, _, state)) = ctx.server.allocation_for_client(peer_addr).await {
-            state.lock().await.bind_channel(channel_number, peer);
-            Log::new(Some(&ctx.status_tx)).info(format!(
-                "TURN allocation {} bound channel {} to {}",
-                id, channel_number, peer
-            ));
+            if state.lock().await.bind_channel(channel_number, peer) {
+                Log::new(Some(&ctx.status_tx)).info(format!(
+                    "TURN allocation {} bound channel {} to {}",
+                    id, channel_number, peer
+                ));
+            } else {
+                // Only reachable if another request filled the map between the capacity check
+                // above and here. Never silent: a channel the client believes it holds and
+                // does not is a relay that drops its traffic for no stated reason.
+                Log::new(Some(&ctx.status_tx)).warn(format!(
+                    "TURN allocation {id} decision=fail_closed_permission_capacity: channel \
+                     {channel_number} -> {peer} did not fit under the {MAX_CHANNELS}-channel / \
+                     {MAX_PERMISSIONS}-permission cap"
+                ));
+            }
         } else {
             warn!(
                 "TURN channel bind response sent to {} which holds no allocation",

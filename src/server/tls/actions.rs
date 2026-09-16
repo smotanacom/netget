@@ -75,6 +75,10 @@ impl Protocol for TlsProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .implementation("TLS transport layer using tokio-rustls; self-signed certificate by default, or cert_path/key_path")
+            // Not a record size — rustls bounds those at 2^14 by the spec. This is what one
+            // connection may accumulate while an answer is in flight, which is the number a
+            // peer actually controls: see `MAX_QUEUED_BYTES`.
+            .max_inbound_bytes(crate::server::tls::MAX_QUEUED_BYTES)
             .llm_control("Full control over application protocol on top of TLS; text or hex payloads")
             .e2e_testing("openssl s_client / native TLS client")
             .notes("Generic TLS server for custom protocols - LLM implements application layer. No client certificate authentication (no mTLS)")
