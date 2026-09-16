@@ -42,9 +42,11 @@ so a test cannot pass by the device happening to emit something.
 
 ## Synchronisation
 
-Every test waits for `"USB serial LLM call completed for connection"` before asserting, because
-the attach event and the USB/IP import are independent: the LLM call starts as soon as the TCP
-connection is accepted, well before the client sends `OP_REQ_IMPORT`.
+Every test waits for `"USB serial LLM call completed for connection"` before asserting:
+the attach event follows the peer's `OP_REQ_IMPORT`, not the TCP accept — a bare
+connect costs no model call at all (see `src/server/usb/CLAUDE.md` and
+`tests/server/usb_keyboard/attach_on_import_test.rs`), so the log line is the only
+signal that the import has been answered.
 
 `test_usb_serial_detach` waits for that line **twice** (attach, then detach) via
 `wait_for_log_count`, plus the `"USB serial host detached on connection"` line.

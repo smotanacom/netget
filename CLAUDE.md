@@ -1463,14 +1463,36 @@ Read before assuming a subsystem is sound:
   oversubscribes a 12-core box; giving one test `flavor = "multi_thread", worker_threads = 4`
   made the same failure go from 2/6 to **7/8**. Measure before adding workers.
 
-- **Building a `reqwest::Client` is a blocking operation.** `Client::builder().build()` sets
-  up the rustls stack and loads the platform root store; on macOS that reads the keychain
-  through Security.framework, synchronously and serialised across processes. Called on the
-  async runtime it parks a tokio worker, and under load that stalled an entire client
-  runtime. Build it on `spawn_blocking`, build it **once** rather than per request (`doh`,
-  `http` and `openapi` all rebuilt it every time, and `http`/`openapi` additionally built one
-  at connect and dropped it), and pass `tls_built_in_root_certs(false)` when
-  `danger_accept_invalid_certs` is set, since nothing will be checked against those roots.
+- **The FIRST `reqwest::Client` in a process is expensive, and this entry named the wrong
+  reason for a long time.** It said the cost was the rustls stack and the platform root store,
+  read from the keychain through Security.framework. **Measured September 2026: that is wrong
+  in every part.** The TLS backend is irrelevant (`use_rustls_tls()` measured *slower*, 699 ms
+  vs 657 ms), and **no root store is loaded at build time at all** — that happens at handshake.
+  So `tls_built_in_root_certs(false)` buys nothing, and the old advice sent people straight at
+  it.
+
+  The real mechanism is the **system-proxy probe**. `reqwest`'s `system-proxy` feature is on by
+  default, so every `build()` calls `hyper_util`'s `Matcher::from_system()`, which on macOS
+  opens an `SCDynamicStore` session against **configd** — one system-wide daemon, exactly the
+  shape of the mDNSResponder serialisation above, a different daemon. Measured at 100
+  concurrent processes: first build **657 ms p50**, with `.no_proxy()` **0.090 ms**.
+
+  It is **per-process, paid once**: the second client in the same process costs ~0.3 ms at any
+  concurrency, which is why a per-endpoint client cache was measured and *rejected* rather than
+  built. Build it once rather than per request (`doh`, `http` and `openapi` all rebuilt it every
+  time) — but do not reach for `spawn_blocking` or a cache without measuring first, because on
+  these numbers neither is warranted.
+
+  `src/llm/ollama_client.rs`'s `configured_for_endpoint` applies `.no_proxy()` **only** for
+  loopback hosts. That is also a correctness fix: `hyper_util`'s macOS reader never consults
+  `kSCPropNetProxiesExceptionsList`, so with a proxy configured a request to
+  `http://127.0.0.1:11434` went **to that proxy**. `tests/llm_endpoint_proxy_bypass_test.rs`
+  shows it from the wire. Note the consequence: a loopback target no longer honours
+  `HTTP_PROXY`.
+
+  **The `doh` client finding below is attributed to the keychain and should be re-checked
+  against this** — the same 657 ms proxy probe was present in every one of those processes and
+  is the better candidate.
 
 - **A client that loses its target must fail, never fall back to the real service.** The
   DynamoDB client took the address as `_remote_addr` and dropped it, so with no explicit

@@ -1,5 +1,12 @@
 //! MySQL server implementation using opensrv-mysql
+//!
+//! **Inbound packets are bounded before they are buffered.** `opensrv-mysql` has no
+//! maximum-packet check of any kind, and it is the crate that answers
+//! `SELECT @@max_allowed_packet` with 67108864 — so until now this server published a ceiling
+//! and enforced nothing, on an unauthenticated connection, before any model call.
+//! `packet_limit` puts that number where the bytes are: see [`packet_limit::MAX_PACKET_BYTES`].
 pub mod actions;
+pub mod packet_limit;
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
@@ -20,7 +27,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 /// How long to wait for the client's handshake response after the greeting goes out.
 ///
@@ -43,6 +50,23 @@ const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::
 
 /// Concurrent connections this server admits.
 const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// How many further octets are read and **discarded** after a packet is refused, so the peer
+/// can finish writing and then read the ERR packet.
+///
+/// A peer refused at [`packet_limit::MAX_PACKET_BYTES`] is by definition still writing: it is
+/// part-way through a packet it declared as larger than we will take. Closing the socket while
+/// data is still in the receive queue sends `RST`, and `RST` discards the response bytes
+/// already written along with it — so the peer's `write` fails with `ECONNRESET` and the
+/// carefully-numbered ERR packet, the one thing that tells it *why*, is never delivered.
+///
+/// This is nginx's `lingering_close`, and it is bounded for the same reason: draining is
+/// politeness, not an obligation. Nothing is buffered — the octets are counted and dropped.
+const LINGER_DRAIN_BYTES: usize = 8 * 1024 * 1024;
+
+/// Wall-clock bound on that drain, so a peer trickling one octet at a time cannot hold the
+/// connection open by staying under [`LINGER_DRAIN_BYTES`].
+const LINGER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
 ///
@@ -193,12 +217,13 @@ impl MysqlServer {
 
                         let conn_state_owner = server.app_state.clone();
                         let conn_server_id = server.server_id;
+                        let status_tx_conn = status_tx.clone();
                         let conn_handle = tokio::spawn(async move {
                             // Held for the life of the session, so the cap counts live
                             // connections rather than accepts.
                             let _permit = permit;
                             // MySQL requires split read/write streams
-                            let (reader, writer) = tokio::io::split(stream);
+                            let (reader, mut writer) = tokio::io::split(stream);
                             // `AsyncMysqlIntermediary::run_on` owns the protocol loop, so there
                             // is no `read()` of ours to wrap in a deadline — but it takes a
                             // *generic* reader, which is the seam. `IdleTimeoutReader` arms its
@@ -213,9 +238,34 @@ impl MysqlServer {
                                     HANDSHAKE_RESPONSE_TIMEOUT,
                                     IDLE_BETWEEN_COMMANDS_TIMEOUT,
                                 );
-                            if let Err(e) =
-                                AsyncMysqlIntermediary::run_on(handler, reader, writer).await
-                            {
+                            // The packet bound sits *under* opensrv-mysql, for the same reason
+                            // the idle bound does: the crate owns the protocol loop, but it
+                            // takes a generic reader, and a reader is where a length field can
+                            // be refused before the payload behind it is read. See
+                            // `packet_limit`.
+                            let trip = Arc::new(packet_limit::PacketLimitTrip::default());
+                            let mut reader =
+                                packet_limit::PacketLimitReader::new(reader, trip.clone());
+                            // `run_on` takes the writer **by value**, and its `W` is only
+                            // `AsyncWrite + Send + Unpin` — which `&mut WriteHalf` satisfies.
+                            // That is the seam: lending the write half rather than giving it
+                            // away leaves this task able to answer once the crate's loop has
+                            // given up, which is the only moment at which a refusal decided
+                            // beneath the crate can be expressed in the crate's protocol.
+                            let outcome =
+                                AsyncMysqlIntermediary::run_on(handler, &mut reader, &mut writer)
+                                    .await;
+                            if trip.tripped() {
+                                Self::refuse_oversized_packet(
+                                    connection_id,
+                                    addr,
+                                    &trip,
+                                    reader.into_inner(),
+                                    &mut writer,
+                                    &status_tx_conn,
+                                )
+                                .await;
+                            } else if let Err(e) = outcome {
                                 error!("MySQL connection error: {:?}", e);
                             }
                             // Mark the connection closed so it does not stay Active forever
@@ -250,6 +300,64 @@ impl MysqlServer {
 
         let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
         Ok(actual_addr)
+    }
+
+    /// Tell a peer, in MySQL's own vocabulary, that the packet it declared is too large.
+    ///
+    /// Order matters and is nginx's, not the obvious one. The ERR packet is written **first**,
+    /// so it is on the wire while the peer is still writing and can be read the moment the
+    /// peer looks; then the receive queue is drained, boundedly, so that the close which
+    /// follows is a `FIN` and not an `RST`. A close with unread data queued discards
+    /// everything already written to the socket, which would make the error number, the
+    /// SQLSTATE and the sequence arithmetic above all equally invisible.
+    async fn refuse_oversized_packet<R, W>(
+        connection_id: ConnectionId,
+        remote_addr: SocketAddr,
+        trip: &packet_limit::PacketLimitTrip,
+        mut reader: R,
+        writer: &mut W,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) where
+        R: tokio::io::AsyncRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let declared = trip.declared_bytes();
+        let sequence = trip.reply_sequence();
+
+        Log::new(Some(status_tx)).warn(format!(
+            "MySQL connection {connection_id} decision=fail_closed_packet_too_large: {remote_addr} \
+             declared a {declared}-byte packet, limit is {} bytes; answering 1153 \
+             ER_NET_PACKET_TOO_LARGE",
+            packet_limit::MAX_PACKET_BYTES
+        ));
+
+        let err = packet_limit::packet_too_large_err(sequence);
+        if let Err(e) = writer.write_all(&err).await {
+            debug!("MySQL {connection_id}: could not write the 1153 refusal: {e}");
+            return;
+        }
+        if let Err(e) = writer.flush().await {
+            debug!("MySQL {connection_id}: could not flush the 1153 refusal: {e}");
+        }
+
+        let mut drained = 0usize;
+        let mut scratch = vec![0u8; 64 * 1024];
+        let _ = tokio::time::timeout(LINGER_DRAIN_TIMEOUT, async {
+            while drained < LINGER_DRAIN_BYTES {
+                match reader.read(&mut scratch).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => drained = drained.saturating_add(n),
+                }
+            }
+        })
+        .await;
+
+        trace!("MySQL {connection_id}: drained {drained} bytes after refusing the packet");
+        if let Err(e) = writer.shutdown().await {
+            debug!("MySQL {connection_id}: shutdown after refusal returned: {e}");
+        }
     }
 }
 

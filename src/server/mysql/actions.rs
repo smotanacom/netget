@@ -83,6 +83,11 @@ impl Protocol for MysqlProtocol {
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
             .implementation("opensrv-mysql v0.7 protocol library")
+            // The number this server publishes and the number it enforces are one number:
+            // opensrv-mysql answers `SELECT @@max_allowed_packet` with 67108864 itself,
+            // without consulting this shim, and until `packet_limit` existed nothing was
+            // ever compared against it.
+            .max_inbound_bytes(crate::server::mysql::packet_limit::MAX_PACKET_BYTES)
             .llm_control("Query responses (result sets, OK packets, ERR packets)")
             .e2e_testing(
                 "mysql_async client crate, text and binary (prepared) protocols. Note what \

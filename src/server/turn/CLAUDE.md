@@ -98,12 +98,12 @@ struct TurnAllocation {
 
 struct AllocationState {   // shared with the relay task
     expires_at:  Instant,
-    permissions: HashMap<IpAddr, Instant>,       // RFC 8656: per IP, 5 minutes
-    channels:    HashMap<u16, (SocketAddr, Instant)>,  // 10 minutes
+    permissions: HashMap<IpAddr, Instant>,       // per IP, 5 min, <= MAX_PERMISSIONS
+    channels:    HashMap<u16, (SocketAddr, Instant)>,  // 10 min, <= MAX_CHANNELS
 }
 ```
 
-Two details that are load-bearing:
+Three details that are load-bearing:
 
 - **`expires_at` lives in the shared state, not beside the socket.** The relay task checks it
   per packet. Keeping it only in the allocation table meant an expired allocation kept
@@ -111,6 +111,14 @@ Two details that are load-bearing:
 - **`impl Drop for TurnAllocation` aborts `relay_task`.** Dropping a `JoinHandle` detaches the
   task rather than stopping it, so without this an expired, replaced, or server-stopped
   allocation would keep its socket bound and keep forwarding.
+- **Both maps age out on write, not only on read.** Expiry used to be filter-on-read —
+  `is_permitted` and `permitted_ips` skipped a stale entry and nothing ever removed one — so
+  the permission map only ever grew, keyed by an IP address the *client* names. Over IPv6 that
+  is 2^128 keys for one client. This is the OSPF neighbour-map defect (a Router ID the sender
+  picks, a peer spraying Hellos, a table that grows until the server stops) and it takes OSPF's
+  repair: `permit` and `bind_channel` `retain` the live entries before inserting. Ageing on
+  read is bookkeeping; ageing on write is a bound. See `MAX_PERMISSIONS` under Security notes
+  for why the ageing alone is not sufficient here.
 
 The table is `HashMap<allocation_id, TurnAllocation>` behind an `Arc<Mutex<_>>`; the cleanup
 task holds only a `Weak` reference, because `register_server_task` stores one handle per
@@ -206,7 +214,8 @@ Send and Data indications have **no event and no action**, by design (see the ta
 5. **Datagrams larger than 2048 bytes are truncated** (`RELAY_MTU`), with a WARN when a
    received datagram exactly fills the buffer.
 6. **Permission and channel lifetimes are fixed** at the RFC values (300s / 600s); the model
-   cannot change them, only whether they exist.
+   cannot change them, only whether they exist. Their *counts* are capped at 256 each per
+   allocation (`MAX_PERMISSIONS`, `MAX_CHANNELS`) and the model cannot change those either.
 7. **One allocation per client 5-tuple.** A second grant replaces the first (RFC 8656 says
    answer 437 Allocation Mismatch; a model can do that explicitly with
    `send_turn_error_response`).
@@ -256,10 +265,26 @@ Two properties worth preserving:
 
 ### What is not gated on the model at all?
 
-The 256-allocation cap, the 3600s maximum lifetime, `peer_scope`, and RFC 8656's fixed
-permission (5 min) and channel (10 min) lifetimes. **There is no per-source rate limit and no
-cap on relayed bytes**, so amplification and free-proxy use are bounded by the policy and by
-`peer_scope`, not by anything counting.
+The 256-allocation cap, `MAX_PERMISSIONS` (256 per allocation), `MAX_CHANNELS` (256 per
+allocation), the 3600s maximum lifetime, `peer_scope`, and RFC 8656's fixed permission (5 min)
+and channel (10 min) lifetimes. **There is no per-source rate limit and no cap on relayed
+bytes**, so amplification and free-proxy use are bounded by the policy and by `peer_scope`,
+not by anything counting.
+
+`MAX_PERMISSIONS` is checked **from the count the request declares, before the model is
+asked** — the same rule as the allocation cap, for the same reason: resource exhaustion is not
+a policy question, and a CreatePermission naming ten thousand peers must not buy a model
+round-trip. Over the cap the client gets **508 Insufficient Capacity** and the log gets
+`decision=fail_closed_permission_capacity`. Ageing alone would not have been a bound: one
+request may name many peers (RFC 8656 section 9.1 allows repeated XOR-PEER-ADDRESS
+attributes), so five minutes is long enough to ask for a great many. ChannelBind is checked the
+same way, because a binding grants a permission as a side effect and a binding without its
+permission would relay nothing.
+
+`tests/server/turn/permission_limit_test.rs` fills the map to exactly the cap with 256
+distinct IPv6 peers over four requests — all of which must succeed, or the refusal proves
+nothing — and asserts the 257th is answered 508 with the model called four times, not five.
+Verified by removing both checks, at which point the refusal becomes a success response.
 
 **Fail-closed points** worth preserving if you refactor: no allocation without an explicit
 grant action; no relaying to or from an unpermitted IP; a peer the request did not name is

@@ -54,16 +54,32 @@ pub(crate) fn actions_launch_stdout_owner(actions: &[serde_json::Value]) -> bool
     })
 }
 
-/// Print a status/log line to the correct stream: stderr when a stdio server
-/// owns stdout, otherwise stdout (the default the test harness parses).
-fn emit_status_line(line: &str, to_stderr: bool) {
+/// Write one status line to the correct stream — stderr when a stdio server owns stdout,
+/// otherwise stdout (the default the test harness parses) — and **never die trying**.
+///
+/// `println!` and `eprintln!` panic when the underlying write fails. On a status line that
+/// makes a closed downstream pipe fatal: `netget "serve …" | head -1` exits `head` after the
+/// first line, the next `[STATUS]` write gets `EPIPE`, and a running server with live
+/// connections dies inside its own diagnostics. Nothing about the *service* has failed — only
+/// the thing that was reading about it — so the write is made fallibly and the error dropped.
+///
+/// This used to be a load-bearing accident. A netget whose stdout reader had gone away died
+/// within a second, which is the only reason orphaned test binaries did not accumulate faster
+/// than they did; a *quiet* one, which is the kind that sits on a port doing nothing, never
+/// learned and never exited. That backstop now belongs to `tests/helpers/child_guard.rs`,
+/// which ties a child's life to its parent's at the OS level and covers the quiet case too.
+/// Exiting on a closed pipe is a defensible policy; doing it by panicking from a status line —
+/// and only when the process happens to be chatty — is not.
+pub(crate) fn emit_status_line(line: &str, to_stderr: bool) {
     use std::io::Write;
     if to_stderr {
-        eprintln!("{line}");
-        let _ = std::io::stderr().flush();
+        let mut sink = std::io::stderr().lock();
+        let _ = writeln!(sink, "{line}");
+        let _ = sink.flush();
     } else {
-        println!("{line}");
-        let _ = std::io::stdout().flush();
+        let mut sink = std::io::stdout().lock();
+        let _ = writeln!(sink, "{line}");
+        let _ = sink.flush();
     }
 }
 

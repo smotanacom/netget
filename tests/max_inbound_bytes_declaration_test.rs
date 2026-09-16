@@ -134,7 +134,8 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
     ),
     (
         "turn",
-        "fixed RELAY_MTU buffer; see the permission-map defect noted in kind 6",
+        "fixed RELAY_MTU buffer, so no message size is peer-chosen; its unbounded growth was \
+         the permission map, now capped at MAX_PERMISSIONS with expiry enforced on write",
     ),
     ("udp", "single recv_from into a fixed 65535-byte buffer"),
     (
@@ -213,18 +214,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
     (
         "http_common",
         "a shared response helper, not a protocol: no impl Protocol, no registry entry",
-    ),
-    (
-        "mysql",
-        "UNBOUNDED: opensrv-mysql 0.7.0 has no max-packet check; chained full packets double \
-         its buffer. Pre-auth and pre-LLM. Needs a limiting reader before run_on plus a 1153 \
-         ER_NET_PACKET_TOO_LARGE. Owned by another agent this session",
-    ),
-    (
-        "tls",
-        "UNBOUNDED: conn.queued_data grows with no cap while an LLM call is in flight, which a \
-         manual intercept can hold open for 300s. Needs a cap plus a record_overflow alert. \
-         Owned by another agent this session",
     ),
     (
         "hls",

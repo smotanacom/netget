@@ -2,16 +2,16 @@
 
 use super::common::*;
 use super::mock_config::{wait_for_mock_expectations, MockLlmConfig};
-use super::netget::NetGetConfig;
+use super::netget::{AbortOnDrop, ManagedChild, NetGetConfig, NetGetInstance};
 use std::time::Duration;
-use tokio::process::Child;
 use tokio::time::sleep;
 
 /// A running NetGet client process
 #[allow(dead_code)]
 pub struct NetGetClient {
-    /// The child process
-    child: Child,
+    /// The child process. Killed, and its death tie released, when this struct is dropped —
+    /// see `ManagedChild`.
+    child: ManagedChild,
     /// Client ID
     pub id: String,
     /// Protocol name (e.g., "TCP", "HTTP")
@@ -24,24 +24,39 @@ pub struct NetGetClient {
     pub output_lines: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
     /// Mock configuration (if mocks were used)
     mock_config: Option<MockLlmConfig>,
-    /// Abort handles for background reader tasks
-    stdout_reader_handle: tokio::task::JoinHandle<()>,
-    stderr_reader_handle: tokio::task::JoinHandle<()>,
+    /// The mock Ollama server, and the temporary mock config file, held for this client's
+    /// lifetime.
+    ///
+    /// **These are not new: they were kept alive by accident.** `start_netget_client` took the
+    /// instance apart with `ManuallyDrop` + `ptr::read` and never read these two, so they were
+    /// *leaked* — which is exactly why every client test worked, because dropping the mock
+    /// server stops answering the client's LLM calls. Naming them makes the lifetime a decision
+    /// instead of a side effect of a leak, and `NetGetServer` has held them this way all along.
+    /// Must NOT be underscore-prefixed: the binding is the lifetime.
+    #[allow(dead_code)]
+    mock_ollama_server: Option<super::mock_ollama::MockOllamaServer>,
+    #[allow(dead_code)]
+    mock_temp_file: Option<tempfile::TempPath>,
+    /// Background reader tasks, aborted when this struct is dropped.
+    stdout_reader_handle: AbortOnDrop,
+    stderr_reader_handle: AbortOnDrop,
 }
 
 impl NetGetClient {
     /// Create a new NetGetClient instance
     #[allow(dead_code)]
     pub(crate) fn new(
-        child: Child,
+        child: ManagedChild,
         id: String,
         protocol: String,
         remote_addr: String,
         local_addr: Option<String>,
         output_lines: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
         mock_config: Option<MockLlmConfig>,
-        stdout_reader_handle: tokio::task::JoinHandle<()>,
-        stderr_reader_handle: tokio::task::JoinHandle<()>,
+        mock_ollama_server: Option<super::mock_ollama::MockOllamaServer>,
+        mock_temp_file: Option<tempfile::TempPath>,
+        stdout_reader_handle: AbortOnDrop,
+        stderr_reader_handle: AbortOnDrop,
     ) -> Self {
         Self {
             child,
@@ -51,6 +66,8 @@ impl NetGetClient {
             local_addr,
             output_lines,
             mock_config,
+            mock_ollama_server,
+            mock_temp_file,
             stdout_reader_handle,
             stderr_reader_handle,
         }
@@ -96,8 +113,8 @@ impl NetGetClient {
 
         // Wait briefly for tasks to abort
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
-            let _ = (&mut self.stdout_reader_handle).await;
-            let _ = (&mut self.stderr_reader_handle).await;
+            let _ = (&mut *self.stdout_reader_handle).await;
+            let _ = (&mut *self.stderr_reader_handle).await;
         })
         .await;
 
@@ -329,18 +346,10 @@ impl NetGetClient {
 
 impl Drop for NetGetClient {
     fn drop(&mut self) {
-        // Signal the child here rather than leaving it to `kill_on_drop`, so the
-        // death tie is released only once the signal is on its way.
-        let pid = self.child.id();
-        let _ = self.child.start_kill();
-        if let Some(pid) = pid {
-            super::child_guard::untie_child(pid);
-        }
-
-        // Abort background reader tasks to prevent hanging
-        self.stdout_reader_handle.abort();
-        self.stderr_reader_handle.abort();
-
+        // Killing the child, releasing its death tie and aborting the reader tasks all happen
+        // in the fields' own `Drop` (`ManagedChild`, `AbortOnDrop`), which is what lets
+        // `NetGetInstance` be destructured into this struct without `ManuallyDrop`. All that is
+        // left here is the diagnostic.
         if let Some(ref mock_config) = self.mock_config {
             if !mock_config.is_verified() {
                 super::mock_config::report_unverified_on_drop("client", mock_config);
@@ -372,22 +381,41 @@ pub async fn start_netget_client(config: NetGetConfig) -> E2EResult<NetGetClient
         .into());
     }
 
-    // Use ManuallyDrop to prevent Drop from running when we move fields out
-    let mut instance = std::mem::ManuallyDrop::new(instance);
-    let client = instance.clients.drain(..).next().unwrap();
+    // Take the instance apart by value. Every field is named and there is no `..`, so adding a
+    // field to `NetGetInstance` fails to compile *here* until somebody decides what happens to
+    // it — which is the whole point. This used to be `ManuallyDrop` plus one `ptr::read` per
+    // field, which moved exactly the fields it named and silently leaked the rest.
+    //
+    // `mock_ollama_server` and `mock_temp_file` must be *carried*, not dropped. The old
+    // `ptr::read` version never named them, so they leaked — and that leak was what kept the
+    // mock model answering for the rest of the test. Dropping them here instead would shut the
+    // mock down the moment the client is created, which is the sort of thing an exhaustive
+    // pattern makes you notice and a per-field `ptr::read` does not.
+    let NetGetInstance {
+        child,
+        servers: _,
+        clients,
+        output_lines,
+        mock_ollama_server,
+        mock_temp_file,
+        mock_config,
+        stdout_reader_handle,
+        stderr_reader_handle,
+    } = instance;
+    let client = clients.into_iter().next().expect("checked non-empty above");
 
-    // SAFETY: We're manually managing the lifecycle. The fields are moved to NetGetClient
-    // which has its own Drop implementation that will clean them up.
     Ok(NetGetClient::new(
-        unsafe { std::ptr::read(&instance.child) },
+        child,
         client.id,
         client.protocol,
         client.remote_addr,
         client.local_addr,
-        instance.output_lines.clone(),
-        unsafe { std::ptr::read(&instance.mock_config) },
-        unsafe { std::ptr::read(&instance.stdout_reader_handle) },
-        unsafe { std::ptr::read(&instance.stderr_reader_handle) },
+        output_lines,
+        mock_config,
+        mock_ollama_server,
+        mock_temp_file,
+        stdout_reader_handle,
+        stderr_reader_handle,
     ))
 }
 

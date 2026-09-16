@@ -578,11 +578,10 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
                 anyhow::anyhow!("No model available — pull one in Ollama or pass --model")
             })?
     };
-    if to_stderr {
-        eprintln!("[SERVER] Using model: {}", selected_model);
-    } else {
-        println!("[SERVER] Using model: {}", selected_model);
-    }
+    non_interactive::emit_status_line(
+        &format!("[SERVER] Using model: {}", selected_model),
+        to_stderr,
+    );
     state.set_ollama_model(Some(selected_model)).await;
 
     if let Some(mode) = args
@@ -610,7 +609,6 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
     // so a downstream pipe receives only the model's payload bytes.
     let (status_tx, mut status_rx) = mpsc::unbounded_channel::<String>();
     let _forwarder = tokio::spawn(async move {
-        use std::io::{self, Write};
         while let Some(msg) = status_rx.recv().await {
             if !msg.starts_with("__") {
                 let clean = msg
@@ -619,13 +617,9 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
                     .or_else(|| msg.strip_prefix("[WARN] "))
                     .or_else(|| msg.strip_prefix("[DEBUG] "))
                     .unwrap_or(&msg);
-                if to_stderr {
-                    eprintln!("{clean}");
-                    let _ = io::stderr().flush();
-                } else {
-                    println!("{clean}");
-                    let _ = io::stdout().flush();
-                }
+                // Through the shared writer, which does not panic when the reader on the far
+                // end of the pipe has gone away. See `non_interactive::emit_status_line`.
+                non_interactive::emit_status_line(clean, to_stderr);
             }
         }
     });
@@ -654,13 +648,8 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
         server_id.as_u32(),
         canonical
     );
-    if to_stderr {
-        eprintln!("{started_line}");
-        eprintln!("Waiting for connections...\n");
-    } else {
-        println!("{started_line}");
-        println!("Waiting for connections...\n");
-    }
+    non_interactive::emit_status_line(&started_line, to_stderr);
+    non_interactive::emit_status_line("Waiting for connections...\n", to_stderr);
 
     // Hand off to the shared non-interactive server loop (Ctrl+C + task ticker).
     let (_srv_tx, srv_rx) = mpsc::unbounded_channel::<String>();
