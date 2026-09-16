@@ -81,6 +81,13 @@ enum Reason {
     AxumOwnsSocket,
     /// USB/IP: the "peer" is a USB host attaching a device, and the protocol's vocabulary is
     /// URBs against endpoints, not a byte stream anything could be injected into.
+    ///
+    /// **No protocol carries this reason any more.** All six USB servers adopted a peer handle
+    /// in September 2026, and this ratchet is what said so — it failed asking for their six
+    /// lines to be deleted, which is the shrink-only half doing its job. The variant is kept
+    /// because the reasoning still holds for anything that speaks URBs rather than bytes, and
+    /// because deleting it would lose why the six were ever exempt.
+    #[allow(dead_code)]
     UsbIp,
     /// A WebSocket: the write side is a `SplitSink` behind a writer task, not an `AsyncWrite`.
     /// `peer_support` writes `ActionResult::Output` bytes straight to the socket, which for a
@@ -184,12 +191,6 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("spark", Reason::HyperOwnsSocket),
     ("sqs", Reason::HyperOwnsSocket),
     ("ssh", Reason::RusshOwnsSocket),
-    ("usb/fido2", Reason::UsbIp),
-    ("usb/keyboard", Reason::UsbIp),
-    ("usb/mouse", Reason::UsbIp),
-    ("usb/msc", Reason::UsbIp),
-    ("usb/serial", Reason::UsbIp),
-    ("usb/smartcard", Reason::UsbIp),
     ("webdav", Reason::HyperOwnsSocket),
     ("webrtc", Reason::WebSocketFrames),
     ("webrtc_signaling", Reason::WebSocketFrames),
