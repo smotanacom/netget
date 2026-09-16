@@ -50,6 +50,38 @@ const IDLE_AFTER_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Concurrent connections this server admits.
 const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
 
+/// Most application data this server will hold for one connection while an answer is in flight.
+///
+/// `ConnectionData::queued_data` exists because a peer may keep writing while the model is
+/// being asked what to say — the Idle → Processing → Accumulating machine every protocol here
+/// hand-rolls. It had no ceiling, so the peer decided how much memory one connection cost, and
+/// it decided it *while the answer it is waiting for has not arrived*: the window is a whole
+/// LLM round-trip, or, where a `manual` rule parks the record for a human
+/// (`src/state/intercepts.rs`), **300 seconds by default**, times
+/// [`MAX_CONNECTIONS`]. Neither authentication nor a model call stands in front of it: the
+/// first record a stranger sends opens the window.
+///
+/// 1 MiB is 64 maximum-size TLS records (RFC 8446 caps a plaintext record at 2^14 bytes), and
+/// the number is taken from the protocol's own framing rather than from a guess about the
+/// application: the queue holds what arrived *while one answer was being composed*, and sixty
+/// four full records is already far more than any request a model is going to be asked to read.
+/// Past that the peer is not waiting for an answer, it is filling memory.
+pub const MAX_QUEUED_BYTES: usize = 1024 * 1024;
+
+/// How many further octets are read and **discarded** after the queue cap is exceeded, so the
+/// peer can finish writing and then read the alert.
+///
+/// A peer refused here is by definition mid-stream. Closing a socket with unread data in the
+/// receive queue sends `RST`, which discards the bytes already written along with it — so the
+/// close_notify record below would never arrive and the peer would see a bare connection reset
+/// instead. This is nginx's `lingering_close`; nothing is buffered, the octets are counted and
+/// dropped, and a peer that keeps writing past either bound gets the abrupt close it earned.
+const LINGER_DRAIN_BYTES: usize = 8 * 1024 * 1024;
+
+/// Wall-clock bound on that drain, so a peer trickling one octet at a time cannot hold the
+/// connection open by staying under [`LINGER_DRAIN_BYTES`].
+const LINGER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
 ///
 /// A plaintext fatal alert record: content type 21 (alert), legacy record version 0x0303,
@@ -325,6 +357,10 @@ impl TlsServer {
                                 let connections_for_read = connections_clone.clone();
                                 let protocol_for_read = protocol_clone.clone();
                                 let activity_for_read = Arc::clone(&activity);
+                                // The reader decides the queue cap, so it needs the write half
+                                // to say so: the refusal is a TLS record, and rustls will only
+                                // produce one through this stream.
+                                let write_half_for_read = write_half_arc.clone();
                                 // Tracked, not detached: stop_server must abort this task too.
                                 let task_owner = app_state_clone.clone();
                                 task_owner
@@ -404,6 +440,45 @@ impl TlsServer {
                                                 }
                                                 Ok(n) => {
                                                     seen_data = true;
+
+                                                    // Bound the queue **before** these bytes are
+                                                    // handed to anything that would keep them.
+                                                    // The size compared is the one the peer has
+                                                    // already committed to — what is queued plus
+                                                    // what this read delivered — not what is left
+                                                    // over after some part of it has been
+                                                    // subtracted, which is the NATS `HPUB`
+                                                    // mistake the project CLAUDE.md records.
+                                                    let queued_state = {
+                                                        let conns =
+                                                            connections_for_read.lock().await;
+                                                        conns.get(&connection_id).map(|c| {
+                                                            (c.state.clone(), c.queued_data.len())
+                                                        })
+                                                    };
+                                                    if let Some((
+                                                        ConnectionState::Processing,
+                                                        queued,
+                                                    )) = queued_state
+                                                    {
+                                                        if queued.saturating_add(n)
+                                                            > MAX_QUEUED_BYTES
+                                                        {
+                                                            Self::refuse_queued_data_overflow(
+                                                                connection_id,
+                                                                server_id,
+                                                                queued.saturating_add(n),
+                                                                &mut read_half,
+                                                                &write_half_for_read,
+                                                                &connections_for_read,
+                                                                &app_state_for_read,
+                                                                &status_tx_for_read,
+                                                            )
+                                                            .await;
+                                                            break;
+                                                        }
+                                                    }
+
                                                     let data = Bytes::copy_from_slice(&buffer[..n]);
 
                                                     // Keep the rail's down/up counters and
@@ -710,6 +785,76 @@ impl TlsServer {
         }
     }
 
+    /// Refuse a connection whose queued application data has passed [`MAX_QUEUED_BYTES`].
+    ///
+    /// **The alert is `close_notify`, and it is not the alert this deserves.** TLS has a
+    /// description for exactly this condition — `record_overflow(22)` — and rustls 0.23 cannot
+    /// send it: `CommonState::send_fatal_alert` is `pub(crate)`, and the only alert the public
+    /// API will emit is `send_close_notify`, which is what `poll_shutdown` on a
+    /// `tokio_rustls` stream calls. Writing the seven raw bytes of a `record_overflow` alert to
+    /// the TCP socket underneath is not an alternative: after the handshake every record is
+    /// encrypted, so a plaintext one is a protocol violation the peer must reject, and it would
+    /// arrive as garbage rather than as a reason. (The connection **cap** refusal higher up in
+    /// this file *is* a raw plaintext alert, and legitimately so — it is written before any
+    /// handshake has happened, when nothing is encrypted yet.)
+    ///
+    /// So the distinction the wire cannot carry is carried by the log, which is the rule the
+    /// project CLAUDE.md states for every deliberately-silent protocol: `decision=` names what
+    /// happened, and `grep decision=fail_closed` finds it.
+    #[allow(clippy::too_many_arguments)]
+    async fn refuse_queued_data_overflow<R>(
+        connection_id: ConnectionId,
+        server_id: crate::state::ServerId,
+        would_be: usize,
+        read_half: &mut R,
+        write_half: &Arc<Mutex<tokio::io::WriteHalf<tokio_rustls::server::TlsStream<TcpStream>>>>,
+        connections: &Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        Log::new(Some(status_tx)).warn(format!(
+            "TLS connection {connection_id} decision=fail_closed_queued_data_overflow: peer \
+             queued {would_be} bytes while an answer was in flight, limit is {MAX_QUEUED_BYTES}; \
+             closing with close_notify (TLS record_overflow is not reachable through rustls)"
+        ));
+
+        {
+            let mut write = write_half.lock().await;
+            if let Err(e) = write.shutdown().await {
+                debug!(
+                    "TLS shutdown on {} after overflow returned: {}",
+                    connection_id, e
+                );
+            }
+        }
+
+        // Drain before the socket is dropped, or the close is an RST and the alert just
+        // written is discarded with it.
+        let mut drained = 0usize;
+        let mut scratch = vec![0u8; 64 * 1024];
+        let _ = tokio::time::timeout(LINGER_DRAIN_TIMEOUT, async {
+            while drained < LINGER_DRAIN_BYTES {
+                match read_half.read(&mut scratch).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => drained = drained.saturating_add(n),
+                }
+            }
+        })
+        .await;
+        debug!("TLS {connection_id}: drained {drained} bytes after refusing the queue");
+
+        connections.lock().await.remove(&connection_id);
+        app_state
+            .remove_peer_handle(server_id, connection_id.as_u32())
+            .await;
+        app_state
+            .close_connection_on_server(server_id, connection_id)
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".to_string());
+    }
+
     /// Handle data received on a connection with LLM actions
     async fn handle_data_with_actions(
         connection_id: ConnectionId,
@@ -741,20 +886,41 @@ impl TlsServer {
             }
         };
 
-        // If processing, queue the data
+        // If processing, queue the data — up to the cap, and never past it.
+        //
+        // The reader loop refuses and tears the connection down before it ever hands over data
+        // that would cross [`MAX_QUEUED_BYTES`], so this is the second half of the same bound
+        // rather than a different one: the reader's check reads the queue length a moment
+        // before this runs, and with a handler task in between the two there is a window in
+        // which another read could arrive. Refusing to extend here is what makes the `Vec`
+        // itself unable to exceed the cap, whatever that window does.
         if current_state == ConnectionState::Processing {
+            let mut refused = None;
             connections
                 .lock()
                 .await
                 .entry(connection_id)
                 .and_modify(|conn| {
-                    conn.queued_data.extend_from_slice(&data);
+                    let would_be = conn.queued_data.len().saturating_add(data.len());
+                    if would_be > MAX_QUEUED_BYTES {
+                        refused = Some(would_be);
+                    } else {
+                        conn.queued_data.extend_from_slice(&data);
+                    }
                 });
-            Log::new(Some(&status_tx)).debug(format!(
-                "Queued {} bytes for {}",
-                data.len(),
-                connection_id
-            ));
+            match refused {
+                Some(would_be) => Log::new(Some(&status_tx)).warn(format!(
+                    "TLS connection {connection_id} decision=fail_closed_queued_data_overflow: \
+                     dropped {} bytes that would have taken the queue to {would_be}, limit is \
+                     {MAX_QUEUED_BYTES}",
+                    data.len()
+                )),
+                None => Log::new(Some(&status_tx)).debug(format!(
+                    "Queued {} bytes for {}",
+                    data.len(),
+                    connection_id
+                )),
+            }
             return;
         }
 

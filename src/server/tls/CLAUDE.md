@@ -300,14 +300,11 @@ entry. Dropping only the map entry left the peer drawn as Active for the life of
 
 **Workaround**: Implement authentication at application protocol layer.
 
-### 3. No Connection Pooling or Limits
+### 3. Connection limits (this section was stale and is now the opposite)
 
-- Each connection handled independently
-- No connection limits or rate limiting
-- Memory usage grows with concurrent connections
-- No idle timeout (connections persist until client closes)
-
-**Workaround**: Use operating system limits (ulimit, firewall rules).
+There is a connection cap (`MAX_CONNECTIONS`), a first-record deadline, an idle deadline and
+a cap on queued application data — see **Connection bounds** below. What there is **not** is a
+per-source rate limit or a cap on total bytes relayed over a connection's lifetime.
 
 ### 4. No TLS Session Resumption
 
@@ -502,6 +499,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `FIRST_RECORD_READ_TIMEOUT` | 60s | Covers the TLS handshake *and* the first application record, because from the peer's side they are one condition: it holds a socket and has produced nothing usable. `acceptor.accept()` was previously unbounded, so a peer that never sent a ClientHello held a task and a rustls state machine for as long as it liked — cheaper for an attacker than a completed connection. |
 | `IDLE_AFTER_DATA_TIMEOUT` | 300s | TLS is a carrier, not an application: whatever rides on it decides what "idle" means, and this server cannot know. Five minutes sits well above any request/response turnaround an operator would run over it and well below an unbounded hold. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plaintext fatal alert record**, level `fatal`, description `internal_error`(80). TLS defines no "server busy" alert and RFC 8446's closest is `internal_error` — what a server sends when it cannot proceed for reasons unrelated to the peer. A client reports "received fatal alert: internal_error" instead of a bare reset. |
+| `MAX_QUEUED_BYTES` | 1 MiB | Application data one connection may accumulate *while an answer is in flight*. 64 maximum-size TLS records (RFC 8446 caps a plaintext record at 2^14), so the number comes from the protocol's own framing rather than a guess about the application riding on it. Refusal: **close_notify, plus `decision=fail_closed_queued_data_overflow` in the log** — see below for why it is not `record_overflow`. |
 
 **The deadline covers the read and nothing else.** TLS is the one server here whose read loop runs *concurrently* with the answer: `handle_data_with_actions` is spawned and the loop goes straight back to reading, so a record parked for a human sits inside the read deadline while it happens. `ConnectionActivity` is marked busy before the task is spawned and released when it ends, and the read deadline re-arms rather than closing while it is set. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
@@ -512,3 +510,41 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+### The queued-data cap, and the alert TLS has but rustls will not send
+
+`ConnectionData::queued_data` is the `Accumulating` half of the Idle → Processing →
+Accumulating machine: a peer may keep writing while the model is being asked what to say, and
+those bytes are held until the answer arrives. It had **no ceiling at all**, so the peer decided
+how much memory a connection cost — during a window whose length it also influences. An LLM
+round-trip is seconds; a `manual` rule parks the record for a **human** and defaults to 300
+seconds (`src/state/intercepts.rs`); times `MAX_CONNECTIONS`. No authentication stands in front
+of it, and no model call: the first record a stranger sends opens the window.
+
+The cap is checked **in the read loop, before the bytes are handed to anything that keeps
+them**, against `queued + n` — the size the peer has already committed to, not what is left
+after subtracting part of it, which is the NATS `HPUB` mistake the project `CLAUDE.md` records.
+`handle_data_with_actions` re-checks at the `extend_from_slice` itself, so the `Vec` cannot
+exceed the cap however the read loop and the handler task interleave.
+
+**The alert is `close_notify`, and it is not the alert this deserves.** TLS has a description
+for exactly this condition — `record_overflow(22)` — and rustls 0.23 will not emit it:
+`CommonState::send_fatal_alert` is `pub(crate)` and the only alert the public API sends is
+`send_close_notify`. Writing the seven raw bytes of a `record_overflow` alert onto the TCP
+socket underneath is not an alternative, because after the handshake every record is encrypted
+and a plaintext one is a protocol violation the peer must reject — it would arrive as garbage
+rather than as a reason. (The **connection-cap** refusal above genuinely is a raw plaintext
+alert, and legitimately so: it is written before any handshake has happened.) So the reason
+lives in the log, which is the rule the project `CLAUDE.md` states for every case where the
+wire cannot carry the distinction.
+
+**The refusal drains before it closes** (`LINGER_DRAIN_BYTES` / `LINGER_DRAIN_TIMEOUT`,
+nginx's `lingering_close`). A peer refused here is mid-stream, and closing a socket with unread
+data in the receive queue sends `RST`, which discards the alert along with it — the peer would
+see a bare connection reset. Draining makes the close a `FIN`, which is what lets the test
+below assert `Ok(0)` rather than `UnexpectedEof`.
+
+`tests/server/tls/queue_limit_test.rs` covers both directions: over the cap is closed with an
+alert and logs the decision, under the cap is *not* closed — without which a server that hung
+up on everybody would pass. Verified by removing both checks, at which point the over-the-cap
+test hangs for its full 30 seconds and the under-cap control still passes.

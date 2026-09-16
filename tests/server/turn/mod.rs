@@ -9,3 +9,6 @@ mod llm_failure_test;
 
 #[cfg(all(test, feature = "turn"))]
 mod peer_scope_test;
+
+#[cfg(all(test, feature = "turn"))]
+mod permission_limit_test;

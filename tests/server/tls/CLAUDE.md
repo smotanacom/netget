@@ -19,6 +19,13 @@ Black-box testing approach:
 - `e2e_test.rs` - End-to-end tests with real TLS clients
 - `llm_failure_test.rs` - what the peer gets when the backend fails: a close_notify alert,
   then `Ok(0)` rather than `UnexpectedEof`
+- `queue_limit_test.rs` - the cap on application data queued while an answer is in flight.
+  Both directions: over `MAX_QUEUED_BYTES` behind a **parked** record (a `manual` handler,
+  which is the 300-second window the cap exists for) must be closed with a close_notify and
+  logged `decision=fail_closed_queued_data_overflow`; well under it must **not** be closed,
+  without which a server that hung up on everybody would pass the first half. **0** model
+  calls in both, by construction — a manual rule answers the event, and a non-zero
+  `tls_data_received` count would mean the routing itself had broken.
 - `peer_inject_test.rs` - the dashboard's `[ message this peer ]` / `[ disconnect this peer ]`
   path, **0 LLM calls**. In-process, `instruction: Some(String::new())` and a `*` static
   handler, so the model is never reached. It asserts the handle exists before the peer has
@@ -43,7 +50,9 @@ Black-box testing approach:
     - 3 requests reuse same server
     - Tests: GET /, GET /api, 404 handling
 
-**Total LLM calls**: 2 (well under budget)
+3. **`queue_limit_test`** (2 tests) - 1 LLM call each (server startup only)
+
+**Total LLM calls**: 4 (well under budget)
 
 ## Runtime Characteristics
 
@@ -250,6 +259,8 @@ Look for:
 ✗ Large data transfers (> 4KB)
 ✗ Connection timeouts
 ✗ Concurrent connections stress test
+✗ The `record_overflow` alert itself — rustls will not send an arbitrary fatal alert, so the
+  queued-data refusal is a close_notify and the reason lives in the log
 
 ## Performance Expectations
 

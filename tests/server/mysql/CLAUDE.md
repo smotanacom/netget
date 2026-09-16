@@ -44,7 +44,27 @@ pure unit test and makes **0** LLM calls.
 `connection_stats_test` runs with a static handler and makes **0** LLM calls, which is what
 makes it a counter test rather than a timing test.
 
-**Total for the MySQL suite: ~17 LLM calls across 9 tests**, each test on its own server.
+### `packet_limit_test.rs`
+
+Four tests. Two are pure framing tests against `PacketLimitReader` and make **0** LLM calls:
+they drive the decision at an exact boundary and across a legitimate multi-fragment chain,
+using the reader's `with_limit` constructor so the boundary can be asserted at 1 KiB rather
+than at 64 MiB. The wire test makes **1** call (the startup) and asserts **zero**
+`mysql_query` calls, because the oversized packet is sent as the *handshake response* — the
+bound is pre-authentication, so nothing the model could be asked about has happened. The
+control makes 1 startup + 2 query calls.
+
+Two things about the wire test are deliberate and worth keeping:
+
+- **A raw socket, not `mysql_async`.** The refusal has to survive the peer still writing, and
+  a client that polls its read side while writing can parse the answer before the close lands
+  — hiding exactly the RST-discards-the-reply failure the drain exists to prevent. The `ipp`
+  suite measured that difference at 5 failures in 8 runs versus 5 in 5.
+- **`ONE_OVERSIZED_PACKET_AT_A_TIME`.** Reaching a 64 MiB bound costs 64 MiB on the wire by
+  construction: the refusal is taken at the header that crosses it, so every earlier
+  fragment's payload really has to be delivered. Same reasoning as `ipp`'s serialising mutex.
+
+**Total for the MySQL suite: ~21 LLM calls across 13 tests**, each test on its own server.
 
 ## Scripting Usage
 
