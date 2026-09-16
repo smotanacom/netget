@@ -52,7 +52,7 @@ fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
             .ok()
             .filter(|s| (100..=599).contains(s))
             .unwrap_or_else(|| {
-                tracing::warn!("Spark: ignoring out-of-range status {raw}, using {default}");
+                warn!("Spark: ignoring out-of-range status {raw}, using {default}");
                 default
             }),
         None => default,
