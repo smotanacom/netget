@@ -92,15 +92,17 @@ Each of these cost a debugging pass and every one presented as a model failure.
   No argument order reaches a loopback port, so whois is driven with `nc`.
   Worth knowing because `whois` is counted among the installed real clients in
   `PROTOCOL_QUALITY.md`.
-- **The shared helpers' Ollama checks are too tight to survive back-to-back
-  model calls.** `check_ollama_available` (`tests/helpers/netget.rs`) builds a
-  fresh `reqwest::Client` and gives `http://localhost:11434/api/tags` **2
-  seconds**; `ensure_model_available` does the same with 5. Both pay the
-  keychain cost of building the client and the mDNSResponder cost of
-  `localhost`, and both run while Ollama is still finishing the previous case.
-  Five of eleven cases in the first smoke run were refused against a healthy
-  Ollama. `runner.rs` waits for `/api/tags` with its own long-lived client
-  first; the real fix belongs in those helpers.
+- **The shared helpers' Ollama checks used to be too tight to survive
+  back-to-back model calls, and that is fixed.** `check_ollama_available`
+  (`tests/helpers/netget.rs`) built a fresh `reqwest::Client` and gave
+  `http://localhost:11434/api/tags` **2 seconds**; `ensure_model_available` did
+  the same with 5. Both paid the keychain cost of building the client and the
+  mDNSResponder cost of `localhost`, and both ran while Ollama was still
+  finishing the previous case — five of eleven cases in the first smoke run were
+  refused against a healthy Ollama. They now share one client built through
+  `client_for_endpoint` against `127.0.0.1` and allow `OLLAMA_PROBE_TIMEOUT`
+  (`tests/helpers/common.rs`). `runner.rs` still polls `/api/tags` first, because
+  a bound is one attempt and a sweep needs a poll.
 - **`./test-e2e.sh --use-ollama` was broken** and is fixed in the same pass: it
   appended `-- --use-ollama`, which libtest rejects outright
   (`error: Unrecognized option: 'use-ollama'`), so the binary exited before any

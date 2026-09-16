@@ -61,6 +61,9 @@ use vt100::Parser;
 #[path = "../snapshot_util.rs"]
 mod snapshot_util;
 
+#[path = "../helpers/child_guard.rs"]
+mod child_guard;
+
 const TERMINAL_WIDTH: u16 = 80;
 const TERMINAL_HEIGHT: u16 = 24;
 const SNAPSHOT_DIR: &str = "tests/terminal_snapshot/snapshots";
@@ -74,7 +77,11 @@ const SNAPSHOT_DIR: &str = "tests/terminal_snapshot/snapshots";
 ///
 /// Killing here is safe and is not the process the rule protects: this guard holds the exact pid
 /// this test spawned, into a PTY it created, and never touches any other process.
-struct NetGetChild(Option<Child>);
+///
+/// `Drop` is still not enough on its own — it does not run when this test binary is `SIGKILL`ed
+/// or aborts, which is how pty runs left netget processes at PPID 1 — so each child also gets an
+/// OS-level death tie (`tests/helpers/child_guard.rs`).
+struct NetGetChild(Option<Child>, Option<child_guard::DeathTie>);
 
 impl Drop for NetGetChild {
     fn drop(&mut self) {
@@ -114,6 +121,10 @@ impl Drop for NetGetChild {
                 }
             }
         }
+        // Released only after the SIGKILL above, never before.
+        if let Some(mut tie) = self.1.take() {
+            tie.disarm();
+        }
     }
 }
 
@@ -145,6 +156,9 @@ fn spawn_netget() -> (pty_process::blocking::Pty, NetGetChild) {
 
 /// Helper to spawn NetGet with arguments in a PTY
 fn spawn_netget_with_args(args: &[&str]) -> (pty_process::blocking::Pty, NetGetChild) {
+    // Once per test binary: collect anything an earlier killed run left behind.
+    child_guard::sweep_orphaned_netget_once();
+
     // Use cargo's env variable to get the actual binary path
     let binary_path = env!("CARGO_BIN_EXE_netget");
 
@@ -184,7 +198,9 @@ fn spawn_netget_with_args(args: &[&str]) -> (pty_process::blocking::Pty, NetGetC
     }
     let child = cmd.spawn(pts).expect("Failed to spawn netget in PTY");
 
-    (pty, NetGetChild(Some(child)))
+    let tie = child_guard::arm_death_tie(child.id());
+
+    (pty, NetGetChild(Some(child), tie))
 }
 
 /// Replace anything in a captured screen that differs between machines.

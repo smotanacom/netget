@@ -13,6 +13,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+#[path = "../helpers/child_guard.rs"]
+mod child_guard;
+
 /// Information about a created server
 #[derive(Debug, Clone)]
 pub struct ServerInfo {
@@ -29,6 +32,10 @@ pub struct NetGetWrapper {
     binary_path: PathBuf,
     stdout_reader_handle: Option<tokio::task::JoinHandle<()>>,
     stderr_reader_handle: Option<tokio::task::JoinHandle<()>>,
+    /// OS-level tie so the child dies with this test binary even when `Drop`
+    /// never runs — a `SIGKILL`, an abort, an interrupted run. See
+    /// `tests/helpers/child_guard.rs`.
+    death_tie: Option<child_guard::DeathTie>,
 }
 
 impl NetGetWrapper {
@@ -48,6 +55,7 @@ impl NetGetWrapper {
             binary_path,
             stdout_reader_handle: None,
             stderr_reader_handle: None,
+            death_tie: None,
         }
     }
 
@@ -77,6 +85,10 @@ impl NetGetWrapper {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to start NetGet binary at {:?}", self.binary_path))?;
+
+        if let Some(pid) = child.id() {
+            self.death_tie = child_guard::arm_death_tie(pid);
+        }
 
         // Take stdin
         self.stdin = child.stdin.take();
@@ -253,6 +265,11 @@ impl NetGetWrapper {
                 .context("Failed to wait for process exit")?;
         }
 
+        // Released only once the process has been waited for.
+        if let Some(mut tie) = self.death_tie.take() {
+            tie.disarm();
+        }
+
         // Abort background reader tasks
         if let Some(handle) = self.stdout_reader_handle.take() {
             handle.abort();
@@ -295,6 +312,10 @@ impl Drop for NetGetWrapper {
         // Try to clean up the process
         if let Some(mut process) = self.process.take() {
             let _ = process.start_kill();
+        }
+        // After the kill, never before.
+        if let Some(mut tie) = self.death_tie.take() {
+            tie.disarm();
         }
     }
 }

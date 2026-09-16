@@ -70,37 +70,30 @@ pub fn probe_timeout() -> Duration {
 
 /// Block until Ollama answers `/api/tags`, or give up after `budget`.
 ///
-/// This exists because of a defect in the shared live-test helpers that this
-/// pass may not edit, and the shape of it is worth recording.
-/// `check_ollama_available` (`tests/helpers/netget.rs`) builds a fresh
-/// `reqwest::Client` and gives `http://localhost:11434/api/tags` **2 seconds**;
-/// `ensure_model_available` (`tests/helpers/llm_live.rs`) does the same with 5.
-/// Both costs this repository has already documented land on exactly that call:
-/// `Client::builder().build()` loads the platform root store from the macOS
-/// keychain synchronously, and `localhost` resolves through mDNSResponder.
-/// Worse, they run **immediately after the previous case's model call**, while
-/// Ollama is still finishing it — so a run that did heavy work makes the next
-/// run's availability check fail against a healthy server.
+/// The shared helpers now build one client and allow a real budget
+/// (`crate::helpers::common::{ollama_http_client, OLLAMA_PROBE_TIMEOUT}`), so
+/// this is no longer working around them — but it is still the right thing for a
+/// **sweep**, for a different reason than the one it was written for.
 ///
-/// Measured in the second smoke run: two of five cases refused to start, three
-/// attempts each, two seconds apart, with Ollama up and serving throughout.
-///
-/// So: one client, built once, with a real budget, polled until Ollama is
-/// actually responsive. By the time the helpers run their 2-second check, it
-/// answers instantly.
+/// A gate asks "is Ollama there". A sweep needs "is Ollama ready *now*", and the
+/// two differ because each case starts on the heels of the previous case's model
+/// call. Ollama is routinely unresponsive for far longer than any single request
+/// bound while it loads or unloads a model — measured in the second smoke run as
+/// two of five cases refusing to start, three attempts each, with Ollama up and
+/// serving throughout. Polling against a budget measured in minutes is the only
+/// form of the question a long run can ask, and a sweep that gives up at step 1
+/// measures nothing at all.
 pub async fn wait_for_ollama_ready(budget: Duration) -> bool {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default()
-    });
-    let url =
-        std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+    let client = crate::helpers::common::ollama_http_client();
+    let url = crate::helpers::common::ollama_base_url();
     let deadline = Instant::now() + budget;
     loop {
-        if let Ok(resp) = client.get(format!("{}/api/tags", url)).send().await {
+        if let Ok(Ok(resp)) = tokio::time::timeout(
+            crate::helpers::common::OLLAMA_PROBE_TIMEOUT,
+            client.get(format!("{}/api/tags", url)).send(),
+        )
+        .await
+        {
             if resp.status().is_success() {
                 return true;
             }
@@ -277,23 +270,18 @@ fn dominant_failure(records: &[RunRecord]) -> Option<String> {
 async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) -> RunRecord {
     let started = Instant::now();
 
-    // Starting is retried, and the reason is a defect in the shared harness
-    // rather than flakiness being papered over. `check_ollama_available`
-    // (`tests/helpers/netget.rs`) is hardcoded to `http://localhost:11434`, gives
-    // it a **2-second** timeout, and builds a fresh `reqwest::Client` for it — so
-    // it pays both macOS costs this repo has already documented: `localhost`
-    // resolves through mDNSResponder (measured at 8.25s under concurrency) and
-    // `Client::builder().build()` loads the platform root store from the keychain
-    // synchronously. Five of eleven cases in the first smoke run were refused by
-    // that 2-second check against an Ollama that was up and serving. The fix
-    // belongs in that helper, which this pass may not edit; until then a start is
-    // worth three tries before it counts as a real failure.
+    // Starting is retried because a sweep starts each case on the heels of the
+    // previous case's model call, and Ollama swapping models is not an outage.
+    // The shared helper's own bound is no longer the reason: it was two seconds
+    // against a freshly built client — five of eleven cases in the first smoke
+    // run were refused by it against an Ollama that was up and serving — and is
+    // now `OLLAMA_PROBE_TIMEOUT` against one shared client.
     const START_ATTEMPTS: usize = 3;
     let mut start_error = String::new();
     let mut started_server = None;
     for attempt in 1..=START_ATTEMPTS {
-        // Make sure Ollama is responsive before the helpers' 2-second check
-        // runs. See `wait_for_ollama_ready`.
+        // Make sure Ollama is responsive before the helper's own check runs.
+        // See `wait_for_ollama_ready`.
         if !wait_for_ollama_ready(Duration::from_secs(120)).await {
             start_error = "Ollama did not answer /api/tags within 120s".to_string();
             continue;

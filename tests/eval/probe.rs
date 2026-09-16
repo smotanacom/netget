@@ -120,6 +120,17 @@ pub async fn run(probe: &Probe, port: u16, timeout: Duration) -> Result<ProbeOut
         .spawn()
         .map_err(|e| format!("could not spawn {:?}: {}", probe.bin, e))?;
 
+    // A probe client can block indefinitely on a server that never answers —
+    // which is precisely the case this harness exists to measure — so a sweep
+    // killed mid-run would otherwise leave `nc`, `psql`, `redis-cli` behind on
+    // the loopback ports the next run wants. `kill_on_drop` covers the panic
+    // path only; this covers a hard-killed parent. See
+    // `tests/helpers/child_guard.rs`.
+    let probe_pid = child.id();
+    if let Some(pid) = probe_pid {
+        crate::helpers::child_guard::tie_child(pid);
+    }
+
     // Write the payload but KEEP the handle: dropping it is EOF, and for `nc`
     // EOF is a socket close. Held until the reader is done.
     let mut stdin_handle = child.stdin.take();
@@ -214,6 +225,9 @@ pub async fn run(probe: &Probe, port: u16, timeout: Duration) -> Result<ProbeOut
                 }
             }
         }
+    }
+    if let Some(pid) = probe_pid {
+        crate::helpers::child_guard::untie_child(pid);
     }
 
     let stderr_text = if timed_out && out_buf.is_empty() && err_buf.is_empty() {
