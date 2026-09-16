@@ -244,3 +244,23 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+`pgwire::tokio::process_socket` takes a concrete `TcpStream` and never exposes it again. This
+file already records the consequence in another place: the idle watchdog **aborts the task**
+rather than sending a FATAL 57P05, because pgwire owns the socket and there is no way to write
+into it from outside. The same absence of a seam is why there is no write half to give
+`peer_support`.
+
+The protocol's own actions are `ActionResult::Custom` — a row description and rows encoded
+against the query being answered, by the handler pgwire calls — so even with a socket there
+would be no free-standing message to inject. The realistic path to `[ disconnect this peer ]`
+here is the `abort_handle` the watchdog already holds, which is a different mechanism from a peer
+handle and would need `peer_support` to grow a non-socket variant.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

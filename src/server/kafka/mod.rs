@@ -90,7 +90,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, warn};
 
 /// How long to wait for a peer's first request after it has connected.
@@ -216,6 +216,14 @@ enum Reply {
     /// made an overloaded backend look like a broken broker.
     NoAnswer(i16),
 }
+
+/// The write half of one live connection.
+///
+/// Shared between the session below and the dashboard's peer-command task
+/// (`server::peer_support`), so an injected send and the broker's own reply cannot interleave
+/// bytes into the middle of each other's frame. Split from the socket with
+/// `tokio::io::split`; never cloned.
+type SharedWrite = Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>;
 
 impl KafkaServer {
     /// Spawn Kafka broker with LLM integration
@@ -387,10 +395,75 @@ impl KafkaServer {
         Ok(local_addr)
     }
 
-    /// Read one length-prefixed request, answer it, repeat.
+    /// Set one connection up, run it, and tear it down on every exit path.
     #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
-        mut stream: TcpStream,
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        local_addr: SocketAddr,
+        connection_id: ConnectionId,
+        server: Arc<KafkaServer>,
+        llm_client: OllamaClient,
+        app_state: Arc<AppState>,
+        status_tx: mpsc::UnboundedSender<String>,
+        server_id: crate::state::ServerId,
+        protocol: Arc<KafkaProtocol>,
+    ) -> Result<()> {
+        let (reader, write_half) = tokio::io::split(stream);
+        let write_half: SharedWrite = Arc::new(Mutex::new(write_half));
+
+        // Peer messaging, registered BEFORE the first read. Kafka is client-speaks-first and
+        // the broker says nothing until a request arrives, so a `*` manual rule parks the very
+        // first request this connection makes - and the operator being asked to decide about it
+        // must be able to reach, or hang up, the connection while it waits. Registering once
+        // the session was under way would leave exactly that case unreachable.
+        let peer_rx = crate::server::peer_support::register_peer_channel(
+            &app_state,
+            server_id,
+            connection_id.as_u32(),
+        )
+        .await;
+        crate::server::peer_support::spawn_peer_command_task(
+            peer_rx,
+            protocol.clone(),
+            app_state.clone(),
+            server_id,
+            connection_id.as_u32(),
+            write_half.clone(),
+            status_tx.clone(),
+        );
+
+        let result = Self::run_session(
+            reader,
+            &write_half,
+            peer_addr,
+            local_addr,
+            connection_id,
+            server,
+            llm_client,
+            app_state.clone(),
+            status_tx.clone(),
+            server_id,
+            protocol,
+        )
+        .await;
+
+        // Every exit path lands here - clean EOF, an invalid size prefix, an unparseable
+        // header, a write error, an injected disconnect. The `?`s all live in `run_session`,
+        // so none of them can skip this. Dropping the handle also ends the peer command task;
+        // the explicit shutdown makes the FIN immediate rather than waiting on it.
+        app_state
+            .remove_peer_handle(server_id, connection_id.as_u32())
+            .await;
+        let _ = write_half.lock().await.shutdown().await;
+        result
+    }
+
+    /// Read one length-prefixed request, answer it, repeat.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_session(
+        mut reader: tokio::io::ReadHalf<TcpStream>,
+        write_half: &SharedWrite,
         peer_addr: SocketAddr,
         local_addr: SocketAddr,
         connection_id: ConnectionId,
@@ -423,7 +496,7 @@ impl KafkaServer {
             // bytes from the previous message.
             let mut size_prefix = [0u8; 4];
             let prefix_read =
-                match tokio::time::timeout(read_timeout, stream.read_exact(&mut size_prefix)).await
+                match tokio::time::timeout(read_timeout, reader.read_exact(&mut size_prefix)).await
                 {
                     Ok(read) => read,
                     Err(_) => {
@@ -465,7 +538,7 @@ impl KafkaServer {
             if buffer.len() < message_size {
                 buffer.resize(message_size, 0);
             }
-            match tokio::time::timeout(read_timeout, stream.read_exact(&mut buffer[..message_size]))
+            match tokio::time::timeout(read_timeout, reader.read_exact(&mut buffer[..message_size]))
                 .await
             {
                 Ok(read) => read?,
@@ -548,7 +621,7 @@ impl KafkaServer {
                     let body =
                         Self::api_versions_response(0, correlation_id, ERR_UNSUPPORTED_VERSION)?;
                     Self::write_frame(
-                        &mut stream,
+                        write_half,
                         &body,
                         &app_state,
                         server_id,
@@ -672,7 +745,7 @@ impl KafkaServer {
             match response_bytes {
                 Some(body) => {
                     Self::write_frame(
-                        &mut stream,
+                        write_half,
                         &body,
                         &app_state,
                         server_id,
@@ -696,7 +769,7 @@ impl KafkaServer {
     }
 
     async fn write_frame(
-        stream: &mut TcpStream,
+        write_half: &SharedWrite,
         body: &[u8],
         app_state: &Arc<AppState>,
         server_id: crate::state::ServerId,
@@ -710,8 +783,16 @@ impl KafkaServer {
                 body.len()
             )
         })?;
-        stream.write_all(&size.to_be_bytes()).await?;
-        stream.write_all(body).await?;
+        // One lock for the whole frame: the size prefix and the body are a single unit on the
+        // wire, and an injected write landing between them would desynchronise the client for
+        // the rest of the connection. The guard is dropped before the stats update so nothing
+        // awaits while holding the write half.
+        {
+            let mut writer = write_half.lock().await;
+            writer.write_all(&size.to_be_bytes()).await?;
+            writer.write_all(body).await?;
+            writer.flush().await?;
+        }
 
         app_state
             .update_connection_stats(

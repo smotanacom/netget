@@ -206,7 +206,13 @@ impl Server for CassandraProtocol {
             "cassandra_prepared" => self.execute_cassandra_prepared(action),
             "cassandra_auth_success" => self.execute_cassandra_auth_success(),
             "cassandra_error" => self.execute_cassandra_error(action),
-            "close_this_connection" => Ok(ActionResult::CloseConnection),
+            // `close_connection` is an alias, deliberately not advertised alongside
+            // `close_this_connection`: the dashboard's "[ disconnect this peer ]" injects a
+            // bare `{"type": "close_connection"}` through the peer handle whatever a protocol
+            // calls its own close verb, so without the alias that button answers "Unknown
+            // Cassandra action". Advertising it would put a second name for one thing in the
+            // model's tool list.
+            "close_this_connection" | "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!("Unknown Cassandra action: {}", action_type)),
         }
     }

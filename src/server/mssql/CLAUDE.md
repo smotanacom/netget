@@ -137,10 +137,19 @@ Two things about it are load-bearing rather than incidental, and both were wrong
   `ServerStatus::Error` — confirmed: a busy port reports
   `Error: Address already in use`) and registers the accept-loop `JoinHandle` via
   `AppState::register_server_task()` so `stop_server` releases the socket.
-- One task per connection. `handle_connection` wraps `run` so the connection is
-  always marked `Closed` in `AppState` on exit. Both directions are recorded:
-  inbound per TDS packet read, outbound per packet written. Only the outbound
-  side used to be counted, so the rail's `↓` sat at zero for every connection.
+- One task per connection. `handle_connection` wraps `run_session` so the peer
+  handle is released, the write half shut down and the connection marked `Closed`
+  in `AppState` on **every** exit, including the error paths — nothing `?`s past
+  the teardown. Both directions are recorded: inbound per TDS packet read,
+  outbound per packet written. Only the outbound side used to be counted, so the
+  rail's `↓` sat at zero for every connection.
+- `tokio::io::split()` (owning, never a clone) in `handle_connection`. Every
+  handler that used to take `&mut TcpStream` only ever *wrote* through it — all
+  reads happen in the top-level loop — so they take the shared
+  `Arc<Mutex<WriteHalf>>` instead. `send_tds_packet` frames a whole message and
+  writes it under **one** lock: locking per packet would let an injected write
+  land between two continuation packets, which no TDS client can resynchronise
+  from.
 - Pre-login advertises version 16.0.0.0 and ENCRYPT_NOT_SUP. An **admitted**
   login is answered with ENVCHANGE (database from `mssql_login_ack`, default
   `master`; language `us_english`; packet size 4096), an INFO token and DONE —
@@ -152,6 +161,46 @@ Two things about it are load-bearing rather than incidental, and both were wrong
   that never sent a LOGIN7 had its statements answered and `mssql_login` never
   fired — the admission decision was skippable by declining to ask for it. Real
   drivers always log in; a hostile peer has no reason to.
+
+### Dashboard injection (peer handle)
+
+Every connection registers a peer handle (`server::peer_support`) **before its
+first read**. TDS is client-speaks-first, so this server says nothing until
+PRELOGIN arrives, and a `manual` rule parks the login itself (and every later
+batch) — the operator must be able to reach, or hang up, a connection that is
+waiting on their own answer.
+
+**What an injected action can and cannot do, exactly:**
+
+| Injected | Result |
+|---|---|
+| `close_connection` (what `[ disconnect this peer ]` sends) | half-close; the peer reads EOF, the connection is marked closed and the handle removed |
+| `close_this_connection` | the same; it is the name the *model* uses |
+| `mssql_query_response` / `mssql_ok_response` / `mssql_error_response` / `mssql_login_ack` | `ClientSendOutcome::Executed` — **executed, but nothing reaches the wire** |
+
+The wire verbs are `ActionResult::Custom`, not `ActionResult::Output`:
+`peer_support` writes `Output` bytes and reports everything else as executed, and
+the TDS token stream each verb describes is framed by the read loop, which is the
+only thing that knows which request it is answering. This is not a plumbing
+shortfall that could be fixed by threading more state through — **TDS has no
+unsolicited server message.** Every server packet is a typed response to a
+request, and a TABULAR_RESULT arriving unrequested is a framing violation rather
+than a message. So `[ message this peer ]` is of limited use on MSSQL, and saying
+so is the honest rendering; `src/server/db2/` is in the same position.
+
+`close_connection` is accepted by `execute_action` as an unadvertised alias of
+`close_this_connection` (it is in neither `get_sync_actions()` nor any event's
+action list, so the model's tool list is unchanged). Without it the dashboard's
+`[ disconnect this peer ]`, which injects a bare `{"type": "close_connection"}`,
+would fail as an unknown action.
+
+After an injected half-close, the read loop stays parked until the peer closes
+its own side or one of the bounds below fires — 30s before login,
+600s afterwards — at which point the task ends. The connection is marked closed
+and the handle removed immediately, by the peer task, so the dashboard never
+shows a peer as live after the operator hung up on it.
+
+`tests/server/mssql/peer_inject_test.rs` proves all of this with zero LLM calls.
 
 ## Not implemented
 
@@ -190,8 +239,8 @@ Two things about it are load-bearing rather than incidental, and both were wrong
 ## Testing
 
 `tests/server/mssql/test.rs` (note: `test.rs`, not `e2e_test.rs`),
-`llm_failure_test.rs` and `hostile_input_test.rs`, all declared in
-`tests/server/mssql/mod.rs`.
+`llm_failure_test.rs`, `hostile_input_test.rs`, `severity_range_test.rs` and
+`peer_inject_test.rs`, all declared in `tests/server/mssql/mod.rs`.
 
 The first two drive `tiberius`, which is the Beta evidence: a real, independent
 TDS client completing login and queries, not `#[ignore]`d and not skipped when

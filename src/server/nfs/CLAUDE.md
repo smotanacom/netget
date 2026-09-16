@@ -322,3 +322,21 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+NFS is a **relay**, for the reason the module header explains: `NFSTcpListener` owns its own
+accept loop, so NetGet binds the public listener itself and runs `nfsserve` on a loopback-only
+ephemeral port behind `guard.rs`. The socket the NFS session sees belongs to the relay. A peer
+handle on the public half would write bytes past the guard that decides every RPC record before
+it is read; one on the backend half would address the relay rather than the client.
+
+And an RPC reply is addressed by the xid of the call it answers — `guard.rs` goes to some trouble
+to echo exactly that on a refusal. Nothing outside the exchange knows an xid the client is waiting
+on, so an injected reply is not a message, it is noise the client discards.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

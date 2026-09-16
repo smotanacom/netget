@@ -18,10 +18,21 @@ an independent implementation, which is why `src/server/torrent_tracker` is
 | `tracker_connection_stats_are_recorded` | 0 | — |
 
 The third is in-process (uses `netget::` APIs directly rather than spawning the binary) and
-answers every announce with a `*` **static** handler, so no LLM call fires. Its point: a
-tracker request is one read, one write, then close, so it registers no peer handle and the
-dashboard's "message this peer" has no live window — but it must still call
-`update_connection_stats`, or the rail shows `↓0 ↑0` and a stale `last_activity`.
+answers every announce with a `*` **static** handler, so no LLM call fires. Its point: the
+server must call `update_connection_stats`, or the rail shows `↓0 ↑0` and a stale
+`last_activity`.
+
+### `peer_inject_test.rs` — two tests, **0 LLM calls**
+
+The dashboard's `[ message this peer ]` / `[ disconnect this peer ]` path. Both are in-process,
+both pass `instruction: Some(String::new())` — `ServerForm::create` substitutes a default
+instruction for `None`, and that alone makes a server consult the model — and both answer with
+a `*` static handler, so the LLM is never reached.
+
+| test | asserts |
+|---|---|
+| `injected_tracker_action_reaches_raw_socket_and_close_sends_eof` | the handle exists **before the peer has written a byte** (the parked-announce window); an injected `send_announce_response` returns `Sent` and its bytes arrive as a real HTTP 200 carrying the injected interval; the write is counted in `bytes_sent`; `close_connection` returns `Disconnected` and the socket reads EOF; the handle is gone afterwards |
+| `announce_still_answered_and_the_connection_entry_is_closed` | the protocol's own path is unaffected, **and** the connection entry stops being `Active` when the exchange ends — which it never did before the handle was adopted |
 
 ### `llm_failure_test.rs` — one test, **1 LLM call**
 

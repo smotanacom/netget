@@ -505,3 +505,21 @@ bounds a two-process TLS + HTTP/2 handshake, not server health. It is now 30s. *
 was made last, deliberately.** Raising it first would have hidden both real defects, which is
 exactly what nearly happened when an earlier pass concluded the cause was "machine load".
 
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+`src/server/peer_support.rs` needs an `AsyncWrite` write half that the session and the
+peer-command task can share. DoH has none to give: `handle_connection` hands the socket to
+hyper's `http2::Builder::serve_connection`, which owns every read and write for the life of the
+connection. Bytes written alongside hyper's framing are not a message to the peer — they are
+frames in the middle of an HTTP/2 stream the client is multiplexing, and the connection dies.
+
+There is nothing useful to send either. A DoH answer is the body of a response to a specific
+`POST /dns-query`, correlated by the HTTP exchange itself; an unsolicited one has no request to
+belong to.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

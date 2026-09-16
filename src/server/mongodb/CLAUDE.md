@@ -37,8 +37,10 @@ client-first, so it could never have been honoured.
 |---|---|
 | `reason` | `client_disconnect`, `close_this_connection`, `invalid_message_length`, `incomplete_message_body`, `unsupported_opcode`, `malformed_op_msg` |
 
-The socket is dropped before this event fires, so the LLM round-trip does not
-hold the connection open.
+The write half is shut down and the connection marked closed before this event
+fires, so the LLM round-trip does not hold the connection open. A session that
+ended in a read or write **error** raises no disconnect event at all — the
+reasons above describe how a session ended, and there is none to report.
 
 **Actions** (all sync; there are no async actions). These are attached to
 `MONGODB_COMMAND_EVENT` via `.with_actions(...)` — `call_llm` builds the model's
@@ -164,10 +166,13 @@ skipping left the client waiting forever for a reply it could parse. OP_QUERY
 - `spawn_with_llm_actions` binds with `?` (so a bind failure surfaces as
   `ServerStatus::Error`) and registers the accept-loop `JoinHandle` via
   `AppState::register_server_task()` so `stop_server` releases the socket.
-- One task per connection. `handle_connection` wraps `run` so the connection is
-  always marked `Closed` in `AppState` on exit.
-- `tokio::io::split()` inside an inner scope so the stream is released before the
-  disconnect event.
+- One task per connection. `handle_connection` wraps `run_session` so the peer
+  handle is released, the write half shut down and the connection marked `Closed`
+  in `AppState` on **every** exit, including the error paths — nothing `?`s past
+  the teardown.
+- `tokio::io::split()` (owning, never a clone) in `handle_connection`, so the
+  write half can be shared with the peer-command task; the read half is dropped
+  when `run_session` returns, before the disconnect event.
 - No per-connection state machine: the read loop is sequential, so concurrent LLM
   calls on one connection cannot happen.
 - `update_connection_stats` fires on every message read and every reply written
@@ -175,6 +180,49 @@ skipping left the client waiting forever for a reply it could parse. OP_QUERY
   `last_activity` reflect the socket. MongoDB is connection-oriented and does
   **not** declare `.connectionless()`, so the 10-second idle sweep leaves its
   connections alone.
+
+### Dashboard injection (peer handle)
+
+Every connection registers a peer handle (`server::peer_support`) **before its
+first read**. MongoDB is client-speaks-first, so this server says nothing until a
+command arrives, and a `manual` rule parks that very first command — the operator
+must be able to reach, or hang up, a connection that is waiting on their own
+answer. The write half is an `Arc<Mutex<WriteHalf>>` shared by the session loop
+and the peer-command task, so an injected write can never land inside an OP_MSG
+the loop is emitting.
+
+**What an injected action can and cannot do, exactly:**
+
+| Injected | Result |
+|---|---|
+| `close_connection` (what `[ disconnect this peer ]` sends) | half-close; the peer reads EOF, the connection is marked closed and the handle removed |
+| `close_this_connection` | the same; it is the name the *model* uses |
+| `find_response` / `insert_response` / `update_response` / `delete_response` / `error_response` | `ClientSendOutcome::Executed` — **executed, but nothing reaches the wire** |
+
+The five wire verbs are `ActionResult::Custom`, not `ActionResult::Output`:
+`peer_support` writes `Output` bytes and reports everything else as executed, and
+the OP_MSG framing for these lives in the read loop, which is the only thing that
+holds the request's `requestID` (the reply's `responseTo`) and the `$db` +
+collection the namespace is built from. An OP_MSG that answers no request has no
+`responseTo` to carry, so there is nothing an injected one could legally emit.
+`[ message this peer ]` is therefore of limited use on MongoDB and this is
+deliberate honesty, not a gap to be papered over — the same situation as
+`src/server/db2/`.
+
+`close_connection` is accepted by `execute_action` as an unadvertised alias of
+`close_this_connection` (it is in neither `get_sync_actions()` nor any event's
+action list, so the model's tool list is unchanged). Without it the dashboard's
+`[ disconnect this peer ]`, which injects a bare `{"type": "close_connection"}`,
+would fail as an unknown action.
+
+`tests/server/mongodb/peer_inject_test.rs` proves all of this with zero LLM calls.
+
+**One thing the handle does not fix**: the header read has no deadline (only the
+*body* is bounded, by `BODY_READ_TIMEOUT`). After an injected half-close the
+connection is marked closed and the handle is gone immediately, but the task
+itself stays parked in `read_exact` until the peer closes its own side. `mssql`,
+`db2` and `whois` all bound the first/idle read; MongoDB does not, and that is a
+pre-existing gap rather than one this introduced.
 
 ## Not implemented
 
@@ -192,6 +240,9 @@ skipping left the client waiting forever for a reply it could parse. OP_QUERY
 `tests/server/mongodb/e2e_test.rs`, declared in `tests/server/mod.rs`. Needs both
 `mongodb-server` (the server) and `mongodb` (the client crate used by the test).
 Five cases: find, insert, update, delete, error. All pass.
+
+`peer_inject_test.rs` needs only `mongodb-server` — it speaks raw OP_MSG rather
+than driving the client crate, so it is gated on the server feature alone.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features mongodb-server,mongodb \

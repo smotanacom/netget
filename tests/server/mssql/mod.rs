@@ -7,3 +7,6 @@ mod test;
 
 #[cfg(all(test, feature = "mssql"))]
 mod severity_range_test;
+
+#[cfg(all(test, feature = "mssql"))]
+mod peer_inject_test;

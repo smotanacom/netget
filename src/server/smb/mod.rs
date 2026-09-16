@@ -242,7 +242,7 @@ impl SmbServer {
     /// Handle a single SMB connection
     #[cfg(feature = "smb")]
     async fn handle_connection(
-        mut stream: TcpStream,
+        stream: TcpStream,
         peer_addr: SocketAddr,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
@@ -284,6 +284,86 @@ impl SmbServer {
             .await;
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
+        // Split the socket (never clone it): the read half stays with the session loop while
+        // the write half is shared, through an `Arc<Mutex<..>>`, with the dashboard's
+        // peer-command task. Both write through the same lock, so an injected message cannot
+        // interleave with a response half-way through an SMB2 frame.
+        let (reader, write_half) = tokio::io::split(stream);
+        let write_half = Arc::new(Mutex::new(write_half));
+        let mut reader = SmbReader::new(reader);
+
+        // Peer messaging: the dashboard's "[ message this peer ]" / "[ disconnect this peer ]"
+        // inject an action into THIS connection through the same executor the LLM path uses.
+        // Registered BEFORE the first read, because SMB2 is client-speaks-first and a manual
+        // `*` rule parks the very first NEGOTIATE for a human — the operator must be able to
+        // reach, or hang up, a connection that has not said anything yet.
+        let peer_rx = crate::server::peer_support::register_peer_channel(
+            &app_state,
+            server_id,
+            connection_id.as_u32(),
+        )
+        .await;
+        crate::server::peer_support::spawn_peer_command_task(
+            peer_rx,
+            protocol.clone(),
+            app_state.clone(),
+            server_id,
+            connection_id.as_u32(),
+            write_half.clone(),
+            status_tx.clone(),
+        );
+
+        Self::run_smb_session(
+            &mut reader,
+            &write_half,
+            peer_addr,
+            &llm_client,
+            &app_state,
+            server_id,
+            &protocol,
+            connection_id,
+            &status_tx,
+        )
+        .await;
+
+        // Every exit path — EOF, an idle timeout, a read or write error, a refused command —
+        // lands here. Dropping the handle also ends the peer command task, which releases its
+        // clone of the write half; the explicit shutdown makes the FIN immediate rather than
+        // waiting on it.
+        app_state
+            .remove_peer_handle(server_id, connection_id.as_u32())
+            .await;
+        let _ = write_half.lock().await.shutdown().await;
+
+        // Mark connection as closed
+        app_state
+            .update_connection_status(server_id, connection_id, ConnectionStatus::Closed)
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+        Log::new(Some(&status_tx)).info(format!("SMB connection {} closed", connection_id));
+
+        Ok(())
+    }
+
+    /// The read/dispatch/reply loop. Every exit is a `break`, so the caller's teardown always
+    /// runs; writes go through the shared `write_half` and are counted there.
+    #[cfg(feature = "smb")]
+    #[allow(clippy::too_many_arguments)]
+    async fn run_smb_session<R, W>(
+        reader: &mut SmbReader<R>,
+        write_half: &Arc<Mutex<W>>,
+        peer_addr: SocketAddr,
+        llm_client: &OllamaClient,
+        app_state: &Arc<AppState>,
+        server_id: ServerId,
+        protocol: &Arc<SmbProtocol>,
+        connection_id: ConnectionId,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) where
+        R: tokio::io::AsyncRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    {
         let state = Arc::new(Mutex::new(SmbConnectionState::new()));
 
         // SMB2 protocol handling loop
@@ -304,13 +384,13 @@ impl SmbServer {
             };
             let header_read = match tokio::time::timeout(
                 header_timeout,
-                stream.read_exact(&mut header_buf),
+                reader.read_exact_counted(&mut header_buf),
             )
             .await
             {
                 Ok(read) => read,
                 Err(_) => {
-                    Log::new(Some(&status_tx)).info(format!(
+                    Log::new(Some(status_tx)).info(format!(
                         "SMB peer {} sent nothing for {}s; closing idle connection",
                         peer_addr,
                         header_timeout.as_secs()
@@ -321,21 +401,15 @@ impl SmbServer {
 
             match header_read {
                 Ok(_) => {
-                    // Update connection stats for received data
-                    app_state
-                        .update_connection_stats(
-                            server_id,
-                            connection_id,
-                            Some(header_buf.len() as u64),
-                            None,
-                            Some(1),
-                            None,
-                        )
-                        .await;
+                    // Update connection stats for received data. The counters live on
+                    // `SmbReader` because a message is read in two places — the header here,
+                    // the body inside `handle_smb2_command` — and only the header used to be
+                    // counted, so a 64 KiB WRITE showed as 64 bytes received.
+                    flush_read_stats(reader, app_state, server_id, connection_id).await;
 
                     // Parse SMB2 header
                     if &header_buf[0..4] != b"\xFESMB" {
-                        Log::new(Some(&status_tx))
+                        Log::new(Some(status_tx))
                             .warn(format!("Invalid SMB2 signature from {}", peer_addr));
                         break;
                     }
@@ -348,14 +422,14 @@ impl SmbServer {
                     let response = match Self::handle_smb2_command(
                         command,
                         &header_buf,
-                        &mut stream,
-                        &llm_client,
-                        &app_state,
+                        reader,
+                        llm_client,
+                        app_state,
                         server_id,
                         connection_id,
-                        &protocol,
+                        protocol,
                         &state,
-                        &status_tx,
+                        status_tx,
                     )
                     .await
                     {
@@ -366,27 +440,27 @@ impl SmbServer {
                         }
                     };
 
+                    // The body the command handler consumed is counted here, after it has
+                    // returned — the header flush above saw only the 64 header bytes.
+                    flush_read_stats(reader, app_state, server_id, connection_id).await;
+
                     // Send response
                     if let Some(response_data) = response {
-                        match stream.write_all(&response_data).await {
+                        match write_counted(
+                            write_half,
+                            &response_data,
+                            app_state,
+                            server_id,
+                            connection_id,
+                        )
+                        .await
+                        {
                             Ok(_) => {
                                 trace!(
                                     "SMB2 response sent to {}, {} bytes",
                                     peer_addr,
                                     response_data.len()
                                 );
-
-                                // Update connection stats for sent data
-                                app_state
-                                    .update_connection_stats(
-                                        server_id,
-                                        connection_id,
-                                        None,
-                                        Some(response_data.len() as u64),
-                                        None,
-                                        Some(1),
-                                    )
-                                    .await;
                             }
                             Err(e) => {
                                 error!("Failed to send response for 0x{:04x}: {}", command, e);
@@ -396,7 +470,7 @@ impl SmbServer {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    Log::new(Some(&status_tx))
+                    Log::new(Some(status_tx))
                         .info(format!("SMB client {} disconnected", peer_addr));
                     break;
                 }
@@ -406,25 +480,15 @@ impl SmbServer {
                 }
             }
         }
-
-        // Mark connection as closed
-        app_state
-            .update_connection_status(server_id, connection_id, ConnectionStatus::Closed)
-            .await;
-        let _ = status_tx.send("__UPDATE_UI__".to_string());
-
-        Log::new(Some(&status_tx)).info(format!("SMB connection {} closed", connection_id));
-
-        Ok(())
     }
 
     /// Handle SMB2 command
     #[cfg(feature = "smb")]
     #[allow(clippy::too_many_arguments)]
-    async fn handle_smb2_command(
+    async fn handle_smb2_command<R>(
         command: u16,
         _header: &[u8],
-        _stream: &mut TcpStream,
+        _stream: &mut SmbReader<R>,
         _llm_client: &OllamaClient,
         _app_state: &Arc<AppState>,
         _server_id: ServerId,
@@ -432,7 +496,10 @@ impl SmbServer {
         _protocol: &Arc<SmbProtocol>,
         _state: &Arc<Mutex<SmbConnectionState>>,
         status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Vec<u8>>>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
         // SMB2 command codes
         const SMB2_NEGOTIATE: u16 = 0x0000;
         const SMB2_SESSION_SETUP: u16 = 0x0001;
@@ -1987,6 +2054,114 @@ impl SmbServer {
     }
 }
 
+/// The connection's read half plus the counters the dashboard's `↓` column reads.
+///
+/// One SMB2 message is read in two places — the 64-byte header in the session loop, the body
+/// the header implies inside `handle_smb2_command` — and only the header was ever counted, so
+/// a 64 KiB WRITE showed up as 64 bytes received. Reads accumulate here and the session loop
+/// flushes them to `AppState`; keeping the counters on the reader is what lets the body sites
+/// stay unchanged.
+struct SmbReader<R> {
+    inner: R,
+    /// Bytes read since the last flush.
+    pending_bytes: u64,
+    /// Completed reads since the last flush.
+    pending_reads: u64,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> SmbReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            pending_bytes: 0,
+            pending_reads: 0,
+        }
+    }
+
+    /// `read_exact`, counting the bytes on success. A cancelled read (the caller's timeout
+    /// firing) has already lost whatever it consumed, so there is nothing honest to count.
+    async fn read_exact_counted(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.inner.read_exact(buf).await;
+        if let Ok(n) = result {
+            self.pending_bytes += n as u64;
+            self.pending_reads += 1;
+        }
+        result
+    }
+
+    /// `read`, counting the bytes on success.
+    async fn read_counted(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.inner.read(buf).await;
+        if let Ok(n) = result {
+            self.pending_bytes += n as u64;
+            self.pending_reads += 1;
+        }
+        result
+    }
+
+    /// Take and clear the counters.
+    fn take_pending(&mut self) -> (u64, u64) {
+        (
+            std::mem::take(&mut self.pending_bytes),
+            std::mem::take(&mut self.pending_reads),
+        )
+    }
+}
+
+/// Fold whatever the reader has counted since the last call into the connection's stats.
+async fn flush_read_stats<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut SmbReader<R>,
+    app_state: &AppState,
+    server_id: ServerId,
+    connection_id: ConnectionId,
+) {
+    let (bytes, reads) = reader.take_pending();
+    if bytes == 0 && reads == 0 {
+        return;
+    }
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(bytes),
+            None,
+            Some(reads),
+            None,
+        )
+        .await;
+}
+
+/// Write one response to the peer and count it. The guard is dropped before the stats update
+/// so nothing awaits `AppState` while holding the write half — the peer command task needs the
+/// same lock to inject a message or a disconnect.
+async fn write_counted<W>(
+    write_half: &Arc<Mutex<W>>,
+    data: &[u8],
+    app_state: &AppState,
+    server_id: ServerId,
+    connection_id: ConnectionId,
+) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    {
+        let mut writer = write_half.lock().await;
+        writer.write_all(data).await?;
+        writer.flush().await?;
+    }
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            None,
+            Some(data.len() as u64),
+            None,
+            Some(1),
+        )
+        .await;
+    Ok(())
+}
+
 /// Read exactly `buf.len()` bytes of a body the peer has already announced, bounded by
 /// [`BODY_READ_TIMEOUT`].
 ///
@@ -1994,11 +2169,11 @@ impl SmbServer {
 /// declaring a large body and then stopped held the connection, the task and the buffer it had
 /// chosen the size of, indefinitely. The timeout is a read error rather than a special case so
 /// the existing `?` paths close the connection exactly as they already do for a truncated body.
-async fn read_body_exact(
-    stream: &mut tokio::net::TcpStream,
+async fn read_body_exact<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut SmbReader<R>,
     buf: &mut [u8],
 ) -> std::io::Result<()> {
-    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read_exact(buf)).await {
+    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read_exact_counted(buf)).await {
         Ok(read) => read.map(|_| ()),
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -2009,8 +2184,11 @@ async fn read_body_exact(
 
 /// As [`read_body_exact`], for the sites that take whatever has arrived rather than a fixed
 /// count.
-async fn read_body(stream: &mut tokio::net::TcpStream, buf: &mut [u8]) -> std::io::Result<usize> {
-    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read(buf)).await {
+async fn read_body<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut SmbReader<R>,
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read_counted(buf)).await {
         Ok(read) => read,
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,

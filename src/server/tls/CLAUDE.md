@@ -234,6 +234,31 @@ I/O driver. 15 of 16 clients that wrote at handshake completion had their reques
 no response and no log line. The banner task is now spawned only when `send_first` is set;
 `tests/connection_map_race_test.rs` pins it.
 
+### Peer handle — `[ message this peer ]` / `[ disconnect this peer ]`
+
+The connection registers a `peer_support` handle over the **same**
+`Arc<Mutex<WriteHalf<TlsStream>>>` the session writes through, so an injected `send_tls_data`
+is encrypted by exactly the code that encrypts a modelled one and the lock is what keeps the
+two from interleaving records. It is registered synchronously, next to the `connections` map
+entry and before either per-connection task is spawned — same reason as step 3 above, plus the
+one that matters most: a `manual` rule can park the very first record for a human (300s by
+default), and that is precisely the window in which an operator needs to reach the peer.
+
+- `send_tls_data` returns `ActionResult::Output`, so an injected message genuinely reaches the
+  client. `tests/server/tls/peer_inject_test.rs` asserts the plaintext coming out of a real
+  rustls client, not just the `send_to_peer` outcome.
+- `close_connection` is accepted by `execute_action` as an **alias** for
+  `close_this_connection`, which is the only name advertised to the model. The dashboard's
+  `[ disconnect this peer ]` injects a bare `{"type": "close_connection"}`
+  (`src/tui/actions.rs`) whatever a protocol calls its own close verb, so without the alias
+  that button answered "Unknown TLS action". `tcp`, `redis` and `mqtt` carry the same alias for
+  the same reason.
+- The handle is released at the end of the read loop — EOF, the idle deadline, a read error —
+  and also on the banner-error and data-path close paths, because those run in other tasks
+  while the reader is still parked in `read()` and would otherwise leave the rail offering a
+  connection that is already finished. All of it is idempotent with `peer_support`'s own close
+  path.
+
 ### Connection statistics
 
 Every read and every successful write calls `AppState::update_connection_stats`, which is what
