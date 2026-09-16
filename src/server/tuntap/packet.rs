@@ -1136,10 +1136,21 @@ fn parse_term(term: &str, whole: &str) -> Result<Term, String> {
     }
     match ip_protocol_number(term) {
         Some(n) => Ok(Term::Protocol(n)),
+        // `all` and `none` are deliberately absent from this list, and the list used to
+        // name them. They are whole-expression keywords, handled in `PacketFilter::parse`
+        // before anything is split, so `tcp:80,all` is refused by an error that told the
+        // reader `all` was valid — and the reader here is usually the model, correcting a
+        // filter from exactly this text. An `all` inside a group means nothing anyway: it
+        // would make the whole expression match everything, which is what writing `all` on
+        // its own says.
+        None if matches!(term, "all" | "none") => Err(err(format!(
+            "{term:?} is the whole packet_filter, not one term of a list: write \
+             packet_filter {term:?} on its own rather than combining it with others"
+        ))),
         None => Err(err(format!(
-            "{term:?} is not a filter term; expected all, none, v4, v6, tcp-syn, a protocol \
-             name, ip-proto-<n>, tcp:<port>, udp:<port>, port:<n>, from:<addr>, to:<addr> or \
-             host:<addr>"
+            "{term:?} is not a filter term; expected v4, v6, tcp-syn, a protocol name, \
+             ip-proto-<n>, tcp:<port>, udp:<port>, port:<n>, from:<addr>, to:<addr> or \
+             host:<addr>. \"all\" and \"none\" are whole expressions, not terms"
         ))),
     }
 }

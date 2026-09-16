@@ -290,13 +290,27 @@ impl EapolFrame {
         })
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encode the PDU, refusing a body the two-octet Packet Body Length field cannot describe.
+    ///
+    /// `self.body.len() as u16` was the `m3ua` defect in miniature and worse than an oversize
+    /// frame: 65536 octets narrow to a declared length of **0**, so the receiver reads an empty
+    /// body out of a frame that carries 64 KiB, and a cast does not overflow-check in release.
+    /// Nothing on an Ethernet segment is that large and no caller in this tree can reach it —
+    /// `encode_eap_typed` already refuses past `u16::MAX`, so the wrapped EAP packet is always
+    /// smaller — but this is a `pub fn` on a `pub` struct with a `pub` body, so the bound
+    /// belongs to the function rather than to an argument about who calls it.
+    pub fn encode(&self) -> CodecResult<Vec<u8>> {
+        let declared = u16::try_from(self.body.len()).map_err(|_| CodecError::FieldTooLong {
+            field: "EAPOL body",
+            max: u16::MAX as usize,
+            got: self.body.len(),
+        })?;
         let mut out = Vec::with_capacity(EAPOL_HEADER_LEN + self.body.len());
         out.push(self.version);
         out.push(self.packet_type);
-        out.extend_from_slice(&(self.body.len() as u16).to_be_bytes());
+        out.extend_from_slice(&declared.to_be_bytes());
         out.extend_from_slice(&self.body);
-        out
+        Ok(out)
     }
 }
 
@@ -315,7 +329,7 @@ pub fn eapol_packet_type_name(packet_type: u8) -> &'static str {
 ///
 /// This takes an opaque body and cannot choose an EAP code, which is why it is safe for both
 /// directions. The Success and Failure builders below deliberately do **not** call it.
-pub fn eapol_wrap_eap(version: u8, eap: &[u8]) -> Vec<u8> {
+pub fn eapol_wrap_eap(version: u8, eap: &[u8]) -> CodecResult<Vec<u8>> {
     EapolFrame {
         version,
         packet_type: EAPOL_TYPE_EAP_PACKET,

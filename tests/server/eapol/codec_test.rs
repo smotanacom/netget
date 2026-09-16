@@ -97,7 +97,7 @@ fn decodes_an_eap_request_identity() {
 fn encodes_an_eap_request_identity_byte_for_byte() {
     let eap = codec::eap_request_identity(1);
     assert_eq!(
-        codec::eapol_wrap_eap(1, &eap),
+        codec::eapol_wrap_eap(1, &eap).unwrap(),
         unhex(REQUEST_IDENTITY),
         "EAP-Request/Identity must match the frame on the wire exactly"
     );
@@ -132,7 +132,10 @@ fn decodes_an_eap_response_identity() {
 #[test]
 fn encodes_an_eap_response_identity_byte_for_byte() {
     let eap = codec::eap_response_identity(1, "alice").unwrap();
-    assert_eq!(codec::eapol_wrap_eap(1, &eap), unhex(RESPONSE_IDENTITY));
+    assert_eq!(
+        codec::eapol_wrap_eap(1, &eap).unwrap(),
+        unhex(RESPONSE_IDENTITY)
+    );
 }
 
 // ===========================================================================
@@ -234,7 +237,7 @@ const EXPECTED_DIGEST: &str = "801f5f3dc4b0e73b2e69795f6ab89bdc";
 #[test]
 fn encodes_an_md5_challenge_request_byte_for_byte() {
     let eap = codec::eap_request_md5_challenge(2, &unhex(MD5_CHALLENGE), "netget").unwrap();
-    assert_eq!(codec::eapol_wrap_eap(2, &eap), unhex(REQUEST_MD5));
+    assert_eq!(codec::eapol_wrap_eap(2, &eap).unwrap(), unhex(REQUEST_MD5));
 }
 
 #[test]
@@ -520,7 +523,7 @@ fn reads_tls_flags() {
 fn encodes_an_eap_tls_start_byte_for_byte() {
     let eap = codec::eap_request_tls_start(3, codec::EAP_TYPE_TLS).unwrap();
     assert_eq!(
-        codec::eapol_wrap_eap(2, &eap),
+        codec::eapol_wrap_eap(2, &eap).unwrap(),
         unhex("02 00 0006 01 03 0006 0d 20")
     );
 }
@@ -533,7 +536,7 @@ fn encodes_an_eap_tls_start_byte_for_byte() {
 fn encodes_an_eap_notification_byte_for_byte() {
     let eap = codec::eap_request_notification(4, "Not today").unwrap();
     assert_eq!(
-        codec::eapol_wrap_eap(2, &eap),
+        codec::eapol_wrap_eap(2, &eap).unwrap(),
         unhex("02 00 000e 01 04 000e 02 4e6f7420746f646179")
     );
 }

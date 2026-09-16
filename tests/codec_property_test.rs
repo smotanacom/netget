@@ -4170,3 +4170,721 @@ mod amqp_props {
         assert!(encoder.as_slice().is_empty());
     }
 }
+
+// ===========================================================================================
+// EAPOL / EAP — `src/server/eapol/codec.rs`
+// ===========================================================================================
+//
+// Six layers stacked inside 60 octets — Ethernet, EAPOL, EAP, the EAP type, RFC 1994's
+// `Value-Size | Value | Name`, and the MD5 digest over all of it — each with its own length
+// field. The properties below pin that every one of those lengths describes the bytes actually
+// there, in both directions.
+//
+// Two shapes here that a table-driven test cannot state, and that the generators are written
+// around:
+//
+//  * **Ethernet pads to 60 octets**, so `parse(build(payload))` is *not* `payload` for anything
+//    shorter. The pad is what EAPOL's own body-length field exists to see past, so the property
+//    asserts the payload is a prefix and the rest is zero rather than asserting equality.
+//  * **EAPOL decode ignores trailing octets** for the same reason, so the round-trip property
+//    appends a random pad and still demands the original frame back. A strict length-equality
+//    decoder would reject every real EAPOL-Start on the wire.
+//
+// Found here: `EapolFrame::encode` narrowed `self.body.len() as u16`, so a 65536-octet body
+// declared a length of **0** — the `m3ua` defect, and worse than an oversize frame, because the
+// result is well-formed and describes a different packet. Fixed by refusing; see the
+// at-the-bound assertions below.
+
+#[cfg(feature = "eapol")]
+mod eapol_props {
+    use netget::server::eapol::codec::{
+        build_ethernet_frame, decode_md5_value, eap_response, eap_response_identity,
+        eapol_wrap_eap, encode_md5_value, format_mac, md5_challenge_digest, md5_response_matches,
+        parse_ethernet_frame, parse_mac, tls_flags, CodecError, EapPacket, EapolFrame,
+        EAPOL_HEADER_LEN, EAPOL_TYPE_EAP_PACKET, EAP_CODE_RESPONSE, EAP_HEADER_LEN,
+        ETHERNET_MIN_FRAME_LEN,
+    };
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::CASES))]
+
+        /// Property 1 for Ethernet, allowing for the pad. `build` is the only thing in this
+        /// codec that *adds* octets, and a round-trip property that demanded equality would
+        /// have to be written against a payload of at least 46 bytes — i.e. against exactly
+        /// the frames the pad does not apply to.
+        #[test]
+        fn ethernet_frames_round_trip_past_the_pad(
+            destination in any::<[u8; 6]>(),
+            source in any::<[u8; 6]>(),
+            ethertype in any::<u16>(),
+            payload in proptest::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let bytes = build_ethernet_frame(destination, source, ethertype, &payload);
+            prop_assert!(bytes.len() >= ETHERNET_MIN_FRAME_LEN);
+            let parsed = parse_ethernet_frame(&bytes).unwrap();
+            prop_assert_eq!(parsed.destination, destination);
+            prop_assert_eq!(parsed.source, source);
+            prop_assert_eq!(parsed.ethertype, ethertype);
+            prop_assert!(parsed.payload.starts_with(&payload));
+            prop_assert!(
+                parsed.payload[payload.len()..].iter().all(|b| *b == 0),
+                "the pad must be zeroes"
+            );
+        }
+
+        /// Property 1 for MAC addresses, through every spelling `parse_mac` accepts. The
+        /// colon form is what every event field carries, so it is the one that has to survive
+        /// being read back out of an event and handed to an action.
+        #[test]
+        fn macs_round_trip_through_every_accepted_spelling(mac in any::<[u8; 6]>()) {
+            let colon = format_mac(&mac);
+            prop_assert_eq!(parse_mac(&colon).unwrap(), mac);
+            prop_assert_eq!(parse_mac(&colon.replace(':', "-")).unwrap(), mac);
+            prop_assert_eq!(parse_mac(&colon.replace(':', "")).unwrap(), mac);
+            prop_assert_eq!(parse_mac(&colon.to_ascii_uppercase()).unwrap(), mac);
+        }
+
+        /// Property 1 for EAPOL, with the pad the wire really carries.
+        #[test]
+        fn eapol_frames_round_trip_and_ignore_trailing_pad(
+            version in 1u8..=3,
+            packet_type in any::<u8>(),
+            body in proptest::collection::vec(any::<u8>(), 0..256),
+            pad in 0usize..24,
+        ) {
+            let frame = EapolFrame { version, packet_type, body };
+            let mut bytes = frame.encode().unwrap();
+            prop_assert_eq!(bytes.len(), EAPOL_HEADER_LEN + frame.body.len());
+            let declared = u16::from_be_bytes([bytes[2], bytes[3]]) as usize;
+            prop_assert_eq!(declared, frame.body.len(), "the length field must describe the body");
+            bytes.resize(bytes.len() + pad, 0);
+            prop_assert_eq!(EapolFrame::decode(&bytes).unwrap(), frame);
+        }
+
+        /// An EAPOL version outside 1..=3 is refused rather than passed through. 802.1X has
+        /// three, and a frame claiming another was built by something that is not speaking
+        /// this protocol.
+        #[test]
+        fn an_unsupported_eapol_version_is_refused(
+            version in prop_oneof![Just(0u8), 4u8..=255u8],
+            packet_type in any::<u8>(),
+        ) {
+            let bytes = vec![version, packet_type, 0, 0];
+            prop_assert_eq!(
+                EapolFrame::decode(&bytes),
+                Err(CodecError::UnsupportedVersion(version))
+            );
+        }
+
+        /// Property 1 for EAP Request/Response, plus property 2: the Length field covers the
+        /// whole packet, header included (RFC 3748 §4).
+        #[test]
+        fn eap_responses_round_trip(
+            identifier in any::<u8>(),
+            eap_type in any::<u8>(),
+            type_data in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let bytes = eap_response(identifier, eap_type, &type_data).unwrap();
+            prop_assert_eq!(
+                u16::from_be_bytes([bytes[2], bytes[3]]) as usize,
+                bytes.len(),
+                "the Length field covers the header too"
+            );
+            let packet = EapPacket::decode(&bytes).unwrap();
+            prop_assert_eq!(packet.code, EAP_CODE_RESPONSE);
+            prop_assert_eq!(packet.identifier, identifier);
+            prop_assert_eq!(packet.eap_type, Some(eap_type));
+            prop_assert_eq!(packet.type_data, type_data);
+        }
+
+        /// The whole stack at once: identity → EAP → EAPOL → and back. This is the path an
+        /// authenticator actually walks, and the one where an off-by-one in any layer's
+        /// length field shows up as "the supplicant said nothing" rather than as an error.
+        #[test]
+        fn an_identity_survives_the_whole_stack(
+            version in 1u8..=3,
+            identifier in any::<u8>(),
+            identity in "[ -~]{0,64}",
+        ) {
+            let eap = eap_response_identity(identifier, &identity).unwrap();
+            let frame = eapol_wrap_eap(version, &eap).unwrap();
+            let eapol = EapolFrame::decode(&frame).unwrap();
+            prop_assert_eq!(eapol.version, version);
+            prop_assert_eq!(eapol.packet_type, EAPOL_TYPE_EAP_PACKET);
+            let packet = EapPacket::decode(&eapol.body).unwrap();
+            prop_assert_eq!(packet.identifier, identifier);
+            prop_assert_eq!(String::from_utf8(packet.type_data).unwrap(), identity);
+        }
+
+        /// Property 1 for RFC 1994's `Value-Size | Value | Name`. The name has no length field
+        /// of its own — it is whatever follows the value — so a wrong `Value-Size` silently
+        /// moves bytes between the two, which is a digest that will not match rather than a
+        /// decode error.
+        #[test]
+        fn md5_challenge_values_round_trip(
+            value in proptest::collection::vec(any::<u8>(), 0..=255),
+            name in "[ -~]{0,32}",
+        ) {
+            let encoded = encode_md5_value(&value, &name).unwrap();
+            prop_assert_eq!(encoded[0] as usize, value.len());
+            let (decoded_value, decoded_name) = decode_md5_value(&encoded).unwrap();
+            prop_assert_eq!(decoded_value, value);
+            prop_assert_eq!(decoded_name, name);
+        }
+
+        /// The digest is what admission rests on, so the two halves of the comparison must
+        /// agree for the right secret and disagree for any other. Not a codec property, but
+        /// the same class: a helper that returned `true` for everything would pass every
+        /// round-trip assertion above.
+        #[test]
+        fn the_md5_digest_matches_only_the_secret_it_was_made_from(
+            identifier in any::<u8>(),
+            secret in "[ -~]{1,32}",
+            other in "[ -~]{1,32}",
+            challenge in proptest::collection::vec(any::<u8>(), 1..=16),
+        ) {
+            let digest = md5_challenge_digest(identifier, &secret, &challenge);
+            prop_assert!(md5_response_matches(identifier, &secret, &challenge, &digest));
+            prop_assert_eq!(
+                md5_response_matches(identifier, &other, &challenge, &digest),
+                secret == other
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::PANIC_CASES))]
+
+        /// Property 3, across every decoder an unauthenticated peer on the segment reaches.
+        #[test]
+        fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..128)) {
+            let _ = parse_ethernet_frame(&data);
+            let _ = EapolFrame::decode(&data);
+            let _ = EapPacket::decode(&data);
+            let _ = decode_md5_value(&data);
+            let _ = tls_flags(&data);
+            let _ = parse_mac(&String::from_utf8_lossy(&data));
+            if let Ok(eth) = parse_ethernet_frame(&data) {
+                if let Ok(eapol) = EapolFrame::decode(&eth.payload) {
+                    let _ = EapPacket::decode(&eapol.body);
+                }
+            }
+        }
+    }
+
+    /// FINDING, fixed: `EapolFrame::encode` narrowed `self.body.len() as u16`.
+    ///
+    /// 65536 octets of body narrow to a declared length of **0**, so a receiver reads an empty
+    /// EAPOL PDU out of a frame carrying 64 KiB — well-formed, self-consistent, and describing
+    /// a different packet. It is the `m3ua` `declared as u16` shape, and a cast does not
+    /// overflow-check in release, which is the half of the build where it would have mattered.
+    ///
+    /// Not reachable: `encode_eap_typed` already refuses past `u16::MAX`, so every body this
+    /// tree wraps is smaller, and an Ethernet segment carries 1500 octets anyway. It is fixed
+    /// regardless, because `EapolFrame` is a `pub` struct with a `pub` body and a `pub`
+    /// encoder — the bound belongs to the function, not to an argument about its callers.
+    #[test]
+    fn an_eapol_body_the_length_field_cannot_describe_is_refused() {
+        // At the bound: 65535 still encodes, and the length field says so. Without this half
+        // an encoder that refused every large body would pass the rest of this test.
+        let at_bound = EapolFrame {
+            version: 2,
+            packet_type: EAPOL_TYPE_EAP_PACKET,
+            body: vec![0xAB; u16::MAX as usize],
+        };
+        let bytes = at_bound
+            .encode()
+            .expect("65535 is exactly what the field can say");
+        assert_eq!(u16::from_be_bytes([bytes[2], bytes[3]]), u16::MAX);
+        assert_eq!(EapolFrame::decode(&bytes).unwrap(), at_bound);
+
+        // One octet past it: refused, rather than declaring zero.
+        let over = EapolFrame {
+            version: 2,
+            packet_type: EAPOL_TYPE_EAP_PACKET,
+            body: vec![0xAB; u16::MAX as usize + 1],
+        };
+        assert_eq!(
+            over.encode(),
+            Err(CodecError::FieldTooLong {
+                field: "EAPOL body",
+                max: u16::MAX as usize,
+                got: u16::MAX as usize + 1,
+            })
+        );
+    }
+
+    /// Property 2 for the two other length fields in this codec, each at its own boundary.
+    #[test]
+    fn every_length_field_refuses_what_it_cannot_describe() {
+        // EAP: 4 header octets + 1 type octet + type-data, in a 16-bit Length field.
+        let largest = u16::MAX as usize - EAP_HEADER_LEN - 1;
+        let at_bound = eap_response(1, 1, &vec![0u8; largest]).expect("the bound must encode");
+        assert_eq!(
+            u16::from_be_bytes([at_bound[2], at_bound[3]]) as usize,
+            at_bound.len()
+        );
+        assert_eq!(
+            EapPacket::decode(&at_bound).unwrap().type_data.len(),
+            largest
+        );
+        assert!(eap_response(1, 1, &vec![0u8; largest + 1]).is_err());
+
+        // MD5-Challenge: an 8-bit Value-Size.
+        let value = vec![0x5A; u8::MAX as usize];
+        let encoded = encode_md5_value(&value, "netget").expect("255 is what the field can say");
+        assert_eq!(
+            decode_md5_value(&encoded).unwrap(),
+            (value, "netget".to_string())
+        );
+        assert!(encode_md5_value(&[0u8; 256], "netget").is_err());
+    }
+}
+
+// ===========================================================================================
+// TUN/TAP packet builder and decoder — `src/server/tuntap/packet.rs`
+// ===========================================================================================
+//
+// The asymmetry here is that the two directions are not the same shape: `build_packet` takes
+// the model's JSON and lays out headers; `decode` reads a frame off the interface and reports
+// fields. So property 1 is stated across them — build what the model asked for, decode it, and
+// require the fields back — which is also the only statement of "the model got the packet it
+// described" that exists anywhere.
+//
+// Property 2 is the interesting one for this codec, because IP has four independent length
+// fields (IPv4 Total Length, IPv6 Payload Length, UDP Length, and the frame itself) and each
+// one narrows differently. Every boundary below was checked at the bound as well as past it.
+//
+// The checksum assertions are an independent oracle of a kind: one's-complement arithmetic is
+// self-verifying, so summing a header *including* the checksum it carries must give zero. A
+// builder that wrote a plausible-looking wrong checksum passes every field assertion and fails
+// this one.
+
+#[cfg(feature = "tuntap")]
+mod tuntap_props {
+    use netget::server::tuntap::packet::{
+        build_packet, checksum16, decode, decode_payload, format_mac, parse_mac, tcp_flag_bits,
+        tcp_flag_names, LinkMode, PacketFilter, PacketInformation, Transport,
+    };
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    /// Every combination a decoder is reached through, so property 3 covers the prefix
+    /// handling as well as the headers.
+    const SHAPES: [(PacketInformation, LinkMode); 6] = [
+        (PacketInformation::None, LinkMode::Tun),
+        (PacketInformation::None, LinkMode::Tap),
+        (PacketInformation::MacOsUtun, LinkMode::Tun),
+        (PacketInformation::MacOsUtun, LinkMode::Tap),
+        (PacketInformation::LinuxTunPi, LinkMode::Tun),
+        (PacketInformation::LinuxTunPi, LinkMode::Tap),
+    ];
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::CASES))]
+
+        /// Property 1 for UDP over IPv4, with property 2's length fields checked on the way
+        /// out. `total_length` is read from the header rather than from the buffer, so a
+        /// builder that wrote the wrong one would be caught here rather than by a real peer.
+        #[test]
+        fn udp_over_ipv4_round_trips(
+            a in any::<[u8; 4]>(),
+            b in any::<[u8; 4]>(),
+            source_port in any::<u16>(),
+            destination_port in any::<u16>(),
+            payload in proptest::collection::vec(any::<u8>(), 0..512),
+        ) {
+            let source = std::net::Ipv4Addr::from(a);
+            let destination = std::net::Ipv4Addr::from(b);
+            let bytes = build_packet(&json!({
+                "source": source.to_string(),
+                "destination": destination.to_string(),
+                "protocol": "udp",
+                "source_port": source_port,
+                "destination_port": destination_port,
+                "payload": hex::encode(&payload),
+                "payload_encoding": "hex",
+            })).unwrap();
+
+            // Property 2: every length field describes what is actually there.
+            prop_assert_eq!(
+                u16::from_be_bytes([bytes[2], bytes[3]]) as usize,
+                bytes.len(),
+                "IPv4 Total Length"
+            );
+            prop_assert_eq!(
+                u16::from_be_bytes([bytes[24], bytes[25]]) as usize,
+                8 + payload.len(),
+                "UDP Length covers its own header"
+            );
+            // One's-complement self-verification of the IPv4 header checksum.
+            prop_assert_eq!(checksum16(&bytes[..20]), 0, "IPv4 header checksum");
+
+            let decoded = decode(&bytes, PacketInformation::None, LinkMode::Tun).unwrap();
+            prop_assert_eq!(decoded.ip_version, 4);
+            prop_assert_eq!(decoded.source, std::net::IpAddr::V4(source));
+            prop_assert_eq!(decoded.destination, std::net::IpAddr::V4(destination));
+            prop_assert_eq!(decoded.protocol, 17);
+            prop_assert_eq!(decoded.total_length, bytes.len());
+            prop_assert_eq!(decoded.payload_len, payload.len());
+            prop_assert_eq!(
+                decoded.transport,
+                Transport::Udp { source_port, destination_port }
+            );
+            prop_assert!(decoded.ethernet.is_none());
+        }
+
+        /// Property 1 for TCP over IPv6 inside an Ethernet frame — the other three axes at
+        /// once, because that is where a header-offset mistake hides: an IPv6 header is 40
+        /// octets rather than 20, and a TAP frame moves everything 14 further along.
+        #[test]
+        fn tcp_over_ipv6_in_an_ethernet_frame_round_trips(
+            a in any::<[u8; 16]>(),
+            b in any::<[u8; 16]>(),
+            src_mac in any::<[u8; 6]>(),
+            dst_mac in any::<[u8; 6]>(),
+            source_port in any::<u16>(),
+            destination_port in any::<u16>(),
+            seq in any::<u32>(),
+            flag_bits in any::<u8>(),
+            payload in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let source = std::net::Ipv6Addr::from(a);
+            let destination = std::net::Ipv6Addr::from(b);
+            let flags: Vec<&str> = tcp_flag_names(flag_bits);
+            let bytes = build_packet(&json!({
+                "source": source.to_string(),
+                "destination": destination.to_string(),
+                "protocol": "tcp",
+                "source_port": source_port,
+                "destination_port": destination_port,
+                "seq": seq,
+                "flags": flags,
+                "source_mac": format_mac(&src_mac),
+                "destination_mac": format_mac(&dst_mac),
+                "payload": hex::encode(&payload),
+                "payload_encoding": "hex",
+            })).unwrap();
+
+            // Property 2: IPv6 Payload Length is everything after the 40-octet header.
+            prop_assert_eq!(
+                u16::from_be_bytes([bytes[18], bytes[19]]) as usize,
+                bytes.len() - 14 - 40,
+                "IPv6 Payload Length"
+            );
+
+            let decoded = decode(&bytes, PacketInformation::None, LinkMode::Tap).unwrap();
+            prop_assert_eq!(decoded.ip_version, 6);
+            prop_assert_eq!(decoded.source, std::net::IpAddr::V6(source));
+            prop_assert_eq!(decoded.destination, std::net::IpAddr::V6(destination));
+            prop_assert_eq!(decoded.protocol, 6);
+            prop_assert_eq!(decoded.payload_len, payload.len());
+            let ethernet = decoded.ethernet.clone().expect("TAP must report an Ethernet header");
+            prop_assert_eq!(ethernet.source_mac, format_mac(&src_mac));
+            prop_assert_eq!(ethernet.destination_mac, format_mac(&dst_mac));
+            match decoded.transport {
+                Transport::Tcp { source_port: s, destination_port: d, seq: q, flags: f, .. } => {
+                    prop_assert_eq!(s, source_port);
+                    prop_assert_eq!(d, destination_port);
+                    prop_assert_eq!(q, seq);
+                    prop_assert_eq!(f, flag_bits);
+                }
+                other => prop_assert!(false, "expected TCP, got {:?}", other),
+            }
+        }
+
+        /// The platform prefix is part of the frame, so a round trip has to survive it. This
+        /// is the off-by-four the type exists for: a prefix skipped rather than validated
+        /// decodes as garbage instead of erroring, because the IP version nibble lands in the
+        /// middle of it.
+        #[test]
+        fn the_platform_prefix_round_trips(
+            a in any::<[u8; 4]>(),
+            b in any::<[u8; 4]>(),
+            which in 0usize..2,
+        ) {
+            let source = std::net::Ipv4Addr::from(a);
+            let destination = std::net::Ipv4Addr::from(b);
+            let packet = build_packet(&json!({
+                "source": source.to_string(),
+                "destination": destination.to_string(),
+                "protocol": "icmp",
+                "icmp_type": "echo_request",
+            })).unwrap();
+
+            let (pi, prefix): (PacketInformation, [u8; 4]) = if which == 0 {
+                (PacketInformation::MacOsUtun, [0, 0, 0, 2])
+            } else {
+                (PacketInformation::LinuxTunPi, [0, 0, 0x08, 0x00])
+            };
+            let mut framed = prefix.to_vec();
+            framed.extend_from_slice(&packet);
+
+            let decoded = decode(&framed, pi, LinkMode::Tun).unwrap();
+            prop_assert_eq!(decoded.source, std::net::IpAddr::V4(source));
+            prop_assert_eq!(decoded.protocol, 1);
+            // And the same bytes without the prefix must be refused rather than misread.
+            prop_assert!(decode(&packet, pi, LinkMode::Tun).is_err());
+        }
+
+        /// Property 1 for MAC addresses. This codec's `parse_mac` requires separators, unlike
+        /// EAPOL's, so the bare twelve-hex-digit form has to be *refused* rather than
+        /// half-accepted — a MAC parsed from the wrong number of octets addresses a different
+        /// station.
+        #[test]
+        fn macs_round_trip_and_the_bare_form_is_refused(mac in any::<[u8; 6]>()) {
+            let colon = format_mac(&mac);
+            prop_assert_eq!(parse_mac(&colon).unwrap(), mac);
+            prop_assert_eq!(parse_mac(&colon.replace(':', "-")).unwrap(), mac);
+            prop_assert!(parse_mac(&colon.replace(':', "")).is_err());
+        }
+
+        /// Property 1 for the TCP flags vocabulary the model writes and reads.
+        #[test]
+        fn tcp_flag_names_round_trip(bits in any::<u8>()) {
+            let names: Vec<String> = tcp_flag_names(bits).into_iter().map(str::to_string).collect();
+            prop_assert_eq!(tcp_flag_bits(&names).unwrap(), bits);
+            // Case and surrounding space are normalised, so the same names shouted back work.
+            let shouted: Vec<String> = names.iter().map(|n| format!("  {}  ", n.to_uppercase())).collect();
+            prop_assert_eq!(tcp_flag_bits(&shouted).unwrap(), bits);
+        }
+
+        /// Property 1 for the payload field, in the encoding the action names. The whole point
+        /// of `payload_encoding` is that `"48656c6c6f"` is simultaneously valid text and valid
+        /// hex, so the generator deliberately includes values that are both.
+        #[test]
+        fn payloads_round_trip_in_the_encoding_they_declare(
+            bytes in proptest::collection::vec(any::<u8>(), 0..128),
+            text in "[ -~]{0,64}",
+        ) {
+            prop_assert_eq!(
+                decode_payload(&json!({
+                    "payload": hex::encode(&bytes), "payload_encoding": "hex"
+                })).unwrap(),
+                bytes
+            );
+            prop_assert_eq!(
+                decode_payload(&json!({
+                    "payload": text.clone(), "payload_encoding": "utf8"
+                })).unwrap(),
+                text.as_bytes().to_vec()
+            );
+            // Absent encoding means utf8, never a guess at the content.
+            prop_assert_eq!(
+                decode_payload(&json!({ "payload": text.clone() })).unwrap(),
+                text.as_bytes().to_vec()
+            );
+        }
+
+        /// `PacketFilter` is the one thing standing between a busy interface and a model call
+        /// per packet, so what it matches has to be exactly what it says — in **both**
+        /// directions. Half of these assertions are negative for that reason: a filter that
+        /// matched everything would satisfy every positive one, and it is the failure mode
+        /// that costs money rather than correctness.
+        ///
+        /// The re-parse at the end is property 4: what `as_str` reports has to parse back to
+        /// a filter that decides the same way, or an operator cannot copy the filter out of
+        /// the dashboard and paste it into a config.
+        #[test]
+        fn a_filter_matches_exactly_what_it_names(
+            a in any::<[u8; 4]>(),
+            b in any::<[u8; 4]>(),
+            source_port in 1u16..=65535,
+            destination_port in 1u16..=65535,
+        ) {
+            let source = std::net::Ipv4Addr::from(a);
+            let destination = std::net::Ipv4Addr::from(b);
+            let bytes = build_packet(&json!({
+                "source": source.to_string(),
+                "destination": destination.to_string(),
+                "protocol": "udp",
+                "source_port": source_port,
+                "destination_port": destination_port,
+            })).unwrap();
+            let packet = decode(&bytes, PacketInformation::None, LinkMode::Tun).unwrap();
+
+            let matches = |expr: &str| PacketFilter::parse(expr).unwrap().matches(&packet);
+            prop_assert!(matches("all"));
+            prop_assert!(!matches("none"));
+            prop_assert!(matches("v4"));
+            prop_assert!(!matches("v6"));
+            prop_assert!(matches("udp"));
+            prop_assert!(!matches("tcp"));
+            // `prop_assert!` re-expands its message through `concat!`, so a `format!` with an
+            // inline capture inside one does not compile. Build the expressions first.
+            let udp_dst = format!("udp:{destination_port}");
+            let any_src = format!("port:{source_port}");
+            let from_src = format!("from:{source}");
+            let to_dst = format!("to:{destination}");
+            let tcp_dst = format!("tcp:{destination_port}");
+            let either = format!("tcp:1,udp:{destination_port}");
+            let v4_and_udp = format!("v4+udp:{destination_port}");
+            let v6_and_udp = format!("v6+udp:{destination_port}");
+            prop_assert!(matches(&udp_dst));
+            prop_assert!(matches(&any_src));
+            prop_assert!(matches(&from_src));
+            prop_assert!(matches(&to_dst));
+            prop_assert!(!matches(&tcp_dst));
+            // An alternative matches if any branch does; a `+` group needs all of them.
+            prop_assert!(matches(&either));
+            prop_assert!(matches(&v4_and_udp));
+            prop_assert!(!matches(&v6_and_udp));
+
+            let expression = format!("v4+udp:{destination_port},from:{source}");
+            let filter = PacketFilter::parse(&expression).unwrap();
+            let again = PacketFilter::parse(filter.as_str()).unwrap();
+            prop_assert_eq!(again.matches(&packet), filter.matches(&packet));
+            prop_assert_eq!(again.as_str(), filter.as_str());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::PANIC_CASES))]
+
+        /// Property 3. This decoder reads whatever the kernel hands up from a TUN/TAP
+        /// interface, which is whatever anything on the local segment chose to send.
+        #[test]
+        fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..128)) {
+            for (pi, mode) in SHAPES {
+                if let Ok(packet) = decode(&data, pi, mode) {
+                    // The reporting side has to survive a hostile packet too: `summary` and
+                    // `to_event_data` are what a decoded packet is *for*, and they slice the
+                    // payload preview.
+                    let _ = packet.summary();
+                    let _ = packet.to_event_data();
+                }
+            }
+        }
+
+        /// Property 3 for the builder: arbitrary JSON is refused, never panicked on. The model
+        /// writes this object, so "arbitrary" here is not hypothetical.
+        #[test]
+        fn arbitrary_build_actions_never_panic(
+            source in "[ -~]{0,20}",
+            destination in "[ -~]{0,20}",
+            protocol in any::<u64>(),
+            port in any::<u64>(),
+            payload in "[ -~]{0,32}",
+        ) {
+            let _ = build_packet(&json!({
+                "source": source,
+                "destination": destination,
+                "protocol": protocol,
+                "source_port": port,
+                "destination_port": port,
+                "payload": payload,
+            }));
+        }
+    }
+
+    /// FINDING, fixed: the "not a filter term" error named two terms the parser refuses.
+    ///
+    /// `all` and `none` are whole-expression keywords, matched in `PacketFilter::parse`
+    /// before the expression is split on commas, so `tcp:80,all` reached `parse_term` and was
+    /// refused by an error whose own text said `all` was valid. The reader of that text is
+    /// usually the model repairing its own `packet_filter`, which is the case this repository
+    /// has already been bitten by twice — a description the model follows into a second
+    /// failure is worse than a terse one.
+    ///
+    /// Both halves asserted: the keywords still work on their own, and the error for a
+    /// misplaced one says where it belongs instead of listing it as an option.
+    #[test]
+    fn the_filter_error_does_not_name_terms_the_parser_refuses() {
+        // Still valid as whole expressions — the half that stops this becoming a refusal of
+        // everything.
+        assert!(!PacketFilter::parse("all").unwrap().matches_nothing());
+        assert!(PacketFilter::parse("none").unwrap().matches_nothing());
+
+        for keyword in ["all", "none"] {
+            let message = PacketFilter::parse(&format!("tcp:80,{keyword}")).unwrap_err();
+            assert!(
+                message.contains("whole packet_filter"),
+                "the error must say where the keyword belongs: {message}"
+            );
+        }
+
+        let message = PacketFilter::parse("nonsense").unwrap_err();
+        assert!(
+            !message.contains("expected all, none"),
+            "the list of terms must not name the whole-expression keywords: {message}"
+        );
+        assert!(
+            message.contains("tcp:<port>"),
+            "the list must still name the terms that do work: {message}"
+        );
+    }
+
+    /// Property 2 at each of the three length fields, at the bound and one octet past it.
+    ///
+    /// Each of these narrowed with `as` at some point in this file's history, and a narrowed
+    /// length is worse than an oversize packet: the header is well-formed and describes a
+    /// different packet, which a receiver will act on. The at-the-bound half of every pair is
+    /// what stops a builder that refused everything from passing.
+    #[test]
+    fn every_ip_length_field_refuses_what_it_cannot_describe() {
+        let v4 = |payload_len: usize| {
+            build_packet(&json!({
+                "source": "10.0.0.1",
+                "destination": "10.0.0.2",
+                "protocol": 253,
+                "payload": "\u{0}".repeat(payload_len),
+            }))
+        };
+        // IPv4 Total Length is 16 bits and counts the 20-octet header.
+        let at_bound = v4(u16::MAX as usize - 20).expect("a maximal IPv4 packet must build");
+        assert_eq!(at_bound.len(), u16::MAX as usize);
+        assert_eq!(
+            u16::from_be_bytes([at_bound[2], at_bound[3]]) as usize,
+            at_bound.len()
+        );
+        assert!(
+            v4(u16::MAX as usize - 19).is_err(),
+            "one octet past IPv4's Total Length"
+        );
+
+        // IPv6 Payload Length is 16 bits and does *not* count the 40-octet header.
+        let v6 = |payload_len: usize| {
+            build_packet(&json!({
+                "source": "2001:db8::1",
+                "destination": "2001:db8::2",
+                "protocol": 253,
+                "payload": "\u{0}".repeat(payload_len),
+            }))
+        };
+        let at_bound = v6(u16::MAX as usize).expect("a maximal IPv6 packet must build");
+        assert_eq!(at_bound.len(), 40 + u16::MAX as usize);
+        assert_eq!(
+            u16::from_be_bytes([at_bound[4], at_bound[5]]) as usize,
+            u16::MAX as usize
+        );
+        assert!(
+            v6(u16::MAX as usize + 1).is_err(),
+            "one octet past IPv6's Payload Length"
+        );
+
+        // UDP Length is 16 bits and counts its own 8-octet header. Checked over IPv6, where
+        // the IP layer can still carry it — over IPv4 the Total Length bound fires first, so
+        // the test would prove the wrong thing.
+        let udp = |payload_len: usize| {
+            build_packet(&json!({
+                "source": "2001:db8::1",
+                "destination": "2001:db8::2",
+                "protocol": "udp",
+                "source_port": 1,
+                "destination_port": 2,
+                "payload": "\u{0}".repeat(payload_len),
+            }))
+        };
+        let at_bound = udp(u16::MAX as usize - 8).expect("a maximal UDP datagram must build");
+        assert_eq!(
+            u16::from_be_bytes([at_bound[44], at_bound[45]]),
+            u16::MAX,
+            "UDP Length"
+        );
+        assert!(
+            udp(u16::MAX as usize - 7).is_err(),
+            "one octet past UDP's Length"
+        );
+    }
+}
