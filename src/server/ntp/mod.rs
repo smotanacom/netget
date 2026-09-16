@@ -290,33 +290,48 @@ impl NtpServer {
                                     }
                                 }
                                 Err(e) => {
-                                    // The operator opted into LLM control and the LLM failed;
-                                    // the mechanical response (the true current time) is the
-                                    // fallback — it can never be a lie in the operator's
-                                    // favour — so send it and say so, rather than dropping the
-                                    // request or inventing a clock reading.
+                                    // The operator opted into LLM control and the backend
+                                    // failed. Answering with the mechanical stratum-2 time is
+                                    // a **fail-open**: the client accepts it and sets its
+                                    // clock, so an outage silently serves time on a server the
+                                    // operator had asked a model to decide for.
                                     //
-                                    // This is deliberately **not** tagged `fail_closed_*`: the
-                                    // client receives a usable, affirmative stratum-2 time
-                                    // sample, so claiming the server denied would be a lie in
-                                    // the log. `decision=static_default_llm_error` is the
-                                    // honest token — see `src/server/ntp/CLAUDE.md`.
-                                    let category = match crate::utils::WireFailure::classify(&e) {
-                                        crate::utils::WireFailure::Overloaded => "overloaded",
-                                        crate::utils::WireFailure::Unavailable => "unavailable",
-                                    };
+                                    // NTP has no error message, but RFC 5905 §7.4 gives it a
+                                    // way to say "do not use me": a Kiss-o'-Death — stratum 0,
+                                    // LI 3, a four-character kiss code. chrony, ntpd and
+                                    // ntpdate all recognise it, refuse to take time from the
+                                    // packet, and back off. It can never be mistaken for a
+                                    // time sample, which is exactly what fails closed here,
+                                    // and it is still a *reply*, so the client is not left
+                                    // retrying against a server it thinks is merely slow.
+                                    //
+                                    // `RATE` when the backend is saturated (the client should
+                                    // slow down and retry) and `INIT` otherwise (not yet
+                                    // synchronised) are the registered codes for these two
+                                    // cases.
+                                    let (category, kiss_code, decision) =
+                                        match crate::utils::WireFailure::classify(&e) {
+                                            crate::utils::WireFailure::Overloaded => {
+                                                ("overloaded", "RATE", "fail_closed_llm_overloaded")
+                                            }
+                                            crate::utils::WireFailure::Unavailable => {
+                                                ("unavailable", "INIT", "fail_closed_llm_error")
+                                            }
+                                        };
                                     Log::new(Some(&status_clone)).error(format!(
-                                        "NTP request from {} decision=static_default_llm_error \
-                                         category={}: {} — answering with the mechanical static \
-                                         time response",
-                                        peer_addr, category, e
+                                        "NTP request from {} decision={} category={}: {} — \
+                                         answering Kiss-o'-Death ({}), which no client will \
+                                         take time from",
+                                        peer_addr, decision, category, e, kiss_code
                                     ));
-                                    send_static_time_response(
-                                        &protocol,
+                                    send_kod_response(
                                         socket_clone.as_ref(),
                                         peer_addr,
+                                        client_version,
+                                        client_transmit_ntp,
+                                        kiss_code,
                                         &status_clone,
-                                        "static_default_llm_error",
+                                        decision,
                                     )
                                     .await;
                                 }
@@ -370,6 +385,44 @@ async fn operator_wants_dynamic(
 /// `decision` is the token this send is recorded under — `static_default` when no model was
 /// consulted, `static_default_llm_error` when one was and it failed — so the two can never be
 /// conflated in the log.
+/// Answer a request the backend could not decide with a Kiss-o'-Death (RFC 5905 §7.4).
+///
+/// This is NTP's fail-closed reply. A KoD carries stratum 0 and LI 3, so a client discards
+/// it as a time sample rather than stepping its clock — which is the whole point: the
+/// alternative on this path is a usable stratum-2 answer, and that turns a backend outage
+/// into the server quietly serving time it was told not to serve on its own authority.
+///
+/// The client's transmit timestamp is echoed as the origin timestamp for the same reason a
+/// normal reply echoes it: a reply failing that check is discarded, which would put us back
+/// at silence.
+#[allow(clippy::too_many_arguments)]
+async fn send_kod_response(
+    socket: &UdpSocket,
+    peer_addr: SocketAddr,
+    version: u8,
+    origin_timestamp: Option<u64>,
+    kiss_code: &str,
+    status: &mpsc::UnboundedSender<String>,
+    decision: &str,
+) {
+    let packet =
+        crate::server::ntp::actions::build_kod_packet(version, origin_timestamp, kiss_code);
+    match socket.send_to(&packet, peer_addr).await {
+        Ok(sent) => {
+            Log::new(Some(status)).info(format!(
+                "NTP Kiss-o'-Death ({}) to {} ({} bytes) decision={}",
+                kiss_code, peer_addr, sent, decision
+            ));
+        }
+        Err(e) => {
+            Log::new(Some(status)).error(format!(
+                "NTP Kiss-o'-Death to {peer_addr} could not be sent \
+                 decision=fail_closed_write_error: {e}"
+            ));
+        }
+    }
+}
+
 async fn send_static_time_response(
     protocol: &NtpProtocol,
     socket: &UdpSocket,

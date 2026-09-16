@@ -1,17 +1,21 @@
 //! Every NTP request leaves a `decision=` token in the log, and the token tells the truth
 //! about what the client received.
 //!
-//! NTP is the awkward case in the `decision=` vocabulary and this test exists to pin the
-//! awkwardness rather than paper over it. On backend failure the server does **not** deny:
-//! it answers with the mechanical stratum-2 time response, which the client accepts as a
-//! usable time sample and sets its clock from. An affirmative answer is not a fail-closed, so
-//! the failure is tagged `decision=static_default_llm_error` and deliberately **not**
-//! `decision=fail_closed_*`. Tagging it `fail_closed` would make `grep decision=fail_closed`
-//! - the one diagnostic this repo teaches - report a denial that never happened.
+//! This test was written to pin an awkwardness that no longer exists, and the history is the
+//! useful part. NTP used to answer a backend failure with the mechanical stratum-2 time
+//! response — an affirmative, usable time sample the client sets its clock from — so the
+//! failure could not honestly be tagged `fail_closed_*` and was tagged
+//! `decision=static_default_llm_error` instead. This file asserted that pairing, and said in
+//! as many words that if the wire behaviour ever became a Kiss-o'-Death the stratum assertion
+//! would fail first so the token had to be revisited in the same change. That is what
+//! happened: `actions::build_kod_packet` was wired up, the fail-open closed, and the token
+//! became `fail_closed_llm_error` / `fail_closed_llm_overloaded`.
 //!
-//! Both halves are asserted together, because either alone is meaningless: the log carries
-//! the tag, and the wire carries the affirmative stratum-2 answer that makes the tag the
-//! honest one.
+//! So what this test now pins is the *converse* obligation. `fail_closed_*` is a claim that
+//! the peer was denied, and `grep decision=fail_closed` — the one diagnostic this repo
+//! teaches — is only worth running if that claim is true. Both halves are asserted together
+//! because either alone is meaningless: the log must carry the tag, and the wire must carry a
+//! packet no client will take time from.
 //!
 //! See `src/server/ntp/CLAUDE.md`, "Failure behaviour".
 
@@ -26,7 +30,7 @@ use tokio::net::UdpSocket;
 const CLIENT_TRANSMIT: u64 = 0xD4C3_B2A1_1234_5678;
 
 #[tokio::test]
-async fn test_ntp_llm_failure_is_tagged_static_default_not_fail_closed() -> E2EResult<()> {
+async fn test_ntp_llm_failure_is_tagged_fail_closed_and_denies_on_the_wire() -> E2EResult<()> {
     // A non-empty instruction is what opts the server into LLM control; without it NTP
     // answers statically and never calls the model at all.
     let prompt = "listen on port {AVAILABLE_PORT} via ntp. Report the time as stratum 1";
@@ -61,44 +65,56 @@ async fn test_ntp_llm_failure_is_tagged_static_default_not_fail_closed() -> E2ER
     let mut buf = vec![0u8; 1024];
     let n = tokio::time::timeout(Duration::from_secs(30), socket.recv(&mut buf))
         .await
-        .map_err(|_| "no NTP reply within 30s")??;
+        .map_err(|_| {
+            "no NTP reply within 30s - failing closed means sending a Kiss-o'-Death, not going \
+             silent; silence looks like a merely slow server and the client keeps polling"
+        })??;
     assert_eq!(n, 48, "an NTP packet is 48 bytes");
 
-    // The wire half: what came back really is an affirmative time sample, not a denial.
+    // The wire half: what came back really is a denial, which is what makes `fail_closed_*`
+    // an honest token below.
     assert_eq!(buf[0] & 0x07, 4, "mode must be 4 (server)");
     assert_eq!(
-        buf[1], 2,
-        "the fallback answers as stratum 2 - an affirmative, usable time sample. If this ever \
-         becomes 0 (Kiss-o'-Death) the wire behaviour has changed and the decision token below \
-         must change with it"
+        (buf[0] >> 6) & 0x03,
+        3,
+        "LI must be 3 (unsynchronised) - half of what marks a Kiss-o'-Death"
+    );
+    assert_eq!(
+        buf[1], 0,
+        "stratum must be 0 (Kiss-o'-Death). If this ever becomes 2 again the server is handing \
+         out usable time samples on backend failure, and the fail_closed_* token asserted below \
+         would be reporting a denial that never happened"
     );
     let origin = u64::from_be_bytes(buf[24..32].try_into().expect("8 bytes"));
     assert_eq!(
         origin, CLIENT_TRANSMIT,
-        "the client's transmit timestamp must be echoed, or the client discards the reply and \
-         the affirmative answer above never lands"
+        "the client's transmit timestamp must be echoed, or the client discards the reply as \
+         unrelated to its request and the denial never lands"
     );
 
-    // The log half.
+    // The log half. The wire says "do not use me" but not why, so only the tag separates a
+    // saturated backend from a broken one.
     server
-        .wait_for_any(&["decision=static_default_llm_error"], 30)
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
         .await;
     let lines = server.get_output().await;
 
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("decision=static_default_llm_error")),
+            .any(|l| l.contains("decision=fail_closed_llm_error")),
         "a backend failure must be tagged so an operator can find it. Output was:\n{}",
         lines.join("\n")
     );
 
-    // The point of the whole test: the tag must not claim a denial the peer did not receive.
+    // The old token named the fail-open. Its reappearance would mean the affirmative
+    // stratum-2 fallback is back on this path.
     assert!(
-        !lines.iter().any(|l| l.contains("decision=fail_closed_llm")),
-        "NTP answered the client with a usable stratum-2 time sample, so tagging the outcome \
-         `fail_closed_*` would make `grep decision=fail_closed` report a denial that never \
-         happened. Output was:\n{}",
+        !lines
+            .iter()
+            .any(|l| l.contains("decision=static_default_llm_error")),
+        "static_default_llm_error named the behaviour where a backend outage still answered \
+         with a usable time sample; it must not come back. Output was:\n{}",
         lines.join("\n")
     );
 
