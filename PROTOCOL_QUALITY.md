@@ -390,8 +390,29 @@ The suite is the evidence. Where it lies, the ratings lie.
   family so each job stays under the runner's memory; keep the six-protocol job as the fast
   gate. Make `registry-audit` blocking once it is green three runs in a row. *Effort:* M.
 
-- [ ] **`single-feature` over all 116, not 14.** *Why:* it is the only check that finds an
-  under-declared dependency, and it costs one `cargo check` each. Run nightly. *Effort:* S.
+- [x] **`single-feature` over all 116, not 14.** *(16 September 2026.)* **133 features verified
+  standalone** with `cargo check --locked --no-default-features --features <f> --tests`, one at
+  a time, every one of them green — so there is no under-declared feature in the tree today.
+  The job is split because the check does not fit a PR gate: `single-feature` keeps 24 in
+  `SINGLE_FEATURE_CORE` under the 30-minute timeout, and `single-feature-full` runs all 133
+  nightly (cron + `workflow_dispatch`, `timeout-minutes: 300`). Both loop rather than matrix,
+  so each feature reuses the previous one's dependency graph.
+
+  **Two things the sweep corrected in `CLAUDE.md`'s system-library table**, both in the
+  direction of under-counting protocols that *are* checkable: `zookeeper` is listed under
+  `protoc` and needs none — `build.rs` compiles protos only under `#[cfg(feature = "etcd")]`,
+  the same error the table already records for `kubernetes` — and the `libpcap` row names
+  three features when seven carry `dep:pcap` (`lldp`, `cdp`, `stp` and `eapol` as well).
+
+  **Still unverified, and deliberately not in either list:** the 7 `libpcap` features, the 18
+  `bluetooth-ble*`, `nfc-client`, `smb-client`, `grpc`, `etcd`, the 7 `usb*` and `can` — 36 in
+  all. The rule the job states is that a feature is listed only after somebody built it, and
+  for these nobody on a macOS machine can: `ble-peripheral-rust` compiles CoreBluetooth there
+  and bluer/D-Bus in CI, so a local green proves nothing about the code the runner would see,
+  and `can`/socketcan does not build at all. Installing the libraries in CI would compile some
+  of them but would put unverified entries in a blocking gate. They are not unwatched —
+  `registry-audit` builds `--all-features` with those libraries — but what it cannot see is a
+  *standalone* dependency gap, so that hole is real and stated rather than closed.
 
 - [ ] **Five consecutive full sweeps at `--test-threads=100`, any failure investigated.** Not
   labelled — investigated. The tuntap/rawip 60s failures turned out to be build contention;
