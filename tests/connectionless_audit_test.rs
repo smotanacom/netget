@@ -37,7 +37,26 @@ use netget::protocol::server_registry::registry;
 /// names. Empty, and meant to stay that way: when this audit flags a protocol,
 /// the fix is `.connectionless()` on its metadata builder, and an entry lands
 /// here only with a comment justifying why the sweep must NOT reap its entries.
-const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[];
+const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
+    // Riding UDP is not the test — "has no connection concept" is, and the root `CLAUDE.md`
+    // records the cost of getting that backwards. Declaring `.connectionless()` on a UDP
+    // protocol that carries a *session* is actively harmful: the 10-second idle sweep evicts
+    // an entry whose peer is mid-exchange, and a peer is idle for the whole of an LLM call.
+    // TFTP had exactly that, and live transfers were reaped out from under themselves.
+    //
+    // Each of these three keeps per-peer state that the next packet is interpreted against,
+    // so each is connection-oriented in every way but the transport.
+
+    // A transfer: block N+1 only means anything against block N's ACK, and the whole of it is
+    // idle while the model is deciding what the next block contains.
+    "TFTP",
+    // A TLS session carried inside P_CONTROL_V1 packets, then the key-method-2 exchange.
+    // Reaping mid-handshake would drop a peer that is behaving correctly.
+    "OpenVPN",
+    // 802.1X is a session machine — EAP identity, challenge, then the admission decision.
+    // The gap between request and response is exactly where the model sits.
+    "EAPOL",
+];
 
 /// Registry names whose source directory does not follow any of the mechanical
 /// name→dir conventions below. Only protocols that would otherwise go

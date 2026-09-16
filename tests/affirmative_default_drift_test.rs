@@ -93,22 +93,22 @@ use std::path::{Path, PathBuf};
 // this ratchet firing on merged code whose lines had shifted, which is the shrink-only half
 // doing its job in both directions at once.
 const AFFIRMATIVE_DEFAULT_BASELINE: &[&str] = &[
-    "server:couchdb:mod.rs:341:status=200",
-    "server:dynamo:mod.rs:316:status=200",
-    "server:elasticsearch:mod.rs:278:status=200",
-    "server:hls:mod.rs:356:status_code=200",
-    "server:hls:mod.rs:439:status_code=200",
-    "server:http2:h2_server.rs:546:status=200",
-    "server:ipp:actions.rs:259:ipp_status=\"successful-ok\"",
-    "server:ipp:actions.rs:286:ipp_status=\"successful-ok\"",
-    "server:ipp:actions.rs:306:ipp_status=\"successful-ok\"",
-    "server:ipp:mod.rs:324:http_status=200",
-    "server:kubernetes:actions.rs:403:status_code=200",
-    "server:mqtt:actions.rs:229:return_code=0",
-    "server:s3:actions.rs:609:status_code=200",
-    "server:s3:mod.rs:627:status_code=200",
-    "server:sqs:mod.rs:303:status=200",
-    "server:yarn:mod.rs:342:status=200",
+    "server:couchdb:mod.rs:status=200",
+    "server:dynamo:mod.rs:status=200",
+    "server:elasticsearch:mod.rs:status=200",
+    "server:hls:mod.rs:status_code=200",
+    "server:hls:mod.rs:status_code=200",
+    "server:http2:h2_server.rs:status=200",
+    "server:ipp:actions.rs:ipp_status=\"successful-ok\"",
+    "server:ipp:actions.rs:ipp_status=\"successful-ok\"",
+    "server:ipp:actions.rs:ipp_status=\"successful-ok\"",
+    "server:ipp:mod.rs:http_status=200",
+    "server:kubernetes:actions.rs:status_code=200",
+    "server:mqtt:actions.rs:return_code=0",
+    "server:s3:actions.rs:status_code=200",
+    "server:s3:mod.rs:status_code=200",
+    "server:sqs:mod.rs:status=200",
+    "server:yarn:mod.rs:status=200",
 ];
 
 /// Key-name segments that mean "this field *is* the verdict".
@@ -484,10 +484,20 @@ fn survey() -> BTreeSet<String> {
                 continue;
             }
             for s in scan_file(&path) {
-                found.insert(format!(
-                    "{role}:{protocol}:{file}:{}:{}={}",
-                    s.line, s.key, s.literal
-                ));
+                // Deliberately NOT keyed on the line number.
+                //
+                // It was, and that made the baseline break on edits that had nothing to do
+                // with it: the September spawn-registration sweep touched 113 `mod.rs` files
+                // and every baselined entry below it shifted, so each one appeared as "new" at
+                // one line and "gone" at another, and the ratchet went red twice in a day for
+                // code nobody had changed. A reviewer who sees that twice stops reading the
+                // output, which is the failure mode a build-failing check can least afford.
+                //
+                // `protocol:file:field=literal` is stable under every edit that does not
+                // change what the defaulting does. The cost is that two identical defaults on
+                // the same field in one file collapse to one entry — acceptable, because the
+                // fix for one is the fix for both.
+                found.insert(format!("{role}:{protocol}:{file}:{}={}", s.key, s.literal));
             }
         }
     }
@@ -534,11 +544,19 @@ fn the_scan_is_reading_real_source() {
         assert!(n >= min, "{dir}: {n} .rs files, expected at least {min}");
     }
     let found = survey();
+    // 13, not the 19 this started at, and the drop is arithmetic rather than progress: the
+    // key stopped carrying a line number (see `survey`), so several identical defaults on the
+    // same field in the same file collapsed into one entry. Three real fixes came out too —
+    // spark, and zookeeper's two — which is the rest of the difference.
+    //
+    // The floor exists to catch the `.get("…")` anchor silently ceasing to resolve, which
+    // would take this to zero. It is set below the true count and not at it, so an actual
+    // fix does not have to edit this line to land.
     assert!(
-        found.len() >= 15,
-        "the survey found {} affirmative defaults on verdict fields; the tree had 19 when this \
-         was written, so a number this low means the `.get(\"…\")` anchor stopped resolving \
-         rather than that the code got better",
+        found.len() >= 10,
+        "the survey found {} affirmative defaults on verdict fields; there were 13 after the \
+         September rekey, so a number this low means the `.get(\"…\")` anchor stopped \
+         resolving rather than that the code got better",
         found.len()
     );
 }

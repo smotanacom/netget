@@ -2084,7 +2084,19 @@ mod sanitizer_props {
             prop_assert!(!line_field(&s).chars().any(char::is_control));
             prop_assert!(!strip_controls(&s).chars().any(char::is_control));
             prop_assert!(!token(&s, 24).chars().any(char::is_control));
-            prop_assert!(!multiline(&s).chars().any(|c| c.is_control() && c != '\n'));
+            // `multiline` keeps `\n` AND `\t`, and the tab is the deliberate part: this variant
+            // is for free text, where a tab delimits nothing and cannot forge a record, so
+            // deleting it is the same column-merging lie `line_field` exists to avoid — a
+            // finger `.plan` is tab-aligned as a matter of course. A format where the tab *is*
+            // a delimiter, like a gopher menu row, uses `line_field` instead.
+            //
+            // This property asserted `c != '\n'` alone and went red when `multiline` gained the
+            // tab. The code was right and the property was stale: it was written against the
+            // older behaviour, and the change that followed carries its reasoning in
+            // `src/utils/sanitize.rs`. Everything else still has to go.
+            prop_assert!(!multiline(&s)
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'));
         }
 
         /// `line_field` substitutes rather than deletes, so it cannot join two fields into
