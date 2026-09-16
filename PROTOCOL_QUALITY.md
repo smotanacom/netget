@@ -348,7 +348,11 @@ the protocol at all — and the mock never tells you, because the mock is script
   within 5s, for every protocol that needs no system library. *Why:* ten BLE examples were
   inert for a reason no shape check can see. *Effort:* M.
 
-- [ ] **Peer handles on every connection-oriented server.** 32 have them; the dashboard greys
+- [ ] **Peer handles on every connection-oriented server.** **13 of 32 TCP servers have one**
+  (re-derived 15 Sep; the earlier figure of 32 counted every `peer_support::` mention, including
+  removal calls and prose). Missing: `cassandra`, `doh`, `dot`, `etcd`, `kafka`, `llmnr`, `mcp`,
+  `mongodb`, `mssql`, `mysql`, `nfs`, `postgresql`, `proxy`, `smb`, `tls`, `tor_relay`,
+  `torrent_tracker`, `webrtc`, `webrtc_signaling`. The dashboard greys
   out `[ message ]`/`[ disconnect ]` on the rest and says why. *Why:* the operator cannot reach
   a parked peer without one, and manual-first is the dashboard's whole premise. *Effort:* S
   each — the `whois` diff is ~40 lines.
