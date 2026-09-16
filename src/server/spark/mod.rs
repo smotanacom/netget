@@ -36,6 +36,29 @@ use crate::server::spark::actions::SparkProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
 
+/// Narrow a model-supplied HTTP status to `u16` without wrapping.
+///
+/// `status as u16` on a `u64` truncates, and the truncation runs in the dangerous
+/// direction: `65736 as u16` is `200`, so a nonsense status becomes a success the client
+/// believes. Anything outside the real status range falls back to `default`.
+///
+/// This is `oauth2`'s `status_or` in Spark's vocabulary. The payoff here is a bogus
+/// monitoring answer rather than a credential, but the shape is the one the root
+/// `CLAUDE.md` catalogues under narrowing casts, and a monitoring client that records a
+/// fabricated `200` is exactly what a monitoring API must not do.
+fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
+    match value.and_then(|v| v.as_u64()) {
+        Some(raw) => u16::try_from(raw)
+            .ok()
+            .filter(|s| (100..=599).contains(s))
+            .unwrap_or_else(|| {
+                tracing::warn!("Spark: ignoring out-of-range status {raw}, using {default}");
+                default
+            }),
+        None => default,
+    }
+}
+
 /// Largest request body this server will buffer.
 ///
 /// The monitoring API is read-only, so a body is never needed — but it was read with an
@@ -288,8 +311,7 @@ async fn handle_spark_request_inner(
             for result in execution_result.protocol_results {
                 if let ActionResult::Custom { name, data } = result {
                     if name == "spark_response" {
-                        let status =
-                            data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+                        let status = status_or(data.get("status"), 200);
                         let body = data
                             .get("body")
                             .and_then(|v| v.as_str())

@@ -78,12 +78,13 @@ the model never sees: calling either `model_answer` would credit a decision nobo
 are DEBUG, so they stay in `netget.log` and off the status stream — the two LLM-failure tokens
 and `model_silent` are what an operator greps.
 
-**Known defect, unrelated to tagging and left alone in this pass:** `handle_spark_request_inner`
-narrows the model's `status` with `data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as
-u16`. That is the truncating cast `oauth2` replaced with `status_or` — `65736 as u16 == 200`, so
-a nonsense status becomes the one code a client reads as success. Here the payoff is a bogus
-monitoring response rather than a credential, which is why it is recorded rather than fixed
-mid-sweep, but it should use a checked `u16::try_from` + range filter.
+**A narrowing cast that used to live here is fixed.** `handle_spark_request_inner` narrowed the
+model's `status` with `.unwrap_or(200) as u16`, and `65736 as u16` is `200` — so a nonsense
+status became the one code a client reads as success. It now goes through a local `status_or`,
+the same shape `oauth2` uses: `u16::try_from` plus a 100–599 range filter, falling back to the
+declared default and logging the value it refused. The payoff here was a bogus monitoring
+answer rather than a credential, but a monitoring API fabricating a `200` is precisely what a
+monitoring API must not do.
 
 ## Startup parameters
 
