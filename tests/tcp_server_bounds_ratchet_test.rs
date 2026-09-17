@@ -158,20 +158,31 @@ const CAP_BASELINE: &[&str] = &[
     "xmpp",
 ];
 
-/// Anything that reads as "this read is bounded in time".
+/// Ways a read is actually bounded in time — **mechanisms, not names**.
 ///
-/// These match a token, not a mechanism, and `_TIMEOUT` in particular over-matches: `snowflake`
-/// was missing from `TIMEOUT_BASELINE` while having no read bound at all, because it declares
-/// `CODE_REQUEST_TIMEOUT = "000629"` — a Snowflake error *code*. The list is deliberately still
-/// loose, since the failure direction of a false positive here is a protocol silently exempted;
-/// so when a protocol is absent from the baseline, check that what matched is a deadline.
+/// This list used to include `READ_TIMEOUT`, `IDLE_` and `_TIMEOUT`, which match a *constant's
+/// name* rather than anything that enforces a deadline. `_TIMEOUT` over-matched badly:
+/// `snowflake` was absent from `TIMEOUT_BASELINE` while having no read bound at all, because it
+/// declares `CODE_REQUEST_TIMEOUT = "000629"` — a Snowflake error *code*, a string. The protocol
+/// was silently exempted by its own error table.
+///
+/// **A loose list fails in the dangerous direction**, and the note that replaced it argued the
+/// opposite. A protocol that has no bound but happens to contain a matching word passes and
+/// nobody looks again; a protocol that has one but spells it unusually gets flagged, which costs
+/// a reader five minutes. Prefer the second. Re-measured across all 92 when this was tightened:
+/// it flags nothing that is not already on the baseline, so the loose version was buying no
+/// coverage at all — only the snowflake-shaped hole.
+///
+/// `timeout(` is bare rather than `tokio::time::timeout(` because most of the tree imports it.
+/// `Instant::now() +` catches the hand-rolled deadline loop that `hls`, `ipp` and the
+/// `accept_bounded` helpers use.
 const TIMEOUT_TOKENS: &[&str] = &[
-    "READ_TIMEOUT",
-    "IDLE_",
-    "_TIMEOUT",
-    "tokio::time::timeout(",
+    "timeout(",
     "IdleTimeoutReader",
     "watch_idle",
+    "Instant::now() +",
+    "sleep_until",
+    "set_read_timeout",
 ];
 
 fn server_root() -> PathBuf {
