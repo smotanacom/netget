@@ -256,6 +256,34 @@ once these exist.
   postgresql's extended query protocol — psql 14 has no `\bind` — so that still rests on
   tokio-postgres alone.
 
+  **The DNS family, same day, and the one that mattered most was the cheapest.** `kdig` (Knot
+  DNS, CZ.NIC — a separate implementation from ISC's `dig`) is now the second peer for **three**
+  protocols:
+
+  - **`dot`** — its own `e2e_testing` had named `kdig +tls` as the one thing that would close its
+    gap, and recorded that it was not installed. `rustls` proved the transport; the DNS message
+    was hand-assembled over **hickory-proto, the codec the server encodes with**, so that half
+    proved our encoder agrees with our decoder.
+  - **`doh`** — same circularity, plus **ALPN was unproven** because the reqwest test connects
+    with `http2_prior_knowledge()`, which skips ALPN entirely. kdig negotiates it. Changing the
+    advertised protocol from `h2` to `http/1.1` now fails the test with kdig's own TLS alert, and
+    kdig drives **both** RFC 8484 encodings it chose for itself.
+  - **`dns`** — already had `dig`, so this is the second *third-party* resolver rather than the
+    first, and it is what puts dns on the Stable shortlist beside `coap` and `modbus`.
+
+  Each was verified by answering with a fixed transaction id instead of the client's, at which
+  point the resolver discards the reply — the class of defect a round-trip through our own codec
+  cannot see, because our decoder does not care what id it reads.
+
+  **Two traps in driving kdig, each of which cost a cycle**, recorded because they present as
+  server bugs: `+https` takes `[authority][/path]`, and the authority becomes the **TLS SNI**, so
+  an IP literal there is rejected by rustls with a fatal alert that looks exactly like a cipher
+  or ALPN mismatch; a *name* there instead switches kdig to a validating profile that a
+  self-signed certificate cannot satisfy. The path alone keeps the opportunistic profile.
+
+  Running total: `etcd`, `grpc`, `postgresql`, `redis`, `dns`, `doh` and `dot` have two clients.
+  Two of the seven turned out to be broken against every conformant implementation.
+
 ## Tier 2 — resource bounds, swept and ratcheted
 
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
