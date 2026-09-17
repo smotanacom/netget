@@ -9,3 +9,6 @@ mod failure_semantics_test;
 
 #[cfg(all(test, feature = "http"))]
 mod decision_tag_test;
+
+#[cfg(all(test, feature = "http"))]
+mod connection_bounds_test;

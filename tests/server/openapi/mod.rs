@@ -14,3 +14,6 @@ mod status_range_test;
 
 #[cfg(all(test, feature = "openapi"))]
 mod body_limit_test;
+
+#[cfg(all(test, feature = "openapi"))]
+mod connection_bounds_test;

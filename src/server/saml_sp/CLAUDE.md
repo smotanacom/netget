@@ -177,3 +177,39 @@ Pairs naturally with `saml_idp` on another port: point the IDP's `acs_url` at th
 ## References
 
 SAML 2.0 Core, SAML 2.0 Web Browser SSO Profile, SAML 2.0 Bindings (OASIS).
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever,
+pre-authentication, and a hundred of them was a free denial of service on a server that would
+happily accept a hundred more. It now declares both halves; the constants and the argument for
+each live beside them in `src/server/saml_sp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | HTTP is client-speaks-first, so a peer that has completed the handshake and sent no byte has asked nothing and negotiated nothing — the state carries no protocol yet, which is why this number is the same across netget's HTTP family. Apache's `mod_reqtimeout` gives the request header 20s and nginx's `client_header_timeout` 60s. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 60s | These endpoints are reached two ways and the two pull in opposite directions: a **browser** does one redirect round and never comes back on that connection (Apache's `KeepAliveTimeout` of 5s is tuned for exactly that), while a **relying party's back-channel** client — token exchange, introspection, a JWKS or metadata fetch — reuses a pooled connection (nginx's 75s is tuned for that). 60s is comfortably past any pooled back-channel round trip and does not let a browser that navigated away hold a slot for minutes. Nothing here streams or long-polls. **The five-minute numbers these specifications do quote are not this number**: an assertion's `NotOnOrAfter` and an `id_token`'s `exp` bound how long a *credential* may be presented, not how long a socket may be silent. |
+| `MAX_CONNECTIONS` | 256 | The shared default. Each admitted connection may buffer one body of up to 256 KiB, well inside the ~1 GiB ceiling netget's HTTP family is held to; a protocol declares a smaller number only when its per-connection cost is larger. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
+
+**The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
+starts, and it keeps polling the connection for more input *while a request is being answered* —
+so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a
+watchdog over `ConnectionActivity` instead, which reports a connection with work in flight as not
+idle at all. The model round-trip, and an event a `manual` rule parked for a human
+(`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
+construction: an answer that takes minutes can never close the connection it is an answer for.
+That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+live transfers because "idle" was measured wrongly.
+
+**hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless
+`http1::Builder::timer` is also set, which nothing here does: hyper downgrades a defaulted
+duration to `None` when no timer is present and applies no deadline at all. That is why the
+`peek` is not redundant.
+
+`tests/server/saml_sp/connection_bounds_test.rs` drives all three from the wire, with three
+sockets on one server whose only rule is `*` → `manual`: a silent peer must be closed after the
+first-byte bound, a peer that sends a request line and then stalls (slowloris) after the idle
+bound, and a peer whose request is parked for a human must **not** be closed at all. The shared
+driver and the removal-verification notes are in `tests/helpers/http_bounds.rs`.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound disappears.

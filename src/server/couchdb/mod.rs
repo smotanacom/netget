@@ -40,6 +40,49 @@ use crate::{console_error, console_info};
 /// without benefit. Without a cap the buffer is whatever the peer chooses to send.
 pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
+/// How long a peer that has connected and produced nothing may hold a slot.
+///
+/// HTTP is client-speaks-first: the server says nothing until a request line arrives, so a peer
+/// that has completed the TCP handshake and sent no byte has asked nothing and negotiated
+/// nothing. That state carries no protocol yet, which is why this number is the same across
+/// netget's HTTP-shaped servers while the idle bound below is not. Apache's `mod_reqtimeout`
+/// gives the request header 20s and nginx's `client_header_timeout` 60s; 30s sits between the
+/// two deployed norms.
+///
+/// hyper's own `header_read_timeout` is **not** this bound: its 30-second default is inert
+/// unless `http1::Builder::timer` is also set, which nothing here does — hyper downgrades a
+/// defaulted duration to `None` when no timer is present and applies no deadline at all.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connection with nothing outstanding may sit idle between requests.
+///
+/// nginx's `keepalive_timeout` default. CouchDB replication and `_changes` consumers hold one
+/// pooled connection across a whole replication, which looks like an argument for minutes, and is
+/// not: a `_changes` feed held open — continuous or long-poll — is a request **in flight**, and
+/// the watchdog reads
+/// [`ConnectionActivity`](crate::server::accept_bounded::ConnectionActivity), which reports a
+/// connection with work in flight — a model round-trip, or an event a `manual` rule parked for a
+/// human — as not idle at all. What this bound measures is a pooled connection with nothing
+/// outstanding, and reopening one of those costs a loopback handshake.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// Concurrent connections this server admits.
+///
+/// Below the shared `DEFAULT_MAX_CONNECTIONS` of 256 on purpose: each admitted connection may
+/// buffer one body of up to [`MAX_REQUEST_BODY_BYTES`] (8 MiB), which is the largest
+/// per-connection cost in netget's HTTP family, and the cap is what turns that per-connection
+/// bound into a total one. 128 holds the worst case to the same ~1 GiB ceiling the 4 MiB and
+/// 64 KiB servers reach at 256, so the number that varies is the one that has to.
+const MAX_CONNECTIONS: usize = 128;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `503 Service Unavailable` with a `Retry-After`, written directly onto the socket because the
+/// peer has not sent a request line for hyper to answer. Fixed bytes: nothing derived from an
+/// error reaches the wire (see `crate::utils::wire_failure`).
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 /// CouchDB server that delegates all operations to LLM
 pub struct CouchDbServer;
 
@@ -75,10 +118,19 @@ impl CouchDbServer {
 
         // Spawn server loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "CouchDB",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -121,11 +173,44 @@ impl CouchDbServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // clients rather than accepts.
+                                let _permit = permit;
+
+                                // First-byte bound, before hyper sees the socket.
+                                //
+                                // hyper owns every read once `serve_connection` starts, and a
+                                // deadline on those reads would be wrong here rather than merely
+                                // awkward: hyper keeps polling the connection for more input
+                                // while a request is being answered, so such a deadline would
+                                // fire in the middle of a model round-trip. `peek` waits for data
+                                // without consuming it, so the request line is still there for
+                                // hyper afterwards, and it bounds exactly the case that needs
+                                // bounding - a peer that has connected and sent nothing at all.
+                                let spoke = matches!(
+                                    tokio::time::timeout(
+                                        FIRST_BYTE_READ_TIMEOUT,
+                                        stream.peek(&mut [0u8; 1]),
+                                    )
+                                    .await,
+                                    Ok(Ok(n)) if n > 0
+                                );
+
                                 let io = TokioIo::new(stream);
 
                                 // Clone for service closure
                                 let status_for_service = status_tx_clone.clone();
                                 let app_state_for_service = app_state_clone.clone();
+
+                                // Tracks whether this connection is answering anything. A
+                                // request waiting on the model, or parked for a human by a
+                                // `manual` rule, holds the count above zero, so the idle watchdog
+                                // below cannot close the connection the answer belongs to however
+                                // long it takes - only genuine silence counts.
+                                let activity = std::sync::Arc::new(
+                                    crate::server::accept_bounded::ConnectionActivity::new(),
+                                );
+                                let activity_for_service = std::sync::Arc::clone(&activity);
 
                                 // Create a service that handles CouchDB requests with LLM
                                 let service = service_fn(move |req: Request<Incoming>| {
@@ -134,23 +219,55 @@ impl CouchDbServer {
                                     let status_clone = status_for_service.clone();
                                     let protocol_clone = protocol_clone.clone();
                                     let auth_clone = auth_config_clone.clone();
-                                    handle_couchdb_request_with_llm(
-                                        req,
-                                        connection_id,
-                                        llm_clone,
-                                        state_clone,
-                                        status_clone,
-                                        protocol_clone,
-                                        server_id,
-                                        auth_clone,
-                                    )
+                                    let activity = std::sync::Arc::clone(&activity_for_service);
+                                    async move {
+                                        let _busy = activity.busy();
+                                        handle_couchdb_request_with_llm(
+                                            req,
+                                            connection_id,
+                                            llm_clone,
+                                            state_clone,
+                                            status_clone,
+                                            protocol_clone,
+                                            server_id,
+                                            auth_clone,
+                                        )
+                                        .await
+                                    }
                                 });
 
-                                // Serve HTTP/1 on this connection
-                                if let Err(err) =
-                                    http1::Builder::new().serve_connection(io, service).await
-                                {
-                                    error!("Error serving CouchDB connection: {:?}", err);
+                                // Serve HTTP/1 on this connection, bounded at both ends.
+                                if !spoke {
+                                    Log::new(Some(&status_tx_clone)).debug(format!(
+                                        "CouchDB peer {} sent nothing for {}s; closing before \
+                                         any request",
+                                        remote_addr,
+                                        FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                    ));
+                                } else {
+                                    let conn = http1::Builder::new().serve_connection(io, service);
+                                    tokio::pin!(conn);
+                                    tokio::select! {
+                                        result = &mut conn => {
+                                            if let Err(err) = result {
+                                                error!(
+                                                    "Error serving CouchDB connection: \
+                                                     {:?}",
+                                                    err
+                                                );
+                                            }
+                                        }
+                                        _ = crate::server::accept_bounded::watch_idle(
+                                            std::sync::Arc::clone(&activity),
+                                            IDLE_BETWEEN_REQUESTS_TIMEOUT,
+                                        ) => {
+                                            Log::new(Some(&status_tx_clone)).debug(format!(
+                                                "CouchDB connection {} idle for {}s; closing",
+                                                connection_id,
+                                                IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                                            ));
+                                        }
+                                    }
                                 }
 
                                 // Mark connection as closed

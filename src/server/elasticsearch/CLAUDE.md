@@ -359,3 +359,39 @@ body='{"_index":"products","_id":"nonexistent","found":false}'
 - [Elasticsearch Search API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-search.html)
 - [Elasticsearch Document APIs](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs.html)
 - [Elasticsearch Query DSL](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl.html)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever,
+pre-authentication, and a hundred of them was a free denial of service on a server that would
+happily accept a hundred more. It now declares both halves; the constants and the argument for
+each live beside them in `src/server/elasticsearch/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | HTTP is client-speaks-first, so a peer that has completed the handshake and sent no byte has asked nothing and negotiated nothing — the state carries no protocol yet, which is why this number is the same across netget's HTTP family. Apache's `mod_reqtimeout` gives the request header 20s and nginx's `client_header_timeout` 60s. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 75s | nginx's `keepalive_timeout` default. Elasticsearch's official clients — the Java `RestClient`, `elasticsearch-py` — hold a *pool* of connections for the life of the application, which looks like an argument for minutes and is not: a scroll, a `?wait_for_completion` request or a bulk batch in progress is a request **in flight**, which the watchdog reports as not idle at all. What is left is a pooled connection with nothing outstanding, and reopening one costs a loopback handshake. |
+| `MAX_CONNECTIONS` | 128 | Below the shared `DEFAULT_MAX_CONNECTIONS` of 256 on purpose: each admitted connection may buffer one body of up to 8 MiB, the largest per-connection cost in netget's HTTP family, and the cap is what turns that per-connection bound into a total one. 128 holds the worst case to the same ~1 GiB ceiling the smaller-bodied servers reach at 256. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
+
+**The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
+starts, and it keeps polling the connection for more input *while a request is being answered* —
+so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a
+watchdog over `ConnectionActivity` instead, which reports a connection with work in flight as not
+idle at all. The model round-trip, and an event a `manual` rule parked for a human
+(`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
+construction: an answer that takes minutes can never close the connection it is an answer for.
+That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+live transfers because "idle" was measured wrongly.
+
+**hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless
+`http1::Builder::timer` is also set, which nothing here does: hyper downgrades a defaulted
+duration to `None` when no timer is present and applies no deadline at all. That is why the
+`peek` is not redundant.
+
+`tests/server/elasticsearch/connection_bounds_test.rs` drives all three from the wire, with three
+sockets on one server whose only rule is `*` → `manual`: a silent peer must be closed after the
+first-byte bound, a peer that sends a request line and then stalls (slowloris) after the idle
+bound, and a peer whose request is parked for a human must **not** be closed at all. The shared
+driver and the removal-verification notes are in `tests/helpers/http_bounds.rs`.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound disappears.
