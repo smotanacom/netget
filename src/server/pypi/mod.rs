@@ -24,10 +24,61 @@ use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ActionResult;
 use crate::logging::emit::Log;
 use crate::protocol::Event;
+use crate::server::accept_bounded::{
+    accept_bounded, watch_idle, ConnectionActivity, ConnectionLimiter,
+};
 use crate::server::connection::ConnectionId;
 use crate::server::PypiProtocol;
 use crate::state::app_state::AppState;
 use actions::PYPI_REQUEST_EVENT;
+
+/// How long a peer that has produced nothing at all may hold this connection.
+///
+/// HTTP is client-speaks-first: the request line is the first thing on the wire and every
+/// installer sends it inside its dial path, so a peer that has connected and sent no byte
+/// has begun no request. Thirty seconds sits between nginx's `client_header_timeout` default of
+/// 60s and Apache's `RequestReadTimeout header=20`, both of which bound the same thing.
+///
+/// Enforced with `TcpStream::peek` **before** hyper sees the socket. hyper owns every read once
+/// `serve_connection` starts, and a deadline on its reads would be wrong here rather than merely
+/// awkward: hyper keeps polling the connection for new frames while a request is being answered,
+/// so such a deadline would fire in the middle of an LLM round-trip. `peek` waits for data
+/// without consuming it, so the request line is still there for hyper afterwards.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an established connection may sit **silent** between requests.
+///
+/// This bounds the silence and never a transfer. A request being answered holds
+/// `ConnectionActivity` busy for the whole of it - the model round-trip included, and a `manual`
+/// rule parking the event for a human at the dashboard (`src/state/intercepts.rs`, 300s by
+/// default) - and `watch_idle` reports a busy connection as not idle at all, so the clock only
+/// ever runs on a connection with nothing in flight.
+///
+/// Five minutes: twenty times pip's own socket timeout (`--timeout`, 15 seconds by default), so
+/// a pip still waiting on us has long since given up before this fires, and four times nginx's
+/// `keepalive_timeout` default of 75s. What is left inside the window is the gap while pip
+/// resolves the next requirement or installs the wheel it just fetched - local work, on a
+/// connection it may reuse afterwards. RFC 9112 requires every client to retry a request on a
+/// persistent connection the server closed, and pip's urllib3 pool does exactly that.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may hold one whole in-memory response body - a simple-index page or
+/// a wheel - so the cap is what turns that per-connection bound into a total one. pip fetches
+/// essentially serially, so 256 is far above any real installer and far below what socket
+/// exhaustion needs.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `503 Service Unavailable` with `Retry-After`, in PyPI's own vocabulary:
+/// pip treats a 503 as retryable and backs off, and a human
+/// with `curl` reads it directly.
+/// Nothing of netget's is interpolated into it - the peer gets a category and the log gets the
+/// reason, under `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
 
 /// PyPI server that delegates package serving to LLM
 pub struct PypiServer;
@@ -50,10 +101,19 @@ impl PypiServer {
 
         // Spawn server loop
         let task_registrar = app_state.clone();
+        let limiter = ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "PYPI",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -96,35 +156,101 @@ impl PypiServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
-                                let io = TokioIo::new(stream);
+                                // Held for the life of the connection, so the
+                                // cap counts live clients, not accepts.
+                                let _permit = permit;
 
-                                // Clone for service closure
-                                let status_for_service = status_tx_clone.clone();
-                                let app_state_for_service = app_state_clone.clone();
-
-                                // Create a service that handles requests with LLM
-                                let service = service_fn(move |req: Request<Incoming>| {
-                                    let llm_clone = llm_client_clone.clone();
-                                    let state_clone = app_state_for_service.clone();
-                                    let status_clone = status_for_service.clone();
-                                    let protocol_clone = protocol_clone.clone();
-                                    handle_pypi_request_with_llm_actions(
-                                        req,
-                                        connection_id,
-                                        server_id,
-                                        llm_clone,
-                                        state_clone,
-                                        status_clone,
-                                        protocol_clone,
+                                // The first-byte bound, before hyper sees the
+                                // socket. `peek` waits for data without
+                                // consuming it, so the request line is still
+                                // there for hyper afterwards, and it bounds
+                                // exactly the case that needs bounding: a peer
+                                // that connected and said nothing at all.
+                                let spoke = matches!(
+                                    tokio::time::timeout(
+                                        FIRST_BYTE_READ_TIMEOUT,
+                                        stream.peek(&mut [0u8; 1]),
                                     )
-                                });
+                                    .await,
+                                    Ok(Ok(n)) if n > 0
+                                );
 
-                                // Serve HTTP/1 on this connection
-                                if let Err(err) =
-                                    http1::Builder::new().serve_connection(io, service).await
-                                {
-                                    Log::new(Some(&status_tx_clone))
-                                        .error(format!("Error serving PyPI connection: {:?}", err));
+                                if spoke {
+                                    let io = TokioIo::new(stream);
+
+                                    // Clone for service closure
+                                    let status_for_service = status_tx_clone.clone();
+                                    let app_state_for_service = app_state_clone.clone();
+
+                                    // Whether this connection is answering
+                                    // anything. The watchdog below reads it, so
+                                    // only genuine silence - never work in
+                                    // flight - can close a connection.
+                                    let activity =
+                                        Arc::new(ConnectionActivity::new());
+                                    let activity_for_service = Arc::clone(&activity);
+                                    // Create a service that handles requests with LLM
+                                    let service = service_fn(move |req: Request<Incoming>| {
+                                        let llm_clone = llm_client_clone.clone();
+                                        let state_clone = app_state_for_service.clone();
+                                        let status_clone = status_for_service.clone();
+                                        let protocol_clone = protocol_clone.clone();
+                                        // Busy for the whole of this request - the
+                                        // model round-trip included, and a `manual`
+                                        // rule parked for a human - so the idle
+                                        // watchdog can never close the connection an
+                                        // answer belongs to.
+                                        let activity = Arc::clone(&activity_for_service);
+                                        async move {
+                                            let _busy = activity.busy();
+                                            handle_pypi_request_with_llm_actions(
+                                                req,
+                                                connection_id,
+                                                server_id,
+                                                llm_clone,
+                                                state_clone,
+                                                status_clone,
+                                                protocol_clone,
+                                            )
+                                            .await
+                                        }
+                                    });
+
+                                    // Serve HTTP/1 on this connection
+                                    let conn = http1::Builder::new().serve_connection(io, service);
+                                    tokio::pin!(conn);
+                                    tokio::select! {
+                                        result = &mut conn => {
+                                            if let Err(err) = result {
+                                                Log::new(Some(&status_tx_clone))
+                                                    .error(format!("Error serving PyPI connection: {:?}", err));
+                                            }
+                                        }
+                                        // The idle bound, over `ConnectionActivity`
+                                        // rather than over a read: hyper owns every
+                                        // read once `serve_connection` starts, and
+                                        // keeps polling for frames while a request is
+                                        // being answered, so a deadline on those reads
+                                        // would fire mid-answer. A connection with work
+                                        // in flight is not idle at all.
+                                        _ = watch_idle(
+                                            Arc::clone(&activity),
+                                            IDLE_BETWEEN_REQUESTS_TIMEOUT,
+                                        ) => {
+                                            Log::new(Some(&status_tx_clone)).debug(format!(
+                                                "PyPI connection {} idle for {}s; closing",
+                                                connection_id,
+                                                IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    Log::new(Some(&status_tx_clone)).debug(format!(
+                                        "PyPI peer {} sent no request within {}s; closing \
+                                         decision=fail_closed_first_byte_timeout",
+                                        remote_addr,
+                                        FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                    ));
                                 }
 
                                 // Mark connection as closed

@@ -2,3 +2,7 @@
 pub mod e2e_test;
 #[cfg(all(test, feature = "yarn"))]
 pub mod llm_failure_test;
+
+/// The first-byte deadline, the idle deadline and the connection cap, from the wire.
+#[cfg(all(test, feature = "yarn"))]
+mod connection_bounds_test;
