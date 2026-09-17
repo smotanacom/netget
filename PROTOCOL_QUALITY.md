@@ -211,6 +211,18 @@ once these exist.
   `tests/scripting_*` (python3/node — outside the protocol tree, but they are real gates and
   both interpreters are installed here).
 
+  **Re-verified across all 50 Beta protocols, 16 September 2026, and it holds.** Anchoring the
+  pattern on the attribute (`^\s*#\[ignore` / `^\s*#\[cfg_attr(.*ignore`) rather than the bare
+  word, no Beta protocol's test directory contains a real `#[ignore]` or a real
+  `SKIP: … not installed` return. The three apparent hits are all prose: `mqtt` and `websocket`
+  carry doc comments explaining *why* they refuse to skip, and `etcd` has a redundant
+  `#[cfg_attr(not(feature = "etcd"), ignore)]` on a file already gated `#![cfg(feature = "etcd")]`.
+
+  The unanchored grep is what produced the original "19 files", and it produced ten false
+  positives again here. **A comment quoting the thing you are grepping for is the most common
+  false positive in this repository** — the same mistake that made the test-location policy read
+  as violated, and that reported every test directory as orphaned.
+
 - [ ] **A second independent client for every Beta rating that rests on one.** One client can
   agree with one bug: HTTP with `curl` *and* Python `http.client`; DNS with `dig` *and* the
   system resolver; Redis with `redis-cli` *and* `redis-rs`. *Why:* two implementations that
