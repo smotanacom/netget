@@ -284,6 +284,39 @@ once these exist.
   Running total: `etcd`, `grpc`, `postgresql`, `redis`, `dns`, `doh` and `dot` have two clients.
   Two of the seven turned out to be broken against every conformant implementation.
 
+  **The rest of the item, as a map rather than a wish.** Measured against what is installed on
+  this machine, the single-client Betas fall into three groups.
+
+  *A second client exists and is installed — this is the work:*
+
+  | protocol | current peer | second peer | note |
+  |---|---|---|---|
+  | `ssh` | libssh2 (ssh2 crate) | OpenSSH `ssh` | a different implementation entirely, and the one an operator reaches for |
+  | `http` | reqwest | `curl` **and** python3 `http.client` | both installed; two at once |
+  | `imap` | async-imap | python3 `imaplib` (stdlib) | no install needed |
+  | `ldap` | ldap3 | `ldapsearch` | already installed; the metadata used to *claim* it |
+  | `webdav` | reqwest_dav | `curl -X PROPFIND` | generic HTTP, but PROPFIND/MKCOL are WebDAV verbs, not HTTP ones |
+  | `sqs`, `dynamo`, `s3` | AWS SDK crates | `aws` CLI | **handle with care** — the root CLAUDE.md records a client that signed real requests against real AWS because it dropped its target. Pin `--endpoint-url`, a dummy region and dummy credentials. |
+
+  *Blocked by the tooling, measured not assumed:*
+
+  - **`ntp`** — `sntp` and `ntpdate` are installed and **neither accepts a port**; both reject
+    `127.0.0.1:12345` as an unresolvable name and go to 123. A test binds an ephemeral port, so
+    aiming either means running as root. Same shape as `dhcp`, which is why `dhcp` is not Beta.
+  - **`webrtc`** — browser interop is the missing evidence and there is no headless second
+    implementation to point at.
+  - **`quic`**, **`mssql`**, **`cassandra`**, **`stomp`**, **`nats`**, **`zookeeper`**,
+    **`amqp`**, **`memcached`** — a second implementation exists in the world; none is installed,
+    and several (cqlsh, zkCli, sqlcmd) drag a runtime behind them.
+
+  *Already resting on the reference implementation, so a second is a nicety rather than the
+  point:* `git`, `npm`, `maven`, `oci_registry`, `kubernetes`, `radius`, `snmp`, `whois`, `sip`,
+  `stun`, `rtsp`, `torrent_tracker`, `memcached`, `svn`.
+
+  **`tcp` and `udp` are deliberately not on any of these lists.** For them the transport *is* the
+  protocol, so the OS stack is the independent implementation and a second client would be
+  testing tokio.
+
 ## Tier 2 — resource bounds, swept and ratcheted
 
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
