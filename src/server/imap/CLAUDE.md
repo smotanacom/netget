@@ -172,6 +172,34 @@ State transitions:
 - `CLOSE` → `Authenticated`
 - `LOGOUT` → `Logout`
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that took the greeting and said nothing held a socket, a connection task, a peer-command channel
+and an `AppState` entry forever — before any `LOGIN` — on a server that would happily accept a
+hundred more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/imap/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 60s | Dovecot's `login_timeout` default, which is the same idea for a connection that has got nowhere. This bound is tighter in *scope* — it ends at the first command rather than at authentication. The greeting's own model round-trip happens before the loop and is outside it. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 2100s (35 min) | **This number exists because of `IDLE`.** A client in IDLE (RFC 2177) is legitimately silent, waiting for the *server* to speak, and this server's own action examples advertise `IDLE` in their capability lists. RFC 2177 §3 requires the client to terminate and re-issue IDLE **at least every 29 minutes**, so 29 minutes is the interval this bound sits above; 35 gives the `DONE` and the re-issued `IDLE` room to cross a slow link and still count as activity. |
+| `MAX_CONNECTIONS` | 256 | Refusal: an untagged **`* BYE [UNAVAILABLE] too many connections`** — IMAP's own way of ending a session unilaterally (RFC 3501 §7.1.5) with RFC 5530's machine-readable reason, the same pair this server already uses for a failed greeting and an oversized command line. There is no tag to echo: the peer has sent nothing. |
+
+**The deadline wraps the read and nothing else**, so `handle_command`'s model round-trip — or a
+`manual` rule parking a command for a human at the dashboard, 300s by default — is never inside
+it. The longer bound is armed on the first *complete command line*, so a peer dripping a partial
+line still gets the shorter one. An idle close writes `* BYE [UNAVAILABLE] idle timeout` and logs
+`decision=fail_closed_idle_timeout`, because a client told why does not record a permanent fault.
+
+`tests/server/imap/connection_bounds_test.rs` drives both halves from the wire against a
+model-free server (static handlers answer the greeting and the commands, so nothing there depends
+on a backend): a greeted peer that says nothing gets `* BYE` and is closed, and a peer that has
+issued one command is still answered 68 seconds later. Replacing the `tokio::time::timeout`
+around `read_bounded_line` with the bare call makes the first test hang for its whole 100-second
+window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is
+removed, and `tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Limitations
 
 - **No message persistence** - LLM manages mailbox data in memory/context

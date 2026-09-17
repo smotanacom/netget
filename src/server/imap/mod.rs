@@ -64,6 +64,51 @@ use serde_json::json;
 #[cfg(feature = "imap")]
 pub const MAX_COMMAND_BYTES: usize = 8192;
 
+/// How long to wait for a peer's first command after the greeting has gone out.
+///
+/// The reference point is what a real server chose: Dovecot's `login_timeout` defaults to 60
+/// seconds for a connection that has not got anywhere yet. This bound is tighter in *scope* than
+/// Dovecot's — it ends at the first command rather than at authentication — and the same in
+/// spirit: a peer that has been greeted and has said nothing has begun no session, which is the
+/// state an unauthenticated flood lives in.
+///
+/// The greeting itself is sent before the loop and may involve a model round-trip; that happens
+/// outside this deadline, which wraps the `read` and nothing else.
+#[cfg(feature = "imap")]
+const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a peer that has already sent a command may send nothing further.
+///
+/// **This number exists because of `IDLE`.** A client in IDLE (RFC 2177) is legitimately silent
+/// for a long time, waiting for the *server* to speak, and this server's own action examples
+/// advertise `IDLE` in their capability lists — so closing such a client would be a bug, not a
+/// bound. RFC 2177 §3 requires the client to terminate and re-issue IDLE **at least every 29
+/// minutes**, so 29 minutes is the interval this bound must sit above; 35 gives the DONE and the
+/// re-issued `IDLE` room to cross a slow link and still be seen as activity.
+///
+/// It is also far longer than the 300-second default a `manual` rule gives a human to answer,
+/// and the deadline wraps the read alone, so neither a model round-trip nor a parked question is
+/// ever inside it.
+#[cfg(feature = "imap")]
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2100);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may buffer a command line of up to [`MAX_COMMAND_BYTES`] and holds a
+/// session, a peer-command channel and an `AppState` entry before anything is authenticated, so
+/// the cap is what turns that per-connection bound into a total one.
+#[cfg(feature = "imap")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// IMAP's own vocabulary for "this session is over and here is why" is an untagged `BYE`
+/// (RFC 3501 §7.1.5), and RFC 5530's `[UNAVAILABLE]` is the machine-readable reason — the same
+/// pair this server already uses to refuse a connection whose greeting handler failed and to end
+/// one that sent an oversized command line. There is no tag to echo: the peer has sent nothing.
+#[cfg(feature = "imap")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"* BYE [UNAVAILABLE] too many connections\r\n";
+
 /// IMAP server that handles mail retrieval with LLM
 pub struct ImapServer;
 
@@ -86,10 +131,19 @@ impl ImapServer {
         let protocol = Arc::new(ImapProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "IMAP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         debug!("IMAP connection {} from {}", connection_id, remote_addr);
@@ -158,6 +212,11 @@ impl ImapServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the peer is still here, which
+                                // silently un-caps the server.
+                                let _permit = permit;
+
                                 let mut session = ImapSession {
                                     reader: BufReader::new(read_half),
                                     writer: write_half_for_session,
@@ -256,17 +315,47 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
             return Ok(());
         }
 
+        // "Has said nothing at all" and "has gone quiet mid-session" are different claims and
+        // get different deadlines. This flips on the first command actually read.
+        let mut answered_one = false;
+
         // Main command loop
         loop {
-            // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer
-            // that connects and never sends one was a one-connection OOM before any model
-            // call.
-            let (read, n) = match crate::utils::line_reader::read_bounded_line(
-                &mut self.reader,
-                MAX_COMMAND_BYTES,
+            // Bounded in size and in time. In size: `read_line` would grow its `String` until
+            // it found a `\n`, so a peer that connects and never sends one was a
+            // one-connection OOM before any model call. In time: the deadline below wraps this
+            // read and nothing else, so `handle_command`'s model round-trip — or a `manual`
+            // rule parking a command for a human at the dashboard — sits outside it by
+            // construction.
+            let read_deadline = if answered_one {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_COMMAND_READ_TIMEOUT
+            };
+            let read_result = match tokio::time::timeout(
+                read_deadline,
+                crate::utils::line_reader::read_bounded_line(&mut self.reader, MAX_COMMAND_BYTES),
             )
             .await
             {
+                Ok(v) => v,
+                Err(_) => {
+                    // An untagged BYE, because IMAP has one and a client that is told why does
+                    // not record a permanent fault. There is no tag to echo: the peer has sent
+                    // nothing to correlate with.
+                    info!(
+                        "IMAP connection {} sent nothing for {}s; closing \
+                         decision=fail_closed_idle_timeout",
+                        self.connection_id,
+                        read_deadline.as_secs()
+                    );
+                    let _ = self
+                        .send_response(b"* BYE [UNAVAILABLE] idle timeout\r\n")
+                        .await;
+                    break;
+                }
+            };
+            let (read, n) = match read_result {
                 Ok(v) => v,
                 Err(e) => {
                     debug!("IMAP read error on {}: {}", self.connection_id, e);
@@ -301,6 +390,9 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                     break;
                 }
             };
+            // A complete command line: from here on this peer is mid-session and gets the
+            // longer bound, which is what lets it sit in IDLE.
+            answered_one = true;
             {
                 trace!(
                     "IMAP received {} bytes from {}: {}",
