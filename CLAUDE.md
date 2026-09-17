@@ -1075,8 +1075,25 @@ Two things about that worth keeping:
   full-disk recovery a worktree was pruned while a `cargo fuzz` run from it was still going. The
   binary was already mapped, so it survived — orphaned at PPID 1, burning half a core for **five
   hours** against a corpus directory that no longer existed, while the same session was
-  investigating load-sensitive test flakes on a machine it had quietly oversubscribed. The
-  script's `worktree_is_busy` does this with `pgrep -f` on the path; do the same by hand.
+  investigating load-sensitive test flakes on a machine it had quietly oversubscribed.
+
+- **And `pgrep -f` on the path is not that check.** The script's `worktree_is_busy` used it
+  alone, and it was measured on 16 September 2026 against **six agents demonstrably building in
+  their worktrees**: it matched **none** of them. An agent runs `cargo` after cd-ing in, so the
+  absolute path never appears in any command line, and a compile is mostly rustc children
+  invoked with relative paths. The guard read as a safety net and was close to a no-op — which
+  is the same class as the ratchets in this file that counted a token instead of the thing.
+
+  It now also treats a worktree as busy when its own, its `target/`'s or its `.git`'s mtime is
+  within `WORKTREE_ACTIVE_MINUTES` (default 60). Recency is what actually tracks activity. Two
+  notes if you write the check by hand: `find -newermt '-60 minutes'` is **not** portable — BSD
+  find does not parse the relative form and silently matches nothing, failing open — so compare
+  `stat -f %m` (BSD) or `stat -c %Y` (GNU) against `date +%s`. And "merged" is trivially true of
+  a branch with no commits on it, so a freshly created agent worktree reads as merged; only the
+  recency signal distinguishes it from an abandoned one.
+
+- **Err toward leaving it alone.** Being wrong in that direction costs disk. Being wrong the
+  other way destroys work in progress, and the machine is routinely running half a dozen agents.
 
 ### `target/` will fill the disk, and it fails in a way that wastes an hour
 
