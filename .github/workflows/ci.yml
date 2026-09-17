@@ -267,6 +267,9 @@ jobs:
       # them can only be checked on a runner that has the binary. Add to this list
       # whenever a protocol's evidence starts depending on a new binary.
       #
+      #   awscli            - sqs, dynamo, s3 (botocore; deliberately NOT the Rust
+      #                       SDK the other tests use. The tests pin --endpoint-url
+      #                       and dummy credentials, so nothing can reach real AWS)
       #   aria2             - torrent_tracker (aria2c)
       #   curl              - gopher, hls
       #   dnsutils (dig)    - dns
@@ -295,7 +298,7 @@ jobs:
       - name: Install the third-party clients the real-client tests drive
         run: |
           sudo apt-get install -y --no-install-recommends \
-            aria2 curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
+            aria2 awscli curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
             knot-dnsutils mosquitto-clients mysql-client npm openvpn \
             postgresql-client python3-pip redis-tools sipsak stuntman-client \
