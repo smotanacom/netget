@@ -2,42 +2,71 @@
 
 ## Test Overview
 
-Tests DNS server implementation with A, TXT, and multiple record queries. Validates NXDOMAIN handling and multi-domain
-resolution. Uses hickory-client (real DNS client) for protocol correctness.
+**Five files, 13 tests**, and the two that carry the maturity rating are the ones this
+overview used to omit. It described only `test.rs` — "uses hickory-client (real DNS client)
+for protocol correctness" — which is the circular half of the suite and the reason `dig_test.rs`
+had to be written.
+
+| file | what drives it | what it is for |
+|---|---|---|
+| `dig_test.rs` | ISC BIND's `dig` | independent resolver #1 — A, AAAA, CNAME, MX, TXT, NXDOMAIN, plus one query with **default** flags (EDNS offered) |
+| `kdig_test.rs` | Knot DNS's `kdig` (CZ.NIC) | independent resolver #2, the same record types through a different presentation writer |
+| `llm_failure_test.rs` | raw `UdpSocket` + pcap oracle | both fail-closed paths, and that `ignore_query` stays silence |
+| `bounds_test.rs` | raw `UdpSocket` + the executor | every declared bound, each verified by removal; the pcap oracle over a NOERROR answer |
+| `test.rs` | hickory-client | A, TXT, multi-domain, NXDOMAIN — **circular**, see "Client Library" below |
 
 ## Test Strategy
 
-- **Isolated test servers**: Each test spawns separate NetGet instance with specific DNS configuration
-- **Real DNS client**: Uses hickory-client library (AsyncClient + UdpClientStream)
-- **Protocol correctness**: Tests actual DNS wire protocol, not mocked responses
-- **Record type coverage**: Tests A, TXT records; NXDOMAIN response
-- **No scripting**: Action-based LLM responses (tests LLM's ability to handle DNS semantics)
-- **Dynamic mocks**: Uses `.respond_with_actions_from_event()` for protocol-correct transaction ID matching
+- **Two independent resolvers carry the rating.** `dig` and `kdig` share no code with hickory
+  or with each other, and each **fails** rather than skipping when its binary is absent.
+- **Isolated test servers**: each test spawns a separate NetGet instance; the resolver tests
+  bundle all their queries onto one server, because each spawn is an extra startup call.
+- **Protocol correctness**: the actual DNS wire protocol, not mocked responses.
+- **The pcap oracle** reads the bytes with Wireshark's DNS dissector in `llm_failure_test.rs`
+  and `bounds_test.rs`. It hard-fails when `tshark` is missing.
+- **No scripting**: action-based LLM responses.
+- **Dynamic mocks**: `.respond_with_actions_from_event()` for protocol-correct transaction ID
+  matching.
 
 ## LLM Call Budget
 
-- `test_dns_a_record_query()`: 1 LLM call (A record query)
-- `test_dns_multiple_records()`: 2 LLM calls (example.com + mail.example.com queries)
-- `test_dns_txt_record()`: 1 LLM call (TXT record query)
-- `test_dns_nxdomain()`: 1 LLM call (NXDOMAIN for unknown domain)
-- `dig_test::test_dns_answers_dig()`: 1 startup + 3 query calls, one server
-- **Total: 9 LLM calls** (under the 10 limit; `dig_test` bundles its three cases into
-  one server rather than spawning three, which is what keeps it there)
+| test | startup | events | total |
+|---|---|---|---|
+| `test::test_dns_a_record_query` | 1 | 1 | **2** |
+| `test::test_dns_multiple_records` | 1 | 2 | **3** |
+| `test::test_dns_txt_record` | 1 | 1 | **2** |
+| `test::test_dns_nxdomain` | 1 | 1 | **2** |
+| `dig_test::test_dns_answers_dig` | 1 | ≥6 | **≥7** |
+| `kdig_test::test_dns_answers_kdig` | 1 | 6 | **7** |
+| `llm_failure_test::…_servfail_when_llm_fails` | 1 | 1 (answered 500) | **2** |
+| `llm_failure_test::…_black_hole` | 1 | 2 | **3** |
+| `bounds_test::…_receive_buffer…` | 1 | 1 | **2** |
+| `bounds_test::` (four executor tests) | 0 | 0 | **0** |
 
-**Optimization Opportunity**: Could consolidate into single comprehensive DNS server handling all record types and
-domains, reducing to 1 startup call + 5 query calls = 6 total. However, current approach provides better isolation and
-clearer failure diagnosis.
+This table used to give a single total of 9 and list five tests. The count drifts every time a
+file is added, which is the argument for a per-test table rather than a number: **derive it**
+rather than reading it. `dig_test`'s event count is a floor (`expect_at_least`) because its
+default-flags query is allowed to fall back from EDNS and re-ask.
+
+The ~10-call guidance in the root `CLAUDE.md` is about keeping a suite cheap against a *real*
+model; every call here is answered by the in-process mock, so what the table is really for is
+noticing a rule that fires more often than it should.
 
 ## Scripting Usage
 
 ❌ **Scripting Disabled** - Action-based responses only
 
-**Rationale**: Tests validate that LLM can correctly generate DNS responses using structured actions. Scripting would
-bypass this validation. For production DNS servers, scripting is highly recommended for performance.
+**Rationale**: Tests validate that the LLM can correctly generate DNS responses using
+structured actions. Scripting would bypass this validation. For production DNS servers,
+scripting is highly recommended for performance.
 
 ## Dynamic Mock Pattern (CRITICAL)
 
-All DNS tests use **dynamic mocks** via `.respond_with_actions_from_event()` to enable protocol-correct transaction ID matching.
+Every mock rule that produces an **answer record** uses `.respond_with_actions_from_event()`,
+to enable protocol-correct transaction ID matching. This line used to say "all DNS tests",
+which stopped being true once `llm_failure_test.rs` arrived: its `show_message` and
+`ignore_query` rules are static, and correctly so — neither produces a packet, so there is no
+id to echo. The rule is about what the answer carries, not about which file it is in.
 
 ### Why Dynamic Mocks?
 
@@ -191,32 +220,49 @@ hickory-proto encoded with, so on its own this suite proves the wire format is
 self-consistent, not that it is correct. That is the circularity that kept `rss` at
 Experimental until `feed-rs` did its parsing.
 
-**`dig_test.rs` is the answer to it.** ISC BIND's `dig` shares no code with hickory,
-and it is stricter than the round-trip - it checks that the transaction id it chose
-comes back and that the question section matches what it asked, so a reply a real
-resolver would discard fails there and passes here. It **fails** when `dig` is absent
-rather than printing SKIP, per the `npm` precedent.
+**`dig_test.rs` and `kdig_test.rs` are the answer to it.** ISC BIND's `dig` and Knot
+DNS's `kdig` share no code with hickory or with each other, and both are stricter
+than the round-trip — each checks that the transaction id it chose comes back and
+that the question section matches what it asked, so a reply a real resolver would
+discard fails there and passes here. Both **fail** when their binary is absent
+rather than printing SKIP, per the `npm` precedent. This paragraph named only `dig`
+for as long as `kdig_test.rs` has existed.
 
 ## Expected Runtime
 
-- Model: qwen3-coder:30b
-- Runtime: ~40-50 seconds for full test suite (4 tests × ~10s each)
-- Each test includes: server startup (2-3s) + LLM response (5-8s) + DNS query (<1s)
+**About 7 seconds for all 13 tests** at `--test-threads=100`, measured 16 September 2026:
 
-**Note**: DNS tests are faster than some other protocols because:
+```bash
+./cargo-isolated.sh test --no-default-features --features dns \
+    --test server -- --test-threads=100 dns
+```
 
-- UDP is connectionless (no TCP handshake)
-- hickory-client is very fast
-- No complex protocol state machine
+This section used to read "Model: qwen3-coder:30b … ~40-50 seconds … LLM response (5-8s)",
+which described a `--use-ollama` run. The default mode needs no Ollama at all: the mock is an
+in-process axum server and answers in microseconds, so no number here is a model's.
 
 ## Failure Rate
 
-- **Low** (~2-3%) - Occasional LLM response issues
-- Most common failure: LLM returns wrong record type or malformed IP address
-- Timeout failures: Very rare (<1%) - DNS queries have 5s timeout
-- NXDOMAIN test: Sometimes flaky if LLM misinterprets "unknown domain" instruction
+**Zero across repeated runs**, and the previous text is worth recording because it was
+describing something these tests cannot do. It said "~2-3%, occasional LLM response issues.
+Most common failure: LLM returns wrong record type or malformed IP address. NXDOMAIN test:
+sometimes flaky if LLM misinterprets 'unknown domain' instruction."
+
+There is no LLM. Every response is fixed by a mock rule, so a "wrong record type" is
+impossible by construction — and, worse, the sentence framed a *test* result as something the
+model might get wrong, which is the reasoning that produced the old NXDOMAIN test that accepted
+every outcome (see Known Issues #1). A mocked suite that is flaky is flaky for a reason in the
+code or in the harness, never because the model had an off day.
+
+The realistic failure mode is the `dig`/`kdig` tests on a machine where the binary is absent:
+they fail, loudly and by name, which is the design.
 
 ## Test Cases
+
+The four below are `test.rs`, the hickory-client file. **They are not the evidence the maturity
+rating rests on** — see the table in Test Overview. This section listed only these four for as
+long as the other four files have existed, which made the circular suite look like the whole of
+the coverage; the rest are summarised after them.
 
 ### 1. DNS A Record Query (`test_dns_a_record_query`)
 
@@ -233,7 +279,9 @@ rather than printing SKIP, per the `npm` precedent.
   return 5.6.7.8"
 - **Client**: Queries both example.com and mail.example.com
 - **Expected**: Each query returns appropriate A record
-- **Purpose**: Tests multi-domain configuration and LLM's ability to distinguish domains
+- **Purpose**: Tests multi-domain routing — two mock rules keyed on different domains, which is
+  the *harness* distinguishing them, not a model. (This line said "LLM's ability to distinguish
+  domains"; with mocked responses there is no such ability under test.)
 - **LLM Calls**: 2 (one per domain query)
 
 ### 3. DNS TXT Record (`test_dns_txt_record`)
@@ -253,6 +301,31 @@ rather than printing SKIP, per the `npm` precedent.
 - **Expected**: RCODE 3 (NXDOMAIN), zero answer records, question echoed
 - **Purpose**: Tests error handling and NXDOMAIN response
 - **Note**: all three are asserted. See "Known Issues" for what this used to accept
+
+### 5-6. The two resolvers (`dig_test.rs`, `kdig_test.rs`)
+
+One server each, six queries each: A, TXT, AAAA, MX, CNAME and a name that does not exist.
+`dig_test.rs` adds a seventh with **default flags** — EDNS offered — which is the only query in
+the suite run the way a person would run it. Both hard-fail naming their package when the
+binary is absent. See "Two resolvers, and why the second one exists" at the foot of this file.
+
+### 7-8. Fail-closed (`llm_failure_test.rs`)
+
+`test_dns_answers_servfail_when_llm_fails`: no mock rule for `dns_query`, so the mock answers
+HTTP 500 and `call_llm` returns `Err`. Asserts the RCODE nibble on the raw bytes *and* through
+a decoder, plus the id and question echo, plus the pcap oracle.
+
+`test_dns_distinguishes_no_usable_action_from_a_deliberate_black_hole`: the case `call_llm`
+returns **`Ok`** for and this server used to answer with silence — a model reply made only of
+common actions. One server, two queries, because the assertion is that they *differ*:
+`show_message` must be SERVFAIL and `ignore_query` must be silence.
+
+### 9-13. Bounds (`bounds_test.rs`)
+
+Every declared bound, each verified by removing it: the 4096-byte receive buffer (from a
+socket), and `query_id`, MX `preference`, the 12-octet raw-message floor and the 255-octet TXT
+character-string (through the executor, where the wire cannot reach them). Also the only run of
+the pcap oracle over a NOERROR answer with rdata in it.
 
 ## Known Issues
 
@@ -275,14 +348,35 @@ RCODE by value. The old rationale - "LLM might format responses slightly differe
 - does not apply: these are mock-driven, the handler's output is fixed, and the values
 are compared after hickory has decoded them into typed rdata, not as text.
 
-### 3. No AAAA, MX, CNAME Tests
+### 3. No AAAA, MX, CNAME Tests — fixed
 
-Current test suite only covers A and TXT records. Other record types are supported by the protocol but not tested.
+This said "A and TXT provide good coverage of address and text record types. Adding all record
+types would exceed LLM call budget." Both halves were wrong. The calls are mocked, so the
+budget argument cost nothing to be wrong about; and the coverage argument was the load-bearing
+mistake — `send_dns_aaaa_response`, `send_dns_mx_response` and `send_dns_cname_response` are
+actions the **model is offered**, so leaving them undecoded by anything independent meant three
+advertised verbs whose wire format nothing had ever checked. `metadata()` said so out loud
+("UNPROVEN: … record types beyond A and TXT") and it was read as a note rather than as a gap.
 
-**Rationale**: A and TXT provide good coverage of address and text record types. Adding all record types would exceed
-LLM call budget.
+`dig_test.rs` and `kdig_test.rs` now query all three on the same server they already had, at a
+cost of three extra mocked calls each. A 16-octet address, a `u16` followed by a domain name,
+and a bare domain name are three different ways to get an encoder wrong; the MX preference is
+4660 (0x1234) so a byte-swap reads 13330 rather than something plausible.
 
-**Future Enhancement**: Create consolidated test with one server handling all record types.
+Still untested: `send_dns_response`, the raw-hex escape hatch, beyond its 12-octet floor and
+hex-only check in `bounds_test.rs`. Nothing constructs a real NS/SOA/PTR/SRV message through it.
+
+### 3b. EDNS — and the one query that is not `+noedns`
+
+Every resolver query passes `+noedns`, for a stated and honest reason: EDNS0 is not
+implemented, and a resolver that offers EDNS and gets a reply with no OPT record may fall back
+and re-query, which would break `expect_calls(1)`.
+
+That left the question the rating actually turns on unasked — does a resolver *as a person
+invokes it* get an answer? `dig_test.rs` now runs one query with no flags at all and asserts
+the address comes back. RFC 6891 §6.1.1: a server that does not understand EDNS answers without
+an OPT record, and the requestor treats the response as non-EDNS. The A rule's expectation is
+`expect_at_least` so a fallback re-query is harmless rather than a failure.
 
 ### 4. No Concurrent Query Tests
 
@@ -314,45 +408,41 @@ DNS is inherently fast:
 
 Without LLM overhead, NetGet DNS server could handle thousands of queries per second with scripting enabled.
 
-## Future Enhancements
+## Remaining coverage gaps
 
-### Test Coverage Gaps
+Re-derived 16 September 2026. The first three entries of the old list — AAAA, MX and CNAME —
+are closed; what is left is:
 
-1. **AAAA records**: No IPv6 testing
-2. **MX records**: No mail exchange testing
-3. **CNAME records**: No alias testing
-4. **Multiple answers**: No testing of multiple A records for same domain
-5. **SOA records**: No zone authority testing
-6. **NS records**: No nameserver delegation testing
-7. **Large responses**: No testing of 512-byte UDP limit
-8. **Malformed queries**: No testing of invalid DNS packets
+1. **Multiple answers**: no test of several records for one name. The action set cannot produce
+   them (one record per response), so this is a limitation to test *for* rather than against —
+   nothing asserts that the server does not silently drop extra answers, because it cannot be
+   asked for any.
+2. **SOA / NS / PTR / SRV**: reachable only through `send_dns_response`, the raw-hex escape
+   hatch, which nothing drives with a real message.
+3. **The 512-byte UDP limit**: still untested, and the server does not implement it — an
+   oversize response is sent rather than truncated with the TC bit. The TXT character-string is
+   bounded at 255 octets (`bounds_test.rs`), which makes the *common* route to a large answer
+   impossible, but `send_dns_response` can still exceed 512.
+4. **Malformed queries**: a datagram that does not parse is logged and dropped with no reply.
+   `bounds_test.rs` covers the truncated-oversize case; a deliberately corrupt but short
+   datagram is not tested, and there is no FORMERR path to assert.
+5. **Concurrent queries**: sent sequentially throughout. The server handles them in separate
+   tokio tasks; nothing asserts that two in flight do not cross their transaction ids.
 
-### Consolidation Opportunity
+### Consolidation opportunity
 
-All four tests could be consolidated into a single comprehensive server:
+`test.rs`'s four tests could share one server, saving three startup calls and a few seconds.
+The old version of this note put the saving at "~8-12 seconds" against a real model; against
+the mock the whole file runs in about two, so this is tidiness rather than economy. The four
+separate servers do buy clearer failure diagnosis.
 
-```rust
-let prompt = format!(
-    "listen on port {} via dns.
-    - For example.com A: return 1.2.3.4
-    - For mail.example.com A: return 5.6.7.8
-    - For example.com TXT: return 'v=spf1 mx ~all'
-    - For known.example.com A: return 93.184.216.34
-    - For all other domains: return NXDOMAIN",
-    port
-);
-```
+### Scripting mode
 
-This would reduce from 4 server spawns to 1, saving ~8-12 seconds of test time and reducing LLM calls from 5 to 4 (1
-startup + 4 queries).
-
-### Scripting Mode Test
-
-Add test with scripting enabled to validate script generation:
-
-- Verify script handles A, TXT, NXDOMAIN correctly
-- Measure throughput improvement (should be 1000x faster)
-- Ensure script doesn't call LLM for each query
+A script handler for `dns_query` is what `get_startup_examples()` offers and what the protocol
+is best at, and nothing here exercises it. `tests/empty_static_handler_test.rs` is the shape to
+copy for the assertion that matters — a **zero** LLM-call count beside a non-zero control,
+measured rather than inferred. The old note here proposed asserting a "1000x faster" throughput
+improvement, which is not a thing a test can hold.
 
 ## References
 
@@ -363,7 +453,7 @@ Add test with scripting enabled to validate script generation:
 
 ## Two resolvers, and why the second one exists
 
-`DevelopmentState::Beta` rests on **both**, and neither is `#[ignore]`d or skip-gated — each
+`DevelopmentState::Stable` rests on **both**, and neither is `#[ignore]`d or skip-gated — each
 fails naming its package when the binary is absent:
 
 | test | resolver | project |
@@ -381,9 +471,20 @@ both cases no conformant implementation could complete a successful call while e
 test passed. Two independent resolvers agreeing with each other and with us is the strongest
 evidence short of the spec; two that disagree is a finding.
 
-Both are run with `+noedns`, honestly rather than conveniently: this server does not implement
-EDNS0, and a resolver that offers EDNS and gets a reply with no OPT record may fall back and
-re-query — which would be a second `dns_query` event and would break `expect_calls`.
+Between them they decode **every record type this server can produce** — A, AAAA, CNAME, MX,
+TXT and NXDOMAIN — each through that resolver's own presentation writer. Until September 2026
+only A and TXT were covered, which left three actions the model is offered with nothing
+independent having decoded them; `metadata()` said so and it was read as a note rather than as
+a gap.
+
+Nearly every query is run with `+noedns`, honestly rather than conveniently: this server does
+not implement EDNS0, and a resolver that offers EDNS and gets a reply with no OPT record may
+fall back and re-query — which would be a second `dns_query` event and would break
+`expect_calls`. **One query is not**: `dig_test.rs` runs the A lookup a second time with no
+flags at all, because "works against real clients" has to mean the way a person invokes the
+client. RFC 6891 §6.1.1 is why it works — a server that does not understand EDNS answers with
+no OPT record and the requestor treats it as non-EDNS — and `expect_at_least` on that rule is
+what makes a fallback re-query harmless.
 
 Verified by answering with a fixed transaction id instead of the client's: kdig discards the
 reply and the test fails. That is the class of defect a round-trip through our own codec cannot

@@ -94,7 +94,7 @@ async fn kdig(port: u16, args: &[&str]) -> E2EResult<String> {
     Ok(stdout)
 }
 
-/// One server, three queries: an A record, a TXT record, and a name that does not exist.
+/// One server, six queries: A, TXT, AAAA, MX, CNAME, and a name that does not exist.
 ///
 /// Bundled onto one server because each spawn costs an extra startup call and several seconds.
 #[tokio::test]
@@ -130,6 +130,46 @@ async fn test_dns_answers_kdig() -> E2EResult<()> {
                         "query_id": event["query_id"],
                         "domain": event["domain"],
                         "text": "answered-by-netget",
+                        "ttl": 300
+                    }])
+                })
+                .expect_calls(1)
+                .and()
+                .on_event("dns_query")
+                .and_event_data_contains("query_type", "AAAA")
+                .respond_with_actions_from_event(|event| {
+                    serde_json::json!([{
+                        "type": "send_dns_aaaa_response",
+                        "query_id": event["query_id"],
+                        "domain": event["domain"],
+                        "ip": "2001:db8::2c",
+                        "ttl": 300
+                    }])
+                })
+                .expect_calls(1)
+                .and()
+                .on_event("dns_query")
+                .and_event_data_contains("query_type", "MX")
+                .respond_with_actions_from_event(|event| {
+                    serde_json::json!([{
+                        "type": "send_dns_mx_response",
+                        "query_id": event["query_id"],
+                        "domain": event["domain"],
+                        "exchange": "mail.kdig.example.com.",
+                        "preference": 4660,
+                        "ttl": 300
+                    }])
+                })
+                .expect_calls(1)
+                .and()
+                .on_event("dns_query")
+                .and_event_data_contains("query_type", "CNAME")
+                .respond_with_actions_from_event(|event| {
+                    serde_json::json!([{
+                        "type": "send_dns_cname_response",
+                        "query_id": event["query_id"],
+                        "domain": event["domain"],
+                        "target": "www.kdig.example.com.",
                         "ttl": 300
                     }])
                 })
@@ -185,6 +225,41 @@ async fn test_dns_answers_kdig() -> E2EResult<()> {
     assert!(
         txt.contains("answered-by-netget"),
         "kdig did not decode the TXT character-string:\n{txt}"
+    );
+
+    // --- AAAA, MX and CNAME ------------------------------------------------
+    //
+    // Three rdata shapes the model can produce and no third-party resolver had ever read. Until
+    // this pass the evidence covered A and TXT, and `metadata()` said so ("UNPROVEN: ... record
+    // types beyond A and TXT") — which left `send_dns_aaaa_response`,
+    // `send_dns_mx_response` and `send_dns_cname_response` as actions the model is offered and
+    // nothing independent has ever decoded. A 16-byte address, a `u16` + a domain name, and a
+    // bare domain name are each a different way to get an encoder wrong.
+    let aaaa = kdig(port, &["kdig.example.com", "AAAA"]).await?;
+    assert!(
+        aaaa.contains("2001:db8::2c"),
+        "kdig did not decode the AAAA rdata; a 16-octet address printed back in canonical form \
+         is the assertion:\n{aaaa}"
+    );
+
+    // 4660 is 0x1234: byte-swapped it reads 13330, so a wrong-endian preference is visible
+    // rather than plausible. Preference is the only integer rdata field in the whole action
+    // set.
+    let mx = kdig(port, &["kdig.example.com", "MX"]).await?;
+    assert!(
+        mx.contains("4660"),
+        "kdig read a different MX preference than the 4660 we sent — 13330 means the u16 went \
+         out byte-swapped:\n{mx}"
+    );
+    assert!(
+        mx.contains("mail.kdig.example.com"),
+        "kdig did not decode the MX exchange name:\n{mx}"
+    );
+
+    let cname = kdig(port, &["kdig.example.com", "CNAME"]).await?;
+    assert!(
+        cname.contains("www.kdig.example.com"),
+        "kdig did not decode the CNAME target:\n{cname}"
     );
 
     // --- NXDOMAIN ----------------------------------------------------------

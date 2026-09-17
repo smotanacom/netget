@@ -151,6 +151,46 @@ async fn test_dns_answers_dig() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 .on_event("dns_query")
+                .and_event_data_contains("query_type", "AAAA")
+                .respond_with_actions_from_event(|event| {
+                    serde_json::json!([{
+                        "type": "send_dns_aaaa_response",
+                        "query_id": event["query_id"],
+                        "domain": event["domain"],
+                        "ip": "2001:db8::22",
+                        "ttl": 300,
+                    }])
+                })
+                .expect_calls(1)
+                .and()
+                .on_event("dns_query")
+                .and_event_data_contains("query_type", "MX")
+                .respond_with_actions_from_event(|event| {
+                    serde_json::json!([{
+                        "type": "send_dns_mx_response",
+                        "query_id": event["query_id"],
+                        "domain": event["domain"],
+                        "exchange": "mail.dig.example.com.",
+                        "preference": 4660,
+                        "ttl": 300,
+                    }])
+                })
+                .expect_calls(1)
+                .and()
+                .on_event("dns_query")
+                .and_event_data_contains("query_type", "CNAME")
+                .respond_with_actions_from_event(|event| {
+                    serde_json::json!([{
+                        "type": "send_dns_cname_response",
+                        "query_id": event["query_id"],
+                        "domain": event["domain"],
+                        "target": "www.dig.example.com.",
+                        "ttl": 300,
+                    }])
+                })
+                .expect_calls(1)
+                .and()
+                .on_event("dns_query")
                 .and_event_data_contains("domain", "dig.example.com")
                 .and_event_data_contains("query_type", "A")
                 .respond_with_actions_from_event(|event| {
@@ -162,7 +202,11 @@ async fn test_dns_answers_dig() -> E2EResult<()> {
                         "ttl": 300,
                     }])
                 })
-                .expect_calls(1)
+                // A floor, not an equality, and only for this rule: it is matched twice, once
+                // by the `+noedns` A query and once by the default-dig query at the end, and
+                // the second of those is allowed to re-query if dig decides to fall back from
+                // EDNS. Two is the expected number; three would also be correct.
+                .expect_at_least(2)
                 .and()
                 .on_instruction_containing("listen on port")
                 .and_instruction_containing("dns")
@@ -216,6 +260,66 @@ async fn test_dns_answers_dig() -> E2EResult<()> {
         "dig must accept the TXT answer and print its character-string; got {txt:?}"
     );
     println!("  ✓ TXT -> {}", txt.trim());
+
+    // --- AAAA, MX and CNAME -----------------------------------------------------------
+    //
+    // Three rdata shapes the model can produce and that no third-party resolver had ever read
+    // before this pass — `metadata()` said so in as many words ("UNPROVEN: ... record types
+    // beyond A and TXT"), which left three advertised actions with no independent decoding
+    // behind them. A 16-octet address, a `u16` followed by a domain name, and a bare domain
+    // name are each a different way to get an encoder wrong.
+    let aaaa = dig(port, &["dig.example.com", "AAAA", "+short"]).await?;
+    assert_eq!(
+        aaaa.trim(),
+        "2001:db8::22",
+        "dig must decode the AAAA rdata and print it in canonical form; got {aaaa:?}"
+    );
+    println!("  ✓ AAAA -> {}", aaaa.trim());
+
+    // 4660 is 0x1234, so a byte-swapped preference reads 13330 rather than something
+    // plausible. It is the only integer rdata field in the whole DNS action set.
+    let mx = dig(port, &["dig.example.com", "MX", "+short"]).await?;
+    assert_eq!(
+        mx.trim(),
+        "4660 mail.dig.example.com.",
+        "dig must decode the MX preference and exchange; 13330 would mean the u16 went out \
+         byte-swapped. Got {mx:?}"
+    );
+    println!("  ✓ MX  -> {}", mx.trim());
+
+    let cname = dig(port, &["dig.example.com", "CNAME", "+short"]).await?;
+    assert_eq!(
+        cname.trim(),
+        "www.dig.example.com.",
+        "dig must decode the CNAME target; got {cname:?}"
+    );
+    println!("  ✓ CNAME -> {}", cname.trim());
+
+    // --- a DEFAULT dig, with EDNS on --------------------------------------------------
+    //
+    // Every query above passes `+noedns`, and the reason given for it is honest but narrow:
+    // this server does not implement EDNS0, and a resolver that offers EDNS and gets a reply
+    // with no OPT record *may* fall back and re-query, which would break `expect_calls(1)`.
+    //
+    // That left the question nobody had asked: does a resolver **as a user actually invokes
+    // it** get an answer at all? Every modern resolver sends EDNS by default, so if the answer
+    // were no, "works against real clients" would be a claim about a configuration nobody uses
+    // — the `mysql_native_password` situation, where the rating rested on the one client
+    // permissive enough to tolerate what is shipped.
+    //
+    // It is not. RFC 6891 §6.1.1 is explicit that a server which does not understand EDNS
+    // answers without an OPT record, and the requestor then treats the response as coming from
+    // a non-EDNS server. `expect_at_least` on the A rule above is what makes the fallback
+    // harmless here: if dig does re-query, that is a second `dns_query` event and the count is
+    // a floor rather than an equality.
+    let default_dig = dig(port, &["dig.example.com", "A", "+short"]).await?;
+    assert_eq!(
+        default_dig.trim(),
+        "93.184.216.34",
+        "a dig invoked the way a person invokes it — EDNS on, no flags — must still resolve. \
+         Got {default_dig:?}"
+    );
+    println!("  ✓ default dig (EDNS offered) -> {}", default_dig.trim());
 
     // --- NXDOMAIN ---------------------------------------------------------------------
     // Read from the header line rather than from an empty answer section: NOERROR with no
