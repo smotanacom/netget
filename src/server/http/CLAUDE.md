@@ -110,8 +110,11 @@ line (`✗ LLM error for …`) has no `decision=`, so the dashboard shows the fa
   present, each accepted stream goes through `tokio_rustls` before hyper. The
   server logs itself as `HTTPS` in that case. (ALPN is not advertised.)
 - One `tokio` task per TCP connection; hyper's `service_fn` calls the LLM per
-  request. Per-connection tasks are not tracked, so `stop_server` does not cancel
-  in-flight requests.
+  request. **Each connection task is registered**, through
+  `AppState::spawn_server_task`, so `stop_server` aborts in-flight requests along
+  with the accept loop. This bullet claimed the opposite for a long time after
+  `spawn_server_task` was adopted — `grep -n spawn_server_task src/server/http/mod.rs`
+  settles it, and there are three call sites.
 - Handling mode priority is the generic one: script handler → static handler →
   LLM (`call_llm` → `try_execute_event_handler`). Script and static handlers cost
   no LLM call.
