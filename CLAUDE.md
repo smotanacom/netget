@@ -142,7 +142,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (45 protocols as of September 15 2026;
+- **Beta** — human-reviewed, works against real clients (50 protocols as of September 16 2026;
   re-derive, the count drifts every pass).
 
   **Do not read the rest of this section as the list. Generate it:**
@@ -433,7 +433,8 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   can check is condition 4 — that the client acts on the model's answer — and the script says so
   instead of implying it passed.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
-  majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
+  majority (107 of the 158 `src/server/*/actions.rs` the script below walks, re-derived
+  16 September 2026). Note the script
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
   with no `impl Protocol` and no registry entry, so it declares no state correctly.
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
@@ -484,7 +485,11 @@ from collections import Counter
 rows=[]
 for f in sorted(list(pathlib.Path('src/server').glob('*/actions.rs'))
               + list(pathlib.Path('src/server').glob('*/*/actions.rs'))):
-    m=re.search(r'\.state\(\s*(?:crate::protocol::metadata::)?DevelopmentState::([A-Za-z]+)',
+    # Two declaration forms: the builder's `.state(X)` and a struct literal's `state: X`.
+    # Only one protocol uses the literal today (the ospf CLIENT), but a pattern that knows
+    # only about the builder reports it as declaring nothing — and that same blind spot was
+    # a real hole in tests/no_protocol_is_hidden_from_the_model_test.rs until September 2026.
+    m=re.search(r'(?:\.state\(|state:\s*)\s*(?:crate::protocol::metadata::)?DevelopmentState::([A-Za-z]+)',
                 f.read_text(errors='ignore'))
     rows.append((m.group(1) if m else 'NONE', str(f)))
 print(Counter(r[0] for r in rows))

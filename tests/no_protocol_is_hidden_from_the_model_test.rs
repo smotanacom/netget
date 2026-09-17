@@ -65,11 +65,20 @@ fn no_protocol_declares_itself_incomplete() {
         if !src.contains("DevelopmentState::Incomplete") {
             continue;
         }
-        // Only a `.state(...)` declaration hides a protocol. A `match` arm rendering the
-        // variant — which is what every occurrence in `src/docs.rs` and the TUI is — does not.
-        if !src.contains(".state(crate::protocol::metadata::DevelopmentState::Incomplete")
-            && !src.contains(".state(DevelopmentState::Incomplete")
-        {
+        // Only a *declaration* hides a protocol. A `match` arm rendering the variant — which is
+        // what every occurrence in `src/docs.rs` and the TUI is — does not.
+        //
+        // **Two declaration forms, and missing the second was a real hole in this ratchet.**
+        // `ProtocolMetadataV2` is normally built through the builder, so `.state(...)` finds it.
+        // But the struct can also be built by literal, where the same declaration reads
+        // `state: DevelopmentState::Incomplete` — and `src/client/ospf/actions.rs` does exactly
+        // that today. A protocol written that way could have been hidden from the model with
+        // this test green, which is precisely the invisibility the test exists to prevent.
+        //
+        // The narrower anchor was not arbitrary: it was there to keep `match` arms out. A
+        // literal's `state:` prefix distinguishes it from an arm just as well, so both forms can
+        // be matched without letting the arms back in.
+        if !declares_incomplete(&src) {
             continue;
         }
         let name = file
@@ -91,4 +100,30 @@ fn no_protocol_declares_itself_incomplete() {
          clear Err from spawn() naming the limitation, as bluetooth_ble_beacon does. If hiding \
          is genuinely right, add it to DELIBERATELY_HIDDEN with the reason."
     );
+}
+
+/// Does this source *declare* `DevelopmentState::Incomplete`, as opposed to merely mentioning it?
+///
+/// Both ways `ProtocolMetadataV2` is constructed in this tree count, and neither matches a
+/// `match` arm (`DevelopmentState::Incomplete => …`), which is what `src/docs.rs` and the TUI
+/// are full of:
+///
+/// * the builder — `.state(DevelopmentState::Incomplete)`
+/// * a struct literal — `state: DevelopmentState::Incomplete,`
+///
+/// Each with or without the `crate::protocol::metadata::` prefix, because roughly half the tree
+/// writes the fully-qualified form.
+fn declares_incomplete(src: &str) -> bool {
+    const SUFFIXES: [&str; 2] = [
+        "crate::protocol::metadata::DevelopmentState::Incomplete",
+        "DevelopmentState::Incomplete",
+    ];
+    for suffix in SUFFIXES {
+        for prefix in [".state(", "state: "] {
+            if src.contains(&format!("{prefix}{suffix}")) {
+                return true;
+            }
+        }
+    }
+    false
 }
