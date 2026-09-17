@@ -304,9 +304,37 @@ once these exist.
   in its first paragraph, and the metadata repeats it, because "offers caching_sha2_password"
   reads like "checks a password" to anyone skimming.
 
-  Running total: `etcd`, `grpc`, `mysql`, `postgresql`, `redis`, `dns`, `doh` and `dot` have two
-  clients. **Three of the eight turned out to be broken against every conformant
-  implementation** — which is the answer to whether this item was worth doing.
+  **The AWS family and `http`, 16 September 2026, none of which found a defect.** `sqs`, `dynamo`
+  and `s3` each gained the real `aws` CLI — botocore, a different SDK generation with a different
+  serialiser — and `http` gained **two**: `curl` and Python's `http.client`.
+
+  Each test was verified non-vacuous by breaking the reply and watching the client's own
+  rendering change: a renamed `MessageId`, a DynamoDB `N` attribute sent as a JSON number rather
+  than a string, a third object added to an S3 listing, a changed custom header. What each second
+  client adds is *rendering* rather than deserialisation — a field name a generated deserialiser
+  tolerates is a missing column there. `s3` is the most valuable of the four, because it is the
+  one AWS protocol whose reply is a hand-written **XML document**.
+
+  **The AWS tests carry three guards and they are not decorative.** The project CLAUDE.md records
+  that the DynamoDB *client* dropped its target, let the SDK resolve
+  `https://dynamodb.<region>.amazonaws.com`, and signed with ambient credentials — a client
+  pointed at localhost issuing real reads and writes against real AWS. So: `--endpoint-url` on
+  every call, the port asserted non-zero before the CLI is spawned, and credentials, region,
+  profile and the EC2 metadata service overridden in the child's environment.
+
+  One trap worth knowing: **`AWS_PROFILE=""` is not "no profile"**. The CLI looks for a profile
+  named the empty string and exits `The config profile () could not be found` before touching the
+  network. The variable has to be *removed* from the child's environment.
+
+  All three evidence fields now also say the thing the tests cannot: **no signature is validated
+  anywhere in the cloud family.** Every request is served unconditionally, and neither
+  `Authorization` nor `X-Amz-Date` reaches the event, so the model cannot make that decision
+  either.
+
+  Running total: `etcd`, `grpc`, `mysql`, `postgresql`, `redis`, `dns`, `doh`, `dot`, `http`,
+  `sqs`, `dynamo` and `s3` have two clients or more. **Three of the twelve turned out to be
+  broken against every conformant implementation** — which is the answer to whether this item was
+  worth doing.
 
   **The rest of the item, as a map rather than a wish.** Measured against what is installed on
   this machine, the single-client Betas fall into three groups.
