@@ -2,19 +2,34 @@
 //!
 //! This reads the **source tree**, not the registry, so it holds at any feature set — including
 //! the six-protocol CI gate, where a registry-walking test only ever sees what that build
-//! compiled. Every `src/server/**/mod.rs` that binds a `TcpListener` must name a timeout
-//! constant *and* go through `crate::server::accept_bounded`, somewhere in its protocol
-//! directory (nfs declares both in `guard.rs`, which is the right place for it).
+//! compiled. Every protocol directory under `src/server` whose `mod.rs` opens a TCP accept loop
+//! must name a timeout constant *and* go through `crate::server::accept_bounded`, somewhere in
+//! that directory (nfs declares both in `guard.rs`, which is the right place for it).
 //!
-//! Measured on 15 September 2026, before the sweep this test guards: of 32 servers with a
-//! `TcpListener` accept loop, **18 referenced no read or idle timeout at all**, and across the
-//! whole tree exactly **2** had any connection cap. A peer that connects and says nothing holds
-//! a socket, a task and an `AppState` entry forever, pre-authentication, on a server that will
-//! happily accept a hundred more.
+//! # This test could not see two thirds of the tree, and that is the part worth reading
 //!
-//! Both baselines are **shrink-only**. Adding a protocol to either is not a fix; it is a
-//! statement, with a reason, that the bound cannot be expressed there — and the reason has to
-//! be good enough to survive review.
+//! Until 16 September 2026 the derivation was `mod_src.contains("TcpListener")`. Most servers
+//! here do not write that: they call `crate::server::socket_helpers::create_reusable_tcp_listener`,
+//! whose *return type* is a `TcpListener` but whose call site never names one. So this ratchet
+//! walked **32** servers while **92** open a TCP accept loop, and the 60 it could not see
+//! included `http`, `tcp`, `telnet`, `ssh`, `ldap`, `imap`, `grpc`, `modbus`, `git` and
+//! `kubernetes`.
+//!
+//! **47 of those 60 had neither bound** — no cap and no deadline. A peer that connects and says
+//! nothing holds a socket, a task and an `AppState` entry forever, pre-authentication, on a
+//! server that will happily accept a hundred more; that is the free denial of service this test
+//! exists to prevent, and it was sitting behind the test's own blind spot.
+//!
+//! The lesson is the recurring one in this repository: **the test counted a token, not the
+//! thing.** A source-reading check must match every way the thing is actually written, and a
+//! green result over an unmeasured population is worse than no check, because it is trusted.
+//!
+//! # The baselines are large on purpose
+//!
+//! Both are **shrink-only**, and they now record real, measured debt rather than an artefact of
+//! what the derivation happened to match. Adding a protocol to either is not a fix; it is a
+//! statement, with a reason, that the bound cannot be expressed there — and the reason has to be
+//! good enough to survive review. Removing one is the work.
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features tcp --test tcp_server_bounds_ratchet -- --test-threads=100
@@ -22,32 +37,146 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Protocols allowed to bind a `TcpListener` without naming a read deadline.
+/// Protocols that open a TCP accept loop without naming a read deadline.
 ///
-/// Empty. Every one of the 32 has one.
-const TIMEOUT_BASELINE: &[&str] = &[];
+/// Measured 16 September 2026 across all 92, once the derivation stopped missing the servers
+/// that bind through `create_reusable_tcp_listener`. The previous value of this list was empty,
+/// which was true of the 32 it could see and false of the tree.
+///
+/// Entries are **leaf names** (`serial`, not `usb/serial`) — see `leaf()`.
+///
+/// Nothing here makes a deadline impossible. This is work left.
+const TIMEOUT_BASELINE: &[&str] = &[
+    "bitcoin",
+    "couchdb",
+    "dc",
+    "dynamo",
+    "elasticsearch",
+    "ftp",
+    "git",
+    "grpc",
+    "http",
+    "imap",
+    "irc",
+    "jsonrpc",
+    "kubernetes",
+    "ldap",
+    "maven",
+    "mercurial",
+    "modbus",
+    "nats",
+    "nfc",
+    "nntp",
+    "npm",
+    "oauth2",
+    "oci_registry",
+    "ollama",
+    "openai",
+    "openapi",
+    "openid",
+    "pop3",
+    "pypi",
+    "rdp",
+    "reverse_shell",
+    "rss",
+    "rtsp",
+    "s3",
+    "saml_idp",
+    "saml_sp",
+    "spark",
+    "sqs",
+    "ssh",
+    "stomp",
+    "tcp",
+    "telnet",
+    "keyboard",
+    "mouse",
+    "msc",
+    "serial",
+    "smartcard",
+    "vnc",
+    "webdav",
+    "xmlrpc",
+    "xmpp",
+    "yarn",
+];
 
-/// Protocols allowed to bind a `TcpListener` without a connection cap.
+/// Protocols that open a TCP accept loop without a connection cap.
 ///
-/// These reached the sweep with read deadlines already in place from earlier work and were out
-/// of its stated boundary, so the cap has not been applied to them yet. Nothing about them
-/// makes a cap impossible — this list is work left, not a design decision, and it may only
-/// shrink.
+/// Measured 16 September 2026 across all 92. The previous list held 14 — the ones the old
+/// derivation could see — and `accept_bounded` has 17 adopters, so the great majority of this
+/// tree accepts without limit.
+///
+/// Nothing here makes a cap impossible. This is work left.
 const CAP_BASELINE: &[&str] = &[
     "amqp",
+    "bgp",
+    "bitcoin",
+    "couchdb",
+    "dc",
     "doh",
     "dot",
+    "dynamo",
+    "elasticsearch",
     "finger",
+    "ftp",
+    "git",
     "gopher",
+    "grpc",
+    "hls",
+    "http",
     "ident",
+    "imap",
+    "ipp",
+    "irc",
+    "jsonrpc",
+    "kubernetes",
+    "ldap",
     "llmnr",
+    "maven",
+    "mercurial",
+    "modbus",
     "mongodb",
     "mqtt",
+    "nats",
+    "nfc",
+    "nntp",
+    "npm",
+    "oauth2",
+    "oci_registry",
+    "ollama",
+    "openai",
+    "openapi",
+    "openid",
+    "pop3",
     "proxy",
+    "pypi",
+    "rdp",
+    "reverse_shell",
+    "rss",
+    "rtsp",
+    "s3",
+    "saml_idp",
+    "saml_sp",
+    "smtp",
+    "snowflake",
+    "socks5",
+    "spark",
+    "sqs",
+    "ssh",
+    "stomp",
+    "tcp",
+    "telnet",
     "torrent_tracker",
+    "vnc",
+    "webdav",
     "webrtc",
     "webrtc_signaling",
+    "websocket",
     "whois",
+    "xmlrpc",
+    "xmpp",
+    "yarn",
 ];
 
 /// Anything that reads as "this read is bounded in time".
@@ -64,7 +193,7 @@ fn server_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server")
 }
 
-/// Every protocol directory under `src/server` whose `mod.rs` binds a `TcpListener`, with the
+/// Every protocol directory under `src/server` whose `mod.rs` opens a TCP accept loop, with the
 /// whole directory's Rust source concatenated — a protocol may put its bounds in a sibling
 /// module, and `nfs` does exactly that.
 fn tcp_servers() -> Vec<(String, String)> {
@@ -76,7 +205,10 @@ fn tcp_servers() -> Vec<(String, String)> {
         let Ok(mod_src) = std::fs::read_to_string(&mod_rs) else {
             continue;
         };
-        if !mod_src.contains("TcpListener") {
+        // Both ways a server opens a TCP accept loop. Matching only the first is what hid 60
+        // of 92 protocols from this test: `create_reusable_tcp_listener` returns a
+        // `TcpListener` without its caller ever writing the type.
+        if !mod_src.contains("TcpListener") && !mod_src.contains("create_reusable_tcp_listener") {
             continue;
         }
         let name = entry
