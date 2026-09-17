@@ -237,6 +237,26 @@ jobs:
             --test test_suite_hygiene_test \
             -- --test-threads=50
 
+      # BLOCKING, and it belongs here rather than in `registry-audit`: the script reads
+      # source only, so it needs no build, no features and no binaries — and
+      # `registry-audit` is `continue-on-error`, where a green result proves nothing.
+      #
+      # `--check` fails only on what a static read can be *sure* of: a Beta whose peer is
+      # only a circular crate, only a generic HTTP library, or absent entirely; a
+      # skip-and-pass gate; every test `#[ignore]`d. The cases that need judgement — a peer
+      # shared with the server, which is legitimate for quic and webrtc — are reported and
+      # do not fail.
+      #
+      # It went green on both sides for the first time on 16 September 2026, after its
+      # loudest warning turned out to fire on a condition nothing in the tree has. Making
+      # it blocking is what stops it drifting back: the alternative is an advisory job
+      # nobody reads, which is how the hand-maintained list in CLAUDE.md was wrong three
+      # times.
+      - name: Beta evidence check (server and client)
+        run: |
+          python3 scripts/beta_evidence_table.py --check
+          python3 scripts/beta_evidence_table.py --side client --check
+
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
     if: github.event_name != 'schedule'
