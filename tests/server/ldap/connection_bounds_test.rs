@@ -95,6 +95,26 @@ async fn start_server(state: &AppState) -> u16 {
     wait_for_port(state, server_id).await
 }
 
+/// The same server, but every event parks for a **human** at the dashboard instead of being
+/// answered — the `*` → manual rule the TUI gives every instance it creates.
+async fn start_server_with_manual_rule(state: &AppState) -> u16 {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let server_id = ServerForm {
+        protocol: "ldap".to_string(),
+        port: Some(0),
+        instruction: Some(String::new()),
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "*",
+            "handler": { "type": "manual", "timeout_secs": 300 }
+        })]),
+        ..Default::default()
+    }
+    .create(state, tx)
+    .await
+    .expect("create ldap server with a manual rule");
+    wait_for_port(state, server_id).await
+}
+
 #[tokio::test]
 async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_message_bound() {
     let state = new_state().await;
@@ -249,4 +269,43 @@ async fn the_connection_past_the_cap_gets_a_notice_of_disconnection_and_the_slot
         NOTICE_OF_DISCONNECTION,
         "the freed slot answered with another refusal — the permit is not being released"
     );
+}
+
+#[tokio::test]
+async fn a_bind_parked_for_a_human_is_never_closed_by_the_deadline() {
+    // The bound that matters most, and the one a careless implementation gets wrong: a `manual`
+    // rule parks the event for a **person** at the dashboard, with a 300-second default, and the
+    // peer is silent for the whole of that wait because it is waiting for us. If the deadline
+    // covered anything but the `read()` itself, this connection would be torn down at 30 seconds
+    // — while the operator was still reading the question.
+    //
+    // Nothing answers the intercept here. The assertion is that the connection is *still there*
+    // well past the first-message bound, which is exactly the state an operator needs.
+    let state = new_state().await;
+    let port = start_server_with_manual_rule(&state).await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+
+    peer.write_all(ANONYMOUS_BIND).await.expect("write bind");
+    peer.flush().await.expect("flush");
+
+    // Well past FIRST_MESSAGE_READ_TIMEOUT, and well short of the manual rule's own 300s.
+    tokio::time::sleep(FIRST_MESSAGE_READ_TIMEOUT + Duration::from_secs(15)).await;
+
+    let mut buf = [0u8; 256];
+    match tokio::time::timeout(Duration::from_secs(3), peer.read(&mut buf)).await {
+        Err(_) => {} // still open, still parked — the expected outcome
+        Ok(Ok(0)) => panic!(
+            "the connection was closed while its bind was parked for a human: the read deadline \
+             is covering the model/manual round-trip rather than the read, so no operator could \
+             ever answer an intercept on this protocol"
+        ),
+        Ok(Ok(n)) => panic!(
+            "the server answered a bind nobody had decided: {:02x?}",
+            &buf[..n]
+        ),
+        Ok(Err(e)) => panic!("the connection was reset while parked: {e}"),
+    }
 }
