@@ -51,6 +51,37 @@ which makes the explicit close the only thing that retires one. Before this the 
 registered nothing at all: the dashboard rail showed an LDAP server with no peers while clients
 were bound to it, and no connection-scoped scheduled task could be created.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry
+forever — for LDAP that means before any bind at all — on a server that would happily accept a
+hundred more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/ldap/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_MESSAGE_READ_TIMEOUT` | 30s | LDAP is client-speaks-first: nothing is sent until a BindRequest or an anonymous SearchRequest arrives, so a peer that has sent nothing has begun no session. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | There is no interval to sit above — LDAP defines no keepalive and OpenLDAP's own `idletimeout` defaults to **0**. Fifteen minutes is safe because of a property of *this* server: it implements no control and no extended operation, so persistent search and syncrepl — the only shapes in which a client legitimately holds an LDAP connection open in silence — cannot be requested here. Every operation is request/response. |
+| `MAX_CONNECTIONS` | 256 | Refusal: LDAP's own **Notice of Disconnection** (RFC 4511 §4.4.1) — an unsolicited `ExtendedResponse` on messageID 0, OID `1.3.6.1.4.1.1466.20036`, `resultCode = unavailable (52)`. `busy (51)` reads closer to the truth and is deliberately not used: §4.4.1 permits only `protocolError`, `strongerAuthRequired` and `unavailable` there, and anything else is a malformed notice. |
+
+**The deadline wraps the `read()` and nothing else.** `handle_message` may sit in an LLM
+round-trip, or in a `manual` rule parked for a human at the dashboard (300s by default), for
+minutes; none of that is this peer being silent, and none of it is inside the timeout. The
+second bound is armed only once a complete message has actually been *handled*, not on the first
+byte — a peer dripping a partial BER envelope has still begun no operation.
+
+An idle close writes nothing: the peer is being dropped for silence rather than refused, and a
+close is what every LDAP client already reads as an idle timeout. The reason lives in the log,
+tagged `decision=fail_closed_idle_timeout`.
+
+`tests/server/ldap/connection_bounds_test.rs` drives all three from the wire, including that the
+Notice of Disconnection arrives byte for byte on the connection past the cap and that releasing
+one admitted connection frees exactly one slot. Replacing the `tokio::time::timeout` around the
+read with a bare read makes the first test hang for its whole 70-second window and fail.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed, and
+`tests/accept_bounded_test.rs` covers the shared helper.
+
 ## No storage
 
 There is no directory. A bind is granted or refused by the model; a search returns the entries
