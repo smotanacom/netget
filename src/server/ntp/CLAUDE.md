@@ -20,10 +20,18 @@ not invoked on the default path.
 **RFC**: RFC 5905 (NTPv4), RFC 1305 (NTPv3)
 **Port**: 123 (UDP)
 **Privilege**: declares `PrivilegeRequirement::PrivilegedPort(123)`; any port above 1023 needs none.
-**Test coverage**: `tests/server/ntp/test.rs` (note the file is `test.rs`, not `e2e_test.rs`). It
-drives the server with `rsntp` and falls back to a raw 48-byte packet — but the fallback only prints
-its outcome and never asserts, so the suite passes even if the client rejects every reply. Treat it
-as a smoke test, not proof of client compatibility.
+**Test coverage**: `tests/server/ntp/test.rs` (note the file is `test.rs`, not `e2e_test.rs`).
+`rsntp` must **succeed** — it validates the origin-timestamp echo, the mode and the leap
+indicator, which are the three things a real client rejects a reply over — and the raw 48-byte
+path decodes every field by hand against RFC 5905.
+
+This paragraph used to say the raw path "only prints its outcome and never asserts, so the suite
+passes even if the client rejects every reply", and to call the whole file a smoke test. That was
+true of the old body, where `rsntp` failing was caught and printed as "this may be expected if
+LLM doesn't respond" — a timeout, an I/O error and a rejected packet were indistinguishable from
+a pass. It is not true now, and the description outlived the code by long enough to be worth
+naming: **a "treat this as a smoke test" note is exactly the claim to re-derive**, because it
+tells the next person not to trust coverage that may since have become real.
 
 ## Library Choices
 

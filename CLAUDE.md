@@ -1585,11 +1585,26 @@ Read before assuming a subsystem is sound:
   `content-length: 18446744073709551615` panicked in every test build and wrapped harmlessly in
   the shipped one, which is exactly backwards from where you want to find it.
 
-- **An `optional = true` dev-dependency means its evidence never runs in the blocking CI job.**
-  `lapin` is optional, so AMQP's Beta rating rests on a test the gate does not execute —
-  the same hole as a skip-when-missing gate, wearing different clothes. `async-nats` and
-  `async-stomp` are unconditional and do run. When a rating depends on a third-party client,
-  check whether that client is actually compiled where the gate runs.
+- **Check whether the client a rating depends on is compiled where the gate runs** — but check
+  it properly, because this entry got its own example wrong for months. It said `lapin` is an
+  `optional = true` **dev**-dependency and that AMQP's Beta therefore rested on a test the gate
+  never executes. `lapin` is a plain optional entry in `[dependencies]`, turned on by the `amqp`
+  feature, so it compiles wherever that feature does — the same shape as `etcd-client`. There is
+  no lapin-specific hole.
+
+  The distinction is real and worth keeping: an `optional = true` entry under
+  `[dev-dependencies]` is never built by a job that does not enable it, which is the same hole
+  as a skip-when-missing gate wearing different clothes. Verify which section the entry is in
+  before claiming it:
+
+  ```bash
+  awk '/^\[/{sec=$0} /^<crate> ?=/{print sec": "$0}' Cargo.toml
+  ```
+
+  What *is* true of AMQP is true of 110 other protocols: the blocking `test` job compiles six
+  features, so it runs none of their evidence. `registry-audit` compiles everything and is
+  `continue-on-error`, so a green PR is not evidence that any of it passed. That is the general
+  gap, not a property of lapin.
 
 - **`nfsserve` 0.10.2 has a pre-auth remote DoS, and the fix is a guard on our side of the
   socket.** It resizes buffers from a wire-supplied 31/32-bit length with no cap, so a

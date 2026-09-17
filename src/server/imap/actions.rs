@@ -628,7 +628,21 @@ impl Protocol for ImapProtocol {
                 "Manual line-based IMAP4rev1 parsing (tag/command/args split), plain TCP only",
             )
             .llm_control("Authentication + mailbox ops + FETCH")
-            .e2e_testing("Raw TCP client issuing tagged IMAP commands")
+            .e2e_testing(
+                "async-imap 0.11, a real third-party IMAP client, in \
+                 tests/server/imap/e2e_client_test.rs -- eleven tests, none #[ignore]d and none \
+                 skip-gated (async-imap is a plain optional dependency the `imap` feature turns \
+                 on, so it compiles wherever the feature does). It completes LOGIN success and \
+                 failure, CAPABILITY, LIST, SELECT and EXAMINE with the parsed EXISTS count \
+                 asserted, FETCH with decoded messages, SEARCH, STATUS, NOOP/LOGOUT and \
+                 concurrent sessions -- all through the client's own parser, so a reply it \
+                 rejected would fail rather than be counted as bytes on a socket. \
+                 This field read `Raw TCP client issuing tagged IMAP commands` for a long time, \
+                 which described a test that no longer exists and UNDER-stated the evidence by \
+                 the whole distance between a hand-written prober and a real client. \
+                 UNPROVEN: IMAPS, STARTTLS, SASL, and literal continuation ('+') handling, none \
+                 of which are implemented.",
+            )
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(143))
             .max_inbound_bytes(crate::server::imap::MAX_COMMAND_BYTES)
             .notes(
