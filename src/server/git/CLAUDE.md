@@ -132,6 +132,33 @@ that is always right. The cost is no progress or error side-channel.
 `NAK` alone; anything else gets `NAK` followed by the full pack. There is no
 common-ancestor computation, so a fetch always transfers everything.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry
+forever, pre-authentication, on a server that would happily accept a hundred more. It now
+declares both halves; the constants and the reasoning live beside them in `src/server/git/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | Smart HTTP is client-speaks-first, so a peer that has sent nothing has begun no request. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* requests, not a bound on a transfer. A clone is two requests on one keep-alive connection; the pack is built into a `Full<Bytes>` before the response is returned, so hyper writes an already-complete body and a slow reader is draining bytes rather than idling. git sets no keep-alive interval of its own; a client that has taken fifteen minutes to decide on its next request has gone away. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`** — Smart HTTP *is* HTTP, so `git` surfaces it as `The requested URL returned error: 503` rather than as an unexplained reset. |
+
+**The deadline bounds the silence, not the transfer.** hyper owns every read once
+`serve_connection` starts and keeps polling for frames *while a request is being answered*, so a
+deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog
+over `ConnectionActivity` instead, which reports a connection with a request in flight as not
+idle at all — so building a repository, including an LLM round-trip or a `manual` rule parked for
+a human (`src/state/intercepts.rs`, 300s by default), can never close the connection it is an
+answer for.
+
+`tests/server/git/connection_bounds_test.rs` drives both halves from the wire: a peer that says
+nothing is closed at the bound, and a peer that speaks is still served 38 seconds later. Removing
+the `tokio::time::timeout` around the `peek` makes the first test hang for its whole 70-second
+window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is
+removed, and `tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Not implemented
 
 Push (`git-receive-pack`), multiple commits or any history, tags, annotated tag
