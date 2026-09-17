@@ -125,13 +125,23 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   6. **No `#[ignore]` and no skip-when-missing gate in its suite.**
 
   **Cheapest candidates, re-derived 16 September 2026 against condition 1 — which is the one
-  that eliminates almost everything.** `coap` and `modbus` are the only two protocols that
-  already hold conditions 1, 2, 3 and 6: each names **two** independent clients in its own
-  `e2e_testing` (coap: libcoap's `coap-client` and the coap-lite/coap Rust codecs; modbus:
-  tokio-modbus and libmodbus's `mbpoll`), each has a `tests/server/<p>/` file using
-  `pcap_oracle`, each has a fuzz target with a corpus, and neither suite has an `#[ignore]` or a
-  skip gate. What is left for them is condition 4 (a test per declared bound) and condition 5
-  (both `CLAUDE.md` files re-verified against source).
+  that eliminates almost everything.** Three protocols hold conditions 1, 2, 3 and 6 today:
+  `coap` (libcoap's `coap-client` plus the coap-lite/coap Rust codecs), `modbus` (tokio-modbus
+  plus libmodbus's `mbpoll`) and `dns` (ISC `dig` plus Knot `kdig`). Each names two independent
+  clients in its own `e2e_testing`, each has a `tests/server/<p>/` file using `pcap_oracle`, each
+  has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What is left
+  for them is condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
+  re-verified against source).
+
+  **Ten protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
+  before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql`, `mongodb` and
+  `websocket` have neither a pcap-oracle test nor a fuzz target; `redis`, `mqtt` and `kafka` have
+  the oracle and no fuzz target. A fuzz target with a depth-bomb corpus is the cheaper of the two
+  to add. Derive this rather than trusting it:
+
+  ```bash
+  grep -rln pcap_oracle tests/server/<p>/ ; ls fuzz/fuzz_targets/ | grep <p>
+  ```
 
   This line used to name `whois`, `gopher`, `finger`, `dns`, `http`, `tcp`, `ntp` and `redis` as
   the cheapest candidates. Every one of them rests on a **single** client, so none of them is
