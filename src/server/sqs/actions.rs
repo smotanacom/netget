@@ -181,7 +181,28 @@ impl Protocol for SqsProtocol {
             .state(DevelopmentState::Beta)
             .implementation("hyper v1.5 HTTP with AWS JSON protocol")
             .llm_control("All SQS operations (SendMessage, ReceiveMessage, DeleteMessage)")
-            .e2e_testing("aws-sdk-sqs client")
+            .e2e_testing(
+                "TWO independent clients, neither #[ignore]d and neither able to skip. \
+                 (1) aws-sdk-sqs, the official Rust SDK, in tests/server/sqs/e2e_test.rs. \
+                 (2) the real `aws` CLI (botocore, Python -- a different SDK generation and a \
+                 different serialiser) in tests/server/sqs/real_client_test.rs, completing \
+                 CreateQueue, SendMessage and ReceiveMessage and asserting on what it PRINTED. \
+                 Rendering is what the second client adds: a field name or JSON shape the Rust \
+                 SDK tolerates through its generated deserialiser shows up there as a missing \
+                 column. Verified by renaming MessageId to messageId in the reply, which the \
+                 test then reports. \
+                 THE TEST CANNOT REACH REAL AWS, and that is enforced rather than assumed: \
+                 --endpoint-url is passed on every invocation, the port is asserted non-zero \
+                 before the CLI is spawned, and credentials, region, profile and the EC2 \
+                 metadata service are overridden in the child's environment. The reason is in \
+                 the project CLAUDE.md -- the DynamoDB CLIENT once dropped its target, let the \
+                 SDK resolve the production endpoint, and signed with ambient credentials. \
+                 UNPROVEN, and worth saying plainly: NO SIGNATURE IS VALIDATED. This server \
+                 serves every request unconditionally and does not put Authorization or \
+                 X-Amz-Date into the event, so the model cannot make that decision either. \
+                 Also unproven: long polling, batch operations, dead-letter queues, FIFO \
+                 queues, and the query-protocol wire format older SDKs use.",
+            )
             .notes("Virtual queues (no persistence); no auth; visibility timeouts are the LLM's job, the server tracks nothing")
             .max_inbound_bytes(crate::server::sqs::MAX_REQUEST_BYTES)
             .build()
