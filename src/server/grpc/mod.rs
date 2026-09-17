@@ -31,7 +31,7 @@ use crate::{console_error, console_info};
 #[cfg(feature = "grpc")]
 use bytes::Bytes;
 #[cfg(feature = "grpc")]
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Limited};
 #[cfg(feature = "grpc")]
 use hyper::{body::Incoming, header::HeaderValue, Request, Response, StatusCode};
 #[cfg(feature = "grpc")]
@@ -570,6 +570,60 @@ struct DynamicGrpcService {
     protocol: Arc<GrpcProtocol>,
 }
 
+/// A gRPC response body: the length-prefixed message, then a **trailing HEADERS frame**
+/// carrying `grpc-status`.
+///
+/// `Full<Bytes>` cannot emit trailers at all, which is how the status ended up in the initial
+/// headers beside a DATA frame — not gRPC, and `grpcurl` (grpc-go, the reference
+/// implementation) refuses such a stream outright:
+///
+/// ```text
+/// Internal: server closed the stream without sending trailers
+/// ```
+///
+/// The specification allows the status in the initial headers **only** for a Trailers-Only
+/// reply, which by definition carries no message. So this server could report a *failure* to a
+/// real gRPC client and could not report a *success* — every error reply is Trailers-Only by
+/// construction and was accidentally correct, while every successful unary call was malformed.
+/// That asymmetry is why the error-path test was real evidence and the success-path test had to
+/// be written `#[ignore]`d.
+///
+/// The identical defect was found and fixed in `src/server/etcd/mod.rs` at the same time.
+#[cfg(feature = "grpc")]
+type GrpcBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+
+/// A message frame followed by trailers carrying `grpc-status`.
+///
+/// Errors do not come through here — `grpc_error_response` is deliberately Trailers-Only.
+#[cfg(feature = "grpc")]
+fn grpc_body_with_trailers(body: Bytes, status: i32, message: &str) -> GrpcBody {
+    use http_body_util::StreamBody;
+
+    let mut trailers = hyper::HeaderMap::new();
+    trailers.insert(
+        "grpc-status",
+        HeaderValue::from_str(&status.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("13")),
+    );
+    trailers.insert(
+        "grpc-message",
+        HeaderValue::from_str(message).unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+
+    let frames: Vec<std::result::Result<hyper::body::Frame<Bytes>, std::convert::Infallible>> = vec![
+        Ok(hyper::body::Frame::data(body)),
+        Ok(hyper::body::Frame::trailers(trailers)),
+    ];
+
+    BodyExt::boxed(StreamBody::new(futures::stream::iter(frames)))
+}
+
+/// An empty body, for a Trailers-Only reply whose status rides in the initial headers.
+#[cfg(feature = "grpc")]
+fn empty_grpc_body() -> GrpcBody {
+    BodyExt::boxed(http_body_util::Empty::<Bytes>::new())
+}
+
 #[cfg(feature = "grpc")]
 impl DynamicGrpcService {
     /// Handle a gRPC HTTP/2 request
@@ -577,7 +631,7 @@ impl DynamicGrpcService {
         &self,
         req: Request<Incoming>,
         connection_id: crate::server::connection::ConnectionId,
-    ) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    ) -> Result<Response<GrpcBody>, hyper::Error> {
         // Extract service and method from path (format: /package.Service/Method)
         let path = req.uri().path();
         let (service_name, method_name) = match Self::parse_grpc_path(path) {
@@ -661,13 +715,18 @@ impl DynamicGrpcService {
         // Encode response with gRPC framing
         let response_frame = Self::encode_grpc_frame(&response_payload);
 
-        // Build the HTTP/2 response. Header values are compile-time constants here, so unlike
-        // the error path there is nothing that can fail to parse.
-        let mut response = Response::new(Full::new(Bytes::from(response_frame)));
+        // Build the HTTP/2 response. The status goes in TRAILERS, not here: `grpc-status` in
+        // the initial headers beside a DATA frame is what made grpcurl refuse every successful
+        // call, because the stream then ends after DATA with no trailing HEADERS at all.
+        let mut response = Response::new(grpc_body_with_trailers(
+            Bytes::from(response_frame),
+            GrpcStatus::Ok as i32,
+            "",
+        ));
         *response.status_mut() = StatusCode::OK;
-        let headers = response.headers_mut();
-        headers.insert("content-type", HeaderValue::from_static("application/grpc"));
-        headers.insert("grpc-status", HeaderValue::from_static("0"));
+        response
+            .headers_mut()
+            .insert("content-type", HeaderValue::from_static("application/grpc"));
 
         Log::new(Some(&self.status_tx))
             .debug(format!("gRPC response: {} bytes", response_payload.len()));
@@ -754,9 +813,12 @@ impl DynamicGrpcService {
     /// explanation instead of the static fallback. That fallback had become the *common* case
     /// rather than the last resort: netget's own LLM error strings begin with a literal `✗`, so
     /// every backend failure reached the client with its reason replaced by "internal error".
-    fn grpc_error_response(status: GrpcStatus, message: &str) -> Response<Full<Bytes>> {
+    fn grpc_error_response(status: GrpcStatus, message: &str) -> Response<GrpcBody> {
         let message = &header_safe(message);
-        let mut res = Response::new(Full::new(Bytes::new()));
+        // **Trailers-Only**, and deliberately so. With no message to send, the specification
+        // puts the status in the initial headers and ends the stream there. This is the one
+        // placement that is correct; the bug was applying it to replies that *do* carry a body.
+        let mut res = Response::new(empty_grpc_body());
         *res.status_mut() = StatusCode::OK;
         let headers = res.headers_mut();
         headers.insert("content-type", HeaderValue::from_static("application/grpc"));

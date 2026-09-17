@@ -5,6 +5,40 @@
 Tests gRPC server with dynamic protobuf schemas using real HTTP/2 clients and protobuf encoding. Validates schema
 loading, unary RPC handling, error responses, and concurrent requests.
 
+## The maturity evidence is `real_client_test.rs`, not this suite
+
+`DevelopmentState::Beta` rests on **grpcurl** — grpc-go, the reference implementation, and
+deliberately not tonic, which this crate depends on and this server does not use, so the
+evidence is not circular. Two tests, neither `#[ignore]`d and neither skipping when the binary
+is absent (they fail, naming `brew install grpcurl`): one completes a unary RPC and asserts
+grpcurl decoded our protobuf response field by field, the other asserts it read back our
+`NOT_FOUND` code and `grpc-message`.
+
+**Everything else here is `reqwest` with `http2_prior_knowledge`, which is not a gRPC client.**
+It hand-frames the 5-byte prefix and posts the bytes. That is fine for schema loading and
+routing, and it is structurally unable to check where the status lives, because reqwest exposes
+no trailers API.
+
+That gap hid a defect that broke **every successful RPC** against a real client. Until
+September 2026 the server wrote `grpc-status` into the initial HEADERS and emitted no trailers;
+a success has a non-empty body, so the stream ended after DATA with nothing, and grpcurl
+answered `Internal: server closed the stream without sending trailers` to every call. Errors
+were unaffected — an empty body makes them Trailers-Only by accident — so **only the success
+path was broken and the failure paths were the ones being asserted on**. `test_grpc_unary_rpc_basic`
+asserted `grpc-status: 0` *on the initial headers*, which is precisely the assertion that kept
+the bug satisfied; it now asserts that header is absent and checks the reply frame instead.
+
+The success test in `real_client_test.rs` was written `#[ignore]`d against the broken server,
+describing correct behaviour rather than the behaviour of the day. It is now un-ignored and is
+the regression test.
+
+```bash
+./cargo-isolated.sh test --no-default-features --features grpc \
+    --test server -- server::grpc --test-threads=8
+```
+
+`grpc` needs `protoc` on PATH to build and to compile a schema at startup.
+
 ## Test Strategy
 
 **Consolidated Tests with Schema Reuse** - Each test validates one aspect of gRPC:

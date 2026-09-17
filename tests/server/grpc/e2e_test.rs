@@ -209,13 +209,44 @@ When you receive GetUser requests, respond with a User message containing the re
         "Expected 200 OK for gRPC request"
     );
 
-    // Check grpc-status header
-    let grpc_status = response
-        .headers()
-        .get("grpc-status")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("missing");
-    assert_eq!(grpc_status, "0", "Expected grpc-status: 0");
+    // `grpc-status` is deliberately NOT here, and this assertion says so rather than going
+    // quiet about it. gRPC puts the status of a reply that carries a message in a trailing
+    // HEADERS frame; reqwest exposes no trailers API, so this test can see the initial headers
+    // and the body and nothing else. Asserting `grpc-status: 0` on the initial headers is
+    // exactly what let the real defect stand: until September 2026 the server put it there,
+    // this test was satisfied, and grpcurl could not complete a single successful call.
+    //
+    // `tests/server/grpc/real_client_test.rs` asserts the status, through grpc-go, which is
+    // the client that actually cares where it lives.
+    assert!(
+        response.headers().get("grpc-status").is_none(),
+        "grpc-status is back in the initial headers beside a message body, which is not gRPC \
+         and which grpc-go refuses outright — see grpc_body_with_trailers() in \
+         src/server/grpc/mod.rs"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/grpc"),
+    );
+
+    // What this test can still check for itself: a well-formed reply frame came back.
+    let body = response.bytes().await?;
+    assert!(
+        body.len() >= 5,
+        "a gRPC reply is a 5-byte header plus a message; got {} bytes",
+        body.len()
+    );
+    assert_eq!(body[0], 0, "compression flag must be clear");
+    let declared = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
+    assert_eq!(
+        declared,
+        body.len() - 5,
+        "the frame header declares {declared} bytes and {} follow",
+        body.len() - 5
+    );
 
     println!("✓ gRPC request successful");
 

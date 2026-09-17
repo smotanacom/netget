@@ -154,11 +154,11 @@ headers) is not parsed and does not reach the handler at all.
 
 - **Unary only.** No client, server or bidirectional streaming. Extra length-prefixed frames in
   a request body are ignored without error.
-- **No trailers — and this is now MEASURED, not suspected. It breaks every successful RPC
-  against a real gRPC client.** `grpc-status` is sent in the initial HEADERS alongside the DATA
-  body rather than in an HTTP/2 trailers frame. This entry used to say "grpc-go and grpcurl
-  **may** not [accept this] … there is no Go client available here to test against". grpcurl
-  1.9.4 was installed and pointed at the server on 16 September 2026, and the answer is:
+- **Trailers are emitted now, and the history is worth keeping** because it is the cleanest
+  example in this tree of a test suite that cannot see the bug it is sitting on. This entry
+  used to say `grpc-status` is sent in the initial HEADERS alongside the DATA body and that
+  grpc-go "**may** not" accept it, with "there is no Go client available here to test against".
+  grpcurl 1.9.4 was installed and pointed at the server on 16 September 2026:
 
   ```text
   ERROR:
@@ -166,22 +166,27 @@ headers) is not parsed and does not reach the handler at all.
     Message: server closed the stream without sending trailers
   ```
 
-  **The success and error paths differ, and the asymmetry is the whole mechanism.** A success
-  has a non-empty body, so `http_body_util::Full::is_end_stream()` is false: hyper emits HEADERS
-  (no END_STREAM) then DATA (END_STREAM) and the stream ends with no trailers, which grpc-go
-  rejects. An **error** has an empty body, `is_end_stream()` is true, and hyper emits a single
-  HEADERS frame with END_STREAM — a valid gRPC **Trailers-Only** response, which grpc-go
-  accepts and parses. So NetGet can report a *failure* to a real gRPC client today and cannot
+  **The success and error paths differed, and the asymmetry is the whole mechanism.** A success
+  has a non-empty body, so `http_body_util::Full::is_end_stream()` is false: hyper emitted
+  HEADERS (no END_STREAM) then DATA (END_STREAM) and the stream ended with no trailers, which
+  grpc-go rejects. An **error** has an empty body, `is_end_stream()` is true, and hyper emits a
+  single HEADERS frame with END_STREAM — a valid gRPC **Trailers-Only** response, which grpc-go
+  accepts and parses. So NetGet could report a *failure* to a real gRPC client and could not
   report a *success*.
 
-  The caution about tonic still stands and is why this was not changed in the same pass that
-  found it: moving the status into trailers changes how tonic classifies the response, and the
-  sibling etcd protocol is verified against the real `etcd_client` crate through the current
-  behaviour. The fix needs both clients checked, not one.
+  `grpc_body_with_trailers` now builds a two-frame `StreamBody` — the length-prefixed message,
+  then `Frame::trailers` carrying `grpc-status` — boxed into a `BoxBody`, because `Full<Bytes>`
+  cannot emit trailers at all. `grpc_error_response` is unchanged: Trailers-Only is the one
+  case where the status belongs in the initial headers.
 
-  `tests/server/grpc/real_client_test.rs::test_grpc_unary_call_against_real_grpcurl` is written,
-  `#[ignore]`d, and is the regression test: un-ignore it when trailers are emitted. It asserts
-  correct behaviour rather than the current behaviour, deliberately.
+  **The caution about tonic was tested rather than assumed, and it was unfounded.** The sibling
+  etcd protocol had the identical defect, is verified against the real `etcd_client` crate, and
+  passes unchanged with trailers — trailers are what tonic expects too, and the header
+  placement was the non-standard one. Both were fixed in the same pass.
+
+  `tests/server/grpc/real_client_test.rs::test_grpc_unary_call_against_real_grpcurl` was
+  written `#[ignore]`d against the broken server, deliberately asserting correct behaviour
+  rather than the behaviour of the day. It is now un-ignored and is the regression test.
 - **No reflection** (above).
 - **Request compression rejected**, not decompressed.
 - **No deadline enforcement** — `grpc-timeout` is ignored.
@@ -235,11 +240,21 @@ Return the sum of a and b.
 
 ## Verified
 
+**State: Beta**, September 2026, on **grpcurl** — grpc-go, the reference implementation, and
+deliberately not tonic, which this crate depends on and this server does not use.
+`tests/server/grpc/real_client_test.rs` has two tests, neither `#[ignore]`d and neither
+skipping when the binary is missing: one completes a unary RPC and asserts grpcurl decoded our
+protobuf response field by field, the other asserts it read back our `NOT_FOUND` code and
+`grpc-message`.
+
 `tests/server/grpc/e2e_test.rs` — 5 tests covering basic unary, inline proto text, `.proto`
-file loading, error responses and concurrent requests. All pass. They drive the server with
-hand-framed HTTP/2 via `reqwest` (`http2_prior_knowledge`), **not** a real gRPC client, which is
-why the missing-trailers question above is open: `reqwest` does not care about trailers, so no
-test here can detect it either way.
+file loading, error responses and concurrent requests. They drive the server with hand-framed
+HTTP/2 via `reqwest` (`http2_prior_knowledge`), **not** a real gRPC client, and that is why
+they could not see the trailers defect: `reqwest` exposes no trailers API, so no test here can
+detect it either way. `test_grpc_unary_rpc_basic` used to assert `grpc-status: 0` on the
+*initial* headers, which is what kept the defect satisfied for as long as it did; it now
+asserts that header is **absent** and checks the reply frame instead, leaving the status to the
+client that cares where it lives.
 
 ## References
 

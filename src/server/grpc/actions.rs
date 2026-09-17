@@ -121,7 +121,12 @@ impl Protocol for GrpcProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta, September 2026. grpcurl — grpc-go, the reference implementation, and
+            // deliberately NOT tonic, which this server links but does not use — completes a
+            // real unary RPC and reads back a real error status. Neither test is #[ignore]d,
+            // neither skips when the binary is absent, and the peer is not the crate the
+            // server frames with.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "prost-reflect over a hand-routed hyper HTTP/2 server. The schema is compiled \
                  once at startup by protoc, which must be on PATH unless a pre-built \
@@ -133,33 +138,35 @@ impl Protocol for GrpcProtocol {
                  changed at runtime.",
             )
             .e2e_testing(
-                "REAL THIRD-PARTY CLIENT for the ERROR path only: grpcurl 1.9.4 (grpc-go) in \
-                 tests/server/grpc/real_client_test.rs. That test is NOT #[ignore]d and NOT \
-                 skip-gated — it FAILS, naming `brew install grpcurl`, when grpcurl is absent — \
-                 and it asserts grpcurl decoded our NOT_FOUND code and grpc-message. \
-                 THE SUCCESS PATH IS BROKEN AGAINST REAL gRPC CLIENTS, measured 16 September \
-                 2026: grpcurl rejects EVERY successful unary RPC with `Internal: server closed \
-                 the stream without sending trailers`. gRPC requires the status of a response \
-                 that carried a message to arrive in an HTTP/2 TRAILERS frame; mod.rs writes \
-                 grpc-status into the INITIAL HEADERS and never emits trailers. A success has a \
-                 non-empty body, so Full::is_end_stream() is false and hyper sends HEADERS then \
-                 DATA and then ends the stream with nothing — which grpc-go refuses. An ERROR \
-                 has an empty body, is_end_stream() is true, and hyper emits one HEADERS with \
-                 END_STREAM, i.e. a valid Trailers-Only response, which is exactly why the \
-                 error path works and the success path does not. So NetGet can currently report \
-                 a FAILURE to a real gRPC client and cannot report a SUCCESS. The success test \
-                 is present and #[ignore]d BECAUSE IT FAILS; it describes correct behaviour, is \
-                 the regression test for the fix, and IS NOT EVIDENCE. Everything else in \
-                 tests/server/grpc is reqwest with http2_prior_knowledge, which does not \
-                 implement gRPC — it never looks for trailers, so it cannot see this bug.",
+                "REAL THIRD-PARTY CLIENT, both paths: grpcurl 1.9.4 (grpc-go) in \
+                 tests/server/grpc/real_client_test.rs. Neither test is #[ignore]d and neither \
+                 is skip-gated — they FAIL, naming `brew install grpcurl`, when grpcurl is \
+                 absent. One completes a unary RPC and asserts grpcurl decoded our protobuf \
+                 response field by field; the other asserts it read back our NOT_FOUND code and \
+                 grpc-message. grpc-go is deliberately not tonic, which this crate depends on \
+                 but this server does not use, so the evidence is not circular. \
+                 The success test was WRITTEN #[ignore]d, because when it was written it \
+                 failed: grpcurl rejected EVERY successful unary RPC with `Internal: server \
+                 closed the stream without sending trailers`. mod.rs wrote grpc-status into the \
+                 INITIAL HEADERS and emitted no trailers at all; a success has a non-empty body \
+                 so hyper sent HEADERS then DATA and ended the stream with nothing, which \
+                 grpc-go refuses. An ERROR has an empty body and became a valid Trailers-Only \
+                 response by accident, which is exactly why the error path worked and the \
+                 success path did not — NetGet could report a FAILURE to a real gRPC client and \
+                 could not report a SUCCESS. Fixed: the success reply is now a message frame \
+                 followed by real trailers, the error reply stays Trailers-Only, and both \
+                 placements are asserted so neither can drift. \
+                 UNPROVEN: streaming of any kind (unary only), server reflection (not served), \
+                 and compression (rejected). The rest of tests/server/grpc is reqwest with \
+                 http2_prior_knowledge, which does not implement gRPC and never looks at \
+                 trailers — which is why it could not see the bug and is not the evidence.",
             )
             .notes(
                 "Unary RPCs only - no client, server or bidirectional streaming. Server \
                  reflection is NOT served (tonic-reflection is a dependency and is referenced \
                  nowhere in src/), so a reflection call gets 12 UNIMPLEMENTED and grpcurl needs \
                  -proto or -protoset. Request compression is rejected. bytes fields cross the \
-                 action boundary as base64. KNOWN DEFECT: no HTTP/2 trailers are ever emitted, \
-                 so a real gRPC client cannot accept a successful response - see e2e_testing.",
+                 action boundary as base64.",
             )
             .max_inbound_bytes(crate::server::grpc::MAX_REQUEST_BYTES)
             .build()
