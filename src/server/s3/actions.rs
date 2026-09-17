@@ -416,13 +416,32 @@ impl crate::llm::actions::protocol_trait::Protocol for S3Protocol {
             .implementation("hyper v1.5 HTTP with manual S3 REST API")
             .llm_control("All S3 operations (GetObject, PutObject, ListBuckets)")
             .e2e_testing(
-                "rust-s3 0.37 (`Bucket` with path-style addressing) is the client: it completes \
-                 ListObjects, GetObject, PutObject, HeadObject and DeleteObject against the \
-                 server. Each retry-wrapped operation is pinned to `expect_calls(1)`, so the \
-                 test only passes if rust-s3 accepted the first response — including parsing our \
-                 ListObjects XML into `contents` (tests/server/s3/e2e_test.rs, not #[ignore]d). \
-                 Not proven: SigV4, multipart upload, versioning",
+                "TWO independent clients, neither #[ignore]d and neither able to skip. \
+                 (1) rust-s3 0.37 (`Bucket`, path-style) in tests/server/s3/e2e_test.rs: \
+                 ListObjects, GetObject, PutObject, HeadObject and DeleteObject, each pinned to \
+                 expect_calls(1) through a retry helper so a response rust-s3 REJECTED would \
+                 retry and break the count. \
+                 (2) the real `aws s3api` CLI (botocore) in tests/server/s3/real_client_test.rs: \
+                 it parses our hand-written ListBucketResult XML itself and prints JSON, and the \
+                 test asserts two objects, both keys -- including one containing a `/`, the one \
+                 most likely to be mangled by escaping -- and Size as a number; then GetObject \
+                 writes the body to a file and the bytes are compared. Verified by adding a \
+                 third object to the listing, which the test then reports. \
+                 S3 is the one protocol in the AWS family where the second client exercises a \
+                 hand-written DOCUMENT rather than a serde struct, which is why an element name \
+                 or namespace our own parser round-trips happily is worth a second reader. \
+                 botocore is forced to path-style addressing (AWS_S3_ADDRESSING_STYLE); its \
+                 default puts the bucket in the hostname, which is neither resolvable here nor \
+                 what this server routes. \
+                 THE TEST CANNOT REACH REAL AWS: --endpoint-url on every call, the port asserted \
+                 non-zero before the CLI is spawned, and credentials, region, profile and the \
+                 EC2 metadata service overridden in the child's environment -- the sibling \
+                 DynamoDB client once signed real requests against real AWS by dropping its \
+                 target. \
+                 UNPROVEN, and worth saying plainly: NO SIGNATURE IS VALIDATED. Also unproven: \
+                 multipart upload, versioning, pagination past the first page, and range GETs.",
             )
+
             .notes("Virtual objects (no persistence); no SigV4 auth; binary bodies via encoding=base64")
             .max_inbound_bytes(crate::server::s3::MAX_REQUEST_BYTES)
             .build()
