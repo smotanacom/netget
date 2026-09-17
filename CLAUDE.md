@@ -974,14 +974,17 @@ therefore green on its first run whatever it captured — review the file before
 
 Four tests scan **all** 136 server and 91 client protocols by reading source, so they hold at
 any feature set — including the 6-protocol CI gate, where a registry-walking test only ever
-sees what that build compiled. Each carries a baseline that **may only shrink**:
+sees what that build compiled. Each carries a baseline that **may only shrink**, and three of
+the four have reached zero (re-derived 16 September 2026 — the figures here read 6 clients, 20
+params and 18 examples for months after the work that removed them, so **read the baseline out
+of the test file**, not out of this table):
 
 | Test | Catches | Baseline |
 |---|---|---|
-| `client_event_wiring_test` | a client that asks the model and cannot act on the answer — including `if let Err(..)` with no success arm, `Ok(ClientLlmResult { .., .. })` dropping actions, `Ok(_) =>`, and count-and-log | 6 clients |
-| `event_emit_sites_test` | an `EventType` declared and never raised (the USB/BLE/imap defect) | empty, both trees |
-| `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | 20 params |
-| `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | 18 examples |
+| `client_event_wiring_test` | a client that asks the model and cannot act on the answer — including `if let Err(..)` with no success arm, `Ok(ClientLlmResult { .., .. })` dropping actions, `Ok(_) =>`, and count-and-log | **empty** (all three lists) |
+| `event_emit_sites_test` | an `EventType` declared and never raised (the USB/BLE/imap defect) | **empty**, both trees |
+| `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | **4 params** |
+| `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | **empty** |
 | `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
 
 A third check worth understanding: `event_action_declarations_test` probes each advertised
