@@ -276,7 +276,25 @@ impl Protocol for LdapProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(389))
             .implementation("Manual ASN.1 BER encoding/decoding, no LDAP crate")
             .llm_control("Bind decisions, search results, add/modify/delete outcomes")
-            .e2e_testing("ldap3 crate and the ldapsearch/ldapadd command-line tools")
+            .e2e_testing(
+                "ldap3 0.11, a real third-party LDAP client, in \
+                 tests/server/ldap/e2e_test.rs -- not #[ignore]d and not skip-gated (ldap3 is a \
+                 plain optional dependency the `ldap` feature turns on, so it compiles wherever \
+                 the feature does). It binds, searches, and parses entries through \
+                 SearchEntry::construct, so a reply it rejected would fail rather than be \
+                 counted as bytes on a socket. It is independent of `ldap3_proto`, the crate \
+                 this server frames with: different project, different authors, despite the \
+                 similar name. \
+                 THIS FIELD USED TO CLAIM `the ldapsearch/ldapadd command-line tools` AS WELL, \
+                 AND NOTHING ASSERTING DRIVES THEM. ldapsearch appears only in tests/eval, the \
+                 real-model harness, which skips unless NETGET_USE_OLLAMA=1 and reports rather \
+                 than asserts -- its own header says it must never gate a PR. An eval probe is \
+                 a useful signal and is not maturity evidence. \
+                 So this rating rests on ONE client, which is the open item a second one would \
+                 close; `ldapsearch` is installed on this machine and is the obvious candidate. \
+                 UNPROVEN: LDAPS and StartTLS, SASL, referrals, and the write operations, which \
+                 are acknowledged without anything changing.",
+            )
             .notes(
                 "LDAPv3 simple bind only - no SASL, no StartTLS, no LDAPS. Search filters, \
                  scope and requested-attribute lists are parsed off the wire but not \
