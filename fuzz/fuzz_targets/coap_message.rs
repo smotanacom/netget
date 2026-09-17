@@ -25,7 +25,23 @@ fuzz_target!(|data: &[u8]| {
 
     // Re-encoding an accepted message must itself decode. A message that decodes but whose
     // encoding does not is a desync the server would emit onto the wire.
-    let reencoded = msg.encode();
+    //
+    // `encode` returns a `Result` — it refuses an over-long token or option value rather than
+    // narrowing it to fit — and **that is what broke this target**: it was written when
+    // `encode` returned a bare `Vec<u8>`, `0996d00f` made it fallible hours later, and
+    // `CoapMessage::decode(&reencoded)` has been an E0308 ever since. Nothing noticed, because
+    // `fuzz/` is its own workspace that `cargo check` at the repository root never compiles,
+    // and no CI job builds it. A fuzz target that does not compile has not run, so CoAP's
+    // "a fuzz target exists and has run clean" was false from September 15 2026 until it was
+    // rebuilt in this pass.
+    //
+    // `expect` rather than a silent `let Ok(..) else`: neither refusal is *reachable* from a
+    // decoded message — `decode` bounds tkl at 8 and an option length at u16::MAX, which are
+    // exactly the two bounds `encode` checks — so an `Err` here is a real disagreement between
+    // the two directions and belongs in a crash artefact rather than in an early return.
+    let reencoded = msg
+        .encode()
+        .expect("encode refused a message decode accepted: the two bounds disagree");
     assert!(
         CoapMessage::decode(&reencoded).is_ok(),
         "a decoded CoAP message re-encoded into something undecodable"
