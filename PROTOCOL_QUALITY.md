@@ -243,7 +243,9 @@ once these exist.
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
 declare, whether or not anyone has looked at it.
 
-- [x] **Idle and first-read timeouts on the 18 TCP servers without any.** `cassandra`, `db2`,
+- [ ] **Idle and first-read timeouts on every TCP server without any.** (Re-opened — see the
+  connection-cap item below for why the original measurement was 18 of 32 rather than 52 of 92.)
+  Originally: `cassandra`, `db2`,
   `etcd`, `kafka`, `m3ua`, `mcp`, `memcached`, `mssql`, `mysql`, `nfs`, `postgresql`, `redis`,
   `smb`, `svn`, `tls`, `tor_relay`, `torrent_peer`, `zookeeper`. `whois`'s
   `FIRST_QUERY_READ_TIMEOUT`/`IDLE_AFTER_REPLY_TIMEOUT` pair is the shape. *Why:* a peer that
@@ -251,11 +253,27 @@ declare, whether or not anyone has looked at it.
   them is a free denial of service on a server with no connection cap. *Verify:* ratchet — any
   `mod.rs` with `TcpListener` must reference a timeout constant. *Effort:* M.
 
-- [x] **A connection cap on every accept loop.** Two servers have one. A shared
-  `accept_bounded(listener, max)` helper in `server/` that every accept loop calls, refusing
-  past the cap with the protocol's own "busy" vocabulary where one exists (SMTP 421, HTTP 503,
-  RESP `LOADING`) and a close where none does. *Why:* the NFS guard chose 256 for a reason;
-  nothing else chose anything. *Effort:* M.
+- [ ] **A connection cap on every accept loop.** A shared `accept_bounded(listener, max)` helper
+  in `server/` that every accept loop calls, refusing past the cap with the protocol's own
+  "busy" vocabulary where one exists (SMTP 421, HTTP 503, RESP `LOADING`) and a close where none
+  does. *Why:* the NFS guard chose 256 for a reason; nothing else chose anything. *Effort:* M.
+
+  **Re-opened 16 September 2026, along with the timeout item above, because the ratchet that
+  closed both could not see two thirds of the tree.** Its derivation was
+  `mod_src.contains("TcpListener")`, and most servers here bind through
+  `create_reusable_tcp_listener`, whose return type is a `TcpListener` but whose call site never
+  writes one. So it walked **32** servers while **92** open a TCP accept loop, and the 60 it
+  could not see include `http`, `tcp`, `telnet`, `ssh`, `ldap`, `imap`, `grpc`, `modbus`, `git`
+  and `kubernetes`. **47 of them have neither bound.**
+
+  Measured across all 92: 52 name no read deadline, 68 have no connection cap. The ratchet's
+  derivation is fixed and both baselines now record that debt, shrink-only. The sweep to shrink
+  them is in flight.
+
+  This is the session's clearest instance of the recurring failure: **the test counted a token,
+  not the thing**, and a green result over an unmeasured population is worse than no check,
+  because it is trusted. The same shape produced "19 skip gates", "6 peer handles" and the
+  orphaned-test derivation that reported every directory.
 
 - [x] **Max message / frame size declared in metadata and asserted by a test.** *(16 September
   2026.)* `ProtocolMetadataV2::max_inbound_bytes` with a builder method; **85 of 158 server
