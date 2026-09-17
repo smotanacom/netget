@@ -46,14 +46,14 @@ and drift.
 | Protocols with a real third-party client binary **already on this machine** | 67 of 100 checked | `which` over a candidate table |
 | Blocking CI test job | 6 protocols | `.github/workflows/ci.yml` |
 
-## Where it stands (re-derived 15 September 2026, same commands)
+## Where it stands (re-derived 16 September 2026, same commands)
 
 | Measure | Was | Now |
 |---|---|---|
-| Server maturity | 39 Beta · 118 Experimental | **45 Beta** · 112 Experimental |
+| Server maturity | 39 Beta · 118 Experimental | **51 Beta** · 106 Experimental |
 | Servers with an LLM path and no `decision=` tag | 27 | **1** (`tor_relay`, baselined) |
-| Servers with a connection cap | 2 | **37** |
-| TCP accept-loop servers with no read/idle timeout | 18 of 32 | **0 of 32** |
+| Servers with a connection cap | 2 | **55 of 92** |
+| TCP accept-loop servers with no read/idle timeout | 52 of 92 | **22 of 92** |
 | `spawn_server_task` / `spawn_client_task` sites | 3 | **148** |
 | `get_dependencies()` overrides | 1 | 4 |
 | Hand-rolled control-character filters | 25 (only 12 were filters) | **12**, each with a reason |
@@ -67,11 +67,20 @@ and drift.
 | Client maturity | 1 Beta · 97 Experimental | **unchanged, now on a written bar** — audited 16 Sep, nothing qualified |
 | Soak coverage | none | **4 protocol shapes × 10 000 connections**, nightly, no leak found |
 
-One correction to my own derivation above: the timeout scan reported `nfs` as having none, because
-its bounds live in `guard.rs` rather than `mod.rs`. `FIRST_RECORD_READ_TIMEOUT` and
-`IDLE_BETWEEN_RECORDS_TIMEOUT` are both there. The real figure is 32 of 32 — a reminder that a
-per-protocol scan anchored on one filename under-reports whenever a protocol splits its
-implementation, which several do.
+**Two rows were re-derived downward on 16 September, and the reason is the session's recurring
+one.** They read "**0 of 32**" and "**37**" because the ratchet they came from derived its
+population as `mod.rs` containing the literal `TcpListener` — and 60 of the 92 TCP servers bind
+through `create_reusable_tcp_listener`, whose call site never writes the type. The denominator
+was wrong, so the numerator meant nothing. Measured across all 92 and with the token list
+tightened to match *mechanisms* rather than timeout-shaped names, 52 had no read deadline and
+68 had no cap; three sweeps have taken those to 22 and 55, and the rest are on the ratchet's
+shrink-only baselines.
+
+An earlier correction in the same shape is worth keeping beside it: the timeout scan once
+reported `nfs` as having none, because its bounds live in `guard.rs` rather than `mod.rs`
+(`FIRST_RECORD_READ_TIMEOUT` and `IDLE_BETWEEN_RECORDS_TIMEOUT` are both there). **A per-protocol
+scan anchored on one filename, one type name or one spelling of a call under-reports, and a
+green result over an unmeasured population is worse than no check because it is trusted.**
 
 Two of those numbers correct `CLAUDE.md`: command-channel adoption is 99 clients, not "`tcp` and
 `telnet`"; and the panic hook exists but restores the terminal rather than logging.
