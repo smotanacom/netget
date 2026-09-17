@@ -6,3 +6,5 @@ pub mod e2e_test;
 pub mod llm_failure_test;
 #[cfg(all(test, feature = "mqtt"))]
 pub mod peer_inject_test;
+#[cfg(all(test, feature = "mqtt"))]
+pub mod real_client_test;

@@ -95,7 +95,21 @@ impl Protocol for CoapProtocol {
                 "Resource representations, media type and response code. Message type, \
                  message id and token echo are server-side",
             )
-            .e2e_testing("coap-lite 0.13 codec and the coap 0.27 UDP client (independent)")
+            .e2e_testing(
+                "TWO independent peers, neither #[ignore]d and neither able to skip. \
+                 (1) coap-lite 0.13 and the coap 0.27 UDP client, Rust codecs independent of \
+                 this server's hand-rolled one. (2) libcoap 4.3.5's own `coap-client` binary -- \
+                 a C implementation -- in tests/server/coap/real_client_test.rs::\
+                 test_coap_get_post_and_not_found_against_libcoap_client, which FAILS rather \
+                 than skips when libcoap is absent: a GET whose 2.05 body libcoap parses and \
+                 prints is asserted exactly, a POST whose payload is echoed back in a 2.04 is \
+                 asserted to have survived both directions, and a 4.04 for a missing resource \
+                 is asserted to be reported as an error and to carry no body. UNPROVEN: \
+                 Observe (RFC 7641), Block-wise transfer (RFC 7959), DTLS/CoAPS on 5684, \
+                 separate (non-piggybacked) responses, retransmission of Confirmable \
+                 responses, message deduplication (there is no cache, so a retransmitted CON \
+                 produces a second handler call) and multicast.",
+            )
             .notes(
                 "Validated against coap-lite 0.13, an independent codec, which decoded this \
                  server's replies and encoded the requests it answered: CON/ACK with token \

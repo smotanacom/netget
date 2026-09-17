@@ -183,16 +183,42 @@ this module.
 
 ## Verified
 
-**State: Beta**, and the evidence holds up to the usual checks:
-`tests/server/etcd/e2e_test.rs` drives the real `etcd_client` crate (tonic-based) through
-put / get / range / delete against the mocked LLM; it is not `#[ignore]`d, it does not skip
-when anything is missing, and `etcd-client` is a plain optional dependency the `etcd` feature
-turns on, so it compiles wherever the feature does — not an optional dev-dependency that the
-blocking CI job would never build. Not verified against `etcdctl`
-or any other Go client: the gRPC status is returned in the initial HEADERS rather than in
-HTTP/2 trailers, which tonic accepts and which grpc-go may not. Do not "fix" that without a Go
-client to test against — moving the status into trailers would change how tonic classifies the
-response and could break the path that currently works.
+**State: Experimental**, demoted from Beta in September 2026 by the Go client this file
+used to say nobody should proceed without.
+
+The Rust evidence is intact and worth keeping: `tests/server/etcd/e2e_test.rs` drives the real
+`etcd_client` crate (tonic-based) through put / get / range / delete against the mocked LLM;
+it is not `#[ignore]`d, it does not skip when anything is missing, and `etcd-client` is a plain
+optional dependency the `etcd` feature turns on, so it compiles wherever the feature does — not
+an optional dev-dependency that the blocking CI job would never build.
+
+**What changed is that the caveat stopped being hypothetical.** This file said the gRPC status
+is returned in the initial HEADERS rather than in HTTP/2 trailers, that tonic accepts it and
+grpc-go "may not", and that it should not be touched without a Go client to test against.
+A Go client was tried:
+
+```
+$ etcdctl --endpoints=http://127.0.0.1:PORT put /config/database localhost:5432
+Error: rpc error: code = Internal desc = server closed the stream without sending trailers
+```
+
+grpc-go cannot complete a **single** RPC that carries a body — not a corner of the API, the
+first Put. The spec requires `grpc-status` in Trailers for any response with a body;
+`grpc_status_reply` and the success path both put it in the initial HEADERS, and the success
+path then writes a `Full<Bytes>` DATA frame, so the stream ends with no trailing HEADERS. The
+error paths survive only because an empty body makes them Trailers-Only by accident, which is
+why every test in the tree passes.
+
+That makes the Beta rating an instance of one lenient client agreeing with one bug — the same
+shape CLAUDE.md records for `mysql`/`mysql_async`. Hence `Experimental`.
+
+**The fix, when someone takes it**: emit real HTTP/2 trailers on the success path. The concern
+this file raised — that moving the status would break tonic — is worth testing rather than
+assuming, because trailers are what tonic expects too; the header placement is the non-standard
+one. Keep the Trailers-Only shape for errors, which is already correct. Then add the `etcdctl`
+test: put, get, `get --prefix` (three pairs, so repeated fields are exercised) and `del`,
+asserting on what `etcdctl` printed, hard-failing when the binary is absent. That test is
+written and was thrown away rather than committed red; it is roughly eighty lines.
 
 ## References
 

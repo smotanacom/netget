@@ -93,10 +93,9 @@ variants so a broken server fails the test in ten seconds instead of hanging it.
 
 ## Coverage gaps
 
-- **No external binary peer.** `libcoap`'s `coap-client` and `aiocoap-client` exist and would be
-  a third, non-Rust implementation; neither is installed here and neither is exercised. The two
-  Rust crates are independent of this server but share a language and, between themselves, a
-  codec.
+- ~~**No external binary peer.**~~ Closed September 2026: `real_client_test.rs` drives
+  libcoap 4.3.5's own `coap-client`, a C implementation — see below. `aiocoap-client` would be
+  a fourth and is still not exercised.
 - **Observe and Block-wise are not implemented and not tested.** So is DTLS/CoAPS.
 - No test for `send_coap_reset` or `ignore_coap_request` as *model* choices — the RST path is
   covered only via the ping, which the server answers itself.
@@ -121,3 +120,31 @@ None across repeated runs. The realistic future flake is the `coap` client's own
 timer firing on a loaded machine while an LLM call is in flight — this server only sends
 piggybacked responses, so a slow answer looks like a lost ACK. With mocked LLM calls the answer
 is immediate, so it does not arise here; with `--use-ollama` it could.
+
+## The binary peer: libcoap's `coap-client`
+
+`real_client_test.rs::test_coap_get_post_and_not_found_against_libcoap_client` drives
+libcoap 4.3.5's `coap-client` — C, by a different project, sharing nothing with this server's
+hand-rolled codec or with `coap-lite`. It is **not** `#[ignore]`d and it **fails** rather than
+skipping when libcoap is absent.
+
+Three exchanges, each asserted on what libcoap parsed and printed:
+
+| request | answer | asserted |
+|---|---|---|
+| `GET /sensors/moisture` | 2.05 Content, `application/json` | the exact body, printed on stdout |
+| `POST /actuators/valve` with `-e open` | 2.04 Changed | `valve=open` — so the request payload reached the model *and* the response payload came back |
+| `GET /nope` | 4.04 Not Found | libcoap reports `4.04`, and the body is asserted **not** to be the moisture representation |
+
+libcoap prints a payload only after accepting version, type, token length, code, message id,
+option deltas and the payload marker, and only when the token and message id match the request
+it sent. That is what a raw-socket assertion cannot reach.
+
+Two things about driving it:
+
+- **Every invocation passes `-B`,** which bounds libcoap's own retransmission window. The
+  server has no deduplication cache, so a retransmitted CON produces a *second* event and a
+  second handler call; the mock rules use `expect_at_least` rather than `expect_calls` for
+  exactly that reason, and under a loaded runner that is not hypothetical.
+- **The 4.04 case is what keeps the other two honest.** Without a negative path, a server that
+  answered 2.05 to every request would satisfy both positive assertions.

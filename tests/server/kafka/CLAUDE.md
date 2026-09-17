@@ -141,3 +141,44 @@ surviving task.
 - [Kafka Protocol Guide](https://kafka.apache.org/protocol)
 - Implementation: `src/server/kafka/CLAUDE.md`
 - Test helpers: `tests/helpers/`
+
+## The real client: `kcat` on librdkafka
+
+Until September 2026 this suite's only peer was `kafka-protocol`'s own client-side codecs —
+the same crate `src/server/kafka/mod.rs` frames with. That proves the crate round-trips through
+itself, which is the circular case CLAUDE.md names for `websocket`/tokio-tungstenite. It is why
+Kafka sat at Experimental with a full e2e suite.
+
+`real_client_test.rs::test_kafka_produce_and_fetch_against_kcat` closes that. `kcat` 1.7 on
+librdkafka 2.15 is C, and NetGet links none of it. It is **not** `#[ignore]`d and it **fails**
+rather than skipping when kcat is absent. Kafka is Beta on the strength of it.
+
+Two runs against one broker:
+
+1. **Produce.** `kcat -P -K :` completes ApiVersions → Metadata → Produce. The test then asserts
+   on what the *server* decoded out of librdkafka's v2 record batch — key `order-1`, value the
+   JSON body — before going anywhere near the fetch. Without that intermediate check the fetch
+   assertion would be vacuous: the broker stores nothing, so a fetch returns whatever the
+   produce captured, and an empty capture would make the round trip assert against itself.
+2. **Fetch.** `kcat -C -o 0 -c 1 -e` completes ApiVersions → Metadata → Fetch and prints the key
+   and value back. librdkafka checks the batch CRC, the varint framing, the attributes word and
+   the per-record offset deltas, so printing the body at all means this broker's v2 encoder is
+   acceptable to the reference non-JVM implementation.
+
+Four things about the invocation are load-bearing, and three of them cost a debugging pass:
+
+- **stdin, not a file argument.** In produce mode `kcat` sends each **file** as one whole
+  message, so `-K :` never splits a key off it: the first version of this test passed a temp
+  file and the record arrived with `key: null` and a value of `order-1:{...}\n`, delimiter and
+  trailing newline included. Line splitting and key splitting only happen on stdin.
+- **`-o 0`, an absolute offset, not `-o beginning`.** Resolving `beginning` needs ListOffsets,
+  which this broker does not implement — and an unsupported API key closes the connection
+  rather than erroring, so the symptom would be a hang, not a message.
+- **`brokers` is omitted from `metadata_response`,** so the server advertises itself. librdkafka
+  connects to the address the metadata names; a fabricated `localhost:9092` sends it somewhere
+  that does not exist.
+- **`expect_at_least`, never `expect_calls`.** librdkafka refreshes metadata on its own schedule
+  and each `kcat` run is a fresh client, so the metadata and fetch counts are not predictable.
+
+Still unproven here: consumer groups (the APIs do not exist), the Java client, compression,
+transactions, TLS/SASL, and multi-broker metadata.

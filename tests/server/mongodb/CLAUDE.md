@@ -403,3 +403,35 @@ cargo test --features mysql,postgresql,redis,mongodb-server,cassandra -- --test-
 - [MongoDB Rust Driver Testing](https://github.com/mongodb/mongo-rust-driver/tree/main/tests)
 - [BSON Test Utilities](https://docs.rs/bson/latest/bson/)
 - [NetGet Test Infrastructure](../../README.md)
+
+## The second client: `mongosh`
+
+`real_client_test.rs::test_mongodb_find_against_mongosh` drives MongoDB's own shell — JavaScript
+on the Node.js driver — against this server. It is **not** `#[ignore]`d and it **fails** rather
+than skipping when mongosh is absent. The Rust `mongodb` driver was already independent of this
+server, so this is a second independent client rather than a first, and that is the point: the
+root `CLAUDE.md`'s Stable bar asks for two because one client can agree with one bug.
+
+The session is a handshake plus `db.users.find({})`, and the assertion is on the documents the
+**Node driver decoded** out of the cursor batch — name and age, per document, parsed back out of
+the JSON the shell printed. A count alone would not catch a BSON field that encoded wrongly.
+
+Two things are load-bearing:
+
+- **`--apiVersion 1` is not decoration.** Per the MongoDB handshake spec a driver opens with a
+  legacy `hello` over **OP_QUERY** unless `serverApi` or `loadBalanced` is set, and this server
+  accepts only OP_MSG (2013) — an OP_QUERY gets the connection closed with nothing written, which
+  surfaces as a topology error rather than as anything naming the opcode. Setting `serverApi`
+  forces OP_MSG. `?loadBalanced=true` would do the same. This is a genuine limitation of the
+  server and is now stated in `metadata()` rather than worked around silently.
+- **A catch-all `mongodb_command` rule, declared last.** A real shell also sends `buildInfo`,
+  `getParameter`, `connectionStatus`, `atlasVersion`, `getLog`, `ping` and `endSessions`, and an
+  unanswered command comes back `{ok: 0, code: 59}`, which the shell reports as an error. The
+  action vocabulary has no "arbitrary reply document" verb, so an empty `find_response` —
+  `{ok: 1, cursor: {id: 0, firstBatch: []}}` — is the only shape that says `ok: 1` with no data.
+  It is declared **after** the `find`-on-`users` rule because rules are first-match-wins and it
+  would otherwise swallow the assertion.
+
+Unproven: authentication (none is implemented), OP_COMPRESSED, OP_MSG section kind 1 document
+sequences (so bulk writes), getMore/killCursors (every cursor id is 0), transactions, change
+streams, and replica-set or sharded topology discovery.

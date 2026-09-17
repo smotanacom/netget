@@ -6,3 +6,5 @@ pub mod connection_task_cleanup_test;
 pub mod e2e_test;
 #[cfg(all(test, feature = "kafka"))]
 pub mod peer_inject_test;
+#[cfg(all(test, feature = "kafka"))]
+pub mod real_client_test;

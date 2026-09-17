@@ -21,11 +21,19 @@ Seven tests, none `#[ignore]`d, none able to skip.
 | `test_mqtt_refuses_connect_when_llm_fails` | `llm_failure_test.rs` | CONNACK return code 3 and a close, not code 0; and the log carries `decision=fail_closed_llm_*`, never `decision=model_silent` (whose CONNECT default is code 0, an accepted session) |
 | `test_mqtt_refuses_subscribe_when_llm_fails` | `llm_failure_test.rs` | SUBACK 0x80 per filter, tagged `decision=fail_closed_llm_*` on `mqtt_subscribe`, while the CONNECT on the same connection is tagged `decision=model_answer` |
 | `injected_mqtt_publish_reaches_raw_socket_and_close_sends_eof` | `peer_inject_test.rs` | the dashboard's `[ message this peer ]` / `[ disconnect this peer ]` reach a live connection |
+| `test_mqtt_pubsub_session_against_mosquitto_clients` | `real_client_test.rs` | **Eclipse Mosquitto's C clients** complete the same pub/sub session across two connections |
 
 `test_mqtt_subscribe_and_receive_a_published_message` is the evidence behind the **Beta**
 rating. `rumqttc` is an unconditional dev-dependency, so it either compiles and runs or the
 suite does not build — there is no "is it installed?" gate and no `SKIP: … not installed`
 branch to hide a silent pass behind.
+
+**Since September 2026 there are two independent clients, not one**, which matters because the
+Stable bar in the root `CLAUDE.md` asks for exactly that: one client can agree with one bug, and
+`mysql`'s Beta resting on `mysql_async` while the real `mysql` CLI cannot connect is the worked
+example. `real_client_test.rs` drives `mosquitto_pub` and `mosquitto_sub` — C on libmosquitto,
+a different project in a different language — and it **fails** rather than skipping when they
+are absent. See "The second implementation" below.
 
 `test_mqtt_keyword_detection` asks `ServerRegistry::parse_from_str` directly and does not spawn
 NetGet. The version before it did, with no `.with_mock()`, so the LLM call always failed, no
@@ -85,3 +93,42 @@ cargo test --no-default-features --features mqtt --test server -- server::mqtt -
 
 `--test` names a *target*. `--test server::mqtt::e2e_test` lists targets and exits without
 running anything.
+
+## The second implementation: Mosquitto's C clients
+
+`real_client_test.rs::test_mqtt_pubsub_session_against_mosquitto_clients` runs a **two-connection**
+broker session, which the rumqttc test does not:
+
+```
+mosquitto_sub   CONNECT -> CONNACK,  SUBSCRIBE -> SUBACK
+mosquitto_pub   CONNECT -> CONNACK,  PUBLISH
+broker          PUBLISH -> mosquitto_sub, routed by client id
+mosquitto_sub   prints "<topic> <payload>" and exits
+```
+
+The assertion is that `mosquitto_sub -v` printed the line `netget/real-client
+payload-from-netget-broker`. Under `-v` the line carries **both** halves of the packet, so a
+broker that delivered the right body on the wrong topic fails. libmosquitto prints it only
+after parsing a PUBLISH whose remaining length, topic length and flags it accepted.
+
+Because the publisher and subscriber are different connections, `to_client_id` is doing real
+work here: this broker keeps no subscription table, so the model names the recipient and the
+directory routes it. The rumqttc test omits `to_client_id` and the reply goes back on the same
+connection, so that path was previously untested.
+
+Three things about driving it:
+
+- **Wait on NetGet's own `MQTT -> SUBACK` log line, not on mosquitto's `-d` narration.** The
+  publish has to happen after the subscribe completes or it is delivered to a client that has
+  not subscribed yet. The first version of this test parsed `-d` output for the word `SUBACK`
+  and read nothing at all — libmosquitto's debug wording and stream are its business, not a
+  contract. `server.wait_for_log(...)` is a real condition and is ours.
+- **`-C 1`** makes `mosquitto_sub` exit after one message, so the process exiting 0 is itself
+  an assertion that a message was delivered.
+- **`expect_at_least(2)` on `mqtt_connect`**, because two clients connect. A CONNECT the
+  backend cannot answer is refused with CONNACK 3, so an absent or under-counted rule here
+  would be testing a broker that turns mosquitto away.
+
+Unproven by either client: MQTT v5, TLS on 8883, WebSocket transport, QoS 1/2 end to end,
+retained messages, wildcard filter matching, last-will delivery, session resume and keep-alive
+reaping — the broker implements no subscription table, no retained store and no keep-alive timer.

@@ -497,11 +497,22 @@ impl Protocol for MqttProtocol {
                  and broker-originated PUBLISH to any named connected client",
             )
             .e2e_testing(
-                "rumqttc, in two tests that are not #[ignore]d: test_mqtt_basic_connect \
-                 (CONNECT/CONNACK) and test_mqtt_subscribe_and_receive_a_published_message, \
-                 where a real rumqttc client completes CONNECT -> SUBSCRIBE -> SUBACK -> \
-                 PUBLISH and then receives the broker's own PUBLISH back on the same \
-                 connection, with topic and payload asserted.",
+                "TWO independent clients, neither #[ignore]d and neither able to skip. \
+                 (1) rumqttc, in test_mqtt_basic_connect (CONNECT/CONNACK) and \
+                 test_mqtt_subscribe_and_receive_a_published_message, where it completes \
+                 CONNECT -> SUBSCRIBE -> SUBACK -> PUBLISH and receives the broker's own \
+                 PUBLISH back on the same connection, topic and payload asserted. \
+                 (2) Eclipse Mosquitto's C clients, in \
+                 tests/server/mqtt/real_client_test.rs::\
+                 test_mqtt_pubsub_session_against_mosquitto_clients, which FAILS rather than \
+                 skips when mosquitto is absent: mosquitto_sub subscribes, mosquitto_pub \
+                 publishes on a second connection, and the broker-originated PUBLISH is routed \
+                 to the subscriber by client id, with mosquitto_sub's own '-v' output -- topic \
+                 AND payload, printed only after libmosquitto parsed the packet -- asserted. \
+                 UNPROVEN by either: MQTT v5, TLS/8883, WebSocket transport, QoS 1 and 2 flows \
+                 end to end, retained messages, wildcard filter matching, last-will delivery, \
+                 session resume, and keep-alive reaping -- the broker implements no \
+                 subscription table, no retained store and no keep-alive timer.",
             )
             .notes(
                 "MQTT 3.1.1 only (no v5, no TLS, no WebSocket). PINGREQ/PINGRESP and \
