@@ -15,6 +15,22 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+/// Longest DNS `<character-string>`, in octets (RFC 1035 §3.3).
+///
+/// A character-string is one length octet followed by that many characters, so 255 is what
+/// the format can describe — not a policy this server chose. `send_dns_txt_response` emits
+/// the TXT record as a single character-string, so this is its ceiling.
+///
+/// It is enforced in `execute_send_dns_txt_response` rather than left to hickory, and the
+/// difference is not cosmetic: hickory's encoder does refuse, but it refuses inside
+/// `message.to_vec()`, which fails the whole action with "Failed to serialize DNS message".
+/// `src/server/dns/mod.rs` then takes its `Ok` branch with no `ActionResult::Output` in hand
+/// and writes **nothing at all** — the peer waits out its own timeout, and the model is told
+/// a serialisation error rather than the one number it needed. Stating the bound here turns a
+/// fail-silent into an error the model can act on, which is the same reason
+/// `coap::codec::MAX_PAYLOAD_LEN` is checked in `decode_payload` instead of at `send_to`.
+pub const MAX_CHARACTER_STRING_LEN: usize = 255;
+
 /// DNS protocol action handler
 pub struct DnsProtocol;
 
@@ -428,6 +444,18 @@ impl DnsProtocol {
         let text = required_str(&action, "text")?;
         let ttl = ttl_of(&action);
 
+        if text.len() > MAX_CHARACTER_STRING_LEN {
+            anyhow::bail!(
+                "'text' is {} octets, over the {}-octet limit. RFC 1035 §3.3 defines a DNS \
+                 <character-string> as one length octet followed by that many characters, so \
+                 {} is what a single length octet can describe and this server emits the TXT \
+                 record as one string. Shorten it.",
+                text.len(),
+                MAX_CHARACTER_STRING_LEN,
+                MAX_CHARACTER_STRING_LEN
+            );
+        }
+
         let (mut message, name) =
             new_response(query_id, domain, RecordType::TXT, ResponseCode::NoError)?;
 
@@ -696,7 +724,10 @@ fn send_dns_txt_response_action() -> ActionDefinition {
             Parameter {
                 name: "text".to_string(),
                 type_hint: "string".to_string(),
-                description: "Text data to return".to_string(),
+                description: "Text data to return. At most 255 octets: it is emitted as a \
+                     single DNS <character-string>, whose length is one octet (RFC 1035 \
+                     §3.3). Longer text is refused rather than split."
+                    .to_string(),
                 required: true,
             },
             Parameter {
