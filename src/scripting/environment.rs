@@ -103,8 +103,6 @@ impl ScriptingEnvironment {
         }
     }
 
-    /// Detect Python 3 availability and version
-
     /// Run `<program> --version` with a deadline, returning its trimmed output.
     ///
     /// The child is killed if it outlives [`PROBE_TIMEOUT`], because the alternative is
