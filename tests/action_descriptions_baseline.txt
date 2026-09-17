@@ -372,8 +372,6 @@ desc/param/server:SMB/smb_get_file_info/path
 desc/param/server:SMB/smb_operation/action/smb_get_file_info/path
 desc/param/server:SMTP/send_smtp_error/message
 desc/param/server:SMTP/smtp_command/action/send_smtp_error/message
-desc/param/server:SVN/send_svn_failure/message
-desc/param/server:SVN/svn_command/action/send_svn_failure/message
 desc/param/server:Tor Relay/tor_relay_circuit_created/action/tor_relay_log/message
 desc/param/server:Tor Relay/tor_relay_log/message
 desc/param/server:Tor Relay/tor_relay_relay_cell/action/tor_relay_log/message
