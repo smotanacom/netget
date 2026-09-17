@@ -61,6 +61,7 @@ impl IppClient {
     /// Connect to an IPP print server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
+        printer_path: Option<String>,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -70,7 +71,7 @@ impl IppClient {
 
         // Parse the remote address to construct IPP URI
         // IPP typically uses http://host:631/printers/printer-name format
-        let uri_str = if remote_addr.starts_with("http://") || remote_addr.starts_with("https://") {
+        let base = if remote_addr.starts_with("http://") || remote_addr.starts_with("https://") {
             remote_addr.clone()
         } else if remote_addr.starts_with("ipp://") {
             // Convert ipp:// to http://
@@ -78,6 +79,24 @@ impl IppClient {
         } else {
             // Default to http:// with IPP default port 631
             format!("http://{}", remote_addr)
+        };
+
+        // The declared `printer_path` parameter, which nothing used to read. IPP addresses a
+        // queue rather than a host, so this is what decides *which printer* is talked to.
+        //
+        // An address that already carries a path wins: the operator spelled the whole URI out,
+        // and silently appending to it would produce `/printers/a/printers/b`. Joining is done
+        // by hand rather than with a URL crate because the only thing being decided is one
+        // slash, and pulling in a parser to decide it would be the larger change.
+        let uri_str = match printer_path {
+            Some(path) if !path_already_present(&base) => {
+                format!(
+                    "{}/{}",
+                    base.trim_end_matches('/'),
+                    path.trim_start_matches('/')
+                )
+            }
+            _ => base,
         };
 
         // Store URI in protocol_data
@@ -865,5 +884,19 @@ impl IppClient {
         info!("IPP client {} command loop finished", client_id);
         app_state.remove_client_handle(client_id).await;
         let _ = status_tx.send("__UPDATE_UI__".to_string());
+    }
+}
+
+/// Does this absolute URL already carry a path beyond `/`?
+///
+/// Used to decide whether the `printer_path` startup parameter applies. An operator who wrote
+/// the whole URI out has already chosen the queue, and appending to it would produce
+/// `/printers/a/printers/b`.
+fn path_already_present(url: &str) -> bool {
+    // Skip the scheme, then look for a `/` that starts a non-empty path.
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    match after_scheme.split_once('/') {
+        Some((_, path)) => !path.is_empty(),
+        None => false,
     }
 }

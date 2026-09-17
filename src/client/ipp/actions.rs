@@ -324,8 +324,29 @@ impl Client for IppClientProtocol {
     > {
         Box::pin(async move {
             use crate::client::ipp::IppClient;
+
+            // `printer_path` is a declared startup parameter and was read by nothing: the URI
+            // was built from `remote_addr` alone, so every `startup_params:
+            // {"printer_path": "/printers/test-printer"}` in this file's own examples did
+            // nothing, and an operator who set the field in the dashboard got the same request
+            // as one who left it blank.
+            //
+            // It matters more here than a dead knob usually does. IPP addresses a *printer*,
+            // not a host: `http://host:631/printers/foo` and `http://host:631/printers/bar` are
+            // different queues on the same server, and with no path the request goes to the
+            // server root, which a real IPP server answers with 404 or with the wrong queue's
+            // attributes.
+            let printer_path = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_string("printer_path"))
+                .transpose()?
+                .flatten()
+                .filter(|s| !s.trim().is_empty());
+
             IppClient::connect_with_llm_actions(
                 ctx.remote_addr,
+                printer_path,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,

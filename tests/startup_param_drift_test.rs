@@ -69,17 +69,23 @@ use std::path::{Path, PathBuf};
 ///
 /// **So this baseline is not new debt. It is old debt becoming visible**, and it may only
 /// shrink, like every other entry above did.
-const DEAD_PARAM_BASELINE: &[&str] = &[
-    // bitcoind's RPC is auth-mandatory and this client sets no `Authorization` header
-    // anywhere, so authenticated Bitcoin Core RPC cannot work at all.
-    "client:bitcoin:rpc_password",
-    "client:bitcoin:rpc_user",
-    // The printer path cannot be set; the client uses its own constant.
-    "client:ipp:printer_path",
-    // Passes `ctx.remote_addr` as the interface, so the declared knob is a dashboard field
-    // that does nothing. (`arp` looks identical but genuinely reads its own.)
-    "client:isis:interface",
-];
+/// Empty, and it should stay that way.
+///
+/// The last four went on 16 September 2026, and each was a knob the dashboard offered and the
+/// protocol's own examples set:
+///
+/// * `client:bitcoin:rpc_user` / `rpc_password` — bitcoind's RPC is auth-mandatory, so a client
+///   that sends no credential gets `401` on every call. The documented
+///   `http://user:pass@host:port` form was broken too and less visibly: reqwest does not derive
+///   Basic auth from URL userinfo, so the one form operators were told to use also 401'd.
+/// * `client:ipp:printer_path` — IPP addresses a *queue*, not a host, so with no path the
+///   request went to the server root.
+/// * `client:isis:interface` — the client passed `ctx.remote_addr` as the capture device, which
+///   for a capture client is not an address at all.
+///
+/// An entry here is a statement that the parameter cannot be read, not a note that nobody has
+/// got to it. Fix the protocol instead.
+const DEAD_PARAM_BASELINE: &[&str] = &[];
 
 fn strip_comments(src: &str) -> String {
     src.lines()

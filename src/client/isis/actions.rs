@@ -217,8 +217,27 @@ impl Client for IsisClientProtocol {
     > {
         Box::pin(async move {
             use crate::client::isis::IsisClient;
+
+            // `interface` is a declared startup parameter, so it has to be the thing that
+            // decides which device is captured. It was declared and never read: the call below
+            // passed `ctx.remote_addr`, which for a capture client is not an address at all,
+            // so the dashboard field and every `startup_params: {"interface": "en0"}` example
+            // in this file did nothing when set.
+            //
+            // `remote_addr` stays as the fallback because that is what callers have been
+            // passing the interface name in, and breaking them to fix a dead knob would trade
+            // one defect for another.
+            let interface = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_string("interface"))
+                .transpose()?
+                .flatten()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(ctx.remote_addr);
+
             IsisClient::connect_with_llm_actions(
-                ctx.remote_addr,
+                interface,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,

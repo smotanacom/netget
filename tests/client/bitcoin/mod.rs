@@ -13,3 +13,7 @@ mod e2e_test;
 // response by hand, so it needs nothing but `bitcoin`.
 #[cfg(all(test, feature = "bitcoin"))]
 mod command_channel_test;
+
+// `rpc_auth_test` stands up its own raw TCP stub node, so it needs nothing but `bitcoin`.
+#[cfg(all(test, feature = "bitcoin"))]
+mod rpc_auth_test;

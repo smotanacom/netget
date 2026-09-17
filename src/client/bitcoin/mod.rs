@@ -25,8 +25,11 @@ pub struct BitcoinClient;
 
 impl BitcoinClient {
     /// Connect to a Bitcoin Core RPC server with integrated LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect_with_llm_actions(
         remote_addr: String,
+        rpc_user: Option<String>,
+        rpc_password: Option<String>,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -37,22 +40,56 @@ impl BitcoinClient {
 
         info!(
             "Bitcoin RPC client {} initialized for {}",
-            client_id, remote_addr
+            client_id,
+            redact_userinfo(&remote_addr)
         );
 
         // Parse remote_addr to extract RPC URL
         // Expected format: "http://user:pass@host:port" or "host:port"
-        let rpc_url = if remote_addr.starts_with("http://") || remote_addr.starts_with("https://") {
+        let base_url = if remote_addr.starts_with("http://") || remote_addr.starts_with("https://")
+        {
             remote_addr.clone()
         } else {
             // Default to http://
             format!("http://{}", remote_addr)
         };
 
+        // `rpc_user` and `rpc_password` are declared startup parameters that nothing read, and
+        // bitcoind's RPC is auth-mandatory — it answers every unauthenticated request with 401 —
+        // so authenticated Bitcoin Core RPC could not work at all through this client.
+        //
+        // They are folded into the URL's userinfo rather than stored separately, because
+        // `http://user:pass@host:port` is the format this client already documents and accepts.
+        // One place therefore carries the credential and one place applies it, which is what
+        // makes the documented form work too: see `split_userinfo`.
+        let rpc_url = match (rpc_user, rpc_password) {
+            (Some(user), pass) if !user.trim().is_empty() && !has_userinfo(&base_url) => {
+                let (scheme, rest) = base_url
+                    .split_once("://")
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .unwrap_or_else(|| ("http".to_string(), base_url.clone()));
+                match pass {
+                    Some(pass) => format!("{scheme}://{user}:{pass}@{rest}"),
+                    None => format!("{scheme}://{user}@{rest}"),
+                }
+            }
+            _ => base_url,
+        };
+
+        // The credential must not leave this function in anything anyone reads. `rpc_url` is
+        // rendered in the dashboard's facts line, and the connected event below is handed to the
+        // **model**, so a userinfo URL put a password into the prompt and onto the screen. Both
+        // now carry the redacted form; `perform_rpc` re-reads the real one from `rpc_url`.
+        let display_url = redact_userinfo(&rpc_url);
+
         // Store RPC URL and auth in protocol_data
         app_state
             .with_client_mut(client_id, |client| {
                 client.set_protocol_field("rpc_url".to_string(), serde_json::json!(rpc_url));
+                client.set_protocol_field(
+                    "rpc_url_display".to_string(),
+                    serde_json::json!(display_url),
+                );
                 client.set_protocol_field("initialized".to_string(), serde_json::json!(true));
             })
             .await;
@@ -63,7 +100,7 @@ impl BitcoinClient {
             .await;
         let _ = status_tx.send(format!(
             "[CLIENT] Bitcoin RPC client {} ready for {}",
-            client_id, remote_addr
+            client_id, display_url
         ));
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
@@ -87,7 +124,8 @@ impl BitcoinClient {
             let event = Event::new(
                 &crate::client::bitcoin::actions::BITCOIN_CLIENT_CONNECTED_EVENT,
                 serde_json::json!({
-                    "rpc_url": rpc_url,
+                    // Redacted: this goes to the model.
+                    "rpc_url": display_url,
                 }),
             );
 
@@ -386,13 +424,21 @@ impl BitcoinClient {
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
-        match http_client
-            .post(&rpc_url)
+        // Split the credential out of the URL and send it as a real `Authorization: Basic`
+        // header. reqwest does **not** derive Basic auth from URL userinfo, so posting the
+        // userinfo URL straight at bitcoind produced a 401 on every call — the
+        // `http://user:pass@host:port` form this client documents has never worked.
+        let (clean_url, credential) = split_userinfo(&rpc_url);
+
+        let mut request = http_client
+            .post(&clean_url)
             .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-        {
+            .json(&request_body);
+        if let Some((user, pass)) = credential {
+            request = request.basic_auth(user, pass);
+        }
+
+        match request.send().await {
             Ok(response) => {
                 let status = response.status();
 
@@ -552,4 +598,59 @@ enum Applied {
     Ran(String),
     /// The action asked to end the session.
     Disconnect,
+}
+
+/// Does this URL already carry userinfo (`scheme://user:pass@host`)?
+///
+/// Only the authority is considered: an `@` in the path is not userinfo.
+pub fn has_userinfo(url: &str) -> bool {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    authority.contains('@')
+}
+
+/// Split `scheme://user:pass@host/path` into the URL without the credential, and the credential.
+///
+/// The credential must not stay in the request URL: some servers log the request line, and
+/// bitcoind wants it in `Authorization` regardless. Returns the URL unchanged and `None` when
+/// there is no userinfo.
+///
+/// Splitting is done by hand rather than with a URL crate because the only decision here is
+/// where the authority ends, and a parser would also percent-decode — which this deliberately
+/// does not do, since it would change a password containing `%` into a different password.
+/// A credential needing percent-encoding should be passed through `rpc_user`/`rpc_password`,
+/// where no encoding is involved at all.
+pub type Credential = Option<(String, Option<String>)>;
+
+pub fn split_userinfo(url: &str) -> (String, Credential) {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return (url.to_string(), None);
+    };
+    // The authority ends at the first `/`, `?` or `#`.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    // Last `@` wins: a password may legitimately contain one.
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return (url.to_string(), None);
+    };
+    let (user, pass) = match userinfo.split_once(':') {
+        Some((u, p)) => (u.to_string(), Some(p.to_string())),
+        None => (userinfo.to_string(), None),
+    };
+    (format!("{scheme}://{host}{tail}"), Some((user, pass)))
+}
+
+/// Replace a URL's userinfo with `***` for anything a human or the model will read.
+///
+/// `http://alice:hunter2@127.0.0.1:8332` becomes `http://***@127.0.0.1:8332`. A URL with no
+/// userinfo comes back unchanged.
+pub fn redact_userinfo(url: &str) -> String {
+    let (clean, credential) = split_userinfo(url);
+    match credential {
+        None => clean,
+        Some(_) => match clean.split_once("://") {
+            Some((scheme, rest)) => format!("{scheme}://***@{rest}"),
+            None => format!("***@{clean}"),
+        },
+    }
 }

@@ -254,3 +254,19 @@ Analyze IS-IS Hello PDUs on wlan0 to identify all neighbors
   System to Intermediate System intra-domain routing information exchange protocol
 - RFC 1142: OSI IS-IS Intra-domain Routing Protocol
 - RFC 5308: Routing IPv6 with IS-IS
+
+## Startup parameters
+
+- `interface` (optional) — the capture device, e.g. `en0`
+
+**It was declared and read by nothing until September 2026.** `connect()` passed
+`ctx.remote_addr` as the capture device, which for a capture client is not an address at all —
+so the dashboard field and every `startup_params: {"interface": "eth0"}` example in
+`actions.rs` did nothing when set.
+
+`remote_addr` remains the fallback, because that is what callers have been passing the interface
+name in, and breaking them to fix a dead knob would trade one defect for another.
+
+`arp` looks identical and genuinely reads its own; the two are worth comparing before assuming
+either way.
+

@@ -199,3 +199,21 @@ the bounded channel, which surfaces as "client busy" backpressure. `send_to_clie
 timeout protects the caller either way.
 
 **Not wired:** `call_llm_with_response` still discards the actions the LLM returns for `ipp_response_received` (`actions: _`). That predates the command channel and is untouched by it; the injected path is currently the only way to run a follow-up `get_job_attributes` without restarting the client.
+
+## Startup parameters
+
+- `printer_path` (optional) — e.g. `/printers/test-printer`
+
+**It was declared and read by nothing until September 2026.** The IPP URI was built from
+`remote_addr` alone, so every `startup_params: {"printer_path": …}` in this protocol's own
+examples did nothing, and an operator who filled the dashboard field got the same request as one
+who left it blank.
+
+That matters more here than a dead knob usually does: IPP addresses a **queue**, not a host.
+`http://host:631/printers/foo` and `http://host:631/printers/bar` are different printers on the
+same server, and with no path at all the request goes to the server root, which a real IPP
+server answers with a 404 or with the wrong queue's attributes.
+
+An address that already carries a path wins — the operator spelled the whole URI out, and
+appending would produce `/printers/a/printers/b`.
+

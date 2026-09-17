@@ -132,6 +132,11 @@ LLMs can construct structured RPC requests and interpret JSON responses.
 - `rpc_user` (optional) - Bitcoin RPC username
 - `rpc_password` (optional) - Bitcoin RPC password
 
+**Both were declared and read by nothing until September 2026**, and bitcoind's RPC is
+auth-mandatory — it answers every unauthenticated request `401` — so authenticated Bitcoin Core
+RPC could not work at all through this client. They are folded into the URL's userinfo on
+connect and applied as a real `Authorization: Basic` header on each request.
+
 ### RPC URL Format
 
 Accepted formats for `remote_addr`:
@@ -139,6 +144,23 @@ Accepted formats for `remote_addr`:
 - `http://user:pass@localhost:8332` - Full URL with auth
 - `localhost:8332` - Auto-prefixed with `http://`
 - `https://bitcoin-node.example.com:8332` - HTTPS support
+
+**The first of those did not work either, and that was the less visible half of the same bug.**
+`reqwest` does **not** derive Basic auth from URL userinfo; the URL was handed to it verbatim,
+so the one form this file told operators to use also produced a `401` on every call, with
+nothing saying why. `split_userinfo` now takes the credential out of the URL and sends it as a
+header, which is also what keeps it out of the request line that servers log.
+
+### The credential is redacted everywhere a human or the model reads
+
+A userinfo URL used to be stored in `rpc_url` — which the dashboard renders on the client's
+facts line — echoed to the status stream on connect, and put into the `bitcoin_client_connected`
+event, **which is handed to the model**. A password in the prompt is not a display bug.
+
+`rpc_url_display` carries `http://***@host:port` and is what all three read; `rpc_url` keeps the
+real value for `perform_rpc` alone. `tests/client/bitcoin/rpc_auth_test.rs` asserts the header
+arrives at a stub node, that the password is in neither the request line nor the status stream,
+and that `split_userinfo` handles a password containing `@` and an `@` in the path.
 
 ### Dual Logging
 

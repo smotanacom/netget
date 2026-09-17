@@ -438,8 +438,26 @@ impl Client for BitcoinClientProtocol {
     > {
         Box::pin(async move {
             use crate::client::bitcoin::BitcoinClient;
+            // Declared and, until now, read by nothing. bitcoind's RPC is auth-mandatory, so
+            // a client that never sends a credential cannot complete a single call against a
+            // real node.
+            let rpc_user = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_string("rpc_user"))
+                .transpose()?
+                .flatten();
+            let rpc_password = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_string("rpc_password"))
+                .transpose()?
+                .flatten();
+
             BitcoinClient::connect_with_llm_actions(
                 ctx.remote_addr,
+                rpc_user,
+                rpc_password,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
