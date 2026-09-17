@@ -612,3 +612,27 @@ Examples:
 - [ADC Protocol](https://adc.sourceforge.io/ADC.html)
 - [DC++ Official Site](https://dcplusplus.sourceforge.io/)
 - [PtokaX DC Protocol Wiki](http://wiki.ptokax.org/doku.php?id=dcprotocol)
+
+## Connection bounds
+
+Before September 2026 this hub accepted without limit and bounded no read in time, so a peer that
+connected and said nothing held a socket, a task and an `AppState` entry forever. It now declares
+both halves; the constants and the reasoning live beside them in `src/server/dc/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 60s | NMDC is hub-speaks-first: the hub sends `$Lock` — written in Rust, with no model call — and the client answers with `$Key` and `$ValidateNick` from inside its own connect path, with no human in the loop. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | An NMDC client in a hub is never silent for long: a bare `\|` is the protocol's keepalive and DC++ sends one about once a minute when it has nothing else to say, so five minutes is five missed keepalives — a link that is gone, not a user who is quiet. The same bound covers a peer that has begun a command and stalled before its `\|`: `MAX_COMMAND_LEN` bounds how much it can make the hub buffer, and this bounds how long it can sit there having sent less. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`$HubIsFull\|`**. NMDC's own way for a hub to turn a client away, and what a client expects in place of the `$Lock` it was waiting for. A client that does not recognise it still sees a well-formed, `\|`-terminated command followed by a clean close rather than an unexplained disconnection. |
+
+**The deadline wraps the read and nothing else.** The `$Lock` is written before the loop, and the
+LLM round-trip and a `manual` rule parking a command for a human (`src/state/intercepts.rs`, 300s
+by default) both happen after a whole `\|`-terminated command has been read.
+
+`tests/server/dc/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

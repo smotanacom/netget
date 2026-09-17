@@ -13,6 +13,7 @@ use actions::DC_COMMAND_RECEIVED_EVENT;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
@@ -29,6 +30,47 @@ const DEFAULT_HUB_NAME: &str = "NetGetHub";
 /// commands are tens of bytes; `$MyINFO` with a long description is the largest and stays well
 /// under a kilobyte, so 64 KiB is generous and still finite.
 pub const MAX_COMMAND_LEN: usize = 64 * 1024;
+
+/// How long to wait for the first byte from a client that has only connected.
+///
+/// NMDC is hub-speaks-first: the hub sends `$Lock` and the client answers with `$Key` and
+/// `$ValidateNick` from inside its own connect path, with no human in the loop. A minute is far
+/// longer than that takes. The `$Lock` itself is written before the read loop begins, so the
+/// model's time over it — and a `manual` rule parking it for a human — is outside this bound by
+/// construction.
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for further bytes once the client has sent a complete command.
+///
+/// Five minutes. An NMDC client in a hub is never silent for long: a bare `|` is the protocol's
+/// keepalive and DC++ sends one about once a minute when it has nothing else to say, so five
+/// minutes is five missed keepalives — a link that is gone, not a user who is quiet. Making it
+/// longer would not help a real client and would only widen the window an unauthenticated peer
+/// can hold.
+///
+/// The same bound covers a peer that has begun a command and stalled before its `|`, which is
+/// the other way this loop can be held: [`MAX_COMMAND_LEN`] bounds how much such a peer can
+/// make the hub buffer, and this bounds how long it can sit there having sent less.
+///
+/// The LLM round-trip and a `manual` rule parking a command for a human
+/// (`src/state/intercepts.rs`, 300s by default) both happen after a complete command has been
+/// read, so neither can be timed out from under itself.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Concurrent connections this hub admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_COMMAND_LEN`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `$HubIsFull` is NMDC's own way for a hub to turn a client away, and it is what a client
+/// expects in place of the `$Lock` it was waiting for. A client that does not recognise it sees
+/// a well-formed, `|`-terminated command followed by a clean close rather than an unexplained
+/// disconnection. Fixed text, so there is no placeholder an internal error could reach.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"$HubIsFull|";
 
 /// Strip the NMDC framing characters from a value that goes inside a command.
 ///
@@ -117,10 +159,19 @@ impl DcServer {
         let protocol = Arc::new(DcProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "DC",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -134,6 +185,10 @@ impl DcServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 let (read_half, write_half) = tokio::io::split(stream);
                                 let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -310,9 +365,31 @@ impl DcServer {
         // logged "DC closing connection N", skipped the remaining actions in that one batch,
         // and then went straight back to reading commands. The action's own description says
         // "Disconnect this client without sending anything further"; it did neither.
+        let mut seen_a_command = false;
         'connection: loop {
             let mut byte = [0u8; 1];
-            match read_half.read_exact(&mut byte).await {
+            // The deadline wraps this read and nothing else. Everything that can legitimately
+            // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
+            // human to answer — happens below, after a whole `|`-terminated command has been
+            // read.
+            let read_timeout = if seen_a_command {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_BYTE_READ_TIMEOUT
+            };
+            let read =
+                match tokio::time::timeout(read_timeout, read_half.read_exact(&mut byte)).await {
+                    Ok(read) => read,
+                    Err(_) => {
+                        Log::new(Some(status_clone)).info(format!(
+                            "DC connection {} sent nothing for {}s; closing idle connection",
+                            connection_id,
+                            read_timeout.as_secs()
+                        ));
+                        break;
+                    }
+                };
+            match read {
                 Ok(_) => {
                     buffer.push(byte[0]);
 
@@ -332,6 +409,7 @@ impl DcServer {
                     // Check for pipe delimiter
                     if byte[0] == b'|' {
                         // We have a complete command
+                        seen_a_command = true;
                         let command_bytes = buffer.clone();
                         buffer.clear();
 

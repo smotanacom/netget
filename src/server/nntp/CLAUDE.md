@@ -557,3 +557,28 @@ learn anything.
 The refusal happens **before** the `nntp_command_received` event is built, so an oversized line
 never reaches a prompt. `tests/server/nntp/line_limit_test.rs` asserts exactly that — zero
 model calls, not merely a 501 — and its second test asserts a 2 KiB command is still answered.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever. It now
+declares both halves; the constants and the reasoning live beside them in
+`src/server/nntp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 60s | NNTP is server-speaks-first: the peer is answered with a `200`/`201` greeting and every reader — `nntp`, `slrn`, `tin`, a mail client's news backend — replies inside its own connect path with `CAPABILITIES` or `MODE READER`. The greeting is generated and written before this loop begins, so however long the model or a `manual` rule takes over it, the clock has not started. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | A newsreader is idle for as long as the person at it takes to read an article, so the bound has to be on a human timescale — which is why news server operators configure their client timeout in minutes. It is safe to be this generous because this server holds nothing on the client's behalf that a reconnect cannot rebuild: the model answers every command afresh. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`400 too many connections`**. `400` is NNTP's "service temporarily unavailable, the connection is closing" response, and RFC 3977 lets a server send it at any point — including in place of a greeting, which is exactly where a refused peer is. A client reads it as *retry later* rather than as a permanent refusal, which is what a connection cap means. |
+
+**The deadline wraps the read and nothing else.** The LLM round-trip, and a `manual` rule parking
+a command for a human (`src/state/intercepts.rs`, 300s by default), happen after a line has
+already been read, so neither can be timed out from under itself.
+
+`tests/server/nntp/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

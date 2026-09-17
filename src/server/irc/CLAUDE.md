@@ -511,3 +511,29 @@ arm is deliberate: a refusal is recorded before the link goes. Dashboard-injecte
 went unnoticed.
 
 Tested by `tests/server/irc/decision_tag_test.rs`.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever. It now
+declares both halves; the constants and the reasoning live beside them in
+`src/server/irc/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_MESSAGE_READ_TIMEOUT` | 60s | IRC is client-speaks-first and the first thing a client sends is its registration — `NICK` and `USER`, or `CAP LS` before them — from inside its own dial path. Every real ircd bounds exactly this: InspIRCd's connect timeout and charybdis/ratbox's registration timeout both default to 30 seconds, so a minute is twice the strictest thing a real client is already built to satisfy. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 1800s | IRC is long-lived by nature: a registered client may sit in a channel for a whole working day without typing, and closing that breaks the protocol's own use rather than defending it. Half an hour is still an order of magnitude above any ircd's own liveness bound — InspIRCd and UnrealIRCd ping an idle client every 120 seconds and drop it after roughly twice that. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`ERROR :Closing Link: too many connections`**. That is IRC's own way of ending a link before registration and verbatim what a real ircd sends at its connection limit; this file already uses the same form for an over-long line. |
+
+**The deadline wraps the read and nothing else.** It is a `tokio::time::timeout` around
+`read_irc_line`, which is shared with the IRC *client* and is left untouched. The model
+round-trip, and a `manual` rule parking a message for a human (`src/state/intercepts.rs`, 300s by
+default), happen after a line has been read, so neither can be timed out from under itself.
+
+`tests/server/irc/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

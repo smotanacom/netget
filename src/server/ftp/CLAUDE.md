@@ -194,3 +194,28 @@ SYST -> 215 "UNIX Type: L8"
 PWD  -> 257 "\"/\" is current directory"
 QUIT -> 221 "Goodbye" then close_connection
 ```
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a control connection, a task and an `AppState` entry
+forever. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/ftp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 60s | FTP is server-speaks-first, and every real client — `ftp(1)`, `lftp`, curl, a browser — answers the `220` with `USER` from inside its own connect path, with no human in the loop yet. The greeting is generated and written before the command loop begins, so the model's time over it is outside this bound by construction. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | vsftpd's `idle_session_timeout` default — the idle bound on the FTP control connection that every client in use is already built to tolerate, and which ProFTPD's `TimeoutIdle` only doubles. It has to be on a human timescale: `ftp(1)` prompts the person at it for the password after `USER`, and again for each command, so the silence between two commands is someone typing. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`421 Too many connections, closing control connection`**. RFC 959's own reply for a server declining to open a session, and what real FTP servers send at their client limit. A `4xx` is a transient negative reply, so a client retries later rather than recording a permanent failure. |
+
+**The deadline wraps the read and nothing else.** The LLM round-trip, and a `manual` rule parking
+a command for a human (`src/state/intercepts.rs`, 300s by default), happen after a line has
+already been read, so neither can be timed out from under itself.
+
+`tests/server/ftp/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

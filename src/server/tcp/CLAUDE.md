@@ -300,3 +300,36 @@ After STOP, send "STOPPED\r\n" and close connection
 - [Tokio TcpListener](https://docs.rs/tokio/latest/tokio/net/struct.TcpListener.html)
 - [Tokio AsyncReadExt](https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html)
 - [Tokio AsyncWriteExt](https://docs.rs/tokio/latest/tokio/io/trait.AsyncWriteExt.html)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/tcp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | Generic TCP is client-speaks-first — `send_first` is opt-in and off by default — so a peer that has connected and sent nothing has made no claim at all. Thirty seconds is far longer than any real client takes to put its first request on the wire once `connect()` has returned. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | This is the generic byte stream every kind of session is built on, so the bound between messages has to be a session's timescale rather than a request's. Fifteen minutes is three times the default a `manual` rule gives a human to answer one event, so a session whose last exchange was composed by hand still has minutes of ordinary think-time left afterwards. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. Raw TCP has no framing, no status code and no error message a peer would not read as *payload*, and a fabricated payload is worse than silence. The peer gets a clean EOF; `accept_bounded` logs the refusal at WARN with `decision=fail_closed_connection_cap`. |
+
+**TCP is the one server here whose read loop does not stop while a request is answered.** Every
+other protocol awaits the model inline, so its `read()` is not even being polled during the
+answer. This one hands each message to a spawned task and goes straight back to `read()`, so the
+deadline and the answer are live at the same moment. `read_bounded` therefore consults
+`ConnectionActivity`, which reports a connection with work in flight as not idle at all: the
+per-message handler and the `send_first` banner task each hold a `BusyGuard` for the whole of
+their work, so an LLM round-trip, and a `manual` rule parking an event for a human
+(`src/state/intercepts.rs`, 300s by default), can never be timed out from under themselves. That
+is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted live
+transfers because "idle" was measured wrongly.
+
+`tests/server/tcp/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

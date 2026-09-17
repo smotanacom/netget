@@ -284,3 +284,28 @@ The refusal happens **before** the `pop3_command` event is built, so an oversize
 reaches a prompt. `tests/server/pop3/line_limit_test.rs` asserts exactly that — zero model
 calls, not merely a `-ERR` — and its second test asserts a 900-byte command is still answered,
 because a guard that refused everything would satisfy the first assertion.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever. It now
+declares both halves; the constants and the reasoning live beside them in
+`src/server/pop3/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 60s | POP3 is server-speaks-first: the peer gets a `+OK` greeting and every real client answers it with `CAPA`, `USER` or `AUTH` from inside its own connect path. A minute is Dovecot's `login_timeout` default, which bounds exactly this pre-authentication phase and is separate there from the post-login idle timer for the same reason it is separate here. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | Not a taste: RFC 1939 §3 says a POP3 server's inactivity autologout timer "MUST be of at least 10 minutes' duration". This is that timer, at its minimum. The shorter bound above does not contradict it — what the RFC protects is a *session*, whose deletions are only committed at `QUIT`, and a peer that has issued no command has no session to lose. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR [SYS/TEMP] too many connections`**. `-ERR` in place of the greeting is how POP3 refuses a connection it will not serve, and RFC 3206's `[SYS/TEMP]` says precisely what a cap means — temporary, retry later. A client that understands it backs off; one that does not still reads a well-formed `-ERR`. This file already uses the `[SYS/PERM]` half of the same pair for an over-long command line. |
+
+**The deadline wraps the read and nothing else.** The greeting is written before the command loop
+begins, and the LLM round-trip and a `manual` rule parking a command for a human
+(`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read.
+
+`tests/server/pop3/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

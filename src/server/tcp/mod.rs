@@ -6,6 +6,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
@@ -32,6 +33,79 @@ use actions::{TCP_CONNECTION_OPENED_EVENT, TCP_DATA_RECEIVED_EVENT};
 /// closed rather than the queue trimmed, which would hand the model a truncated message it had
 /// no way to know was truncated.
 pub const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
+
+/// How long to wait for the first byte from a peer that has only connected.
+///
+/// Generic TCP is client-speaks-first: `send_first` is opt-in and off by default, so a peer
+/// that has connected and sent nothing has made no claim on this server at all. Thirty seconds
+/// is far longer than any real client needs to put its first request on the wire once its
+/// `connect()` has returned, and short enough that an unauthenticated socket, task and
+/// `AppState` entry cannot be held for free.
+///
+/// A `send_first` server is not the exception it looks like: the banner task raises
+/// [`ConnectionActivity::begin_work`] for the whole of its LLM round-trip, so the clock does
+/// not run while the peer is legitimately waiting to be spoken to.
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait for further bytes once the peer has sent something.
+///
+/// Longer than the first bound by a wide margin, because the two are different claims: "has
+/// said nothing at all" is a peer that may not be a client, while "has gone quiet mid-session"
+/// is a client between requests, and this is the generic byte-stream protocol every kind of
+/// session is built on top of. Fifteen minutes is three times the default a `manual` rule gives
+/// a human to answer one event (`src/state/intercepts.rs`, 300s), so even a session whose last
+/// exchange was composed by hand at the dashboard has minutes of ordinary think-time left
+/// afterwards before the connection is reclaimed.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may queue up to
+/// [`MAX_QUEUED_BYTES`] while its LLM call is in flight, so this is the multiplier that turns
+/// that per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: nothing.
+///
+/// Generic TCP has no vocabulary — there is no framing, no status code and no error message
+/// this server could write that a peer would not read as *payload*, and a fabricated payload is
+/// worse than silence for the same reason twenty protocols here stay silent on an LLM failure.
+/// The refusal is still recorded: `accept_bounded` logs it at WARN with
+/// `decision=fail_closed_connection_cap`, and the peer sees a clean EOF rather than a reset.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
+/// Read from `reader` with a deadline that a connection doing work can never trip.
+///
+/// Returns `None` when the peer has genuinely been silent for `bound`, and the read's own
+/// result otherwise. TCP needs this rather than a bare `tokio::time::timeout` because its read
+/// loop is the one thing here that does *not* stop while a request is answered: each message is
+/// handed to a spawned task and the loop goes straight back to `read()`, so at any moment the
+/// connection may be parked on an LLM round-trip, or on a `manual` rule waiting for a human,
+/// with nothing arriving on the socket. Consulting [`ConnectionActivity::idle_for`] — which
+/// reports a connection with work in flight as not idle at all — is what keeps the deadline
+/// from closing the connection it is in the middle of answering.
+async fn read_bounded<R>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    activity: &crate::server::accept_bounded::ConnectionActivity,
+    bound: Duration,
+) -> Option<std::io::Result<usize>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    loop {
+        match tokio::time::timeout(bound, reader.read(buffer)).await {
+            Ok(result) => return Some(result),
+            Err(_) => match activity.idle_for() {
+                // Work in flight: the peer is waiting on us, not the other way round.
+                None => continue,
+                // Something crossed the connection inside the window; wait again from there.
+                Some(idle) if idle < bound => continue,
+                Some(_) => return None,
+            },
+        }
+    }
+}
 
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]
@@ -73,10 +147,19 @@ impl TcpServer {
 
         // Spawn accept loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "TCP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -85,6 +168,12 @@ impl TcpServer {
                         // Split stream
                         let (read_half, write_half) = tokio::io::split(stream);
                         let write_half_arc = Arc::new(Mutex::new(write_half));
+
+                        // Whether this connection is doing work the peer is waiting on. The
+                        // read deadline below consults it, so an LLM round-trip or a `manual`
+                        // rule parked for a human can never be mistaken for an idle peer.
+                        let activity =
+                            Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
 
                         // Add connection to ServerInstance
                         use crate::state::server::{
@@ -161,12 +250,16 @@ impl TcpServer {
                             let connections_clone = connections.clone();
                             let write_half_for_conn = write_half_arc.clone();
                             let protocol_clone = protocol.clone();
+                            // The peer is waiting to be greeted, so the first-byte deadline
+                            // must not run while the model is composing the banner.
+                            let banner_busy = activity.busy();
                             // Tracked, not detached: a banner task holds the write half and
                             // makes an LLM call, so a detached one keeps talking to a peer
                             // after the operator stopped the server.
                             let state_for_spawn = app_state.clone();
                             state_for_spawn
                                 .spawn_server_task(server_id, async move {
+                                    let _banner_busy = banner_busy;
                                     Self::send_banner(
                                         connection_id,
                                         server_id,
@@ -188,6 +281,7 @@ impl TcpServer {
                         let status_tx_clone = status_tx.clone();
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
+                        let activity_clone = activity.clone();
                         // The per-connection reader is registered with the server, so
                         // `stop_server` aborts it along with the accept loop. Registering
                         // prunes finished handles, so one entry per live connection is the
@@ -199,11 +293,55 @@ impl TcpServer {
                         let state_for_reader = app_state.clone();
                         state_for_reader
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here
+                                // would cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 let mut buffer = vec![0u8; 8192];
                                 let mut read_half = read_half;
+                                let mut seen_bytes = false;
 
                                 loop {
-                                    match read_half.read(&mut buffer).await {
+                                    let bound = if seen_bytes {
+                                        IDLE_BETWEEN_MESSAGES_TIMEOUT
+                                    } else {
+                                        FIRST_BYTE_READ_TIMEOUT
+                                    };
+                                    // The deadline wraps this read and nothing else.
+                                    let read = match read_bounded(
+                                        &mut read_half,
+                                        &mut buffer,
+                                        &activity_clone,
+                                        bound,
+                                    )
+                                    .await
+                                    {
+                                        Some(result) => result,
+                                        None => {
+                                            connections_clone.lock().await.remove(&connection_id);
+                                            app_state_clone
+                                                .remove_peer_handle(
+                                                    server_id,
+                                                    connection_id.as_u32(),
+                                                )
+                                                .await;
+                                            app_state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "Connection {connection_id} sent nothing for \
+                                                 {}s; closing idle connection",
+                                                bound.as_secs()
+                                            ));
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                    };
+                                    match read {
                                         Ok(0) => {
                                             // Connection closed
                                             connections_clone.lock().await.remove(&connection_id);
@@ -226,6 +364,8 @@ impl TcpServer {
                                             break;
                                         }
                                         Ok(n) => {
+                                            seen_bytes = true;
+                                            activity_clone.touch();
                                             let data = Bytes::copy_from_slice(&buffer[..n]);
 
                                             // Data summary + full payload. These are FileOnly:
@@ -286,8 +426,14 @@ impl TcpServer {
                                             // writes the reply, so it is the task that must not
                                             // outlive a stop.
                                             let state_for_data = app_state_clone.clone();
+                                            // Busy for the whole of the answer — the LLM call,
+                                            // a script, or a `manual` rule parked for a human —
+                                            // so the read deadline above cannot close the
+                                            // connection this is an answer for.
+                                            let busy = activity_clone.busy();
                                             state_for_data
                                                 .spawn_server_task(server_id, async move {
+                                                    let _busy = busy;
                                                     Self::handle_data_with_actions(
                                                         connection_id,
                                                         server_id,

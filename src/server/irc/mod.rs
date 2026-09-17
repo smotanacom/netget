@@ -6,6 +6,7 @@ use crate::server::connection::ConnectionId;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace};
@@ -18,6 +19,44 @@ use crate::server::irc::wire::{read_irc_line, IrcLine, MAX_IRC_READ_LINE};
 use crate::server::IrcProtocol;
 use crate::state::app_state::AppState;
 use actions::IRC_MESSAGE_RECEIVED_EVENT;
+
+/// How long to wait for the first message from a peer that has only connected.
+///
+/// IRC is client-speaks-first and the first thing a client sends is its registration — `NICK`
+/// and `USER`, or `CAP LS` before them — inside its own dial path. Every real ircd bounds
+/// exactly this: InspIRCd's connect timeout and charybdis/ratbox's registration timeout both
+/// default to 30 seconds, so a minute is twice the strictest thing a real client is already
+/// built to satisfy, and a peer that has not registered has authenticated nothing.
+const FIRST_MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for a *further* message once the peer has sent one.
+///
+/// Half an hour, because IRC is long-lived by nature: a registered client may sit in a channel
+/// for a whole working day without typing, and closing that is breaking the protocol's own use
+/// rather than defending it. The number is still an order of magnitude more generous than any
+/// ircd's own liveness bound — InspIRCd and UnrealIRCd ping an idle client every 120 seconds
+/// and drop it after roughly twice that — so nothing a real client does comes near it, while an
+/// unauthenticated socket still cannot be held forever.
+///
+/// The LLM round-trip and a `manual` rule parking a message for a human
+/// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
+/// so they sit outside this deadline by construction.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_IRC_READ_LINE`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `ERROR :Closing Link:` is IRC's own way of ending a link before registration, and it is
+/// verbatim what a real ircd sends when it is at its connection limit. This file already uses
+/// the same form for an over-long line. Fixed text, so there is no placeholder an internal
+/// error could reach.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"ERROR :Closing Link: too many connections\r\n";
 
 /// IRC server that forwards messages to LLM
 pub struct IrcServer;
@@ -40,10 +79,19 @@ impl IrcServer {
         let protocol = Arc::new(IrcProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "IRC",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -55,6 +103,9 @@ impl IrcServer {
                         // Tracked, not detached: stop_server must abort this task too.
                         let task_owner = app_state.clone();
                         task_owner.spawn_server_task(server_id, async move {
+                            // Held for the life of the connection: releasing it here would cap
+                            // the accept rate rather than the number of live connections.
+                            let _permit = permit;
                             let (read_half, write_half) = tokio::io::split(stream);
                             let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -105,24 +156,48 @@ impl IrcServer {
                             );
 
                             let mut reader = BufReader::new(read_half);
+                            let mut answered_one = false;
 
                             loop {
+                                // The deadline wraps this read and nothing else: the model
+                                // round-trip below, and a `manual` rule parking a message for
+                                // a human, happen only after a line has been read.
+                                let read_timeout = if answered_one {
+                                    IDLE_BETWEEN_MESSAGES_TIMEOUT
+                                } else {
+                                    FIRST_MESSAGE_READ_TIMEOUT
+                                };
                                 // Bounded: `read_line` grows its buffer until it finds a
                                 // newline, so an unauthenticated peer that connects and
                                 // streams bytes with no `\n` was a one-connection OOM. IRC
                                 // messages are 512 bytes by RFC 1459 and 8704 with IRCv3
                                 // tags, so nothing real is refused by the ceiling.
-                                let (read, n) =
-                                    match read_irc_line(&mut reader, MAX_IRC_READ_LINE).await {
-                                        Ok(v) => v,
-                                        Err(e) => {
-                                            debug!(
-                                                "IRC read error on connection {}: {}",
-                                                connection_id, e
-                                            );
-                                            break;
-                                        }
-                                    };
+                                let framed = tokio::time::timeout(
+                                    read_timeout,
+                                    read_irc_line(&mut reader, MAX_IRC_READ_LINE),
+                                )
+                                .await;
+                                let (read, n) = match framed {
+                                    Err(_) => {
+                                        info!(
+                                            "IRC connection {} from {} sent nothing for {}s; \
+                                             closing idle connection",
+                                            connection_id,
+                                            remote_addr,
+                                            read_timeout.as_secs()
+                                        );
+                                        break;
+                                    }
+                                    Ok(Ok(v)) => v,
+                                    Ok(Err(e)) => {
+                                        debug!(
+                                            "IRC read error on connection {}: {}",
+                                            connection_id, e
+                                        );
+                                        break;
+                                    }
+                                };
+                                answered_one = true;
                                 let line = match read {
                                     IrcLine::Line(line) => line,
                                     IrcLine::Eof => break,

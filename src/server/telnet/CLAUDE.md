@@ -230,3 +230,30 @@ listen on port 2323 via telnet
 Buffer lines with wait_for_more until the client sends END
 Then reply with the number of lines collected
 ```
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever. It now
+declares both halves; the constants and the reasoning live beside them in
+`src/server/telnet/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_LINE_READ_TIMEOUT` | 120s | Two minutes rather than a machine protocol's thirty seconds, because the other end is usually a *person*: they connect, read whatever banner `send_first` produced, and start typing. A scripted client sends immediately, so only someone who has not begun ever reaches this. The banner is generated and written before the read loop starts, so the model's time over it is outside the deadline by construction. |
+| `IDLE_BETWEEN_LINES_TIMEOUT` | 600s | Cisco IOS's `exec-timeout 10 0` default for vty lines — the canonical idle bound for exactly the kind of device an operator points this server at, and therefore the number every telnet user already expects. A session here is long-lived by nature: a person thinks, reads output, and types again. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plain notice line**, `\r\n[netget] too many connections\r\n`. Telnet has no error frame — it is a byte stream with a human on the other end — so the protocol-appropriate refusal is the same fixed notice this file already writes for an over-long line. A terminal prints it; no client can mistake it for a prompt or a login success. |
+
+**The deadline wraps the read and nothing else.** `TelnetLineReader::next_line` takes the bound
+and applies it to the wait for *more bytes*, so a person on a slow link who is still typing keeps
+the connection. The LLM round-trip and a `manual` rule parking a line for a human
+(`src/state/intercepts.rs`, 300s by default) happen further down the loop, after a line has
+already been read, so a slow answer can never be timed out from under itself.
+
+`tests/server/telnet/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

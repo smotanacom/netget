@@ -178,3 +178,28 @@ session, which is honest.
 nc 127.0.0.1 4444
 # then type: whoami   ->  model prints e.g. "www-data"
 ```
+
+## Connection bounds
+
+Before September 2026 this listener accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever. It now
+declares both halves; the constants and the reasoning live beside them in
+`src/server/reverse_shell/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 120s | Two minutes rather than a machine protocol's thirty seconds, because the peer is a person at `nc`: the session opens with a model-written banner and prompt, and they read it before typing. The banner is generated and written before the read loop starts, so this bound measures only the time from a prompt being on their screen to the first key. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 900s | A shell's own idle convention is `TMOUT`, which hardening baselines set to 900 seconds — so this is the number an operator already expects a shell session to be reclaimed at, and long enough that reading a long listing, or stepping away mid-engagement, does not cost the session. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plain notice line**, `\r\n[netget] too many connections\r\n`. There is no framing to refuse in, but there is a terminal on the other end, so a plain line reaches the one audience that exists. It is deliberately netget's own voice rather than a shell-looking error: the emulated shell never got as far as existing, and a fabricated shell message would assert something about a session that was declined. |
+
+**The deadline wraps the read and nothing else.** The session-opened consultation happens before
+the loop, and the LLM round-trip and a `manual` rule parking a command for a human
+(`src/state/intercepts.rs`, 300s by default) happen after bytes have already been read.
+
+`tests/server/reverse_shell/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

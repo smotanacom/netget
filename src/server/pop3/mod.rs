@@ -4,6 +4,7 @@ pub mod actions;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
@@ -40,6 +41,51 @@ use tokio_rustls::TlsAcceptor;
 /// oversized line never reaches a prompt.
 #[cfg(feature = "pop3")]
 pub const MAX_COMMAND_BYTES: usize = 1024;
+
+/// How long to wait for the first command after the greeting has been sent.
+///
+/// POP3 is server-speaks-first: the peer gets a `+OK` greeting and every real client answers it
+/// with `CAPA`, `USER` or `AUTH` from inside its own connect path. A minute is Dovecot's
+/// `login_timeout` default, which bounds exactly this pre-authentication phase and is separate
+/// there from the post-login idle timer for the same reason it is separate here.
+///
+/// The greeting itself sits outside this deadline by construction: it is generated and written
+/// before the command loop begins, so however long the model — or a `manual` rule parking it
+/// for a human — takes over it, the clock below has not started.
+#[cfg(feature = "pop3")]
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// Ten minutes, which is not a taste: RFC 1939 §3 says a POP3 server's inactivity autologout
+/// timer "MUST be of at least 10 minutes' duration". This is that timer, at its minimum. The
+/// shorter bound above does not contradict it — what the RFC protects is a *session*, whose
+/// deletions are only committed at `QUIT`, and a peer that has issued no command has no session
+/// to lose.
+///
+/// The LLM round-trip and a `manual` rule parking a command for a human
+/// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
+/// so neither can be timed out from under itself.
+#[cfg(feature = "pop3")]
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_COMMAND_BYTES`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+#[cfg(feature = "pop3")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `-ERR` in place of the greeting is how POP3 refuses a connection it will not serve, and
+/// RFC 3206's `[SYS/TEMP]` response code says precisely what a connection cap means: a
+/// temporary condition, retry later. A client that understands it backs off instead of
+/// recording a permanent fault; one that does not still reads a well-formed `-ERR`. This file
+/// already uses the `[SYS/PERM]` half of the same pair for an over-long command line.
+#[cfg(feature = "pop3")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"-ERR [SYS/TEMP] too many connections\r\n";
 
 /// POP3 server that forwards mail retrieval to LLM
 pub struct Pop3Server;
@@ -78,10 +124,19 @@ impl Pop3Server {
         let tls_acceptor = tls_config.map(TlsAcceptor::from);
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "POP3",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id = crate::server::connection::ConnectionId::new(
                             app_state.get_next_unified_id().await,
                         );
@@ -104,6 +159,10 @@ impl Pop3Server {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 // Optionally perform TLS handshake
                                 if let Some(ref acceptor) = tls_acceptor_clone {
                                     match acceptor.accept(stream).await {
@@ -367,21 +426,41 @@ impl Pop3Session {
         }
 
         // Main command loop
+        let mut answered_one = false;
         loop {
             // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer
             // that connects and never sends one was a one-connection OOM before any model
             // call. `line.clear()` bounded accumulation *across* commands and nothing within
             // one.
-            let (read, n) =
-                match crate::utils::line_reader::read_bounded_line(&mut reader, MAX_COMMAND_BYTES)
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        debug!("POP3 read error on connection {}: {}", connection_id, e);
-                        break;
-                    }
-                };
+            // The deadline wraps this read and nothing else. Everything that can legitimately
+            // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
+            // human to answer — happens below, after a line has already been read.
+            let read_timeout = if answered_one {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_COMMAND_READ_TIMEOUT
+            };
+            let framed = tokio::time::timeout(
+                read_timeout,
+                crate::utils::line_reader::read_bounded_line(&mut reader, MAX_COMMAND_BYTES),
+            )
+            .await;
+            let (read, n) = match framed {
+                Err(_) => {
+                    info!(
+                        "POP3 connection {} sent nothing for {}s; closing idle connection",
+                        connection_id,
+                        read_timeout.as_secs()
+                    );
+                    break;
+                }
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    debug!("POP3 read error on connection {}: {}", connection_id, e);
+                    break;
+                }
+            };
+            answered_one = true;
             let line = match read {
                 crate::utils::line_reader::BoundedLine::Line(line) => line,
                 crate::utils::line_reader::BoundedLine::Eof => {

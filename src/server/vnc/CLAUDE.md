@@ -230,3 +230,33 @@ will not connect.
 
 - [RFC 6143 — The Remote Framebuffer Protocol](https://tools.ietf.org/html/rfc6143)
 - [rfbproto](https://github.com/rfbproto/rfbproto)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and never returned its ProtocolVersion held a socket, a task and an `AppState`
+entry forever — on a server whose only security type is `None`, so every connection is
+unauthenticated by construction. It now declares both halves; the constants and the reasoning
+live beside them in `src/server/vnc/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | RFB is server-speaks-first: this server writes `RFB 003.008\n` and the viewer answers with its own twelve-byte version string from inside its connect path, before any human is involved. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 1800s | The length is dictated by RFB, not by taste: a viewer that has issued an *incremental* `FramebufferUpdateRequest` is required to say nothing more until the server has an update for it, so a healthy client watching an unchanging screen is silent for as long as the screen does not change. Closing that would be the TFTP mistake — measuring "idle" on a connection in the middle of the protocol's own normal behaviour. Half an hour is longer than any interval an operator leaves a viewer attached across, and still turns "forever" into a bound. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. RFB *has* a refusal — a security-type count of zero followed by a reason string — but it may only be sent after the peer has returned its own ProtocolVersion, and a capped connection is refused before a byte has been read. Writing the version banner and then hanging up would be worse than silence: it starts a handshake this server has already declined, and the viewer reports a truncated connection rather than a refused one. `accept_bounded` logs it at WARN with `decision=fail_closed_connection_cap`. |
+
+**The deadlines are applied with `IdleTimeoutReader`, not a `tokio::time::timeout` around one
+call**, because RFB reads are scattered: the version exchange, the security choice, `ClientInit`,
+each message-type octet and each message body are separate reads, and a peer that sends a message
+type and then stalls mid-body would otherwise be unbounded. Its deadline is armed lazily — only
+while a read is actually pending — so the model round-trip inside a message handler, and a
+`manual` rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), run with
+no clock against them at all.
+
+`tests/server/vnc/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.
