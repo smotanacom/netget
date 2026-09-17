@@ -233,6 +233,33 @@ get wrong" — was not true here. The protocol's own startup example builds the 
 peer input (`'session-' + login`), so the injection was reachable from a script handler as
 readily as from the model.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` row forever —
+before `CONNECT`, so before the model had decided anything about it — on a server that would
+happily accept a hundred more. It now declares both halves; the constants and the reasoning live
+beside them in `src/server/stomp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_FRAME_READ_TIMEOUT` | 30s | STOMP is client-speaks-first and the spec makes `CONNECT`/`STOMP` the *only* legal first frame, so a peer that has sent nothing has begun no session. Which bound applies is the protocol's own distinction: the flag is `connected`, set by that frame. |
+| `IDLE_BETWEEN_FRAMES_TIMEOUT` | 1800s (30 min) | **The one bound here that can close a well-behaved client, stated rather than hidden.** A subscriber sends `SUBSCRIBE` once and then only receives, and this server negotiates heart-beating off unconditionally (`STOMP_HEARTBEAT` is `0,0`, because there is no timer here and promising one would be a lie), so there is no keepalive interval to sit above and no traffic from an idle subscriber at all. A finite bound is still required. Thirty minutes is measured against what a real broker does: ActiveMQ and RabbitMQ negotiate heart-beats at 10–60s and cut a peer at twice the interval, so this is 30–180× more patient. A client that wants longer has a cheap way to say so — a bare EOL is a STOMP heart-beat, the parser drains it as one, and it counts as inbound activity. |
+| `MAX_CONNECTIONS` | 256 | Refusal: a well-formed **`ERROR` frame** with `message:too many connections`, built through `frame::error_frame` rather than as a byte literal so escaping and the `content-length`/NUL rules stay the encoder's job. The spec has the server close after an `ERROR`, which is exactly the shape of a refusal. |
+
+**The deadline wraps the `read()` and nothing else**, and here that is stronger than it sounds:
+`handle_frame` is awaited in the same task, so while the model is answering — or a `manual` rule
+is parked for a human — nothing is being read and no clock is running. What the bound measures is
+the peer's own silence. An idle close writes `ERROR` with `message:idle timeout` and logs
+`decision=fail_closed_idle_timeout`.
+
+`tests/server/stomp/connection_bounds_test.rs` drives all three from the wire against a
+model-free server: the refusal is checked for its `message` header *and* its NUL terminator, and
+releasing one admitted connection is checked to free exactly one slot. Replacing the
+`tokio::time::timeout` around the read with the bare call makes the first test hang for its whole
+70-second window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either
+bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Not implemented
 
 - **Heart-beating.** Negotiated `0,0`; see above.

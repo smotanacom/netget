@@ -56,6 +56,53 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 
+/// How long to wait for a peer's `CONNECT` after it opens the socket.
+///
+/// STOMP is client-speaks-first and the spec makes `CONNECT`/`STOMP` the *only* legal first
+/// frame, so a peer that has connected and sent nothing has begun no session at all — which is
+/// the state an unauthenticated flood lives in. The deadline wraps the `read()` and nothing
+/// else, so a model round-trip, or a `manual` rule parking the CONNECT for a human, sits outside
+/// it by construction.
+const FIRST_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connected peer may send nothing further.
+///
+/// **This is the one bound here that can close a well-behaved client, and the reason is worth
+/// stating rather than hiding.** A STOMP subscriber sends `SUBSCRIBE` once and then only
+/// receives, and this server negotiates heart-beating **off unconditionally**
+/// (`actions::STOMP_HEARTBEAT` is `"0,0"`, because there is no heart-beat timer here and
+/// promising one would be a lie), so there is no keepalive interval to sit above and no traffic
+/// from an idle subscriber at all. Some finite bound is still required — a socket, a task and an
+/// `AppState` row per silent peer, pre-authentication, is the denial of service this exists to
+/// close.
+///
+/// Thirty minutes is chosen against what a real broker does: ActiveMQ and RabbitMQ negotiate
+/// heart-beats in the 10–60 second range and cut a peer at twice the negotiated interval, so
+/// this is between thirty and a hundred and eighty times more patient than either. A client that
+/// wants to stay silent longer has a cheap way to say so: a bare EOL is a STOMP heart-beat, the
+/// parser drains it as one, and it counts as inbound activity here.
+const IDLE_BETWEEN_FRAMES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection holds a task, a frame buffer and an `AppState` row before any
+/// `CONNECT` is decided, so the cap is what turns those per-connection bounds into total ones.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// The `message` header of the `ERROR` frame a peer over [`MAX_CONNECTIONS`] is sent.
+///
+/// STOMP has an `ERROR` frame and the spec has the server close after one, which is exactly the
+/// shape of a refusal — so the peer is told, in the protocol's own vocabulary, rather than
+/// dropped. The frame is built through `frame::error_frame` rather than written as a byte
+/// literal so that the escaping and the `content-length`/NUL rules stay the encoder's job.
+const CONNECTION_CAP_REFUSAL_MESSAGE: &str = "too many connections";
+
+/// The body of that `ERROR` frame. A fixed string: nothing derived from an internal error may
+/// reach the wire (`crate::utils::wire_failure`), and there is nothing internal here anyway —
+/// the server is simply full.
+const CONNECTION_CAP_REFUSAL_BODY: &str =
+    "The server has reached its connection limit. Retry later.";
+
 pub struct StompServer;
 
 impl StompServer {
@@ -80,10 +127,23 @@ impl StompServer {
         let protocol = Arc::new(StompProtocol::new());
         let task_registrar = app_state.clone();
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        // Encoded once rather than per refusal: the bytes never change, and going through the
+        // protocol's own encoder keeps header escaping and the NUL terminator its job.
+        let cap_refusal = error_frame(CONNECTION_CAP_REFUSAL_MESSAGE, CONNECTION_CAP_REFUSAL_BODY);
+
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &cap_refusal,
+                    "STOMP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = socket.local_addr().unwrap_or(local_addr);
@@ -128,6 +188,10 @@ impl StompServer {
                         // unregistered connection task keeps its socket alive after
                         // stop_server has released the listener.
                         let conn_handle = tokio::spawn(async move {
+                            // Held for the life of the connection: dropping it early releases
+                            // the slot while the peer is still here, which silently un-caps
+                            // the server.
+                            let _permit = permit;
                             handle_stomp_connection(
                                 socket,
                                 peer_addr,
@@ -329,7 +393,44 @@ async fn run_stomp_session<R, W>(
             }
         }
 
-        match reader.read(&mut read_buf).await {
+        // The deadline wraps this read and nothing else. `handle_frame` above is awaited in the
+        // same task, so while the model is answering — or a `manual` rule is parked for a
+        // human — nothing is being read and no clock is running: what this measures is the
+        // peer's own silence, which is what it should measure.
+        //
+        // Which bound applies is the protocol's own distinction: `connected` is set by the
+        // CONNECT/STOMP frame the spec requires first, so "has begun no session" and "is
+        // mid-session" are exactly the two states.
+        let read_deadline = if connected {
+            IDLE_BETWEEN_FRAMES_TIMEOUT
+        } else {
+            FIRST_FRAME_READ_TIMEOUT
+        };
+        let read_result =
+            match tokio::time::timeout(read_deadline, reader.read(&mut read_buf)).await {
+                Ok(v) => v,
+                Err(_) => {
+                    log.info(format!(
+                        "STOMP client {} sent nothing for {}s; closing \
+                     decision=fail_closed_idle_timeout",
+                        peer_addr,
+                        read_deadline.as_secs()
+                    ));
+                    // ERROR then close, as the spec requires after an ERROR. A fixed string: the
+                    // peer is being told the server's own policy, not anything internal.
+                    let _ = write_counted(
+                        write_half,
+                        &error_frame("idle timeout", "No frame received within the idle timeout."),
+                        app_state,
+                        server_id,
+                        connection_id,
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+        match read_result {
             Ok(0) => {
                 log.info(format!("STOMP client {} disconnected", peer_addr));
                 return;
