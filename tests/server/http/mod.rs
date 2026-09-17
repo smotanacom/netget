@@ -12,3 +12,5 @@ mod decision_tag_test;
 
 #[cfg(all(test, feature = "http"))]
 mod connection_bounds_test;
+#[cfg(all(test, feature = "http"))]
+pub mod real_client_test;
