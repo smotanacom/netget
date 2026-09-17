@@ -138,9 +138,14 @@ A field name the message does not declare is logged at WARN rather than dropped 
 the headers is why this client mishandled every real gRPC server: grpc-go and tonic put the
 status in trailers on a normal unary call — headers carry it only in the "trailers-only" shape
 — so a genuine `5 NOT_FOUND` arrived as "absent", which the client treated as success, and the
-caller then got a meaningless "Response too short" from the empty body beside it. NetGet's own
-gRPC server puts the status in the headers, which is why testing against ourselves never showed
-it (and is a known gap on the server side: see `src/server/grpc/CLAUDE.md`, "No trailers").
+caller then got a meaningless "Response too short" from the empty body beside it.
+
+**Both halves of that story were NetGet talking to itself.** The server had the mirror-image
+defect — it put the status in the headers on a call that carried a body — so pointing this
+client at that server showed nothing wrong in either direction. The server was fixed in
+September 2026 and now emits real trailers (`src/server/grpc/CLAUDE.md`), which is what a real
+gRPC client refuses to proceed without. Reading both places is still correct here: an error
+reply is legitimately Trailers-Only, and its status really is in the headers.
 
 ### The connection is claimed only once the request is built
 
