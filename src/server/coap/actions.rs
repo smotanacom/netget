@@ -119,7 +119,10 @@ impl Protocol for CoapProtocol {
                  (RFC 7959), DTLS/CoAPS on 5684, separate (non-piggybacked) responses, \
                  retransmission of Confirmable responses, and multicast",
             )
-            .max_inbound_bytes(crate::server::coap::codec::MAX_PAYLOAD_LEN)
+            // The bound on what a stranger can send, not on what this server writes.
+            // `MAX_PAYLOAD_LEN` was declared here and governs the outbound direction only,
+            // so the number named nothing the inbound path checked.
+            .max_inbound_bytes(crate::server::coap::codec::MAX_MESSAGE_LEN)
             .build()
     }
 

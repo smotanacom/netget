@@ -54,8 +54,12 @@ impl CoapServer {
         let recv_handle = tokio::spawn(async move {
             Log::new(Some(&status_tx)).info(format!("CoAP receive loop started on {local_addr}"));
 
-            // RFC 7252 §4.6: without Block-wise transfer, a message has to fit one
-            // datagram; 1500 covers a full Ethernet MTU, 2048 leaves headroom.
+            // Deliberately larger than `codec::MAX_MESSAGE_LEN` (1152), and that is the
+            // whole point of the number rather than headroom for its own sake: `recv_from`
+            // silently discards whatever does not fit, so a buffer sized *at* the bound
+            // would deliver a 5000-byte datagram as a legal-looking 1152-byte one and the
+            // guard below could never fire. With 2048 anything over the bound is seen to
+            // be over it.
             let mut buffer = vec![0u8; 2048];
 
             loop {
@@ -148,6 +152,62 @@ impl CoapServer {
         protocol: Arc<CoapProtocol>,
         next_message_id: Arc<AtomicU16>,
     ) {
+        // --- The inbound size bound, before anything is decoded or asked -------------
+        //
+        // RFC 7252 §4.6 puts MAX_MESSAGE_SIZE at 1152 bytes when the path MTU is unknown,
+        // and Block-wise transfer (RFC 7959) — the legal way to exceed it — is not
+        // implemented here. So a larger datagram is refused in CoAP's own vocabulary
+        // (4.13 Request Entity Too Large, §5.9.2.9) rather than decoded, and the model is
+        // never asked about it: an oversize request must not become a prompt.
+        if data.len() > codec::MAX_MESSAGE_LEN {
+            warn!(
+                "CoAP refusing a {}-byte datagram from {} (limit {}) decision={}",
+                data.len(),
+                peer_addr,
+                codec::MAX_MESSAGE_LEN,
+                Decision::RefusedTooLarge.as_str()
+            );
+            let _ = status_tx.send(format!(
+                "✗ CoAP refused a {}-byte datagram from {peer_addr}: over the {}-byte limit",
+                data.len(),
+                codec::MAX_MESSAGE_LEN
+            ));
+
+            // The refusal still has to be matchable, so it carries the request's own
+            // message id and token — read from the fixed-offset prefix, which needs no
+            // option walk. Without that echo a client discards it and the refusal is
+            // indistinguishable from the silence it exists to avoid.
+            if let Some(prefix) = codec::message_prefix(&data) {
+                let reply = if codec::method_name(prefix.code).is_some() {
+                    let fresh = next_message_id.fetch_add(1, Ordering::Relaxed);
+                    Some(codec::response_to_prefix(
+                        &prefix,
+                        fresh,
+                        codec::CODE_REQUEST_ENTITY_TOO_LARGE,
+                    ))
+                } else if prefix.mtype == MessageType::Confirmable {
+                    // Not a request, so 4.13 would be a category error; RFC 7252 §4.2
+                    // rejects a Confirmable message that cannot be processed with a Reset.
+                    Some(codec::reset_for(prefix.message_id))
+                } else {
+                    None
+                };
+                if let Some(reply) = reply {
+                    Self::send(
+                        &reply,
+                        peer_addr,
+                        connection_id,
+                        server_id,
+                        &socket,
+                        &app_state,
+                        &status_tx,
+                    )
+                    .await;
+                }
+            }
+            return;
+        }
+
         let request = match CoapMessage::decode(&data) {
             Ok(m) => m,
             Err(e) => {
@@ -523,6 +583,10 @@ enum Decision {
     ModelSilent,
     /// The specification determined the reply; the model was never asked.
     SpecReply,
+    /// The datagram was over `codec::MAX_MESSAGE_LEN` and was refused unread. A decision
+    /// the server makes on its own, so not a `fail_closed_` — but loud, because it is the
+    /// tag that says an oversize request never became a prompt.
+    RefusedTooLarge,
     /// The LLM backend failed. Nobody decided anything.
     FailClosedLlmError,
     /// The model was asked and returned nothing this request could use.
@@ -537,6 +601,7 @@ impl Decision {
             Decision::ModelReset => "model_reset",
             Decision::ModelSilent => "model_silent",
             Decision::SpecReply => "spec_reply",
+            Decision::RefusedTooLarge => "refused_too_large",
             Decision::FailClosedLlmError => "fail_closed_llm_error",
             Decision::FailClosedNoAction => "fail_closed_no_action",
         }
