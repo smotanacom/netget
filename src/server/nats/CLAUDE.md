@@ -99,15 +99,34 @@ stopped the server accepting for good while `AppState` still showed it `Running`
 a server that lies about being up, reached from the other direction. It retries
 with a 50 ms backoff and gives up only after `MAX_CONSECUTIVE_ACCEPT_ERRORS`.
 
-## Known gap: nothing reaps an idle connection
+## Connection bounds
 
-There is no read deadline, no server-initiated `PING` timer and no cap on
-concurrent connections, and `.connectionless()` is deliberately unset (NATS is
-TCP, and setting it would have the 10-second idle sweep evict live sessions). A
-peer that connects and then says nothing holds a socket, two tasks and an
-`AppState` row until the server stops. This is repo-consistent — `src/server/tcp`
-is the same — but NATS is a protocol whose own `PING` could be used for liveness,
-and is not.
+Until September 2026 this section read "nothing reaps an idle connection", and it was accurate:
+a peer that connected and said nothing held a socket, **two** tasks, a 256-frame queue and an
+`AppState` row until the server stopped, on a server that accepted without limit. Both halves are
+declared now; the constants and the reasoning live beside them in `src/server/nats/mod.rs`.
+`.connectionless()` stays unset, correctly — NATS has sessions, and setting it would have the
+10-second idle sweep evict live ones.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_FRAME_READ_TIMEOUT` | 30s | NATS is server-speaks-first (`INFO` before the client says anything) and every client answers `CONNECT` inside its own connect path, so a greeted peer that has sent nothing has begun no session. |
+| `IDLE_BETWEEN_FRAMES_TIMEOUT` | 600s | **A subscriber is legitimately silent** — it sends `SUB` once and then only receives — so this bound rests on NATS's own keepalive: `nats-server`'s `ping_interval` defaults to **2 minutes** and `async-nats` sends its own `PING` every **60 seconds**. Ten minutes sits above both, with five times the margin on the longer one. It is also well above the 300-second default a `manual` rule gives a human, which matters here in a way it does not elsewhere: the reader keeps reading while the dispatcher answers, so a peer waiting for its own reply is silent on this socket for the whole of that work. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR 'Maximum Connections Exceeded'`**, the exact line `nats-server` itself sends over `max_connections`. The peer has not sent `CONNECT`, so nothing has been negotiated and there is nothing else worth saying. |
+
+The deadline covers the read and nothing else. The idle close writes `-ERR 'Stale Connection'` —
+NATS's own error line, and the phrasing a real server uses when it reaps a connection that
+stopped answering — and logs `decision=fail_closed_idle_timeout`.
+
+One connection is **two** tasks here, so the permit is an `Arc` held by both rather than parked
+in whichever ends last: the dispatcher outlives the reader by however long its final frame takes,
+and a slot released early un-caps the server silently.
+
+`tests/server/nats/connection_bounds_test.rs` drives all three from the wire, including that the
+refusal line arrives exactly and that a peer over the cap is never greeted with `INFO` first.
+Deleting the `tokio::time::sleep` arm from the reader's `select!` makes the first test hang for
+its whole 70-second window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if
+either bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
 
 ## What the model sees and controls
 
