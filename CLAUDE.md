@@ -991,6 +991,23 @@ itself, and that is what caught `ospf` advertising `list_neighbors`/`list_lsdb` 
 executor arm, and `tor_relay_log` advertised under a comment claiming the executor "has always
 handled it" when there was no arm at all.
 
+**A source-reading ratchet must know both ways metadata is declared, and which direction it
+fails in when it does not.** `ProtocolMetadataV2` is usually built through the builder
+(`.state(…)`, `.connectionless()`, `.deliberately_silent()`, `.max_inbound_bytes(…)`), but it
+can also be built by struct literal, where the same declarations read `state: …`,
+`connectionless: true` and so on. One protocol does that today, `src/client/ospf/actions.rs`.
+
+Ask which way a missed match fails:
+
+- **`no_protocol_is_hidden_from_the_model_test` failed the dangerous way** and was fixed in
+  September 2026. It looked only for `.state(…Incomplete)`, so a protocol hidden from the model
+  in the literal form would have passed. Hidden is invisible by construction, so nothing else
+  would have caught it either.
+- **The other three fail the safe way.** `connectionless_audit_test`,
+  `failure_mode_declaration_test` and `max_inbound_bytes_declaration_test` each require a
+  declaration to be *present*, so an unrecognised form reads as "declares nothing" and is
+  flagged. A false positive costs a reader five minutes; a miss costs months.
+
 Two lessons from building them, both about false positives rather than misses. **Detect at the
 right nesting depth**: an `Ok(_) => {}` catch-all on an inner `match protocol.execute_action(..)`
 is correct and everywhere, and a substring version of that check flagged `ntp` and `tor` while
