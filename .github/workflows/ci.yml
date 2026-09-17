@@ -401,14 +401,19 @@ jobs:
           echo "::notice::These are the real-client tests behind the Beta ratings."
           failed=""
           for filter in \
-            coap::real_client_test dns::dig_test gopher::e2e_test hls::curl_test \
+            coap::real_client_test dns::dig_test dns::kdig_test \
+            doh::real_client_test dot::real_client_test dynamo::real_client_test \
+            etcd::real_client_test gopher::e2e_test grpc::real_client_test \
+            hls::curl_test http::real_client_test \
             kafka::real_client_test kubernetes::e2e_test maven::e2e_test \
             memcached::real_client_test modbus::real_client_test \
             mongodb::real_client_test mqtt::real_client_test \
             mysql::real_client_test npm::e2e_test \
-            oci_registry::e2e_test openvpn:: pypi::e2e_test \
-            radius::real_client_test rtsp::ffprobe_test svn::real_client_test \
-            websocket::e2e_test ; do
+            oci_registry::e2e_test openvpn:: postgresql::real_client_test \
+            pypi::e2e_test radius::real_client_test redis::real_client_test \
+            rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
+            sqs::real_client_test stun::real_client_test svn::real_client_test \
+            torrent_tracker::real_client_test websocket::e2e_test ; do
             echo "::group::$filter"
             if ! cargo test --locked --all-features --test server -- \
                  --test-threads=100 --nocapture "$filter" ; then
