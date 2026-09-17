@@ -2,8 +2,54 @@
 
 ## Test Overview
 
-Tests MySQL server implementation using real `mysql_async` client library. Validates query execution, multi-row results,
-DDL operations, the binary (prepared-statement) protocol, and rows whose value count disagrees with the column list.
+**Two independent clients, and the second one is the point.** `mysql_async` (a Rust
+reimplementation) covers query execution, multi-row results, DDL, the binary
+(prepared-statement) protocol and rows whose value count disagrees with the column list.
+`real_client_test.rs` drives the **real `mysql` CLI**, which is the client a person actually
+types, and it hard-fails rather than skipping when the binary is absent — a skip would put the
+protocol's maturity rating back on one client.
+
+## `real_client_test.rs` — the second client
+
+Two tests, one server each.
+
+- `test_mysql_real_client_selects_and_errors` — one connection, `--force`, two statements: a
+  `SELECT` whose rows the model authors and a statement answered with an ERR packet. The
+  assertions are on what the **client printed**: the tab-separated rows on stdout, and
+  `ERROR 1146 (42S02)` with the model's message on stderr.
+- `test_mysql_real_client_with_a_password_completes_fast_auth` — the same handshake with
+  `--password=…`, which is a different code path: a client that sent a 32-byte
+  `caching_sha2_password` scramble blocks reading for the `AuthMoreData` `0x01 0x03` packet
+  before it will accept the OK packet, while a client with an empty password expects the OK
+  alone. Nothing about the password is checked — **this server verifies nothing** — the test
+  exists because the two branches are different bytes on the wire.
+
+**Both tests failed before September 2026 with `ERROR 2059 … mysql_native_password cannot be
+loaded`**, which is what they are the regression test for. Verified by removing the three auth
+hooks from `src/server/mysql/mod.rs` and watching both fail with that message in the panic.
+
+### The `select $$` trap, which costs a debugging pass if you do not know it
+
+The CLI issues two queries of its own before yours:
+
+| query | what a real `mysqld` 9.3.0 answers |
+|---|---|
+| `select @@version_comment limit 1` | a one-row result set |
+| `select $$` | **ERR 1064**, SQLSTATE 42000 |
+
+Answer `select $$` with a result set — which is what a single catch-all rule does — and the
+client is left holding one it never read. Your actual statement then fails with `ERROR 2014
+(HY000): Commands out of sync`, and it reads exactly like a framing bug in the server. The
+mock rules here answer it the way the real server does.
+
+Neither probe carries a strict `expect_calls`: how many system variables a client asks about,
+and whether it still sends `$$`, is that client version's business. The `@@` rule uses
+`expect_at_least(1)`, the `$$` rule asserts nothing, and the load-bearing assertions are on
+the CLI's own output.
+
+`tokio::process::Command`, never `std::process` — `#[tokio::test]` gives a current-thread
+runtime, and a blocking `output()` parks the only worker, which is also what has to drain the
+child's pipes: the test deadlocks instead of failing.
 
 ## Test Strategy
 
@@ -64,7 +110,18 @@ Two things about the wire test are deliberate and worth keeping:
   construction: the refusal is taken at the header that crosses it, so every earlier
   fragment's payload really has to be delivered. Same reasoning as `ipp`'s serialising mutex.
 
-**Total for the MySQL suite: ~21 LLM calls across 13 tests**, each test on its own server.
+### `real_client_test.rs`
+
+Two tests. Each is 1 startup + the CLI's own `@@` and `$$` probes + the statements the test
+issues: **4** calls for the selects-and-errors test, **4** for the password one. It reads as
+more than `mysql_async` costs because the CLI talks to the server before it talks for you.
+
+**Total for the MySQL suite: ~29 LLM calls across 15 tests**, each test on its own server.
+
+The raw-socket assertion in `packet_limit_test.rs` is also the suite's only check that a MySQL
+packet reaches the wire as **one** write. It caught `FastAuthWriter` not implementing
+`poll_write_vectored`, which split every packet into a 4-byte header and a body — nothing else
+in the suite could see the difference, because every real client reassembles.
 
 ## Scripting Usage
 
@@ -74,7 +131,14 @@ action-based responses for flexibility in testing different query patterns.
 **Why no scripting?** MySQL queries are highly variable (SELECT vs DDL vs DML), making scripting less practical.
 Action-based responses provide better test coverage.
 
-## Client Library
+## Client Libraries
+
+**the `mysql` CLI** (9.3.0 here, anything 8.0+ will do):
+
+- The client a user actually types, and a separate C implementation — the reason this
+  protocol's rating does not rest on one lenient client.
+- Driven as a subprocess in `real_client_test.rs`; never linked.
+- Required, not optional: the test fails with install instructions if it is missing.
 
 **mysql_async** v0.34:
 
