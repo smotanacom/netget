@@ -159,6 +159,12 @@ const CAP_BASELINE: &[&str] = &[
 ];
 
 /// Anything that reads as "this read is bounded in time".
+///
+/// These match a token, not a mechanism, and `_TIMEOUT` in particular over-matches: `snowflake`
+/// was missing from `TIMEOUT_BASELINE` while having no read bound at all, because it declares
+/// `CODE_REQUEST_TIMEOUT = "000629"` — a Snowflake error *code*. The list is deliberately still
+/// loose, since the failure direction of a false positive here is a protocol silently exempted;
+/// so when a protocol is absent from the baseline, check that what matched is a deadline.
 const TIMEOUT_TOKENS: &[&str] = &[
     "READ_TIMEOUT",
     "IDLE_",

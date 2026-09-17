@@ -473,3 +473,38 @@ the file names. When clients list the bucket, show all uploaded files. Return
 - [S3 Error Codes](https://docs.aws.amazon.com/AmazonS3/latest/API/ErrorResponses.html)
 - [MinIO Documentation](https://min.io/docs/minio/linux/index.html)
 - [rust-s3 client](https://docs.rs/rust-s3/) - for testing
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry forever,
+pre-authentication, on a server that would happily accept a hundred more. It now declares both
+halves; the constants and the reasoning live beside them in `src/server/s3/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | HTTP is client-speaks-first, so a peer that has connected and sent no byte has begun no request. 30s sits between nginx's `client_header_timeout` default of 60s and Apache's `RequestReadTimeout header=20`. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there for hyper afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | Deliberately more permissive than the service this mimics: AWS's own load balancers ship a 60-second idle timeout and S3 closes idle connections of its own accord, so every SDK already has the reopen path. An object body being served is not silence — the response is built under a busy guard and written by hyper. |
+| `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (an object body — the largest thing this family serves), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — a 503 with `Retry-After` is S3's own overload reply (`SlowDown`), which every SDK's retry path handles. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
+
+**The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
+owns every read once `serve_connection` starts and keeps polling the connection for new frames
+*while a request is being answered*, so a deadline on those reads would fire in the middle of an
+LLM round-trip. It watches `ConnectionActivity` instead, which reports a connection with work in
+flight as not idle at all — so the model round-trip, and a `manual` rule parking an event for a
+human (`src/state/intercepts.rs`, 300s by default), sit outside every deadline by construction.
+That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse: TFTP evicted
+live transfers because "idle" was measured wrongly.
+
+**One residual, stated rather than hidden.** The first-byte bound is discharged the moment any
+byte arrives, so a peer that sends one byte of a request line and then stops is bounded by the
+*idle* deadline (300s) rather than by the 30s one. hyper's own `header_read_timeout` cannot
+express the pair: it re-arms whenever hyper starts reading a head, an idle keep-alive connection
+included, so setting it to 30s would close every pooled client between requests — collapsing the
+two bounds onto one number, which is exactly what the pair exists to avoid.
+
+`tests/server/s3/connection_bounds_test.rs` drives all three from the wire, over
+`tests/helpers/http_bounds.rs`. Each was verified by **removing** the bound and watching the test
+fail: with the `peek` deadline gone the silent peer still held the socket at 60s; with the idle
+bound collapsed to 30s an answered connection was closed after 38s of silence; with the permit
+released early the connection past the cap was served instead of refused. The real-client evidence this protocol's rating rests on — rust-s3 0.37 (`tests/server/s3/e2e_test.rs`) — still passes.
