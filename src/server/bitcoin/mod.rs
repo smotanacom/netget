@@ -48,6 +48,47 @@ struct ConnectionData {
 /// the constant the parser actually enforces instead of repeating the number.
 pub const MAX_MESSAGE_BYTES: usize = 4_000_000;
 
+/// How long to wait for a peer's first bytes after it connects.
+///
+/// Bitcoin Core's own number for the same thing: `DEFAULT_PEER_CONNECT_TIMEOUT` is 60 seconds,
+/// after which a peer that has not completed the version handshake is disconnected. This bound
+/// is on the first *byte* rather than on the handshake, so it is strictly more permissive than
+/// Core's and cannot close a peer Core would keep.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a peer that has already sent something may send nothing further.
+///
+/// Bitcoin has a keepalive and every node uses it: Core pings on a `PING_INTERVAL` of **2
+/// minutes** and disconnects a peer that has sent nothing for `TIMEOUT_INTERVAL`, **20 minutes**.
+/// Thirty minutes therefore sits above Core's own inactivity limit — a peer this server closes
+/// is one Core would already have dropped — and fifteen times above the interval at which a live
+/// node speaks.
+///
+/// The margin over 20 minutes matters for a reason specific to NetGet: `handle_data_with_actions`
+/// runs on its own task, so the reader keeps reading while a message is being answered, and a
+/// peer waiting on a model round-trip — or on a `manual` rule parked for a human — is silent on
+/// this socket for the whole of that work.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Concurrent connections this server admits.
+///
+/// **125**, which is Bitcoin Core's `-maxconnections` default rather than this project's shared
+/// 256: a P2P node's connection count is part of how it behaves, and a Bitcoin server that
+/// admitted twice what Core does would be conspicuous. Each admitted connection may buffer a
+/// message of up to [`MAX_MESSAGE_BYTES`] (4 MB) before anything is handshaked, so the cap is
+/// also what turns that per-connection bound into a total one — at 125 it is 500 MB rather than
+/// a gigabyte.
+const MAX_CONNECTIONS: usize = 125;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: **nothing**.
+///
+/// Bitcoin P2P has no "busy" message and no error message of any kind — `reject` was removed in
+/// Core 0.20 and never applied to a connection anyway — and every message this server could send
+/// is a positive assertion about a node that has not handshaked. Core itself simply drops the
+/// connection when it is over `-maxconnections`. So the refusal is a plain close and the reason
+/// lives in the log, under the `decision=fail_closed_connection_cap` tag `accept_bounded` writes.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// Bitcoin P2P protocol server
 pub struct BitcoinServer;
 
@@ -90,10 +131,19 @@ impl BitcoinServer {
 
         // Spawn accept loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Bitcoin",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -211,11 +261,57 @@ impl BitcoinServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection. The reader is the task
+                                // that lives as long as the socket does — the connection-opened
+                                // task above answers one event and ends — so the slot is
+                                // released exactly when the peer is gone.
+                                let _permit = permit;
                                 let mut buffer = vec![0u8; 8192];
                                 let mut read_half = read_half;
+                                // "Has said nothing at all" and "has gone quiet mid-session"
+                                // are different claims and get different deadlines.
+                                let mut spoke_once = false;
 
                                 loop {
-                                    match read_half.read(&mut buffer).await {
+                                    let read_deadline = if spoke_once {
+                                        IDLE_BETWEEN_MESSAGES_TIMEOUT
+                                    } else {
+                                        FIRST_BYTE_READ_TIMEOUT
+                                    };
+                                    // The deadline wraps this read and nothing else:
+                                    // `handle_data_with_actions` answers on its own task, so a
+                                    // model round-trip and a `manual` rule parked for a human
+                                    // are outside it by construction.
+                                    let read_result = match tokio::time::timeout(
+                                        read_deadline,
+                                        read_half.read(&mut buffer),
+                                    )
+                                    .await
+                                    {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            // Nothing on the wire: Bitcoin P2P has no message a
+                                            // node may send to explain a disconnect, and Core
+                                            // itself just drops. The reason is the log line.
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "Bitcoin connection {} sent nothing for {}s; \
+                                                 closing decision=fail_closed_idle_timeout",
+                                                connection_id,
+                                                read_deadline.as_secs()
+                                            ));
+                                            Self::teardown_connection(
+                                                &connections_clone,
+                                                &app_state_clone,
+                                                server_id,
+                                                connection_id,
+                                            )
+                                            .await;
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                    };
+                                    match read_result {
                                         Ok(0) => {
                                             // Connection closed
                                             Self::teardown_connection(
@@ -234,6 +330,7 @@ impl BitcoinServer {
                                             break;
                                         }
                                         Ok(n) => {
+                                            spoke_once = true;
                                             let data = &buffer[..n];
                                             app_state_clone
                                                 .update_connection_stats(

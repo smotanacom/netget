@@ -47,7 +47,6 @@ use std::path::{Path, PathBuf};
 ///
 /// Nothing here makes a deadline impossible. This is work left.
 const TIMEOUT_BASELINE: &[&str] = &[
-    "bitcoin",
     "couchdb",
     "dc",
     "dynamo",
@@ -101,7 +100,6 @@ const TIMEOUT_BASELINE: &[&str] = &[
 const CAP_BASELINE: &[&str] = &[
     "amqp",
     "bgp",
-    "bitcoin",
     "couchdb",
     "dc",
     "doh",
