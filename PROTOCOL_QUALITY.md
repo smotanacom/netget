@@ -281,8 +281,32 @@ once these exist.
   or ALPN mismatch; a *name* there instead switches kdig to a validating profile that a
   self-signed certificate cannot satisfy. The path alone keeps the opportunistic profile.
 
-  Running total: `etcd`, `grpc`, `postgresql`, `redis`, `dns`, `doh` and `dot` have two clients.
-  Two of the seven turned out to be broken against every conformant implementation.
+  **`mysql` was the item's reference case and it is now closed, which is the third protocol this
+  week to be found broken against the client a user would actually reach for.** The server
+  offered `mysql_native_password`, whose client plugin MySQL 9.0 deleted, so the real `mysql`
+  9.3 CLI could not connect at all — `ERROR 2059 … Authentication plugin cannot be loaded`. It
+  now offers `caching_sha2_password`, and `tests/server/mysql/real_client_test.rs` drives the
+  real CLI through a session.
+
+  Two things from that repair generalise, and both are about how the fix was found:
+
+  - **Reverting the obvious line did not reproduce the failure.** The client survives a greeting
+    it cannot honour — it answers naming its own plugin — and dies on the `AuthSwitchRequest`
+    that follows. A regression test asserting on the advertised plugin name would have been
+    green against the bug, so the test asserts on what the client printed.
+  - **The fix broke a bound that only one test could see.** The new writer had no
+    `poll_write_vectored`, so tokio forwarded only the first slice and every packet went out as
+    a bare 4-byte header. Real clients reassemble, so nothing else in the suite could notice;
+    `packet_limit_test.rs` caught it.
+
+  And it is a statement about packets, not about security: **that server authenticates nothing**
+  — no password is stored or compared and the model is not consulted. `caching_sha2.rs` says so
+  in its first paragraph, and the metadata repeats it, because "offers caching_sha2_password"
+  reads like "checks a password" to anyone skimming.
+
+  Running total: `etcd`, `grpc`, `mysql`, `postgresql`, `redis`, `dns`, `doh` and `dot` have two
+  clients. **Three of the eight turned out to be broken against every conformant
+  implementation** — which is the answer to whether this item was worth doing.
 
   **The rest of the item, as a map rather than a wish.** Measured against what is installed on
   this machine, the single-client Betas fall into three groups.
