@@ -374,3 +374,29 @@ here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_te
 this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
 source on every run, so if the mechanism changes the build fails rather than the file going
 quietly stale.
+
+## Verified
+
+**State: Beta**, on **two** independent peers as of September 2026:
+
+| test | peer | what it proves |
+|---|---|---|
+| `tests/server/dot/real_client_test.rs` | `kdig` (Knot DNS 3.6, C) | a third-party resolver completes a `+tls` session and renders our answer |
+| `tests/server/dot/e2e_test.rs` | `rustls` | the TLS handshake and RFC 7858 framing, over a reused connection |
+
+Neither is `#[ignore]`d; the kdig test **fails** naming `brew install knot` rather than skipping.
+
+**The second one alone was half circular, and the protocol's own metadata said so for months
+before anyone acted on it.** rustls is genuinely independent for the transport, but the DNS
+message is hand-assembled over **hickory-proto — the codec this server encodes with** — so that
+half proved our encoder agrees with our decoder and nothing more. The `e2e_testing` field named
+`kdig +tls` as the thing that would close it and recorded that it was not installed. It is now.
+
+Verified by answering with a fixed transaction id instead of the client's: kdig waits out its
+timeout and the test fails. A resolver discards any reply whose id does not match, which is
+exactly the class of defect an in-house codec cannot see.
+
+**Unproven:** certificate validation of any kind — the certificate is self-signed and plain
+`+tls` does not authenticate it (that needs `+tls-ca`, `+tls-hostname` or `+tls-pin`) — client
+auth, and record types beyond A.
+

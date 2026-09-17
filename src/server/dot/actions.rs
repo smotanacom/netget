@@ -106,7 +106,27 @@ impl Protocol for DotProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(853))
             .implementation("hickory-proto + tokio-rustls; DNS actions and action execution are delegated to the DNS protocol")
             .llm_control("Same as DNS (delegates to DNS protocol)")
-            .e2e_testing("tests/server/dot/e2e_test.rs, not #[ignore]d: rustls - an independent TLS implementation - completes a real handshake, and the test asserts the transaction id and question are echoed and that each domain gets its own address. The RFC 7858 framing and the DNS message are hand-assembled in the test over hickory-proto as a codec, so the DNS layer's evidence is inherited from the dns protocol (which dig now validates) rather than proved here. What is NOT proved: a third-party DoT client completing a session - kdig +tls (knot-dnsutils) is the one to reach for, and is not installed on this machine.")
+            .e2e_testing(
+                "TWO independent peers, neither #[ignore]d and neither able to skip. \
+                 (1) tests/server/dot/real_client_test.rs drives the real kdig binary (Knot DNS \
+                 3.6, a C implementation sharing no code with this tree) through `kdig +tls`: it \
+                 matches the reply's transaction id against the one it chose, confirms the \
+                 question section, decodes the RFC 7858 length prefix and renders the answer \
+                 through its own presentation writer. Two queries for different names with \
+                 different addresses, so a reply bound to the wrong question is visible. The \
+                 test FAILS, naming `brew install knot`, when kdig is absent. \
+                 (2) tests/server/dot/e2e_test.rs: rustls completes a real handshake and the \
+                 test asserts the id and question are echoed and that each domain gets its own \
+                 address. \
+                 UNTIL SEPTEMBER 2026 ONLY (2) EXISTED, and its DNS half was circular: the \
+                 message is hand-assembled over hickory-proto, the codec this server encodes \
+                 with, so it proved our encoder agrees with our decoder. This field named kdig \
+                 as the thing that would close it; kdig is now installed and does. Verified by \
+                 answering with a fixed transaction id instead of the client's, at which point \
+                 kdig waits out its timeout and the test fails. \
+                 UNPROVEN: certificate validation of any kind (the cert is self-signed and plain \
+                 `+tls` does not authenticate it), client auth, and record types beyond A.",
+            )
             .notes("Self-signed certs only, no client auth, TLS overhead")
             .build()
     }

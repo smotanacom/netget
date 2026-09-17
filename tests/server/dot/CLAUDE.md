@@ -5,13 +5,42 @@
 Tests DoT server implementation with multiple DNS queries over a single TLS connection. Validates that DNS queries work
 correctly when delivered over TLS transport.
 
+## The maturity evidence is `real_client_test.rs`
+
+`DevelopmentState::Beta` rests on **kdig** — Knot DNS 3.6, a C implementation sharing no code
+with this tree. `kdig +tls` matches the reply's transaction id against the one it chose,
+confirms the question section, decodes the RFC 7858 length prefix and renders the answer through
+its own presentation writer. Two queries for different names with different addresses, so a
+reply bound to the wrong question is visible rather than merely plausible. The test **fails**,
+naming `brew install knot`, when kdig is absent.
+
+**Until September 2026 there was no such test, and the evidence was half circular.** `rustls`
+really is an independent TLS implementation, so the transport was proved — but the DNS message
+in `e2e_test.rs` is hand-assembled over **hickory-proto, the codec this server encodes with**,
+so that half proved only that our encoder agrees with our decoder. This is the `ssh`/russh shape
+the project CLAUDE.md records: check what a test *drives*, not what the server links.
+
+Verified by answering with a fixed transaction id instead of the client's. kdig then waits out
+its timeout and the test fails — which is also the one thing `e2e_test.rs` could not have
+caught before it started checking the id itself.
+
+```bash
+./cargo-isolated.sh test --no-default-features --features dot \
+    --test server -- server::dot --test-threads=8
+```
+
 ## Test Strategy
 
-- **Single server setup**: One NetGet instance with Python script handles all test queries
-- **Real TLS client**: Uses tokio-rustls with custom certificate verifier (accepts self-signed)
-- **Real DNS client**: Uses hickory-proto for DNS message construction/parsing
-- **Connection reuse**: Multiple queries over same TLS session (tests persistent connection)
-- **Script-driven**: Uses Python script for fast, deterministic responses
+- **`real_client_test.rs`**: the real `kdig` binary over `+tls`, via `tokio::process` (a
+  blocking `std::process::Command` would park the current-thread runtime's only worker and
+  deadlock the harness draining netget's pipes)
+- **`e2e_test.rs`**: tokio-rustls with a custom verifier that accepts the self-signed cert, and
+  hickory-proto for message construction; three queries over one TLS session, which is what
+  exercises connection reuse and the length-prefixed framing
+- **`llm_failure_test.rs`**: what the peer gets when the backend fails
+- **Mock-driven**: the model is `tests/helpers/mock_ollama.rs`, in-process. Nothing here
+  contacts a real backend, and the "Python script" this section used to describe is not what
+  any of these tests do
 
 ## LLM Call Budget
 
