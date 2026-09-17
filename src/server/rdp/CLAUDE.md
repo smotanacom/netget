@@ -169,3 +169,31 @@ because the slice ends after the Connection Confirm.
 - [MS-RDPBCGR] 2.2.1.1 Client X.224 Connection Request PDU
 - [MS-RDPBCGR] 2.2.1.2 Server X.224 Connection Confirm PDU
 - RFC 1006 (TPKT), ITU-T X.224 (COTP)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and sent no Connection Request held a socket, a task and an `AppState` entry
+forever. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/rdp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | RDP is client-speaks-first: the X.224 Connection Request is the very first thing on the wire, sent by `mstsc`, FreeRDP or rdesktop from inside their own connect path with no user interaction in between. A peer that has sent nothing has negotiated nothing. |
+| `IN_FRAME_READ_TIMEOUT` | 15s | A narrower claim than the first bound, so a shorter number: these bytes belong to a TPKT frame whose header has already arrived, and a Connection Request is at most `MAX_X224_LEN` bytes that a real client writes in one go. Nothing legitimate pauses in the middle of it. This server's whole session is one request and one reply, so there is no third case — the model round-trip happens after the request has been read in full. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. RDP's own refusal is a Connection Confirm carrying `RDP_NEG_FAILURE`, and it is a *reply*: a capped peer is refused before its Connection Request has been read, so there is no `srcRef` to answer and no requested protocol to fail. A fabricated Connection Confirm would also be a positive assertion — it tells the client which security protocol to speak next — which is what a refusal must not do. `accept_bounded` logs it at WARN with `decision=fail_closed_connection_cap`. |
+
+**The deadlines are applied with `IdleTimeoutReader`, not a `tokio::time::timeout` around one
+call**, because the Connection Request is read in two steps — the TPKT header, then the X.224
+body whose length that header declares — and a peer that sends `0x03` and stalls would otherwise
+be unbounded. Its deadline is armed lazily, only while a read is pending, so the model
+round-trip, and a `manual` rule parking the negotiation for a human
+(`src/state/intercepts.rs`, 300s by default), run with no clock against them.
+
+`tests/server/rdp/connection_bounds_test.rs` drives all three from the wire: a silent peer is
+closed at the first bound, a connection whose answer is parked for a human is not closed at all,
+and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
+EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
+and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
+itself, including that a busy connection is never reported as idle.

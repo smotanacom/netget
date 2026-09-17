@@ -66,7 +66,7 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 
 /// `parked` routes every event to a human, which is the 300-second window the second test
 /// exists for. The RFB handshake itself needs no model call either way.
-async fn start_server(state: &AppState, parked: bool) -> u16 {
+async fn start_server(state: &AppState, parked: bool) -> (ServerId, u16) {
     let (tx, _rx) = mpsc::unbounded_channel();
     let server_id = ServerForm {
         protocol: "vnc".to_string(),
@@ -85,7 +85,8 @@ async fn start_server(state: &AppState, parked: bool) -> u16 {
     .create(state, tx)
     .await
     .expect("create vnc server");
-    wait_for_port(state, server_id).await
+    let port = wait_for_port(state, server_id).await;
+    (server_id, port)
 }
 
 /// Take the connection through RFB 3.8 to the point where client messages are accepted.
@@ -121,7 +122,7 @@ async fn complete_rfb_handshake(peer: &mut TcpStream) {
 #[tokio::test]
 async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_bound() {
     let state = new_state().await;
-    let port = start_server(&state, false).await;
+    let (_server_id, port) = start_server(&state, false).await;
 
     let mut peer = TcpStream::connect(("127.0.0.1", port))
         .await
@@ -163,7 +164,7 @@ async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_bound() {
 #[tokio::test]
 async fn a_connection_whose_answer_is_parked_for_a_human_is_not_closed() {
     let state = new_state().await;
-    let port = start_server(&state, true).await;
+    let (server_id, port) = start_server(&state, true).await;
 
     let mut peer = TcpStream::connect(("127.0.0.1", port))
         .await
@@ -181,6 +182,26 @@ async fn a_connection_whose_answer_is_parked_for_a_human_is_not_closed() {
     // window the human has to answer in.
     tokio::time::sleep(FIRST_READ_TIMEOUT + Duration::from_secs(20)).await;
 
+    // Asserted on the server's own view first, because that is the half that cannot be
+    // satisfied by accident. A read loop that has given up removes the connection's row or
+    // marks it `Closed`, and it does so whether or not the peer has noticed: the write half is
+    // still held by whatever is composing the parked answer, so a socket that has not seen EOF
+    // proves less than it looks like it does.
+    let live = state
+        .get_server(server_id)
+        .await
+        .expect("the server is still registered")
+        .connections
+        .values()
+        .filter(|c| !matches!(c.status, netget::state::server::ConnectionStatus::Closed))
+        .count();
+    assert_eq!(
+        live, 1,
+        "the server no longer has a live connection for a peer whose answer is parked for a \
+         human — the read deadline is being applied to the answer as well as to the read, which \
+         gives up on the connection it is in the middle of answering"
+    );
+
     let mut buf = [0u8; 256];
     match tokio::time::timeout(Duration::from_secs(3), peer.read(&mut buf)).await {
         // Nothing to read and the socket is still open: the parked answer is still outstanding
@@ -197,4 +218,73 @@ async fn a_connection_whose_answer_is_parked_for_a_human_is_not_closed() {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => panic!("read failed on a connection that should still be open: {e}"),
     }
+}
+
+/// `src/server/vnc/mod.rs::MAX_CONNECTIONS`, which takes
+/// `accept_bounded::DEFAULT_MAX_CONNECTIONS`.
+const MAX_CONNECTIONS: usize = 256;
+
+/// `src/server/vnc/mod.rs::CONNECTION_CAP_REFUSAL`: nothing — RFB's refusal is only sendable after the peer has returned its ProtocolVersion, which a capped peer never gets to do.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
+#[tokio::test]
+async fn the_connection_past_the_cap_is_refused_in_the_protocols_own_words() {
+    let state = new_state().await;
+    let (server_id, port) = start_server(&state, true).await;
+
+    // Every event is parked for a human, so an admitted connection stays admitted for the whole
+    // test: the cap counts *live* connections, and a peer that was let go of would re-open a
+    // slot and make the assertion below pass for the wrong reason.
+    let mut admitted = Vec::with_capacity(MAX_CONNECTIONS);
+    for i in 0..MAX_CONNECTIONS {
+        admitted.push(
+            TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap_or_else(|e| panic!("connection {i} of the cap could not be opened: {e}")),
+        );
+    }
+
+    // A `connect()` the kernel completed is not yet an accept, and it is the accept that takes
+    // the permit — so wait for the server's own view to show the cap filled before testing it.
+    let mut live = 0;
+    for _ in 0..400 {
+        live = state
+            .get_server(server_id)
+            .await
+            .expect("the server is still registered")
+            .connections
+            .values()
+            .filter(|c| !matches!(c.status, netget::state::server::ConnectionStatus::Closed))
+            .count();
+        if live >= MAX_CONNECTIONS {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        live >= MAX_CONNECTIONS,
+        "only {live} of {MAX_CONNECTIONS} connections were admitted, so what the next one \
+         meets is not the cap"
+    );
+
+    let mut over = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("a refused peer still completes the TCP handshake; the refusal is above it");
+    let mut sink = Vec::new();
+    tokio::time::timeout(Duration::from_secs(15), over.read_to_end(&mut sink))
+        .await
+        .expect(
+            "the connection past the cap was admitted and held rather than refused — a read \
+             deadline alone still lets an attacker hold `deadline x rate` connections at once, \
+             which is what the cap exists to stop",
+        )
+        .expect("read to EOF");
+    assert_eq!(
+        sink,
+        CONNECTION_CAP_REFUSAL,
+        "a refused peer must be told in this protocol's own words, or told nothing at all where \
+         the wire cannot carry a reason — a silent drop it cannot distinguish from a crash makes \
+         it retry immediately and forever. Got {:?}",
+        String::from_utf8_lossy(&sink)
+    );
 }
