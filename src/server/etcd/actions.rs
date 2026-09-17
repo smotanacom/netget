@@ -344,14 +344,14 @@ impl Protocol for EtcdProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            // Experimental, demoted from Beta in September 2026. The Beta rating rested on
-            // `etcd-client`, which is tonic-based and accepts a gRPC status wherever it finds
-            // one. Pointing etcd's OWN Go client at this server showed that no grpc-go client
-            // can complete a single RPC here: see `e2e_testing` below. "Works against real
-            // clients" is not true of the implementation the protocol is defined against, and
-            // one lenient client agreeing is exactly the `mysql`/mysql_async situation this
-            // repo already records.
-            .state(DevelopmentState::Experimental)
+            // Beta, restored September 2026 -- and on different evidence than the rating it
+            // lost. The old Beta rested on `etcd-client` alone, which is tonic-based and
+            // accepts a gRPC status wherever it finds one; pointing etcd's own Go client at
+            // this server showed no grpc-go client could complete a single RPC. That bug is
+            // fixed (the status is in trailing HEADERS now) and BOTH clients are asserted, so
+            // the `mysql`/mysql_async shape -- one lenient client agreeing with one bug -- no
+            // longer applies.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "hyper HTTP/2 + prost, hand-routed gRPC; etcd protobuf schemas compiled by \
                  build.rs. tonic is a dependency but this server does not use it.",
@@ -361,24 +361,24 @@ impl Protocol for EtcdProtocol {
                  handler; a Txn's nested operations are not executed, only its outcome.",
             )
             .e2e_testing(
-                "etcd-client, the official Rust client, in tests/server/etcd/e2e_test.rs and \
-                 not #[ignore]d: it completes put, get, prefix-get and delete against this \
-                 server and asserts on the decoded key/value pairs it gets back. \
-                 MEASURED AND FAILING, September 2026: etcd's own Go client cannot complete \
-                 ANY RPC here. `etcdctl put` against this server returns `rpc error: code = \
-                 Internal desc = server closed the stream without sending trailers`. The cause \
-                 is in mod.rs, not in the test: a successful reply puts `grpc-status` in the \
-                 INITIAL HEADERS and then sends a DATA frame, so the stream ends after DATA \
-                 with no trailing HEADERS. gRPC-over-HTTP/2 requires the status in Trailers \
-                 for any response that carries a body; tonic tolerates the header placement \
-                 and grpc-go does not. Error replies happen to be fine -- they are \
-                 Trailers-Only by construction -- so only the success path is broken, which is \
-                 why no existing test caught it. No etcdctl test is committed, because a test \
-                 asserting this failure would block the fix. Fixing it means emitting real \
-                 HTTP/2 trailers from the success path in src/server/etcd/mod.rs; after that, \
-                 an etcdctl test is the promotion evidence. UNPROVEN besides: Watch, Lease, \
-                 Auth, Cluster and Maintenance (none are routed -- they return UNIMPLEMENTED), \
-                 and binary keys or values, which cross the action boundary as lossy UTF-8.",
+                "TWO independent clients, neither #[ignore]d and neither skipping when \
+                 anything is missing. etcd-client (the official Rust client, tonic) in \
+                 tests/server/etcd/e2e_test.rs completes put, get, prefix-get and delete and \
+                 asserts on the decoded key/value pairs. The real etcdctl binary (grpc-go, the \
+                 reference implementation) in tests/server/etcd/real_client_test.rs does the \
+                 same four verbs through the CLI and asserts on what it printed; it hard-fails \
+                 when etcdctl is absent rather than skipping. \
+                 The second client is there because the first was not enough: until September \
+                 2026 a successful reply put `grpc-status` in the INITIAL HEADERS and then sent \
+                 a DATA frame, so the stream ended with no trailing HEADERS. tonic tolerated \
+                 that; grpc-go answered `server closed the stream without sending trailers` to \
+                 every RPC carrying a body -- the first Put included. Error replies were \
+                 unaffected because they are Trailers-Only by construction, which is precisely \
+                 why the whole suite passed. The success path now emits real HTTP/2 trailers \
+                 and the error path stays Trailers-Only, and removing either is a red test. \
+                 UNPROVEN: Watch, Lease, Auth, Cluster and Maintenance (none are routed -- they \
+                 return UNIMPLEMENTED), Txn's nested operations, and binary keys or values, \
+                 which cross the action boundary as lossy UTF-8.",
             )
             .notes(
                 "KV service only: no Watch, Lease, Auth, Cluster or Maintenance. No storage - \

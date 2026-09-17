@@ -27,7 +27,7 @@ use crate::state::app_state::AppState;
 #[cfg(feature = "etcd")]
 use bytes::Bytes;
 #[cfg(feature = "etcd")]
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Limited};
 #[cfg(feature = "etcd")]
 use hyper::{body::Incoming, header::HeaderValue, Request, Response, StatusCode};
 #[cfg(feature = "etcd")]
@@ -109,7 +109,7 @@ const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// etcd's own `--grpc-keepalive-interval` defaults to two hours, which is a bound in name only,
 /// so there is no upstream number worth copying here. Fifteen minutes instead, and what makes
 /// it safe is a property of *this* server rather than of etcd: every RPC here is unary —
-/// `handle_grpc_request` returns a `Response<Full<Bytes>>`, so even Watch is answered as one
+/// `handle_grpc_request` returns a `Response<GrpcBody>`, so even Watch is answered as one
 /// complete message rather than held open as a stream. There is therefore no legitimate
 /// long-lived silent request, and a connection with no RPC for fifteen minutes is a client that
 /// has gone away. A request still being answered is not silence: the watchdog reads
@@ -339,10 +339,66 @@ fn header_safe(message: &str) -> String {
 /// value. It is put through [`header_safe`] first so the caller keeps the explanation, and the
 /// fallback below stays as a last resort rather than the common case — it used to be the common
 /// case, because netget's own LLM error strings start with `✗`.
+/// A gRPC response body: the length-prefixed message, then a **trailing HEADERS frame**
+/// carrying `grpc-status`.
+///
+/// This exists because putting `grpc-status` in the *initial* headers beside a DATA body is not
+/// gRPC, and `etcdctl` — grpc-go, the reference implementation — refuses such a stream outright:
+///
+/// ```text
+/// Error: rpc error: code = Internal desc = server closed the stream without sending trailers
+/// ```
+///
+/// The specification allows the status in the initial headers **only** for a Trailers-Only
+/// reply, which by definition carries no message. So this server's *error* replies were
+/// accidentally correct — an empty body makes them Trailers-Only — and every *success* reply was
+/// malformed. That asymmetry is why no test caught it for so long: the failure paths were the
+/// ones being asserted on, and tonic is lenient enough to accept the rest.
+///
+/// `tests/server/etcd/real_client_test.rs` is the second, stricter client that finds it.
+type GrpcBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+
+/// A message frame followed by trailers carrying `grpc-status`/`grpc-message`.
+///
+/// Used for every reply that has a body. Errors do not come through here — see
+/// `grpc_status_reply`, which is deliberately Trailers-Only instead.
 #[cfg(feature = "etcd")]
-fn grpc_status_reply(status: i32, message: &str) -> Response<Full<Bytes>> {
+fn grpc_body_with_trailers(body: Bytes, status: i32, message: &str) -> GrpcBody {
+    use http_body_util::StreamBody;
+
+    let mut trailers = hyper::HeaderMap::new();
+    trailers.insert(
+        "grpc-status",
+        HeaderValue::from_str(&status.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("13")),
+    );
+    trailers.insert(
+        "grpc-message",
+        HeaderValue::from_str(message).unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+
+    let frames: Vec<std::result::Result<hyper::body::Frame<Bytes>, std::convert::Infallible>> = vec![
+        Ok(hyper::body::Frame::data(body)),
+        Ok(hyper::body::Frame::trailers(trailers)),
+    ];
+
+    BodyExt::boxed(StreamBody::new(futures::stream::iter(frames)))
+}
+
+/// An empty body, for a Trailers-Only reply whose status rides in the initial headers.
+#[cfg(feature = "etcd")]
+fn empty_grpc_body() -> GrpcBody {
+    BodyExt::boxed(http_body_util::Empty::<Bytes>::new())
+}
+
+#[cfg(feature = "etcd")]
+fn grpc_status_reply(status: i32, message: &str) -> Response<GrpcBody> {
     let message = &header_safe(message);
-    let mut res = Response::new(Full::new(Bytes::new()));
+    // **Trailers-Only**, and deliberately so. With no message to send, the specification puts the
+    // status in the initial headers and ends the stream there — which is what real etcd does for
+    // an error and what every gRPC client expects. This is the one placement that is correct;
+    // the bug was applying it to replies that *do* carry a message.
+    let mut res = Response::new(empty_grpc_body());
     *res.status_mut() = StatusCode::OK;
     let headers = res.headers_mut();
     headers.insert(
@@ -636,7 +692,7 @@ impl EtcdServer {
         server_id: crate::state::ServerId,
         meta: Arc<Mutex<EtcdMeta>>,
         protocol: Arc<EtcdProtocol>,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<Response<GrpcBody>> {
         // Never return Err from here. hyper turns a service error into an abrupt HTTP/2
         // stream reset with no gRPC status, which a client reports as a transport failure
         // with no explanation; worse, an error out of service_fn tears down the whole
@@ -662,7 +718,7 @@ impl EtcdServer {
         server_id: crate::state::ServerId,
         meta: Arc<Mutex<EtcdMeta>>,
         protocol: Arc<EtcdProtocol>,
-    ) -> std::result::Result<Response<Full<Bytes>>, GrpcFailure> {
+    ) -> std::result::Result<Response<GrpcBody>, GrpcFailure> {
         // Store owned copies before consuming req
         let path = req.uri().path().to_string();
         let method = req.method().as_str().to_string();
@@ -771,15 +827,18 @@ impl EtcdServer {
         response_with_frame.extend_from_slice(&(response_bytes.len() as u32).to_be_bytes());
         response_with_frame.extend_from_slice(&response_bytes);
 
-        let mut res = Response::new(Full::new(Bytes::from(response_with_frame)));
+        // The status goes in TRAILERS, not here. `grpc-status` in the initial headers beside a
+        // DATA body is what made `etcdctl` refuse every successful call.
+        let mut res = Response::new(grpc_body_with_trailers(
+            Bytes::from(response_with_frame),
+            0,
+            "",
+        ));
         *res.status_mut() = StatusCode::OK;
-        let headers = res.headers_mut();
-        headers.insert(
+        res.headers_mut().insert(
             "content-type",
             HeaderValue::from_static("application/grpc+proto"),
         );
-        headers.insert("grpc-status", HeaderValue::from_static("0"));
-        headers.insert("grpc-message", HeaderValue::from_static(""));
 
         Ok(res)
     }

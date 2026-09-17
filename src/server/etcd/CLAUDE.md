@@ -3,7 +3,7 @@
 etcd v3 KV service over gRPC. The handler (LLM, script, or static) answers every key-value
 request; the server itself stores nothing.
 
-**State**: `Experimental` · **Port**: 2379 · **Stack**: `ETH>IP>TCP>GRPC>ETCD`
+**State**: `Beta` · **Port**: 2379 · **Stack**: `ETH>IP>TCP>GRPC>ETCD`
 
 ## Libraries
 
@@ -183,42 +183,57 @@ this module.
 
 ## Verified
 
-**State: Experimental**, demoted from Beta in September 2026 by the Go client this file
-used to say nobody should proceed without.
+**State: Beta**, restored September 2026 — and the route back is the useful part, because the
+rating it lost and the rating it has now rest on different things.
 
-The Rust evidence is intact and worth keeping: `tests/server/etcd/e2e_test.rs` drives the real
-`etcd_client` crate (tonic-based) through put / get / range / delete against the mocked LLM;
-it is not `#[ignore]`d, it does not skip when anything is missing, and `etcd-client` is a plain
-optional dependency the `etcd` feature turns on, so it compiles wherever the feature does — not
-an optional dev-dependency that the blocking CI job would never build.
+Two independent clients, neither `#[ignore]`d and neither skipping when something is missing:
 
-**What changed is that the caveat stopped being hypothetical.** This file said the gRPC status
-is returned in the initial HEADERS rather than in HTTP/2 trailers, that tonic accepts it and
-grpc-go "may not", and that it should not be touched without a Go client to test against.
-A Go client was tried:
+| test | client | what it is |
+|---|---|---|
+| `tests/server/etcd/e2e_test.rs` | `etcd-client` 0.15 | the official Rust client, tonic-based |
+| `tests/server/etcd/real_client_test.rs` | the real `etcdctl` binary | grpc-go, the reference implementation |
+
+`etcd-client` is a plain optional dependency the `etcd` feature turns on, not an
+`optional = true` **dev**-dependency, so it compiles wherever the feature does — that
+distinction is what makes AMQP's Beta rest on a test its gate never compiles. The `etcdctl`
+test hard-fails when the binary is absent, saying so in as many words, rather than printing
+`SKIP` and returning `Ok(())`.
+
+### Why one client was not enough
+
+This file used to say the gRPC status is returned in the initial HEADERS rather than in HTTP/2
+trailers, that tonic accepts it and grpc-go "may not", and that nobody should touch it without
+a Go client to test against. A Go client was pointed at it:
 
 ```
 $ etcdctl --endpoints=http://127.0.0.1:PORT put /config/database localhost:5432
 Error: rpc error: code = Internal desc = server closed the stream without sending trailers
 ```
 
-grpc-go cannot complete a **single** RPC that carries a body — not a corner of the API, the
-first Put. The spec requires `grpc-status` in Trailers for any response with a body;
-`grpc_status_reply` and the success path both put it in the initial HEADERS, and the success
-path then writes a `Full<Bytes>` DATA frame, so the stream ends with no trailing HEADERS. The
-error paths survive only because an empty body makes them Trailers-Only by accident, which is
-why every test in the tree passes.
+Not a corner of the API — the **first** Put, and every other RPC carrying a body. The spec
+requires `grpc-status` in Trailers for any response with a body; the success path wrote it into
+the initial HEADERS and then sent a `Full<Bytes>` DATA frame, so the stream ended with no
+trailing HEADERS. Error replies were unaffected because an empty body makes them Trailers-Only
+by construction, so **only the success path was broken** — which is exactly why every test in
+the tree passed. That made the old Beta an instance of one lenient client agreeing with one
+bug, the same shape CLAUDE.md records for `mysql`/`mysql_async`.
 
-That makes the Beta rating an instance of one lenient client agreeing with one bug — the same
-shape CLAUDE.md records for `mysql`/`mysql_async`. Hence `Experimental`.
+### What the fix is
 
-**The fix, when someone takes it**: emit real HTTP/2 trailers on the success path. The concern
-this file raised — that moving the status would break tonic — is worth testing rather than
-assuming, because trailers are what tonic expects too; the header placement is the non-standard
-one. Keep the Trailers-Only shape for errors, which is already correct. Then add the `etcdctl`
-test: put, get, `get --prefix` (three pairs, so repeated fields are exercised) and `del`,
-asserting on what `etcdctl` printed, hard-failing when the binary is absent. That test is
-written and was thrown away rather than committed red; it is roughly eighty lines.
+`grpc_body_with_trailers` in `mod.rs` builds a `StreamBody` of two frames — the
+length-prefixed message, then `Frame::trailers` carrying `grpc-status`/`grpc-message` — boxed
+into a `BoxBody`, because `Full<Bytes>` cannot emit trailers at all. That body type flows
+through `handle_grpc_request`'s signature to hyper.
+
+**The error path deliberately did not change.** A Trailers-Only reply is the one case where
+the status belongs in the initial headers, and `grpc_status_reply` still puts it there over an
+`Empty<Bytes>` body. Moving it into a trailers frame would be legal but pointlessly different
+from what real etcd sends, and `llm_failure_test.rs` and `unanswered_request_test.rs` read it
+from the headers. Both placements are now asserted, so neither can drift.
+
+The concern this file raised — that emitting trailers might break tonic — was worth testing
+rather than assuming, and it was unfounded: trailers are what tonic expects too. The header
+placement was the non-standard one. The whole suite is green for both clients.
 
 ## References
 
@@ -237,7 +252,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | Bound | Value | Why this number |
 |---|---|---|
 | `FIRST_BYTE_READ_TIMEOUT` | 30s | Enforced with `TcpStream::peek` before the socket reaches hyper, so the HTTP/2 preface is still there afterwards. HTTP/2 is client-speaks-first and every gRPC client sends the preface inside its dial path. |
-| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | etcd's `--grpc-keepalive-interval` defaults to two hours, a bound in name only, so there is no upstream number worth copying. Fifteen minutes is safe here because of a property of *this* server: every RPC is unary — `handle_grpc_request` returns a `Response<Full<Bytes>>`, so even Watch is one complete message rather than a held-open stream. There is no legitimate long-lived silent request. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | etcd's `--grpc-keepalive-interval` defaults to two hours, a bound in name only, so there is no upstream number worth copying. Fifteen minutes is safe here because of a property of *this* server: every RPC is unary — `handle_grpc_request` returns a `Response<GrpcBody>` carrying one message frame and its trailers, so even Watch is one complete message rather than a held-open stream. There is no legitimate long-lived silent request. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately in the older protocol — a refused peer has not sent the HTTP/2 preface, so nothing has been negotiated and a GOAWAY would have to follow a SETTINGS exchange this server is declining. |
 
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection` starts, and it keeps polling the connection for new frames *while a request is being answered* — so a deadline on reads would be wrong here, not merely awkward. The idle bound is a watchdog over `ConnectionActivity` instead, which reports a connection with work in flight as not idle at all. The LLM round-trip, and a `manual`
