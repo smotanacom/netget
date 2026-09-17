@@ -16,8 +16,9 @@ client credentials) and token management (introspection, revocation) using HTTP 
 
 ### Test Coverage
 
-**10 tests across three files.** `e2e_test.rs` covers the happy paths, and the other two cover
-the ways this protocol has failed *open* — which is what it is actually known for.
+**12 tests across four files.** `e2e_test.rs` covers the happy paths, the next two cover
+the ways this protocol has failed *open* — which is what it is actually known for — and the
+fourth covers what a peer can hold without asking anything at all.
 
 `e2e_test.rs` (4):
 
@@ -44,6 +45,13 @@ because nothing was processed.
 `hardening_test.rs` (2): a 1 MiB `/token` body is refused `413` before any LLM call, and a
 model-supplied `status_code` of `65736` does not wrap into a `200`. Both were live defects;
 `65736 as u16 == 200` meant a refusal arrived as the status a client reads as success.
+
+`connection_bounds_test.rs` (2): the connection cap answers the peer past `MAX_CONNECTIONS`
+with a `503` and gives the slot back, and the two read deadlines are driven from three sockets
+— a silent peer closed after `FIRST_BYTE_READ_TIMEOUT`, a peer that stalls mid-request closed
+after `IDLE_BETWEEN_REQUESTS_TIMEOUT`, and a peer whose request is parked for a human not
+closed at all. Neither costs a model call. See `src/server/oauth2/CLAUDE.md` for the numbers
+and `tests/helpers/http_bounds.rs` for the shared driver.
 
 ### LLM Call Budget
 

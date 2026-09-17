@@ -48,27 +48,18 @@ use std::path::{Path, PathBuf};
 /// Nothing here makes a deadline impossible. This is work left.
 const TIMEOUT_BASELINE: &[&str] = &[
     "bitcoin",
-    "couchdb",
-    "elasticsearch",
     "git",
     "grpc",
-    "http",
     "imap",
-    "jsonrpc",
     "kubernetes",
     "ldap",
     "mercurial",
     "modbus",
     "nats",
     "nfc",
-    "oauth2",
     "ollama",
     "openai",
-    "openapi",
-    "openid",
     "rtsp",
-    "saml_idp",
-    "saml_sp",
     "ssh",
     "stomp",
     "keyboard",
@@ -77,7 +68,6 @@ const TIMEOUT_BASELINE: &[&str] = &[
     "serial",
     "smartcard",
     "webdav",
-    "xmlrpc",
     "xmpp",
 ];
 
@@ -92,20 +82,16 @@ const CAP_BASELINE: &[&str] = &[
     "amqp",
     "bgp",
     "bitcoin",
-    "couchdb",
     "doh",
     "dot",
-    "elasticsearch",
     "finger",
     "git",
     "gopher",
     "grpc",
     "hls",
-    "http",
     "ident",
     "imap",
     "ipp",
-    "jsonrpc",
     "kubernetes",
     "ldap",
     "llmnr",
@@ -115,15 +101,10 @@ const CAP_BASELINE: &[&str] = &[
     "mqtt",
     "nats",
     "nfc",
-    "oauth2",
     "ollama",
     "openai",
-    "openapi",
-    "openid",
     "proxy",
     "rtsp",
-    "saml_idp",
-    "saml_sp",
     "smtp",
     "socks5",
     "ssh",
@@ -134,7 +115,6 @@ const CAP_BASELINE: &[&str] = &[
     "webrtc_signaling",
     "websocket",
     "whois",
-    "xmlrpc",
     "xmpp",
 ];
 
@@ -146,12 +126,11 @@ const CAP_BASELINE: &[&str] = &[
 /// declares `CODE_REQUEST_TIMEOUT = "000629"` — a Snowflake error *code*, a string. The protocol
 /// was silently exempted by its own error table.
 ///
-/// **A loose list fails in the dangerous direction**, and the note that replaced it argued the
-/// opposite. A protocol that has no bound but happens to contain a matching word passes and
-/// nobody looks again; a protocol that has one but spells it unusually gets flagged, which costs
-/// a reader five minutes. Prefer the second. Re-measured across all 92 when this was tightened:
-/// it flags nothing that is not already on the baseline, so the loose version was buying no
-/// coverage at all — only the snowflake-shaped hole.
+/// **A loose list fails in the dangerous direction.** A protocol that has no bound but happens
+/// to contain a matching word passes and nobody looks again; a protocol that has one but spells
+/// it unusually gets flagged, which costs a reader five minutes. Prefer the second. Re-measured
+/// across all 92 when this was tightened: it flags nothing that is not already on the baseline,
+/// so the loose version was buying no coverage at all — only the snowflake-shaped hole.
 ///
 /// `timeout(` is bare rather than `tokio::time::timeout(` because most of the tree imports it.
 /// `Instant::now() +` catches the hand-rolled deadline loop that `hls`, `ipp` and the

@@ -24,6 +24,56 @@ use crate::server::HttpProtocol;
 use crate::state::app_state::AppState;
 use actions::HTTP_REQUEST_EVENT;
 
+/// How long a peer that has connected and produced nothing may hold a slot.
+///
+/// HTTP is client-speaks-first: the server says nothing until a request line arrives, so a peer
+/// that has completed the TCP handshake and sent no byte has asked nothing and negotiated
+/// nothing. That state carries no protocol yet, which is why this number is the same across
+/// netget's HTTP-shaped servers while the idle bound below is not. Apache's `mod_reqtimeout`
+/// gives the request header 20s and nginx's `client_header_timeout` 60s; 30s sits between the
+/// two deployed norms.
+///
+/// hyper's own `header_read_timeout` is **not** this bound: its 30-second default is inert
+/// unless `http1::Builder::timer` is also set, which nothing here does — hyper downgrades a
+/// defaulted duration to `None` when no timer is present and applies no deadline at all.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connection with nothing outstanding may sit idle between requests.
+///
+/// nginx's `keepalive_timeout` default, and this is the one server in the family where copying
+/// it needs no further argument: a netget HTTP server's clients are whatever the operator points
+/// at it — a browser, `curl`, a generated SDK — so the number the deployed web is already tuned
+/// against is the right one. Apache's `KeepAliveTimeout` of 5s is the other end of the range and
+/// is tuned for a front-end serving far more connections than this one admits.
+///
+/// A request still being answered is not silence: the watchdog reads
+/// [`ConnectionActivity`](crate::server::accept_bounded::ConnectionActivity), which reports a
+/// connection with work in flight — a model round-trip, or an event a `manual` rule parked for a
+/// human at the dashboard (`src/state/intercepts.rs`, 300s by default) — as not idle at all. So
+/// an answer that takes longer than this bound can never close the connection it is an answer
+/// for, which is the `.connectionless()`/TFTP lesson read in reverse.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// Concurrent connections this server admits.
+///
+/// Below the shared `DEFAULT_MAX_CONNECTIONS` of 256 on purpose: each admitted connection may
+/// buffer one body of up to `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB), which is the largest
+/// per-connection cost in netget's HTTP family, and the cap is what turns that per-connection
+/// bound into a total one. 128 holds the worst case to the same ~1 GiB ceiling the 4 MiB and
+/// 64 KiB servers reach at 256.
+///
+/// It is not a throughput knob, and it is deliberately not configurable: a bound decided by
+/// configuration is a bound an attacker can ask you to raise.
+const MAX_CONNECTIONS: usize = 128;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `503 Service Unavailable` with a `Retry-After`, written directly onto the socket because the
+/// peer has not sent a request line for hyper to answer. Fixed bytes: nothing derived from an
+/// error reaches the wire (see `crate::utils::wire_failure`).
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 /// HTTP server that delegates request handling to LLM
 pub struct HttpServer;
 
@@ -79,10 +129,19 @@ impl HttpServer {
 
         // Spawn server loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "HTTP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -129,6 +188,51 @@ impl HttpServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // First-byte bound, before hyper sees the socket.
+                                //
+                                // hyper owns every read once `serve_connection` starts, and a
+                                // deadline on those reads would be wrong here rather than merely
+                                // awkward: hyper keeps polling the connection for more input
+                                // while a request is being answered, so such a deadline would
+                                // fire in the middle of a model round-trip. `peek` waits for data
+                                // without consuming it, so the request line is still there for
+                                // hyper afterwards, and it bounds exactly the case that needs
+                                // bounding - a peer that has connected and sent nothing at all.
+                                let spoke = matches!(
+                                    tokio::time::timeout(
+                                        FIRST_BYTE_READ_TIMEOUT,
+                                        stream.peek(&mut [0u8; 1]),
+                                    )
+                                    .await,
+                                    Ok(Ok(n)) if n > 0
+                                );
+
+                                if !spoke {
+                                    Log::new(Some(&status_tx_clone)).debug(format!(
+                                        "{} peer {} sent nothing for {}s; closing before any \
+                                         request",
+                                        protocol_name,
+                                        remote_addr,
+                                        FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                    ));
+                                    app_state_clone
+                                        .close_connection_on_server(server_id, connection_id)
+                                        .await;
+                                    let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                    return;
+                                }
+
+                                // Survives this task: an h2c upgrade moves the connection to a
+                                // separate task, and the slot must stay taken while it runs.
+                                let permit = std::sync::Arc::new(permit);
+
+                                // Tracks whether this connection is answering anything, so the
+                                // idle watchdog in `serve_connection` cannot close a connection
+                                // whose answer is still being composed.
+                                let activity = std::sync::Arc::new(
+                                    crate::server::accept_bounded::ConnectionActivity::new(),
+                                );
+
                                 // Perform TLS handshake if TLS is enabled
                                 if let Some(acceptor) = tls_acceptor_clone {
                                     match acceptor.accept(stream).await {
@@ -147,6 +251,8 @@ impl HttpServer {
                                                 status_tx_clone.clone(),
                                                 protocol_clone,
                                                 filter_clone,
+                                                activity,
+                                                permit,
                                             )
                                             .await;
                                         }
@@ -169,6 +275,8 @@ impl HttpServer {
                                         status_tx_clone.clone(),
                                         protocol_clone,
                                         filter_clone,
+                                        activity,
+                                        permit,
                                     )
                                     .await;
                                 }
@@ -212,12 +320,15 @@ impl HttpServer {
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<HttpProtocol>,
         filter: Arc<crate::server::http_common::handler::RequestFilter>,
+        activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
+        permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
     ) where
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         // Clone for service closure
         let status_for_service = status_tx.clone();
         let app_state_for_service = app_state.clone();
+        let activity_for_service = Arc::clone(&activity);
 
         // The request filter is built once per server in spawn_with_llm_actions.
         // Create a service that handles requests with LLM
@@ -227,25 +338,50 @@ impl HttpServer {
             let status_clone = status_for_service.clone();
             let protocol_clone = protocol.clone();
             let filter_clone = filter.clone();
-            handle_http_request_with_llm_actions(
-                req,
-                connection_id,
-                server_id,
-                llm_clone,
-                state_clone,
-                status_clone,
-                protocol_clone,
-                filter_clone,
-            )
+            let activity = Arc::clone(&activity_for_service);
+            // Kept alive for the whole request, and cloned into an h2c upgrade if one happens,
+            // so the connection cap counts this peer for as long as it is really here.
+            let permit_clone = Arc::clone(&permit);
+            async move {
+                // Held for the whole request, so an answer waiting on the model — or parked for
+                // a human by a `manual` rule — reads as work in flight rather than as silence.
+                let _busy = activity.busy();
+                handle_http_request_with_llm_actions(
+                    req,
+                    connection_id,
+                    server_id,
+                    llm_clone,
+                    state_clone,
+                    status_clone,
+                    protocol_clone,
+                    filter_clone,
+                    permit_clone,
+                )
+                .await
+            }
         });
 
-        // Serve HTTP/1 on this connection with upgrade support
-        if let Err(err) = http1::Builder::new()
+        // Serve HTTP/1 on this connection with upgrade support, bounded on idle time.
+        let conn = http1::Builder::new()
             .serve_connection(io, service)
-            .with_upgrades()
-            .await
-        {
-            error!("Error serving HTTP connection: {:?}", err);
+            .with_upgrades();
+        tokio::pin!(conn);
+        tokio::select! {
+            result = &mut conn => {
+                if let Err(err) = result {
+                    error!("Error serving HTTP connection: {:?}", err);
+                }
+            }
+            _ = crate::server::accept_bounded::watch_idle(
+                Arc::clone(&activity),
+                IDLE_BETWEEN_REQUESTS_TIMEOUT,
+            ) => {
+                debug!(
+                    "HTTP connection {} idle for {}s; closing",
+                    connection_id,
+                    IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                );
+            }
         }
     }
 }
@@ -280,6 +416,7 @@ async fn handle_http_request_with_llm_actions(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<HttpProtocol>,
     filter: Arc<crate::server::http_common::handler::RequestFilter>,
+    connection_permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Count the inbound message before doing anything else, so a request that is
     // filtered out or upgraded still refreshes last_activity.
@@ -296,6 +433,7 @@ async fn handle_http_request_with_llm_actions(
         status_tx,
         protocol,
         filter,
+        connection_permit,
     )
     .await;
 
@@ -331,6 +469,12 @@ async fn handle_http_request_inner(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<HttpProtocol>,
     filter: Arc<crate::server::http_common::handler::RequestFilter>,
+    // Only the h2c upgrade below needs this, and only when that feature is compiled: the
+    // upgraded connection outlives the HTTP/1 task that accepted it, so without carrying the
+    // permit across, an upgrade would quietly hand the slot back while the peer was still on it.
+    #[cfg_attr(not(feature = "http2"), allow(unused_variables))] connection_permit: Arc<
+        crate::server::accept_bounded::ConnectionPermit,
+    >,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Check for HTTP/2 upgrade request (h2c) - only when http2 feature is enabled
     #[cfg(feature = "http2")]
@@ -366,11 +510,15 @@ async fn handle_http_request_inner(
                     let status_tx_clone = status_tx.clone();
                     let protocol_clone = protocol.clone();
                     let filter_clone = filter.clone();
+                    let permit_clone = Arc::clone(&connection_permit);
 
                     // Tracked, not detached: stop_server must abort this task too.
                     let task_owner = app_state.clone();
                     task_owner
                         .spawn_server_task(server_id, async move {
+                            // The upgraded connection outlives the HTTP/1 task, so it carries
+                            // the connection-cap slot with it.
+                            let _permit = permit_clone;
                             // Wait for upgrade to complete
                             match hyper::upgrade::on(req).await {
                                 Ok(upgraded) => {
@@ -689,9 +837,28 @@ where
 
     let protocol = Arc::new(Http2Protocol::new());
 
+    // The upgraded connection gets the same idle bound as the HTTP/1 one it came from:
+    // reaching h2c costs one request, after which an unbounded peer could hold the stream — and
+    // the slot it carried across — indefinitely.
+    let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+
     // Accept requests on the h2 connection
     loop {
-        match h2_conn.accept().await {
+        let accepted = tokio::select! {
+            accepted = h2_conn.accept() => accepted,
+            _ = crate::server::accept_bounded::watch_idle(
+                Arc::clone(&activity),
+                IDLE_BETWEEN_REQUESTS_TIMEOUT,
+            ) => {
+                debug!(
+                    "H2C connection {} idle for {}s; closing",
+                    connection_id,
+                    IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                );
+                break;
+            }
+        };
+        match accepted {
             Some(result) => {
                 let (request, send_response) = result?;
 
@@ -700,12 +867,16 @@ where
                 let status_tx_clone = status_tx.clone();
                 let protocol_clone = protocol.clone();
                 let filter_clone = filter.clone();
+                let activity_clone = Arc::clone(&activity);
 
                 // Spawn task to handle this HTTP/2 request
                 // Tracked, not detached: stop_server must abort this task too.
                 let task_owner = app_state.clone();
                 task_owner
                     .spawn_server_task(server_id, async move {
+                        // In flight for the whole request, so a model round-trip or a parked
+                        // `manual` event reads as work rather than as an idle connection.
+                        let _busy = activity_clone.busy();
                         if let Err(e) = crate::server::http2::h2_server::handle_h2_request(
                             request,
                             send_response,
