@@ -30,6 +30,7 @@ use actions::{
 use anyhow::{anyhow, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
@@ -53,6 +54,54 @@ struct ConnectionRequest {
 /// RDP server (negotiation slice).
 pub struct RdpServer;
 
+/// How long to wait for the first byte from a peer that has only connected.
+///
+/// RDP is client-speaks-first: the X.224 Connection Request is the very first thing on the
+/// wire, sent by `mstsc`, FreeRDP or rdesktop from inside their own connect path with no user
+/// interaction in between. Thirty seconds is far longer than that takes, and a peer that has
+/// sent nothing has negotiated nothing.
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait for the rest of a frame the peer has already begun.
+///
+/// Shorter than the first bound, because it is a narrower claim: these bytes belong to a TPKT
+/// frame whose header has already arrived, and a Connection Request is at most
+/// [`MAX_X224_LEN`] bytes that a real client writes in one go. Nothing legitimate pauses in the
+/// middle of it, so fifteen seconds is generous for a slow link and still bounds a peer that
+/// sends `0x03` and stops.
+///
+/// This server's whole session is one request and one reply, so there is no third case: the
+/// model round-trip happens after the request has been read in full, and the connection closes
+/// after the Connection Confirm.
+const IN_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_X224_LEN`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: nothing.
+///
+/// RDP's own refusal is an X.224 Connection Confirm carrying `RDP_NEG_FAILURE`, and it cannot
+/// be sent here: it is a *reply*, and a capped peer is refused before its Connection Request
+/// has been read, so there is no `srcRef` to answer and no requested protocol to fail. A
+/// fabricated Connection Confirm would also be a positive assertion — it tells the client which
+/// security protocol to speak next — which is precisely what a refusal must not do. The peer
+/// gets a clean EOF and the refusal is recorded where it can carry a reason: `accept_bounded`
+/// logs it at WARN with `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
+/// The read half of an RDP connection, with both deadlines applied to every read.
+///
+/// [`crate::server::accept_bounded::IdleTimeoutReader`] rather than one `tokio::time::timeout`,
+/// because the Connection Request is read in two steps — the four-byte TPKT header, then the
+/// X.224 body whose length that header declares — and a peer that sends the header and stalls
+/// would otherwise be unbounded. Its deadline is armed lazily, only while a read is pending, so
+/// the model round-trip that follows runs with no clock against it.
+type RdpReader = crate::server::accept_bounded::IdleTimeoutReader<tokio::io::ReadHalf<TcpStream>>;
+
 impl RdpServer {
     /// Bind and spawn the accept loop. Awaits the bind so failure is returned as `Err`; registers
     /// the accept-loop `JoinHandle` so `stop_server` releases the socket.
@@ -75,10 +124,19 @@ impl RdpServer {
         );
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "RDP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -94,6 +152,10 @@ impl RdpServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -139,7 +201,13 @@ impl RdpServer {
         status_tx: mpsc::UnboundedSender<String>,
         llm_client: OllamaClient,
     ) -> Result<()> {
-        let (mut read_half, write_half) = tokio::io::split(stream);
+        let (read_half, write_half) = tokio::io::split(stream);
+        // Every read below goes through the deadline pair; nothing else does.
+        let mut read_half: RdpReader = crate::server::accept_bounded::IdleTimeoutReader::with_first(
+            read_half,
+            FIRST_BYTE_READ_TIMEOUT,
+            IN_FRAME_READ_TIMEOUT,
+        );
         let write_half = Arc::new(Mutex::new(write_half));
 
         let now = crate::utils::clock::Instant::now();
@@ -211,7 +279,7 @@ impl RdpServer {
     /// Read and parse the CR, raise the event, and write the model's (or fail-closed) CC.
     #[allow(clippy::too_many_arguments)]
     async fn negotiate(
-        read_half: &mut tokio::io::ReadHalf<TcpStream>,
+        read_half: &mut RdpReader,
         write_half: &Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
         connection_id: ConnectionId,
         server_id: crate::state::ServerId,
@@ -395,9 +463,7 @@ fn negotiation_kind(confirm: &[u8]) -> Option<u8> {
 /// Read one TPKT-framed X.224 Connection Request and parse its RDP negotiation fields.
 ///
 /// Every length is bounded before allocation: the TPKT length field is client-controlled.
-async fn read_connection_request(
-    read_half: &mut tokio::io::ReadHalf<TcpStream>,
-) -> Result<(ConnectionRequest, usize)> {
+async fn read_connection_request(read_half: &mut RdpReader) -> Result<(ConnectionRequest, usize)> {
     // TPKT header: version(1)=0x03, reserved(1), length(2, big-endian, total incl. this header).
     let mut tpkt = [0u8; 4];
     read_half.read_exact(&mut tpkt).await?;

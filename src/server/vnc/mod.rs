@@ -32,10 +32,64 @@ use actions::{
 use anyhow::{anyhow, Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
+
+/// How long to wait for the first byte from a peer that has only connected.
+///
+/// RFB is server-speaks-first: this server writes `RFB 003.008\n` and the viewer answers with
+/// its own twelve-byte version string from inside its connect path, before any human is
+/// involved. Thirty seconds is far longer than that takes and is the same bound the rest of
+/// this tree gives a peer that has produced nothing.
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait for further bytes once the peer has sent something.
+///
+/// Half an hour, and the reason it cannot be short is a property of RFB rather than taste: a
+/// viewer that has issued an *incremental* `FramebufferUpdateRequest` is required to say
+/// nothing more until the server has an update to send it, so a perfectly healthy client
+/// watching an unchanging screen is silent for as long as the screen does not change. Closing
+/// that would be the TFTP mistake this project already made once — measuring "idle" on a
+/// connection that is in the middle of the protocol's own normal behaviour.
+///
+/// A bound is still necessary, and here more than elsewhere: this server offers security type
+/// `None`, so every connection is unauthenticated by construction. Thirty minutes is longer
+/// than any interval an operator leaves a viewer attached across and still turns "hold a socket
+/// forever" into "hold it for half an hour".
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection carries a
+/// framebuffer and may buffer a `ClientCutText` up to [`MAX_CUT_TEXT_LEN`], so this is the
+/// multiplier that turns those per-connection bounds into total ones.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: nothing.
+///
+/// RFB *has* a refusal — a security-type count of zero followed by a reason string — but it is
+/// not reachable here. It may only be sent after the peer has returned its own ProtocolVersion,
+/// and a capped connection is refused before a single byte has been read. Writing
+/// `RFB 003.008\n` and then hanging up would be worse than silence: it starts a handshake this
+/// server has already decided to decline, and the viewer reports a truncated connection rather
+/// than a refused one. So the peer gets a clean EOF and the refusal is recorded where it can
+/// carry a reason — `accept_bounded` logs it at WARN with
+/// `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
+/// The read half of a VNC connection, with both deadlines applied to every read.
+///
+/// [`crate::server::accept_bounded::IdleTimeoutReader`] rather than a `tokio::time::timeout`
+/// around one call, because RFB reads are scattered: the version exchange, the security choice,
+/// `ClientInit`, each message-type octet and each message body are separate reads, and a peer
+/// that sends a message type and then stalls mid-body would otherwise be unbounded. Its
+/// deadline is armed lazily — only while a read is actually pending — so the model round-trip
+/// inside a message handler, and a `manual` rule parking an event for a human, run with no
+/// clock against them at all.
+type VncReader = crate::server::accept_bounded::IdleTimeoutReader<tokio::io::ReadHalf<TcpStream>>;
 
 /// VNC server whose display contents are decided by the LLM.
 pub struct VncServer;
@@ -176,10 +230,19 @@ impl VncServer {
         ));
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "VNC",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -195,6 +258,10 @@ impl VncServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -249,7 +316,13 @@ impl VncServer {
         height: u16,
         desktop_name: &str,
     ) -> Result<()> {
-        let (mut read_half, write_half) = tokio::io::split(stream);
+        let (read_half, write_half) = tokio::io::split(stream);
+        // Every read below goes through the deadline pair; nothing else does.
+        let mut read_half: VncReader = crate::server::accept_bounded::IdleTimeoutReader::with_first(
+            read_half,
+            FIRST_BYTE_READ_TIMEOUT,
+            IDLE_BETWEEN_MESSAGES_TIMEOUT,
+        );
         let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
 
         let now = crate::utils::clock::Instant::now();
@@ -355,7 +428,7 @@ impl VncServer {
 
     /// RFB 3.8 handshake: ProtocolVersion, security types, SecurityResult.
     async fn perform_handshake(
-        read_half: &mut tokio::io::ReadHalf<TcpStream>,
+        read_half: &mut VncReader,
         write_half: &Arc<tokio::sync::Mutex<tokio::io::WriteHalf<TcpStream>>>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
@@ -421,7 +494,7 @@ impl VncServer {
 
     /// ClientInit (shared flag) then ServerInit (geometry, pixel format, desktop name).
     async fn handle_client_init(
-        read_half: &mut tokio::io::ReadHalf<TcpStream>,
+        read_half: &mut VncReader,
         write_half: &Arc<tokio::sync::Mutex<tokio::io::WriteHalf<TcpStream>>>,
         status_tx: &mpsc::UnboundedSender<String>,
         width: u16,
@@ -472,7 +545,7 @@ impl VncConnection {
     /// One connection is handled strictly sequentially: a model call for one message finishes
     /// before the next message is read. RFB client messages are small and the socket buffers
     /// them, so nothing is lost; the cost is latency on input that arrives during a call.
-    async fn message_loop(&mut self, mut read_half: tokio::io::ReadHalf<TcpStream>) -> Result<()> {
+    async fn message_loop(&mut self, mut read_half: VncReader) -> Result<()> {
         loop {
             let message_type = match read_half.read_u8().await {
                 Ok(t) => t,

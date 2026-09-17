@@ -33,6 +33,7 @@ use actions::{
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
@@ -45,6 +46,43 @@ use tracing::{debug, error, info, warn};
 pub const MAX_LINE_LEN: usize = 64 * 1024;
 
 /// Reverse-shell listener.
+/// How long to wait for the first command from an operator who has only connected.
+///
+/// Two minutes rather than a machine protocol's thirty seconds, because the peer here is a
+/// person at `nc`: the session opens with a model-written banner and prompt, and they read it
+/// before typing. The banner sits outside this deadline by construction — it is generated and
+/// written before the read loop starts — so this bound measures only the time from a prompt
+/// being on their screen to the first key.
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// Fifteen minutes. A shell's own idle convention is `TMOUT`, which hardening baselines set to
+/// 900 seconds, so this is the number an operator already expects a shell session to be
+/// reclaimed at — and long enough that reading a long listing, or stepping away mid-engagement,
+/// does not cost the session.
+///
+/// The LLM round-trip and a `manual` rule parking a command for a human
+/// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
+/// so neither can be timed out from under itself.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// Concurrent connections this listener admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. A reverse-shell listener in real
+/// use holds one or two sessions, so the generous shared default is far above anything
+/// legitimate while still bounding a peer that simply opens sockets.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// There is no framing to refuse in — this is a raw byte stream — but there *is* a terminal on
+/// the other end, so a plain line is read by the one audience that exists. It is deliberately
+/// netget's own voice rather than a shell-looking error: the emulated shell never got as far as
+/// existing, and a fabricated shell message would be a positive assertion about a session that
+/// was declined. Fixed text, so there is no placeholder an internal error could reach.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"\r\n[netget] too many connections\r\n";
+
 pub struct ReverseShellServer;
 
 impl ReverseShellServer {
@@ -72,10 +110,19 @@ impl ReverseShellServer {
         );
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Reverse-shell",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -93,6 +140,10 @@ impl ReverseShellServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -293,7 +344,26 @@ impl ShellConnection {
         let mut first_command = true;
 
         loop {
-            let n = match read_half.read(&mut buffer).await {
+            // The deadline wraps this read and nothing else. Everything that can legitimately
+            // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
+            // human to answer — happens below, after bytes have already been read.
+            let read_timeout = if first_command {
+                FIRST_COMMAND_READ_TIMEOUT
+            } else {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            };
+            let read = match tokio::time::timeout(read_timeout, read_half.read(&mut buffer)).await {
+                Ok(read) => read,
+                Err(_) => {
+                    info!(
+                        "Reverse-shell operator {} sent nothing for {}s; closing idle session",
+                        self.connection_id,
+                        read_timeout.as_secs()
+                    );
+                    break;
+                }
+            };
+            let n = match read {
                 Ok(0) => {
                     debug!("Reverse-shell operator {} disconnected", self.connection_id);
                     break;

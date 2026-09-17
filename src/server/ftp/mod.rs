@@ -8,6 +8,7 @@ pub mod actions;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 #[cfg(feature = "ftp")]
 use tokio::sync::Mutex;
@@ -51,10 +52,19 @@ impl FtpServer {
         let protocol = Arc::new(FtpProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "FTP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id = crate::server::connection::ConnectionId::new(
                             app_state.get_next_unified_id().await,
                         );
@@ -73,6 +83,10 @@ impl FtpServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 // Register the connection so it shows up in the TUI and in
                                 // list_connections, and so stop_server accounts for it.
                                 use crate::state::server::{
@@ -136,6 +150,49 @@ impl FtpServer {
         Ok(local_addr)
     }
 }
+
+/// How long to wait for the first command after the `220` greeting has been sent.
+///
+/// FTP is server-speaks-first, and every real client — `ftp(1)`, `lftp`, curl, a browser —
+/// answers the greeting with `USER` from inside its own connect path, with no human in the
+/// loop yet. A minute is far more than that needs. The greeting itself is generated and written
+/// before the command loop begins, so the model's time over it, and a `manual` rule parking it
+/// for a human, are outside this deadline by construction.
+#[cfg(feature = "ftp")]
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// Five minutes, which is vsftpd's `idle_session_timeout` default — the idle bound on the FTP
+/// control connection that every client in use is already built to tolerate, and which
+/// ProFTPD's `TimeoutIdle` only doubles. It has to be on a human timescale rather than a
+/// machine one: `ftp(1)` prompts the person at it for the password after `USER`, and again for
+/// each command of an interactive session, so the silence between two commands here is someone
+/// typing.
+///
+/// The LLM round-trip and a `manual` rule parking a command for a human
+/// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
+/// so neither can be timed out from under itself.
+#[cfg(feature = "ftp")]
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Concurrent control connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_COMMAND_LINE`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+#[cfg(feature = "ftp")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `421 Service not available, closing control connection` is RFC 959's own reply for exactly
+/// this — the server declining to open a session — and it is what real FTP servers send when
+/// they are at their client limit. A `4xx` is a transient negative reply, so a client retries
+/// later rather than recording a permanent failure. Fixed text, so there is no placeholder an
+/// internal error could reach.
+#[cfg(feature = "ftp")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"421 Too many connections, closing control connection\r\n";
 
 /// Largest control line the server will accumulate before giving up on the peer.
 ///
@@ -531,8 +588,33 @@ impl FtpSession {
         let mut reader = BufReader::new(read_half);
         let log = Log::new(Some(status_tx));
 
+        let mut answered_one = false;
         loop {
-            let (outcome, n) = read_command_line(&mut reader, MAX_COMMAND_LINE).await?;
+            // The deadline wraps this read and nothing else. Everything that can legitimately
+            // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
+            // human to answer — happens below, after a line has already been read.
+            let read_timeout = if answered_one {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_COMMAND_READ_TIMEOUT
+            };
+            let (outcome, n) = match tokio::time::timeout(
+                read_timeout,
+                read_command_line(&mut reader, MAX_COMMAND_LINE),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    log.info(format!(
+                        "FTP connection {connection_id} sent nothing for {}s; closing idle \
+                         control connection",
+                        read_timeout.as_secs()
+                    ));
+                    return Ok(());
+                }
+            };
+            answered_one = true;
             let line = match outcome {
                 CommandLine::Eof => break,
                 CommandLine::TooLong => {

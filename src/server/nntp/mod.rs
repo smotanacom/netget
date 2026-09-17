@@ -5,6 +5,7 @@ use crate::server::connection::ConnectionId;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -29,6 +30,46 @@ use actions::NNTP_COMMAND_RECEIVED_EVENT;
 /// `nntp_command_received` event is built, so an oversized line never reaches a prompt.
 pub const MAX_COMMAND_BYTES: usize = 4096;
 
+/// How long to wait for the first command after the greeting has been sent.
+///
+/// NNTP is server-speaks-first: the peer is answered with a `200`/`201` greeting and every
+/// reader — `nntp`, `slrn`, `tin`, a mail client's news backend — replies inside its own
+/// connect path with `CAPABILITIES` or `MODE READER`. A minute is far longer than that takes,
+/// and a peer that has still said nothing has authenticated nothing. The greeting itself sits
+/// outside this deadline by construction: it is generated and written before this loop begins,
+/// so however long the model or a `manual` rule takes over it, the clock has not started.
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// Ten minutes. A newsreader is idle for exactly as long as the person at it takes to read an
+/// article, so the bound has to be on a human timescale rather than a machine one — which is
+/// why news server operators configure their client timeout in minutes. It is safe to make it
+/// this generous because NNTP here holds nothing on the client's behalf that a reconnect cannot
+/// rebuild: the model answers every command afresh, so a reclaimed idle connection costs a
+/// reader one transparent reconnect.
+///
+/// The LLM round-trip and a `manual` rule parking a command for a human
+/// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
+/// so neither can be timed out from under itself.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_COMMAND_BYTES`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `400` is NNTP's "service temporarily unavailable, the connection is closing" response, and
+/// RFC 3977 lets a server send it at any point — including in place of a greeting, which is
+/// exactly where a refused peer is. A client reads it as *retry later* rather than as a
+/// permanent refusal, which is what a connection cap means. Fixed text, so there is no
+/// placeholder an internal error could reach.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"400 too many connections\r\n";
+
 /// NNTP server that forwards commands to LLM
 pub struct NntpServer;
 
@@ -49,10 +90,19 @@ impl NntpServer {
         let protocol = Arc::new(NntpProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "NNTP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -65,6 +115,10 @@ impl NntpServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: releasing it here would
+                                // cap the accept rate rather than the number of live
+                                // connections.
+                                let _permit = permit;
                                 Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -350,14 +404,34 @@ impl NntpServer {
         //
         // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer that
         // connects and never sends one was a one-connection OOM before any model call.
+        let mut answered_one = false;
         loop {
-            let (read, n) =
-                match crate::utils::line_reader::read_bounded_line(&mut reader, MAX_COMMAND_BYTES)
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
+            // The deadline wraps this read and nothing else. Everything that can legitimately
+            // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
+            // human to answer — happens below, after a line has already been read.
+            let read_timeout = if answered_one {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_COMMAND_READ_TIMEOUT
+            };
+            let framed = tokio::time::timeout(
+                read_timeout,
+                crate::utils::line_reader::read_bounded_line(&mut reader, MAX_COMMAND_BYTES),
+            )
+            .await;
+            let (read, n) = match framed {
+                Err(_) => {
+                    log.info(format!(
+                        "NNTP connection {} sent nothing for {}s; closing idle connection",
+                        connection_id,
+                        read_timeout.as_secs()
+                    ));
+                    break;
+                }
+                Ok(Ok(v)) => v,
+                Ok(Err(_)) => break,
+            };
+            answered_one = true;
             let line = match read {
                 crate::utils::line_reader::BoundedLine::Line(line) => line,
                 crate::utils::line_reader::BoundedLine::Eof => break,

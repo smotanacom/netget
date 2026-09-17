@@ -5,6 +5,7 @@ use crate::server::connection::ConnectionId;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::llm::action_helper::call_llm;
@@ -41,6 +42,47 @@ fn preview(text: &str, max: usize) -> String {
 /// loop, and telnet is the protocol an operator is most likely to point at a real device.
 #[cfg(feature = "telnet")]
 pub const MAX_LINE_BYTES: usize = 8192;
+
+/// How long to wait for the first line from a peer that has only connected.
+///
+/// Two minutes rather than the thirty seconds a machine protocol gets, because the other end of
+/// a telnet session is usually a *person*: they connect, read whatever banner `send_first`
+/// produced, and then start typing. A scripted client sends immediately, so this bound is only
+/// ever reached by someone who has not begun. The banner itself sits outside the deadline by
+/// construction — it is generated and written before this loop starts, so however long the
+/// model takes, the clock below has not started.
+#[cfg(feature = "telnet")]
+const FIRST_LINE_READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long to wait for a *further* line once the peer has sent one.
+///
+/// Ten minutes, which is Cisco IOS's `exec-timeout 10 0` default for vty lines — the canonical
+/// idle bound for exactly the kind of device an operator points this server at, and therefore
+/// the number every telnet user already expects. A session here is long-lived by nature: a
+/// person thinks, reads output, and types again, and cutting that off at a machine protocol's
+/// timescale would break the protocol's own use. Everything that can legitimately take minutes
+/// — the LLM round-trip, and a `manual` rule parking a line for a human to answer
+/// (`src/state/intercepts.rs`, 300s by default) — happens after a read has already returned, so
+/// a slow answer can never be timed out from under itself.
+#[cfg(feature = "telnet")]
+const IDLE_BETWEEN_LINES_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_LINE_BYTES`], so this is the multiplier that turns that per-connection bound into a
+/// total one.
+#[cfg(feature = "telnet")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// Telnet has no error frame — it is a byte stream with a human on the other end — so the
+/// protocol-appropriate refusal is the same plain notice line this file already writes when a
+/// line runs past [`MAX_LINE_BYTES`]: fixed text, on its own line, with nothing interpolated
+/// into it. A terminal prints it; no client can mistake it for a prompt or a login success.
+#[cfg(feature = "telnet")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"\r\n[netget] too many connections\r\n";
 
 #[cfg(feature = "telnet")]
 mod iac {
@@ -81,6 +123,8 @@ enum LineRead {
     Eof,
     /// [`MAX_LINE_BYTES`] of data arrived with no newline in it.
     TooLong,
+    /// Nothing arrived within the caller's deadline.
+    TimedOut,
     /// The socket errored.
     Failed(std::io::Error),
 }
@@ -166,7 +210,9 @@ impl<R: tokio::io::AsyncRead + Unpin> TelnetLineReader<R> {
         }
     }
 
-    async fn next_line(&mut self) -> LineRead {
+    /// The `bound` limits the wait for *more bytes*, not the whole line: a peer that is still
+    /// typing keeps the connection alive, which is what a person on a slow link needs.
+    async fn next_line(&mut self, bound: Duration) -> LineRead {
         use tokio::io::AsyncReadExt;
         loop {
             if let Some(idx) = self.pending.iter().position(|b| *b == b'\n') {
@@ -182,7 +228,11 @@ impl<R: tokio::io::AsyncRead + Unpin> TelnetLineReader<R> {
                 return LineRead::TooLong;
             }
 
-            let n = match self.reader.read(&mut self.chunk).await {
+            let read = match tokio::time::timeout(bound, self.reader.read(&mut self.chunk)).await {
+                Err(_) => return LineRead::TimedOut,
+                Ok(read) => read,
+            };
+            let n = match read {
                 Ok(0) => {
                     if self.pending.is_empty() {
                         return LineRead::Eof;
@@ -227,10 +277,19 @@ impl TelnetServer {
         let protocol = Arc::new(TelnetProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Telnet",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -242,6 +301,9 @@ impl TelnetServer {
                         // Tracked, not detached: stop_server must abort this task too.
                         let task_owner = app_state.clone();
                         task_owner.spawn_server_task(server_id, async move {
+                            // Held for the life of the connection: releasing it here would cap
+                            // the accept rate rather than the number of live connections.
+                            let _permit = permit;
                             let (read_half, write_half) = tokio::io::split(stream);
                             let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -390,11 +452,30 @@ impl TelnetServer {
                             // dropped when its negotiation fails to decode as UTF-8.
                             let mut reader = TelnetLineReader::new(read_half);
                             let mut close_requested = false;
+                            let mut answered_one = false;
 
                             loop {
-                                let (line_bytes, n) = match reader.next_line().await {
+                                // The deadline wraps the read and nothing else: the LLM call
+                                // and a `manual` park both happen further down this loop, after
+                                // a line has already been read.
+                                let read_timeout = if answered_one {
+                                    IDLE_BETWEEN_LINES_TIMEOUT
+                                } else {
+                                    FIRST_LINE_READ_TIMEOUT
+                                };
+                                let (line_bytes, n) = match reader.next_line(read_timeout).await {
                                     LineRead::Line(bytes, n) => (bytes, n),
                                     LineRead::Eof => break,
+                                    LineRead::TimedOut => {
+                                        log.info(format!(
+                                            "Telnet client {} (connection {}) sent nothing for \
+                                             {}s; closing idle connection",
+                                            remote_addr,
+                                            connection_id,
+                                            read_timeout.as_secs()
+                                        ));
+                                        break;
+                                    }
                                     LineRead::TooLong => {
                                         // No error frame exists in telnet, so say it in words
                                         // on their own line and hang up. A category, never an
@@ -429,6 +510,7 @@ impl TelnetServer {
                                 // what the peer typed, and a stray non-UTF-8 byte must not
                                 // cost them the connection.
                                 let line = String::from_utf8_lossy(&line_bytes).into_owned();
+                                answered_one = true;
 
                                 // Counters and last_activity: the rail shows ↓/↑ per peer,
                                 // and until this was added every telnet peer read 0/0.
