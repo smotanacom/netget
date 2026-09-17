@@ -457,3 +457,52 @@ the `decision=static_fallback_llm_error` tag.
 an earlier implementation. `StunProtocol::build_error_response` survives from it and is now
 reached only through the `send_stun_error_response` action, i.e. when a handler or the model
 refuses a request deliberately.
+
+## Maturity: `Beta` since September 2026
+
+**Promoted on stuntman 1.2.16's `stunclient`**, driven in
+`tests/server/stun/real_client_test.rs`. Two tests, neither `#[ignore]`d, both **failing** (and
+naming `brew install stuntman`) when the binary is absent.
+
+`metadata().e2e_testing` claimed `"stuntman-client / WebRTC"` for a long time while **nothing in
+this tree had ever run either**. That is the exact failure mode the root `CLAUDE.md` catalogues
+— a maturity claim outliving the thing that justified it — and it was fixed by making the claim
+true rather than by deleting it.
+
+### Why this is real evidence and not a liveness check
+
+Every other test here builds its Binding Request by hand and decodes the reply by hand: an
+independent *reading* of RFC 8489, which is the `dhcp` situation. A hand-rolled decoder that
+shares a misreading with the server it checks agrees with it perfectly.
+
+stuntman is a C++ implementation that has never seen this repository, and it must **un-XOR** our
+XOR-MAPPED-ADDRESS against the magic cookie (address) and the cookie's high half (port), using
+the transaction ID it chose, to recover the address it prints. Both tests assert that what it
+recovers is exactly the socket it sent from — which a wrong byte anywhere would break.
+
+**Both encoders are covered, and they are genuinely two:**
+
+| test | path | what builds the attribute |
+|---|---|---|
+| `test_stun_binding_against_real_stunclient` | static (empty instruction, **zero** LLM calls) | `mod.rs`, from the socket it just read |
+| `test_stun_llm_authored_response_is_accepted_by_real_stunclient` | model-controlled | the `send_stun_binding_response` **action**, from model-supplied strings |
+
+Only the first had ever been shown to anything third-party. They must produce identical bytes
+and now both are checked against a real client.
+
+### Not circular
+
+This server is a hand-written RFC 8489 codec with no STUN library behind it. The `stunclient`
+**crate** in `Cargo.toml` belongs to the STUN *client* (`src/client/stun/`) — a different
+program, not running in these tests. The peer here is an unrelated C++ binary on `PATH`.
+
+### Still unproven
+
+- **IPv6 XOR-MAPPED-ADDRESS against a real client.** The encoder exists and is unit-covered;
+  stunclient is driven over IPv4 loopback here.
+- **Any authenticated exchange.** MESSAGE-INTEGRITY, USERNAME, REALM, NONCE and FINGERPRINT are
+  not implemented and no action can add them, so no client can be made to authenticate.
+- **stuntman's NAT behaviour and filtering tests (`-b`, `-f`).** They need the second address
+  and port pair RFC 5780 wants, which this server does not implement.
+- **Behaviour behind a real NAT.** Everything here is loopback, where the mapped address is
+  trivially the source address.

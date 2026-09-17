@@ -731,3 +731,56 @@ inferred.
 `build_sip_response` now also honours an optional `retry_after` field, so a handler can set one
 on a 503 of its own. Covered by `tests/server/sip/llm_failure_test.rs`, which checks the
 correlation headers and that an ACK gets nothing.
+
+## Maturity: `Beta` since September 2026
+
+**Promoted on sipsak 0.9.8.1**, the FhG Fokus SER torture-tester, driven in
+`tests/server/sip/real_client_test.rs`. Three tests, none `#[ignore]`d, all **failing** (and
+naming `brew install sipsak`) when the binary is absent.
+
+Note what the "Future Enhancements → Priority 1 (Promote to Beta)" list above asks for: digest
+authentication, TCP transport, a persistent registration database. **None of those were the
+blocker, and two of them should never be built here** — a registration database is storage,
+which protocols must not implement (see the root `CLAUDE.md`). The blocker was that the only
+clients driving this server were NetGet's own SIP client and hand-built requests, which is
+circular. An outside client was all that was missing.
+
+### What sipsak decides that the Wireshark dissector cannot
+
+`e2e_test.rs` runs every reply through the `sip` dissector, which is genuinely strong on
+**syntax**. But a dissector does not run a transaction. It never asks the question a UA asks:
+*does this reply match the request I sent?* In SIP that is a separate matter with its own rules —
+the response must carry the request's `Via` (branch and all), its `Call-ID`, its `CSeq` and its
+`From` tag, or a real UA discards it and reports a timeout instead.
+
+| test | transaction | what it pins |
+|---|---|---|
+| `test_sip_options_transaction_against_real_sipsak` | OPTIONS → 200 | sipsak exits 0 only after matching Via/Call-ID/CSeq; the `Allow` header built from the model's `allow_methods` reaches the wire |
+| `test_sip_register_against_real_sipsak` | REGISTER → 200 | `All usrloc tests completed successful.` — the admission decision accepted by a real UA |
+| `test_sip_non_2xx_is_understood_by_real_sipsak` | OPTIONS → 403 | sipsak reports the code and exits non-zero, so it is reading our status line and not merely receiving a datagram |
+
+`build_sip_response` is **one function for every method**, so the correlation proven on OPTIONS
+is the same code every reply uses — that is what makes three transactions worth more than three
+transactions.
+
+### A wrong mock that looked exactly like a protocol bug
+
+Worth keeping, because it cost a debugging pass and the repo warns about this class. The OPTIONS
+rule first matched on `from` containing the user from `-s sip:probe@…`. **sipsak's `From` is
+always `sip:sipsak@<its own address>`** — the user goes in the Request-URI and the `To` header.
+So the rule never fired, the event fell through to a real LLM call, the mock answered 500, and
+the server produced a textbook `503 Service Unavailable` + `Retry-After: 5`. Which sipsak
+accepted and parsed perfectly well. The fail-closed path was incidentally demonstrated working
+against a real client; the "failure" was entirely in the test. Match on `to`.
+
+### Still unproven
+
+- **INVITE and its SDP against a real UA.** sipsak's `-I` mode calls itself and needs a media
+  stack; no softphone is driven here. Call setup is covered only by the dissector.
+- **Digest authentication.** Not implemented, and no action can produce a 401 challenge with a
+  nonce — so no client can be made to authenticate, whatever a test does.
+- **TCP and TLS transport.** UDP only.
+- **Dialogs, CANCEL, and multi-`Via` proxy paths.**
+- **Correlation on REGISTER specifically**: sipsak's usrloc mode prints
+  `Deactivated Via insertion in usrloc mode`, so it is not checking Via there. That test
+  contributes the admission decision; the correlation evidence is the OPTIONS test.

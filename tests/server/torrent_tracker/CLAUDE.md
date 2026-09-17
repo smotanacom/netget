@@ -1,11 +1,15 @@
 # tests/server/torrent_tracker
 
-BitTorrent HTTP tracker (BEP 3 announce/scrape) **server**. Every request in this suite is an
-HTTP/1.1 GET written by hand onto a raw `tokio::net::TcpStream`, and every reply is decoded
-with `serde_bencode`. There is **no third-party BitTorrent client** anywhere — no
-transmission, no aria2, nothing to install. That is an independent *reading* of the spec, not
-an independent implementation, which is why `src/server/torrent_tracker` is
-`DevelopmentState::Experimental` and must stay there.
+BitTorrent HTTP tracker (BEP 3 announce/scrape) **server**.
+
+**`real_client_test.rs` drives the real `aria2c`, and the protocol is `Beta` as of
+September 2026.** This page said the opposite for a long time — "there is no third-party
+BitTorrent client anywhere … which is why it is Experimental and must stay there" — and that
+was true when written and stopped being true the moment aria2 was installed. The rest of the
+suite still writes its own HTTP/1.1 GETs onto a raw `tokio::net::TcpStream` and decodes the
+replies with `serde_bencode`, which is the crate the *server encodes with*: one crate
+round-tripping through itself, plus an independent *reading* of BEP 3. That is worth keeping
+for the cases aria2 will not produce, but it is not what the rating rests on.
 
 ## Files
 
@@ -66,3 +70,36 @@ All mocked; no Ollama and nothing serializing requests behind a lock. Helpers co
 `tests/helpers/` via `tests/server/helpers.rs`, which is a one-line re-export — there is no
 `start_server_with_instruction()` or `wait_for_server_ready()`; use `start_netget_server` plus
 `wait_for_mocks` / `wait_for_any`.
+
+## `real_client_test.rs` — two tests, **4 LLM calls**, real `aria2c` 1.37.0
+
+The evidence the rest of this directory cannot produce. Both tests **fail** (naming
+`brew install aria2`) when the binary is absent; neither is `#[ignore]`d.
+
+| test | what aria2 proves |
+|---|---|
+| `test_tracker_compact_peers_are_decoded_by_real_aria2c` | it dials **both** `10.0.0.1:6881` and `10.0.0.2:6882` after decoding our compact peer string |
+| `test_tracker_failure_reason_is_read_back_by_real_aria2c` | it prints `Tracker returned failure reason: <our text>`, i.e. its own parse of our bencoded refusal dict inside an HTTP 200 |
+
+Three things make this evidence rather than a liveness check:
+
+- **`compact=1` is hardcoded in aria2's announce format string.** It never requests the
+  dictionary form, so the compact encoder — a bencode byte string, six bytes per peer, four
+  address octets then a big-endian port, nothing self-describing anywhere in it — is the branch
+  a real swarm always takes, and it is the branch no earlier test drove against a real client.
+  Asserting **both** peers is what catches a stride or length error, which would lose exactly
+  one of them.
+- **The mock rule matches on `info_hash` AND `compact`.** That is the server-side half: if the
+  percent-decode or hex-encode is wrong, or `compact` does not arrive as 1, the rule never
+  fires, the tracker answers nothing, and the failure shows up in both halves at once instead of
+  passing quietly.
+- **DHT, DHT6 and LPD are all disabled.** Otherwise a peer aria2 found elsewhere would be
+  indistinguishable from one we returned and the assertion would be vacuous.
+
+aria2 is expected to exit non-zero: the magnet names a swarm that does not exist, so after
+announcing it fails to fetch metadata from two unreachable peers. The download is not the point
+and the exit status is deliberately not asserted.
+
+**Still not covered by a real client**: the dictionary peer form (aria2 parses it but never asks
+for it), IPv6/BEP 7 `peers6` (not implemented), `/scrape` (aria2 does not issue one on its own),
+multi-`info_hash` scrape, and the 400/408 paths.

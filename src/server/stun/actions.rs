@@ -53,10 +53,34 @@ impl crate::llm::actions::protocol_trait::Protocol for StunProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("Manual STUN protocol (RFC 8489)")
             .llm_control("Optional: Binding responses are static by default (mechanical), LLM only on opt-in")
-            .e2e_testing("stuntman-client / WebRTC")
+            .e2e_testing(
+                "REAL THIRD-PARTY CLIENT: stuntman 1.2.16's `stunclient` binary, in \
+                 tests/server/stun/real_client_test.rs. NOT #[ignore]d and NOT skip-gated — the \
+                 test FAILS, naming `brew install stuntman`, when the binary is absent. Not \
+                 circular: this server is a hand-written RFC 8489 codec with no STUN library \
+                 behind it, and the `stunclient` *crate* in Cargo.toml belongs to the STUN \
+                 *client* (src/client/stun/), a different program that does not run in these \
+                 tests. stuntman completes a full Binding transaction and must un-XOR our \
+                 XOR-MAPPED-ADDRESS against the magic cookie and its own transaction ID to \
+                 recover the address it prints; both tests assert the address it recovers is \
+                 exactly the socket it sent from, which a wrong byte anywhere would break. Both \
+                 encoders are covered: the STATIC path (empty instruction, zero LLM calls) and \
+                 the ACTION path (send_stun_binding_response building the attribute from \
+                 model-supplied strings). Also covered, without a third-party client: \
+                 reflection_test.rs (only a Binding REQUEST is answered), static_default_test.rs \
+                 (zero LLM calls on the mechanical path) and llm_failure_test.rs \
+                 (decision=static_fallback_llm_error). NOT PROVEN: IPv6 XOR-MAPPED-ADDRESS \
+                 against a real client (stunclient is driven over IPv4 loopback here, though the \
+                 IPv6 encoder exists and is unit-covered); any authenticated exchange, since \
+                 MESSAGE-INTEGRITY/USERNAME/REALM/NONCE/FINGERPRINT are not implemented and no \
+                 action can add them, so no client can be made to authenticate; stuntman's NAT \
+                 behaviour and filtering tests (-b/-f), which need the second address and port \
+                 pair RFC 5780 wants and this server does not implement; and behaviour under \
+                 any real NAT, everything here being loopback.",
+            )
             .notes(
                 "Stateless UDP; IPv4 and IPv6 XOR-MAPPED-ADDRESS are both encoded. A Binding \
                  response is fully determined by the request (reflect source into \

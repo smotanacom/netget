@@ -64,7 +64,7 @@ impl Protocol for SipProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // Not rsipstack, and not a compliant stack. `Cargo.toml` declares `sip = []` -
             // there is no SIP dependency at all. `mod.rs` hand-parses the request line and
             // headers and hand-builds the status line. The old claim named a library version
@@ -76,14 +76,35 @@ impl Protocol for SipProtocol {
                  layer, no retransmissions, no digest auth, no dialog state, UDP only",
             )
             .llm_control("Registration decisions + call routing + SDP generation")
-            // No `rvoip-sip-client` exists in this tree. The evidence is a mocked-LLM UDP
-            // exchange plus netget's own SIP client - which makes it circular, and is why this
-            // stays Experimental rather than Beta.
+            // Beta since September 2026. This comment used to say the evidence was "a
+            // mocked-LLM UDP exchange plus netget's own SIP client - which makes it circular,
+            // and is why this stays Experimental". That was true when written; sipsak is now
+            // installed and drives the server from outside, which is what changed.
             .e2e_testing(
-                "Mocked-LLM UDP e2e over the six methods (tests/server/sip/e2e_test.rs), a \
-                 fail-closed 503/ACK-silence test, and an RTP interop test. No third-party SIP \
-                 client (the client side of tests/client/sip is netget's own), so this is not \
-                 independent-client evidence",
+                "REAL THIRD-PARTY CLIENT: sipsak 0.9.8.1 (the FhG Fokus SER torture-tester, a \
+                 C program) in tests/server/sip/real_client_test.rs. NOT #[ignore]d and NOT \
+                 skip-gated — the tests FAIL, naming `brew install sipsak`, when the binary is \
+                 absent. Not circular: `sip = []` in Cargo.toml, so this server is hand-written \
+                 over tokio's UdpSocket with no SIP library at all. Three transactions: an \
+                 OPTIONS answered 200 with the model's own allow_methods (sipsak exits 0 only \
+                 after matching the reply's Via+branch, Call-ID and CSeq against the request it \
+                 sent — the correlation a dissector cannot check, and the thing that decides \
+                 whether a real UA accepts a reply or discards it as unmatched); the same \
+                 OPTIONS answered 403, where sipsak reports the code and exits non-zero, \
+                 proving it reads our status line rather than merely receiving a datagram; and \
+                 a REGISTER through usrloc mode, which sipsak reports as 'All usrloc tests \
+                 completed successful.' Since build_sip_response is ONE function for every \
+                 method, the correlation proven on OPTIONS is the same code every reply uses. \
+                 Alongside: the mocked-LLM UDP e2e over the six methods, whose replies are \
+                 additionally checked with the Wireshark `sip` dissector, plus a fail-closed \
+                 503/ACK-silence test and an RTP interop test. \
+                 NOT PROVEN: INVITE and its SDP against a real UA (sipsak's -I mode calls \
+                 itself and needs a media stack; no softphone is driven here), so call setup is \
+                 covered only by the dissector; digest authentication, which is NOT IMPLEMENTED \
+                 and which no action can produce, so no client can be made to authenticate; \
+                 TCP and TLS transport (UDP only); dialogs, CANCEL, and multi-Via proxy paths. \
+                 Also note sipsak's usrloc mode deactivates Via insertion, so the REGISTER test \
+                 contributes the admission decision and NOT correlation evidence.",
             )
             .notes(
                 "Scripting candidate, VoIP signaling honeypot. No registration database: the \
