@@ -400,3 +400,34 @@ requirement the successful actions have, and it regressed once before (`6a384617
 
 Covered by `tests/server/dns/llm_failure_test.rs`, which asserts the RCODE nibble on the raw
 bytes as well as through a decoder.
+
+## Two resolvers, and why the second one exists
+
+`DevelopmentState::Beta` rests on **both**, and neither is `#[ignore]`d or skip-gated — each
+fails naming its package when the binary is absent:
+
+| test | resolver | project |
+|---|---|---|
+| `dig_test.rs` | `dig` | ISC BIND |
+| `kdig_test.rs` | `kdig` | Knot DNS, CZ.NIC |
+
+`test.rs` covers the same ground with hickory-client, which is useful and **circular on its
+own**: hickory-client decodes with the same codec hickory-proto encoded with, so it proves the
+wire format is self-consistent rather than correct.
+
+`dig` already fixed that. The second resolver is here because **one client can agree with one
+bug** — in September 2026 `etcd` and `grpc` each turned out to be doing exactly that, and in
+both cases no conformant implementation could complete a successful call while every existing
+test passed. Two independent resolvers agreeing with each other and with us is the strongest
+evidence short of the spec; two that disagree is a finding.
+
+Both are run with `+noedns`, honestly rather than conveniently: this server does not implement
+EDNS0, and a resolver that offers EDNS and gets a reply with no OPT record may fall back and
+re-query — which would be a second `dns_query` event and would break `expect_calls`.
+
+Verified by answering with a fixed transaction id instead of the client's: kdig discards the
+reply and the test fails. That is the class of defect a round-trip through our own codec cannot
+see, because our decoder does not care what id it reads.
+
+**Unproven:** EDNS0, TCP transport, DNSSEC, zone transfers, and record types beyond A and TXT.
+
