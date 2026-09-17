@@ -85,7 +85,26 @@ impl Protocol for NtpProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(123))
             .implementation("Manual 48-byte NTP packet construction")
             .llm_control("Optional: normal time responses are static by default (mechanical), LLM only on opt-in")
-            .e2e_testing("rsntp client + raw packets (tests/server/ntp/test.rs)")
+            .e2e_testing(
+                "rsntp, a third-party SNTP client, in tests/server/ntp/test.rs -- not \
+                 #[ignore]d and not skip-gated (rsntp is a compiled-in dependency). It must \
+                 SUCCEED: it validates the origin-timestamp echo, the mode and the leap \
+                 indicator, which are the three things a real client rejects a reply over. The \
+                 raw 48-byte path alongside it decodes every field by hand against RFC 5905, \
+                 and llm_failure_test.rs / decision_tag_test.rs assert the Kiss-o'-Death on the \
+                 fail-closed paths, stratum included, so the wire and the log cannot drift \
+                 apart. \
+                 ONE CLIENT, and a second is blocked by the protocol rather than by effort. \
+                 The reference clients are sntp and ntpdate (ntp 4.2.8), both installed on this \
+                 machine, and NEITHER accepts a port: sntp takes a bare hostname-or-IP with no \
+                 -p, ntpdate's usage line has none either, and both reject `127.0.0.1:12345` as \
+                 an unresolvable name. A test binds an ephemeral port, so neither can be aimed \
+                 at it without running the server on 123 as root. This is the same shape as \
+                 dhcp, whose own metadata records that dhclient and ipconfig bind UDP/68, need \
+                 root and cannot target an ephemeral loopback port. \
+                 UNPROVEN: NTPv5, extension fields, authentication (none is implemented), \
+                 broadcast and symmetric modes, and the NTP control protocol.",
+            )
             .notes("Client/server mode only (mode 3 -> mode 4). A normal time response is mechanical (stratum 2, LOCL, current-time timestamps, origin+version echoed from the request), so it is answered STATICALLY with no LLM round-trip by default. The LLM is consulted only when the operator opts in with a server instruction or per-event handler — the way to make the server skew or lie about the time. On LLM failure in opt-in mode the server falls back to the correct static time response. Sub-ms with scripting")
             .build()
     }

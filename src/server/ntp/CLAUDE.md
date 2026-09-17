@@ -437,3 +437,35 @@ field, so there is nothing to leak into. `WireFailure::classify` is used only to
 
 Covered by `tests/server/ntp/llm_failure_test.rs` (decodes all 48 bytes by hand) and
 `tests/server/ntp/decision_tag_test.rs` (asserts the tag on the failure path).
+
+## Why there is only one client, and why that is not laziness
+
+`rsntp` is the third-party peer, and it is a real one: not `#[ignore]`d, not skip-gated, and it
+must **succeed**, validating the origin-timestamp echo, the mode and the leap indicator.
+
+A second client is blocked by the tooling, not by effort. The reference clients are `sntp` and
+`ntpdate` (ntp 4.2.8, both installed on this machine), and **neither accepts a port**:
+
+```
+$ sntp -t 2 '127.0.0.1:12345'
+127.0.0.1:12345 lookup error nodename nor servname provided, or not known
+
+$ ntpdate -q '127.0.0.1:12345'
+Error resolving 127.0.0.1:12345: nodename nor servname provided, or not known (8)
+```
+
+`sntp`'s usage line is `sntp [ -<flag> [<val>] ] [hostname-or-IP ...]` with no `-p`, and
+`ntpdate`'s `[-46bBdqsuv] [-a key#] [-e delay] [-k file] [-p samples] [-o version#] [-t timeo]`
+uses `-p` for the sample count. Both take the bare address and go to port 123.
+
+A test binds an ephemeral port, so aiming either at it means running the server on 123 as root.
+**This is the same shape as `dhcp`**, whose metadata records that dhclient and ipconfig bind
+UDP/68, need root, and cannot target an ephemeral loopback port — and it is why `dhcp` is not
+Beta at all. NTP differs only in having one client that *can* be aimed.
+
+If someone wants to close it: a privileged test that binds 123 would do it, and so would any
+SNTP client that takes a port. Do not close it by pointing a hand-written decoder at the server
+and calling that a second implementation — the project CLAUDE.md names that case explicitly
+(`usb/serial`, `usb/smartcard`, `dhcp`, `torrent_tracker` before aria2c), and it is an
+independent reading of the spec rather than an independent implementation.
+
