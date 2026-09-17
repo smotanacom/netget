@@ -124,8 +124,19 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
      inherited. `ssh`'s said "there is no E2E test" while eleven existed.
   6. **No `#[ignore]` and no skip-when-missing gate in its suite.**
 
-  Cheapest candidates, all of which already hold most of this: `whois`, `gopher`, `finger`,
-  `dns`, `http`, `tcp`, `ntp`, `redis`.
+  **Cheapest candidates, re-derived 16 September 2026 against condition 1 — which is the one
+  that eliminates almost everything.** `coap` and `modbus` are the only two protocols that
+  already hold conditions 1, 2, 3 and 6: each names **two** independent clients in its own
+  `e2e_testing` (coap: libcoap's `coap-client` and the coap-lite/coap Rust codecs; modbus:
+  tokio-modbus and libmodbus's `mbpoll`), each has a `tests/server/<p>/` file using
+  `pcap_oracle`, each has a fuzz target with a corpus, and neither suite has an `#[ignore]` or a
+  skip gate. What is left for them is condition 4 (a test per declared bound) and condition 5
+  (both `CLAUDE.md` files re-verified against source).
+
+  This line used to name `whois`, `gopher`, `finger`, `dns`, `http`, `tcp`, `ntp` and `redis` as
+  the cheapest candidates. Every one of them rests on a **single** client, so none of them is
+  one step from Stable — they are one *client* from even being eligible. The list was written
+  against the other five conditions and skipped the first, which is the expensive one.
 
   The three demotions are worth reading before setting this on anything, because each one is a
   different way the bar above can be failed while the rating looks earned. `tor_relay` and
