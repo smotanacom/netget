@@ -196,8 +196,32 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   Checked and *not* promoted in the same pass, with the reason: `xmpp` (its own test says
   `tokio_xmpp::Client` cannot complete its connect), `bitcoin` (the `bitcoin` crate is used as a
   codec, not as a peer completing a session — the `dhcp` situation), `vnc` (no third-party
-  client; the apparent import was netget's own path), `bgp` and `grpc` and `torrent_dht` and
-  `xmlrpc` (codecs and parsers rather than clients).
+  client; the apparent import was netget's own path), `bgp` and `torrent_dht` and `xmlrpc`
+  (codecs and parsers rather than clients). **`grpc` was on that list and is now Beta** —
+  grpcurl, which is grpc-go, completes a unary call and reads back an error status, in two
+  tests that hard-fail rather than skip. Getting there meant fixing the defect the Go client
+  found; see the trailers entry below.
+
+  **September 16 2026 added four more, and three of them cost a bug fix first.**
+  `stun` (stuntman's `stunclient`, which must un-XOR our XOR-MAPPED-ADDRESS against the cookie
+  and its own transaction id — both the static zero-LLM encoder and the action encoder are
+  covered, and only the first had ever faced anything third-party), `sip` (sipsak, which exits
+  0 only after matching Via+branch, Call-ID and CSeq — the correlation a dissector cannot
+  check), `torrent_tracker` (aria2c decoded our **compact** peer list and dialled both peers out
+  of it, which is the branch a real swarm always takes and a stride or byte-order error loses),
+  and `grpc` and `etcd` on the trailers fix.
+
+  **`etcd` was demoted and re-promoted in the same week, and the round trip is the lesson.**
+  Its Beta rested on `etcd-client`, which is tonic; tonic accepts a `grpc-status` in the initial
+  HEADERS beside a DATA body, and the gRPC specification does not. `etcdctl` — grpc-go — could
+  not complete a **single** RPC carrying a body. `grpc` had the identical defect, found the same
+  day by grpcurl. In both servers the *error* path was accidentally correct, because an empty
+  body makes it Trailers-Only, so **only the success path was broken and the failure paths were
+  the ones the tests asserted on**. Both now emit real trailing HEADERS and both keep
+  Trailers-Only for errors, and each has a second, stricter client asserting it. The shape to
+  remember: **one client agreeing is not "works against real clients"** — it is the
+  `mysql`/`mysql_async` situation, where the rating rests on the only implementation lenient
+  enough to tolerate the bug.
 
   The August 30 sweep of the rest turned up four more near-misses, and the reasons are worth
   keeping because each looks like evidence until you read it:
@@ -234,7 +258,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     `usb/smartcard` are driven by `tests/helpers/usbip_client.rs`, which speaks USB/IP from the
     wire format deliberately (no macOS USB/IP client exists). Same class as `dhcp`'s in-test RFC
     2131 decoder: an independent reading of the spec, not an independent implementation.
-    `torrent_tracker` is the same shape via `serde_bencode`.
+    `torrent_tracker` was the same shape via `serde_bencode` and is now Beta on aria2c.
 
   `openvpn` is a fifth case and a different one: its real-client test is **not** ignored and
   **does** hard-fail when the binary is missing, the system `openvpn` 2.x accepts our
@@ -1625,6 +1649,24 @@ Read before assuming a subsystem is sound:
   distinguishable in the log *and* on the wire. Its regression test asserts the fail-closed
   packet is also correctly *signed*, because a denial the client discards as corrupt is just a
   timeout.
+- **One client's leniency is one protocol's bug, and the tests will all be green.** Two gRPC
+  servers here — `etcd` and `grpc` — put `grpc-status` in the *initial* HEADERS and then sent a
+  DATA frame, so the stream ended with no trailing HEADERS at all. That is not gRPC. tonic
+  tolerates it; grpc-go refuses outright, so `etcdctl` and `grpcurl` could not complete a single
+  successful call. Both are fixed (a two-frame body: the message, then `Frame::trailers`), and
+  both keep the Trailers-Only shape for errors, where the status legitimately rides in the
+  initial headers.
+
+  Three things are worth carrying to the next protocol:
+  - **The failure path can be accidentally correct while the success path is broken.** An error
+    has an empty body, which makes it Trailers-Only by construction — so every `llm_failure` and
+    `unanswered_request` test passed, and those were the ones doing the asserting.
+  - **A test can hold a defect in place by asserting it.** `test_grpc_unary_rpc_basic` checked
+    `grpc-status: 0` *on the initial headers*. It was reqwest, which exposes no trailers API, so
+    it could not have checked the right place even if someone had wanted to.
+  - **"We have no second client to test against" is a task, not a conclusion.** Both files said
+    grpc-go "may not" accept this and that nobody should touch it without a Go client. Installing
+    one took a minute and answered it.
 - **A tokio blocking API called from async context, with the panic swallowed by `tokio::spawn`.**
   Found three times: `block_on` inside `UsbInterfaceHandler::handle_urb` (usb-msc, usb-fido2) and
   `tokio::sync::Mutex::blocking_lock()` in SMB's connection task. The failure mode is identical

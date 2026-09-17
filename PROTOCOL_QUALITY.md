@@ -217,6 +217,15 @@ once these exist.
   disagree with each other but agree with NetGet is the strongest evidence short of the spec.
   Cheap where the binary is already installed. *Effort:* S each.
 
+  **Started, and the first one paid for the whole item.** `etcd` was Beta on `etcd-client`
+  alone, which is tonic. Adding `etcdctl` (grpc-go) showed it could not complete a *single* RPC
+  carrying a body: the server put `grpc-status` in the initial HEADERS and never emitted
+  trailers. `grpc` had the identical defect, found the same day by `grpcurl`. In both, the error
+  path was accidentally correct — an empty body is Trailers-Only — so only the success path was
+  broken, and the failure paths were the ones the suites asserted on. Both are fixed and both
+  now carry two clients. etcd went Experimental and back to Beta in a week; grpc went
+  Experimental → Beta. The remaining single-client Betas are the rest of this item.
+
 ## Tier 2 — resource bounds, swept and ratcheted
 
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
@@ -420,11 +429,22 @@ declare, whether or not anyone has looked at it.
   needs root — record that), `socks5`/`http2`/`proxy` (curl, but see the generic-HTTP rule),
   `mdns` (dns-sd), `tor_relay` (tor, currently `#[ignore]`d), `rsync`/`sftp` as clients.
 
-- [ ] **Install the missing clients and do the same.** `brew install` covers most of the
-  33: `mosquitto`, `nats-server`+`nats`, `kcat`, `mongosh`, `etcd`, `zookeeper`, `subversion`,
-  `mercurial`, `grpcurl`, `coap-client` (libcoap), `mbpoll`, `stuntman`, `coturn`, `lldpd`,
-  `wakeonlan`, `bitcoin` (large), `aria2`. Record each in `ci.yml` as it lands. *Effort:* S
-  each; the install is the work.
+- [x] **Install the missing clients and do the same.** *(16 September 2026.)* Installed and
+  driven: `mosquitto`, `nats`, `kcat`, `mongosh`, `etcd` (etcdctl), `grpcurl`, `coap-client`,
+  `mbpoll`, `stuntman`, `wakeonlan`, `aria2`, `sipsak`, `mercurial`, `subversion`. All are in
+  `ci.yml`'s `registry-audit` job except `subversion`, whose test is `#[ignore]`d because a real
+  `svn` cannot get past its **own first message** against this server.
+
+  Promoted on the new clients: `kafka` (kcat), `stun` (stunclient), `sip` (sipsak),
+  `torrent_tracker` (aria2c), `grpc` and `etcd` (grpcurl / etcdctl, after the trailers fix).
+  Refused with a reason rather than promoted: `mercurial` (real `hg` completes the handshake,
+  but `hg clone` dies asking for a capability the server hardcodes away — the `openvpn`
+  precedent, only the front of the protocol), `wol` (one-way, so nothing NetGet emits is ever
+  read by an independent implementation; `wakeonlan` writes our *input*, which is the opposite
+  of the `rss` case), `lldp` (`lldpcli` is not an LLDP speaker at all, just the control program
+  for a local daemon over a unix socket, so the real peer would need root and a feth pair), and
+  `svn` (the blocker is a real defect: its capability tuple ends in a space with no newline and
+  our `read_line` never returns).
 
 - [x] **Client maturity — the bar is written down; applying it promoted nothing.**
   *(16 September 2026. The bar is in `CLAUDE.md`'s maturity section, beside the server one.)*
@@ -686,6 +706,36 @@ only number in this repository that says whether the model can drive the thing a
 ## Done
 
 Move items here with the date and the commit or PR that verified them.
+
+**16 September 2026 — the gRPC trailers class, found by a second client.**
+
+Two servers, `etcd` and `grpc`, wrote `grpc-status` into the **initial** HEADERS and then sent a
+DATA frame, so the stream ended with no trailing HEADERS at all. gRPC requires the status of any
+reply carrying a message to arrive in trailers. tonic tolerates the header placement; grpc-go
+refuses outright, so neither `etcdctl` nor `grpcurl` could complete a single successful call —
+not a corner of the API, the first Put and every unary RPC.
+
+Both now build the success reply as a two-frame body (the length-prefixed message, then
+`Frame::trailers`) boxed into a `BoxBody`, because `Full<Bytes>` cannot emit trailers at all.
+Both keep the Trailers-Only shape for errors, where the status legitimately rides in the initial
+headers. `etcd` returned to Beta and `grpc` reached it, each on two independent clients.
+
+Three things this cost and is worth not paying twice:
+
+- **The failure path was accidentally correct.** An error has an empty body, which makes it
+  Trailers-Only by construction — so every `llm_failure` and `unanswered_request` test passed,
+  and those were the ones doing the asserting. Only the success path was broken.
+- **A test held the defect in place by asserting it.** `test_grpc_unary_rpc_basic` checked
+  `grpc-status: 0` on the *initial* headers. It drives reqwest, which exposes no trailers API,
+  so it could not have checked the right place even if someone had wanted to. It now asserts
+  that header is **absent**.
+- **"No second client available to test against" was a task, not a conclusion.** Both protocols'
+  CLAUDE.md files said grpc-go "may not" accept this and that nobody should touch it without a
+  Go client. Installing one took a minute.
+
+Each fix was verified by removing the trailers frame and watching the real client fail with its
+own error message, which is the same technique the AMQP field-table depth bound used.
+
 
 **15 September 2026 — Tier 0, first four.**
 
