@@ -6,10 +6,63 @@ the answer to every query. **There is no database** — no tables, no rows, no
 storage of any kind in Rust. The only per-connection state is the prepared
 statement text map the wire protocol requires.
 
-**State**: Experimental — LLM-authored, not human-reviewed. Result sets, OK
-packets and ERR packets verified against the real `mysql` CLI (8.0).
+**State**: Beta — two independent clients complete a session: `mysql_async`, and the
+real `mysql` CLI 9.3.0 (`tests/server/mysql/real_client_test.rs`, which hard-fails
+rather than skips when the binary is absent).
 **Port**: 3306 by default. **Privilege**: `None` (3306 > 1024).
 **Stack**: `ETH>IP>TCP>MySQL`.
+
+## Authentication: there is none, and that is what the handshake says
+
+**Nothing here verifies anything.** No password is stored or compared, the model is
+never asked, and every connection is admitted whatever it sends. The server offers
+`caching_sha2_password` (`src/server/mysql/caching_sha2.rs`) so that a *current*
+client can get past its own plugin loader — that is a statement about which packets
+go on the wire, not about security, and it must not be written down as though it
+were about security.
+
+Until September 2026 the greeting named `mysql_native_password`, whose client plugin
+MySQL 9.0 deleted, so the shipping CLI could not connect:
+
+```text
+ERROR 2059 (HY000): Authentication plugin 'mysql_native_password' cannot be loaded: dlopen(…)
+```
+
+**The greeting alone was not what broke it**, and the distinction decides where the
+fix goes. Captured from the wire: the 9.3 client answers a greeting it cannot honour
+by naming `caching_sha2_password` itself, and dies on the **AuthSwitchRequest** that
+`opensrv-mysql` sends whenever `auth_plugin_for_username` disagrees with the client's
+choice. So this shim returns `""` there — no switch, ever — which is also what keeps
+an older `mysql_native_password` client working.
+
+The end of the connection phase has two shapes and the choice is made from the length
+of the client's auth response, not from the plugin name it claimed:
+
+| client sent | server answers |
+|---|---|
+| 0 bytes (no password) | the OK packet alone — an `AuthMoreData` here is read as a failure |
+| 32 bytes (caching_sha2 SHA-256 scramble) | `AuthMoreData` `0x01 0x03` (*fast auth success*), **then** the OK packet |
+| 20 bytes (`mysql_native_password` SHA-1) | the OK packet alone, exactly as before |
+
+Both shapes were checked against a throwaway real `mysqld` 9.3.0 for comparison, and
+`mysql_async`'s own client code states the same two cases.
+
+`opensrv-mysql` writes that OK packet itself and its `authenticate` hook cannot write,
+so the `0x01 0x03` packet is injected *beneath* the crate by `FastAuthWriter`, using the
+same generic-writer seam the packet bound uses on the reader. It takes the OK packet's
+sequence id and renumbers the OK to the next one; MySQL numbers packets within a phase
+and a conforming client discards a reply out of order.
+
+Two traps that writer produced, both worth keeping:
+
+- **It must implement `poll_write_vectored`.** `PacketWriter::end_packet` writes header
+  and payload in one `write_vectored`, and tokio's default implementation of that method
+  forwards only the first slice — so without it every packet became two writes and the
+  greeting arrived as a 4-byte read followed by the rest.
+  `packet_limit_test.rs` reads the greeting from a raw socket and is what caught it.
+- **The nonce is a fixed string** (`opensrv-mysql`'s `salt()` default). Harmless only
+  because nothing is verified against it; it would be a real defect the moment anything
+  were.
 
 ## What the model sees and controls
 
@@ -174,9 +227,9 @@ counters live and refresh `last_activity`. Proven with zero LLM calls by
 ## Not implemented
 
 - **Authentication** — every connection is accepted; username and password are
-  ignored. Note the MySQL 9.x client no longer ships `mysql_native_password`, so
-  test with an 8.0 client (`/opt/homebrew/opt/mysql@8.0/bin/mysql`) or
-  `mysql_async`.
+  ignored. See the section above: the connection *phase* is now completed the way
+  a `caching_sha2_password` client expects, which is not the same thing as checking
+  anything. Any current `mysql` CLI can be pointed at it.
 - **TLS**.
 - **Prepared-statement parameter values** — see above; the `?` reaches the model
   unsubstituted.
@@ -196,15 +249,20 @@ counters live and refresh `last_activity`. Proven with zero LLM calls by
     --test server::mysql::test -- --test-threads=100
 ```
 
-Real-client check used during review, with a static handler so no model is
-involved:
+Real-client check by hand, with a static handler so no model is involved:
 
 ```bash
 netget --mcp-http 18899 &
 # start_server protocol=mysql port=13306 event_handlers=[{mysql_query → static …}]
-/opt/homebrew/opt/mysql@8.0/bin/mysql -h 127.0.0.1 -P 13306 -u root \
-    --protocol=TCP -e "SELECT * FROM t"
+mysql --no-defaults -h 127.0.0.1 -P 13306 -u root --protocol=TCP -e "SELECT * FROM t"
 ```
+
+**Give that handler a branch for `select $$`.** The CLI sends two queries of its own
+before it sends yours — `select @@version_comment limit 1` and `select $$` — and a real
+MySQL server answers the second with **ERR 1064**. Answer it with a result set instead,
+as a single static rule does, and the client is left holding an unread one; your actual
+statement then fails with `ERROR 2014 (HY000): Commands out of sync`, which looks
+exactly like a protocol defect and is not.
 
 ## Example prompts
 

@@ -78,9 +78,11 @@ impl Protocol for MysqlProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            // Beta: exercised against a real, independent client — mysql_async —
-            // covering handshake, queries and prepared statements. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
+            // Beta: exercised against two independent clients — mysql_async and the real
+            // `mysql` CLI — covering handshake, queries, errors and prepared statements.
+            // Not Stable: the Stable bar additionally wants a green pcap oracle, a fuzz
+            // target with a depth-bomb corpus, and a test per declared bound, none of which
+            // exist here.
             .state(DevelopmentState::Beta)
             .implementation("opensrv-mysql v0.7 protocol library")
             // The number this server publishes and the number it enforces are one number:
@@ -90,20 +92,27 @@ impl Protocol for MysqlProtocol {
             .max_inbound_bytes(crate::server::mysql::packet_limit::MAX_PACKET_BYTES)
             .llm_control("Query responses (result sets, OK packets, ERR packets)")
             .e2e_testing(
-                "mysql_async client crate, text and binary (prepared) protocols. Note what \
-                 that does NOT cover: this server offers `mysql_native_password`, which the \
-                 shipping MySQL 9.x client no longer carries, so `mysql` 9.x fails to connect \
-                 at all with 'Authentication plugin cannot be loaded'. The Beta rating \
-                 therefore rests on mysql_async being more permissive than the client a user \
-                 would reach for. Found by the real-model eval driving the CLI; the suite \
-                 pins the 8.0 binary.",
+                "Two independent clients, neither skipped nor #[ignore]d. (1) the mysql_async \
+                 crate, text and binary (prepared) protocols \
+                 (tests/server/mysql/test.rs, prepared_statement_test.rs). (2) the real \
+                 `mysql` CLI, 9.3.0 (tests/server/mysql/real_client_test.rs): connect, a \
+                 SELECT whose rows the model authors, and a statement answered with an ERR \
+                 packet, asserted on what the client printed — including the \
+                 caching_sha2_password fast-auth branch a client that was given a password \
+                 takes. That test fails rather than skips when the binary is absent. Until \
+                 September 2026 the CLI could not connect at all ('Authentication plugin \
+                 mysql_native_password cannot be loaded'), so the rating rested on \
+                 mysql_async alone being more permissive than the client a user would reach \
+                 for.",
             )
             .notes(
-                "No authentication, no TLS. Prepared statements work and report their `?` \
-                 count, but parameter values are not substituted - the model sees the `?`. \
-                 Offering caching_sha2_password, which 9.x expects, is what would let a \
-                 current client connect and is the single thing standing between this and a \
-                 second independent client.",
+                "THIS SERVER AUTHENTICATES NOTHING. It offers caching_sha2_password so a \
+                 current client can complete the connection phase, and then accepts whatever \
+                 that client sent: no password is stored or compared, the model is not asked, \
+                 the nonce is a fixed string, and mysql_native_password is still accepted \
+                 too. 'Offers caching_sha2_password' is a statement about the packets, not \
+                 about security. No TLS either. Prepared statements work and report their `?` \
+                 count, but parameter values are not substituted - the model sees the `?`.",
             )
             .build()
     }

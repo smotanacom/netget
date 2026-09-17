@@ -6,6 +6,7 @@
 //! and enforced nothing, on an unauthenticated connection, before any model call.
 //! `packet_limit` puts that number where the bytes are: see [`packet_limit::MAX_PACKET_BYTES`].
 pub mod actions;
+pub mod caching_sha2;
 pub mod packet_limit;
 
 use crate::llm::action_helper::call_llm;
@@ -252,9 +253,21 @@ impl MysqlServer {
                             // away leaves this task able to answer once the crate's loop has
                             // given up, which is the only moment at which a refusal decided
                             // beneath the crate can be expressed in the crate's protocol.
-                            let outcome =
+                            //
+                            // The same seam carries the one packet a `caching_sha2_password`
+                            // client waits for between its scramble and the OK packet: the
+                            // crate writes that OK itself and its `authenticate` hook cannot
+                            // write, so the packet is injected beneath it. See
+                            // `caching_sha2`. The borrow ends with the block, leaving this
+                            // task the write half for the refusal path below.
+                            let outcome = {
+                                let mut writer = caching_sha2::FastAuthWriter::new(
+                                    &mut writer,
+                                    handler.fast_auth_gate(),
+                                );
                                 AsyncMysqlIntermediary::run_on(handler, &mut reader, &mut writer)
-                                    .await;
+                                    .await
+                            };
                             if trip.tripped() {
                                 Self::refuse_oversized_packet(
                                     connection_id,
@@ -377,6 +390,9 @@ pub struct MysqlHandler {
     prepared_statements: Arc<Mutex<std::collections::HashMap<u32, String>>>,
     /// Next statement ID
     next_stmt_id: Arc<Mutex<u32>>,
+    /// How `authenticate` asks the writer beneath `opensrv-mysql` for the one packet a
+    /// `caching_sha2_password` client waits for. See [`caching_sha2`].
+    fast_auth: Arc<caching_sha2::FastAuthGate>,
 }
 
 impl MysqlHandler {
@@ -404,13 +420,58 @@ impl MysqlHandler {
             protocol,
             prepared_statements: Arc::new(Mutex::new(std::collections::HashMap::new())),
             next_stmt_id: Arc::new(Mutex::new(1)),
+            fast_auth: Arc::new(caching_sha2::FastAuthGate::default()),
         }
+    }
+
+    /// The gate this handler will arm from `authenticate`, for the writer that answers it.
+    pub fn fast_auth_gate(&self) -> Arc<caching_sha2::FastAuthGate> {
+        self.fast_auth.clone()
     }
 }
 
 #[async_trait]
 impl<W: tokio::io::AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MysqlHandler {
     type Error = io::Error;
+
+    /// The plugin named in the greeting.
+    ///
+    /// `opensrv-mysql`'s default is `mysql_native_password`, whose *client* plugin MySQL 9.0
+    /// deleted — so the shipping CLI cannot load it and never reaches the query phase. See
+    /// [`caching_sha2`], and note what it does not mean: nothing here checks a password.
+    fn default_auth_plugin(&self) -> &str {
+        caching_sha2::CACHING_SHA2_PASSWORD
+    }
+
+    /// Never ask a client to switch plugins.
+    ///
+    /// An empty expectation is `opensrv-mysql`'s "no auth-switch": whatever the client chose
+    /// is what this connection uses. That is the honest answer for a server that verifies
+    /// nothing, and it is what keeps an older `mysql_native_password` client working — it
+    /// answers the greeting with its own plugin and is accepted as it always was, rather than
+    /// being sent an `AuthSwitchRequest` for a plugin it may not have.
+    async fn auth_plugin_for_username(&self, _user: &[u8]) -> &str {
+        ""
+    }
+
+    /// Admit the connection. **Nothing is verified** — there is no password here to verify
+    /// against, and the model is not consulted.
+    ///
+    /// The only decision taken is which shape the *end* of the connection phase has: a client
+    /// that sent a 32-byte `caching_sha2_password` scramble is blocked reading for
+    /// `AuthMoreData`, and gets it; every other client is answered with the OK packet alone.
+    async fn authenticate(
+        &self,
+        _auth_plugin: &str,
+        _username: &[u8],
+        _salt: &[u8],
+        auth_data: &[u8],
+    ) -> bool {
+        if caching_sha2::awaits_fast_auth_success(auth_data) {
+            self.fast_auth.arm();
+        }
+        true
+    }
 
     async fn on_prepare<'a>(
         &'a mut self,

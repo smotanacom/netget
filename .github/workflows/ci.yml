@@ -281,6 +281,7 @@ jobs:
       #   mbpoll            - modbus (libmodbus's CLI master)
       #   mercurial (hg)    - mercurial
       #   mosquitto-clients - mqtt (mosquitto_pub / mosquitto_sub)
+      #   mysql-client      - mysql (the real CLI; the second client, not mysql_async)
       #   npm               - npm
       #   openvpn           - openvpn
       #   postgresql-client - postgresql (psql; libpq, deliberately NOT tokio-postgres)
@@ -296,9 +297,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
-            knot-dnsutils mosquitto-clients npm openvpn postgresql-client \
-            python3-pip redis-tools sipsak stuntman-client subversion tor \
-            wakeonlan
+            knot-dnsutils mosquitto-clients mysql-client npm openvpn \
+            postgresql-client python3-pip redis-tools sipsak stuntman-client \
+            subversion tor wakeonlan
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry
@@ -400,7 +401,8 @@ jobs:
             coap::real_client_test dns::dig_test gopher::e2e_test hls::curl_test \
             kafka::real_client_test kubernetes::e2e_test maven::e2e_test \
             memcached::real_client_test modbus::real_client_test \
-            mongodb::real_client_test mqtt::real_client_test npm::e2e_test \
+            mongodb::real_client_test mqtt::real_client_test \
+            mysql::real_client_test npm::e2e_test \
             oci_registry::e2e_test openvpn:: pypi::e2e_test \
             radius::real_client_test rtsp::ffprobe_test svn::real_client_test \
             websocket::e2e_test ; do

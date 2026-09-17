@@ -190,7 +190,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
   `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
-  `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async — but a *current* `mysql` client cannot connect at all; see below),
+  `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async, and since September 2026 the real `mysql` CLI too — see below),
   `postgresql` (tokio-postgres), `redis` (redis-rs), `sqs` (aws-sdk-sqs), `webdav`
   (reqwest_dav), `zookeeper` (zookeeper-async). Each protocol's `metadata()` names its client.
   **August 28 2026 added two more**: `npm` (the real npm CLI — `npm view` resolves the packument
@@ -241,8 +241,8 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   the ones the tests asserted on**. Both now emit real trailing HEADERS and both keep
   Trailers-Only for errors, and each has a second, stricter client asserting it. The shape to
   remember: **one client agreeing is not "works against real clients"** — it is the
-  `mysql`/`mysql_async` situation, where the rating rests on the only implementation lenient
-  enough to tolerate the bug.
+  `mysql`/`mysql_async` situation, where the rating rested on the only implementation lenient
+  enough to tolerate the bug until a second client was pointed at it.
 
   The August 30 sweep of the rest turned up four more near-misses, and the reasons are worth
   keeping because each looks like evidence until you read it:
@@ -360,14 +360,26 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
 
   Re-derive this list rather than trusting it; the counts drift.
 
-  **`mysql` is the worked example of one client agreeing with one bug**, found in September
-  2026 by pointing the real CLI at it rather than by reading. This server offers
-  `mysql_native_password`; the shipping MySQL 9.x client no longer carries that plugin and
-  fails to connect outright. So the Beta rating rests entirely on `mysql_async` being more
-  permissive than the client a user would actually reach for. The evidence is real and the
-  rating is not withdrawn — but it is exactly why the Stable bar above asks for **two**
-  independent clients, and why "a real client completes a session" is worth asking *which*
-  client, and which version.
+  **`mysql` was the worked example of one client agreeing with one bug, and it is now the
+  worked example of fixing that.** Found in September 2026 by pointing the real CLI at it
+  rather than by reading: the server offered `mysql_native_password`, whose client plugin
+  MySQL 9.0 deleted, so `mysql` 9.x failed with `ERROR 2059 … cannot be loaded` and the Beta
+  rating rested entirely on `mysql_async` being more permissive than the client a user would
+  reach for. The server now offers `caching_sha2_password` — **which authenticates nothing;
+  it is a statement about packets, and `src/server/mysql/caching_sha2.rs` says so in its first
+  paragraph** — and `tests/server/mysql/real_client_test.rs` drives the real CLI through a
+  session, so there are two independent clients.
+
+  Two things from that repair generalise:
+
+  - **Reverting the obvious line did not reproduce the failure.** The greeting was not what
+    the client died on; it answers a greeting it cannot honour by naming its own plugin, and
+    dies on the `AuthSwitchRequest` that follows. A regression test that asserted on the
+    plugin name would have been green against the bug.
+  - **A protocol's own suite is what catches the collateral damage.** Injecting one packet
+    beneath `opensrv-mysql` meant wrapping the writer, which silently stopped vectored writes
+    and split every packet in two. Only the pre-existing raw-socket test in
+    `packet_limit_test.rs` could see it — every real client reassembles.
 
   **And check that the mechanism giving the evidence its force actually covers every verb the
   rating names.** `s3`'s Beta rests on each operation being pinned to `expect_calls(1)` through
