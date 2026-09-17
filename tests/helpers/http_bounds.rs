@@ -33,8 +33,22 @@
 //!
 //! # Verified by removal
 //!
-//! Each bound was taken out and the matching socket's assertion observed to fail before the
-//! code was committed; the per-protocol test files record which one they saw.
+//! Each bound was taken out across all ten servers at once and the suite watched failing, 16
+//! September 2026. A bound nobody tested is a comment; a test nobody watched fail is a comment
+//! about a comment.
+//!
+//! | what was removed | result |
+//! |---|---|
+//! | the `peek` (`let spoke = true`, all ten) | 10 of 10 failed — five "still holding a socket … 73s later", five "closed after 60s, far past its 30s bound" |
+//! | `watch_idle` (made to never resolve) | 10 of 10 failed — "sent a request line and then stalled, still connected 100s/115s later" |
+//! | `ConnectionActivity::idle_for`'s `in_flight` guard | 10 of 10 failed — "the connection whose request is parked for a human was closed" |
+//! | `ConnectionLimiter::try_acquire` (made infallible) | 10 of 10 failed — "the connection past the cap … was neither answered nor closed" |
+//!
+//! **The first row is why the upper bound on SILENT's close time exists.** The first attempt
+//! asserted only that the silent peer was closed *after* 30s, and removing the `peek` failed
+//! only the five servers whose idle bound is 75s: on the five at 60s the idle watchdog picked
+//! the connection up instead, half a minute late, and the assertion could not tell the
+//! difference. A test that cannot say **which** bound acted is not testing either of them.
 
 #![allow(dead_code)]
 
@@ -280,6 +294,18 @@ pub async fn assert_read_deadlines(case: &HttpBoundsCase) -> E2EResult<()> {
         "the silent peer was closed after {}s, before its {FIRST_BYTE_SECS}s bound — a client on \
          a slow link would be cut off too",
         elapsed.as_secs()
+    );
+    // And an upper bound, because without it this assertion is satisfied by the *idle* watchdog
+    // instead. Taking the `peek` out and running this test is how that was found: the five
+    // servers whose idle bound is 75s failed, and the five at 60s passed — the silent connection
+    // was still being closed, just by the wrong bound and half a minute late. A test that cannot
+    // say which bound acted is not testing either of them.
+    assert!(
+        elapsed.as_secs() <= FIRST_BYTE_SECS + 20,
+        "the silent peer was closed after {}s, far past its {FIRST_BYTE_SECS}s bound — that is \
+         the {}s idle watchdog picking it up, which means the first-byte bound did nothing",
+        elapsed.as_secs(),
+        case.idle_secs
     );
 
     // PARTIAL: one request line and then silence — past the first-byte check, so only the idle
