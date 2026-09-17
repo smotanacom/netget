@@ -737,6 +737,39 @@ only number in this repository that says whether the model can drive the thing a
 
 Move items here with the date and the commit or PR that verified them.
 
+**16 September 2026 — circular-evidence audit across all 50 Beta ratings.**
+
+Method: for each Beta protocol, diff the external crates imported by `src/server/<p>/*.rs`
+against those imported by `tests/server/<p>/*.rs`. An overlap means the test's peer may be the
+crate the server frames with — the `ssh`/russh case, where a rating looked earned because nobody
+checked what the test drove as opposed to what the server linked.
+
+Five overlaps, and **four are already disclosed in the protocol's own metadata**, which is the
+outcome the bar was written for:
+
+| protocol | shared crate | verdict |
+|---|---|---|
+| `dns` | hickory-proto | rating rests on `dig` (BIND), which is independent |
+| `doh` | hickory-proto | `e2e_testing` already says the DNS half is decoded with the server's own codec and is inherited from `dns`, which dig validates |
+| `dot` | hickory-proto | same, and it names what would close it: `kdig +tls` from knot-dnsutils |
+| `grpc` | prost, prost-reflect | rating now rests on grpcurl (grpc-go); prost builds the request message only |
+| `webrtc` | webrtc-rs, tokio-tungstenite | the quinn precedent, already recorded in the root CLAUDE.md: the peer is the same library in the opposite role completing a real handshake |
+
+**One bad claim, and it was in the opposite direction from circularity.** `ldap`'s `e2e_testing`
+named "the ldapsearch/ldapadd command-line tools" as evidence. Nothing asserting drives them:
+`ldapsearch` appears only in `tests/eval/`, the real-model harness, which **skips unless
+`NETGET_USE_OLLAMA=1` and reports rather than asserts** — its own header says it must never gate
+a PR. A citation a reader cannot find, backed by a harness that passes by skipping. Corrected;
+the rating stands on `ldap3`, which is genuinely independent of `ldap3_proto` despite the name.
+
+**The eval suite drives `redis-cli`, `psql`, `mysql`, `ipptool`, `whois` and `ftp` too.** Only
+`whois` is also cited by a maturity claim, and that one is sound — a real `whois` binary runs in
+its own e2e test. **An eval probe is a useful signal and is not maturity evidence**; it is the
+easiest thing in this tree to mistake for one.
+
+`kdig` is now installed, so `dot`'s named gap is one test away.
+
+
 **16 September 2026 — the last four dead startup parameters, and a credential in the prompt.**
 
 `startup_param_drift_test`'s baseline is empty. Each of the four was a knob the dashboard
