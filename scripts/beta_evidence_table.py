@@ -177,10 +177,26 @@ def http_native(protocol: str, side: str) -> bool:
 
 
 def cargo_dependencies() -> dict[str, bool]:
-    """Every declared dependency, mapped to whether it is `optional = true`.
+    """Every declared dependency, mapped to whether it is an **optional dev-dependency**.
 
     Keys are normalised to the crate's Rust identifier (`-` becomes `_`), which is
     how a `use` statement spells it.
+
+    **This used to return `optional = true` alone, and that made its loudest finding
+    wrong.** The hole worth flagging is a crate that the job running the gate never
+    builds, and only an `optional = true` entry under `[dev-dependencies]` is that:
+    a plain optional `[dependencies]` entry is compiled exactly when its feature is
+    on, which is exactly when its protocol's tests run.
+
+    Measured 16 September 2026: **142 optional regular dependencies and ZERO optional
+    dev-dependencies**, so every one of the dozen "AMQP/lapin hole" warnings this
+    produced was a false positive — including the one for lapin itself, which is a
+    plain `[dependencies]` entry. A warning that fires on a dozen protocols for a
+    condition none of them has trains the reader to skip the whole section.
+
+    The real gap those protocols share is that the blocking CI job compiles 6 of 116
+    features, which is true of 110 protocols and is not a property of any one of them.
+    It belongs in the header, not on a row.
     """
     text = (ROOT / "Cargo.toml").read_text(errors="ignore")
     deps: dict[str, bool] = {}
@@ -196,7 +212,9 @@ def cargo_dependencies() -> dict[str, bool]:
         if not m:
             continue
         name, rest = m.group(1), m.group(2)
-        optional = "optional = true" in rest or "optional=true" in rest
+        optional = ("optional = true" in rest or "optional=true" in rest) and (
+            "dev-dependencies" in section
+        )
         key = name.replace("-", "_")
         deps[key] = optional
         # `foo = { package = "bar" }` means `use bar::` is what the code writes.
@@ -437,10 +455,31 @@ def independent_peers(row: dict) -> list[str]:
     return row["binaries"] + [c for c in row["crates"] if c not in row["circular"]]
 
 
+# Protocols where "no third-party peer" is correct rather than a defect, with the reason.
+#
+# Keep this tiny and argued. An entry here is a claim that no second implementation could
+# exist to be pointed at — not that nobody has got to it, which is what the baselines in the
+# ratchet tests are for.
+TRANSPORT_IS_THE_PROTOCOL = {
+    "tcp": (
+        "the transport IS the protocol, so the independent implementation is the peer's OS "
+        "network stack, which every test on both sides already goes through. A 'third-party "
+        "TCP client' here would be testing tokio."
+    ),
+    "udp": (
+        "as `tcp`: the datagram layer is the protocol, and the peer's kernel is the "
+        "independent implementation."
+    ),
+}
+
+
 def blocking_defects(row: dict, side: str) -> list[str]:
     """Failures a script can be sure about, which `--check` fails the build on."""
     out = []
     peers = independent_peers(row)
+    if not peers and side == "server" and row["protocol"] in TRANSPORT_IS_THE_PROTOCOL:
+        # Reported in the table as usual; just not a failure.
+        return out
     if not peers:
         if row["generic_only"]:
             out.append(
@@ -496,14 +535,15 @@ def review_flags(row: dict, side: str) -> list[str]:
     only_optional = peers and all(row["optional_status"].get(p) is True for p in peers)
     if only_optional:
         out.append(
-            "every peer is an `optional = true` dependency ("
+            "every peer is an `optional = true` **dev**-dependency ("
             + ", ".join(peers)
-            + ") — compiled only when its feature is on, and the blocking CI job "
-            "compiles 6 of 116 protocols, so this evidence does not run there: the "
-            "AMQP/lapin hole"
+            + ") — never built by a job that does not enable it, so the evidence does "
+            "not run where the gate runs"
         )
     elif row["optional"]:
-        out.append("optional dependency among the peers: " + ", ".join(row["optional"]))
+        out.append(
+            "optional `dev`-dependency among the peers: " + ", ".join(row["optional"])
+        )
     if row["ignored"] and (not row["tests"] or len(row["ignored"]) < row["tests"]):
         out.append(f"{len(row['ignored'])} of {row['tests']} tests #[ignore]d")
     if not row["has_tests"]:
