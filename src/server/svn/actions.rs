@@ -27,9 +27,13 @@ impl Protocol for SvnProtocol {
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
             send_greeting_action(),
+            send_auth_request_action(),
+            send_auth_success_action(),
+            send_repos_info_action(),
             send_success_action(),
             send_failure_action(),
             send_list_action(),
+            send_stat_action(),
             send_response_action(),
             close_connection_action(),
         ]
@@ -52,42 +56,52 @@ impl Protocol for SvnProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // svn:// is port 3690, which is above 1024 and needs no privilege. This used to
             // declare PrivilegedPort(3690); server_startup.rs only refuses to spawn when the
             // port is < 1024, so that check could never fire and merely read as protection
             // that did not exist.
             .privilege_requirement(PrivilegeRequirement::None)
-            .implementation("Hand-rolled subset of the svn:// wire protocol, line-framed")
-            .llm_control("Greeting, command responses (get-latest-rev, get-dir, stat, log, ...)")
+            .implementation(
+                "Hand-rolled subset of the svn:// wire protocol, framed on ra_svn tuple \
+                 structure (src/server/svn/wire.rs): nested lists and byte-counted strings, \
+                 with a depth cap and a per-message byte cap applied to the length the peer \
+                 declares. Read-only metadata commands only - no svndiff, no editor commands.",
+            )
+            .llm_control(
+                "Greeting, the auth-request offered to the client, accept/reject of its \
+                 credentials, the repository UUID and root it is told about, and every \
+                 command response (get-latest-rev, stat, get-dir, log, ...)",
+            )
             .e2e_testing(
-                "NO WORKING THIRD-PARTY CLIENT, and this field claimed 'svn command-line \
-                 client' for a long time while nothing in the tree ran one. MEASURED 16 \
-                 September 2026 against the real svn 1.14.5: the client CANNOT GET PAST ITS \
-                 OWN FIRST MESSAGE. It parses our greeting, replies with its capability tuple \
-                 ending in a SPACE and containing no newline (ra_svn frames on tuple structure \
-                 and counted strings, never on newlines), our read_line therefore never \
-                 returns, the server logs 'sent nothing for 30s; closing idle connection' and \
-                 svn reports E210002 Network connection closed unexpectedly. \
-                 tests/server/svn/real_client_test.rs reproduces exactly that and is \
-                 #[ignore]d BECAUSE IT FAILS — it describes correct behaviour and is the \
-                 regression test for whoever implements ra_svn framing. IT IS NOT EVIDENCE AND \
-                 MUST NOT BE CITED AS ANY. What does run: tests/server/svn/{e2e_test, \
-                 llm_failure_test, peer_inject_test}.rs, all of which write '<command>\\n' \
-                 themselves, i.e. they speak a line-oriented protocol that only NetGet speaks.",
+                "Driven by the REAL svn command-line client (Subversion 1.14.5), a separate C \
+                 implementation run as a subprocess: tests/server/svn/real_client_test.rs \
+                 takes it through `svn info`, `svn ls` and `svn log`, each a complete ra_svn \
+                 session - greeting, capability tuple, auth-request, ANONYMOUS token, auth \
+                 success, repos-info, then the commands the subcommand issues - and asserts \
+                 fields the client parsed out of distinct tuples (revision, repository UUID, \
+                 node kind, last author, directory entries, log message). Those tests are NOT \
+                 #[ignore]d and FAIL rather than skip when svn is absent. \
+                 tests/server/svn/framing_test.rs proves the same framing from a raw socket \
+                 with zero LLM calls - a tuple ending without a newline, a counted string \
+                 containing newlines - and that the depth and declared-length bounds fire. \
+                 WHAT IS NOT COVERED: checkout, update and commit, which need the editor \
+                 command set and svndiff and are not implemented at all. \
+                 tests/server/svn/{e2e_test,llm_failure_test,peer_inject_test}.rs write \
+                 '<command>\\n' themselves and are mocked-model tests, not client evidence.",
             )
             .notes(
-                "Line-framed subset only: tuples are read one line at a time, so a \
-                 length-prefixed string containing a newline (any file content, any multi-line \
-                 log message) desynchronises the parser. No svndiff, no editor/commit commands, \
-                 no authentication beyond announcing ANONYMOUS. Usable as a honeypot or for \
-                 protocol experiments. NOT usable by a real svn client AT ALL - not `checkout`, \
-                 and not `info` or `log` either: the line framing above breaks on the client's \
-                 very first reply, before any command is sent. Behind that sits a second \
-                 blocker, so fixing the framing alone is not enough - the ra_svn handshake \
-                 needs a server auth-request, then the client's `( ANONYMOUS ( 33:...\\n ) )` \
-                 whose counted string CONTAINS a newline, then an auth success plus a \
-                 repos-info tuple, and this protocol has no action for any of them.",
+                "Read-only metadata subset. `svn info`, `svn ls` and `svn log` work against \
+                 the real client; `svn checkout`, `svn update` and `svn commit` DO NOT - \
+                 there is no svndiff, no editor/report command set and no delta transfer, so \
+                 a client asking for one gets whatever the handler answers with and no \
+                 working tree. Authentication is whatever the handler decides: the server \
+                 offers the mechanisms the model names and nothing here can synthesise an \
+                 acceptance, but no credential is ever checked against anything. Protocol \
+                 version 2 only. No repository storage - the model answers every command. \
+                 `log` is a multi-tuple stream (entries, then the word `done`, then the \
+                 command response) and has no action of its own; it goes through the raw \
+                 send_svn_response escape hatch.",
             )
             .max_inbound_bytes(crate::server::svn::MAX_COMMAND_BYTES as usize)
             .build()
@@ -202,6 +216,10 @@ impl Server for SvnProtocol {
 
         match action_type {
             "send_svn_greeting" => self.execute_send_greeting(action),
+            "send_svn_auth_request" => self.execute_send_auth_request(action),
+            "send_svn_auth_success" => self.execute_send_auth_success(action),
+            "send_svn_repos_info" => self.execute_send_repos_info(action),
+            "send_svn_stat" => self.execute_send_stat(action),
             "send_svn_success" => self.execute_send_success(action),
             "send_svn_failure" => self.execute_send_failure(action),
             "send_svn_list" => self.execute_send_list(action),
@@ -242,6 +260,123 @@ impl SvnProtocol {
             response.push_str(mech);
         }
         response.push_str(" ) ( edit-pipeline svndiff1 ) ) )\n");
+
+        Ok(ActionResult::Output(response.into_bytes()))
+    }
+
+    /// `( success ( mechs:list realm:string ) )` — ra_svn's auth-request.
+    ///
+    /// The client reads exactly this after its capability tuple. An **empty** mechanism list
+    /// is the protocol's way of saying "no authentication is required": the client returns
+    /// without answering and waits for the repository info, so a handler that sends one must
+    /// send `send_svn_repos_info` in the same answer.
+    fn execute_send_auth_request(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let mechanisms = action
+            .get("mechanisms")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_else(|| vec!["ANONYMOUS"]);
+
+        let realm = action.get("realm").and_then(|v| v.as_str()).unwrap_or("");
+
+        let mut response = String::from("( success ( ( ");
+        for mech in &mechanisms {
+            response.push_str(mech);
+            response.push(' ');
+        }
+        response.push_str(&format!(") {} ) )\n", svn_string(realm)));
+
+        Ok(ActionResult::Output(response.into_bytes()))
+    }
+
+    /// `( success ( [ token:string ] ) )` — the credentials were accepted.
+    ///
+    /// Nothing else in this protocol can produce it: rejecting is `send_svn_failure`, which
+    /// shares no code path with this, so a handler that returns nothing at all cannot be
+    /// mistaken for one that approved (the fail-open rule in the project CLAUDE.md).
+    fn execute_send_auth_success(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let response = match action.get("token").and_then(|v| v.as_str()) {
+            Some(token) => format!("( success ( {} ) )\n", svn_string(token)),
+            None => "( success ( ) )\n".to_string(),
+        };
+        Ok(ActionResult::Output(response.into_bytes()))
+    }
+
+    /// `( success ( uuid:string repos-url:string ( cap:word ... ) ) )`.
+    ///
+    /// Sent unprompted straight after the auth success; the client reads both before it sends
+    /// its first command. `repository_root` must be a prefix of the URL the client asked for
+    /// (it is in the `url` field of the `svn_auth_response` event), or the client cannot work
+    /// out the session's relative path.
+    fn execute_send_repos_info(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let uuid = action
+            .get("uuid")
+            .and_then(|v| v.as_str())
+            .context("Missing 'uuid' parameter")?;
+        let root = action
+            .get("repository_root")
+            .and_then(|v| v.as_str())
+            .context("Missing 'repository_root' parameter")?;
+        let capabilities = action
+            .get("capabilities")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let mut response = format!("( success ( {} {} ( ", svn_string(uuid), svn_string(root));
+        for cap in &capabilities {
+            response.push_str(cap);
+            response.push(' ');
+        }
+        response.push_str(") ) )\n");
+
+        Ok(ActionResult::Output(response.into_bytes()))
+    }
+
+    /// The answer to `stat`: `( success ( ( ? entry ) ) )`.
+    ///
+    /// `entry` is `( kind:word size:number has-props:bool created-rev:number
+    /// ( ? date:string ) ( ? author:string ) )` — note that the date and the author each ride
+    /// in their own one-element list, which is how ra_svn spells an optional string. A `kind`
+    /// of `none` sends the empty form, which is how the protocol says "that path does not
+    /// exist"; `svn info` prints `Not a valid URL` for it rather than failing the session.
+    fn execute_send_stat(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let kind = match action.get("kind").and_then(|v| v.as_str()) {
+            Some("dir") => "dir",
+            Some("file") => "file",
+            _ => "none",
+        };
+
+        if kind == "none" {
+            return Ok(ActionResult::Output(b"( success ( ( ) ) )\n".to_vec()));
+        }
+
+        let size = action.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let has_props = action
+            .get("has_props")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let created_rev = action
+            .get("created_rev")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let date = match action.get("created_date").and_then(|v| v.as_str()) {
+            Some(d) if !d.is_empty() => format!("( {} )", svn_string(d)),
+            _ => "( )".to_string(),
+        };
+        let author = match action.get("last_author").and_then(|v| v.as_str()) {
+            Some(a) if !a.is_empty() => format!("( {} )", svn_string(a)),
+            _ => "( )".to_string(),
+        };
+
+        // Three opening parens after `success`, and the count is load-bearing: the response
+        // params are `( ? entry )` — a sub-tuple holding an optional list — so it is
+        // ( success ( ( <dirent> ) ) ) with the dirent itself a list. One level short and the
+        // real client answers `E210004: Malformed network data`, measured.
+        let response = format!(
+            "( success ( ( ( {} {} {} {} {} {} ) ) ) )\n",
+            kind, size, has_props, created_rev, date, author
+        );
 
         Ok(ActionResult::Output(response.into_bytes()))
     }
@@ -440,6 +575,167 @@ fn send_greeting_action() -> ActionDefinition {
     }
 }
 
+fn send_auth_request_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_svn_auth_request".to_string(),
+        description: "Answer the client's capability tuple with an ra_svn auth-request: the \
+                      mechanisms this server offers, and the realm they apply to"
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "mechanisms".to_string(),
+                type_hint: "array".to_string(),
+                description: "Mechanism names to offer, e.g. [\"ANONYMOUS\"] (default). An \
+                              empty array means no authentication is required, in which case \
+                              the client sends nothing back and expects send_svn_repos_info \
+                              immediately"
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "realm".to_string(),
+                type_hint: "string".to_string(),
+                description: "Authentication realm shown to the user (default: empty)".to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "send_svn_auth_request",
+            "mechanisms": ["ANONYMOUS"],
+            "realm": "netget repository"
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> SVN auth-request {mechanisms}")
+                .with_debug("SVN auth-request: mechanisms={mechanisms}, realm={realm}"),
+        ),
+    }
+}
+
+fn send_auth_success_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_svn_auth_success".to_string(),
+        description: "Accept the client's credentials. Send send_svn_repos_info in the same \
+                      answer — the client reads both before it sends a command"
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "token".to_string(),
+            type_hint: "string".to_string(),
+            description: "Optional mechanism token to return (ANONYMOUS needs none)".to_string(),
+            required: false,
+        }],
+        example: json!({"type": "send_svn_auth_success"}),
+        log_template: Some(LogTemplate::new().with_info("-> SVN auth accepted")),
+    }
+}
+
+fn send_repos_info_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_svn_repos_info".to_string(),
+        description: "Send the repository's UUID and root URL, which every ra_svn session \
+                      reads immediately after the auth success"
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "uuid".to_string(),
+                type_hint: "string".to_string(),
+                description: "Repository UUID, any stable identifier in UUID form".to_string(),
+                required: true,
+            },
+            Parameter {
+                name: "repository_root".to_string(),
+                type_hint: "string".to_string(),
+                description: "Root URL of the repository. It must be a prefix of the URL the \
+                              client asked for, which the svn_auth_response event carries in \
+                              its 'url' field"
+                    .to_string(),
+                required: true,
+            },
+            Parameter {
+                name: "capabilities".to_string(),
+                type_hint: "array".to_string(),
+                description: "Repository capability words (default: none)".to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "send_svn_repos_info",
+            "uuid": "8f3c1d2e-4b5a-4c6d-9e7f-0a1b2c3d4e5f",
+            "repository_root": "svn://127.0.0.1:3690"
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> SVN repository {repository_root}")
+                .with_debug("SVN repos-info: uuid={uuid}, root={repository_root}"),
+        ),
+    }
+}
+
+fn send_stat_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_svn_stat".to_string(),
+        description: "Answer a `stat` command with one directory entry (this is what `svn \
+                      info` asks for)"
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "kind".to_string(),
+                type_hint: "string".to_string(),
+                description: "\"dir\", \"file\", or \"none\" for a path that does not \
+                              exist (default: none)"
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "size".to_string(),
+                type_hint: "number".to_string(),
+                description: "Size in bytes for a file (default: 0)".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "has_props".to_string(),
+                type_hint: "boolean".to_string(),
+                description: "Whether the node carries svn properties (default: false)".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "created_rev".to_string(),
+                type_hint: "number".to_string(),
+                description: "Revision this node was last changed in (default: 0)".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "created_date".to_string(),
+                type_hint: "string".to_string(),
+                description: "Last-changed time, in svn's own format \
+                              YYYY-MM-DDThh:mm:ss.ffffffZ (default: omitted)"
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "last_author".to_string(),
+                type_hint: "string".to_string(),
+                description: "Who last changed it (default: omitted)".to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "send_svn_stat",
+            "kind": "dir",
+            "size": 0,
+            "has_props": false,
+            "created_rev": 42,
+            "created_date": "2026-01-01T00:00:00.000000Z",
+            "last_author": "netget"
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> SVN stat {kind} r{created_rev}")
+                .with_debug("SVN stat: kind={kind}, size={size}, created_rev={created_rev}"),
+        ),
+    }
+}
+
 fn send_success_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_svn_success".to_string(),
@@ -485,7 +781,9 @@ fn send_failure_action() -> ActionDefinition {
             Parameter {
                 name: "message".to_string(),
                 type_hint: "string".to_string(),
-                description: "Error message".to_string(),
+                description: "Human-readable reason, shown to the user by the svn client \
+                              (default: \"Operation failed\")"
+                    .to_string(),
                 required: false,
             },
         ],
@@ -629,6 +927,7 @@ pub static SVN_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send_success_action(),
         send_failure_action(),
         send_list_action(),
+        send_stat_action(),
         send_response_action(),
         close_connection_action(),
     ])
@@ -647,6 +946,131 @@ pub static SVN_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+/// The client's answer to the greeting: its protocol version, its capabilities and the URL it
+/// wants. Raised once per connection, before any command.
+///
+/// This is the message a line-framed reader could never see — it ends in a space and contains
+/// no newline — and the handshake stalled here until `wire.rs` existed.
+pub static SVN_CLIENT_CAPABILITIES_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "svn_client_capabilities",
+        "SVN client announced its version, capabilities and target URL",
+        json!({
+            "type": "send_svn_auth_request",
+            "mechanisms": ["ANONYMOUS"],
+            "realm": "netget repository"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "version".to_string(),
+            type_hint: "number".to_string(),
+            description: "Protocol version the client selected".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "capabilities".to_string(),
+            type_hint: "array".to_string(),
+            description: "Capability words the client offers (edit-pipeline, svndiff1, ...)"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "url".to_string(),
+            type_hint: "string".to_string(),
+            description: "Repository URL the client is opening".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "ra_client".to_string(),
+            type_hint: "string".to_string(),
+            description: "Client version string, e.g. SVN/1.14.5 (...)".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "client_ip".to_string(),
+            type_hint: "string".to_string(),
+            description: "Address of the connecting client".to_string(),
+            required: false,
+        },
+    ])
+    .with_actions(vec![
+        send_auth_request_action(),
+        send_failure_action(),
+        close_connection_action(),
+    ])
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} SVN v{version} wants {url}")
+            .with_debug("SVN capabilities from {client_ip}: {capabilities}")
+            .with_trace("SVN client {ra_client} opening {url}"),
+    )
+});
+
+/// The client's choice of authentication mechanism, with whatever token that mechanism sends.
+///
+/// Answer it with `send_svn_auth_success` **and** `send_svn_repos_info` in one action list:
+/// the client reads both tuples before it sends its first command. Refuse with
+/// `send_svn_failure` — there is no code path here that can turn silence into an approval.
+pub static SVN_AUTH_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "svn_auth_response",
+        "SVN client chose an authentication mechanism",
+        json!({
+            "type": "send_svn_auth_success"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "mechanism".to_string(),
+            type_hint: "string".to_string(),
+            description: "Mechanism the client picked, e.g. ANONYMOUS".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "token".to_string(),
+            type_hint: "string".to_string(),
+            description: "Credential token the mechanism carried, if any".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "url".to_string(),
+            type_hint: "string".to_string(),
+            description: "URL this session is opening, carried over from the capability \
+                          tuple. send_svn_repos_info's repository_root must be a prefix of it"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "client_ip".to_string(),
+            type_hint: "string".to_string(),
+            description: "Address of the connecting client".to_string(),
+            required: false,
+        },
+    ])
+    .with_actions(vec![
+        send_auth_success_action(),
+        send_repos_info_action(),
+        send_failure_action(),
+        close_connection_action(),
+    ])
+    .with_alternative_example(json!({
+        "type": "send_svn_failure",
+        "error_code": 210007,
+        "message": "Authentication failed"
+    }))
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} SVN auth {mechanism}")
+            .with_debug("SVN auth from {client_ip}: mechanism={mechanism}"),
+    )
+});
+
 pub fn get_svn_event_types() -> Vec<EventType> {
-    vec![SVN_GREETING_EVENT.clone(), SVN_COMMAND_EVENT.clone()]
+    vec![
+        SVN_GREETING_EVENT.clone(),
+        SVN_CLIENT_CAPABILITIES_EVENT.clone(),
+        SVN_AUTH_RESPONSE_EVENT.clone(),
+        SVN_COMMAND_EVENT.clone(),
+    ]
 }

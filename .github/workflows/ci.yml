@@ -284,6 +284,7 @@ jobs:
       #   python3-pip       - pypi, and oci_registry's script handler
       #   sipsak            - sip
       #   stuntman-client   - stun (provides `stunclient`; universe)
+      #   subversion (svn)  - svn (the real ra_svn client; info/ls/log)
       #   tor               - tor_relay
       #   wakeonlan         - wol
       - name: Install the third-party clients the real-client tests drive
@@ -291,8 +292,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
-            mosquitto-clients npm openvpn python3-pip sipsak stuntman-client tor \
-            wakeonlan
+            mosquitto-clients npm openvpn python3-pip sipsak stuntman-client \
+            subversion tor wakeonlan
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry
@@ -396,7 +397,8 @@ jobs:
             memcached::real_client_test modbus::real_client_test \
             mongodb::real_client_test mqtt::real_client_test npm::e2e_test \
             oci_registry::e2e_test openvpn:: pypi::e2e_test \
-            radius::real_client_test rtsp::ffprobe_test websocket::e2e_test ; do
+            radius::real_client_test rtsp::ffprobe_test svn::real_client_test \
+            websocket::e2e_test ; do
             echo "::group::$filter"
             if ! cargo test --locked --all-features --test server -- \
                  --test-threads=100 --nocapture "$filter" ; then
