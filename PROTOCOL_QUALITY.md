@@ -737,6 +737,31 @@ only number in this repository that says whether the model can drive the thing a
 
 Move items here with the date and the commit or PR that verified them.
 
+**16 September 2026 — the last four dead startup parameters, and a credential in the prompt.**
+
+`startup_param_drift_test`'s baseline is empty. Each of the four was a knob the dashboard
+offered, the protocol's own examples set, and nothing read:
+
+- **`bitcoin` `rpc_user` / `rpc_password`.** bitcoind's RPC is auth-mandatory — every
+  unauthenticated request gets `401` — so authenticated Bitcoin Core RPC could not work at all
+  through this client. The documented alternative was broken too, and less visibly: the client's
+  own comment says it accepts `http://user:pass@host:port`, and **reqwest does not derive Basic
+  auth from URL userinfo**, so the one form operators were told to use also 401'd with nothing
+  saying why. One fix covers both — take the credential out of the URL, send it as a header.
+- **`ipp` `printer_path`.** IPP addresses a queue, not a host.
+- **`isis` `interface`.** The client passed `remote_addr` as the capture device.
+
+**The part worth carrying forward is what the bitcoin fix exposed on the way past.** The
+userinfo URL was stored in `rpc_url`, which the dashboard renders on the client's facts line;
+echoed to the status stream on connect; and put into the `bitcoin_client_connected` event, which
+is handed to **the model**. A password in the prompt is not a display bug, and nothing about the
+dead-parameter task would have found it — it surfaced only because making the credential *work*
+meant following where it goes. **When you make a secret functional, trace every place it lands.**
+
+Verified by removing the `basic_auth` call and watching both wire tests fail with their own
+messages.
+
+
 **16 September 2026 — the gRPC trailers class, found by a second client.**
 
 Two servers, `etcd` and `grpc`, wrote `grpc-status` into the **initial** HEADERS and then sent a
