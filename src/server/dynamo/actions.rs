@@ -148,7 +148,30 @@ impl Protocol for DynamoProtocol {
             .state(DevelopmentState::Beta)
             .implementation("hyper v1.5 HTTP with manual DynamoDB API")
             .llm_control("All DynamoDB operations (GetItem, PutItem, Query)")
-            .e2e_testing("aws-sdk-dynamodb, the official AWS SDK, in tests/server/dynamo/e2e_aws_sdk_test.rs and not #[ignore]d: CreateTable, PutItem/GetItem and UpdateItem complete through the SDK, the same class of evidence that made sqs Beta.")
+            .e2e_testing(
+                "TWO independent clients, neither #[ignore]d and neither able to skip. \
+                 (1) aws-sdk-dynamodb, the official Rust SDK, in \
+                 tests/server/dynamo/e2e_aws_sdk_test.rs: CreateTable, PutItem/GetItem and \
+                 UpdateItem complete through the SDK. \
+                 (2) the real `aws` CLI (botocore, Python) in \
+                 tests/server/dynamo/real_client_test.rs: ListTables, PutItem and GetItem, \
+                 asserting the TYPED attribute values it rendered -- a string under S, a number \
+                 under N, a boolean under BOOL. That is the check worth having, because \
+                 DynamoDB numbers cross the wire as STRINGS under an N tag and botocore rejects \
+                 an item whose tags it does not recognise rather than rendering it as text. \
+                 Verified by sending `\"count\":{\"N\":7}` as a JSON number, which the test \
+                 then reports. \
+                 THE TEST CANNOT REACH REAL AWS, and for this protocol that is not abstract: \
+                 the project CLAUDE.md records that this protocol's CLIENT once dropped its \
+                 target, let the SDK resolve the production endpoint and signed with ambient \
+                 credentials. --endpoint-url is passed on every invocation, the port is asserted \
+                 non-zero before the CLI is spawned, and credentials, region, profile and the \
+                 EC2 metadata service are overridden in the child's environment. \
+                 UNPROVEN, and worth saying plainly: NO SIGNATURE IS VALIDATED -- every request \
+                 is served unconditionally and neither Authorization nor X-Amz-Date reaches the \
+                 event, so the model cannot make that decision either. Also unproven: Query and \
+                 Scan, conditional writes, transactions, streams, and pagination.",
+            )
             .notes("Virtual data (no persistence)")
             .max_inbound_bytes(crate::server::dynamo::MAX_REQUEST_BYTES)
             .build()
