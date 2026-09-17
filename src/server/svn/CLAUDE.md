@@ -106,10 +106,36 @@ EOF.
 
 The connection is read with `read_line`. Real svn frames on tuple structure, not
 newlines, and a counted string may contain a newline — any file content, any
-multi-line log message. Such a message desynchronises the parser. This is why the
-protocol is honest about not being usable by a real `svn checkout`: it handles
+multi-line log message. Such a message desynchronises the parser. It handles
 short, single-line command tuples, which covers honeypots and protocol
 experiments.
+
+**This is worse than "not usable by a real `svn checkout`", which is how this page
+described it until it was measured.** A real `svn` 1.14.5 cannot get past its **own
+first message**, so `svn info` and `svn log` fail too — before any command is sent:
+
+1. NetGet writes the greeting, `( success ( 2 2 ( ANONYMOUS ) ( edit-pipeline svndiff1 ) ) )\n`.
+2. The client parses it and replies with its capability tuple, which ends in a
+   **space** and contains no newline anywhere.
+3. `read_line` never returns. After `FIRST_COMMAND_READ_TIMEOUT` the server logs
+   `sent nothing for 30s; closing idle connection` and hangs up.
+4. `svn` reports `E210002: Network connection closed unexpectedly`.
+
+Measured 16 September 2026, reproduced in
+`tests/server/svn/real_client_test.rs` (`#[ignore]`d **because it fails** — it
+describes correct behaviour and is the regression test for whoever fixes the
+framing; it is not evidence and `metadata()` says so).
+
+`tests/server/svn/e2e_test.rs` cannot catch this because it writes
+`format!("{}\n", command)` itself: it speaks a line-oriented protocol that only
+NetGet speaks.
+
+**Fixing the framing alone is not enough**, so budget for both. The ra_svn handshake
+then needs a server **auth-request**, the client's `( ANONYMOUS ( 33:…\n ) )` — whose
+counted string *contains* a newline, the exact desync above all over again — and then
+an auth success **plus** a repos-info tuple, which is two tuples in reply to one
+message. No action here can express any of that; it would all have to go through the
+raw `send_svn_response` escape hatch.
 
 **The read is bounded at `MAX_COMMAND_BYTES` (64 KiB).** `read_line` grows its
 `String` until it sees a newline, so an unbounded read let one peer that never

@@ -154,12 +154,34 @@ headers) is not parsed and does not reach the handler at all.
 
 - **Unary only.** No client, server or bidirectional streaming. Extra length-prefixed frames in
   a request body are ignored without error.
-- **No trailers.** `grpc-status` is sent in the initial HEADERS alongside the DATA body rather
-  than in an HTTP/2 trailers frame. tonic-based clients accept this (the sibling etcd protocol
-  is verified against the real `etcd_client` crate this way); **grpc-go and grpcurl may not.**
-  This has not been changed because there is no Go client available here to test against, and
-  moving the status into trailers changes how tonic classifies the response — it could break
-  the path that currently works. Verify with a Go client before touching it.
+- **No trailers — and this is now MEASURED, not suspected. It breaks every successful RPC
+  against a real gRPC client.** `grpc-status` is sent in the initial HEADERS alongside the DATA
+  body rather than in an HTTP/2 trailers frame. This entry used to say "grpc-go and grpcurl
+  **may** not [accept this] … there is no Go client available here to test against". grpcurl
+  1.9.4 was installed and pointed at the server on 16 September 2026, and the answer is:
+
+  ```text
+  ERROR:
+    Code: Internal
+    Message: server closed the stream without sending trailers
+  ```
+
+  **The success and error paths differ, and the asymmetry is the whole mechanism.** A success
+  has a non-empty body, so `http_body_util::Full::is_end_stream()` is false: hyper emits HEADERS
+  (no END_STREAM) then DATA (END_STREAM) and the stream ends with no trailers, which grpc-go
+  rejects. An **error** has an empty body, `is_end_stream()` is true, and hyper emits a single
+  HEADERS frame with END_STREAM — a valid gRPC **Trailers-Only** response, which grpc-go
+  accepts and parses. So NetGet can report a *failure* to a real gRPC client today and cannot
+  report a *success*.
+
+  The caution about tonic still stands and is why this was not changed in the same pass that
+  found it: moving the status into trailers changes how tonic classifies the response, and the
+  sibling etcd protocol is verified against the real `etcd_client` crate through the current
+  behaviour. The fix needs both clients checked, not one.
+
+  `tests/server/grpc/real_client_test.rs::test_grpc_unary_call_against_real_grpcurl` is written,
+  `#[ignore]`d, and is the regression test: un-ignore it when trailers are emitted. It asserts
+  correct behaviour rather than the current behaviour, deliberately.
 - **No reflection** (above).
 - **Request compression rejected**, not decompressed.
 - **No deadline enforcement** — `grpc-timeout` is ignored.

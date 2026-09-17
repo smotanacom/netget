@@ -60,13 +60,34 @@ impl Protocol for SvnProtocol {
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("Hand-rolled subset of the svn:// wire protocol, line-framed")
             .llm_control("Greeting, command responses (get-latest-rev, get-dir, stat, log, ...)")
-            .e2e_testing("svn command-line client")
+            .e2e_testing(
+                "NO WORKING THIRD-PARTY CLIENT, and this field claimed 'svn command-line \
+                 client' for a long time while nothing in the tree ran one. MEASURED 16 \
+                 September 2026 against the real svn 1.14.5: the client CANNOT GET PAST ITS \
+                 OWN FIRST MESSAGE. It parses our greeting, replies with its capability tuple \
+                 ending in a SPACE and containing no newline (ra_svn frames on tuple structure \
+                 and counted strings, never on newlines), our read_line therefore never \
+                 returns, the server logs 'sent nothing for 30s; closing idle connection' and \
+                 svn reports E210002 Network connection closed unexpectedly. \
+                 tests/server/svn/real_client_test.rs reproduces exactly that and is \
+                 #[ignore]d BECAUSE IT FAILS — it describes correct behaviour and is the \
+                 regression test for whoever implements ra_svn framing. IT IS NOT EVIDENCE AND \
+                 MUST NOT BE CITED AS ANY. What does run: tests/server/svn/{e2e_test, \
+                 llm_failure_test, peer_inject_test}.rs, all of which write '<command>\\n' \
+                 themselves, i.e. they speak a line-oriented protocol that only NetGet speaks.",
+            )
             .notes(
                 "Line-framed subset only: tuples are read one line at a time, so a \
                  length-prefixed string containing a newline (any file content, any multi-line \
                  log message) desynchronises the parser. No svndiff, no editor/commit commands, \
                  no authentication beyond announcing ANONYMOUS. Usable as a honeypot or for \
-                 protocol experiments, not by a real `svn checkout`.",
+                 protocol experiments. NOT usable by a real svn client AT ALL - not `checkout`, \
+                 and not `info` or `log` either: the line framing above breaks on the client's \
+                 very first reply, before any command is sent. Behind that sits a second \
+                 blocker, so fixing the framing alone is not enough - the ra_svn handshake \
+                 needs a server auth-request, then the client's `( ANONYMOUS ( 33:...\\n ) )` \
+                 whose counted string CONTAINS a newline, then an auth success plus a \
+                 repos-info tuple, and this protocol has no action for any of them.",
             )
             .max_inbound_bytes(crate::server::svn::MAX_COMMAND_BYTES as usize)
             .build()

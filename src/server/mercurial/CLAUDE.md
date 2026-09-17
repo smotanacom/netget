@@ -131,3 +131,41 @@ here. Treat "works with hg" as unproven.
 `#[cfg(feature = "mercurial")]`) and runs: five mocked e2e cases. This file claimed
 the opposite — the mod.rs footgun was real when it was written and has since been
 fixed tree-wide.
+
+## Maturity: what a real `hg` can and cannot do here
+
+**`Experimental`, and it stays there despite a passing real-client test.** This is the `openvpn`
+precedent the root `CLAUDE.md` records: the test is genuine, is not `#[ignore]`d and hard-fails
+when the binary is missing, and it still does not justify `Beta`, because the server implements
+only the **front** of the protocol.
+
+Measured 16 September 2026 against the installed `hg` 7.2.4:
+
+| command | result |
+|---|---|
+| `hg debugcapabilities <url>` | **works** — the full wire-protocol handshake |
+| `hg id <url>` | `abort: cannot look up remote revision; remote repository does not support the 'lookup' capability` |
+| `hg clone <url>` | dies in discovery, asking for `known` |
+
+`tests/server/mercurial/real_client_test.rs` drives the first of those. It is worth more than it
+looks: `httppeer.performhandshake` requires the reply to carry
+`Content-Type: application/mercurial-*` before `hg` will treat us as a repository at all, and no
+`reqwest` assertion anywhere in this tree checks that. The test also asserts — *through hg's own
+parser* — that `sanitize_capabilities` stripped the `lookup`/`known`/`batch`/`unbundle`/`pushkey`
+the model asked for, which matters because advertising any of them makes `hg` issue a request
+this server answers with a 404.
+
+Why the other two cannot be made to work without new protocol code:
+
+- **`hg id` needs `lookup`.** `wireprotov1peer.lookup` begins `self.requirecap(b'lookup', …)`, and
+  `sanitize_capabilities` **discards whatever the model returns** and substitutes the constant
+  `["branchmap", "getbundle", "listkeys"]`. So `lookup` cannot be advertised at all, and
+  `?cmd=lookup` is a 404 besides. Implementing it means answering `"1 <40-hex node>\n"`.
+- **`hg clone` needs `known`.** Because `getbundle` *is* advertised, discovery takes
+  `setdiscovery.findcommonheads`, which issues `heads` **and `known`** — and `known` is not
+  capability-gated, so there is no way to opt out of being asked for it. After that, `getbundle`
+  would have to return a real changegroup rather than the current empty `HG10UN` bundle.
+
+So the minimum for a clone is `known` plus a non-empty changegroup; the minimum for `hg id` is
+`lookup`. Until one of those lands, "works against real clients" would be a false claim whatever
+the handshake test shows.

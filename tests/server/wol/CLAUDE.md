@@ -36,11 +36,28 @@ target MAC sixteen times, optionally with a SecureON trailer. Cases:
   terminate with the right answer;
 * the MAC crosses to the model as a 17-character formatted string, never as bytes.
 
-**These packets are not third-party evidence.** No `wakeonlan` or `etherwake` binary is
-installed here and no WoL crate is a dependency, so this is the repository reading the
-specification for itself — an independent reading, not an independent implementation. That is
-the `dhcp` situation, and it is why the protocol is `Experimental`. See
-`src/server/wol/CLAUDE.md` for what would make it `Beta`.
+**These particular packets are not third-party evidence** — they are the repository reading the
+specification for itself, an independent reading rather than an independent implementation. For
+third-party packets see `real_client_test.rs` below, which drives the real `wakeonlan`. The
+protocol is still `Experimental`, but no longer for want of a sender: see
+`src/server/wol/CLAUDE.md` for why a one-way protocol cannot reach `Beta` this way.
+
+## `real_client_test.rs` — one test, **2 LLM calls**, real `wakeonlan` 0.50
+
+`test_wol_decodes_a_packet_built_by_the_real_wakeonlan`. Runs
+`wakeonlan -i 127.0.0.1 -p <ephemeral> 00:11:22:33:44:55` and asserts the server's event
+described that datagram as `transport=udp offset=0 password_length=0` carrying that MAC — with
+the mock echoing the **event's own fields** back into the action, so a misdecode produces a
+record for the wrong MAC rather than passing quietly.
+
+It **fails**, naming `brew install wakeonlan`, when the binary is absent, and is not
+`#[ignore]`d. `-i 127.0.0.1` overrides wakeonlan's `255.255.255.255` default (broadcast needs a
+route and privileges these tests do not have) and `-p` aims at the ephemeral port, since
+`PrivilegedPort(9)` genuinely fires on the real port.
+
+**What it does not do is make the protocol `Beta`**, and that is deliberate rather than an
+oversight — Wake-on-LAN has no reply, so nothing NetGet emits is ever judged by a third-party
+implementation, and a decoder that is too permissive passes this test like every other one here.
 
 ## `e2e_test.rs` — 3 tests, 12 LLM calls
 

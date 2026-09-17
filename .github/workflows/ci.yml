@@ -267,6 +267,7 @@ jobs:
       # them can only be checked on a runner that has the binary. Add to this list
       # whenever a protocol's evidence starts depending on a new binary.
       #
+      #   aria2             - torrent_tracker (aria2c)
       #   curl              - gopher, hls
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
@@ -274,29 +275,39 @@ jobs:
       #   libcoap2-bin      - coap (coap-client, libcoap's own C client)
       #   libmemcached-tools- memcached (memcat/memstat/memping)
       #   maven (mvn)       - maven
+      #   etcd-client       - etcd (etcdctl; grpc-go, deliberately NOT tonic)
       #   mbpoll            - modbus (libmodbus's CLI master)
+      #   mercurial (hg)    - mercurial
       #   mosquitto-clients - mqtt (mosquitto_pub / mosquitto_sub)
       #   npm               - npm
       #   openvpn           - openvpn
       #   python3-pip       - pypi, and oci_registry's script handler
+      #   sipsak            - sip
+      #   stuntman-client   - stun (provides `stunclient`; universe)
       #   tor               - tor_relay
+      #   wakeonlan         - wol
       - name: Install the third-party clients the real-client tests drive
         run: |
           sudo apt-get install -y --no-install-recommends \
-            curl bind9-dnsutils ffmpeg freeradius-utils libcoap2-bin \
-            libmemcached-tools maven mbpoll mosquitto-clients npm openvpn \
-            python3-pip tor
+            aria2 curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
+            libcoap2-bin libmemcached-tools maven mbpoll mercurial \
+            mosquitto-clients npm openvpn python3-pip sipsak stuntman-client tor \
+            wakeonlan
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry
+      #   grpcurl  - grpc (grpc-go; deliberately NOT tonic, which the server links)
       #   websocat - websocket (rust-websocket, deliberately NOT tungstenite)
       #   mongosh  - mongodb (MongoDB's own shell, on the Node.js driver)
-      - name: Install crane, websocat and mongosh
+      - name: Install crane, grpcurl, websocat and mongosh
         run: |
           set -eux
           curl -fsSL -o /tmp/crane.tgz \
             https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz
           sudo tar -xzf /tmp/crane.tgz -C /usr/local/bin crane
+          curl -fsSL -o /tmp/grpcurl.tgz \
+            https://github.com/fullstorydev/grpcurl/releases/download/v1.9.1/grpcurl_1.9.1_linux_x86_64.tar.gz
+          sudo tar -xzf /tmp/grpcurl.tgz -C /usr/local/bin grpcurl
           sudo curl -fsSL -o /usr/local/bin/websocat \
             https://github.com/vi/websocat/releases/download/v1.14.0/websocat.x86_64-unknown-linux-musl
           sudo chmod +x /usr/local/bin/websocat
@@ -305,6 +316,7 @@ jobs:
           sudo tar -xzf /tmp/mongosh.tgz -C /usr/local --strip-components=1 \
             mongosh-2.3.8-linux-x64/bin/mongosh
           crane version
+          grpcurl --version
           websocat --version
           mongosh --version
 

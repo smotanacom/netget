@@ -129,8 +129,25 @@ impl Protocol for WolProtocol {
                  (off by default) whether a non-standard awake announcement is sent",
             )
             .e2e_testing(
-                "Magic packets assembled from AMD's Magic Packet specification in \
-                 tests/server/wol/, including offset, SecureON and near-miss cases",
+                "REAL THIRD-PARTY SENDER: the `wakeonlan` Perl script (0.50), in \
+                 tests/server/wol/real_client_test.rs. NOT #[ignore]d and NOT skip-gated — the \
+                 test FAILS, naming `brew install wakeonlan`, when the binary is absent. It \
+                 asserts the server decoded wakeonlan's own 102 bytes as target_mac \
+                 00:11:22:33:44:55, transport=udp, sync_offset=0, password_length=0, with the \
+                 mock echoing the EVENT's fields back so a misdecode produces a wrong record \
+                 rather than passing quietly. Alongside it, decode_test.rs covers the decoder \
+                 exhaustively against packets assembled from AMD's Magic Packet specification \
+                 (offsets 1/7/20/137, a false sync stream, 4- and 6-byte SecureON trailers, \
+                 near-misses at 15 repetitions and single flipped bytes), and e2e_test.rs covers \
+                 the four byte-identical silences and the announce_host_awake gate. \
+                 THIS IS STILL NOT A BETA CASE, deliberately: Wake-on-LAN is one-way and defines \
+                 no reply, so wakeonlan sends and exits and NOTHING NetGet produces is ever \
+                 judged by a third-party implementation. That makes this a codec test with a \
+                 real generator rather than a session, and it cannot catch the failure that \
+                 matters most here — a decoder wrong by being too PERMISSIVE passes every test \
+                 in this directory. NOT PROVEN: the EtherType 0x0842 transport (no raw socket is \
+                 bound, so nothing can receive one), and that any real NIC would wake, NetGet \
+                 not being a NIC.",
             )
             .notes(
                 "UDP only. The EtherType 0x0842 form is NOT received off the wire - that \
@@ -138,9 +155,11 @@ impl Protocol for WolProtocol {
                  transport='ethernet' means the UDP payload was itself an encapsulated \
                  Ethernet frame. Wake-on-LAN defines no response, so nothing is ever sent \
                  back except the explicitly non-standard, off-by-default announce_host_awake. \
-                 Experimental because the decoder has been validated only against packets \
-                 this repository builds from the specification - no third-party sender \
-                 (wakeonlan, etherwake) was available to generate one",
+                 Experimental NOT for want of a third-party sender - the real `wakeonlan` \
+                 script now drives the decoder in tests/server/wol/real_client_test.rs - but \
+                 because a one-way protocol admits no session to be evidence of: nothing this \
+                 server emits is ever read by an independent implementation, so 'works against \
+                 real clients' cannot be established here in the direction Beta means it",
             )
             .build()
     }

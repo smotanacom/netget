@@ -52,11 +52,38 @@ impl Protocol for TorrentTrackerProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("HTTP server with bencode response encoding (serde_bencode)")
             .llm_control("Peer list generation, announce/scrape responses")
-            .e2e_testing("tests/server/torrent_tracker/{e2e_test,llm_failure_test}.rs, 6 LLM calls, none #[ignore]d. NO third-party BitTorrent client is involved: every request is an HTTP/1.1 GET written by hand onto a raw TcpStream and every reply is decoded with serde_bencode, which is an independent *reading* of BEP 3 rather than an independent implementation. This field claimed 'Real BitTorrent clients (transmission, aria2)' and nothing in the tree has ever referenced either binary. Covered: announce and scrape round trips, a send_error_response refusal, connection stats, and the LLM-failure reply (503/500 + bencoded `failure reason`, asserted to leak nothing from netget's internals). Not tested: any real client, compact vs dictionary peer selection against one, IPv6/BEP 7, multi-info_hash scrape.")
+            .e2e_testing(
+                "REAL THIRD-PARTY CLIENT: aria2c 1.37.0 (a C++ BitTorrent implementation) in \
+                 tests/server/torrent_tracker/real_client_test.rs. NOT #[ignore]d and NOT \
+                 skip-gated - both tests FAIL, naming `brew install aria2`, when the binary is \
+                 absent. Not circular: the server hand-rolls its HTTP on a raw TcpListener and \
+                 encodes with serde_bencode; aria2 links neither. aria2 announces with its own \
+                 info_hash and peer_id (the mock rule MATCHES ON BOTH, so a percent-decode or \
+                 hex-encode error means the rule never fires and the test fails in both halves), \
+                 and then DECODES OUR COMPACT PEER LIST - a bencode byte string, six bytes per \
+                 peer, four address octets plus a big-endian port, with nothing self-describing \
+                 in it - which the test asserts by requiring aria2 to dial 10.0.0.1:6881 AND \
+                 10.0.0.2:6882, so a wrong byte order, stride or length loses a peer and fails. \
+                 `compact=1` is HARDCODED in aria2 and is the branch a real swarm always takes; \
+                 no earlier test drove it against a real client. The second test asserts aria2 \
+                 printing `Tracker returned failure reason: <our text>`, i.e. its own parse of \
+                 our bencoded refusal dict inside an HTTP 200. \
+                 This field previously claimed 'Real BitTorrent clients (transmission, aria2)' \
+                 when nothing in the tree referenced either, and was then corrected to say no \
+                 real client existed; aria2 is now genuinely driven. Alongside: e2e_test, \
+                 llm_failure_test and peer_inject_test cover announce/scrape round trips, a \
+                 send_error_response refusal, connection stats and the LLM-failure reply \
+                 (503/500 + bencoded `failure reason`, asserted to leak nothing internal). \
+                 NOT PROVEN: the DICTIONARY peer form against a real client (aria2 can parse it \
+                 but never requests it, so only hand-written tests reach that branch); IPv6 and \
+                 BEP 7 `peers6`, which are NOT IMPLEMENTED; multi-info_hash scrape, and /scrape \
+                 against a real client at all, since aria2 does not issue one on its own; a \
+                 completed download, there being no real swarm; and the 400/408 paths."
+            )
             .notes("Bencode<->JSON conversion, compact peer format. Stores nothing: peers, swarm counts and scrape statistics all come from the model, so successive announces are not correlated unless the model correlates them.")
             .build()
     }
