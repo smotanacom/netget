@@ -96,6 +96,7 @@
 use netget::cli::management::ServerForm;
 use netget::state::app_state::AppState;
 use netget::state::ServerId;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -359,9 +360,9 @@ impl HttpBounds {
     }
 }
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-
+// `AsyncReadExt`, `AsyncWriteExt` and `TcpStream` are already imported at the top of this file
+// by the first driver; re-importing them here is what the two agents' independent files did,
+// and it is an E0252 once they share a module.
 use super::common::{wait_for_server_listening, E2EResult};
 use super::netget::NetGetConfig;
 use super::server::{start_netget_server, NetGetServer};
