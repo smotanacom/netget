@@ -276,12 +276,16 @@ jobs:
       #   libmemcached-tools- memcached (memcat/memstat/memping)
       #   maven (mvn)       - maven
       #   etcd-client       - etcd (etcdctl; grpc-go, deliberately NOT tonic)
+      #   knot-dnsutils     - dns, doh, dot (kdig; Knot, deliberately NOT ISC dig
+      #                       and NOT the hickory codec the servers encode with)
       #   mbpoll            - modbus (libmodbus's CLI master)
       #   mercurial (hg)    - mercurial
       #   mosquitto-clients - mqtt (mosquitto_pub / mosquitto_sub)
       #   npm               - npm
       #   openvpn           - openvpn
+      #   postgresql-client - postgresql (psql; libpq, deliberately NOT tokio-postgres)
       #   python3-pip       - pypi, and oci_registry's script handler
+      #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
       #   sipsak            - sip
       #   stuntman-client   - stun (provides `stunclient`; universe)
       #   subversion (svn)  - svn (the real ra_svn client; info/ls/log)
@@ -292,8 +296,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
-            mosquitto-clients npm openvpn python3-pip sipsak stuntman-client \
-            subversion tor wakeonlan
+            knot-dnsutils mosquitto-clients npm openvpn postgresql-client \
+            python3-pip redis-tools sipsak stuntman-client subversion tor \
+            wakeonlan
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry

@@ -6,10 +6,26 @@ answer to every statement. **There is no database** — no tables, no planner, n
 storage in Rust. The only per-connection state is a Describe→Execute correlation
 cache (see below).
 
-**State**: Experimental — LLM-authored, not human-reviewed. Both query protocols
-are covered by the suite against `tokio-postgres`, an independent implementation
-of the wire protocol (`test.rs` for simple, `extended_query_test.rs` for
-Parse/Describe/Bind/Execute).
+**State**: Beta (this file said Experimental while `actions.rs` said Beta; the
+code was right). **Two** independent clients, sharing no code with each other or
+with `pgwire`:
+
+- **tokio-postgres** (Rust) covers both query protocols — `test.rs` for simple,
+  `extended_query_test.rs` for Parse/Describe/Bind/Execute with binary result
+  columns decoded into real Rust types.
+- **psql 14 / libpq** (C) covers what tokio-postgres cannot reach:
+  `real_client_test.rs` drives the real binary, which hard-fails when psql is
+  absent. libpq defaults to `sslmode=prefer`, so psql opens every connection with
+  an `SSLRequest` and expects `N` back — an exchange `NoTls` skips entirely, so
+  nothing else here had ever driven it. It then asserts the *rendered* result:
+  `t`/`f` booleans, a real NULL distinguished from an empty string by
+  `\pset null`, four columns and three rows in order, the `INSERT 0 1` tag, and
+  the SQLSTATE psql prints under `\set VERBOSITY verbose`.
+
+**psql 14 does not exercise the extended protocol** — it sends every statement as
+a simple `Query` (`\bind` arrived in psql 16) — so Parse/Bind/Describe/Execute
+and the binary result format still rest on tokio-postgres alone. The two clients
+are complementary, not overlapping.
 **Port**: 5432 by default. **Privilege**: `None` (5432 > 1024).
 **Stack**: `ETH>IP>TCP>PostgreSQL`.
 
@@ -174,10 +190,13 @@ Two consequences worth keeping:
 
 ## Testing
 
-Four files, all declared in `tests/server/postgresql/mod.rs`:
+Five files, all declared in `tests/server/postgresql/mod.rs`:
 
 - `test.rs` (note: `test.rs`, not `e2e_test.rs`) — four `client.simple_query`
   cases through the mock-model harness.
+- `real_client_test.rs` — the real `psql` binary, two sessions: the SSLRequest
+  negotiation plus a multi-row SELECT and a command tag, then the error path with
+  its SQLSTATE. Hard-fails when psql is missing rather than skipping.
 - `extended_query_test.rs` — Parse/Describe/Bind/Execute through
   `client.query` and `client.prepare`, asserting an `int4` arrives as a real
   `i32`, that a prepared statement's RowDescription matches its DataRows, and

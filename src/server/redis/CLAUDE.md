@@ -5,12 +5,23 @@ by hand in `actions.rs` (`encode_*`, the single source of truth — each reply v
 executor returns the encoded bytes as `ActionResult::Output`). The LLM owns every
 reply — there is no key space, no storage, and no command dispatch table in Rust.
 
-**State**: Beta — driven by `redis-rs`, a real third-party client, in
-`tests/server/redis/e2e_test.rs`; six tests covering every RESP2 reply type,
-none `#[ignore]`d and none skipping when something is missing. Not Stable:
-Stable additionally wants spec compliance and scripting support reviewed, which
-has not been done. (This file used to say Experimental while `actions.rs` said
-Beta — the code was right.)
+**State**: Beta — **two** independent clients, sharing no code with each other or
+with the `redis-protocol` crate the server parses with:
+
+- **redis-rs** (Rust) in `tests/server/redis/e2e_test.rs`: six tests, one per
+  RESP2 reply type, each deserialised into the Rust type the test asked for.
+- **redis-cli** (C; the binary here is `valkey-cli`, the redis-cli-compatible
+  fork) in `real_client_test.rs`: seven commands on one connection, asserted as
+  one ordered list of what `--no-raw` printed. That reads the type off the wire
+  rather than coercing it — a bulk string is quoted, an integer is
+  `(integer) n`, a nil is `(nil)` and not an empty line, an error is `(error) …`
+  — and because it is one ordered list, a reply landing against the wrong command
+  fails as a mismatched line rather than passing as a same-typed value. It
+  hard-fails when the binary is absent.
+
+Not Stable: Stable additionally wants spec compliance and scripting support
+reviewed, which has not been done. (This file used to say Experimental while
+`actions.rs` said Beta — the code was right.)
 **Port**: 6379 by default. **Privilege**: `None` (6379 > 1024).
 **Stack**: `ETH>IP>TCP>Redis`. **Spec**: RESP2.
 
@@ -168,10 +179,13 @@ injecting into a strictly request/response protocol, not a NetGet bug.
 
 ## Testing
 
-Four files, declared in `tests/server/redis/mod.rs`:
+Five files, declared in `tests/server/redis/mod.rs`:
 
-- `e2e_test.rs` — six `redis-rs` tests, one per RESP2 reply type. This is what
-  the Beta rating rests on.
+- `e2e_test.rs` — six `redis-rs` tests, one per RESP2 reply type.
+- `real_client_test.rs` — the real `redis-cli` binary, seven commands on one
+  connection, asserted as one ordered list of rendered replies. Hard-fails when
+  the binary is missing. Together with `e2e_test.rs` this is what the Beta rating
+  rests on.
 - `resp_framing_test.rs` — CR/LF in a model-supplied simple string or error
   cannot split the frame, and `stop_server` ends an in-flight connection rather
   than just the listener. Zero LLM calls.

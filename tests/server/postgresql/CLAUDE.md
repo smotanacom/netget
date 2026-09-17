@@ -1,15 +1,49 @@
 # PostgreSQL Protocol E2E Tests
 
-Four files, all declared in `tests/server/postgresql/mod.rs`. The peer is always
-`tokio-postgres` — an independent implementation of the wire protocol, not the
-`pgwire` crate the server frames with, so nothing here is circular.
+Five files, all declared in `tests/server/postgresql/mod.rs`. **Two** peers, and
+neither is the `pgwire` crate the server frames with, so nothing here is
+circular: `tokio-postgres` (Rust) and `psql` 14 / libpq (C).
 
-| File | What it proves | LLM calls |
-|---|---|---|
-| `test.rs` | Four simple-query cases through the mock-model harness | 8 |
-| `extended_query_test.rs` | Parse/Describe/Bind/Execute really works | 0 |
-| `decoder_panic_test.rs` | A pgwire panic is contained; counters move | 0 |
-| `llm_failure_test.rs` | The SQLSTATE a driver sees when the backend fails | 1 |
+| File | Peer | What it proves | LLM calls |
+|---|---|---|---|
+| `test.rs` | tokio-postgres | Four simple-query cases through the mock-model harness | 8 |
+| `extended_query_test.rs` | tokio-postgres | Parse/Describe/Bind/Execute really works | 0 |
+| `decoder_panic_test.rs` | raw socket | A pgwire panic is contained; counters move | 0 |
+| `llm_failure_test.rs` | tokio-postgres | The SQLSTATE a driver sees when the backend fails | 1 |
+| `real_client_test.rs` | **psql / libpq** | A real session, asserted on what psql printed | 4 |
+
+## The second client, and what it is for
+
+One client can agree with one bug. `real_client_test.rs` exists because
+tokio-postgres was the only peer this server had ever faced, and a rating resting
+on one client rests on that client's leniency.
+
+**What psql adds over tokio-postgres:**
+
+- **The SSLRequest negotiation.** libpq defaults to `sslmode=prefer`, so psql
+  opens every connection by asking for TLS and expecting a single `N` byte back
+  before it sends the StartupMessage. `NoTls` skips that exchange entirely, so no
+  test here had ever driven it.
+- **The rendered result rather than the deserialised one.** The assertions are on
+  the bytes a human sees: `t`/`f` for booleans, a real NULL distinguished from an
+  empty string by `\pset null`, and the exact CSV lines in order. A
+  column-count or column-order mistake fails as a wrong line, not a wrong count.
+- **The SQLSTATE.** `\set VERBOSITY verbose` makes psql print the `C` field of
+  the `ErrorResponse`, so the code the model chose is read off the wire.
+
+**What it does not add:** psql 14 sends every statement as a simple `Query`
+(`\bind` arrived in psql 16), so the extended protocol and the binary result
+format are still proven by tokio-postgres and by nothing else. The two clients
+are complementary rather than overlapping, which is the point.
+
+**On first contact psql completed a session with no server change required** —
+the simple-query path, the SSLRequest negotiation, NULL, booleans, floats, the
+command tag and the SQLSTATE all behaved. `sslmode=require` is correctly refused
+(`server does not support SSL, but SSL was required`), which is the honest
+outcome for a server that implements no TLS. The test was nevertheless verified
+non-vacuous by breaking `encode_value` to send `Some("")` where a JSON `null`
+arrives: psql then printed `2,bob,f,` and `3,,t,0.25` and the test failed naming
+the missing `<NULL>`.
 
 ## Running
 
@@ -74,7 +108,11 @@ rather than answering with an empty result set.
 
 `test.rs`: 4 tests × (1 startup + 1 query) = **8 calls**.
 `llm_failure_test.rs`: **1 call** (the startup; the query call is answered 500 on
-purpose). Total **9**, under the ~10 guideline.
+purpose).
+`real_client_test.rs`: **4 calls** — 1 startup plus 3 statements, all answered by
+one `respond_with_actions_from_event` rule that branches on the query. Two
+sessions share the server, so the startup handshake runs twice for one startup
+call.
 
 `extended_query_test.rs` and `decoder_panic_test.rs` cost **0** — they neither
 start a netget subprocess nor reach a model.
@@ -104,6 +142,6 @@ log gets the error.
 - **`COPY`, `LISTEN`/`NOTIFY`, cursors/`FETCH`, arrays and composite types.**
 - **Multi-statement simple queries** return a single response, not one per
   statement.
-- **psql, psycopg or any other real client binary.** tokio-postgres is a genuine
-  third-party implementation and is what the rating rests on; a
-  skip-when-missing gate around a binary would not be evidence anyway.
+- **psycopg, or any client that binds real parameters.** `real_client_test.rs`
+  covers psql; psycopg in a binary mode would additionally drive the extended
+  path from a non-Rust client, which nothing here does.

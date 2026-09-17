@@ -1,10 +1,11 @@
 # Redis Protocol E2E Tests
 
-Four files, all declared in `tests/server/redis/mod.rs`.
+Five files, all declared in `tests/server/redis/mod.rs`.
 
 | File | Tests | What it proves | LLM calls |
 |---|---|---|---|
 | `e2e_test.rs` | 6 | Every RESP2 reply type, through `redis-rs` | 13 |
+| `real_client_test.rs` | 1 | A whole session through the real `redis-cli` binary | 8 |
 | `resp_framing_test.rs` | 3 | Model output cannot split a frame; `stop_server` stops sessions | 0 |
 | `llm_failure_test.rs` | 1 | The RESP error a client sees when the backend fails | 1 |
 | `peer_inject_test.rs` | 1 | Dashboard injection reaches the socket | 0 |
@@ -40,12 +41,54 @@ None is `#[ignore]`d and none skips when something is missing — redis-rs is
 compiled in, so there is no binary to be absent. `llm_failure_test.rs` also reads
 its assertion back through redis-rs.
 
+### The second client, and what it is for
+
+One client can agree with one bug, and redis-rs converts a reply into the Rust
+type the *test* asked for — so a test asking for `String` cannot tell a bulk
+string from a simple string. `real_client_test.rs` drives **redis-cli**, the C
+client shipped with the server (the binary on this machine is `valkey-cli`
+9.1.2, the redis-cli-compatible fork), which shares no code with redis-rs.
+
+It sends seven commands on one connection — `PING`, `SET`, `GET`, `INCR`,
+`KEYS *`, a `GET` of a missing key, and a command answered with an error — and
+asserts the whole session as **one ordered list** of what `--no-raw` printed:
+
+```
+PONG
+OK
+"hello"
+(integer) 7
+1) "greeting"
+2) "hits"
+(nil)
+(error) WRONGTYPE Operation against a key holding the wrong kind of value
+```
+
+Two things that gives which redis-rs does not. The rendering is the type read off
+the wire: a quoted bulk string is distinguishable from the bare simple string
+above it, `(nil)` from a zero-length bulk string, `(integer) 7` from a bulk
+string of `"7"`. And because it is one ordered list, a reply landing against the
+wrong command fails as a mismatched line rather than passing as a same-typed
+value — the desynchronisation `resp_framing_test.rs` guards the *cause* of.
+
+`redis-cli` reading commands from a pipe sends nothing of its own: no
+`COMMAND DOCS`, no `HELLO`. Every LLM call the mock counts is a command the test
+wrote. (Interactively it does send `COMMAND DOCS`, which is why the test does not
+run it on a tty.)
+
+**On first contact redis-cli completed a session with no server change
+required** — every RESP2 reply type rendered correctly. The test was nevertheless
+verified non-vacuous by breaking `encode_null` to emit `$0\r\n\r\n`: redis-cli
+then printed `""` where `(nil)` belongs, and the test failed on that line.
+
 ## LLM call budget
 
 `e2e_test.rs`: 6 servers × 1 startup + 7 command calls = **13**. That is over the
 ~10 guideline, and the honest reason is that each test covers a distinct RESP2
-encoding and consolidating them would make a failure harder to localise. The
-other three files cost **1** between them.
+encoding and consolidating them would make a failure harder to localise.
+`real_client_test.rs`: 1 startup + 7 commands = **8**, all answered by one
+`respond_with_actions_from_event` rule that branches on the command. The other
+three files cost **1** between them.
 
 `resp_framing_test.rs` and `peer_inject_test.rs` build their servers directly
 through `ServerForm` with a `*` static handler and point at an unreachable
@@ -85,10 +128,8 @@ right.
 
 ## Known limitations of the suite
 
-- **`redis-cli` is not driven anywhere.** redis-rs is a genuine third-party
-  implementation and is what the rating rests on; a skip-when-missing gate around
-  a binary would not be evidence anyway.
 - **RESP3 is not tested** because the server does not implement it (no `HELLO 3`).
+  Neither client sends `HELLO 3`.
 - **Inline commands** (`PING\r\n` typed into `nc`) are not tested; only RESP
   arrays decode, and both redis-cli and redis-rs always send arrays.
 - **Pipelining** — the read loop processes several frames from one read in order,
