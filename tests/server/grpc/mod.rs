@@ -4,3 +4,5 @@
 pub mod e2e_test;
 #[cfg(all(test, feature = "grpc"))]
 pub mod llm_failure_test;
+#[cfg(all(test, feature = "grpc"))]
+mod real_client_test;

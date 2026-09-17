@@ -219,7 +219,18 @@ impl Protocol for LldpProtocol {
                  TLVs of a real-world Extreme Summit300-48 capture. \
                  tests/server/lldp/e2e_test.rs drives the full event -> handler/LLM -> frame \
                  path over the UDP test transport in-process, including the silence case. \
-                 Nothing has ever run the pcap transport.",
+                 Nothing has ever run the pcap transport. \
+                 NO THIRD-PARTY PEER, and this was investigated rather than assumed \
+                 (September 2026): `lldpcli` is installed on this machine and CANNOT be \
+                 pointed at NetGet. It is not an LLDP speaker at all — lldpcli(8) is the \
+                 control program for a local `lldpd` daemon and reaches it over the unix \
+                 socket /opt/homebrew/var/run/lldpd.socket, which is its only transport (-u \
+                 changes the socket path; there is no host or port option, because there is no \
+                 wire protocol on that side). The real peer would have to be `lldpd` itself, \
+                 which needs root, a real Ethernet interface and NetGet's libpcap transport — \
+                 and a test needing root could only be #[ignore]d or skip-gated, neither of \
+                 which is evidence. See src/server/lldp/CLAUDE.md for the feth-pair experiment \
+                 that would earn Beta.",
             )
             .notes(
                 "PROVEN: the TLV codec, against literal IEEE 802.1AB-2016 byte layouts and a \

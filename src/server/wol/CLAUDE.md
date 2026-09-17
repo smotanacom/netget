@@ -170,22 +170,34 @@ another port to bind.
 durable record is the server's access log entry, which already contains the action verbatim and
 is readable with `list_access_logs` / `get_access_log`.
 
-## Why `Experimental`
+## Why `Experimental` — and why a real sender did NOT change it
 
-The magic-packet format is small enough to validate exhaustively against literal bytes, and
-that is done. What is missing is the only evidence that would justify `Beta`: **a packet
-produced by a third-party sender.** No `wakeonlan`, `etherwake`, `ether-wake` or `wol` binary is
-installed on this machine, the Python `wakeonlan` module is absent, and adding a Rust WoL crate
-would mean editing `Cargo.toml`. So every packet in the test suite is *this repository reading
-the specification for itself* — an independent reading, not an independent implementation. That
-is exactly the `dhcp` situation the root `CLAUDE.md` describes, and it is `Experimental`, not
-`Beta`.
+This section used to say the one missing thing was "a packet produced by a third-party sender",
+and that installing `wakeonlan` was a cheap path to `Beta`. **The first half is now done and the
+conclusion was wrong.**
 
-Promoting it is cheap and the path is specific: install `wakeonlan` (or `etherwake`), point it
-at `127.0.0.1` on a high port, and assert the decode — in a test that **hard-fails when the
-binary is missing**, the way `npm`'s does. A `SKIP: … is not installed` that returns `Ok(())`
-would leave the rating resting on nothing, which the root `CLAUDE.md` lists as its own
-near-miss category.
+`wakeonlan` 0.50 is installed, and `tests/server/wol/real_client_test.rs` drives it: it
+hard-fails when the binary is absent (the `npm` shape, not a `SKIP: … is not installed` that
+returns `Ok(())`), it is not `#[ignore]`d, and it asserts the server decoded the Perl script's
+own 102 bytes as `target_mac=00:11:22:33:44:55, transport=udp, sync_offset=0,
+password_length=0`. So the packets the decoder is judged on are no longer only ones this
+repository wrote for itself.
+
+**It is still `Experimental`, because Wake-on-LAN admits no session to be evidence of.** A magic
+packet is one datagram in one direction; the protocol defines no reply, and `wakeonlan` sends
+and exits without reading. So nothing this server produces is ever inspected by an independent
+implementation. That makes the new test a **codec test with a real generator**, not "works
+against real clients", and it cannot catch the failure that matters most here: *a decoder that
+is wrong by being too permissive passes every test in this directory, including this one.*
+
+It is worth being precise about why this is not the `rss` case, because the arguments sound
+alike. `rss` was promoted on "fetch-and-parse *is* the protocol, so an independent reader is the
+strongest evidence the protocol admits" — but there the independent implementation (`feed-rs`)
+was reading **NetGet's output**. Here the independent implementation writes NetGet's **input**.
+The direction is the whole difference, and it is the direction Beta is about.
+
+Also unproven: the `transport: "ethernet"` path has never seen a datagram produced by a real
+relay, only ones this repository assembled.
 
 Also unproven, and worth a human's eye before this goes past `Beta`: the `transport: "ethernet"`
 path has never seen a datagram produced by a real relay, only ones this repository assembled;

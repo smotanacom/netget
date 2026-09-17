@@ -119,11 +119,33 @@ impl Protocol for MercurialProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("Hand-rolled Mercurial HTTP wire protocol v1 on hyper")
             .llm_control("Capabilities, heads, branch map, bookmark namespaces")
-            .e2e_testing("HTTP-level requests; not verified against the hg client")
+            .e2e_testing(
+                "REAL THIRD-PARTY CLIENT, for the handshake only: the real `hg` 7.2.4 in \
+                 tests/server/mercurial/real_client_test.rs. NOT #[ignore]d and NOT skip-gated \
+                 — it FAILS, naming `brew install mercurial`, when hg is absent. \
+                 `hg debugcapabilities` runs Mercurial's own wire-protocol handshake \
+                 (httppeer.performhandshake), which requires the reply to carry \
+                 `Content-Type: application/mercurial-*` before it will treat us as a \
+                 repository at all — something no reqwest assertion in this tree checks. The \
+                 test also asserts, through hg's parser, that sanitize_capabilities STRIPPED \
+                 the lookup/known/batch/unbundle/pushkey the model asked for, since advertising \
+                 any of them makes hg issue a request this server 404s. \
+                 THIS IS NOT A BETA CASE and the reason is the openvpn precedent, not a missing \
+                 test: the server implements only the FRONT of the protocol, so no real hg \
+                 command that does work can complete. MEASURED: `hg id` aborts with 'remote \
+                 repository does not support the lookup capability' — and lookup CANNOT be \
+                 advertised, because sanitize_capabilities substitutes a hardcoded three-entry \
+                 list. `hg clone` dies one step later in discovery, where \
+                 setdiscovery.findcommonheads issues `known`, which is not capability-gated so \
+                 there is no way to opt out of being asked, and which this server 404s. \
+                 Everything else here is reqwest, which the root CLAUDE.md rules out on its own.",
+            )
             .notes(
                 "Read-only and metadata-only: getbundle always answers with an EMPTY \
                  changegroup, so a clone produces an empty repository. No changegroup \
-                 generation, no bundle2, no batch/known/lookup commands, no push.",
+                 generation, no bundle2, no batch/known/lookup commands, no push. A real `hg` \
+                 can complete the capabilities handshake and nothing beyond it: `hg id` needs \
+                 `lookup` and `hg clone` needs `known`, and neither is implemented.",
             )
             .max_inbound_bytes(crate::server::mercurial::MAX_REQUEST_BODY_BYTES)
             .build()

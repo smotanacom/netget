@@ -132,11 +132,34 @@ impl Protocol for GrpcProtocol {
                  gRPC status code on failure. The schema is fixed at startup and cannot be \
                  changed at runtime.",
             )
-            .e2e_testing("hand-framed HTTP/2 requests via reqwest in tests/server/grpc")
+            .e2e_testing(
+                "REAL THIRD-PARTY CLIENT for the ERROR path only: grpcurl 1.9.4 (grpc-go) in \
+                 tests/server/grpc/real_client_test.rs. That test is NOT #[ignore]d and NOT \
+                 skip-gated — it FAILS, naming `brew install grpcurl`, when grpcurl is absent — \
+                 and it asserts grpcurl decoded our NOT_FOUND code and grpc-message. \
+                 THE SUCCESS PATH IS BROKEN AGAINST REAL gRPC CLIENTS, measured 16 September \
+                 2026: grpcurl rejects EVERY successful unary RPC with `Internal: server closed \
+                 the stream without sending trailers`. gRPC requires the status of a response \
+                 that carried a message to arrive in an HTTP/2 TRAILERS frame; mod.rs writes \
+                 grpc-status into the INITIAL HEADERS and never emits trailers. A success has a \
+                 non-empty body, so Full::is_end_stream() is false and hyper sends HEADERS then \
+                 DATA and then ends the stream with nothing — which grpc-go refuses. An ERROR \
+                 has an empty body, is_end_stream() is true, and hyper emits one HEADERS with \
+                 END_STREAM, i.e. a valid Trailers-Only response, which is exactly why the \
+                 error path works and the success path does not. So NetGet can currently report \
+                 a FAILURE to a real gRPC client and cannot report a SUCCESS. The success test \
+                 is present and #[ignore]d BECAUSE IT FAILS; it describes correct behaviour, is \
+                 the regression test for the fix, and IS NOT EVIDENCE. Everything else in \
+                 tests/server/grpc is reqwest with http2_prior_knowledge, which does not \
+                 implement gRPC — it never looks for trailers, so it cannot see this bug.",
+            )
             .notes(
                 "Unary RPCs only - no client, server or bidirectional streaming. Server \
-                 reflection is NOT served, so grpcurl needs -proto or -protoset. Request \
-                 compression is rejected. bytes fields cross the action boundary as base64.",
+                 reflection is NOT served (tonic-reflection is a dependency and is referenced \
+                 nowhere in src/), so a reflection call gets 12 UNIMPLEMENTED and grpcurl needs \
+                 -proto or -protoset. Request compression is rejected. bytes fields cross the \
+                 action boundary as base64. KNOWN DEFECT: no HTTP/2 trailers are ever emitted, \
+                 so a real gRPC client cannot accept a successful response - see e2e_testing.",
             )
             .max_inbound_bytes(crate::server::grpc::MAX_REQUEST_BYTES)
             .build()

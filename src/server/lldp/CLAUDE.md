@@ -215,6 +215,28 @@ fields exactly as the model wrote them, and `lldpd`'s own advertisements arrive 
 promote on the codec tests alone — that is the mistake `wireguard` made, and the correction is
 recorded in the root `CLAUDE.md`.
 
+### `lldpcli` is installed, and it is NOT a way to do this
+
+Checked 16 September 2026, because "an LLDP client is on `PATH`" looks like the missing piece
+and is not. **`lldpcli` does not speak LLDP.** It is the control program for a local `lldpd`
+daemon and reaches it over a unix socket — `/opt/homebrew/var/run/lldpd.socket` — which is its
+*only* transport. Run with no daemon present it fails immediately:
+
+```text
+[WARN/control] unable to connect to socket /opt/homebrew/var/run/lldpd.socket: No such file or directory
+```
+
+`lldpcli(8)`'s synopsis is `lldpcli [-dv] [-u socket] [-f format] [-c file] [command ...]`:
+there is no host or port option, because there is no wire protocol on that side. Nothing can
+point it at a NetGet server.
+
+The real peer is still `lldpd` itself, on the other end of a `feth` pair, exactly as the recipe
+above describes — and that still needs root and still needs NetGet's never-executed pcap
+transport. A test requiring root could only be `#[ignore]`d or skip-gated, and the root
+`CLAUDE.md` disqualifies both as evidence. **So no LLDP test was written in that pass, on
+purpose**: contriving one against `lldpcli` would have produced something that looks like
+third-party evidence and is not.
+
 ## Text TLVs are screened, and asymmetrically
 
 An LLDP text TLV is an entry in somebody's neighbour table, copied verbatim into

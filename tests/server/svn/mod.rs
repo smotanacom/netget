@@ -6,3 +6,5 @@ mod peer_inject_test;
 
 #[cfg(all(test, feature = "svn"))]
 mod llm_failure_test;
+#[cfg(all(test, feature = "svn"))]
+mod real_client_test;
