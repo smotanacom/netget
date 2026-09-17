@@ -34,6 +34,119 @@ use tracing::{debug, error, info, trace, warn};
 /// is cost with no benefit.
 pub const MAX_SHELL_LINE_BYTES: usize = 64 * 1024;
 
+/// How long to wait for a peer's first byte after it connects.
+///
+/// Both ends send an identification string as soon as the TCP connection is up (RFC 4253 §4.2),
+/// so a peer that has connected and sent nothing has begun no session at all — which is the
+/// state an unauthenticated flood lives in. OpenSSH's own `LoginGraceTime` for *completing*
+/// authentication is 120 seconds; this is half that and applies only to producing a single byte,
+/// so it cannot close a peer `sshd` would keep.
+///
+/// Enforced by [`DeadlinedStream`] rather than by a `peek` before russh sees the socket,
+/// deliberately: SSH is the one protocol in this sweep where the *server* may legitimately speak
+/// first, and a `peek` would make the bound depend on the client speaking first, which the RFC
+/// does not require.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a session may do nothing at all once it is up.
+///
+/// **An interactive shell is legitimately silent for a long time**, and SSH has no keepalive
+/// that is on by default to sit above: OpenSSH's `ServerAliveInterval` and `ClientAliveInterval`
+/// both default to **0**, i.e. disabled. An hour is therefore the most aggressive bound that is
+/// defensible, and it is also what this server was already doing — russh's `inactivity_timeout`
+/// was set to 3600 here as an unexplained literal. It is now named, argued, and passed to *both*
+/// russh's config and [`DeadlinedStream`], so the two cannot drift apart.
+///
+/// The bound cannot fire during a model round-trip or a `manual` rule parked for a human: the
+/// reader's deadline is armed lazily, only while a read is pending with no bytes yet, and russh
+/// awaits a handler inside the arm that matched rather than polling the read alongside it. See
+/// `IdleTimeoutReader`'s own documentation — that lazy arming is the whole correctness argument,
+/// and is the TFTP live-transfer eviction read in reverse.
+const IDLE_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection costs a russh session with its own transport state, cipher buffers
+/// and per-channel echo buffers of up to [`MAX_SHELL_LINE_BYTES`], all before any password has
+/// been checked, so the cap is what turns those per-connection bounds into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// The exact line OpenSSH's `sshd` writes when it refuses a connection over `MaxStartups`, and
+/// it is legal SSH: RFC 4253 §4.2 lets a server send lines of data *before* its identification
+/// string precisely so it can say something to the user, and a client prints them. So `ssh`
+/// reports `Exceeded MaxStartups` rather than an unexplained reset.
+///
+/// One honest difference from `sshd`: this cap counts **every** connection, not only
+/// unauthenticated ones, so it is not literally MaxStartups. The text is chosen because it is
+/// the line SSH clients and their users already recognise for "this server is refusing new
+/// connections right now", which is exactly what happened.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"Exceeded MaxStartups\r\n";
+
+/// A `TcpStream` whose **reads** are bounded in time, with writes passed straight through.
+///
+/// russh owns the session loop once `run_stream` is called, so there is no `read()` of ours to
+/// wrap — the shape every other protocol in this sweep uses. `IdleTimeoutReader` exists for
+/// exactly that case; this type is the two-line adapter that lets russh, which wants one
+/// `AsyncRead + AsyncWrite`, take a reader with a deadline on it.
+struct DeadlinedStream {
+    reader: crate::server::accept_bounded::IdleTimeoutReader<
+        tokio::io::ReadHalf<tokio::net::TcpStream>,
+    >,
+    writer: tokio::io::WriteHalf<tokio::net::TcpStream>,
+}
+
+impl DeadlinedStream {
+    fn new(
+        stream: tokio::net::TcpStream,
+        first: std::time::Duration,
+        idle: std::time::Duration,
+    ) -> Self {
+        let (read_half, writer) = tokio::io::split(stream);
+        Self {
+            reader: crate::server::accept_bounded::IdleTimeoutReader::with_first(
+                read_half, first, idle,
+            ),
+            writer,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for DeadlinedStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for DeadlinedStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+    }
+}
+
 /// SSH server configuration
 #[derive(Clone, Debug)]
 pub struct SshServerConfig {
@@ -103,7 +216,9 @@ impl SshServer {
         let key_pair = generate_host_key()?;
 
         let russh_config = russh::server::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
+            // The same constant `DeadlinedStream` is built with, so russh's own view of an
+            // idle session and ours cannot drift apart.
+            inactivity_timeout: Some(IDLE_SESSION_TIMEOUT),
             auth_rejection_time: std::time::Duration::from_secs(3),
             auth_rejection_time_initial: Some(std::time::Duration::from_secs(0)),
             keys: vec![key_pair],
@@ -131,10 +246,19 @@ impl SshServer {
 
             // Counter for connection IDs
             let mut connection_counter = 0u64;
+            let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
 
             loop {
-                match listener.accept().await {
-                    Ok((tcp_stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "SSH",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((tcp_stream, peer_addr, permit)) => {
                         connection_counter += 1;
                         Log::new(Some(&status_tx)).info(format!(
                             "SSH: Accepted TCP connection #{} from {}",
@@ -205,8 +329,24 @@ impl SshServer {
                         let task_owner = app_state.clone();
                         let ssh_connection = async move {
                             {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the peer is still here, which
+                                // silently un-caps the server.
+                                let _permit = permit;
+
                                 Log::new(Some(&status_tx_clone))
                                     .debug(format!("SSH: Starting SSH protocol for {}", peer_addr));
+
+                                // russh owns every read from here on, so the deadline goes on
+                                // the stream rather than around a `read()` of ours. It is armed
+                                // lazily — only while a read is pending with no bytes — so a
+                                // model round-trip, or a `manual` rule parked for a human, runs
+                                // with no clock against it.
+                                let tcp_stream = DeadlinedStream::new(
+                                    tcp_stream,
+                                    FIRST_BYTE_READ_TIMEOUT,
+                                    IDLE_SESSION_TIMEOUT,
+                                );
 
                                 match russh::server::run_stream(config_clone, tcp_stream, handler)
                                     .await
