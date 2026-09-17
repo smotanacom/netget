@@ -86,6 +86,33 @@ through `http_body_util::Limited` at 1 MiB and refused with `413` beyond that. A
 plain `collect()` let one unauthenticated client grow the process by whatever it
 cared to send.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry
+forever, pre-authentication, on a server that would happily accept a hundred more. It now
+declares both halves; the constants and the reasoning live beside them in
+`src/server/mercurial/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | The wire protocol rides on HTTP, which is client-speaks-first, so a peer that has sent nothing has begun no command. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* commands, not a bound on a transfer. An `hg clone` issues `capabilities`, `heads`, `branchmap`, `listkeys` and `getbundle` on one keep-alive connection, and each answer is a `Full<Bytes>` built before the response is returned, so a slow reader is draining bytes rather than idling. hg sets no keep-alive interval of its own. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`** — the wire protocol here *is* HTTP, so hg reports the status rather than an unexplained reset. |
+
+**The deadline bounds the silence, not the transfer.** hyper owns every read once
+`serve_connection` starts and keeps polling for frames *while a command is being answered*, so a
+deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog
+over `ConnectionActivity` instead, which reports a connection with a command in flight as not
+idle at all — so an LLM round-trip, or a `manual` rule parked for a human
+(`src/state/intercepts.rs`, 300s by default), can never close the connection it is an answer for.
+
+`tests/server/mercurial/connection_bounds_test.rs` drives both halves from the wire: a peer that
+says nothing is closed at the bound, and a peer that speaks is still served 38 seconds later.
+Removing the `tokio::time::timeout` around the `peek` makes the first test hang for its whole
+70-second window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either
+bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Not implemented
 
 Push (`unbundle`, `pushkey`), any non-empty changegroup, bundle2, stream clones,
