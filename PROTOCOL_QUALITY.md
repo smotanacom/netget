@@ -821,6 +821,34 @@ The suite is the evidence. Where it lies, the ratings lie.
   verified them once. Schedule it: every protocol's two docs re-read against source every
   quarter, with the drift recorded. *Effort:* L, recurring.
 
+  **A pass ran 16 September 2026 and the drift it found all ran in one direction: the docs
+  understated the code.** `imap`'s evidence field described a hand-written prober where
+  async-imap had been driving eleven tests for months; `ntp`'s called an asserting suite a
+  smoke test; `http`'s said connection tasks are untracked beside three `spawn_server_task`
+  call sites; the root file's ratchet table listed baselines of 6, 20 and 18 that were all
+  zero. **Understating is the dangerous direction** — it tells the next person to build around
+  an absence that is not there.
+
+  One claim ran the other way and is the one that matters: `ldap` cited "the ldapsearch/ldapadd
+  command-line tools" as evidence, and nothing asserting drives them. `ldapsearch` appears only
+  in `tests/eval/`, the real-model harness, which skips unless `NETGET_USE_OLLAMA=1` and
+  reports rather than asserts. **An eval probe is not maturity evidence**, and it is the
+  easiest thing in this tree to mistake for one.
+
+  **Do not try to mechanise this by matching names in the prose — it was tried and it does not
+  work.** A scan comparing binaries named in each `e2e_testing` string against the peers
+  `scripts/beta_evidence_table.py` finds in the tests produces exactly two hits on the current
+  tree, and **both are false positives**: `http` names `mysql` while *discussing* the three
+  protocols a second client caught, and `ntp` names `sntp` and `ntpdate` while explaining that
+  neither can be pointed at an ephemeral port. A field that argues about a client reads
+  identically to one that claims it. Shipping a check with a 100% false-positive rate is worse
+  than shipping none, because it trains people to edit the baseline rather than the code — the
+  same reason the startup-param scan uses the conservative rule.
+
+  What *is* mechanical is already built and now blocking: `beta_evidence_table.py --check`
+  reads what the tests drive rather than what the docs say, which is the right direction to
+  measure in.
+
 - [x] **Correct `CLAUDE.md` on the two counts this file measured**: command-channel adoption is
   99 clients; the panic hook does not log. *Effort:* S.
 
