@@ -80,14 +80,26 @@ enum Reason {
     /// socket to a loopback backend — so the handler's peer is the relay, not the client.
     AxumOwnsSocket,
     /// USB/IP: the "peer" is a USB host attaching a device, and the protocol's vocabulary is
-    /// URBs against endpoints, not a byte stream anything could be injected into.
+    /// URBs against endpoints, not a byte stream anything could be injected into. An
+    /// `ActionResult::Output` written to that socket is not a message the host can read; it is
+    /// garbage in the middle of a URB reply.
     ///
-    /// **No protocol carries this reason any more.** All six USB servers adopted a peer handle
-    /// in September 2026, and this ratchet is what said so — it failed asking for their six
-    /// lines to be deleted, which is the shrink-only half doing its job. The variant is kept
-    /// because the reasoning still holds for anything that speaks URBs rather than bytes, and
-    /// because deleting it would lose why the six were ever exempt.
-    #[allow(dead_code)]
+    /// **This doc comment claimed for a while that no protocol carried the reason any more,
+    /// because "all six USB servers adopted a peer handle in September 2026". They did not, and
+    /// none of them registers one today** — `grep -rn register_peer_channel src/server/usb/`
+    /// finds nothing. The six lines were deleted because this test asked for them to be, and it
+    /// asked for the wrong reason: `runs_tcp_accept_loop` matched only the fully-qualified
+    /// `accept_bounded::accept_bounded(`, so a server that imports the function and calls it
+    /// bare read as **not a TCP accept loop at all**. `the_baseline_only_shrinks` says
+    /// "now register a peer handle (**or** no longer run a TCP accept loop)", and whoever acted
+    /// on it took the first branch.
+    ///
+    /// Two lessons, and the second is the one that generalises. A source-reading check must
+    /// match every spelling of the thing — this is the third instance in one pass, after the TCP
+    /// bounds ratchet missing 60 of 92 servers and the hidden-protocol ratchet knowing only the
+    /// builder form of a declaration. And **an assertion message that offers two causes invites
+    /// the reader to pick the flattering one**; this one now names which cause applies to which
+    /// protocol.
     UsbIp,
     /// A WebSocket: the write side is a `SplitSink` behind a writer task, not an `AsyncWrite`.
     /// `peer_support` writes `ActionResult::Output` bytes straight to the socket, which for a
@@ -151,6 +163,18 @@ impl Reason {
 ///   watchdog aborts the task rather than sending a FATAL. The same absence of a seam is why
 ///   there is no write half to hand `peer_support`.
 const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
+    // Restored 16 September 2026. These six were deleted a day earlier on this test's own
+    // instruction, and the instruction was wrong: `runs_tcp_accept_loop` could not see a server
+    // that calls `accept_bounded` bare, so it reported them as no longer running an accept loop
+    // and `the_baseline_only_shrinks` asked for the lines to go. None of the six registers a
+    // peer handle — `grep -rn register_peer_channel src/server/usb/` finds nothing — so the
+    // exemption was real the whole time. See `Reason::UsbIp`.
+    ("usb/fido2", Reason::UsbIp),
+    ("usb/keyboard", Reason::UsbIp),
+    ("usb/mouse", Reason::UsbIp),
+    ("usb/msc", Reason::UsbIp),
+    ("usb/serial", Reason::UsbIp),
+    ("usb/smartcard", Reason::UsbIp),
     ("couchdb", Reason::HyperOwnsSocket),
     ("doh", Reason::HyperOwnsSocket),
     ("dot", Reason::Reviewed),
@@ -274,8 +298,19 @@ impl ServerSource {
     /// catches a server whose listener came from a helper — which is 62 of the 92, including
     /// both protocols the project `CLAUDE.md` cites as having a peer handle.
     fn runs_tcp_accept_loop(&self) -> bool {
+        // **Both spellings of the bounded accept.** Matching only the fully-qualified
+        // `accept_bounded::accept_bounded(` reported eleven servers — the whole registry and
+        // cloud family — as no longer running a TCP accept loop the moment they adopted it,
+        // because they `use crate::server::accept_bounded::accept_bounded` and then call it
+        // bare. The failure was loud here only because this baseline is shrink-only; the
+        // equivalent miss in a "must have a bound" check would have exempted them silently.
+        //
+        // This is the third time in one pass that a source-reading check matched one spelling
+        // of a thing rather than the thing: see `tests/tcp_server_bounds_ratchet_test.rs`, whose
+        // derivation missed 60 of 92 servers, and `no_protocol_is_hidden_from_the_model_test`,
+        // which knew only the builder form of a metadata declaration.
         let matched = self.has("TcpListener")
-            || self.has("accept_bounded::accept_bounded(")
+            || self.has("accept_bounded(")
             || self.has("listener.accept().await");
         if !matched {
             return false;
@@ -347,29 +382,48 @@ fn every_tcp_accept_loop_server_has_a_peer_handle_or_a_reason() {
 #[test]
 fn the_baseline_only_shrinks() {
     let servers = load_servers();
-    let mut stale = Vec::new();
+    let mut adopted = Vec::new();
+    let mut not_a_tcp_server = Vec::new();
     let mut vanished = Vec::new();
 
     for (name, _) in NO_PEER_HANDLE_BASELINE {
         match servers.iter().find(|s| s.name == *name) {
             None => vanished.push(*name),
             Some(server) => {
+                // **The two causes are reported separately, and that is not cosmetic.** This
+                // used to be one list under the message "now register a peer handle (or no
+                // longer run a TCP accept loop)". On 15 September 2026 the six USB servers
+                // appeared in it because `runs_tcp_accept_loop` could not see a bare
+                // `accept_bounded(` call — the second cause — and their lines were deleted
+                // under a commit message saying they had "adopted a peer handle", the first.
+                // None of them had. A message that offers two causes invites the reader to pick
+                // the flattering one.
                 if server.registers_peer_handle() {
-                    stale.push(*name);
+                    adopted.push(*name);
                 } else if !server.runs_tcp_accept_loop() {
-                    // No longer a TCP accept loop either: still an entry that has stopped
-                    // describing anything.
-                    stale.push(*name);
+                    not_a_tcp_server.push(*name);
                 }
             }
         }
     }
 
     assert!(
-        stale.is_empty(),
-        "these protocols now register a peer handle (or no longer run a TCP accept loop) but are\n\
-         still listed in NO_PEER_HANDLE_BASELINE — delete their lines:\n\n  {}",
-        stale.join("\n  "),
+        adopted.is_empty(),
+        "these protocols now REGISTER A PEER HANDLE but are still listed in\n\
+         NO_PEER_HANDLE_BASELINE — delete their lines:\n\n  {}",
+        adopted.join("\n  "),
+    );
+    assert!(
+        not_a_tcp_server.is_empty(),
+        "these protocols are listed in NO_PEER_HANDLE_BASELINE and NO LONGER READ AS A TCP\n\
+         ACCEPT LOOP. That is NOT the same as adopting a peer handle, and the difference has\n\
+         already cost one wrong deletion. Check which it is before touching the baseline:\n\n  \
+         {}\n\n\
+         If the protocol really stopped listening on TCP, delete the line. If it only changed\n\
+         HOW it accepts — a new helper, a different spelling of the call — then the detector in\n\
+         `runs_tcp_accept_loop` is what needs fixing, and deleting the line would silently drop\n\
+         a protocol out of this ratchet's coverage.",
+        not_a_tcp_server.join("\n  "),
     );
     assert!(
         vanished.is_empty(),
