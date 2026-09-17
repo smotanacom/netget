@@ -48,6 +48,52 @@ use serde_json::json;
 #[cfg(feature = "grpc")]
 pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
+/// How long to wait for a peer's first byte after it connects.
+///
+/// HTTP/2 is client-speaks-first — the connection preface and the client's SETTINGS frame are
+/// the first thing on the wire and the server says nothing before them — and every gRPC client
+/// sends them inside its dial path. A peer that has connected and sent nothing has begun no
+/// connection at all, which is the state an unauthenticated flood lives in. Enforced with
+/// `TcpStream::peek` *before* the socket reaches hyper, so the preface is still there for hyper
+/// afterwards.
+#[cfg(feature = "grpc")]
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connection may do nothing at all once it is up.
+///
+/// gRPC's own keepalive is **off by default** on both sides (grpc-go's
+/// `keepalive.ClientParameters.Time` is unset, and its server enforcement policy refuses pings
+/// more often than five minutes), so there is no interval to copy. Fifteen minutes is safe
+/// because of a property of *this* server rather than of gRPC: it is unary-only — there is no
+/// server-streaming route at all, reflection included — so no legitimate request is held open
+/// waiting for something to happen, and a connection with no RPC for fifteen minutes is a client
+/// that has gone away. A request still being answered is not silence: the watchdog reads
+/// `ConnectionActivity`, which reports a busy connection as not idle at all, so an LLM
+/// round-trip or a `manual` rule parked for a human cannot close the connection it is an answer
+/// for.
+#[cfg(feature = "grpc")]
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may buffer a request of up to [`MAX_REQUEST_BYTES`] and holds an
+/// HTTP/2 session with its own flow-control windows, so the cap is what turns that
+/// per-connection bound into a total one.
+#[cfg(feature = "grpc")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// HTTP/1.1 `503 Service Unavailable` with a `Retry-After`, deliberately in the older protocol —
+/// the same choice `src/server/etcd/mod.rs` makes and for the same reason. A refused peer has
+/// not sent the HTTP/2 preface yet, so nothing has been negotiated, and a GOAWAY would have to
+/// follow a SETTINGS exchange this server is declining to perform. A gRPC client reports a
+/// transport failure either way, but the bytes on the wire now say why, and `curl` or a human
+/// can read it.
+#[cfg(feature = "grpc")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 /// gRPC status codes (`google.rpc.Code`) this server produces.
 ///
 /// `grpc_error`'s documented `code` string maps onto these. It previously did not map onto
@@ -338,84 +384,162 @@ impl GrpcServer {
         // Spawn server loop
         let service = Arc::new(dynamic_service);
         let task_registrar = app_state.clone();
-        let accept_handle =
-            tokio::spawn(async move {
-                loop {
-                    match listener.accept().await {
-                        Ok((stream, remote_addr)) => {
-                            let connection_id = crate::server::connection::ConnectionId::new(
-                                service.app_state.get_next_unified_id().await,
-                            );
-                            debug!("gRPC connection {} from {}", connection_id, remote_addr);
-                            Log::new(Some(&status_tx))
-                                .debug(format!("gRPC connection from {}", remote_addr));
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        let accept_handle = tokio::spawn(async move {
+            loop {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "gRPC",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
+                        let connection_id = crate::server::connection::ConnectionId::new(
+                            service.app_state.get_next_unified_id().await,
+                        );
+                        debug!("gRPC connection {} from {}", connection_id, remote_addr);
+                        Log::new(Some(&status_tx))
+                            .debug(format!("gRPC connection from {}", remote_addr));
 
-                            // Add connection to server state
-                            use crate::state::server::{
-                                ConnectionState as ServerConnectionState, ConnectionStatus,
-                                ProtocolConnectionInfo,
-                            };
-                            let now = crate::utils::clock::Instant::now();
-                            let conn_state = ServerConnectionState {
-                                id: connection_id,
-                                remote_addr,
-                                local_addr: actual_addr,
-                                bytes_sent: 0,
-                                bytes_received: 0,
-                                packets_sent: 0,
-                                packets_received: 0,
-                                last_activity: now,
-                                status: ConnectionStatus::Active,
-                                status_changed_at: now,
-                                protocol_info: ProtocolConnectionInfo::empty(),
-                            };
-                            app_state
-                                .add_connection_to_server(server_id, conn_state)
-                                .await;
-                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        // Add connection to server state
+                        use crate::state::server::{
+                            ConnectionState as ServerConnectionState, ConnectionStatus,
+                            ProtocolConnectionInfo,
+                        };
+                        let now = crate::utils::clock::Instant::now();
+                        let conn_state = ServerConnectionState {
+                            id: connection_id,
+                            remote_addr,
+                            local_addr: actual_addr,
+                            bytes_sent: 0,
+                            bytes_received: 0,
+                            packets_sent: 0,
+                            packets_received: 0,
+                            last_activity: now,
+                            status: ConnectionStatus::Active,
+                            status_changed_at: now,
+                            protocol_info: ProtocolConnectionInfo::empty(),
+                        };
+                        app_state
+                            .add_connection_to_server(server_id, conn_state)
+                            .await;
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
 
-                            let service_clone = service.clone();
-                            let app_state_clone = app_state.clone();
-                            let status_tx_clone = status_tx.clone();
+                        let service_clone = service.clone();
+                        let app_state_clone = app_state.clone();
+                        let status_tx_clone = status_tx.clone();
 
-                            // Spawn connection handler
-                            // Tracked, not detached: stop_server must abort this task too.
-                            let task_owner = app_state.clone();
-                            task_owner.spawn_server_task(server_id, async move {
-                            let io = hyper_util::rt::TokioIo::new(stream);
+                        // Spawn connection handler
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early releases
+                                // the slot while the peer is still here, which silently un-caps
+                                // the server.
+                                let _permit = permit;
 
-                            // Create service function for this connection
-                            let grpc_service = hyper::service::service_fn(move |req| {
-                                let service = service_clone.clone();
-                                let conn_id = connection_id;
-                                async move { service.handle_grpc_request(req, conn_id).await }
-                            });
+                                // First-byte bound, before hyper sees the socket. hyper owns every
+                                // read once `serve_connection` starts and keeps polling the
+                                // connection for frames *while a request is being answered*, so a
+                                // deadline on reads would fire in the middle of an LLM round-trip.
+                                // `peek` waits for data without consuming it, so the HTTP/2 preface
+                                // is still there for hyper afterwards.
+                                match tokio::time::timeout(
+                                    FIRST_BYTE_READ_TIMEOUT,
+                                    stream.peek(&mut [0u8; 1]),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(0)) | Ok(Err(_)) => {
+                                        app_state_clone
+                                            .remove_connection_from_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                    Ok(Ok(_)) => {}
+                                    Err(_) => {
+                                        Log::new(Some(&status_tx_clone)).debug(format!(
+                                        "gRPC peer {} sent nothing for {}s; closing before the \
+                                         HTTP/2 preface",
+                                        remote_addr,
+                                        FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                    ));
+                                        app_state_clone
+                                            .remove_connection_from_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                }
 
-                            // Serve HTTP/2 connection
-                            if let Err(e) = hyper::server::conn::http2::Builder::new(
-                                hyper_util::rt::TokioExecutor::new(),
-                            )
-                            .serve_connection(io, grpc_service)
-                            .await
-                            {
-                                Log::new(Some(&status_tx_clone))
-                                    .debug(format!("gRPC connection error: {}", e));
-                            }
+                                let io = hyper_util::rt::TokioIo::new(stream);
 
-                            // Clean up connection
-                            app_state_clone
-                                .remove_connection_from_server(server_id, connection_id)
-                                .await;
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        }).await;
-                        }
-                        Err(e) => {
-                            console_error!(status_tx, "Failed to accept gRPC connection: {}", e);
-                            break;
-                        }
+                                // Tracks whether this connection is answering anything. A request
+                                // waiting on the model, or parked for a human at the dashboard,
+                                // holds the count above zero, so the idle watchdog below cannot
+                                // close the connection the answer belongs to however long it takes
+                                // — only genuine silence counts.
+                                let activity = Arc::new(
+                                    crate::server::accept_bounded::ConnectionActivity::new(),
+                                );
+                                let activity_for_service = Arc::clone(&activity);
+
+                                // Create service function for this connection
+                                let grpc_service = hyper::service::service_fn(move |req| {
+                                    let service = service_clone.clone();
+                                    let conn_id = connection_id;
+                                    let activity = Arc::clone(&activity_for_service);
+                                    async move {
+                                        let _busy = activity.busy();
+                                        service.handle_grpc_request(req, conn_id).await
+                                    }
+                                });
+
+                                // Serve HTTP/2 connection
+                                let conn = hyper::server::conn::http2::Builder::new(
+                                    hyper_util::rt::TokioExecutor::new(),
+                                )
+                                .serve_connection(io, grpc_service);
+                                tokio::pin!(conn);
+                                tokio::select! {
+                                    result = &mut conn => {
+                                        if let Err(e) = result {
+                                            Log::new(Some(&status_tx_clone))
+                                                .debug(format!("gRPC connection error: {}", e));
+                                        }
+                                    }
+                                    _ = crate::server::accept_bounded::watch_idle(
+                                        Arc::clone(&activity),
+                                        IDLE_BETWEEN_REQUESTS_TIMEOUT,
+                                    ) => {
+                                        debug!(
+                                            "gRPC connection {} idle for {}s; closing",
+                                            connection_id,
+                                            IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                                        );
+                                    }
+                                }
+
+                                // Clean up connection
+                                app_state_clone
+                                    .remove_connection_from_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        console_error!(status_tx, "Failed to accept gRPC connection: {}", e);
+                        break;
                     }
                 }
-            });
+            }
+        });
 
         task_registrar
             .register_server_task(server_id, accept_handle)
