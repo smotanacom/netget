@@ -83,13 +83,27 @@ impl Protocol for RedisProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            // Beta: exercised against a real, independent client — redis-rs —
-            // covering RESP commands driven by the standard Rust client. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
+            // Beta: exercised against two independent clients that share no code with each
+            // other or with redis-protocol — redis-rs (Rust) and redis-cli (C). Not Stable:
+            // Stable additionally wants spec compliance and scripting support reviewed, which
+            // has not been done here.
             .state(DevelopmentState::Beta)
             .implementation("redis-protocol v6.0 (RESP2 parsing), manual RESP2 encoding")
             .llm_control("All Redis commands (GET, SET, INCR, etc.)")
-            .e2e_testing("redis-rs client")
+            .e2e_testing(
+                "Two independent clients. redis-rs (tests/server/redis/e2e_test.rs, \
+                 llm_failure_test.rs): one test per RESP2 reply type, each deserialised into \
+                 the Rust type the test asked for. redis-cli — the C client, valkey-cli here \
+                 (real_client_test.rs, hard-fails when the binary is absent): seven commands on \
+                 one connection, asserted as one ordered list of what --no-raw printed, so each \
+                 reply type is read off the wire rather than coerced (simple string, bulk \
+                 string quoted, (integer) n, a two-element multi-bulk, (nil) distinguished from \
+                 an empty bulk string, and (error) …) and a reply landing against the wrong \
+                 command fails as a mismatched line. \
+                 NOT proven: RESP3 (no HELLO 3 is implemented), inline commands, pipelining \
+                 (neither client sends two commands in one write), AUTH/SELECT/MULTI/pub-sub, \
+                 and TLS.",
+            )
             .notes("RESP2 only (no RESP3), no AUTH/SELECT/MULTI/pub-sub, no inline commands")
             .max_inbound_bytes(crate::server::redis::MAX_PENDING_FRAME_BYTES)
             .build()

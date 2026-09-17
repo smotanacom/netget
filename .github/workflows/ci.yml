@@ -281,7 +281,9 @@ jobs:
       #   mosquitto-clients - mqtt (mosquitto_pub / mosquitto_sub)
       #   npm               - npm
       #   openvpn           - openvpn
+      #   postgresql-client - postgresql (psql; libpq, deliberately NOT tokio-postgres)
       #   python3-pip       - pypi, and oci_registry's script handler
+      #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
       #   sipsak            - sip
       #   stuntman-client   - stun (provides `stunclient`; universe)
       #   tor               - tor_relay
@@ -291,8 +293,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
-            mosquitto-clients npm openvpn python3-pip sipsak stuntman-client tor \
-            wakeonlan
+            mosquitto-clients npm openvpn postgresql-client python3-pip redis-tools \
+            sipsak stuntman-client tor wakeonlan
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry

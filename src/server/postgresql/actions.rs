@@ -80,13 +80,28 @@ impl Protocol for PostgresqlProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            // Beta: exercised against a real, independent client — tokio-postgres —
-            // covering startup, simple and extended query protocol. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
+            // Beta: exercised against two independent clients that share no code with each
+            // other or with pgwire — tokio-postgres (Rust) and psql/libpq (C). Not Stable:
+            // Stable additionally wants spec compliance and scripting support reviewed, which
+            // has not been done here.
             .state(DevelopmentState::Beta)
             .implementation("pgwire v0.35 protocol library")
             .llm_control("Query responses (columns, rows, types)")
-            .e2e_testing("tokio-postgres client")
+            .e2e_testing(
+                "Two independent clients. tokio-postgres (tests/server/postgresql/test.rs, \
+                 extended_query_test.rs, llm_failure_test.rs): simple query, and \
+                 Parse/Bind/Describe/Execute with binary result columns decoded into real Rust \
+                 types. psql 14 / libpq (real_client_test.rs, hard-fails when the binary is \
+                 absent): the sslmode=prefer SSLRequest negotiation tokio-postgres+NoTls never \
+                 sends, the startup handshake, a four-column three-row SELECT asserted on the \
+                 exact text psql rendered (t/f booleans, a real NULL distinguished from an \
+                 empty string), a CommandComplete tag, and an ErrorResponse whose SQLSTATE psql \
+                 prints under VERBOSITY verbose. \
+                 NOT proven: psql 14 sends every statement as a simple Query (no \\bind), so the \
+                 extended protocol and binary formats rest on tokio-postgres alone; no client \
+                 here exercises authentication or TLS (neither is implemented), bound parameter \
+                 values, COPY, LISTEN/NOTIFY, cursors, or multi-statement simple queries.",
+            )
             .notes(
                 "No authentication, no TLS; simple and extended query protocols, text format only",
             )

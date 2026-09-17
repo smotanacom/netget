@@ -238,6 +238,24 @@ once these exist.
   now carry two clients. etcd went Experimental and back to Beta in a week; grpc went
   Experimental → Beta. The remaining single-client Betas are the rest of this item.
 
+  **16 September 2026 — `postgresql` and `redis` each have a second client, and neither found a
+  defect.** `psql` 14 / libpq against postgresql and `redis-cli` (valkey-cli 9.1.2) against redis
+  both completed a real session on first contact with no server change required —
+  `tests/server/postgresql/real_client_test.rs` and `tests/server/redis/real_client_test.rs`,
+  both hard-failing when the binary is absent. That is the honest outcome and it is worth
+  recording as loudly as a bug would be: the etcd/grpc result taught that a second client
+  *often* finds something, not that it always does.
+
+  Each test was verified non-vacuous by breaking the server and watching the real client's own
+  rendering change — postgresql's `encode_value` made to send `Some("")` for a JSON `null` (psql
+  printed `2,bob,f,` instead of `2,bob,f,<NULL>`), redis's `encode_null` made to emit
+  `$0\r\n\r\n` (redis-cli printed `""` instead of `(nil)`). What psql adds is the
+  `sslmode=prefer` SSLRequest exchange that `NoTls` skips and the rendered result rather than the
+  deserialised one; what redis-cli adds is the type read off the wire (`(nil)` vs `""`,
+  `(integer) 7` vs `"7"`) and a whole session asserted as one ordered list. Neither reaches
+  postgresql's extended query protocol — psql 14 has no `\bind` — so that still rests on
+  tokio-postgres alone.
+
 ## Tier 2 — resource bounds, swept and ratcheted
 
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
