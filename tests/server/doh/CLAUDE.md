@@ -291,3 +291,37 @@ Add test to measure:
 - [hickory-proto Documentation](https://docs.rs/hickory-proto/latest/hickory_proto/)
 - [reqwest Documentation](https://docs.rs/reqwest/latest/reqwest/)
 - [base64 Documentation](https://docs.rs/base64/latest/base64/)
+
+## The maturity evidence
+
+**State: Beta**, on **two** independent peers as of September 2026:
+
+| test | peer | what it proves |
+|---|---|---|
+| `tests/server/doh/real_client_test.rs` | `kdig` (Knot DNS 3.6, C) | a third-party resolver completes both RFC 8484 encodings, negotiating `h2` over ALPN |
+| `tests/server/doh/e2e_test.rs` | `reqwest` (hyper + rustls) | the HTTP/2 and TLS transport, the 200 status and Content-Type, a mixed-case media type with a charset parameter |
+
+Neither is `#[ignore]`d; the kdig test **fails** naming `brew install knot` rather than skipping.
+
+**The second one alone was half circular.** reqwest proves an HTTP server answers, not that the
+DNS on top is right — the root `CLAUDE.md` says exactly that about generic HTTP clients — and
+the DNS message is decoded with **hickory-proto, the codec this server encodes with**. ALPN was
+unproven for a related reason: that client uses `http2_prior_knowledge()`, which skips ALPN
+entirely, so the `h2` advertisement could have been anything.
+
+Both are now covered, and both were verified by breaking them:
+
+- Answering with a fixed transaction id instead of the client's → kdig discards the reply and
+  the test fails.
+- Advertising `http/1.1` instead of `h2` → the handshake fails with kdig's own alert,
+  `TLS, handshake failed (A TLS fatal alert has been received.)`.
+
+**Two things about driving kdig here, both of which cost a debugging cycle.** `+https` takes
+`[authority][/path]`, and the authority becomes the TLS SNI as well as the `:authority` header.
+An IP literal there is rejected by rustls outright, which surfaces as a fatal alert that looks
+exactly like a cipher or ALPN mismatch. A *name* there instead switches kdig to a validating
+profile, which a self-signed certificate cannot satisfy. Passing the path alone keeps the
+opportunistic profile, which is also what the DoT test relies on.
+
+**Unproven:** certificate validation of any kind, client auth, and record types beyond A.
+
