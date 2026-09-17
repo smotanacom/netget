@@ -963,7 +963,7 @@ after a long period when no CI job ran `cargo test` at all:
 
 | Job | Blocking | What it does |
 |---|---|---|
-| `lint` | yes | `cargo fmt --check`; `clippy -D correctness -D suspicious`. A full default clippy runs advisory-only — ~50 style/complexity warnings predate the gate |
+| `lint` | yes | `cargo fmt --check`; `clippy -D clippy::correctness -D clippy::suspicious` over the lib **and all test targets**. A full default clippy runs advisory-only — ~50 style/complexity warnings predate the gate |
 | `test` | yes | `cargo test` on `tcp,http,dns,udp,redis,mcp-stdio` |
 | `single-feature` | yes | `cargo check --tests` on `SINGLE_FEATURE_CORE` (24 features) **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
 | `single-feature-full` | nightly | The same check over all **133** features that build standalone (`SINGLE_FEATURE_CORE` + `SINGLE_FEATURE_REST`). Cron + `workflow_dispatch` only, never on a PR; the 30-minute runner timeout is why it is not blocking |
@@ -1080,6 +1080,26 @@ Use minimal features. `--all-features` compiles 50+ protocols and their dependen
 `--all-features` only for release validation.
 
 Kill stuck builds with `./cargo-isolated-kill.sh`, never `pkill cargo`.
+
+**Write the clippy lint groups qualified: `-D clippy::correctness`, not `-D correctness`.** The
+bare form is deprecated and rustc says so:
+
+```
+warning: lint name `correctness` is deprecated and may not have an effect in the future
+```
+
+"May not have an effect" is the part that matters — a local check written the bare way can go
+quiet without failing, and then a finding CI would block on reads as clean on the machine where
+the code was written. CI already uses the qualified form in both its clippy jobs; this file's own
+table did not, which is how several passes in this repository ran the deprecated one.
+
+```bash
+cargo clippy --no-default-features --features <set> --all-targets \
+    -- -D clippy::correctness -D clippy::suspicious
+```
+
+`--all-targets` is not optional either: without it the ~200 test files are outside the gate.
+
 
 ### Reclaiming disk: agent worktrees are where the space is, and pruning them has a trap
 
