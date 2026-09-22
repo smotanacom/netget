@@ -917,6 +917,31 @@ only number in this repository that says whether the model can drive the thing a
 
 Move items here with the date and the commit or PR that verified them.
 
+**22 September 2026 — the full sweep earned its keep: three failures, three real defects.**
+
+172 targets, 3926 passed, 3 failed. None was noise, and each failed in a different way that is
+worth keeping:
+
+- **`tcp` dropped the peer this server most often has.** The bounds sweep gave it a 30-second
+  deadline on a peer that has sent nothing, argued from generic TCP being client-speaks-first.
+  True of a stranger; false of the dashboard's own `[ + tcp client ]`, which connects, says
+  nothing and waits for a person to type. The default is now 300s — the window a `manual` rule
+  gives a human — and both bounds are declared startup parameters, because the right value is a
+  property of who is on the other end.
+- **A test waited for the wrong condition.** `coap`'s fail-closed test used `wait_for_any` on
+  two `decision=` tags and then asserted **both**, so the first tag satisfied the wait while the
+  second was still in flight. `wait_for_all` now exists beside it. The other 45 multi-needle
+  sites were checked: all wait on alternative spellings of one fact and assert with `||`, which
+  is what the any-variant is for.
+- **A ratchet fired on a protocol it had no business flagging** — see the hex-drift entries.
+
+**Two things about diagnosing the `tcp` one generalise.** It looked like flakiness and was not:
+the test takes ~38 seconds to drive the MCP surface, so it is *slow* rather than racy, and a
+slow test crosses a real deadline every time. **An isolation run and a baseline run were both
+needed** — isolation showed it was deterministic, and running it at the commit before the merge
+showed it was new. Either alone would have supported the wrong conclusion.
+
+
 **22 September 2026 — a fuzz target is the one test nothing else builds, and seventeen were in
 that position.**
 
