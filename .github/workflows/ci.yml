@@ -910,3 +910,71 @@ jobs:
       # cfg-gated ones - are the only files it never sees.
       - name: Check every .rs file is reachable from a target root
         run: ./.github/scripts/check-module-reachability.sh
+
+  # TEMPORARY PROBE - delete before merge.
+  probe:
+    name: PROBE registry-audit client environment
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: apt state
+        run: |
+          sudo apt-get update
+          echo "=== apt-cache policy ==="
+          apt-cache policy etcd-client libmemcached-tools maven || true
+
+      - name: install etcd-client + libmemcached-tools + maven
+        run: |
+          sudo apt-get install -y --no-install-recommends etcd-client libmemcached-tools maven
+
+      - name: etcdctl probe
+        run: |
+          echo "=== dpkg -L etcd-client ==="
+          dpkg -L etcd-client | grep -E 'bin/' || true
+          echo "=== which etcdctl ==="
+          command -v etcdctl || true
+          echo "=== etcdctl version ==="
+          set +e
+          etcdctl version; echo "exit=$?"
+          echo "=== etcdctl --version ==="
+          etcdctl --version; echo "exit=$?"
+          echo "=== ETCDCTL_API=3 etcdctl version ==="
+          ETCDCTL_API=3 etcdctl version; echo "exit=$?"
+          echo "=== ETCDCTL_API=2 etcdctl version ==="
+          ETCDCTL_API=2 etcdctl version; echo "exit=$?"
+          echo "=== etcdctl --help (head) ==="
+          etcdctl --help 2>&1 | head -40; echo "exit=$?"
+          set -e
+
+      - name: libmemcached probe
+        run: |
+          echo "=== dpkg -L libmemcached-tools ==="
+          dpkg -L libmemcached-tools
+          echo "=== apt-file style: what provides memstat ==="
+          ls -l /usr/bin/mem* 2>&1 || true
+          echo "=== packages matching memcache ==="
+          apt-cache search memcache || true
+
+      - name: stunserver build probe
+        run: |
+          set -x
+          sudo apt-get install -y --no-install-recommends libboost-dev libssl-dev g++ make
+          git clone --depth 1 --branch version1.2.13 https://github.com/jselbie/stunserver.git /tmp/stunserver
+          cd /tmp/stunserver
+          make -j"$(nproc)" 2>&1 | tail -60 || echo "MAKE FAILED rc=$?"
+          echo "=== tree ==="
+          find /tmp/stunserver -maxdepth 2 -type f -perm -u+x -name 'stun*' || true
+          ls -l /tmp/stunserver | head -40
+
+      - name: maven warm-up probe
+        run: |
+          set -x
+          mvn --version
+          ls -la "$HOME/.m2" || echo "no ~/.m2"
+          mvn -B dependency:get -Dartifact=junit:junit:4.13.2 2>&1 | tail -20
+          echo "=== .m2 plugins ==="
+          ls "$HOME/.m2/repository/org/apache/maven/plugins" || true
+          ls "$HOME/.m2/repository/org/apache/maven/plugins/maven-dependency-plugin" || true
+          find "$HOME/.m2/repository/org/apache/maven/plugins" -maxdepth 2 -name 'maven-metadata*' | head
