@@ -78,6 +78,26 @@ const FIRST_QUERY_READ_TIMEOUT: Duration = Duration::from_secs(300);
 /// the parameter is for, not to make everyone wait.
 const IDLE_AFTER_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. This is the "still capped by the
+/// accept loop" the [`FIRST_QUERY_READ_TIMEOUT`] note above leans on, and until now that
+/// sentence was describing something that did not exist. The pairing matters here more than
+/// most: that bound is 300 seconds precisely so NetGet's own client is not stranded, which is
+/// 300 seconds of held socket per stranger, and a per-connection bound multiplied by an
+/// unbounded number of connections is not a bound. A WHOIS connection costs a
+/// [`MAX_QUERY_BYTES`] line buffer and a task, so the house default is the right number.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// WHOIS (RFC 3912) has no status codes at all: a reply is free text the client prints and the
+/// server closes. `%` is the RPSL comment prefix every registry uses for lines that are not
+/// data, and `% netget:` is already how this server labels its own refusals — "query too long",
+/// "backend at capacity, retry later". A `whois(1)` client reads until EOF and prints this; it
+/// cannot be mistaken for an answer, because it says it is not one.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"% netget: too many connections, retry later\r\n";
+
 pub struct WhoisServer;
 
 impl WhoisServer {
@@ -108,10 +128,19 @@ impl WhoisServer {
         let protocol = Arc::new(actions::WhoisProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "WHOIS",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -152,6 +181,10 @@ impl WhoisServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection — WHOIS spawns nothing else per peer — so
+                                // `MAX_CONNECTIONS` caps live connections, not accepts.
+                                let _permit = permit;
                                 handle_whois_connection(
                                     socket,
                                     peer_addr,

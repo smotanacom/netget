@@ -82,6 +82,34 @@ pub const CONNACK_SERVER_UNAVAILABLE: u8 = 3;
 /// SUBACK return code 0x80, "Failure" (3.1.1 §3.9.3). One per topic filter.
 pub const SUBACK_FAILURE: u8 = 0x80;
 
+/// Concurrent connections this broker admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. An MQTT connection is a
+/// *session*, not a request: a subscriber holds its socket open for the life of the
+/// application, so unlike a request/response protocol this server's live-connection count is
+/// its client count rather than its arrival rate. That argues for keeping the house default
+/// rather than trimming it — 256 subscribed clients is a plausible small deployment, and the
+/// per-connection cost is bounded by `max_packet_size` either way.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// CONNACK with return code 3, "Server unavailable" — the one code MQTT defines for "I am
+/// working, come back later", and the same one this broker already sends when a handler
+/// refuses a CONNECT. The bytes are [`build_connack`]`(`[`CONNACK_SERVER_UNAVAILABLE`]`,
+/// false)`, written out here because a `const` cannot call it.
+///
+/// **It is the 3.1.1 framing, and that is right for this broker rather than a guess about the
+/// peer.** A v5 CONNACK carries an extra property-length field, so the two are not
+/// interchangeable — but this broker only ever emits the 3.1.1 form ([`build_connack`] is the
+/// single CONNACK site and has no version parameter), so a peer that could have completed a
+/// session here is a peer that accepts this framing. Sending the v5 shape instead would
+/// refuse in a dialect the server does not otherwise speak.
+///
+/// 3.1.1 §3.2 requires the server to close the connection after a non-zero CONNACK, which is
+/// exactly what `accept_bounded` does next.
+const CONNECTION_CAP_REFUSAL: &[u8] = &[PKT_CONNACK << 4, 0x02, 0x00, CONNACK_SERVER_UNAVAILABLE];
+
 /// MQTT broker
 pub struct MqttServer;
 
@@ -115,10 +143,19 @@ impl MqttServer {
         let accept_state = app_state.clone();
         let accept_status_tx = status_tx.clone();
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "MQTT",
+                    Some(&accept_status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         Log::new(Some(&accept_status_tx))
                             .debug(format!("MQTT connection from {}", peer_addr));
 
@@ -130,6 +167,12 @@ impl MqttServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // One MQTT connection is *two* tasks — this one and the writer
+                                // `handle_mqtt_connection` spawns — so the permit goes in as an
+                                // `Arc` held by both and the slot comes back when the later of
+                                // the two ends. Holding it here alone would release the slot
+                                // while a writer was still draining, which un-caps the broker.
+                                let permit = std::sync::Arc::new(permit);
                                 if let Err(e) = handle_mqtt_connection(
                                     socket,
                                     peer_addr,
@@ -139,6 +182,7 @@ impl MqttServer {
                                     status_tx,
                                     server_id,
                                     max_packet_size,
+                                    permit,
                                 )
                                 .await
                                 {
@@ -185,6 +229,9 @@ async fn handle_mqtt_connection(
     status_tx: mpsc::UnboundedSender<String>,
     server_id: crate::state::ServerId,
     max_packet_size: usize,
+    // This connection's slot in the accept loop's cap. Shared with the writer task below, so
+    // the slot is released by whichever of the two ends last.
+    permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
 ) -> Result<()> {
     let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -203,7 +250,12 @@ async fn handle_mqtt_connection(
     let writer_status_tx = status_tx.clone();
     let writer_write_half = write_half.clone();
     let writer_state = app_state.clone();
+    let writer_permit = Arc::clone(&permit);
     let writer_handle = tokio::spawn(async move {
+        // The other half of this connection's cap slot. `finish_connection` waits at most 5
+        // seconds for this task, so on the path where it gives up and abandons the writer the
+        // slot is still held by the writer's own Arc until it really ends.
+        let _permit = writer_permit;
         while let Some(bytes) = out_rx.recv().await {
             let n = bytes.len();
             let mut guard = writer_write_half.lock().await;

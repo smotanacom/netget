@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "proxy"))]
+mod connection_bounds_test;
+#[cfg(all(test, feature = "proxy"))]
 mod e2e_test;
 #[cfg(all(test, feature = "proxy"))]
 mod llm_failure_test;

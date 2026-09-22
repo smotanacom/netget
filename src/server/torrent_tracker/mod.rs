@@ -28,6 +28,43 @@ use actions::TorrentTrackerProtocol;
 /// connection-map entry indefinitely — which is a slow-loris for free.
 const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Concurrent connections this tracker admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`REQUEST_READ_TIMEOUT`] bounds
+/// how long one silent peer holds a slot; only a cap bounds how many of them there can be at
+/// once, and a tracker is the most openly-addressed thing in a swarm — its address is in every
+/// `.torrent` file, so every peer in the world that has the file knows where to find it. One
+/// announce is one short GET on its own connection, so a real swarm's concurrency is set by
+/// arrival rate rather than by seeders, and the house default is far above it.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// The same shape [`TorrentTrackerServer::write_failure_response`] already sends for a
+/// saturated backend: **HTTP 503 + `Retry-After`**, carrying a bencoded `failure reason`
+/// because that is the one refusal BEP 3 defines and the only thing a BitTorrent client will
+/// display. The status code is the part that does the work — a peer over the cap has not sent
+/// its announce, so the refusal belongs to the transport rather than to a request nobody read
+/// — and the bencoded body is there so a client that parses the body anyway gets a sentence
+/// instead of nothing. Built rather than written out so the `Content-Length` cannot drift.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    let mut dict = HashMap::new();
+    dict.insert(
+        b"failure reason".to_vec(),
+        serde_bencode::value::Value::Bytes(b"too many connections, try again later".to_vec()),
+    );
+    let body =
+        serde_bencode::to_bytes(&serde_bencode::value::Value::Dict(dict)).unwrap_or_default();
+    let mut out = format!(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Type: \
+         text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    out.extend_from_slice(&body);
+    out
+});
+
 /// The connection's write half, shared between the session and the peer-command task.
 ///
 /// Both write to the same socket, so the lock is what keeps an injected `[ send message ]`
@@ -56,10 +93,19 @@ impl TorrentTrackerServer {
         let protocol = Arc::new(TorrentTrackerProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "BitTorrent Tracker",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let llm_clone = llm_client.clone();
@@ -100,6 +146,11 @@ impl TorrentTrackerServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends. `handle_connection` owns the
+                                // whole session including its teardown — the peer-command
+                                // channel shares the write half rather than running in a task
+                                // of its own — so the slot covers the connection's real life.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     peer_addr,

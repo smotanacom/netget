@@ -54,6 +54,27 @@ pub const MAX_QUERY_BYTES: usize = 1024;
 /// as long as its own timeout allows.
 const QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`QUERY_READ_TIMEOUT`] bounds
+/// how long one silent peer holds a slot; only a cap bounds how many of them there can be at
+/// once. An ident exchange is one line in and one line out, so nothing here argues for a
+/// number other than the house default.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a **plain close**, with nothing written.
+///
+/// This is the one place in this server where fail-closed cannot be said out loud, and the
+/// reason is RFC 1413's grammar rather than a shortcut. Every reply the protocol defines —
+/// `USERID` and all four `ERROR` tokens — begins by echoing back the *port pair from the
+/// query*: `<server-port> , <client-port> : ERROR : UNKNOWN-ERROR`. A refused peer has not
+/// sent its query, so there is no pair to echo, and a reply carrying invented ports is worse
+/// than silence: a client matches the pair against its own outstanding query and records a
+/// protocol violation rather than backing off. An ident client that reads EOF instead simply
+/// treats the lookup as unavailable, which is the truth. The refusal is logged
+/// (`decision=fail_closed_connection_cap`) and the log line is the diagnosis.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 pub struct IdentServer;
 
 impl IdentServer {
@@ -76,10 +97,19 @@ impl IdentServer {
         let protocol = Arc::new(actions::IdentProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "IDENT",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -116,6 +146,10 @@ impl IdentServer {
 
                         let registrar = app_state.clone();
                         let conn_handle = tokio::spawn(async move {
+                            // Released when this task ends, and this task is the whole of the
+                            // connection — ident spawns nothing else per peer — so
+                            // `MAX_CONNECTIONS` caps live connections, not accepts.
+                            let _permit = permit;
                             handle_ident_connection(
                                 socket,
                                 peer_addr,

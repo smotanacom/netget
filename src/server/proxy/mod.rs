@@ -47,6 +47,39 @@ pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 /// How long a client has to send its request line and headers after connecting.
 const REQUEST_READ_TIMEOUT_SECS: u64 = 30;
 
+/// Concurrent client connections this proxy admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. A proxy connection is the most
+/// expensive kind in this tree: a `CONNECT` tunnel holds a *second* socket to the upstream for
+/// as long as the client keeps it, so an uncapped accept loop exhausts descriptors at twice
+/// the rate, and with MITM enabled each one also drives a TLS handshake and a certificate
+/// mint. That argues for a number, not for a smaller one — a browser opens six connections per
+/// origin and a handful of origins is already dozens, so anything tight would break the
+/// ordinary case. 256 is generous for a human's browser and far below what socket exhaustion
+/// needs.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// The body of [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_BODY: &str = "Too many connections, try again later.\n";
+
+/// What a client over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// A proxy speaks HTTP to its client whatever the client is asking for: a plain request gets
+/// an HTTP response, and a `CONNECT` gets an HTTP status line before any tunnel exists
+/// (RFC 9110 §9.3.6), so one 503 is correct for both and neither is mis-parsed. 503 +
+/// `Retry-After` is also what this server already sends when its own backend is saturated,
+/// which keeps "the proxy is full" and "the proxy is overloaded" in the same vocabulary for a
+/// client deciding whether to retry.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    format!(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Type: \
+         text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        CONNECTION_CAP_BODY.len(),
+        CONNECTION_CAP_BODY
+    )
+    .into_bytes()
+});
+
 /// Re-assemble `host` and `port` into something `TcpStream::connect` accepts, re-bracketing an
 /// IPv6 literal that the CONNECT parser stripped.
 pub(crate) fn connect_authority(host: &str, port: u16) -> String {
@@ -306,11 +339,20 @@ impl ProxyServer {
 
         // Spawn proxy handler task
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             Log::new(Some(&status_tx)).debug("Proxy accept loop started");
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "Proxy",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         Log::new(Some(&status_tx)).info(format!(
@@ -354,6 +396,11 @@ impl ProxyServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends. A CONNECT tunnel is driven to
+                                // completion *inside* `handle_proxy_connection` rather than in
+                                // a task of its own, so the slot covers the upstream socket
+                                // too — which is the resource the cap is really about here.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_proxy_connection(
                                     stream,
                                     peer_addr,

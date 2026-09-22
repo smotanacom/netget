@@ -79,6 +79,32 @@ const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// Longest request path carried into the log, the status stream and the model's prompt.
 const MAX_PATH_LEN: usize = 512;
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HEADER_READ_TIMEOUT`] bounds
+/// how long one peer can hold a slot saying nothing; only a cap bounds how many of them there
+/// can be at once. HLS is one GET per connection with `Connection: close`, so a player's
+/// working set is a handful of sockets and the house default is far above anything real
+/// playback produces.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// The body of [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_BODY: &[u8] = b"Too many connections, try again later.\n";
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// HLS rides HTTP/1.1, and 503 + `Retry-After` is HTTP's own vocabulary for exactly this —
+/// the same pair this server already sends when the model backend is saturated, for the same
+/// reason given at [`build_http_response`]: it tells a player to back off and re-request
+/// rather than treat the stream as dead. Built through this server's own response builder so
+/// the `Content-Length` cannot drift from the body, which a hand-written literal invites.
+///
+/// It is written before any request has been read, which is deliberate and safe: HTTP/1.1
+/// §3.3 allows a server to send a final response before the request is complete, and the
+/// response says `Connection: close`, so a client that was still sending stops and reads.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(|| build_http_response(503, "text/plain", CONNECTION_CAP_BODY, true));
+
 /// Why the peer got what it got, for the log only.
 ///
 /// The three failure cases a reader of `netget.log` must be able to tell apart: the model
@@ -120,10 +146,19 @@ impl HlsServer {
         let protocol = Arc::new(HlsProtocol::new());
         let task_registrar = app_state.clone();
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "HLS",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -159,6 +194,10 @@ impl HlsServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection — HLS spawns nothing else per peer — so
+                                // `MAX_CONNECTIONS` caps live connections, not accepts.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     remote_addr,

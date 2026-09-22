@@ -46,6 +46,23 @@ const NO_INFORMATION: &[u8] = b"finger: no information available\r\n";
 /// the event for as long as its own timeout allows.
 const QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`QUERY_READ_TIMEOUT`] bounds
+/// how long *one* peer can hold a slot doing nothing; only a cap bounds how many such peers
+/// there can be at once, and a finger connection is cheap enough that nothing here argues for
+/// a number other than the house default.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// A finger reply is free text read until EOF (RFC 1288 §2.3) — there is no status code to
+/// get wrong and no framing a client can choke on, which is why this server already answers
+/// its other refusals the same way ([`FORWARD_DENIED`], [`QUERY_TOO_LONG`]). The peer has not
+/// sent its query yet, so this arrives as the whole of the answer rather than after one; a
+/// finger client prints it and exits, which is exactly what should happen.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"finger: too many connections, try again later\r\n";
+
 pub struct FingerServer;
 
 impl FingerServer {
@@ -79,10 +96,19 @@ impl FingerServer {
         let protocol = Arc::new(actions::FingerProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "FINGER",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -119,6 +145,10 @@ impl FingerServer {
                         let registrar = app_state.clone();
 
                         let conn_handle = tokio::spawn(async move {
+                            // The permit is released when this task ends, and this task is the
+                            // whole of the connection — finger spawns nothing else per peer —
+                            // so `MAX_CONNECTIONS` caps live connections rather than accepts.
+                            let _permit = permit;
                             handle_finger_connection(
                                 socket,
                                 peer_addr,

@@ -256,3 +256,121 @@ async fn a_query_parked_for_a_human_is_never_closed_by_the_deadline() {
         Ok(Err(e)) => panic!("the connection was reset while parked: {e}"),
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The connection cap
+// ---------------------------------------------------------------------------------------
+//
+// The deadlines above bound how long *one* peer holds a socket. They are the reason this
+// server needs a cap and not a substitute for one: `FIRST_QUERY_READ_TIMEOUT` is 300 seconds
+// precisely so NetGet's own client is not stranded waiting for a person to type, which is 300
+// seconds of held socket per stranger, and a per-connection bound multiplied by an unbounded
+// number of connections is not a bound at all.
+//
+// **How this was proved to fail without the cap**: replace the `accept_bounded` call in
+// `src/server/whois/mod.rs` with a bare `listener.accept().await` (and drop the permit from the
+// connection task). The over-cap peer is then admitted and silent, so the `read_to_end` times
+// out and the test fails on "was neither answered nor closed".
+
+/// `src/server/whois/mod.rs::MAX_CONNECTIONS`. Deliberately duplicated rather than imported: if
+/// the constant moves, this test should be re-read rather than silently follow it.
+const MAX_CONNECTIONS: usize = 256;
+
+/// `src/server/whois/mod.rs::CONNECTION_CAP_REFUSAL`, byte for byte.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"% netget: too many connections, retry later\r\n";
+
+/// A model-free server with the *default* bounds, so the peers filling the cap are not closed
+/// by a deadline part-way through the test.
+async fn start_server_with_default_bounds(state: &AppState) -> (ServerId, u16) {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let server_id = ServerForm {
+        protocol: "whois".to_string(),
+        port: Some(0),
+        instruction: Some(String::new()),
+        ..Default::default()
+    }
+    .create(state, tx)
+    .await
+    .expect("create whois server");
+    let port = wait_for_port(state, server_id).await;
+    (server_id, port)
+}
+
+/// Wait until the accept loop has taken `n` connections out of the listen backlog. A
+/// `connect()` succeeds as soon as the kernel queues it, so without this the over-cap peer
+/// races the accept loop and the test measures scheduling rather than the cap.
+async fn wait_for_admitted(state: &AppState, id: ServerId, n: usize) {
+    for _ in 0..600 {
+        if let Some(s) = state.get_server(id).await {
+            if s.connections.len() >= n {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let seen = state
+        .get_server(id)
+        .await
+        .map(|s| s.connections.len())
+        .unwrap_or(0);
+    panic!("the server admitted only {seen} of {n} connections");
+}
+
+#[tokio::test]
+async fn the_connection_past_the_cap_is_refused_with_an_rpsl_comment_and_the_slot_comes_back() {
+    let state = new_state().await;
+    let (server_id, port) = start_server_with_default_bounds(&state).await;
+
+    let mut held = Vec::with_capacity(MAX_CONNECTIONS);
+    for i in 0..MAX_CONNECTIONS {
+        held.push(
+            TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap_or_else(|e| panic!("connection {i} of the cap failed: {e}")),
+        );
+    }
+    wait_for_admitted(&state, server_id, MAX_CONNECTIONS).await;
+
+    let mut over = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("the listener must still accept — a cap is not a closed socket");
+    let mut refusal = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), over.read_to_end(&mut refusal))
+        .await
+        .expect("the connection past the cap was neither answered nor closed")
+        .expect("read the refusal");
+    assert_eq!(
+        refusal,
+        CONNECTION_CAP_REFUSAL,
+        "WHOIS has no status codes, so the refusal is an RPSL comment line — the `% netget:` \
+         prefix this server already uses for everything that is not data — followed by EOF. A \
+         silent drop leaves a client unable to tell a full server from a crashed one. Got {:?}",
+        String::from_utf8_lossy(&refusal)
+    );
+
+    drop(held.pop().expect("one held connection"));
+
+    let mut admitted = false;
+    for _ in 0..100 {
+        let mut candidate = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect after freeing a slot");
+        let mut buf = [0u8; 64];
+        match tokio::time::timeout(Duration::from_millis(300), candidate.read(&mut buf)).await {
+            // WHOIS is client-speaks-first: silence means this peer was admitted and is
+            // waiting for its query line.
+            Err(_) => {
+                admitted = true;
+                break;
+            }
+            Ok(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    assert!(
+        admitted,
+        "the cap never freed its slot after an admitted connection ended — the permit is being \
+         held past the life of the connection, which wedges the server shut"
+    );
+}
