@@ -5,6 +5,29 @@
 Tests IRC server implementation with various IRC protocol commands: registration (NICK/USER), keepalive (PING/PONG),
 channel operations (JOIN), and messaging (PRIVMSG). Validates LLM's ability to handle IRC protocol semantics.
 
+## The six files, and what each is for
+
+This doc described `e2e_test.rs` alone. Five files sat beside it unmentioned — and four of the
+five exist because of a defect, which is exactly the set a reader most needs pointed at.
+`tests/server/irc/` holds **17 tests** across six files:
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 5 | registration, PING/PONG, JOIN, PRIVMSG — the protocol semantics |
+| `framing_test.rs` | 5 | **the two ways an IRC implementation gets owned**, asserted directly |
+| `connection_bounds_test.rs` | 3 | the first-byte and idle deadlines and the connection cap, from the wire |
+| `decision_tag_test.rs` | 2 | every terminal outcome of a line is grep-able as `decision=<token>` |
+| `llm_failure_test.rs` | 1 | what a client gets when the backend fails: numeric 400, then a closed link |
+| `peer_inject_test.rs` | 1 | the dashboard's `[ message this peer ]` / `[ disconnect this peer ]` path |
+
+**`framing_test.rs` is the one to read first.** IRC is line-framed over a stream, which is the
+oldest way to get a server wrong: a peer controls where the line ends, so it controls how much
+you buffer waiting for one.
+
+**`decision_tag_test.rs` earns its place because IRC can answer a line in several ways that look
+alike on the wire.** A numeric reply, silence, and a closed link are each a decision; the log is
+where they stay distinguishable, and a tag nothing asserts is a tag that drifts.
+
 ## Test Strategy
 
 - **Isolated test servers**: Each test spawns separate NetGet instance with specific IRC behavior
@@ -56,7 +79,10 @@ patterns (PING/PONG, JOIN confirmations).
 ## Expected Runtime
 
 - Model: qwen3-coder:30b
-- Runtime: ~120-150 seconds for full test suite (5 tests)
+- Runtime: ~120-150 seconds for the five tests in `e2e_test.rs`, which is what the per-test
+  breakdown below covers. The other five files add twelve tests and cost far less: they drive
+  sockets and deadlines rather than model calls, and `connection_bounds_test.rs` is the only
+  slow one because it waits out a bound by construction.
     - Each test: ~2-3 server startup + 1-3 LLM calls per test × 5-8s per call
     - `test_irc_welcome`: ~25s (2 LLM calls)
     - `test_irc_ping_pong`: ~15s (1 LLM call)
