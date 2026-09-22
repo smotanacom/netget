@@ -345,7 +345,6 @@ jobs:
       #   python3-pip       - pypi, and oci_registry's script handler
       #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
       #   sipsak            - sip
-      #   stuntman-client   - stun (provides `stunclient`; universe)
       #   ldap-utils        - ldap (OpenLDAP ldapsearch, deliberately NOT the ldap3 crate)
       #   openssh-client    - ssh (OpenSSH, deliberately NOT libssh2, which found nothing
       #                       here for months while OpenSSH disconnected on a duplicate
@@ -353,21 +352,58 @@ jobs:
       #   subversion (svn)  - svn (the real ra_svn client; info/ls/log)
       #   tor               - tor_relay
       #   wakeonlan         - wol
+      #
+      # `continue-on-error` on THIS step, deliberately. An unavailable package used to abort
+      # the whole job at its fifth step, so no audit and no evidence ran at all and the job
+      # still reported green (it is `continue-on-error` at the job level). That is exactly
+      # what happened between 2026-09-16 and 2026-09-22: `stuntman-client` is not in any
+      # current Ubuntu release, apt exited 100, and this job ran nothing for six days.
+      # A client that cannot be installed must surface as its own NAMED evidence failure in
+      # the loop at the foot of this job - never as forty protocols' evidence silently not
+      # running.
       - name: Install the third-party clients the real-client tests drive
+        continue-on-error: true
         run: |
           sudo apt-get install -y --no-install-recommends \
             aria2 awscli curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
-            openvpn postgresql-client python3-pip redis-tools sipsak stuntman-client \
+            openvpn postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan
+
+      # stuntman's `stunclient` drives `stun::real_client_test`, and it is built here rather
+      # than installed because it is in NO current apt repository: the `stuntman-client`
+      # package existed in Ubuntu xenial and bionic only, was dropped before focal, and is
+      # absent from Debian too. The apt line above claimed it was in jammy universe, which is
+      # what killed this job for six days.
+      #
+      # `continue-on-error` for the same reason as the apt step: a build failure must cost
+      # stun's evidence, not everybody else's.
+      - name: Build stuntman's stunclient from source
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo apt-get install -y --no-install-recommends libboost-dev libssl-dev g++ make
+          git clone --depth 1 --branch version1.2.13 \
+            https://github.com/jselbie/stunserver.git /tmp/stunserver
+          cd /tmp/stunserver && make -j"$(nproc)"
+          # The Makefile leaves the binaries in the tree rather than an install prefix, and
+          # which subdirectory has moved between releases - so find it rather than guess.
+          client=$(find /tmp/stunserver -maxdepth 2 -type f -name stunclient -perm -u+x | head -1)
+          test -n "$client"
+          sudo install -m 0755 "$client" /usr/local/bin/stunclient
+          # `stunclient --help` exits 254 by design, so presence is what is asserted.
+          command -v stunclient
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry
       #   grpcurl  - grpc (grpc-go; deliberately NOT tonic, which the server links)
       #   websocat - websocket (rust-websocket, deliberately NOT tungstenite)
       #   mongosh  - mongodb (MongoDB's own shell, on the Node.js driver)
+      # `continue-on-error` for the same reason as the apt step above: one download
+      # that 404s must cost its own protocol's evidence, not the whole job.
       - name: Install crane, grpcurl, websocat and mongosh
+        continue-on-error: true
         run: |
           set -eux
           curl -fsSL -o /tmp/crane.tgz \
@@ -392,7 +428,10 @@ jobs:
       # pre-rename package name `kafkacat`, whose binary may be either `kcat` or
       # `kafkacat` depending on the build - the test invokes `kcat`, so symlink when
       # only the old name is present rather than making the test guess.
+      # `continue-on-error` for the same reason as the apt step above: one download
+      # that 404s must cost its own protocol's evidence, not the whole job.
       - name: Install kcat (librdkafka CLI)
+        continue-on-error: true
         run: |
           set -eux
           sudo apt-get install -y --no-install-recommends kafkacat
@@ -498,7 +537,17 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-22.04
+    # ubuntu-24.04, not 22.04, and the reason is tshark. `tests/helpers/pcap_oracle.rs`
+    # asks Wireshark to decode Redis with the `resp` dissector, and `resp` was added in
+    # **Wireshark 4.0.0** (MR 6458, March 2022). jammy ships 3.6.2; noble ships 4.2.2.
+    # There is no older name to fall back to - Wireshark never had a built-in `redis`
+    # dissector, only third-party Lua ones - so on 22.04 `server::redis::resp_framing_test`
+    # could only fail with `tshark: Unknown protocol -- "resp"`, which is what it did.
+    #
+    # Checked at the same time: `resp` is the ONLY one of the 59 dissector names in
+    # `src/tui/wireshark.rs` that needs Wireshark >= 4.0. Every other name has fields
+    # going back to 3.6 or earlier, so nothing else in that table was riding on this.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -509,11 +558,32 @@ jobs:
         with:
           key: test-${{ env.CI_FEATURES }}
 
-      # The dns suite drives ISC BIND's `dig` as an independent client, and that test
-      # deliberately FAILS rather than skips when dig is absent - a skip-when-missing gate
-      # is a silent pass, not evidence. dns is in CI_FEATURES, so the binary must be here.
-      - name: install dig (required by the dns real-client test)
-        run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils
+      # Every third-party binary the CI_FEATURES test binaries drive. Each of these tests
+      # deliberately FAILS rather than skips when its binary is absent - a skip-when-missing
+      # gate is a silent pass, not evidence - so this job has to carry them. It is NOT enough
+      # that `registry-audit` installs the same clients: that job is `continue-on-error`, so a
+      # green PR says nothing about it, and this is the only BLOCKING job these tests run in.
+      #
+      #   dig       bind9-dnsutils  server::dns::dig_test        (ISC BIND)
+      #   kdig      knot-dnsutils   server::dns::kdig_test       (Knot - the second resolver)
+      #   redis-cli redis-tools     server::redis::real_client_test (the C client, not redis-rs)
+      #
+      # `curl` and `python3`, which server::http::real_client_test drives, are preinstalled on
+      # every GitHub runner image and are not listed here.
+      #
+      # `tests/ci_feature_clients_are_installed` (in tests/real_client_evidence_is_run_test.rs)
+      # derives this list from the test sources and fails the build if it drifts - which is how
+      # kdig and redis-cli came to be missing here in the first place.
+      - name: install the third-party clients the CI_FEATURES tests drive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bind9-dnsutils knot-dnsutils redis-tools
+          # Not decoration: these fail the step when a package silently stopped shipping
+          # the binary, which is a clearer signal than three test failures later on.
+          dig -v
+          kdig -V
+          redis-cli --version
 
       # The pcap oracle (tests/helpers/pcap_oracle.rs) runs tshark over the bytes each
       # server emitted, as an independent decoder. It deliberately FAILS rather than
@@ -531,6 +601,16 @@ jobs:
             | sudo debconf-set-selections
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
           tshark --version | head -1
+          # The oracle needs `resp` specifically; see the runs-on comment above. Assert it
+          # here so a runner-image change that quietly takes it away says so in one line
+          # rather than as three confusing redis test failures.
+          tshark -G protocols | awk -F'\t' '$3=="resp"{found=1} END{
+            if (!found) {
+              print "this tshark has no `resp` dissector (needs Wireshark >= 4.0)" > "/dev/stderr"
+              exit 1
+            }
+            print "resp dissector present"
+          }'
 
       - name: cargo test
         run: |

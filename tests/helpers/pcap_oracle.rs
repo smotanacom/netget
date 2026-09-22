@@ -448,6 +448,34 @@ impl PcapOracle {
         }
 
         let wire = wire_for(&self.protocol);
+        // Check the name against the tshark that is actually installed, before handing it
+        // over. `-d tcp.port==N,<name>` with a name this build does not know makes tshark
+        // exit 1 saying `Unknown protocol -- "<name>"`, which arrives here as
+        // "pcap oracle could not run" and reads like a NetGet defect. It is not: it means
+        // this Wireshark predates the dissector. That is how `redis` broke CI - `resp`
+        // arrived in Wireshark 4.0 and ubuntu-22.04 ships 3.6.
+        //
+        // This is a verification, not a fallback, and deliberately so. A dissector that is
+        // absent is NOT skipped: the oracle is an independent-decoder check and a silent skip
+        // turns it into decoration, the same failure mode as a skip-when-missing client gate.
+        // It only replaces an opaque error with one that names the fix.
+        if let Some(name) = wire.decode_as {
+            if !dissector_is_known(name) {
+                return Err(format!(
+                    "this tshark ({}) has no `{name}` dissector, so `{}`'s frames cannot be \
+                     judged.\n\
+                     This is an environment defect, not a defect in the bytes: `{name}` is the \
+                     name `netget::tui::wireshark::wire_for` gives Wireshark's dissector for \
+                     this protocol, verified against `tshark -G protocols` on a current build.\n\
+                     Install a Wireshark new enough to have it - `resp` (Redis), for one, \
+                     arrived in 4.0.0, and Ubuntu 22.04 ships 3.6.\n\
+                     The oracle does NOT skip when the dissector is missing: a skip is a silent \
+                     pass, which is the whole thing this check exists to prevent.",
+                    tshark_version(),
+                    self.protocol,
+                ));
+            }
+        }
         let decode_as = wire.decode_as.and_then(|name| match self.framing {
             Framing::Tcp => Some(format!("tcp.port=={},{}", self.port, name)),
             Framing::Udp => Some(format!("udp.port=={},{}", self.port, name)),
@@ -1044,6 +1072,59 @@ pub fn require_tshark() {
              \x20            apt-get install -y tshark   (Debian/Ubuntu CI)\n"
         );
     }
+}
+
+/// The first line of `tshark --version`, or a placeholder. Only for error messages.
+fn tshark_version() -> String {
+    Command::new("tshark")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_else(|| "version unknown".to_string())
+}
+
+/// Every protocol filter name the installed tshark knows, from `tshark -G protocols`.
+///
+/// Column 3 of that table is the display-filter name, which is exactly what `-d` wants.
+/// Queried once per process: it is ~3000 lines and every oracle call would otherwise pay
+/// for it.
+fn known_dissectors() -> &'static std::collections::BTreeSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+        std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        let out = match Command::new("tshark").arg("-G").arg("protocols").output() {
+            Ok(o) if o.status.success() => o.stdout,
+            // An empty set would make every protocol look unknown, which is a worse lie
+            // than not checking. `require_tshark` has already established that tshark
+            // runs, so this is the "-G protocols changed shape" case: let the real run
+            // produce the real error.
+            _ => return std::collections::BTreeSet::new(),
+        };
+        String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|l| l.split('\t').nth(2))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+/// Does the installed tshark know this dissector name?
+///
+/// Answers `true` when the name table could not be read at all, so a change in
+/// `-G protocols`' output cannot turn this verification into a blanket refusal.
+fn dissector_is_known(name: &str) -> bool {
+    let names = known_dissectors();
+    names.is_empty() || names.contains(name)
 }
 
 /// Is `tshark` usable? For the oracle's own tests, which must distinguish
