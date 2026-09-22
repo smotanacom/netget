@@ -1169,6 +1169,14 @@ sha1 = "0.10"  # For info_hash calculation
 # through itself. feed-rs is a separate implementation with its own model, so it is the thing
 # that makes the test evidence.
 feed-rs = "2"
+# XML parser for the webdav server's second-client test, which drives `curl -X PROPFIND` and
+# has to read the DAV:multistatus body back as a tree. Substring-matching a tag name would pass
+# against a body that is not well-formed XML at all, which is precisely the failure an
+# under-escaped `displayname` or an under-encoded `href` produces. Unconditional and in
+# dev-dependencies deliberately: quick-xml's entry in [dependencies] is optional and turned on
+# only by `saml`/`xmlrpc`, so a test gated on `webdav` alone could not see it, and a test that
+# cannot compile under its own feature is a test that never runs.
+quick-xml = "0.37"
 async-nats = "0.50.0"
 async-stomp = "0.6.3"
 # Property-based round-trip tests for the hand-written codecs (tests/codec_property_test.rs).
