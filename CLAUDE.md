@@ -1002,21 +1002,44 @@ after a long period when no CI job ran `cargo test` at all:
 |---|---|---|
 | `lint` | yes | `cargo fmt --check`; `clippy -D clippy::correctness -D clippy::suspicious` over the lib **and all test targets**. A full default clippy runs advisory-only — ~50 style/complexity warnings predate the gate |
 | `test` | yes | `cargo test` on `tcp,http,dns,udp,redis,mcp-stdio` |
-| `single-feature` | yes | `cargo check --tests` on `SINGLE_FEATURE_CORE` (24 features) **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
-| `single-feature-full` | nightly | The same check over all **133** features that build standalone (`SINGLE_FEATURE_CORE` + `SINGLE_FEATURE_REST`). Cron + `workflow_dispatch` only, never on a PR; the 30-minute runner timeout is why it is not blocking |
+| `single-feature` | yes | `cargo check --tests` on **all 133** standalone features (`SINGLE_FEATURE_CORE` + `SINGLE_FEATURE_REST`), **one at a time**, across a 4-way sharded matrix — catches a feature whose deps are under-declared, which no multi-feature build can |
 | `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
 | `clippy-wide` | **no** (`continue-on-error`) | Clippy over a wide feature set. Advisory because at `--all-features` the lib alone emits ~495 warnings |
 | `registry-audit` | **no** (`continue-on-error`) | The registry-walking audits at `--all-features`, with the system libraries installed. This is the only job that sees more than 6 of 116 protocols — and it cannot fail the build, so **a green PR is not evidence the audits passed**. Read its log |
 
-Nine jobs, not the six tabulated: `ratchets` and `wasm-web` are blocking and missing from the
-table above, and `clippy-wide` and `registry-audit` are easy to miss because both are
+Eight jobs, not the seven tabulated: `ratchets` and `wasm-web` are blocking and missing from
+the table above, and `clippy-wide` and `registry-audit` are easy to miss because both are
 `continue-on-error` and so report green regardless of outcome. Derive the list from
-`.github/workflows/ci.yml`; this table has been short before.
+`.github/workflows/ci.yml`; this table has been short before, and wrong about the count in
+both directions — it said "nine" while `single-feature-full` existed and nothing had counted
+them:
 
-Every job except `single-feature-full` carries `if: github.event_name != 'schedule'`, so the
-nightly cron runs that one job and nothing else. The workflow's `concurrency` group includes
-`github.event_name` for the same reason: without it a push to master and the nightly run share
-a group and `cancel-in-progress` makes each kill the other.
+```bash
+python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/ci.yml')); \
+  [print(k, 'advisory' if v.get('continue-on-error') else 'BLOCKING') for k,v in d['jobs'].items()]"
+```
+
+**`single-feature-full` is gone, and why it existed is the lesson.** It was the only check that
+compiled the 109 features in `SINGLE_FEATURE_REST`, and it ran on `workflow_dispatch` only —
+so those 109 had no automatic compile coverage at all. `tor` did not compile *at any feature
+set* (`src/server/tor_relay/mod.rs` asked for `rustls::crypto::aws_lc_rs` while `Cargo.toml`
+pins rustls to `default-features = false, features = ["ring"]`), and every CI run was green
+throughout. A sweep of all 133 at HEAD in September 2026 found nothing else — 133 of 133 pass
+— so `tor` was the only one, but it was entirely broken and nothing could have said so.
+
+`single-feature` now covers all 133 on every PR and push, sharded four ways. The sizing is
+measured rather than assumed: `gh api` on two completed runs put the old 24-feature job at 9
+and 12 minutes warm, ~25s per feature and near-constant because each iteration recompiles the
+library and ~170 test targets whatever the feature is. 133 in one job is ~55 minutes against a
+30-minute timeout, so the split's premise was real; four shards of ~34 are ~14 minutes each in
+parallel, for ~4x the runner minutes (10 → 60 per run) which are free on a public repository.
+
+**A nightly cron was the obvious alternative and is the wrong shape**, and the distinction
+generalises to anything else you are tempted to move off the commit: `fuzz`, `nightly-soak` and
+`nightly-eval` are *searches and measurements*, which return no verdict about any particular
+commit and so suit a nightly cadence. A compile check is a *gate* — it answers yes or no about
+the commit in front of it — so it belongs on the commit. Nightly would have caught `tor` too, a
+day late and on `master` rather than on the change that broke it.
 
 ### Terminal (PTY) tests
 
