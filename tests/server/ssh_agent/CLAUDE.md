@@ -27,6 +27,13 @@ keys and performs signing operations for SSH clients.
 
 - `test.rs` - Unit tests for SSH Agent protocol message parsing (no LLM)
 - `e2e_test.rs` - E2E tests with mock LLM responses (requires Unix sockets)
+- `executor_test.rs` - `execute_action` as a pure `Value -> ActionResult` mapping: no socket,
+  no LLM, 0 calls. It exists because both of this protocol's advertised hex examples declared
+  more key/signature bytes than they supplied — a truncation a client walks off the end of, and
+  one nobody had proofread. It pins the replacement (an authorized_keys line for a key, an
+  algorithm name for a signature, both framed by the server), that a truncated or mislabelled
+  blob is *refused*, that the hex escape hatches still pass bytes through verbatim, and that
+  giving both spellings of the same thing is an error rather than a coin toss.
 
 ## LLM Call Budget
 

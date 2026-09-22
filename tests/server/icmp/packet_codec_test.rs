@@ -459,3 +459,203 @@ fn time_exceeded_defaults_to_ttl_exceeded_in_transit() {
     assert_eq!(p[20], 11, "type 11 = TIME EXCEEDED");
     assert_eq!(p[21], 0, "code 0 when the model does not say");
 }
+
+// ---------------------------------------------------------------------------
+// The quoted datagram, described rather than transcribed
+// ---------------------------------------------------------------------------
+
+/// The 28 bytes RFC 792 quotes, built from `original_packet` fields.
+///
+/// The point of the structured form is that the model never writes a checksum: both of the
+/// ones' complement sums in this quotation are computed here, and a wrong one is *silent* —
+/// the peer just fails to match the error against its outstanding probe. So the assertion is
+/// that each sum verifies, not that the bytes equal any particular constant.
+#[test]
+fn structured_quoted_datagram_is_a_real_udp_probe() {
+    let p = output_of(serde_json::json!({
+        "type": "send_time_exceeded",
+        "source_ip": "192.168.1.100",
+        "destination_ip": "192.168.1.50",
+        "original_packet": {
+            "source_ip": "192.168.1.50",
+            "destination_ip": "203.0.113.5",
+            "protocol": "udp",
+            "source_port": 41234,
+            "destination_port": 33434,
+            "ttl": 1,
+            "identification": 7238
+        }
+    }));
+    assert_ipv4_header(&p);
+    assert_eq!(p[20], 11, "type 11 = TIME EXCEEDED");
+
+    // The quotation begins after the 8-byte ICMP header.
+    let quoted = &p[28..];
+    assert_eq!(
+        quoted.len(),
+        28,
+        "IPv4 header (20) + 64 bits of payload (8)"
+    );
+    assert_eq!(quoted[0], 0x45, "IPv4, 20-byte header");
+    assert_eq!(
+        u16::from_be_bytes([quoted[2], quoted[3]]),
+        28,
+        "total length describes the header plus the 8 quoted transport bytes"
+    );
+    assert_eq!(
+        u16::from_be_bytes([quoted[4], quoted[5]]),
+        7238,
+        "identification is carried through, so the peer can match its own probe"
+    );
+    assert_eq!(quoted[8], 1, "ttl 1 — what makes this a traceroute probe");
+    assert_eq!(quoted[9], 17, "protocol 17 = UDP");
+    assert_eq!(
+        ones_complement_sum(&quoted[..20]),
+        0,
+        "the quoted IPv4 header's checksum must verify; the whole point of describing the \
+         datagram as fields is that nobody hand-writes this"
+    );
+    assert_eq!(&quoted[12..16], &[192, 168, 1, 50], "probe source");
+    assert_eq!(&quoted[16..20], &[203, 0, 113, 5], "probe destination");
+    assert_eq!(u16::from_be_bytes([quoted[20], quoted[21]]), 41234);
+    assert_eq!(u16::from_be_bytes([quoted[22], quoted[23]]), 33434);
+    assert_eq!(
+        u16::from_be_bytes([quoted[24], quoted[25]]),
+        8,
+        "UDP length: the header and no payload"
+    );
+    // Pseudo-header + UDP header. A UDP checksum that does not verify is one a peer treats as
+    // corruption, which is indistinguishable from the error never arriving.
+    let mut checked = Vec::new();
+    checked.extend_from_slice(&quoted[12..20]); // source + destination address
+    checked.push(0);
+    checked.push(17); // zero, protocol
+    checked.extend_from_slice(&8u16.to_be_bytes()); // UDP length
+    checked.extend_from_slice(&quoted[20..28]);
+    assert_eq!(
+        ones_complement_sum(&checked),
+        0,
+        "UDP checksum over the pseudo-header does not verify"
+    );
+}
+
+/// TCP quotes the ports and the sequence number — the 64 bits RFC 792 asks for, and exactly
+/// what a peer matches a half-open connection against.
+#[test]
+fn structured_quoted_datagram_handles_tcp() {
+    let p = output_of(serde_json::json!({
+        "type": "send_destination_unreachable",
+        "source_ip": "192.168.1.100",
+        "destination_ip": "192.168.1.50",
+        "code": 3,
+        "original_packet": {
+            "source_ip": "192.168.1.50",
+            "destination_ip": "203.0.113.5",
+            "protocol": "tcp",
+            "source_port": 52000,
+            "destination_port": 443,
+            "sequence": 305419896u32
+        }
+    }));
+    let quoted = &p[28..];
+    assert_eq!(quoted[9], 6, "protocol 6 = TCP");
+    assert_eq!(ones_complement_sum(&quoted[..20]), 0, "header checksum");
+    assert_eq!(u16::from_be_bytes([quoted[20], quoted[21]]), 52000);
+    assert_eq!(u16::from_be_bytes([quoted[22], quoted[23]]), 443);
+    assert_eq!(
+        u32::from_be_bytes([quoted[24], quoted[25], quoted[26], quoted[27]]),
+        305419896,
+        "sequence number"
+    );
+}
+
+/// The hex escape hatch still works, and still means bytes the caller captured.
+#[test]
+fn the_hex_escape_hatch_is_still_passed_through_verbatim() {
+    let p = output_of(serde_json::json!({
+        "type": "send_destination_unreachable",
+        "source_ip": "192.168.1.100",
+        "destination_ip": "192.168.1.50",
+        "code": 1,
+        "original_packet_hex": "450000140000000040010000c0a80132cb007105"
+    }));
+    assert_eq!(
+        hex::encode(&p[28..]),
+        "450000140000000040010000c0a80132cb007105",
+        "bytes the caller supplied must reach the wire unchanged"
+    );
+}
+
+/// Both spellings at once is refused rather than resolved.
+///
+/// This is the `send_tcp_data` rule applied to a second field: the structured description and
+/// the hex blob say the same thing in incompatible ways, and only the sender knows which was
+/// meant. Picking one would make the other silently ignored.
+#[test]
+fn giving_both_spellings_of_the_quotation_is_refused() {
+    let err = IcmpProtocol::new()
+        .execute_action(serde_json::json!({
+            "type": "send_time_exceeded",
+            "source_ip": "192.168.1.100",
+            "destination_ip": "192.168.1.50",
+            "original_packet": {"source_ip": "1.2.3.4", "destination_ip": "5.6.7.8"},
+            "original_packet_hex": "450000140000000040010000c0a80132cb007105"
+        }))
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("not both"),
+        "the error must say which of the two to drop, got {err:#}"
+    );
+}
+
+/// A structured quotation that cannot be built is refused, never half-built.
+#[test]
+fn malformed_structured_quotations_are_refused() {
+    let protocol = IcmpProtocol::new();
+    for (what, spec) in [
+        (
+            "no source",
+            serde_json::json!({"destination_ip": "203.0.113.5"}),
+        ),
+        (
+            "source is not an address",
+            serde_json::json!({"source_ip": "not an ip", "destination_ip": "203.0.113.5"}),
+        ),
+        (
+            "IPv6 where IPv4 is required",
+            serde_json::json!({"source_ip": "::1", "destination_ip": "::1"}),
+        ),
+        (
+            "a protocol with no structured form",
+            serde_json::json!({
+                "source_ip": "192.168.1.50", "destination_ip": "203.0.113.5",
+                "protocol": "sctp"
+            }),
+        ),
+        (
+            "a numeric protocol with no structured form",
+            serde_json::json!({
+                "source_ip": "192.168.1.50", "destination_ip": "203.0.113.5",
+                "protocol": 132
+            }),
+        ),
+        (
+            "ttl past 8 bits",
+            serde_json::json!({
+                "source_ip": "192.168.1.50", "destination_ip": "203.0.113.5", "ttl": 300
+            }),
+        ),
+        ("not an object at all", serde_json::json!("192.168.1.50")),
+    ] {
+        let action = serde_json::json!({
+            "type": "send_time_exceeded",
+            "source_ip": "192.168.1.100",
+            "destination_ip": "192.168.1.50",
+            "original_packet": spec
+        });
+        assert!(
+            protocol.execute_action(action.clone()).is_err(),
+            "{what}: {action} was accepted; it must be refused with an error the model can read"
+        );
+    }
+}

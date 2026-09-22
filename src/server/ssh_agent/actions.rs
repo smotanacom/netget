@@ -8,7 +8,7 @@ use crate::protocol::log_template::LogTemplate;
 use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 use crate::protocol::EventType;
 use crate::state::app_state::AppState;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
@@ -33,17 +33,22 @@ pub static SEND_IDENTITIES_LIST_ACTION: LazyLock<ActionDefinition> = LazyLock::n
         parameters: vec![Parameter {
             name: "identities".to_string(),
             type_hint: "array".to_string(),
-            description: "Array of objects, one per key. Each needs \
-                'public_key_blob_hex' (the SSH public key blob, hex-encoded: the wire \
-                encoding of the key, which for ssh-ed25519 is the string \"ssh-ed25519\" \
-                followed by the 32-byte public key, each length-prefixed) and 'comment' \
-                (the label `ssh-add -l` prints, e.g. \"deploy-key\"). A blob that is not \
-                valid hex, or decodes to zero bytes, fails the whole request rather than \
-                sending a broken identity"
+            description: "Array of objects, one per key. Give each key as 'public_key': an \
+                OpenSSH public key exactly as it appears in authorized_keys or a .pub file, \
+                \"<algorithm> <base64 blob> [comment]\". 'comment' is the label \
+                `ssh-add -l` prints and overrides any comment in the line. \
+                'public_key_blob_hex' is the escape hatch for a blob with no OpenSSH text \
+                form - give that or 'public_key', never both. A key whose blob will not \
+                decode, or whose length prefixes do not span it exactly, fails the whole \
+                request rather than sending a broken identity"
                 .to_string(),
             required: true,
         }],
-        example: json!({"type": "send_identities_list", "identities": [{"public_key_blob_hex": "0000000b7373682d6564323535313900000020e5a1b3", "comment": "deploy-key"}]}),
+        // An OpenSSH text key, not a hex blob. The hex spelling here used to declare a
+        // 32-byte ed25519 key and then supply three bytes of it - a truncation nobody could
+        // see, because nobody proofreads hex, and one `ssh-add -l` would have rejected. The
+        // text form is the one a model has actually seen, and its framing is now checked.
+        example: json!({"type": "send_identities_list", "identities": [{"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH98ewNgR4yzG9S6UrA3P6sN2mFMedO/XrRqPcibUAfr", "comment": "deploy-key"}]}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> SSH Agent {identities_len} identities")
@@ -61,17 +66,45 @@ pub static SEND_SIGN_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock::new
             public key it holds. Useful for honeypots and for exercising the protocol; \
             reply with send_failure to refuse the signature instead."
             .to_string(),
-        parameters: vec![Parameter {
-            name: "signature_hex".to_string(),
-            type_hint: "string".to_string(),
-            description: "Hex-encoded SSH signature blob: the signature algorithm name \
-                and the signature itself, each length-prefixed, as in the event's \
-                'public_key_blob_hex' encoding. Invalid hex, or hex decoding to zero \
-                bytes, fails the request instead of sending an empty signature"
-                .to_string(),
-            required: true,
-        }],
-        example: json!({"type": "send_sign_response", "signature_hex": "0000000b7373682d65643235353139000000400a1b2c3d"}),
+        parameters: vec![
+            Parameter {
+                name: "algorithm".to_string(),
+                type_hint: "string".to_string(),
+                description: "Signature algorithm name - \"ssh-ed25519\", \"ssh-rsa\", \
+                    \"rsa-sha2-256\" or \"rsa-sha2-512\" - matching the key in the event's \
+                    'key_type' and its 'flags'. The server builds the framing (algorithm \
+                    name and signature, each length-prefixed) and, unless you give \
+                    'signature_bytes_hex', fabricates a signature of the size that \
+                    algorithm requires. This is the field to use"
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "signature_bytes_hex".to_string(),
+                type_hint: "string".to_string(),
+                description: "Optional: the raw signature bytes to put inside the framing \
+                    'algorithm' builds - 64 for ssh-ed25519. NOT the framed blob; that is \
+                    'signature_hex'"
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "signature_hex".to_string(),
+                type_hint: "string".to_string(),
+                description: "Escape hatch: the whole framed signature blob as hex - the \
+                    algorithm name and the signature, each length-prefixed, as in the \
+                    event's 'public_key_blob_hex' encoding. Give this or 'algorithm', never \
+                    both. Invalid hex, or hex decoding to zero bytes, fails the request \
+                    instead of sending an empty signature"
+                    .to_string(),
+                required: false,
+            },
+        ],
+        // Name the algorithm; the server frames it. The hex spelling here used to declare a
+        // 64-byte ed25519 signature and supply four bytes of it, which is the drift a hex
+        // literal in an example invites - and the framing is the only part of a fabricated
+        // signature that has a right answer at all.
+        example: json!({"type": "send_sign_response", "algorithm": "ssh-ed25519"}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> SSH Agent signature")
@@ -205,7 +238,7 @@ pub static SSH_AGENT_SIGN_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| 
          any signature you return is fabricated and will not verify.",
         json!({
             "type": "send_sign_response",
-            "signature_hex": "0000000b7373682d656432353531390000004000..."
+            "algorithm": "ssh-ed25519"
         }),
     )
     .with_parameters(vec![
@@ -429,6 +462,197 @@ pub static SSH_AGENT_UNLOCK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+// ============================================================================
+// Turning what the model can write into what the wire needs
+//
+// Both of these exist for the same reason. An SSH key blob and an SSH signature blob are
+// sequences of length-prefixed strings, and the two examples this protocol advertised were
+// hex transcriptions of them that were *wrong*: one declared a 32-byte ed25519 key and
+// supplied three bytes, the other declared a 64-byte signature and supplied four. Nothing
+// caught it, because nothing proofreads hex - which is the whole argument of
+// `tests/example_hex_drift_test.rs`. Naming the algorithm and letting the server frame the
+// blob removes the only part of this a model could get wrong.
+// ============================================================================
+
+/// Do the SSH `string` length prefixes in `blob` span it exactly?
+///
+/// Every standard public key blob is a run of length-prefixed fields - `string(algorithm)`
+/// then the key's own fields, `mpint` for RSA, `string` for ed25519 and ECDSA - so a walk
+/// that consumes the blob exactly is the cheapest check that it is not truncated, which is
+/// how the old example was broken.
+fn ssh_fields_span_exactly(blob: &[u8]) -> bool {
+    let mut at = 0usize;
+    while at < blob.len() {
+        let Some(header) = blob.get(at..at + 4) else {
+            return false;
+        };
+        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        at += 4;
+        let Some(end) = at.checked_add(len) else {
+            return false;
+        };
+        if end > blob.len() {
+            return false;
+        }
+        at = end;
+    }
+    at == blob.len() && !blob.is_empty()
+}
+
+/// Encode an SSH `string`: a 32-bit big-endian length followed by the bytes.
+fn ssh_string(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Normalise one entry of `send_identities_list` into the `public_key_blob_hex` the server
+/// writes, from whichever spelling the model used.
+fn normalise_identity(identity: &serde_json::Value) -> Result<serde_json::Value> {
+    use base64::Engine as _;
+
+    let text = identity
+        .get("public_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty());
+    let blob_hex = identity
+        .get("public_key_blob_hex")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let stated_comment = identity.get("comment").and_then(|v| v.as_str());
+
+    match (text, blob_hex) {
+        (Some(line), None) => {
+            let mut fields = line.split_whitespace();
+            let algorithm = fields
+                .next()
+                .context("'public_key' is empty; it is an authorized_keys line")?;
+            let encoded = fields.next().with_context(|| {
+                format!(
+                    "'public_key' must be \"<algorithm> <base64 blob> [comment]\", e.g. \
+                     \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...\"; got {line:?}"
+                )
+            })?;
+            let line_comment = fields.next();
+
+            let blob = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .with_context(|| {
+                    format!("the base64 blob in 'public_key' does not decode ({encoded:?})")
+                })?;
+            if !ssh_fields_span_exactly(&blob) {
+                anyhow::bail!(
+                    "the key blob in 'public_key' is truncated: its length prefixes do not \
+                     span its {} bytes. Copy a whole line from a .pub file rather than \
+                     shortening it",
+                    blob.len()
+                );
+            }
+            // The blob names its own algorithm; disagreeing with the word in front of it
+            // means one of the two is wrong and there is no way to tell which.
+            let named: &[u8] = {
+                let len = u32::from_be_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+                &blob[4..4 + len]
+            };
+            if named != algorithm.as_bytes() {
+                anyhow::bail!(
+                    "'public_key' says {algorithm:?} but its blob names {:?}",
+                    String::from_utf8_lossy(named)
+                );
+            }
+
+            Ok(json!({
+                "public_key_blob_hex": hex::encode(&blob),
+                "comment": stated_comment.or(line_comment).unwrap_or(""),
+            }))
+        }
+        (None, Some(blob_hex)) => Ok(json!({
+            "public_key_blob_hex": blob_hex,
+            "comment": stated_comment.unwrap_or(""),
+        })),
+        (Some(_), Some(_)) => anyhow::bail!(
+            "an identity has both 'public_key' and 'public_key_blob_hex'; they are two \
+             spellings of the same key and nothing can tell which one you meant"
+        ),
+        (None, None) => anyhow::bail!(
+            "an identity has neither 'public_key' (an authorized_keys line, e.g. \
+             \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... deploy-key\") nor \
+             'public_key_blob_hex'"
+        ),
+    }
+}
+
+/// How many bytes of signature a named algorithm carries inside its frame.
+///
+/// RSA's is the modulus size, so 2048-bit is the assumption; a caller wanting anything else
+/// supplies `signature_bytes_hex`.
+fn fabricated_signature_len(algorithm: &str) -> Option<usize> {
+    match algorithm {
+        "ssh-ed25519" => Some(64),
+        "ssh-rsa" | "rsa-sha2-256" | "rsa-sha2-512" => Some(256),
+        _ => None,
+    }
+}
+
+/// Build the framed signature blob `send_sign_response` puts on the wire.
+fn sign_response_blob(action: &serde_json::Value) -> Result<Vec<u8>> {
+    let algorithm = action
+        .get("algorithm")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let framed_hex = action
+        .get("signature_hex")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    match (algorithm, framed_hex) {
+        (Some(algorithm), None) => {
+            let signature = match action.get("signature_bytes_hex").and_then(|v| v.as_str()) {
+                Some(raw) if !raw.is_empty() => hex::decode(raw)
+                    .context("Invalid hex in 'signature_bytes_hex'")
+                    .and_then(|bytes| {
+                        if bytes.is_empty() {
+                            anyhow::bail!("'signature_bytes_hex' decoded to zero bytes");
+                        }
+                        Ok(bytes)
+                    })?,
+                _ => {
+                    let len = fabricated_signature_len(algorithm).with_context(|| {
+                        format!(
+                            "no signature size is known for {algorithm:?}, so there is \
+                             nothing to fabricate - give 'signature_bytes_hex' as well, or \
+                             the whole framed blob as 'signature_hex'"
+                        )
+                    })?;
+                    // Recognisable in a capture as what it is. Nothing here holds a private
+                    // key, so these bytes cannot verify and should not pretend to.
+                    const MARKER: &[u8] = b"netget-fabricated-signature-";
+                    MARKER.iter().copied().cycle().take(len).collect()
+                }
+            };
+
+            let mut blob = Vec::with_capacity(8 + algorithm.len() + signature.len());
+            ssh_string(&mut blob, algorithm.as_bytes());
+            ssh_string(&mut blob, &signature);
+            Ok(blob)
+        }
+        (None, Some(framed_hex)) => {
+            let blob = hex::decode(framed_hex).context("Invalid hex in 'signature_hex'")?;
+            if blob.is_empty() {
+                anyhow::bail!("'signature_hex' decoded to zero bytes");
+            }
+            Ok(blob)
+        }
+        (Some(_), Some(_)) => anyhow::bail!(
+            "give 'algorithm' or 'signature_hex', not both - the first builds the framing and \
+             the second already contains it"
+        ),
+        (None, None) => anyhow::bail!(
+            "Missing 'algorithm'. Name the signature algorithm (e.g. \"ssh-ed25519\") and the \
+             server frames the blob for you, or pass a whole framed blob as 'signature_hex'"
+        ),
+    }
+}
+
 /// SSH Agent server protocol implementation
 pub struct SshAgentProtocol;
 
@@ -642,21 +866,23 @@ impl Server for SshAgentProtocol {
                     .as_array()
                     .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'identities' field"))?;
 
-                Ok(ActionResult::Custom {
-                    name: "send_identities_list".to_string(),
-                    data: json!({ "identities": identities }),
-                })
-            }
-            "send_sign_response" => {
-                let signature_hex = action["signature_hex"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'signature_hex' field"))?;
+                // Normalise here rather than in the server loop, so the one form that
+                // reaches the wire is the hex blob and `executable_examples_test` exercises
+                // the conversion the advertised example depends on.
+                let normalised = identities
+                    .iter()
+                    .map(normalise_identity)
+                    .collect::<Result<Vec<_>>>()?;
 
                 Ok(ActionResult::Custom {
-                    name: "send_sign_response".to_string(),
-                    data: json!({ "signature_hex": signature_hex }),
+                    name: "send_identities_list".to_string(),
+                    data: json!({ "identities": normalised }),
                 })
             }
+            "send_sign_response" => Ok(ActionResult::Custom {
+                name: "send_sign_response".to_string(),
+                data: json!({ "signature_hex": hex::encode(sign_response_blob(&action)?) }),
+            }),
             "send_success" => Ok(ActionResult::Custom {
                 name: "send_success".to_string(),
                 data: json!({}),

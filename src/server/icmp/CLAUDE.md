@@ -139,14 +139,16 @@ None of this has been executed. Opening the socket needs root; see "Maturity" be
   "type": "send_destination_unreachable",
   "source_ip": "192.168.1.1",
   "destination_ip": "192.168.1.50",
-  "code": 1,
-  "original_packet_hex": "4500001c1c460000401160abc0a80132cb007105a1120035000860b6"
+  "code": 3,
+  "original_packet": {
+    "source_ip": "192.168.1.50",
+    "destination_ip": "203.0.113.5",
+    "protocol": "udp",
+    "source_port": 41234,
+    "destination_port": 53
+  }
 }
 ```
-`original_packet_hex` is the RFC 792 quotation: the offending IPv4 header plus the next 64
-bits, and it is **decoded, not passed through** — the executor `hex::decode`s it, refuses
-non-hex, and the builder truncates to 28 bytes (and does not panic on fewer). Nothing is
-elided in the advertised example; a model that copies it emits a datagram a peer can match.
 
 #### Send Time Exceeded (Traceroute)
 ```json
@@ -155,10 +157,38 @@ elided in the advertised example; a model that copies it emits a datagram a peer
   "source_ip": "10.0.0.1",
   "destination_ip": "192.168.1.50",
   "code": 0,
-  "original_packet_hex": "4500001c1c47000001119faac0a80132cb007105a112829a0008de50"
+  "original_packet": {
+    "source_ip": "192.168.1.50",
+    "destination_ip": "203.0.113.5",
+    "protocol": "udp",
+    "source_port": 41234,
+    "destination_port": 33434,
+    "ttl": 1
+  }
 }
 ```
 `code` is the only optional numeric field, defaulting to 0 (TTL exceeded in transit).
+
+#### The quoted datagram has two spellings, and exactly one may be given
+
+RFC 792 wants the offending IPv4 header plus the next 64 bits. Both error actions accept it
+either way, and **refuse both at once** — they say the same thing in incompatible ways and
+nothing can tell which was meant, which is the rule `send_tcp_data` settled for `encoding`.
+
+- **`original_packet`** (preferred, and what both examples show) describes the datagram as
+  fields: `source_ip`, `destination_ip`, `protocol` (`"udp"` default, `"tcp"`, `"icmp"`, or an
+  IANA number), `source_port` / `destination_port`, `ttl` (64), `identification` (0). The
+  server builds the 20-byte header and the 8 transport bytes and **computes both checksums**.
+- **`original_packet_hex`** is the escape hatch for a relay quoting bytes it actually
+  captured. It is decoded, not passed through as text — the executor `hex::decode`s it,
+  refuses non-hex, and the builder truncates to 28 bytes (and does not panic on fewer).
+
+The examples used to be hex, and that is what the structured form exists to undo: those 28
+bytes end in two ones' complement sums, which a model can neither compute nor proofread, and
+a wrong one is **silent** — the peer does not match the error to its outstanding probe and
+simply ignores it. Written as fields, the `"ttl": 1` that makes a quotation a traceroute probe
+is legible; as hex it is bit 8 of a blob. `tests/example_hex_drift_test.rs` is the gate that
+found this.
 
 #### Ignore ICMP
 ```json

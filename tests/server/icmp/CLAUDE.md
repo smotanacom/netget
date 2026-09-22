@@ -39,6 +39,10 @@ privilege, because `IcmpServer::build_echo_reply` / `build_destination_unreachab
 | `the_echo_reply_example_produces_the_packet_it_describes` | `payload_hex` is decoded, not sent as text |
 | `ignore_icmp_puts_nothing_on_the_wire` | `NoAction`, not an error |
 | `malformed_actions_are_refused_rather_than_panicking` | thirteen hostile shapes: non-hex, odd-length hex, out-of-range identifier, a stringified number, an IPv6 address, a payload larger than a datagram |
+| `structured_quoted_datagram_is_a_real_udp_probe`, `structured_quoted_datagram_handles_tcp` | the RFC 792 quotation built from `original_packet` fields — both ones' complement sums *verified*, which is the whole reason the field exists: a model cannot compute a header checksum and a wrong one is silent |
+| `the_hex_escape_hatch_is_still_passed_through_verbatim` | `original_packet_hex` still means "these exact bytes", for a relay quoting what it captured |
+| `giving_both_spellings_of_the_quotation_is_refused` | `original_packet` and `original_packet_hex` together are an error, never resolved by picking one — the `send_tcp_data` rule |
+| `malformed_structured_quotations_are_refused` | seven shapes of `original_packet` that cannot be built, refused rather than half-built |
 
 Assert against offsets, not golden blobs: a failure then names the field that moved.
 

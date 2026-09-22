@@ -42,69 +42,109 @@ const MAX_INLINE_HEX_BYTES: usize = 16;
 
 /// `limb:protocol:file:bytes` for every long hex literal in a model-facing example.
 ///
-/// All five are *placeholders* rather than transcriptions — there is no const anywhere in their
-/// protocol that they could have drifted from, which is why limb B does not see them and why
-/// none is a live defect. They are recorded so that the sixth, which may well be a descriptor
-/// somebody pasted, fails the build.
+/// **Every entry below has been reviewed against its protocol's source** (22 September 2026).
+/// Nothing here is a to-do waiting for someone to look; each line says which of three kinds it
+/// is and why it stays. Three kinds, because that is what the review actually found:
 ///
-/// **`A:mercurial:actions.rs:20`** — `1234567890abcdef…`, a made-up 20-byte Mercurial changeset
-/// id. Obviously synthetic, and harmless because Mercurial node ids are opaque.
+/// 1. **An opaque identifier the caller supplies.** A 20-byte BitTorrent info hash, a
+///    Mercurial changeset node id, a 32-byte block hash: fixed-width identifiers whose
+///    canonical text form *is* their hex. There is nothing for them to drift from — no const,
+///    no derivation, no structure a model could read instead — and a model cannot get them
+///    wrong in a way structure would fix, because any value is as valid as any other.
+/// 2. **A deliberate escape hatch whose contract is raw bytes.** Verified in each case, not
+///    taken on the description's word: the action says it is the escape hatch, a *structured*
+///    sibling exists and is reachable, and the executor really `hex::decode`s the field.
+///    (That last check is the `send_tcp_data` bug — documented as accepting hex while the
+///    executor did `data.as_bytes()`. None of these has it.)
+/// 3. **A wire blob with neither excuse.** A frame or packet the model is expected to
+///    assemble, with no structured alternative and nothing to copy it from. These are defects
+///    and get fixed rather than recorded.
 ///
-/// **`A:torrent_dht:actions.rs:20`** (two sites) — `0123456789abcdef…`, a made-up 20-byte
-/// BitTorrent node id / infohash. Same shape, same reasoning.
+/// The review found kind 3 in `icmp` and `ssh_agent` and **fixed both**, which is why they are
+/// no longer here. In `ssh_agent` the fix found a live bug: its two advertised blobs each
+/// declared more bytes than they supplied — 32 promised and 3 given for an ed25519 key,
+/// 64 promised and 4 given for a signature — so a client reading either walks off the end.
+/// That is the defect this whole file exists to catch, sitting in a limb-C entry.
 ///
-/// **`A:socks5:actions.rs:37` and `A:tor:actions.rs:37`** — the same 37 bytes in both, and the
-/// one entry here that is arguably worth fixing: it is `GET / HTTP/1.1\r\nHost: example.com…`
-/// hex-encoded, so the model is shown a request it cannot read, cannot adapt, and cannot check.
-/// `CLAUDE.md`'s rule that raw bytes do not belong in action parameters applies to examples
-/// too. Fix: express it as text with an `encoding: "utf8"` field, the way `tcp`'s
-/// `send_tcp_data` settled the same question.
-/// **Limb C's thirteen are UNREVIEWED, and that word is doing real work here.** They are not a
-/// claim that each is fine; they are a claim that nobody has looked. Limb C was added on
-/// 22 September 2026 and every one of these predates it — an `ActionDefinition`'s `example` was
-/// outside the scan entirely, which is how a dozen went unnoticed while limbs A and B were
-/// argued case by case.
+/// ## Kind 1 — opaque identifiers, staying
 ///
-/// They split into **three** kinds, and naming the third is most of what makes the review
-/// tractable:
+/// * **`A:mercurial:actions.rs:20`, `C:mercurial:actions.rs:20`** — `hg_heads` / `hg_branchmap`
+///   / `hg_listkeys` and the startup example, all carrying `1234567890abcdef…`, a 40-character
+///   changeset node id. The parameter description *requires* exactly 40 hex characters and
+///   tells the model to write them out rather than elide them.
+/// * **`A:torrent_dht:actions.rs:20`, `C:torrent_dht:actions.rs:20`** — `send_ping_response`
+///   and friends, and the startup script: 20-byte DHT node ids and info hashes.
+/// * **`C:torrent_peer:actions.rs:20`** — `send_handshake`'s `info_hash` and `peer_id_hex`.
+/// * **`C:torrent_tracker:actions.rs:20`** — `send_announce_response` / `send_scrape_response`:
+///   info hashes and a peer id (`2d5452303030312d…` is the ASCII `-TR0001-xxxxxxxxxxxx`).
+///   Note the comments beside these three: the concrete hex is *deliberate*, replacing a
+///   `{{event.info_hash}}` template that only interpolates for static handlers, so on the LLM
+///   path the executor received the literal braces, dropped the entry and answered 200 OK with
+///   nothing in it. Reverting to a placeholder would reintroduce a known silent failure.
+/// * **`C:bitcoin:actions.rs:32`** (the *client*) — `00000000839a8e68…` is the real hash of
+///   Bitcoin block 1 and `f4184fc596403b9d…` the first-ever BTC transaction id. Block hashes
+///   and txids are 32-byte identifiers; hex is how the whole ecosystem writes them.
+/// * **`C:nfc:actions.rs:20`** — `set_atr`'s ATR, `3B8F8001804F0CA0000003060300030000000068`.
+///   This is the PC/SC standard ATR for a contactless card, and ISO 7816-3 defines an ATR *as*
+///   bytes, including the trailing XOR check character (0x68, which verifies). Its own
+///   parameter description already says hex is the only faithful form, and the executor
+///   decodes it through `parse_hex` and refuses an empty result.
 ///
-/// * **Opaque identifiers a caller supplies** — a 20-byte BitTorrent info hash or Mercurial
-///   node id has nothing to drift *from*, and the reasoning already written above for
-///   `A:torrent_dht` applies unchanged. `hls`, `nfc`, `mercurial`, `torrent_dht`,
-///   `torrent_peer` and `torrent_tracker` look like this. Probably fine as they are.
-/// * **A deliberate escape hatch, whose contract IS raw bytes** — `ntp`'s
-///   `send_ntp_response` and `bitcoin`'s `send_bitcoin_message` both say so in their own
-///   descriptions, and both sit *beside* a structured action (`send_ntp_time_response`,
-///   `send_verack`) that the description tells the model to prefer. "Express it as structured
-///   fields" is already done here; the hex action is the exit for what the structured one
-///   cannot say. The remedy the failure message offers does not apply, and forcing it would
-///   remove a capability.
-/// * **Wire blobs with neither excuse** — `datalink`'s 42 bytes is an Ethernet frame,
-///   `icmp`'s 28 an IP+ICMP packet, `ssh_agent`'s 22 and 23 agent messages. No const to build
-///   from, no escape-hatch framing, and a model cannot proofread any of them. These are the
-///   ones worth changing.
+/// ## Kind 2 — escape hatches, verified, staying
 ///
-/// Shrinking this list means deciding which kind each is and acting on it. Removing a line
-/// without doing that is how a baseline becomes a place to put things.
+/// * **`C:ntp:actions.rs:56`** — `send_ntp_response`. Description opens "Escape hatch:" and
+///   names `send_ntp_time_response` as the thing to prefer; that sibling is in the same
+///   `get_sync_actions` list and fills in the header and echoes the origin timestamp. The
+///   executor strips separators, refuses odd-length and non-hex with an error naming the
+///   field, and refuses under 48 bytes. No `as_bytes()` path exists.
+/// * **`C:bitcoin:actions.rs:24`** (the *server*) — `send_bitcoin_message`. Description opens
+///   "ESCAPE HATCH - prefer send_version/send_verack/…"; all five of those siblings exist and
+///   are reachable. The executor `hex::decode`s. The 24 bytes are a correct mainnet verack
+///   (magic `f9beb4d9`, command padded to 12, length 0, checksum `5df6e0e2` = the first four
+///   bytes of the double-SHA256 of the empty payload).
+/// * **`C:hls:actions.rs:21`** — `hls_segment_response`. This one is the *remedy* already
+///   applied: it carries an explicit `encoding` field ("utf8" default, "hex"), never sniffed,
+///   exactly as `send_tcp_data` settled it, and the example exists to show the hex path with
+///   genuine MPEG-TS bytes (`0x47` sync byte, PID 0, a PAT).
+///
+/// ## Kind 3 — defects, and the two that are not fixed yet
+///
+/// **`A:socks5:actions.rs:37`, `A:tor:actions.rs:37`** (both in `src/client/`, both the same
+/// 37 bytes) — `474554202f20485454502f312e310d0a…` is `GET / HTTP/1.1\r\nHost: example.com\r\n\r\n`.
+/// The model is shown a request it cannot read, cannot adapt to another host or path, and
+/// cannot check. Neither `send_socks5_data` nor `send_tor_data` has any text spelling: both
+/// declare only `data_hex` and both executors `hex::decode` it unconditionally.
+///
+/// **`C:datalink:actions.rs:42`** (also `src/client/`) — `inject_frame`'s example is an ARP
+/// request as 42 bytes of hex, on two event types and the action itself. Same shape: no
+/// structured form, no `encoding` field, nothing to copy it from.
+///
+/// The fix for all three is the one `tcp` settled: a `data_text` field beside `data_hex` with
+/// an explicit `encoding` ("utf8" default, "hex"), decoded explicitly and **never** sniffed —
+/// `"48656c6c6f"` is simultaneously valid text and valid hex and only the sender knows which
+/// it means. For `inject_frame`, structured Ethernet/ARP fields would be better still. They
+/// are recorded rather than done because `src/client/` was being edited by another agent
+/// during this pass; this is the one thing in this file that is still work rather than a
+/// decision.
 const LONG_HEX_EXAMPLE_BASELINE: &[&str] = &[
-    "A:mercurial:actions.rs:20",
+    // Kind 3, not yet fixed — see "Kind 3" above. These are the only entries here that are
+    // still work rather than a recorded decision.
     "A:socks5:actions.rs:37",
     "A:tor:actions.rs:37",
-    "A:torrent_dht:actions.rs:20",
-    // Limb C, unreviewed — see above.
-    "C:bitcoin:actions.rs:24",
-    "C:bitcoin:actions.rs:32",
     "C:datalink:actions.rs:42",
-    "C:hls:actions.rs:21",
-    "C:icmp:actions.rs:28",
+    // Kind 1 — opaque identifiers a caller supplies.
+    "A:mercurial:actions.rs:20",
+    "A:torrent_dht:actions.rs:20",
+    "C:bitcoin:actions.rs:32",
     "C:mercurial:actions.rs:20",
     "C:nfc:actions.rs:20",
-    "C:ntp:actions.rs:56",
-    "C:ssh_agent:actions.rs:22",
-    "C:ssh_agent:actions.rs:23",
     "C:torrent_dht:actions.rs:20",
     "C:torrent_peer:actions.rs:20",
     "C:torrent_tracker:actions.rs:20",
+    // Kind 2 — escape hatches beside a structured sibling, executors verified to decode.
+    "C:bitcoin:actions.rs:24",
+    "C:hls:actions.rs:21",
+    "C:ntp:actions.rs:56",
 ];
 
 /// Bodies whose contents the model reads as a template.
