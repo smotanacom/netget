@@ -144,6 +144,36 @@ impl NetGetServer {
         }
     }
 
+    /// Wait until **every** needle has appeared, or the deadline passes.
+    ///
+    /// [`wait_for_any`](Self::wait_for_any) returns on the *first* match, which is right when a
+    /// test then asserts on one thing and wrong when it asserts on several. The coap
+    /// fail-closed test did the latter — waited for either `decision=` tag, then asserted both —
+    /// so under a 32-thread sweep the first tag landed inside the window, the wait returned
+    /// satisfied, and the assertion on the second failed while it was still in flight. It
+    /// passed alone every time, which is exactly how that class hides.
+    ///
+    /// Returns quietly on timeout, like its sibling: the caller's `assert!` reports the
+    /// condition and dumps the output, and failing here would replace a good message with a
+    /// worse one.
+    #[allow(dead_code)]
+    pub async fn wait_for_all(&self, needles: &[&str], timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let lines = self.output_lines.lock().await;
+                if needles.iter().all(|n| lines.iter().any(|l| l.contains(n))) {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     pub async fn output_contains(&self, needle: &str) -> bool {
         let lines = self.output_lines.lock().await;
         lines.iter().any(|line| line.contains(needle))

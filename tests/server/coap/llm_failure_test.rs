@@ -149,8 +149,12 @@ async fn test_coap_fails_closed_with_5_03_and_says_which_path_it_took() -> E2ERe
     // The peer got the same five bytes twice. `grep 'decision=fail_closed_'` has to find both
     // *and tell them apart*, or an operator cannot separate a backend outage from a model that
     // is answering badly — which are opposite problems with opposite fixes.
+    // `wait_for_all`, not `wait_for_any`: this test asserts on BOTH tags below, and the
+    // any-variant returns on the first match. Under a 32-thread sweep that is a real
+    // difference — the backend-failure tag landed inside the window, the wait returned
+    // satisfied, and the assertion on the second tag failed while it was still in flight.
     server
-        .wait_for_any(
+        .wait_for_all(
             &[
                 "decision=fail_closed_llm_error",
                 "decision=fail_closed_no_action",
