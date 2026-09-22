@@ -179,7 +179,6 @@ fn evidence_loop() -> String {
 ///   for a rating rather than as something the loop must carry; `wireguard` is Experimental for
 ///   exactly that reason, and `tor_relay` is named in the same passage.
 const NOT_RUN_ANYWHERE: &[&str] = &[
-    "git::e2e_test",
     "snmp::test",
     "tor_integration::tor_client",
     "whois::e2e_test",
