@@ -922,7 +922,7 @@ The suite is the evidence. Where it lies, the ratings lie.
   |---|---|
   | docs naming **every** one of their test files | 65 |
   | docs naming some but not all | 71 |
-  | docs naming **none** of them | **21** |
+  | docs naming **none** of them | **21** → **0** |
 
   ```bash
   python3 - <<'EOF'
@@ -938,10 +938,9 @@ The suite is the evidence. Where it lies, the ratings lie.
   ```
 
   **The 21 were where to start**, because a doc that names none of its own tests is not stale in
-  a detail — it is describing something else. **Twelve are done (22 September 2026): `git`,
-  `irc`, `ldap`, `maven`, `mercurial`, `named_pipe`, `nfc`, `pty`, `quic`, `saml_idp`,
-  `saml_sp`, `stdio`, and `tcp`'s test doc alongside them. Nine remain, all
-  `bluetooth_ble_*` profiles** — formulaic, and best done as one batch.
+  a detail — it is describing something else. **All 21 are done (22 September 2026), and the
+  measure is now zero**: every test directory's `CLAUDE.md` names at least one of its own test
+  files. Re-run the snippet above to confirm rather than trusting this line.
 
   Doing them was not a formatting exercise. Four of `irc`'s five unmentioned files exist because
   of a defect; `ldap`'s unmentioned `result_code_range_test.rs` guards a narrowing cast where
