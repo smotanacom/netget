@@ -6,10 +6,52 @@ Tests SSH server implementation with authentication, shell sessions, and SFTP op
 control SSH authentication decisions, generate shell responses, and provide SFTP filesystem operations. Includes
 extensive testing of Python script-based auth handling.
 
+## Two independent clients, and what the second one found
+
+One client can agree with one bug. Until September 2026 every real-client test here drove
+`ssh2` (libssh2), and a rating resting on one client rests on that client's leniency —
+elsewhere in this repository `etcd`, `grpc` and `mysql` were each Beta on a single client and
+each turned out to be unusable by every other conformant implementation.
+
+| file | peer | what only it covers |
+|---|---|---|
+| `test.rs` | `ssh2` → libssh2 (C) | the SFTP subsystem end to end; script-vs-LLM auth routing |
+| `real_client_test.rs` | the real OpenSSH `ssh` binary | algorithm negotiation against OpenSSH 10's own preference list; `exec` with no PTY; the **exit status**; OpenSSH's own rendering of a refusal |
+
+`real_client_test.rs` generates an ed25519 identity with `ssh-keygen`, authenticates with
+`BatchMode=yes` (OpenSSH will not read a password without a TTY, which is why a key rather than
+a password), runs one `ssh host <command>`, and asserts the exact stdout bytes *and* the exit
+code. A second session with a username the model refuses is asserted to be `Permission denied`
+and exit 255. **It fails rather than skips** when `ssh`/`ssh-keygen` are absent, and is not
+`#[ignore]`d.
+
+Every option it passes exists to make the run reproducible: `-F /dev/null` (ignore the
+operator's `~/.ssh/config`, as `psql -X` ignores `~/.psqlrc`), `UserKnownHostsFile=/dev/null`
+plus `StrictHostKeyChecking=no` (the host key is regenerated on every start, so it is unknown
+by construction), and `IdentitiesOnly=yes` + `IdentityAgent=none` (without them a running
+`ssh-agent`'s keys are offered first and **each one is a separate `ssh_auth` event**, which
+would make the call budget depend on the developer's agent).
+
+**Verified non-vacuous** by breaking the server twice:
+
+| break | what OpenSSH printed |
+|---|---|
+| `llm_auth_decision`'s accepted branch returns `Ok(!allowed)` | `netget@127.0.0.1: Permission denied (…)`, exit **255**, on the session the model admitted |
+| `exec_request`'s success exit status forced to `69` | stdout still byte-for-byte correct; **only** the exit code moved, to 69. A test reading stdout alone would have passed |
+
+**What it found: `ssh host cmd` returns CRLF where a real `sshd` returns LF.**
+`normalize_line_endings` runs on the exec path too, where no PTY exists; the CRLF an
+interactive session shows comes from the pty's `ONLCR`, not from the server. So
+`OUT=$(ssh host cmd)` keeps a trailing `\r`. The libssh2 tests could never see it — they
+compare against a string the same test wrote, so `\r\n` on both sides agrees with itself. The
+test asserts the current behaviour **and names it as a deviation**, so a fix fails a test that
+describes the defect rather than quietly satisfying one that never looked. See
+`src/server/ssh/CLAUDE.md` → Known limitations for why the fix is not a one-liner.
+
 ## Test Strategy
 
 - **Isolated test servers**: Each test spawns separate NetGet instance with specific instructions
-- **Real SSH client**: Uses `ssh2` Rust library (libssh2 bindings) for authentic SSH protocol testing
+- **Real SSH clients**: `ssh2` (libssh2 bindings) *and* the OpenSSH `ssh` binary
 - **Raw TCP for basic tests**: Some tests use raw TCP to verify SSH banner (lower-level validation)
 - **Script-focused**: Multiple tests validate script generation and execution for auth
 - **SFTP validation**: One comprehensive test for SFTP subsystem operations
@@ -30,7 +72,13 @@ extensive testing of Python script-based auth handling.
 - `test_ssh_script_update()`: 1-2 LLM calls (setup + optional update) + 0 for auth events
 - `test_ssh_script_fallback_to_llm()`: 1 LLM call (setup) + 2 fallback calls (eve, frank)
 
-**Total: ~15-18 LLM calls** (exceeds 10 target but acceptable given comprehensive coverage)
+### Real-Client Test (OpenSSH)
+
+- `openssh_completes_a_session_against_the_ssh_server()`: **4** — 1 startup + 2 auth decisions
+  (one per session; OpenSSH offers exactly one key because of `IdentitiesOnly`) + 1 exec
+  command. The refused session costs no shell call, because it never opens a channel.
+
+**Total: ~19-22 LLM calls** (exceeds 10 target but acceptable given comprehensive coverage)
 
 **Why Higher Budget?**:
 
@@ -303,11 +351,15 @@ Total: ~5s per operation (LLM dominates)
 
 ### Test Coverage Gaps
 
-1. **Shell commands**: No tests for interactive shell (ls, pwd, cd, etc.)
+1. **Interactive shell**: no test drives a PTY session. `exec` (`ssh host <command>`) *is*
+   covered, by `real_client_test.rs`.
 2. **SFTP writes**: No tests for file upload or modification
-3. **Public key auth**: Only password auth tested
+3. **openssh's `sftp` binary**: the SFTP subsystem still rests on libssh2 alone
 4. **Multiple channels**: No tests for multiple channels per connection
 5. **Connection close**: No tests for LLM-initiated connection close
+
+Item 3 on this list used to read "Public key auth: only password auth tested". That stopped
+being true when `real_client_test.rs` landed: OpenSSH authenticates with `publickey` there.
 
 ### Consolidation Opportunities
 

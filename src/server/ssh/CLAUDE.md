@@ -43,17 +43,37 @@ comment outlived the fix and was quoted twice as the reason for the rating. **Ch
 test drives, not what the server links**: the demotion looked at russh in `src/` and never
 noticed `ssh2::Session` in `tests/`.
 
+### The second client, and what it found
+
+Since September 2026 the rating rests on **two** independent clients rather than one. One
+client can agree with one bug — `etcd`, `grpc` and `mysql` were each Beta on a single client
+and each turned out to be unusable by every other conformant implementation — so
+`tests/server/ssh/real_client_test.rs` drives the real **OpenSSH `ssh` binary**, which is a
+third implementation again: neither russh nor libssh2, and the one an operator actually types.
+
+It authenticates with a generated ed25519 key (`BatchMode=yes`, so nothing can prompt — OpenSSH
+will not read a password without a TTY, which is why the key rather than a password), runs a
+one-shot `ssh host <command>` over an exec channel, and asserts both the exact stdout bytes and
+**the exit status OpenSSH reports** from the SSH `exit-status` request. A second session with a
+username the model refuses is asserted to come back as OpenSSH's own `Permission denied` and
+exit 255. It fails rather than skips when `ssh`/`ssh-keygen` are absent, and is not
+`#[ignore]`d.
+
+Verified non-vacuous by inverting `llm_auth_decision`'s accepted branch (the admitted session
+became `Permission denied`, exit 255) and by forcing `exec_request`'s success exit status to
+`69` — stdout stayed byte-for-byte correct and *only* the exit code moved, so a test reading
+stdout alone would have passed.
+
+**And the second client immediately found a real deviation from OpenSSH `sshd`.** See
+"Line endings on the exec path" under Known limitations.
+
 ### Still unproven
 
-- **openssh's own `ssh` and `sftp` binaries** have only ever been driven by hand. They are on
-  this machine and in CI, so an automated test is cheap — and they are the client most users
-  would point at this server, so until it exists Beta rests on libssh2 alone.
-- **An interactive shell through a third-party client.** The libssh2 tests cover exec and
-  SFTP; nothing drives a PTY session.
-
-What would settle the shell gap either way: openssh's `ssh`/`sftp`, or `ssh2` again, completing
-auth **and a shell/exec channel exchange** in a test that is neither `#[ignore]`d nor skipped
-when the binary is absent — the same shape `test_sftp_basic_operations` already has for SFTP.
+- **openssh's `sftp` binary.** `ssh` is now driven by a test; `sftp` has only ever been run by
+  hand, so the SFTP subsystem still rests on libssh2 alone.
+- **An interactive shell through a third-party client.** libssh2 covers exec and SFTP, OpenSSH
+  covers exec; nothing drives a PTY session — which is also why the CRLF defect below has no
+  test that would notice a correct fix on the interactive side.
 
 ### Fail-closed
 
@@ -236,6 +256,22 @@ removed, and `tests/accept_bounded_test.rs` covers the shared helper, including 
   decision is made on the username alone.
 - No readline emulation: no command history, no arrow keys, no tab completion.
 - The host key is ephemeral (see above).
+- **Line endings on the exec path are wrong, and a real client shows it.**
+  `SshServerHandler::normalize_line_endings` rewrites `\n` to `\r\n` on **every** shell
+  response, including the one-shot `exec_request` path where no PTY exists. A real `sshd`
+  never translates: the CRLF an interactive session shows comes from the *pty's* `ONLCR`, not
+  from the server. So `ssh host 'cmd' | xxd` returns `…\r\n` here and `…\n` against OpenSSH
+  sshd, and the common `OUT=$(ssh host cmd)` leaves a stray `\r` at the end of `$OUT`.
+
+  Nothing in the libssh2 tests could see this — they compare the output against a string the
+  same test wrote, so `\r\n` on both sides agrees with itself. `real_client_test.rs` asserts
+  the current behaviour *and names it as a deviation*, so a fix fails a test that describes the
+  defect rather than quietly satisfying one that never looked.
+
+  The honest fix is to translate only when a PTY was requested on that channel, and that is not
+  a one-line edit: `mod.rs` implements no `pty_request` handler at all, so the server does not
+  currently know. `llm_shell_command`'s second parameter is `first_input`, not a mode, so the
+  flag has to be threaded from `exec_request` and `data` separately.
 
 ## Storage
 
@@ -249,13 +285,17 @@ The suite is `tests/server/ssh/test.rs` (banner, version exchange, concurrent co
 script-vs-LLM auth routing, and one SFTP round trip) and `tests/server/ssh/llm_failure_test.rs`
 (the fail-closed paths: auth, shell command, exec). Nothing in either file is `#[ignore]`d.
 
+…plus `tests/server/ssh/real_client_test.rs`, which drives the real OpenSSH `ssh` binary
+(see "The second client" above), and `tests/server/ssh/connection_bounds_test.rs`.
+
 `test_sftp_basic_operations` is the one that uses a third-party client end to end: `ssh2`
 (libssh2 bindings) handshakes, authenticates with a password, opens the SFTP subsystem and
 completes `readdir` / `open` + `read` / `stat`, with unconditional assertions. The other ssh2
 tests are lower-level — `test_ssh_version_exchange` notes that ssh2 has timing and
 compatibility trouble against this russh server outside that path.
 
-Verify the interactive paths by hand, which no test covers:
+Verify the interactive paths by hand, which no test covers (`ssh host <command>` *is* covered,
+by `real_client_test.rs`; a PTY session is not):
 
 ```
 ssh -p 2222 -o StrictHostKeyChecking=no admin@localhost

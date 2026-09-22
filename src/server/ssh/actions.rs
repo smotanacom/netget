@@ -90,6 +90,12 @@ impl Protocol for SshProtocol {
             // `src/server/ssh/CLAUDE.md` as the reason for the rating.
             //
             // Check what the test drives, not what the server links.
+            //
+            // Since September 2026 the rating rests on TWO independent clients rather than
+            // one: libssh2 as above, and the real OpenSSH `ssh` binary in
+            // tests/server/ssh/real_client_test.rs. One client can agree with one bug, and
+            // the second one immediately showed a real deviation from OpenSSH sshd (see
+            // `e2e_testing` on the exec-path CRLF translation).
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(22))
             // The shell echo buffer is the only inbound allocation NetGet owns here; russh
@@ -110,10 +116,28 @@ impl Protocol for SshProtocol {
                  paths. test_ssh_connection_attempt asserts libssh2 completes the handshake \
                  and is then refused a login no handler granted. Alongside these, bare \
                  TcpStream tests cover the banner, version exchange and concurrent connects. \
-                 UNPROVEN: openssh's own ssh/sftp binaries have only been driven by hand, so \
-                 no automated test covers the client most users would point at this server; \
-                 and no test exercises an interactive shell through a third-party client, \
-                 only exec and SFTP.",
+                 SECOND CLIENT: the real OpenSSH `ssh` binary, in \
+                 tests/server/ssh/real_client_test.rs. A third implementation again - neither \
+                 russh nor libssh2 - and the one an operator actually types. It authenticates \
+                 with a generated ed25519 key (BatchMode, so nothing can prompt), runs a \
+                 one-shot `ssh host <command>` over an exec channel, and the test asserts the \
+                 exact bytes on stdout AND the exit status OpenSSH reports from the SSH \
+                 exit-status request; a second session with a username the model refuses is \
+                 asserted to come back as OpenSSH's own `Permission denied` and exit 255. It \
+                 FAILS rather than skips when ssh/ssh-keygen are absent, and is not #[ignore]d. \
+                 Verified non-vacuous by inverting llm_auth_decision's accepted branch (the \
+                 admitted session became `Permission denied` and exit 255) and by forcing \
+                 exec_request's success exit status to 69 (stdout was still byte-for-byte \
+                 correct and ONLY the exit code moved, so a test reading stdout alone would \
+                 have passed). \
+                 WHAT THE SECOND CLIENT FOUND: NetGet applies normalize_line_endings on the \
+                 EXEC path, where no PTY exists, so `ssh host cmd` returns CRLF where a real \
+                 sshd returns LF - the CRLF an interactive session shows comes from the pty's \
+                 ONLCR, not from the server. `OUT=$(ssh host cmd)` therefore leaves a stray \
+                 CR. Not fixed here (mod.rs handles no pty_request at all, so the honest fix \
+                 is channel bookkeeping); the test asserts and names the current behaviour. \
+                 STILL UNPROVEN: openssh's `sftp` binary, and an interactive shell through any \
+                 third-party client - only exec and SFTP are covered.",
             )
             .notes(
                 "FAILS CLOSED: an LLM error, a handler that returns no ssh_auth_decision, and \
@@ -122,7 +146,10 @@ impl Protocol for SshProtocol {
                  keyboard-interactive. SFTP is read-only (write/remove/mkdir/rmdir/rename are \
                  not implemented) and serves no real filesystem — every listing, stat and byte \
                  comes from the model. Host key is regenerated on every start, so clients warn \
-                 about a changed key.",
+                 about a changed key. Shell output has \\n rewritten to \\r\\n on EVERY path, \
+                 including the one-shot exec channel where no PTY exists and a real sshd would \
+                 not translate - so `ssh host cmd` returns CRLF and `$(ssh host cmd)` keeps a \
+                 trailing CR.",
             )
             .build()
     }
