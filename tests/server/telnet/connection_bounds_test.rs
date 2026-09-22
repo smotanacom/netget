@@ -1,6 +1,6 @@
 //! The connection bounds on a real, running Telnet server, driven from the wire.
 //!
-//! Two claims, and they pull in opposite directions — which is the point. A peer that has
+//! Four claims, and the first two pull in opposite directions — which is the point. A peer that has
 //! connected and said nothing must be let go of; a connection that is in the middle of being
 //! answered must not be.
 //!
@@ -37,8 +37,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
-/// `src/server/telnet/mod.rs::FIRST_LINE_READ_TIMEOUT`.
-const FIRST_READ_TIMEOUT: Duration = Duration::from_secs(120);
+/// The first-byte bound the tests below drive, passed as `first_byte_timeout_secs`.
+const SHORT_FIRST_BYTE: Duration = Duration::from_secs(6);
+
+/// The idle bound one test drives, passed as `idle_timeout_secs`.
+const SHORT_IDLE: Duration = Duration::from_secs(3);
+
+/// How long the last test holds a silent peer against the *default* first-byte bound.
+///
+/// Past the 120 seconds this bound used to be, by a margin that survives a 100-thread run,
+/// and far inside the 300 it now is. A cheaper test cannot exist: the claim is about a number
+/// larger than 120, so the wait has to be larger than 120 too.
+///
+/// **This is the regression test for the defect this file was extended for.** The bound was
+/// 120 seconds, set to 120 seconds on the correct observation that the peer is usually a person, but 120 is less than half the 300 seconds a `manual` rule gives that person. The greeting, where there is one, is *ours*; sending it says nothing
+/// about whether the peer will answer it, and NetGet's own Telnet client is precisely a peer that
+/// will not - `src/client/telnet/mod.rs` writes nothing of its own - every byte comes from an action - and a client created from the dashboard is routed `*` -> manual. At 120 seconds this server dropped the operator's own client while
+/// they were still looking at it.
+const PAST_THE_OLD_BOUND: Duration = Duration::from_secs(140);
 
 async fn new_state() -> AppState {
     let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
@@ -64,14 +80,25 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 
 /// A server whose events are answered deterministically, with no model call at all: this test
 /// is about the clock, and a reachable backend would only add noise to it.
-async fn start_server(state: &AppState) -> u16 {
+async fn start_server(state: &AppState, startup_params: Option<serde_json::Value>) -> u16 {
     let (tx, _rx) = mpsc::unbounded_channel();
     let server_id = ServerForm {
         protocol: "telnet".to_string(),
         port: Some(0),
+        startup_params,
         // An empty instruction really is model-free; `None` is replaced by a default one and
         // every event would consult the LLM.
         instruction: Some(String::new()),
+        // A deterministic answer to any line, so the idle-bound test can get a connection into
+        // the post-answer state without a model. Tests that send nothing are unaffected: the
+        // rule only fires on a line that arrived.
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "telnet_message_received",
+            "handler": {"type": "static", "actions": [{
+                "type": "send_telnet_line",
+                "line": "ack"
+            }]}
+        })]),
         ..Default::default()
     }
     .create(state, tx)
@@ -82,11 +109,15 @@ async fn start_server(state: &AppState) -> u16 {
 
 /// The same server with every event parked for a human, which is the 300-second window the
 /// second test exists for.
-async fn start_parked_server(state: &AppState) -> (ServerId, u16) {
+async fn start_parked_server(
+    state: &AppState,
+    startup_params: Option<serde_json::Value>,
+) -> (ServerId, u16) {
     let (tx, _rx) = mpsc::unbounded_channel();
     let server_id = ServerForm {
         protocol: "telnet".to_string(),
         port: Some(0),
+        startup_params,
         instruction: Some(String::new()),
         event_handlers: Some(vec![serde_json::json!({
             "event_pattern": "*",
@@ -104,7 +135,13 @@ async fn start_parked_server(state: &AppState) -> (ServerId, u16) {
 #[tokio::test]
 async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_bound() {
     let state = new_state().await;
-    let port = start_server(&state).await;
+    let port = start_server(
+        &state,
+        Some(serde_json::json!({
+            "first_byte_timeout_secs": SHORT_FIRST_BYTE.as_secs(),
+        })),
+    )
+    .await;
 
     let mut peer = TcpStream::connect(("127.0.0.1", port))
         .await
@@ -116,7 +153,7 @@ async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_bound() {
     // --test-threads=100 is not mistaken for a missing deadline; what is being asserted is
     // that the read ends at all.
     let read = tokio::time::timeout(
-        FIRST_READ_TIMEOUT + Duration::from_secs(45),
+        SHORT_FIRST_BYTE + Duration::from_secs(45),
         peer.read_to_end(&mut sink),
     )
     .await;
@@ -125,24 +162,34 @@ async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_bound() {
     assert!(
         read.is_ok(),
         "a peer that connected and sent nothing was still holding the socket, the connection \
-         task and its AppState entry after {}s — the first-byte read deadline is not being \
-         applied",
+         task and its AppState entry after {}s — either the first-byte read deadline is not \
+         applied at all, or `first_byte_timeout_secs` was declared and never read and the \
+         300-second default is still in force",
         elapsed.as_secs()
     );
     read.unwrap().expect("read to EOF");
     assert!(
-        elapsed >= FIRST_READ_TIMEOUT / 2,
+        elapsed >= SHORT_FIRST_BYTE / 2,
         "closed after only {}ms — that is not the declared {}s bound, it is something else \
          tearing the connection down, and this test would then pass without the bound existing",
         elapsed.as_millis(),
-        FIRST_READ_TIMEOUT.as_secs()
+        SHORT_FIRST_BYTE.as_secs()
     );
 }
 
 #[tokio::test]
 async fn a_connection_whose_answer_is_parked_for_a_human_is_not_closed() {
     let state = new_state().await;
-    let (server_id, port) = start_parked_server(&state).await;
+    // A deliberately tiny first-byte bound, so the park outlives it several times over. If the
+    // deadline covered the answer as well as the read, this connection would be gone in six
+    // seconds.
+    let (server_id, port) = start_parked_server(
+        &state,
+        Some(serde_json::json!({
+            "first_byte_timeout_secs": SHORT_FIRST_BYTE.as_secs(),
+        })),
+    )
+    .await;
 
     let mut peer = TcpStream::connect(("127.0.0.1", port))
         .await
@@ -152,7 +199,7 @@ async fn a_connection_whose_answer_is_parked_for_a_human_is_not_closed() {
     peer.flush().await.expect("flush");
     // Past the first-byte bound, and past it by a margin — but well inside the 600-second
     // window the human has to answer in.
-    tokio::time::sleep(FIRST_READ_TIMEOUT + Duration::from_secs(20)).await;
+    tokio::time::sleep(SHORT_FIRST_BYTE * 5).await;
 
     // Asserted on the server's own view first, because that is the half that cannot be
     // satisfied by accident. A read loop that has given up removes the connection's row or
@@ -183,7 +230,7 @@ async fn a_connection_whose_answer_is_parked_for_a_human_is_not_closed() {
             "the server hung up on a connection whose answer was parked for a human after \
              {}s — the read deadline is being applied to the answer as well as to the read, \
              which closes the connection it is in the middle of answering",
-            (FIRST_READ_TIMEOUT + Duration::from_secs(20)).as_secs()
+            (SHORT_FIRST_BYTE * 5).as_secs()
         ),
         // Bytes rather than silence would mean the routing broke and something answered; the
         // connection is alive either way, which is what this test is about.
@@ -202,7 +249,7 @@ const CONNECTION_CAP_REFUSAL: &[u8] = b"\r\n[netget] too many connections\r\n";
 #[tokio::test]
 async fn the_connection_past_the_cap_is_refused_in_the_protocols_own_words() {
     let state = new_state().await;
-    let (server_id, port) = start_parked_server(&state).await;
+    let (server_id, port) = start_parked_server(&state, None).await;
 
     // Every event is parked for a human, so an admitted connection stays admitted for the whole
     // test: the cap counts *live* connections, and a peer that was let go of would re-open a
@@ -259,4 +306,93 @@ async fn the_connection_past_the_cap_is_refused_in_the_protocols_own_words() {
          it retry immediately and forever. Got {:?}",
         String::from_utf8_lossy(&sink)
     );
+}
+
+#[tokio::test]
+async fn once_a_command_has_been_answered_the_idle_bound_governs_not_the_first_byte_one() {
+    let state = new_state().await;
+    // The two bounds are set far apart and the wrong way round on purpose: if the read loop
+    // kept using the first-byte bound after answering, this connection would live 60 seconds
+    // and the assertion below would time out.
+    let port = start_server(
+        &state,
+        Some(serde_json::json!({
+            "first_byte_timeout_secs": 60,
+            "idle_timeout_secs": SHORT_IDLE.as_secs(),
+        })),
+    )
+    .await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+
+    peer.write_all(b"hello\r\n").await.expect("write a line");
+
+    let mut reply = [0u8; 512];
+    let n = tokio::time::timeout(Duration::from_secs(20), peer.read(&mut reply))
+        .await
+        .expect("the static handler did not answer within 20s")
+        .expect("read reply");
+    assert!(
+        reply[..n].starts_with(b"ack"),
+        "the static rule did not answer with ack, so what follows is not the post-answer \
+         state this test is about; got {:?}",
+        String::from_utf8_lossy(&reply[..n])
+    );
+
+    let started = std::time::Instant::now();
+    let mut sink = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(45), peer.read_to_end(&mut sink)).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        read.is_ok(),
+        "an answered connection that then went quiet was never closed — `idle_timeout_secs` \
+         was declared and is not being read"
+    );
+    read.unwrap().expect("read to EOF");
+    assert!(
+        elapsed < Duration::from_secs(40),
+        "closed after {}s, which is the 60-second first-byte bound rather than the {}s idle \
+         one — the read loop never switched bounds",
+        elapsed.as_secs(),
+        SHORT_IDLE.as_secs()
+    );
+}
+
+#[tokio::test]
+async fn the_default_leaves_a_silent_peer_alone_for_longer_than_a_person_takes() {
+    let state = new_state().await;
+    // No startup parameters at all: this is the shipped default, which is the whole point.
+    let port = start_server(&state, None).await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+
+    // Drain anything the server says unprompted, so what the read below waits on is the server
+    // closing rather than a greeting arriving.
+    let mut greeting = [0u8; 512];
+    let _ = tokio::time::timeout(Duration::from_secs(20), peer.read(&mut greeting)).await;
+
+    // A dashboard-created Telnet client is exactly this peer: connected, silent, and
+    // silent until a person uses [ send message ].
+    let mut sink = Vec::new();
+    match tokio::time::timeout(PAST_THE_OLD_BOUND, peer.read_to_end(&mut sink)).await {
+        // Still open with nothing further to read: the passing case.
+        Err(_) => {}
+        Ok(Ok(0)) => panic!(
+            "the server hung up on a silent peer within {}s. The default first-byte bound was \
+             120 seconds and that is less than a person takes: NetGet's own Telnet client \
+             writes nothing until someone types into [ send message ], so the operator watched \
+             their own client disappear. See FIRST_LINE_READ_TIMEOUT in src/server/telnet/mod.rs",
+            PAST_THE_OLD_BOUND.as_secs()
+        ),
+        Ok(Ok(_)) => panic!(
+            "the server wrote further bytes to a peer that had sent no command; the static rule \
+             answers commands, and there was none"
+        ),
+        Ok(Err(e)) => panic!("read failed on a connection that should still be open: {e}"),
+    }
 }

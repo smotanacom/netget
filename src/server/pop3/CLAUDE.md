@@ -294,8 +294,8 @@ declares both halves; the constants and the reasoning live beside them in
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_COMMAND_READ_TIMEOUT` | 60s | POP3 is server-speaks-first: the peer gets a `+OK` greeting and every real client answers it with `CAPA`, `USER` or `AUTH` from inside its own connect path. A minute is Dovecot's `login_timeout` default, which bounds exactly this pre-authentication phase and is separate there from the post-login idle timer for the same reason it is separate here. |
-| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | Not a taste: RFC 1939 §3 says a POP3 server's inactivity autologout timer "MUST be of at least 10 minutes' duration". This is that timer, at its minimum. The shorter bound above does not contradict it — what the RFC protects is a *session*, whose deletions are only committed at `QUIT`, and a peer that has issued no command has no session to lose. |
+| `FIRST_COMMAND_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 60s — Dovecot's `login_timeout`, which bounds exactly this pre-authentication phase. The argument was that POP3 is server-speaks-first and every real client answers the `+OK` with `CAPA`, `USER` or `AUTH` from inside its own connect path: true of every third-party client and **irrelevant to the peer this server most often has**, because the greeting is *ours* and sending it says nothing about whether the other end will answer it. `src/client/pop3/mod.rs` reads the greeting in its read loop and writes nothing until an action or `[ send message ]` says to, and a dashboard-made client is routed `*` → manual, so at 60s the server dropped the operator's own client while they were still looking at it. Dovecot's number is not wrong for Dovecot — it has no client that parks on a human. 300s is the window a `manual` rule gives one (`src/state/intercepts.rs`). Cost: one idle stranger holds a slot for 300s rather than 60s, still capped at `MAX_CONNECTIONS` and still answered above that cap. A listener exposed to strangers should set the parameter back to 60. Still separate from the post-login idle timer, for the same reason it is separate in Dovecot. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s, overridable per server with `idle_timeout_secs` — but a value below 600 puts this server outside the specification, which the parameter's own description says | Not a taste: RFC 1939 §3 says a POP3 server's inactivity autologout timer "MUST be of at least 10 minutes' duration". This is that timer, at its minimum. The shorter bound above does not contradict it — what the RFC protects is a *session*, whose deletions are only committed at `QUIT`, and a peer that has issued no command has no session to lose. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR [SYS/TEMP] too many connections`**. `-ERR` in place of the greeting is how POP3 refuses a connection it will not serve, and RFC 3206's `[SYS/TEMP]` says precisely what a cap means — temporary, retry later. A client that understands it backs off; one that does not still reads a well-formed `-ERR`. This file already uses the `[SYS/PERM]` half of the same pair for an over-long command line. |
 
 **NetGet's own POP3 client is the *connected-and-silent* case, and this bound is therefore
@@ -310,10 +310,15 @@ closes a peer that is connected and silent, and the greeting is ours, not the pe
 begins, and the LLM round-trip and a `manual` rule parking a command for a human
 (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read.
 
-`tests/server/pop3/connection_bounds_test.rs` drives all three from the wire: a silent peer is
-closed at the first bound, a connection whose answer is parked for a human is not closed at all,
-and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
-EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
-and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+`tests/server/pop3/connection_bounds_test.rs` drives all five from the wire: a silent peer is
+closed at `first_byte_timeout_secs`, a connection whose answer is parked for a human is not
+closed at all however far past that bound the park runs, an answered connection that goes quiet
+is closed at `idle_timeout_secs` rather than at the first-byte one, and the connection past
+`MAX_CONNECTIONS` is answered with the refusal above and then a clean EOF. The fifth is the
+regression for the raise: with **no parameters passed at all**, a silent peer is still open past
+the 60 seconds this bound used to be, which is why that test is deliberately the slow one. Each
+was verified by removing the thing it tests — the deadline, the parameter read, the busy
+marking, the cap — and watching it fail; the default was verified by putting 60 back and watching
+the regression test fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
 is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
 itself, including that a busy connection is never reported as idle.

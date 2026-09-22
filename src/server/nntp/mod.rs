@@ -32,13 +32,63 @@ pub const MAX_COMMAND_BYTES: usize = 4096;
 
 /// How long to wait for the first command after the greeting has been sent.
 ///
-/// NNTP is server-speaks-first: the peer is answered with a `200`/`201` greeting and every
-/// reader — `nntp`, `slrn`, `tin`, a mail client's news backend — replies inside its own
-/// connect path with `CAPABILITIES` or `MODE READER`. A minute is far longer than that takes,
-/// and a peer that has still said nothing has authenticated nothing. The greeting itself sits
-/// outside this deadline by construction: it is generated and written before this loop begins,
-/// so however long the model or a `manual` rule takes over it, the clock has not started.
-const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// **This was 60 seconds, and "NNTP is server-speaks-first" was the wrong reason for it.** The
+/// argument read: the peer is answered with a `200`/`201` greeting and every reader — `nntp`,
+/// `slrn`, `tin`, a mail client's news backend — replies inside its own connect path with
+/// `CAPABILITIES` or `MODE READER`, so a minute is far longer than that takes. True of every
+/// third-party reader, and irrelevant to the peer this server most often has: the greeting is
+/// *ours*, and sending it says nothing about whether the other end will answer it.
+///
+/// The question a first-byte bound actually has to answer is whether NetGet's own client of
+/// this protocol can be connected and silent. NNTP's can, and is, by default:
+/// `src/client/nntp/mod.rs` opens the socket, registers its command channel, and then reads
+/// the welcome line in its read loop. It writes nothing of its own — every byte it puts on the
+/// wire comes from an action — and a client created from the dashboard's `[ + nntp client ]`
+/// is routed `nntp_connected` → static-with-no-actions and then `*` → manual
+/// (`src/tui/modal/form.rs`). So it connects, reads our greeting, parks it for a person, and
+/// waits for someone to type into `[ send message ]`. At 60 seconds this server hung up on the
+/// operator's own client while they were still looking at it.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for how long
+/// someone might take.
+///
+/// What it costs: a stranger holding a socket, a task, an `AppState` row and one of
+/// [`MAX_CONNECTIONS`] slots while saying nothing now gets 300 seconds rather than 60 — a
+/// fivefold rise in how long one idle slot is held, not a removal of the bound. The cap still
+/// holds and a peer over it is still answered [`CONNECTION_CAP_REFUSAL`]. A listener exposed
+/// to strangers should set `first_byte_timeout_secs` low; 60 is the old value and remains a
+/// sound choice for one.
+///
+/// The greeting itself sits outside this deadline by construction: it is generated and written
+/// before this loop begins, so however long the model or a `manual` rule takes over it, the
+/// clock has not started.
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The two read deadlines for one connection, resolved from the server's startup parameters.
+///
+/// Carried as one value so threading them from `spawn_with_llm_actions` down to the command
+/// loop costs one argument rather than two at each hop.
+#[derive(Clone, Copy)]
+struct ReadDeadlines {
+    /// [`FIRST_COMMAND_READ_TIMEOUT`], or this server's `first_byte_timeout_secs`.
+    first_byte: Duration,
+    /// [`IDLE_BETWEEN_COMMANDS_TIMEOUT`], or this server's `idle_timeout_secs`.
+    idle: Duration,
+}
+
+impl ReadDeadlines {
+    fn resolve(first_byte_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        Self {
+            first_byte: first_byte_secs
+                .map(Duration::from_secs)
+                .unwrap_or(FIRST_COMMAND_READ_TIMEOUT),
+            idle: idle_secs
+                .map(Duration::from_secs)
+                .unwrap_or(IDLE_BETWEEN_COMMANDS_TIMEOUT),
+        }
+    }
+}
 
 /// How long to wait for a *further* command once one has been answered.
 ///
@@ -52,6 +102,9 @@ const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// The LLM round-trip and a `manual` rule parking a command for a human
 /// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
 /// so neither can be timed out from under itself.
+///
+/// Overridable per server with `idle_timeout_secs`, for the same reason the first bound is:
+/// the right value is a property of who is on the other end, and only the operator knows that.
 const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Concurrent connections this server admits.
@@ -75,13 +128,21 @@ pub struct NntpServer;
 
 impl NntpServer {
     /// Spawn NNTP server with integrated LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults serve NetGet's own NNTP
+        // client waiting on a human; a listener exposed to strangers wants the first one much
+        // lower.
+        let deadlines = ReadDeadlines::resolve(first_byte_timeout_secs, idle_timeout_secs);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -129,6 +190,7 @@ impl NntpServer {
                                     state_clone,
                                     status_clone,
                                     protocol_clone,
+                                    deadlines,
                                 )
                                 .await;
                             })
@@ -163,6 +225,7 @@ impl NntpServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<NntpProtocol>,
+        deadlines: ReadDeadlines,
     ) {
         use crate::state::server::{
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
@@ -220,6 +283,7 @@ impl NntpServer {
             &app_state,
             &status_tx,
             &protocol,
+            deadlines,
         )
         .await;
 
@@ -274,6 +338,7 @@ impl NntpServer {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<NntpProtocol>,
+        deadlines: ReadDeadlines,
     ) where
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
@@ -410,9 +475,9 @@ impl NntpServer {
             // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
             // human to answer — happens below, after a line has already been read.
             let read_timeout = if answered_one {
-                IDLE_BETWEEN_COMMANDS_TIMEOUT
+                deadlines.idle
             } else {
-                FIRST_COMMAND_READ_TIMEOUT
+                deadlines.first_byte
             };
             let framed = tokio::time::timeout(
                 read_timeout,

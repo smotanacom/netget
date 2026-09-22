@@ -567,8 +567,8 @@ declares both halves; the constants and the reasoning live beside them in
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_COMMAND_READ_TIMEOUT` | 60s | NNTP is server-speaks-first: the peer is answered with a `200`/`201` greeting and every reader — `nntp`, `slrn`, `tin`, a mail client's news backend — replies inside its own connect path with `CAPABILITIES` or `MODE READER`. The greeting is generated and written before this loop begins, so however long the model or a `manual` rule takes over it, the clock has not started. |
-| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | A newsreader is idle for as long as the person at it takes to read an article, so the bound has to be on a human timescale — which is why news server operators configure their client timeout in minutes. It is safe to be this generous because this server holds nothing on the client's behalf that a reconnect cannot rebuild: the model answers every command afresh. |
+| `FIRST_COMMAND_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 60s. NNTP is server-speaks-first: the peer is answered with a `200`/`201` greeting and every reader — `nntp`, `slrn`, `tin`, a mail client's news backend — replies inside its own connect path with `CAPABILITIES` or `MODE READER` — true of every third-party reader and **irrelevant to the peer this server most often has**, because the greeting is *ours* and sending it says nothing about whether the other end will answer it. `src/client/nntp/mod.rs` reads the welcome line in its read loop and writes nothing until an action or `[ send message ]` says to, and a dashboard-made client is routed `*` → manual, so at 60s the server dropped the operator's own client while they were still looking at it. 300s is the window a `manual` rule gives a human (`src/state/intercepts.rs`). Cost: one idle stranger holds a slot for 300s rather than 60s, still capped at `MAX_CONNECTIONS` and still answered above that cap. A listener exposed to strangers should set the parameter low; 60 remains a sound choice for one. The greeting is generated and written before this loop begins, so however long the model or a `manual` rule takes over it, the clock has not started. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s, overridable per server with `idle_timeout_secs` | A newsreader is idle for as long as the person at it takes to read an article, so the bound has to be on a human timescale — which is why news server operators configure their client timeout in minutes. It is safe to be this generous because this server holds nothing on the client's behalf that a reconnect cannot rebuild: the model answers every command afresh. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`400 too many connections`**. `400` is NNTP's "service temporarily unavailable, the connection is closing" response, and RFC 3977 lets a server send it at any point — including in place of a greeting, which is exactly where a refused peer is. A client reads it as *retry later* rather than as a permanent refusal, which is what a connection cap means. |
 
 **NetGet's own NNTP client is the *connected-and-silent* case, and this bound is therefore
@@ -583,10 +583,15 @@ has — `PROTOCOL_QUALITY.md`'s three-state test.
 a command for a human (`src/state/intercepts.rs`, 300s by default), happen after a line has
 already been read, so neither can be timed out from under itself.
 
-`tests/server/nntp/connection_bounds_test.rs` drives all three from the wire: a silent peer is
-closed at the first bound, a connection whose answer is parked for a human is not closed at all,
-and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
-EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
-and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+`tests/server/nntp/connection_bounds_test.rs` drives all five from the wire: a silent peer is
+closed at `first_byte_timeout_secs`, a connection whose answer is parked for a human is not
+closed at all however far past that bound the park runs, an answered connection that goes quiet
+is closed at `idle_timeout_secs` rather than at the first-byte one, and the connection past
+`MAX_CONNECTIONS` is answered with the refusal above and then a clean EOF. The fifth is the
+regression for the raise: with **no parameters passed at all**, a silent peer is still open past
+the 60 seconds this bound used to be, which is why that test is deliberately the slow one. Each
+was verified by removing the thing it tests — the deadline, the parameter read, the busy
+marking, the cap — and watching it fail; the default was verified by putting 60 back and watching
+the regression test fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
 is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
 itself, including that a busy connection is never reported as idle.

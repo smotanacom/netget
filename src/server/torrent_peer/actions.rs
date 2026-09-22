@@ -21,6 +21,40 @@ impl TorrentPeerProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for TorrentPeerProtocol {
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        // The two read deadlines, and nothing else. BEP 3 has no negotiable listener options,
+        // but who is on the other end decides both of these and only the operator knows that:
+        // the defaults serve NetGet's own peer client, which waits for our handshake before
+        // sending its own, while a listener on a public swarm wants the first one much lower.
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send no handshake before the server \
+                              closes it. Default 300, matching the window a `manual` rule \
+                              gives a human to answer one event. The peer is often NetGet's \
+                              own torrent_peer client, whose read loop blocks on the other \
+                              side's 68-byte handshake and only sends its own when the \
+                              send_handshake action says to - so both ends wait, and a short \
+                              bound makes this end give up first. Lower it (30 was the old \
+                              value) for a listener on a public swarm."
+                    .to_string(),
+                required: false,
+                example: json!(300),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a handshaked peer may go without a further message \
+                              before the server closes it. Default 180: the peer wire \
+                              protocol's keep-alive runs about every two minutes, so this \
+                              gives a conforming peer a full missed keep-alive of slack."
+                    .to_string(),
+                required: false,
+                example: json!(180),
+            },
+        ]
+    }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         Vec::new()
     }
@@ -160,12 +194,27 @@ impl Server for TorrentPeerProtocol {
     > {
         Box::pin(async move {
             use crate::server::torrent_peer::TorrentPeerServer;
+            // Both read deadlines are the operator's to choose: who is on the other end is
+            // the only thing that decides them, and only the operator knows that.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             TorrentPeerServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

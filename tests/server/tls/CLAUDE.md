@@ -288,3 +288,31 @@ Look for:
 - [RFC 8446: TLS 1.3](https://datatracker.ietf.org/doc/html/rfc8446)
 - [tokio-rustls Documentation](https://docs.rs/tokio-rustls/latest/tokio_rustls/)
 - [rustls Documentation](https://docs.rs/rustls/latest/rustls/)
+
+## `connection_bounds_test.rs` — 4 in-process tests, **0 LLM calls** (the backend is a dead port)
+
+The read deadlines in `src/server/tls/mod.rs` — `HANDSHAKE_READ_TIMEOUT` (60s), `FIRST_RECORD_READ_TIMEOUT` (300s) and `IDLE_AFTER_DATA_TIMEOUT` (300s) — driven from the wire. No
+mock: these assert on *clocks*, not on answers, and a reachable backend would only add noise.
+Loopback only.
+
+**What each test is for, and why there are three bounds rather than two.** One constant used to
+govern both the handshake wait and the wait for the first application record. They face
+different peers — one that has not proved it speaks TLS, and one that has — so the tests drive
+them separately: a bare `TcpStream` that never sends a ClientHello is closed on
+`handshake_timeout_secs` (and the test fails if it is instead held for the long first-record
+bound, which is how it detects the two collapsing back into one constant), a real rustls client
+that handshakes and then says nothing is closed on `first_byte_timeout_secs`, and one that has
+sent a record and gone quiet is closed on `idle_timeout_secs`.
+
+**The last test is the regression, and it is deliberately the slow one.** The first-byte bound
+was 60 seconds, and NetGet's own TLS client is precisely a peer that bound stranded:
+`src/client/tls/mod.rs` completes the handshake inside `connect()` and then writes no application bytes at all until an action or `[ send message ]` says to, and a client made from the dashboard is routed `*` → manual — so it connects and
+waits for a person, who gets 300 seconds (`src/state/intercepts.rs`). It is now 300s. Proving
+that means holding a silent peer open **past 60 seconds with no startup parameters passed at
+all**, so the wait cannot be made cheaper than the claim.
+
+Every other test passes a short override instead of waiting the default out, which is also what
+proves `first_byte_timeout_secs` and `idle_timeout_secs` are read rather than merely declared:
+a parameter that was ignored would leave the 300-second default in force and the test would time
+out. Each bound was verified by removing it and watching its test fail, and the default was
+verified by putting 60 back and watching the regression test fail.

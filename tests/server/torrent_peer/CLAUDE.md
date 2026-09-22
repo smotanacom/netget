@@ -50,3 +50,31 @@ form: where the wire cannot carry a category, it carries none, and the detail go
 ```
 
 No Ollama: `e2e_test` is mocked and the other two deliberately point the LLM nowhere.
+
+## `connection_bounds_test.rs` — 3 in-process tests, **0 LLM calls** (the backend is a dead port)
+
+The read deadlines in `src/server/torrent_peer/mod.rs` — `HANDSHAKE_READ_TIMEOUT` (300s) and `IDLE_AFTER_HANDSHAKE_TIMEOUT` (180s) — driven from the wire. No
+mock: these assert on *clocks*, not on answers, and a reachable backend would only add noise.
+Loopback only.
+
+**What each test is for.** A peer that has connected and sent no handshake must eventually be
+let go of, because nothing else in the process will close that socket — it holds a task, an
+`AppState` row and one of `MAX_CONNECTIONS` slots before it has identified itself with so much
+as an info-hash. The two bounds are different claims, so the second test completes a hand-built
+BEP 3 handshake, has it answered by a static rule, and then goes quiet, which must be governed
+by `idle_timeout_secs` rather than by the first-byte one. (There is no parked-for-a-human test
+here as there is for `ftp` and `telnet`: the deadline wraps this protocol's `read()` and nothing
+else, and the LLM round-trip happens after it has already returned.)
+
+**The last test is the regression, and it is deliberately the slow one.** The first-byte bound
+was 30 seconds, and NetGet's own BitTorrent peer client is precisely a peer that bound stranded:
+`src/client/torrent_peer/mod.rs` blocks on `read_exact` for the *other* peer's 68-byte handshake and sends its own only when the `send_handshake` action says to, so **both ends wait**, and a client made from the dashboard is routed `*` → manual — so it connects and
+waits for a person, who gets 300 seconds (`src/state/intercepts.rs`). It is now 300s. Proving
+that means holding a silent peer open **past 30 seconds with no startup parameters passed at
+all**, so the wait cannot be made cheaper than the claim.
+
+Every other test passes a short override instead of waiting the default out, which is also what
+proves `first_byte_timeout_secs` and `idle_timeout_secs` are read rather than merely declared:
+a parameter that was ignored would leave the 300-second default in force and the test would time
+out. Each bound was verified by removing it and watching its test fail, and the default was
+verified by putting 30 back and watching the regression test fail.

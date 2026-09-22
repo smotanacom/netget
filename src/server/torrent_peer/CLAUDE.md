@@ -461,16 +461,19 @@ more. It now declares both halves; the constants and the reasoning live beside t
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `HANDSHAKE_READ_TIMEOUT` | 30s | BEP 3 has the initiating peer send its 68-byte handshake immediately — it is the first thing on the wire and nothing precedes it — so a peer that has connected and sent nothing is not mid-handshake, it is holding a socket. |
-| `IDLE_AFTER_HANDSHAKE_TIMEOUT` | 180s | The peer wire protocol's own answer: the keep-alive is a zero-length message sent roughly every two minutes precisely so an idle-but-live peer can be told from a dead one, and mainline clients drop a connection quiet for about that long. Three minutes gives a conforming peer a full missed keep-alive of slack. |
+| `HANDSHAKE_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 30s, on the argument that BEP 3 has the initiating peer send its 68-byte handshake immediately — it is the first thing on the wire and nothing precedes it — so a peer that has connected and sent nothing is not mid-handshake, it is holding a socket. True of every mainline client. **False of NetGet's own peer client, where the two ends deadlock:** `src/client/torrent_peer/mod.rs` connects and its read loop's *first* act is `read_exact` on the other peer's handshake, while sending its own is only the `send_handshake` action — so both ends sit in `read`, and at 30s this end gave up while the operator was still reading the parked event that would have unblocked it. Nothing in BEP 3 argues against 300s: the specification says when a handshake is sent, not how long a listener must wait for one. 300s is the window a `manual` rule gives a human (`src/state/intercepts.rs`). Cost: one idle stranger holds a slot for 300s rather than 30s, still capped at `MAX_CONNECTIONS`. A listener on a public swarm should set the parameter low; 30 remains a sound choice for one. |
+| `IDLE_AFTER_HANDSHAKE_TIMEOUT` | 180s, overridable per server with `idle_timeout_secs` | The peer wire protocol's own answer: the keep-alive is a zero-length message sent roughly every two minutes precisely so an idle-but-live peer can be told from a dead one, and mainline clients drop a connection quiet for about that long. Three minutes gives a conforming peer a full missed keep-alive of slack. |
 | `MAX_CONNECTIONS` | 256 | Real swarms are far smaller — mainline clients cap global peers in the low hundreds. Refusal: **a plain close.** BEP 3 has no busy, error or free-text message of any kind, and the one refusal it does define (`CHOKE_FRAME`) is legal only *after* a handshake this peer has not sent. Any bytes here would be read as the first 5 of the 68 handshake bytes, so a client would report a malformed handshake rather than a full server — strictly worse than silence. |
 
-**NetGet's own peer-wire client is the *connected-and-silent* case, and this bound is therefore
-wrong as it stands:** `src/client/torrent_peer/mod.rs` connects and its first act is
-`read_exact` on the *peer's* 68 bytes; its own handshake is written only by the
-`send_handshake` action, so both ends wait and at 30s the server drops a peer the operator is
-still looking at. It wants 300s with declared `first_byte_timeout_secs`/`idle_timeout_secs`, as
-`src/server/redis/` has — `PROTOCOL_QUALITY.md`'s three-state test.
+**NetGet's own peer-wire client is the *connected-and-silent* case, which is why the handshake
+bound is 300s and both bounds are declared parameters.** `src/client/torrent_peer/mod.rs`
+connects and its first act is `read_exact` on the *peer's* 68 bytes; its own handshake is
+written only by the `send_handshake` action, so **both ends wait** — and at the 30s this bound
+used to carry it was this end that gave up, while the operator was still reading the parked
+event that would have unblocked it. That is the sharpest form of the three-state test: the
+question is never "does the server speak first", it is whether NetGet's own client can be a
+peer that is connected and silent. `PROTOCOL_QUALITY.md`; `src/server/redis/` is the shape
+copied.
 
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
@@ -478,6 +481,13 @@ every deadline here, so an answer that takes minutes can never close the connect
 answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
+`tests/server/torrent_peer/connection_bounds_test.rs` drives both from the wire: a peer that
+connects and sends no handshake is closed at `first_byte_timeout_secs`, and one that completes a
+hand-built BEP 3 handshake and then goes quiet is closed at `idle_timeout_secs` rather than at
+the first-byte one. Its third test is the regression for the raise: with **no parameters passed
+at all**, a silent peer is still open past the 30 seconds this bound used to be, which is why
+that test is deliberately the slow one. Each bound was verified by removing it and watching its
+test fail; the default was verified by putting 30 back and watching the regression test fail.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.

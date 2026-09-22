@@ -496,18 +496,20 @@ more. It now declares both halves; the constants and the reasoning live beside t
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_RECORD_READ_TIMEOUT` | 60s | Covers the TLS handshake *and* the first application record, because from the peer's side they are one condition: it holds a socket and has produced nothing usable. `acceptor.accept()` was previously unbounded, so a peer that never sent a ClientHello held a task and a rustls state machine for as long as it liked — cheaper for an attacker than a completed connection. |
-| `IDLE_AFTER_DATA_TIMEOUT` | 300s | TLS is a carrier, not an application: whatever rides on it decides what "idle" means, and this server cannot know. Five minutes sits well above any request/response turnaround an operator would run over it and well below an unbounded hold. |
+| `HANDSHAKE_READ_TIMEOUT` | 60s, overridable per server with `handshake_timeout_secs` | The wait for the peer to finish the TLS handshake, and nothing else. `acceptor.accept()` was once unbounded, so a peer that never sent a ClientHello held a task and a rustls state machine for as long as it liked — cheaper for an attacker than a completed connection. Every real client sends ClientHello immediately and finishes in one round-trip, NetGet's own TLS client included (`TlsConnector::connect` runs inside its own `connect()`, before any model turn or keystroke), and nothing in this phase involves the model — so the deadline may cover the whole of it, and 60s is far beyond what any peer worth waiting for needs. |
+| `FIRST_RECORD_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | The wait for a *handshaked* peer's first application record. **One constant used to govern this and the handshake wait**, on the reasoning that from the peer's side they are one condition: it holds a socket and has produced nothing usable. They are not one condition, because they face different peers — one that has not proved it speaks TLS, and one that has — and the number that was right for the first was wrong for the second. `src/client/tls/mod.rs` completes the handshake inside `connect()` and then writes **no application bytes at all** unprompted; a dashboard-made client is routed `*` → manual, so it connects, handshakes, is answered with nothing and waits. At 60s the server hung up on the operator's own client, and unlike in the handshake phase there was nothing the peer could have done about it. 300s is the window a `manual` rule gives a human (`src/state/intercepts.rs`) and is this server's own idle bound. Cost: a peer that completed a handshake and then said nothing holds a slot for 300s rather than 60s — and note that is strictly more expensive for an attacker than the untouched handshake phase, because reaching this bound at all requires a real handshake. A listener exposed to strangers should set the parameter low; 60 remains a sound choice for one. |
+| `IDLE_AFTER_DATA_TIMEOUT` | 300s, overridable per server with `idle_timeout_secs` | TLS is a carrier, not an application: whatever rides on it decides what "idle" means, and this server cannot know. Five minutes sits well above any request/response turnaround an operator would run over it and well below an unbounded hold. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plaintext fatal alert record**, level `fatal`, description `internal_error`(80). TLS defines no "server busy" alert and RFC 8446's closest is `internal_error` — what a server sends when it cannot proceed for reasons unrelated to the peer. A client reports "received fatal alert: internal_error" instead of a bare reset. |
 | `MAX_QUEUED_BYTES` | 1 MiB | Application data one connection may accumulate *while an answer is in flight*. 64 maximum-size TLS records (RFC 8446 caps a plaintext record at 2^14), so the number comes from the protocol's own framing rather than a guess about the application riding on it. Refusal: **close_notify, plus `decision=fail_closed_queued_data_overflow` in the log** — see below for why it is not `record_overflow`. |
 
-**NetGet's own TLS client is the *connected-and-silent* case for the second half of this
-bound:** `tokio_rustls` puts the ClientHello on the wire inside `connect()`, so the handshake
-half can never strand it — but the post-handshake loop keeps this same constant until the first
-application record, and `src/client/tls/mod.rs` writes no application bytes until a model
-action or a human's `[ send message ]`, so at 60s the server drops a peer the operator is still
-looking at. It wants the application half at 300s with a declared parameter, as
-`src/server/redis/` has — `PROTOCOL_QUALITY.md`'s three-state test.
+**NetGet's own TLS client is the *connected-and-silent* case for the second of those bounds,
+and that is why there are now three rather than two.** `tokio_rustls` puts the ClientHello on
+the wire inside `connect()`, so the handshake half can never strand it; the post-handshake wait
+faces a peer that has proved it speaks TLS and then says nothing, which is exactly what
+`src/client/tls/mod.rs` does until a model action or a human's `[ send message ]`. Splitting
+them is the general lesson: **a bound that covers two waits is only correct if both waits face
+the same peer.** `PROTOCOL_QUALITY.md`'s three-state test; `src/server/redis/` is the shape
+copied.
 
 **The deadline covers the read and nothing else.** TLS is the one server here whose read loop runs *concurrently* with the answer: `handle_data_with_actions` is spawned and the loop goes straight back to reading, so a record parked for a human sits inside the read deadline while it happens. `ConnectionActivity` is marked busy before the task is spawned and released when it ends, and the read deadline re-arms rather than closing while it is set. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
@@ -515,7 +517,13 @@ every deadline here, so an answer that takes minutes can never close the connect
 answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
-`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/server/tls/connection_bounds_test.rs` drives all three from the wire — a bare TCP peer
+that never sends a ClientHello is closed on `handshake_timeout_secs`, a handshaked rustls peer
+that sends no record is closed on `first_byte_timeout_secs`, one that has sent a record and gone
+quiet is closed on `idle_timeout_secs` — plus the regression: with no parameters passed at all,
+a handshaked silent peer is still open past the 60 seconds the bound used to be. Each bound was
+verified by removing it and watching its test fail.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if any bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
 

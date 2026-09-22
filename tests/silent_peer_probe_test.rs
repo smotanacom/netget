@@ -369,6 +369,54 @@ async fn redis_client_is_connected_and_silent() {
     );
 }
 
+#[cfg(feature = "ftp")]
+#[tokio::test]
+async fn ftp_client_is_connected_and_silent() {
+    let obs = probe("ftp", None).await;
+    assert_reach(
+        "ftp",
+        Reach::ConnectedAndSilent,
+        &obs,
+        "the client connects and reads the server's 220 greeting in its read loop; it writes          nothing of its own, so \"FTP is server-speaks-first\" is not an exemption — the          greeting is ours, and sending it says nothing about whether the peer will answer it.          That was the wrong test, and it is why src/server/ftp/mod.rs kept a 60-second          first-byte bound through the first pass of this sweep",
+    );
+}
+
+#[cfg(feature = "nntp")]
+#[tokio::test]
+async fn nntp_client_is_connected_and_silent() {
+    let obs = probe("nntp", None).await;
+    assert_reach(
+        "nntp",
+        Reach::ConnectedAndSilent,
+        &obs,
+        "the client reads the welcome line in its read loop and answers it only when an action          says to — no CAPABILITIES, no MODE READER of its own. Server-speaks-first again, and          again not an exemption",
+    );
+}
+
+#[cfg(feature = "pop3")]
+#[tokio::test]
+async fn pop3_client_is_connected_and_silent() {
+    let obs = probe("pop3", None).await;
+    assert_reach(
+        "pop3",
+        Reach::ConnectedAndSilent,
+        &obs,
+        "the client reads the +OK greeting in its read loop and sends no CAPA or USER of its          own. Its server's 60-second bound was Dovecot's login_timeout, which is right for          Dovecot: Dovecot has no client that parks on a human",
+    );
+}
+
+#[cfg(feature = "torrent-peer")]
+#[tokio::test]
+async fn torrent_peer_client_is_connected_and_silent() {
+    let obs = probe("torrent_peer", None).await;
+    assert_reach(
+        "torrent_peer",
+        Reach::ConnectedAndSilent,
+        &obs,
+        "the sharpest case in this file: the client's read loop opens with read_exact on the          OTHER peer's 68-byte handshake, and sends its own only when the send_handshake action          says to — so both ends wait, and whichever has the shorter bound gives up first. BEP 3          says the initiator speaks immediately, which is true of every mainline client and false          of this one",
+    );
+}
+
 // ===========================================================================================
 // Speaks inside connect() — exempt because the first byte arrives before anyone is waited on.
 // ===========================================================================================
@@ -418,6 +466,18 @@ async fn mongodb_client_speaks_inside_connect() {
         Reach::SpeaksInConnect,
         &obs,
         "the official driver starts SDAM monitoring on construction, which sends `hello`",
+    );
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn tls_client_speaks_inside_connect_but_only_the_handshake() {
+    let obs = probe("tls", None).await;
+    assert_reach(
+        "tls",
+        Reach::SpeaksInConnect,
+        &obs,
+        "tokio_rustls puts the ClientHello on the wire from inside connect(), before any model          turn or keystroke — which exempts the server's HANDSHAKE_READ_TIMEOUT and nothing          else. **This is the one protocol where a byte count cannot answer the question by          itself.** Those bytes are a handshake; after it completes the same client writes no          application bytes at all until an action or [ send message ] says to, so against the          server's wait for the first application RECORD it is connected-and-silent. A bare          TcpListener cannot see that distinction, which is exactly why src/server/tls/mod.rs          now has two constants where it had one: a bound that covers two waits is only correct          if both waits face the same peer",
     );
 }
 

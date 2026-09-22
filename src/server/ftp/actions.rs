@@ -179,7 +179,39 @@ impl Protocol for FtpProtocol {
         // This server implements the FTP control connection only - there is no PASV/PORT
         // data connection, so there is no passive port range to configure. It also always
         // sends the 220 greeting itself, so it declares no `send_first` either.
-        Vec::new()
+        //
+        // The two it does declare are the read deadlines. Their right value is a property of
+        // who is on the other end, which only the operator knows: the defaults serve NetGet's
+        // own FTP client parked at the dashboard waiting for a person, and a listener exposed
+        // to strangers wants the first one much lower.
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send no command at all - not even \
+                              a USER after the 220 greeting - before the server closes it. \
+                              Default 300, matching the window a `manual` rule gives a human \
+                              to answer one event. The peer is often NetGet's own FTP client, \
+                              which reads the greeting in its read loop and writes nothing \
+                              until an action or [ send message ] says to. Lower it (60 was \
+                              the old value) for a listener exposed to strangers."
+                    .to_string(),
+                required: false,
+                example: json!(300),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an established control connection may go without a \
+                              further command before the server closes it. Default 300, which \
+                              is vsftpd's `idle_session_timeout` default; the silence between \
+                              two commands of an interactive session is someone typing, so \
+                              this is on a human timescale rather than a machine one."
+                    .to_string(),
+                required: false,
+                example: json!(300),
+            },
+        ]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -317,12 +349,27 @@ impl Server for FtpProtocol {
             use crate::server::ftp::FtpServer;
             #[allow(deprecated)]
             let listen_addr = ctx.socket_addr().unwrap_or(ctx.legacy_listen_addr());
+            // Both read deadlines are the operator's to choose: who is on the other end is
+            // the only thing that decides them, and only the operator knows that.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             FtpServer::spawn_with_llm_actions(
                 listen_addr,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })
