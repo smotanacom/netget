@@ -39,7 +39,10 @@ fn require_tool(name: &str) -> E2EResult<String> {
              `STAT`/`VERSION` replies are acceptable to something we did not write. Skipping \
              would leave Memcached's Beta rating resting on nothing, so this is a failure and \
              not a skip. Install with `brew install libmemcached` (macOS) or \
-             `apt-get install -y libmemcached-tools` (Debian/Ubuntu)."
+             `apt-get install -y libmemcached-tools` (Debian/Ubuntu) — note that Debian and \
+             Ubuntu ship these same binaries under a `memc` prefix (`memccat`, `memcstat`, \
+             `memcping`), so the package can be installed and this name still absent; CI \
+             symlinks them to the names upstream uses."
         )
         .into()
     })
