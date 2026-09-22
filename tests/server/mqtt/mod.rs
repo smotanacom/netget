@@ -1,6 +1,9 @@
 //! MQTT protocol E2E tests
 
 #[cfg(all(test, feature = "mqtt"))]
+mod connection_bounds_test;
+
+#[cfg(all(test, feature = "mqtt"))]
 pub mod e2e_test;
 #[cfg(all(test, feature = "mqtt"))]
 pub mod llm_failure_test;

@@ -178,6 +178,41 @@ async fn read_body_bounded(body: Incoming) -> BodyRead {
     }
 }
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. An IPP connection is worth more
+/// than most here — [`MAX_IPP_BODY_BYTES`] is 8 MiB of print job the server will buffer — so
+/// the cap is what turns that per-connection bound into a total one. 256 × 8 MiB is a large
+/// number, but the buffering is transient and per-request while the cap has to stay above any
+/// real spooler's parallelism; a printer front-end that wants a tighter total should be
+/// bounding [`MAX_IPP_BODY_BYTES`], which is the half of the product that actually describes
+/// the memory.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// The body of [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_BODY: &str = "Too many connections, try again later.\n";
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// **HTTP's refusal, not IPP's, and that is the honest one.** IPP has a rich status vocabulary
+/// of its own (`server-error-busy`, 0x0507), but every IPP status rides in an
+/// `application/ipp` body that answers a specific operation, echoing the request's own
+/// `request-id` — and a peer over the cap has not sent an operation, so there is no request-id
+/// to echo and nothing to say `server-error-busy` *about*. A fabricated IPP response is the
+/// mis-parse this codebase warns about: CUPS reads the version, operation and request-id back
+/// and reports a protocol error rather than backing off. RFC 8010 §3.1 makes HTTP the
+/// transport, so 503 + `Retry-After` is inside the protocol, and `ipptool`, CUPS and
+/// `pycups` all surface it as a transient HTTP failure.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    format!(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Type: \
+         text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        CONNECTION_CAP_BODY.len(),
+        CONNECTION_CAP_BODY
+    )
+    .into_bytes()
+});
+
 /// IPP server that delegates request handling to LLM
 pub struct IppServer;
 
@@ -200,10 +235,19 @@ impl IppServer {
 
         // Spawn server loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "IPP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -245,6 +289,11 @@ impl IppServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends. hyper's `serve_connection` is
+                                // awaited to completion inside it and IPP spawns nothing else
+                                // per peer, so the slot is held for the whole connection —
+                                // including a keep-alive one serving several operations.
+                                let _permit = permit;
                                 let io = TokioIo::new(stream);
 
                                 // Clone for service closure

@@ -1,4 +1,7 @@
 #[cfg(all(test, feature = "ipp"))]
+mod connection_bounds_test;
+
+#[cfg(all(test, feature = "ipp"))]
 mod test;
 
 #[cfg(all(test, feature = "ipp"))]

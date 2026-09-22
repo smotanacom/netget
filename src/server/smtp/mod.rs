@@ -47,6 +47,43 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 #[cfg(feature = "smtp")]
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. This is the bound
+/// [`READ_TIMEOUT`] needs to be worth anything: RFC 5321 §4.5.3.2 makes the per-command wait
+/// five minutes, so one stranger legitimately holds a socket for five minutes and an uncapped
+/// accept loop turns that into as many five-minute holds as it can open. A mail server is the
+/// canonical target for this, which is why every real MTA ships a connection limit of its own
+/// (Postfix's `smtpd_client_connection_count_limit` defaults to 50 *per client*); 256 total is
+/// generous against a real sending host and finite against an attacker.
+#[cfg(feature = "smtp")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes, on a **plain**
+/// listener.
+///
+/// SMTP is server-speaks-first, so a refusal has a natural place: the greeting. RFC 5321 §3.1
+/// and §4.3.2 let the server open with something other than 220, and 421 — "Service not
+/// available, closing transmission channel" — is precisely this case; Postfix answers its own
+/// connection-count limit with a 421 greeting, so every MTA in the world already handles it and
+/// backs off rather than recording a permanent failure. The enhanced code matches the
+/// `421 4.3.2` this server already sends when its model backend is saturated.
+#[cfg(feature = "smtp")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"421 4.3.2 Too many connections, try again later\r\n";
+
+/// What a peer over [`MAX_CONNECTIONS`] gets on an **implicit-TLS (SMTPS)** listener: nothing,
+/// and then a close.
+///
+/// A peer on port 465 is mid-`ClientHello` and expects TLS records; plaintext ASCII arriving
+/// there is not a 421 it will ever read, it is a record with content type 0x34 and a nonsense
+/// version, and every TLS stack aborts the handshake with a decode error. That is a worse
+/// answer than silence — the client records a broken server rather than a busy one. The
+/// correct refusal would be a TLS `alert(internal_error)`, which cannot be formed without
+/// first completing the handshake we are declining to spend a slot on, so the honest answer is
+/// an empty write and a clean close, logged as `decision=fail_closed_connection_cap`.
+#[cfg(feature = "smtp")]
+const CONNECTION_CAP_REFUSAL_TLS: &[u8] = b"";
+
 /// The outcome of one bounded read.
 #[cfg(feature = "smtp")]
 enum LineRead {
@@ -146,10 +183,26 @@ impl SmtpServer {
         let tls_acceptor = tls_config.map(TlsAcceptor::from);
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        // Which refusal this listener can honestly send depends on what the peer is speaking,
+        // and on this listener that is decided once, at bind time.
+        let cap_refusal: &'static [u8] = if tls_acceptor.is_some() {
+            CONNECTION_CAP_REFUSAL_TLS
+        } else {
+            CONNECTION_CAP_REFUSAL
+        };
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    cap_refusal,
+                    "SMTP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id = crate::server::connection::ConnectionId::new(
                             app_state.get_next_unified_id().await,
                         );
@@ -172,6 +225,11 @@ impl SmtpServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection — the TLS handshake and the session both run
+                                // inside it and SMTP spawns nothing else per peer — so
+                                // `MAX_CONNECTIONS` caps live connections, not accepts.
+                                let _permit = permit;
                                 // Optionally perform TLS handshake
                                 if let Some(ref acceptor) = tls_acceptor_clone {
                                     match acceptor.accept(stream).await {

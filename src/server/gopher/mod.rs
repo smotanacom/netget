@@ -35,6 +35,25 @@ pub const MAX_REQUEST_BYTES: usize = 8192;
 /// with nothing to say has nothing to wait for.
 const SELECTOR_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`SELECTOR_READ_TIMEOUT`]
+/// bounds how long one silent peer holds a slot; only a cap bounds how many of them there can
+/// be at once. A Gopher connection carries one selector and one reply, so nothing about it
+/// argues for a number other than the house default.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// A type-3 error item, byte-for-byte the shape [`gopher_error_item`] already writes for every
+/// other refusal here: RFC 1436 §3.8 makes type 3 the way a Gopher server says "this did not
+/// work", and it is the only refusal the protocol has. A menu client renders it as an error
+/// line; `curl`, which reads until EOF, prints it and exits 0 rather than 28. It has to be a
+/// literal rather than a `gopher_error_item` call because the refusal is written before any
+/// connection task exists, and `accept_bounded` takes bytes.
+const CONNECTION_CAP_REFUSAL: &[u8] =
+    b"3Too many connections, try again later\t\terror.host\t1\r\n.\r\n";
+
 pub struct GopherServer;
 
 impl GopherServer {
@@ -55,10 +74,19 @@ impl GopherServer {
         let protocol = Arc::new(actions::GopherProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Gopher",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -94,6 +122,10 @@ impl GopherServer {
                         let protocol_clone = protocol.clone();
 
                         let conn_handle = tokio::spawn(async move {
+                            // Released when this task ends, and this task is the whole of the
+                            // connection — Gopher spawns nothing else per peer — so
+                            // `MAX_CONNECTIONS` caps live connections, not accepts.
+                            let _permit = permit;
                             handle_gopher_connection(
                                 socket,
                                 peer_addr,
