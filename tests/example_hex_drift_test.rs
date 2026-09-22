@@ -107,31 +107,47 @@ const MAX_INLINE_HEX_BYTES: usize = 16;
 ///   exactly as `send_tcp_data` settled it, and the example exists to show the hex path with
 ///   genuine MPEG-TS bytes (`0x47` sync byte, PID 0, a PAT).
 ///
-/// ## Kind 3 — defects, and the two that are not fixed yet
+/// ## Kind 3 — defects, all fixed; nothing in this file is outstanding
 ///
-/// **`A:socks5:actions.rs:37`, `A:tor:actions.rs:37`** (both in `src/client/`, both the same
-/// 37 bytes) — `474554202f20485454502f312e310d0a…` is `GET / HTTP/1.1\r\nHost: example.com\r\n\r\n`.
-/// The model is shown a request it cannot read, cannot adapt to another host or path, and
-/// cannot check. Neither `send_socks5_data` nor `send_tor_data` has any text spelling: both
-/// declare only `data_hex` and both executors `hex::decode` it unconditionally.
+/// Every entry in the baseline is kind 1 or kind 2 — a recorded decision, not a to-do. The
+/// kind-3 findings were `icmp` and `ssh_agent` (above), and three more in `src/client/` that
+/// this file carried as "still work" for one pass and that were fixed on 22 September 2026:
 ///
-/// **`C:datalink:actions.rs:42`** (also `src/client/`) — `inject_frame`'s example is an ARP
-/// request as 42 bytes of hex, on two event types and the action itself. Same shape: no
-/// structured form, no `encoding` field, nothing to copy it from.
+/// * **`A:socks5:actions.rs:37`, `A:tor:actions.rs:37`** — the same 37 bytes in both,
+///   `474554202f20485454502f312e310d0a…`, which is `GET / HTTP/1.1` and a `Host:` header
+///   hex-encoded into the static-mode startup example. The model was shown a request it could
+///   not read, adapt to another host or path, or check; `send_socks5_data` and `send_tor_data`
+///   declared only `data_hex`, and both executors `hex::decode`d it unconditionally.
 ///
-/// The fix for all three is the one `tcp` settled: a `data_text` field beside `data_hex` with
-/// an explicit `encoding` ("utf8" default, "hex"), decoded explicitly and **never** sniffed —
-/// `"48656c6c6f"` is simultaneously valid text and valid hex and only the sender knows which
-/// it means. For `inject_frame`, structured Ethernet/ARP fields would be better still. They
-/// are recorded rather than done because `src/client/` was being edited by another agent
-/// during this pass; this is the one thing in this file that is still work rather than a
-/// decision.
+///   Both now take `data` plus an explicit `encoding` ("utf8" by default, or "hex") — the
+///   `send_tcp_data` shape — and every example is the request spelled out. `data_hex` is
+///   still **accepted** by both executors so an existing static handler or stored prompt
+///   keeps working, is no longer advertised, and supplying it together with `data` is refused
+///   rather than resolved by precedence.
+///
+///   The inbound events changed with them, because an event field the model cannot read is
+///   the same defect wearing the other hat: `socks5_data_received` and `tor_data_received`
+///   carried `data_hex` only, so even a plain HTTP response arrived as hex. They now carry
+///   `data` + `encoding` + `data_length`, which hand straight back to the send action.
+/// * **`C:datalink:actions.rs:42`** — `inject_frame`'s example was an ARP request as 42 bytes
+///   of hex, on the action and on two event types. An Ethernet frame is genuinely structured,
+///   so it got structure rather than an encoding flag: `dst_mac`, `src_mac`, `ethertype` (a
+///   name such as `"arp"`, a number, or `"0x0806"` — a bare `"0806"` is refused, because it
+///   is 2054 read as hex and 806 read as decimal and only the caller knows which) and an
+///   optional `payload` whose `payload_encoding` is **required**. Required, not defaulted to
+///   "utf8" like `send_tcp_data`'s: an Ethernet payload is binary far more often than text,
+///   so a utf8 default would put the ASCII characters of an ARP body on the wire for exactly
+///   the frames a model is most likely to build.
+///
+///   `frame_hex` stays, as the escape hatch — `datalink_frame_captured` hands the model
+///   exactly that, and replaying or amending a captured frame is a real thing to want — and
+///   the two spellings cannot be combined. Both frame events gained the same fields, so a
+///   captured frame is readable instead of being hex for the model to slice in its head.
+///
+/// What did not change is the threshold, and the rule that a long hex literal is a defect
+/// until someone writes down which of the three kinds it is. All three above were found by
+/// this ratchet rather than by reading.
 const LONG_HEX_EXAMPLE_BASELINE: &[&str] = &[
-    // Kind 3, not yet fixed — see "Kind 3" above. These are the only entries here that are
-    // still work rather than a recorded decision.
-    "A:socks5:actions.rs:37",
-    "A:tor:actions.rs:37",
-    "C:datalink:actions.rs:42",
     // Kind 1 — opaque identifiers a caller supplies.
     "A:mercurial:actions.rs:20",
     "A:torrent_dht:actions.rs:20",

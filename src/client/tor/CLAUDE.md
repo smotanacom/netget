@@ -125,20 +125,49 @@ Idle ────data────> Processing ─────LLM done───�
     - LLM can send initial data or wait for response
 
 2. **`tor_data_received`**: Triggered when data received from destination
-    - Parameters: `data_hex` (hex-encoded data), `data_length`
+    - Parameters: `data`, `encoding` (`"utf8"` or `"hex"`), `data_length`
+    - Printable ASCII arrives as itself; anything else arrives hex-encoded and `encoding` says
+      so. Handing `data` and `encoding` straight back to `send_tor_data` reproduces the
+      received bytes exactly. It used to carry `data_hex` only, so even a plain HTTP response
+      reached the model as hex it had to decode in its head.
     - LLM decides how to respond (send data, wait for more, disconnect)
 
 ### Actions
 
 **Async Actions** (user-initiated):
 
-- `send_tor_data`: Send hex-encoded data to destination
+- `send_tor_data(data, encoding?)`: Send a payload to the destination
 - `disconnect`: Close the circuit
 
 **Sync Actions** (response to events):
 
-- `send_tor_data`: Send hex-encoded data in response to received data
+- `send_tor_data(data, encoding?)`: Send a payload in response to received data
 - `wait_for_more`: Queue current data and wait for more before responding
+
+### `data` and `encoding`, and what happened to `data_hex`
+
+`send_tor_data` declares two parameters: `data`, the payload, and `encoding`, which is
+`"utf8"` (the default when omitted) or `"hex"`. **Nothing is sniffed.** `"48656c6c6f"` is a
+perfectly good five-byte payload and a perfectly good ten-character one, and only the sender
+knows which it meant — the `send_tcp_data` rule in the root CLAUDE.md, applied here.
+
+It used to declare a single `data_hex` field, so the static-mode startup example showed
+`GET / HTTP/1.1` and a `Host:` header as 74 hex characters: a request the model could not
+read, could not point at another host or path, and could not check.
+
+Backward compatibility is a decision, not an accident:
+
+| sent | outcome |
+|---|---|
+| `data` (+ optional `encoding`) | the declared path |
+| `data_hex` alone | still decoded as hex — an existing static handler or stored prompt keeps working |
+| **both** | **refused**, naming both fields and saying that neither takes precedence |
+| neither | refused, naming `data` |
+
+`data_hex` is deliberately **not** advertised any more: re-declaring it would put hex back in
+the model's vocabulary, which is the whole thing this change removed. It is executed, not
+documented, and `tests/client/tor/action_test.rs` pins every row of that table — including
+that a `data` of `"deadbeef"` with `encoding` absent goes out as those eight characters.
 
 ### LLM Prompt Example
 
@@ -147,7 +176,7 @@ You are controlling a Tor client connected to example.com:80.
 Your instruction: "Send HTTP GET request for / and analyze response"
 
 Available actions:
-- send_tor_data: Send data (hex-encoded)
+- send_tor_data: Send a payload ('data', plus 'encoding' when it is binary)
 - disconnect: Close connection
 - wait_for_more: Wait for more data
 
@@ -322,10 +351,11 @@ All DNS resolution happens through Tor:
     - Can't force circuit rebuild (yet)
     - Exit node selection uses Arti's defaults
 
-4. **Binary Data Only**: LLM works with hex-encoded data
-    - Same pattern as TCP client
-    - Works well for text protocols (HTTP, IRC, etc.)
-    - Less ideal for complex binary protocols
+4. **Text by default, hex on request**: the LLM writes a payload into `data` and says how to
+   read it with `encoding`
+    - Same pattern as the TCP client's `send_tcp_data`
+    - Text protocols (HTTP, IRC, …) are written and read as themselves
+    - Binary payloads use `"encoding": "hex"`, explicitly, never by detection
 
 5. **No Bridge Support Yet**: No pluggable transport support in this implementation
     - Arti supports bridges, but not exposed in our API

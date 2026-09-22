@@ -92,26 +92,49 @@ public, pure `frame_event_fields()`:
 
 | field | meaning |
 |---|---|
-| `frame_hex` | hex of the **first 2048 bytes** (`MAX_HEX_BYTES_TO_MODEL`) |
+| `dst_mac` | destination MAC, `"ff:ff:ff:ff:ff:ff"` — the spelling `inject_frame` accepts back |
+| `src_mac` | source MAC, same spelling |
+| `ethertype` | `"0x0806"`, likewise accepted back unchanged |
+| `payload` | everything after the 14-byte header, read per `payload_encoding` |
+| `payload_encoding` | `"utf8"` when the payload is all printable ASCII, else `"hex"` |
+| `frame_hex` | hex of the **first 2048 bytes** (`MAX_HEX_BYTES_TO_MODEL`), for exact replay |
 | `frame_length` | the frame's true length, always |
 | `captured_length` | how many bytes `frame_hex` covers |
-| `truncated` | whether `frame_hex` is a prefix |
+| `truncated` | whether `frame_hex` (and `payload`) is a prefix |
+
+The header fields exist because the payload used to be `frame_hex` and nothing else, so a
+model that wanted to know who a frame was addressed to had to slice hex in its head. They are
+spelled exactly as `inject_frame` accepts them, so answering a captured frame is copying
+fields rather than re-deriving them, and `frame_hex` stays beside them for replaying one
+verbatim. `dst_mac`, `src_mac` and `ethertype` are `null` for a frame shorter than 14 bytes —
+a real Ethernet frame cannot be, but libpcap can hand back a runt and inventing a header for
+one would be worse than saying there is none.
 
 A frame can be 65535 bytes and all of it as hex is 131070 characters of prompt. The length and
 the prefix are reported separately so a model is never told a 9000-byte frame was 2048 bytes
-long. `tests/client/datalink/action_test.rs` asserts this against literal bytes, including the
-exact boundary, and that every field the payload carries is one the events declare.
+long. `tests/client/datalink/action_test.rs` asserts all of this against literal bytes,
+including the exact boundary, the runt, and that every field the payload carries is one the
+events declare.
 
 ### Actions
 
 #### Async Actions (User-triggered)
 
-1. **inject_frame**: Inject raw Ethernet frame
+1. **inject_frame**: Inject raw Ethernet frame, built from fields
    ```json
    {
      "type": "inject_frame",
-     "frame_hex": "ffffffffffff001122334455080600010800060400010011223344550a0000010000000000000a000002"
+     "dst_mac": "ff:ff:ff:ff:ff:ff",
+     "src_mac": "00:11:22:33:44:55",
+     "ethertype": "arp",
+     "payload": "0001080006040001001122334455 0a000001 000000000000 0a000002",
+     "payload_encoding": "hex"
    }
+   ```
+   The escape hatch is still there for a frame you already have whole — typically one a
+   `datalink_frame_captured` event just handed you:
+   ```json
+   {"type": "inject_frame", "frame_hex": "ffffffffffff0011223344550806…"}
    ```
 
 2. **disconnect**: Close the DataLink client and release interface
@@ -135,23 +158,46 @@ exact boundary, and that every field the payload carries is one the events decla
 
 ### Frame Format
 
-The LLM must construct complete Ethernet frames:
+An Ethernet frame is structured, so the model writes it as fields rather than as a blob. That
+is the whole change: `inject_frame` used to take one parameter, `frame_hex`, and its example
+was a 42-byte ARP request written out as 84 hex characters — on the action and on two event
+types — which a model cannot proofread and nothing downstream checks.
 
-- **Destination MAC** (6 bytes): Target MAC address (or broadcast `ffffffffffff`)
-- **Source MAC** (6 bytes): Sender MAC address
-- **EtherType** (2 bytes): Protocol type (e.g., `0x0806` for ARP, `0x0800` for IPv4)
-- **Payload**: Protocol-specific data
+- **`dst_mac`** / **`src_mac`**: `"00:11:22:33:44:55"`, `"00-11-…"`, `"001122334455"` or the
+  uppercase of any of them; `"ff:ff:ff:ff:ff:ff"` to broadcast. Exactly six bytes, refused by
+  name with the length it decoded to.
+- **`ethertype`**: a name (`ipv4`, `arp`, `vlan`, `ipv6` — `ETHERTYPE_NAMES`), a number
+  (`2054`), or a `0x`-prefixed hex string (`"0x0806"`). **A bare `"0806"` is refused**: it is
+  2054 read as hex and 806 read as decimal, and only the caller knows which. That is the same
+  ambiguity the encoding fields exist for, given the same treatment — say which, do not guess.
+- **`payload`** with **`payload_encoding`**: everything after the 14-byte header.
+  `payload_encoding` is **required whenever `payload` is present** and has *no* default,
+  unlike `send_tcp_data`'s `encoding`. An Ethernet payload is binary far more often than it is
+  text — ARP, IPv4 and IPv6 are the three a model will build — so a `utf8` default would put
+  the ASCII characters of an ARP body on the wire for exactly the frames most likely to be
+  written. `"deadbeef"` is four bytes as hex and eight characters as text; the field says
+  which, and `a_utf8_payload_that_looks_like_hex_goes_out_as_those_characters` asserts both
+  readings of the same string produce different frames.
+- **`frame_hex`**: the escape hatch, a complete frame including its header. It stays because
+  `datalink_frame_captured` hands the model exactly that and replaying or amending a captured
+  frame is a real thing to want. **The two spellings cannot be combined** — supplying
+  `frame_hex` together with any of `dst_mac` / `src_mac` / `ethertype` is refused rather than
+  resolved by precedence, and a structured frame missing one of its three required fields is
+  refused by the name of what is missing rather than completed with zeros.
 - **No FCS.** `pcap::sendpacket` puts exactly the bytes it is given on the wire and the
   interface computes the frame check sequence itself, so four bytes of model-computed FCS
   would go out as payload. The `inject_frame` definition used to say "including dst MAC, src
   MAC, ethertype, payload, **FCS**"; a model that followed it corrupted every frame it sent.
-  `inject_frame_does_not_ask_the_model_for_an_fcs` keeps that wording from coming back.
+  `inject_frame_does_not_ask_the_model_for_an_fcs` keeps that wording from coming back. For
+  the same reason the 14-byte header is assembled from the fields and must not be repeated in
+  `payload`.
 
-`execute_action` bounds the frame before libpcap sees it: at least
+`build_frame` bounds the assembled frame before libpcap sees it: at least
 `MIN_ETHERNET_FRAME_BYTES` (14 — a runt has no EtherType) and at most
 `MAX_ETHERNET_FRAME_BYTES` (65535), each refused with a message naming the actual length so
-the model can correct it. Octet separators (`:`, `-`, ` `, `.`) are stripped before decoding,
-because a model writing hex out of a packet dump writes them and they carry no information.
+the model can correct it. Octet separators (`:`, `-`, ` `, `.`) are stripped from `frame_hex`,
+from a hex `payload` and from a MAC before decoding, because a model writing hex out of a
+packet dump writes them and they carry no information.
 
 Example ARP request frame:
 
@@ -223,7 +269,7 @@ and `command_channel_test.rs` (the lifecycle; its privileged half asserts a real
    in `SystemCapabilities`: a macOS user in the ChmodBPF group has capture and not raw sockets,
    and would have been refused a client that works on their machine.
 2. **Blocking I/O**: pcap is blocking, so operations run in `spawn_blocking`
-3. **No FCS**: the interface computes it; do not put one in `frame_hex`
+3. **No FCS**: the interface computes it; do not put one in `payload` or `frame_hex`
 4. **Platform Differences**: libpcap behavior varies across OS
 5. **No TCP/UDP**: This is Layer 2 only - for Layer 3+ protocols, use TCP/UDP/IP clients
 6. **Performance**: capture can outrun the model. One model turn runs at a time per client;

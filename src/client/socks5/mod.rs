@@ -291,10 +291,7 @@ impl Socks5Client {
                                     );
                                     let event = Event::new(
                                         &SOCKS5_CLIENT_DATA_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "data_hex": hex::encode(&data),
-                                            "data_length": data.len(),
-                                        }),
+                                        crate::client::socks5::actions::inbound_event_fields(&data),
                                     );
 
                                     // Same reasoning as the connected-event call above: the
