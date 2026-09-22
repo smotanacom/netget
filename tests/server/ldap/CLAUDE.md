@@ -2,8 +2,43 @@
 
 ## Test Overview
 
-Tests LDAP server with real LDAP client library (`ldap3`) validating directory operations including bind, search, add,
-modify, and delete.
+Tests the LDAP server with a real third-party client library, `ldap3`, driving bind and search
+and parsing the entries back through its own `SearchEntry::construct` — so a reply it rejected
+would fail rather than be counted as bytes on a socket.
+
+**`ldap3` is one client, and the protocol's `e2e_testing` says so.** That field used to claim
+"the ldapsearch/ldapadd command-line tools" as well; nothing asserting drives them. `ldapsearch`
+appears only in `tests/eval/`, the real-model harness, which skips unless `NETGET_USE_OLLAMA=1`
+and reports rather than asserts. An eval probe is a useful signal and is not maturity evidence.
+
+## The four files, and what each is for
+
+This doc described `e2e_test.rs` alone until 22 September 2026 — three of the four files beside
+it went unmentioned, including the two that exist because of real defects. A test nothing points
+at is a test nobody re-reads.
+
+| file | what it holds |
+|---|---|
+| `e2e_test.rs` | the maturity evidence: `ldap3` binds, searches and parses entries through its own `SearchEntry::construct` |
+| `llm_failure_test.rs` | what a client gets when the backend fails — `unavailable` (52) |
+| `result_code_range_test.rs` | a narrowing cast that encoded LDAP **success** |
+| `connection_bounds_test.rs` | the read deadlines and the connection cap, driven from the wire |
+
+**`result_code_range_test.rs` is the one to read first.** A model-supplied `result_code` was
+narrowed with `as u8`, and the wrap lands on the worst possible value: `256 as u8` is `0`, and
+resultCode `0` is `success`. Every refusal the model could express sat a multiple of 256 away
+from telling the client that a bind, a write or a search had completed — fail-open by
+arithmetic, and silent, because the encoder produced a perfectly well-formed success.
+
+**`llm_failure_test.rs` is the same shape one level up.** LDAP always answered *something* on
+that path, but it answered the per-operation default: `invalidCredentials` for a bind, and an
+empty **successful** result set for a search. Both report an outage as a decision the directory
+made, and the search case is the dangerous one — resultCode 0 with no entries is a valid answer
+meaning "nothing matched".
+
+**`connection_bounds_test.rs`**: before September 2026 this server accepted without limit and
+bounded no read, so a peer that connected and said nothing held a socket, a connection task and
+an `AppState` entry forever — pre-authentication, which for LDAP means before any bind at all.
 
 ## Test Strategy
 
