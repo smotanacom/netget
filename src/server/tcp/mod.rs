@@ -45,7 +45,22 @@ pub const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 /// A `send_first` server is not the exception it looks like: the banner task raises
 /// [`ConnectionActivity::begin_work`] for the whole of its LLM round-trip, so the clock does
 /// not run while the peer is legitimately waiting to be spoken to.
-const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// **This was 30 seconds and that broke a real flow.** The argument for 30 was that generic TCP
+/// is client-speaks-first, so a silent peer has made no claim — true of a stranger, and false of
+/// the peer this server most often has. The dashboard offers `[ + tcp client ]` under a server's
+/// peers and `[ send message ]` beneath it: that client connects, says nothing, and waits for a
+/// person to type. Thirty seconds is less than a person takes, so the peer was dropped while the
+/// operator was still looking at it. `tests/mcp_stdio_test.rs::client_tools_manage_a_real_connection`
+/// is the same shape and failed deterministically — it takes ~38s to drive the MCP surface, and
+/// the client it had just created was gone before it asked for its status.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for "how long
+/// someone might take". The stranger it was protecting against is still bounded, and still
+/// capped at [`MAX_CONNECTIONS`]; what changed is which of the two cases the default serves.
+/// A listener genuinely exposed to strangers should set `first_byte_timeout_secs` low.
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long to wait for further bytes once the peer has sent something.
 ///
@@ -135,7 +150,15 @@ impl TcpServer {
         status_tx: mpsc::UnboundedSender<String>,
         send_first: bool,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(FIRST_BYTE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_MESSAGES_TIMEOUT);
         // Create and bind TCP server
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
@@ -303,9 +326,9 @@ impl TcpServer {
 
                                 loop {
                                     let bound = if seen_bytes {
-                                        IDLE_BETWEEN_MESSAGES_TIMEOUT
+                                        idle_timeout
                                     } else {
-                                        FIRST_BYTE_READ_TIMEOUT
+                                        first_byte_timeout
                                     };
                                     // The deadline wraps this read and nothing else.
                                     let read = match read_bounded(

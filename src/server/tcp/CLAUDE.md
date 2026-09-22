@@ -311,9 +311,23 @@ more. It now declares both halves; the constants and the reasoning live beside t
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_BYTE_READ_TIMEOUT` | 30s | Generic TCP is client-speaks-first — `send_first` is opt-in and off by default — so a peer that has connected and sent nothing has made no claim at all. Thirty seconds is far longer than any real client takes to put its first request on the wire once `connect()` has returned. |
+| `FIRST_BYTE_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 30s, on the argument that generic TCP is client-speaks-first so a silent peer has made no claim. True of a stranger; **false of the peer this server most often has.** The dashboard offers `[ + tcp client ]` under a server's peers with `[ send message ]` beneath it — that client connects, says nothing, and waits for a person to type, and 30 seconds is less than a person takes. 300s is the window a `manual` rule gives a human (`src/state/intercepts.rs`), which is the number this product already uses for how long someone might take. A listener genuinely exposed to strangers should set the parameter low. |
 | `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | This is the generic byte stream every kind of session is built on, so the bound between messages has to be a session's timescale rather than a request's. Fifteen minutes is three times the default a `manual` rule gives a human to answer one event, so a session whose last exchange was composed by hand still has minutes of ordinary think-time left afterwards. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. Raw TCP has no framing, no status code and no error message a peer would not read as *payload*, and a fabricated payload is worse than silence. The peer gets a clean EOF; `accept_bounded` logs the refusal at WARN with `decision=fail_closed_connection_cap`. |
+
+**The 30-second default was found by a test failing, and the failure looked like flakiness.**
+`tests/mcp_stdio_test.rs::client_tools_manage_a_real_connection` creates a TCP server, attaches
+a TCP client to it, and asks for the client's status. It began reporting `Disconnected`. It
+takes about 38 seconds to drive that much of the MCP surface, so the server closed the client it
+had just been given — and the test only *looked* load-sensitive because it is slow, not because
+it races. Two runs settled it: in isolation it reproduced every time, and at the commit before
+the bounds merge it passed. Neither run alone would have been enough.
+
+Both bounds are now declared startup parameters, because the right value is a property of who is
+on the other end and only the operator knows that. `tests/server/tcp/connection_bounds_test.rs`
+sets the first to six seconds — a test cannot wait five minutes, and one that asserted the
+default by waiting it out would be the slowest thing in the suite. What it asserts is that the
+deadline is applied and that work in flight suspends it; the value is argued here.
 
 **TCP is the one server here whose read loop does not stop while a request is answered.** Every
 other protocol awaits the model inline, so its `read()` is not even being polled during the

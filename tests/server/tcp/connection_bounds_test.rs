@@ -22,7 +22,8 @@
 //! task and goes straight back to `read()`, so the deadline and the answer are live at the same
 //! moment — which is exactly why it consults `ConnectionActivity`, and why the second test below
 //! drives a `send_first` banner that is parked for a human while the peer says nothing. Remove
-//! the `activity.busy()` guard from the banner task and the connection is closed at 30 seconds
+//! the `activity.busy()` guard from the banner task and the connection is closed at the
+//! first-byte bound
 //! while the human is still composing the greeting it was opened for.
 //!
 //! No mock backend: the LLM endpoint is a dead port. These tests assert on *deadlines*, not on
@@ -42,8 +43,16 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
-/// `src/server/tcp/mod.rs::FIRST_BYTE_READ_TIMEOUT`.
-const FIRST_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// The first-byte bound these tests drive, passed to the server as `first_byte_timeout_secs`.
+///
+/// **Not the default.** `src/server/tcp/mod.rs::FIRST_BYTE_READ_TIMEOUT` is 300 seconds —
+/// the window a `manual` rule gives a human — because the peer is most often NetGet's own
+/// client waiting for someone to use `[ send message ]`. A test cannot wait five minutes, and
+/// a test that asserted the default by waiting it out would be the slowest thing in the suite,
+/// so the bound is a declared startup parameter and these tests set it small. What is being
+/// asserted is that the deadline is applied and that work in flight suspends it; the *value*
+/// is the operator's to choose and is argued where it is declared.
+const FIRST_READ_TIMEOUT: Duration = Duration::from_secs(6);
 
 async fn new_state() -> AppState {
     let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
@@ -77,6 +86,9 @@ async fn start_server(state: &AppState) -> u16 {
         // An empty instruction really is model-free; `None` is replaced by a default one and
         // every event would consult the LLM.
         instruction: Some(String::new()),
+        startup_params: Some(serde_json::json!({
+            "first_byte_timeout_secs": FIRST_READ_TIMEOUT.as_secs(),
+        })),
         ..Default::default()
     }
     .create(state, tx)
@@ -93,6 +105,9 @@ async fn start_parked_server(state: &AppState) -> (ServerId, u16) {
         protocol: "tcp".to_string(),
         port: Some(0),
         instruction: Some(String::new()),
+        startup_params: Some(serde_json::json!({
+            "first_byte_timeout_secs": FIRST_READ_TIMEOUT.as_secs(),
+        })),
         send_first: true,
         event_handlers: Some(vec![serde_json::json!({
             "event_pattern": "*",

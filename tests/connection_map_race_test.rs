@@ -113,6 +113,9 @@ async fn tcp_payload_written_before_accept_is_answered() {
         status_tx,
         false, // send_first: the banner path is not what races here
         server_id,
+        // Default bounds: this test is about the connection map, not the clock.
+        None,
+        None,
     )
     .await
     .expect("TCP server should start");
@@ -207,6 +210,8 @@ async fn tcp_write_then_immediate_close_does_not_panic_a_task() {
         status_tx,
         false,
         server_id,
+        None,
+        None,
     )
     .await
     .expect("TCP server should start");

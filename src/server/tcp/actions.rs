@@ -38,6 +38,27 @@ impl Protocol for TcpProtocol {
                     required: false,
                     example: serde_json::json!(false),
                 },
+                crate::llm::actions::ParameterDefinition {
+                    name: "first_byte_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds a connected peer may send nothing before the server \
+                                  closes it. Default 300, matching the window a `manual` rule \
+                                  gives a human to answer one event - a peer is often NetGet's \
+                                  own client waiting for someone to use [ send message ]. \
+                                  Lower it for a listener exposed to strangers."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(300),
+                },
+                crate::llm::actions::ParameterDefinition {
+                    name: "idle_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds an established session may be silent between messages \
+                                  before the server closes it. Default 900."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(900),
+                },
             ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -182,6 +203,20 @@ impl Server for TcpProtocol {
                 .flatten()
                 .unwrap_or(false);
 
+            // Both bounds are tunable because their right value is a property of who is on the
+            // other end, which only the operator knows. The defaults serve NetGet's own client
+            // waiting on a human; a listener exposed to strangers wants them much lower.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             use crate::server::tcp::TcpServer;
             let listen_addr = ctx.legacy_listen_addr();
             TcpServer::spawn_with_llm_actions(
@@ -191,6 +226,8 @@ impl Server for TcpProtocol {
                 ctx.status_tx,
                 send_first,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })
