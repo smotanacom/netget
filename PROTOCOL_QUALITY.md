@@ -385,6 +385,13 @@ declare, whether or not anyone has looked at it.
 
 - [ ] **Idle and first-read timeouts on every TCP server without any.** (Re-opened — see the
   connection-cap item below for why the original measurement was 18 of 32 rather than 52 of 92.)
+
+  **10 left of 92, measured 22 September 2026** — down from 52 across four agent sweeps:
+  `nfc`, `ollama`, `openai`, `rtsp`, `xmpp`, and the five USB/IP servers (`usb/keyboard`,
+  `usb/mouse`, `usb/msc`, `usb/serial`, `usb/smartcard`). The USB five are one shape and should
+  be done together; `ollama` and `openai` are hyper servers and want etcd's `peek` +
+  `ConnectionActivity` pattern rather than a deadline on hyper's reads.
+
   Originally: `cassandra`, `db2`,
   `etcd`, `kafka`, `m3ua`, `mcp`, `memcached`, `mssql`, `mysql`, `nfs`, `postgresql`, `redis`,
   `smb`, `svn`, `tls`, `tor_relay`, `torrent_peer`, `zookeeper`. `whois`'s
@@ -406,9 +413,14 @@ declare, whether or not anyone has looked at it.
   could not see include `http`, `tcp`, `telnet`, `ssh`, `ldap`, `imap`, `grpc`, `modbus`, `git`
   and `kubernetes`. **47 of them have neither bound.**
 
-  Measured across all 92: 52 name no read deadline, 68 have no connection cap. The ratchet's
-  derivation is fixed and both baselines now record that debt, shrink-only. The sweep to shrink
-  them is in flight.
+  Measured across all 92: 52 named no read deadline, 68 had no connection cap. The ratchet's
+  derivation is fixed and both baselines record the debt, shrink-only.
+
+  **25 left, measured 22 September 2026**, down from 68: `amqp`, `bgp`, `doh`, `dot`, `finger`,
+  `gopher`, `hls`, `ident`, `ipp`, `llmnr`, `mongodb`, `mqtt`, `nfc`, `ollama`, `openai`,
+  `proxy`, `rtsp`, `smtp`, `socks5`, `torrent_tracker`, `webrtc`, `webrtc_signaling`,
+  `websocket`, `whois`, `xmpp`. Note `doh`, `dot` and `llmnr` among them: a cap is about
+  *accepting*, so a protocol that already bounds its reads still needs one.
 
   This is the session's clearest instance of the recurring failure: **the test counted a token,
   not the thing**, and a green result over an unmeasured population is worse than no check,
