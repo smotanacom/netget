@@ -22,6 +22,72 @@ use tokio::sync::mpsc;
 /// without limit, and every subsequent event re-sends the whole thing to the model.
 pub const MAX_XMPP_BUFFER_BYTES: usize = 256 * 1024;
 
+/// How long a peer that has connected and sent nothing at all may hold this connection.
+///
+/// XMPP is unambiguously initiator-speaks-first: RFC 6120 §4.2 has the initiating entity send
+/// the opening `<stream:stream>` header before the server may say anything, and this server
+/// cannot even answer until it has one, because its first event is the peer's own bytes.
+/// `tokio-xmpp` — what NetGet's own XMPP client is built on — sends that header from inside its
+/// connect path, so NetGet's client is the "speaks inside `connect()`" case and never the
+/// connected-and-silent one that made `tcp`, `telnet`, `ldap`, `whois` and `redis` settle on
+/// 300 seconds. (It is in practice not a peer here at all: `XmppClient::new` dials the JID's
+/// domain via SRV, not the `127.0.0.1:<ephemeral>` the dashboard pre-fills.)
+///
+/// Thirty seconds is also the number the XMPP servers this one imitates already use for the
+/// same window: ejabberd's `negotiation_timeout` defaults to 30 seconds for completing stream
+/// negotiation, and Prosody bounds the pre-authentication phase the same way. A peer that has
+/// not sent a stream header has not begun a stream, which is the state an unauthenticated
+/// flood lives in.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an established stream may carry no further bytes.
+///
+/// Deliberately far longer than the first bound, because **a silent XMPP session is the normal
+/// case, not a broken one**: a connected person who is not typing sends nothing, and that is
+/// what the protocol is for. Neither ejabberd nor Prosody closes an authenticated session for
+/// idleness at all, so there is no upstream number to copy — the bound here exists only so the
+/// socket, the task and the `AppState` row are not held forever, not to enforce a session
+/// policy.
+///
+/// Fifteen minutes, which is above every keepalive interval real clients use: RFC 6120 §4.6.1
+/// whitespace keepalives and XEP-0199 pings are sent on the order of one to five minutes
+/// (Conversations pings at roughly five, most desktop clients at one), so any client that
+/// intends to stay connected refreshes this bound several times over before it can fire.
+///
+/// The deadline wraps the read alone. The model round-trip that answers a stanza, and a
+/// `manual` rule parking that stanza for a human at the dashboard, both happen after the read
+/// has returned — so a slow answer can never close the connection the answer belongs to.
+const IDLE_BETWEEN_STANZAS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent streams this server admits.
+///
+/// [`accept_bounded::DEFAULT_MAX_CONNECTIONS`](crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS).
+/// Each admitted connection may accumulate [`MAX_XMPP_BUFFER_BYTES`] of un-consumed XML, so the
+/// cap is what turns that 256 KiB per-connection bound into a 64 MiB total one — and with a
+/// fifteen-minute idle bound above, a cap is the only thing standing between this server and
+/// `900s × accept rate` simultaneous silent streams.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// A stream error in XMPP's own vocabulary, and the one the XSF defines for exactly this:
+/// `<policy-violation/>` (RFC 6120 §4.9.3.14 — "the entity has violated some local service
+/// policy"), which is what a connection limit is. RFC 6120 §4.9.1.1 requires the error to be
+/// preceded by an opening stream tag and followed by the closing one even when the server is
+/// the first to speak, so the whole exchange is synthesised here; this is the same shape
+/// [`stream_error_frame`] builds for an LLM failure on a stream that never opened.
+///
+/// No `from` attribute: the refusal is written by the accept loop, which has the listener's
+/// domain but no parsed stream to attribute it to, and §4.7.1 makes `from` optional on a
+/// server's opening tag. Every XMPP client parses this and reports a refusal rather than a
+/// transport fault, which is the entire point of saying it out loud.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"<?xml version='1.0'?>\
+<stream:stream xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' \
+version='1.0'><stream:error>\
+<policy-violation xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>\
+<text xmlns='urn:ietf:params:xml:ns:xmpp-streams' xml:lang='en'>\
+connection limit reached</text></stream:error></stream:stream>";
+
 /// A fatal stream error to send when netget itself cannot answer, per RFC 6120 §4.9.
 ///
 /// The peer gets a *category*, never a diagnosis: the two `WireFailure` variants map onto two
@@ -79,7 +145,18 @@ impl XmppServer {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
         domain: String,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults are argued beside the
+        // constants.
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(FIRST_BYTE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_STANZAS_TIMEOUT);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -94,10 +171,19 @@ impl XmppServer {
         let protocol = Arc::new(XmppProtocol::with_domain(domain));
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "XMPP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -115,6 +201,10 @@ impl XmppServer {
                         // Tracked, not detached: stop_server must abort this task too.
                         let task_owner = app_state.clone();
                         task_owner.spawn_server_task(server_id, async move {
+                            // The permit is released when this task ends, which is what makes
+                            // MAX_CONNECTIONS a cap on live streams rather than on the accept
+                            // rate.
+                            let _permit = permit;
                             let (read_half, write_half) = tokio::io::split(stream);
                             let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -175,7 +265,42 @@ impl XmppServer {
                             let mut stream_opened = false;
 
                             loop {
-                                match read_half.read(&mut temp_buf).await {
+                                // The deadline wraps this read and nothing else. Everything
+                                // that legitimately takes time — the model round-trip that
+                                // answers a stanza, a `manual` rule parking it for a human —
+                                // happens below, after the read has already returned, so none
+                                // of it can be timed out from under itself.
+                                //
+                                // `stream_opened` is the switch between the two bounds because
+                                // it is exactly the right claim: it is set the moment this
+                                // server writes its first byte to the peer, which on this
+                                // server is the model's answer to the peer's stream header. A
+                                // peer that has not got that far has not established a stream,
+                                // whatever it has sent.
+                                let read_timeout = if stream_opened {
+                                    idle_timeout
+                                } else {
+                                    first_byte_timeout
+                                };
+                                let read_result = match tokio::time::timeout(
+                                    read_timeout,
+                                    read_half.read(&mut temp_buf),
+                                )
+                                .await
+                                {
+                                    Ok(result) => result,
+                                    Err(_) => {
+                                        Log::new(Some(&status_clone)).info(format!(
+                                            "XMPP connection {} sent nothing for {}s; closing \
+                                             idle connection \
+                                             decision=fail_closed_read_timeout",
+                                            connection_id,
+                                            read_timeout.as_secs()
+                                        ));
+                                        break;
+                                    }
+                                };
+                                match read_result {
                                     Ok(0) => {
                                         Log::new(Some(&status_clone)).debug(format!(
                                             "XMPP connection {} closed by client",

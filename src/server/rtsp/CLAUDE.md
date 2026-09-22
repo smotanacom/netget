@@ -161,3 +161,42 @@ status vocabulary (RFC 2326 §11) and 413 is the answer.
 
 `CSeq` is not echoed on the refusal: the request head is exactly what did not arrive, so there
 is no sequence number to correlate to. Logged `decision=fail_closed_oversized_request`.
+
+## Connection bounds
+
+A peer that connects and says nothing holds a socket, a task and an `AppState` row. Until
+September 2026 it held them forever: this server had no read deadline and accepted without
+limit.
+
+| bound | default | overridable with |
+|---|---|---|
+| first request from a connected peer | 30s | `first_byte_timeout_secs` |
+| further requests on an established session | 300s | `idle_timeout_secs` |
+
+The deadline wraps `read_half.read(&mut chunk)` and nothing else, so the model round-trip that
+shapes a DESCRIBE's SDP — and a `manual` rule parking that event for a human — sits outside it
+by construction.
+
+**Why 30 for the first byte.** RTSP is client-speaks-first (RFC 2326 §10) and ffprobe, ffplay
+and VLC all send OPTIONS or DESCRIBE inside their open path. The peer that made `tcp`, `redis`
+and `whois` settle on 300 — NetGet's own client of the same protocol, created from the
+dashboard and parked at `[ send message ]` having sent nothing — cannot exist here: there is no
+`src/client/rtsp/`, so the card's `[ + client ]` button is disabled with "no client
+implementation for this protocol is compiled in".
+
+**Why 300 for idle, and why this idle bound is not free.** Closing the control connection
+aborts `Session::play_task`, so too tight a value stops **live media** for a client that is
+happily receiving it over UDP and saying nothing on the control channel. RFC 2326 §12.37 makes
+a session's timeout 60 seconds when the `Session` header carries no `timeout=` — as this
+server's does not — so a client intending to keep its session alive must already send something
+well inside a minute, and ffmpeg sends a keepalive at `timeout / 2`. 300 seconds is five of
+those windows.
+
+**Connection cap**: `accept_bounded::DEFAULT_MAX_CONNECTIONS` (256), which turns the 1 MiB
+request buffer and the per-session UDP socket into total bounds. A peer over it is told
+`RTSP/1.0 503 Service Unavailable` with a `Retry-After`, carrying no `CSeq` for the same reason
+the 413 above carries none — the refused peer has sent no request, so there is no sequence
+number to echo.
+
+Tests: `tests/server/rtsp/connection_bounds_test.rs`, driven from a raw socket with a static
+routing rule and zero LLM calls.

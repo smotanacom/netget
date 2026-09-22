@@ -61,6 +61,64 @@ struct Session {
 /// needs a complete request before it can act, so until a `\r\n\r\n` arrives every byte is held.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
+/// How long a peer that has connected and sent nothing at all may hold this connection.
+///
+/// **No NetGet client can be that peer**, which is what settles the number. There is no
+/// `src/client/rtsp/`, so this server's card shows `[ + client ]` disabled with "no client
+/// implementation for this protocol is compiled in" (`src/tui/cards.rs`) and the
+/// connected-and-silent peer that made `tcp`, `telnet`, `ldap`, `whois` and `redis` settle on
+/// 300 seconds cannot be created here. Nor is a peer ever waiting to be spoken to: RTSP's
+/// meaningful injection from the dashboard is `close_connection` — every `rtsp_*_response`
+/// returns `NoAction` because the framing is built here rather than by the action — so nothing
+/// useful happens on a connection whose client has said nothing.
+///
+/// Every peer that *can* be here speaks first and at once. RTSP is request/response with the
+/// client always initiating (RFC 2326 §10), and ffprobe, ffplay and VLC all send `OPTIONS` or
+/// `DESCRIBE` inside their open path. Thirty seconds is the same number `s3` and `etcd` argue
+/// from the same client-speaks-first property, and it sits between nginx's
+/// `client_header_timeout` of 60s and Apache's `RequestReadTimeout header=20`, which bound the
+/// identical thing for RTSP's parent protocol.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an established RTSP session may go without a further request.
+///
+/// This bound is not free the way an ordinary idle bound is: closing the control connection
+/// aborts `Session::play_task`, so a value that is too tight stops **live media** for a client
+/// that is happily receiving it. RTP leaves over its own UDP socket and a playing client can be
+/// silent on the control channel the whole time.
+///
+/// What makes 300 seconds safe is RFC 2326 §12.37: a session's timeout defaults to 60 seconds
+/// when the `Session` header carries no `timeout=` parameter — as this server's does not — so
+/// every client that intends to keep a session alive must already send something (`OPTIONS` or
+/// `GET_PARAMETER`) well inside a minute, and ffmpeg does exactly that at `timeout / 2`.
+/// Five minutes is five of those windows: a client that has sent nothing for it has stopped
+/// keeping its own session alive by its own rules, and tearing down media it is no longer
+/// maintaining is correct rather than a surprise.
+///
+/// As everywhere, the deadline wraps the read alone: the model round-trip that shapes a
+/// DESCRIBE's SDP, and a `manual` rule parking that event for a human, both happen after the
+/// read has returned.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent control connections this server admits.
+///
+/// [`accept_bounded::DEFAULT_MAX_CONNECTIONS`](crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS).
+/// Each admitted connection may buffer [`MAX_REQUEST_BYTES`] and may own a PLAY task with its
+/// own UDP socket, so the cap is what turns those per-connection bounds into total ones —
+/// 256 MiB of buffer and 256 sockets at the very worst.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// RTSP inherits HTTP's status vocabulary (RFC 2326 §11) and `503 Service Unavailable` is the
+/// answer a busy server owes. It carries no `CSeq`, for the same reason the oversized-request
+/// `413` below carries none: the refused peer has sent no request, so there is no sequence
+/// number to echo, and RFC 2326 permits a response the server generates without one. ffmpeg
+/// and VLC both surface a 503 as a server-side refusal rather than as a transport fault, which
+/// is the whole point of saying it out loud.
+const CONNECTION_CAP_REFUSAL: &[u8] =
+    b"RTSP/1.0 503 Service Unavailable\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 pub struct RtspServer;
 
 impl RtspServer {
@@ -72,7 +130,18 @@ impl RtspServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults are argued beside the
+        // constants.
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(FIRST_BYTE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_REQUESTS_TIMEOUT);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -81,10 +150,19 @@ impl RtspServer {
         let protocol = Arc::new(RtspProtocol::new());
         let task_registrar = app_state.clone();
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "RTSP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -120,6 +198,10 @@ impl RtspServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // The permit is released when this task ends, which is what
+                                // makes MAX_CONNECTIONS a cap on live connections rather than
+                                // on the accept rate.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     remote_addr,
@@ -129,6 +211,8 @@ impl RtspServer {
                                     state,
                                     stx.clone(),
                                     proto,
+                                    first_byte_timeout,
+                                    idle_timeout,
                                 )
                                 .await
                                 {
@@ -161,6 +245,8 @@ impl RtspServer {
         state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<RtspProtocol>,
+        first_byte_timeout: std::time::Duration,
+        idle_timeout: std::time::Duration,
     ) -> Result<()> {
         // Share the write half between the reader loop and the peer-injection task through
         // one Arc<Mutex<_>>, so an injected write cannot interleave with a response.
@@ -201,6 +287,8 @@ impl RtspServer {
             &status_tx,
             &protocol,
             &mut session,
+            first_byte_timeout,
+            idle_timeout,
         )
         .await;
 
@@ -230,9 +318,13 @@ impl RtspServer {
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<RtspProtocol>,
         session: &mut Session,
+        first_byte_timeout: std::time::Duration,
+        idle_timeout: std::time::Duration,
     ) -> Result<()> {
         let mut buffer: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 8192];
+        // Has this peer had a request answered yet? Until it has, the shorter bound applies.
+        let mut answered_one = false;
 
         loop {
             // Extract as many complete requests as the buffer holds before reading more.
@@ -267,9 +359,33 @@ impl RtspServer {
                         Some(1),
                     )
                     .await;
+                // From here the peer is an established session, so every later read gets the
+                // longer idle bound.
+                answered_one = true;
             }
 
-            let n = read_half.read(&mut chunk).await?;
+            // The deadline wraps this read and nothing else. The model round-trip that shapes
+            // a DESCRIBE's SDP or decides a PLAY, and a `manual` rule parking that event for a
+            // human (300s by default), both happen above — after a read has already returned —
+            // so neither can be timed out from under itself. What is bounded is only the time
+            // a peer may hold this connection while sending nothing.
+            let read_timeout = if answered_one {
+                idle_timeout
+            } else {
+                first_byte_timeout
+            };
+            let n = match tokio::time::timeout(read_timeout, read_half.read(&mut chunk)).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    Log::new(Some(status_tx)).info(format!(
+                        "RTSP connection {} sent nothing for {}s; closing idle connection \
+                         decision=fail_closed_read_timeout",
+                        connection_id,
+                        read_timeout.as_secs()
+                    ));
+                    return Ok(());
+                }
+            };
             if n == 0 {
                 return Ok(());
             }

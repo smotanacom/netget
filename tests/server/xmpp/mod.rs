@@ -8,3 +8,6 @@ pub mod peer_inject_test;
 
 #[cfg(all(test, feature = "xmpp"))]
 pub mod llm_failure_test;
+
+#[cfg(all(test, feature = "xmpp"))]
+pub mod connection_bounds_test;

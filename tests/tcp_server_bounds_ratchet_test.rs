@@ -46,13 +46,14 @@ use std::path::{Path, PathBuf};
 /// Entries are **leaf names** (`serial`, not `usb/serial`) — see `leaf()`.
 ///
 /// Nothing here makes a deadline impossible. This is work left.
-const TIMEOUT_BASELINE: &[&str] = &[
-    "nfc",
-    "ollama",
-    "openai",
-    "rtsp",
-    "xmpp",
-];
+///
+/// **Empty as of 22 September 2026, and it may only stay that way.** Every one of the 92 TCP
+/// accept loops now names a read deadline. The last five were `nfc`, `ollama`, `openai`, `rtsp`
+/// and `xmpp`; the two hyper servers among them (`ollama`, `openai`) took the `peek` +
+/// `ConnectionActivity` shape `etcd` and `s3` established rather than a deadline inside hyper's
+/// own reads, because hyper keeps polling a connection while a request is being answered and
+/// such a deadline fires in the middle of a model round-trip.
+const TIMEOUT_BASELINE: &[&str] = &[];
 
 /// Protocols that open a TCP accept loop without a connection cap.
 ///
@@ -68,15 +69,10 @@ const CAP_BASELINE: &[&str] = &[
     "dot",
     "llmnr",
     "mongodb",
-    "nfc",
-    "ollama",
-    "openai",
-    "rtsp",
     "socks5",
     "webrtc",
     "webrtc_signaling",
     "websocket",
-    "xmpp",
 ];
 
 /// Ways a read is actually bounded in time — **mechanisms, not names**.
