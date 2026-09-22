@@ -322,6 +322,10 @@ jobs:
       #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
       #   sipsak            - sip
       #   stuntman-client   - stun (provides `stunclient`; universe)
+      #   ldap-utils        - ldap (OpenLDAP ldapsearch, deliberately NOT the ldap3 crate)
+      #   openssh-client    - ssh (OpenSSH, deliberately NOT libssh2, which found nothing
+      #                       here for months while OpenSSH disconnected on a duplicate
+      #                       SSH_MSG_CHANNEL_CLOSE one run in five)
       #   subversion (svn)  - svn (the real ra_svn client; info/ls/log)
       #   tor               - tor_relay
       #   wakeonlan         - wol
@@ -330,8 +334,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 awscli curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools maven mbpoll mercurial \
-            knot-dnsutils mosquitto-clients mysql-client npm openvpn \
-            postgresql-client python3-pip redis-tools sipsak stuntman-client \
+            knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
+            openvpn postgresql-client python3-pip redis-tools sipsak stuntman-client \
             subversion tor wakeonlan
 
       # Not in apt on ubuntu-22.04.
@@ -440,8 +444,9 @@ jobs:
             coap::real_client_test dns::dig_test dns::kdig_test \
             doh::real_client_test dot::real_client_test dynamo::real_client_test \
             etcd::real_client_test gopher::e2e_test grpc::real_client_test \
-            hls::curl_test http::real_client_test \
-            kafka::real_client_test kubernetes::e2e_test maven::e2e_test \
+            hls::curl_test http::real_client_test imap::real_client_test \
+            kafka::real_client_test kubernetes::e2e_test ldap::real_client_test \
+            maven::e2e_test \
             memcached::real_client_test modbus::real_client_test \
             mongodb::real_client_test mqtt::real_client_test \
             mercurial::real_client_test mysql::real_client_test npm::e2e_test \
@@ -449,8 +454,10 @@ jobs:
             postgresql::real_client_test \
             pypi::e2e_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
-            sqs::real_client_test stun::real_client_test svn::real_client_test \
-            torrent_tracker::real_client_test websocket::e2e_test \
+            sqs::real_client_test ssh::real_client_test stun::real_client_test \
+            svn::real_client_test \
+            torrent_tracker::real_client_test webdav::real_client_test \
+            websocket::e2e_test \
             wol::real_client_test ; do
             echo "::group::$filter"
             if ! cargo test --locked --all-features --test server -- \
