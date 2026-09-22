@@ -4,6 +4,9 @@
 pub mod test;
 
 #[cfg(all(test, feature = "bgp"))]
+mod connection_bounds_test;
+
+#[cfg(all(test, feature = "bgp"))]
 pub mod e2e_test;
 
 #[cfg(all(test, feature = "bgp"))]

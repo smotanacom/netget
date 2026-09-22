@@ -252,3 +252,135 @@ async fn an_answered_peer_gets_the_longer_idle_bound() {
 
     let _ = state.remove_server(server_id).await;
 }
+
+// ---------------------------------------------------------------------------------------
+// The connection cap
+// ---------------------------------------------------------------------------------------
+//
+// The deadlines above bound how long *one* peer holds a connection. They say nothing about
+// how many such peers there may be, and until September 2026 this accept loop admitted every
+// connection offered to it — so `IDLE_BETWEEN_MESSAGES_TIMEOUT`'s ten minutes multiplied by an
+// unbounded arrival rate was not a bound at all.
+//
+// Three claims below, and the second is the unusual one:
+//
+//  1. `MAX_CONNECTIONS` peers are admitted.
+//  2. The next one is closed **with nothing written**, and that is the right answer rather than
+//     a shortcut. Every MongoDB reply is addressed to a request through the header's
+//     `responseTo`, which the driver matches against its own outstanding `requestID`; a peer
+//     over the cap has sent nothing, so the only value available is zero. A driver receiving a
+//     reply it did not ask for has no request to fail and simply discards it, so an invented
+//     OP_MSG would leave the peer waiting out its own `connectTimeoutMS` — strictly worse than
+//     the immediate EOF it gets here, which every driver already treats as a failed connection.
+//  3. Closing an admitted connection **frees exactly one slot**. A permit dropped before the
+//     connection ends un-caps the server silently; one never released wedges it shut after
+//     `MAX_CONNECTIONS` peers have ever connected.
+//
+// Because the refusal is silence, "refused" and "admitted" are told apart by *time* rather
+// than by content: a refused peer reads EOF at once, while an admitted one that says nothing
+// is held for `FIRST_HEADER_READ_TIMEOUT` — thirty seconds — before this server closes it. The
+// assertion windows below sit well inside that gap on both sides.
+//
+// **How this was proved to fail without the cap**: replace the `accept_bounded` call in
+// `src/server/mongodb/mod.rs` with a bare `listener.accept().await` (and drop the permit from
+// the connection task). The over-cap peer is then admitted and held for the full header
+// deadline, and the test fails on "was neither answered nor closed".
+
+/// `src/server/mongodb/mod.rs::MAX_CONNECTIONS`. Deliberately duplicated rather than imported:
+/// if the constant moves, this test should be re-read rather than silently follow it.
+const MAX_CONNECTIONS: usize = 256;
+
+/// Wait until the accept loop has taken `n` connections out of the listen backlog. A
+/// `connect()` succeeds as soon as the kernel queues it, so without this the over-cap peer
+/// races the accept loop and the test measures scheduling rather than the cap.
+///
+/// This server registers the connection in the accept loop itself, before the session task
+/// reads a header, so the count reflects admitted peers rather than peers that have spoken.
+async fn wait_for_admitted(state: &AppState, id: ServerId, n: usize) {
+    for _ in 0..600 {
+        if let Some(s) = state.get_server(id).await {
+            if s.connections.len() >= n {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let seen = state
+        .get_server(id)
+        .await
+        .map(|s| s.connections.len())
+        .unwrap_or(0);
+    panic!("the server admitted only {seen} of {n} connections");
+}
+
+#[tokio::test]
+async fn the_connection_past_the_cap_is_closed_without_a_fabricated_reply_and_the_slot_comes_back()
+{
+    let state = new_state().await;
+    let (server_id, port) = start_server(&state).await;
+
+    let mut held = Vec::with_capacity(MAX_CONNECTIONS);
+    for i in 0..MAX_CONNECTIONS {
+        held.push(
+            TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap_or_else(|e| panic!("connection {i} of the cap failed: {e}")),
+        );
+    }
+    wait_for_admitted(&state, server_id, MAX_CONNECTIONS).await;
+
+    let mut over = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("the listener must still accept — a cap is not a closed socket");
+    let mut refusal = Vec::new();
+    let started = std::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(10), over.read_to_end(&mut refusal))
+        .await
+        .expect(
+            "the connection past the cap was neither answered nor closed — it was admitted, so \
+             there is no cap",
+        )
+        .expect("read to EOF");
+    assert!(
+        refusal.is_empty(),
+        "every MongoDB reply is addressed to a request through responseTo, and a refused peer \
+         has sent none — so the refusal must be a plain close, not an invented reply. \
+         Got {refusal:02x?}"
+    );
+    // The gap that makes silence readable: a refused peer sees EOF now, an admitted one would
+    // not for thirty seconds. Without this the assertion above would also pass for a peer that
+    // was admitted and then timed out, which is the opposite outcome.
+    assert!(
+        started.elapsed() < FIRST_HEADER_READ_TIMEOUT / 3,
+        "the refusal took {:?}, which is close enough to FIRST_HEADER_READ_TIMEOUT that this \
+         peer may simply have been admitted and then closed for saying nothing",
+        started.elapsed()
+    );
+
+    drop(held.pop().expect("one held connection"));
+
+    let mut admitted = false;
+    for _ in 0..100 {
+        let mut candidate = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect after freeing a slot");
+        let mut buf = [0u8; 64];
+        match tokio::time::timeout(Duration::from_millis(300), candidate.read(&mut buf)).await {
+            // Neither bytes nor EOF: MongoDB is client-speaks-first, so a connection still open
+            // and still silent after the window is one that was admitted and is waiting for a
+            // header. A refused peer, whose refusal is a bare close, returns `Ok(0)` at once.
+            Err(_) => {
+                admitted = true;
+                break;
+            }
+            Ok(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    assert!(
+        admitted,
+        "the cap never freed its slot after an admitted connection ended — the permit is being \
+         held past the life of the connection, which wedges the server shut"
+    );
+}

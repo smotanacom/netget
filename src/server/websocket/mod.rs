@@ -74,6 +74,49 @@ const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE: usize = 1024 * 1024;
 pub const MAX_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HANDSHAKE_TIMEOUT_SECS`]
+/// bounds how long a peer can hold a slot before it has sent a request head; nothing bounds an
+/// *upgraded* connection at all, and nothing should — a WebSocket is a session the client is
+/// entitled to hold open in silence, which is the whole point of the protocol. That makes the
+/// cap the only bound this server has on its total, rather than the second of two.
+///
+/// So the number is a statement about sessions, not about arrival rate. Each one costs a
+/// socket, two tasks and up to [`DEFAULT_MAX_MESSAGE_SIZE`] of reassembly buffer; 256 is far
+/// above a browser application's fan-in to one endpoint and far below where a stranger's
+/// `connect()` loop starts costing this process its descriptors. A deployment that needs the
+/// per-connection cost lower should be tightening `max_message_size`, which is the half of the
+/// product that describes the memory.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// The reason phrase in [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_REASON: &str = "Too many connections, try again later";
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// **A WebSocket client is an HTTP client first, so this speaks HTTP.** RFC 6455 §4.1 makes
+/// the opening handshake an ordinary HTTP/1.1 GET, and §4.2.2 has the server answer anything
+/// it will not upgrade with a normal HTTP response — which is what this server already does
+/// for a refused upgrade, a bad path and a timed-out head. 503 with `Retry-After` is HTTP's
+/// own word for "full, come back", and every client surfaces it as a failed handshake with a
+/// status: browsers fire `error` on the `WebSocket` rather than `close`, and `websocat`,
+/// tungstenite and `wscat` all report the code. A close frame would be wrong twice over — it
+/// belongs to a connection that was never upgraded, and the peer has no frame parser running
+/// yet.
+///
+/// Writing it before the request head has arrived is deliberate and legal: RFC 9112 §3.3 lets
+/// a server send a final response before the request is complete, and `Connection: close`
+/// tells a client still sending its head to stop and read. Built through this server's own
+/// [`build_error_response`] so the `Content-Length` cannot drift from the body.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    build_error_response(
+        503,
+        CONNECTION_CAP_REASON,
+        &[("Retry-After".to_string(), "30".to_string())],
+    )
+});
+
 // ============================================================================
 // HTTP request head parsing
 // ============================================================================
@@ -473,10 +516,19 @@ impl WebSocketServer {
         let accept_state = app_state.clone();
         let accept_status_tx = status_tx.clone();
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "WEBSOCKET",
+                    Some(&accept_status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let llm_client = llm_client.clone();
                         let app_state = accept_state.clone();
                         let status_tx = accept_status_tx.clone();
@@ -485,6 +537,14 @@ impl WebSocketServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // One upgraded WebSocket is *two* tasks — this one and the
+                                // writer `run_connection` spawns — and the read loop waits
+                                // only five seconds for the writer before giving up on it, so
+                                // the permit goes in as an `Arc` held by both and the slot
+                                // comes back when the later of the two ends. Holding it here
+                                // alone would release the slot while a writer was still
+                                // draining a slow peer, which un-caps the server silently.
+                                let permit = Arc::new(permit);
                                 if let Err(e) = Self::handle_connection(
                                     socket,
                                     peer_addr,
@@ -495,6 +555,7 @@ impl WebSocketServer {
                                     server_id,
                                     path_filter,
                                     ws_config,
+                                    permit,
                                 )
                                 .await
                                 {
@@ -533,6 +594,7 @@ impl WebSocketServer {
         server_id: ServerId,
         path_filter: Option<String>,
         ws_config: WebSocketConfig,
+        permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
     ) -> Result<()> {
         // ---- 1. read the request head -------------------------------------
         let (head_bytes, leftover) = match tokio::time::timeout(
@@ -735,6 +797,7 @@ impl WebSocketServer {
         Self::run_connection(
             ws_stream,
             out_rx,
+            permit,
             ConnCtx {
                 server_id,
                 connection_id,
@@ -891,6 +954,7 @@ impl WebSocketServer {
     async fn run_connection(
         ws_stream: WebSocketStream<TcpStream>,
         mut out_rx: mpsc::UnboundedReceiver<WsOut>,
+        permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
         ctx: ConnCtx,
         path: String,
         peer_addr: SocketAddr,
@@ -902,7 +966,12 @@ impl WebSocketServer {
         // lock is ever held across the `.send().await`.
         let writer_status_tx = ctx.status_tx.clone();
         let writer_conn = ctx.connection_id;
+        // The writer's own claim on the connection's slot. The read loop below waits at most
+        // five seconds for this task, so it can outlive the task that accepted the peer; the
+        // slot is released by whichever of the two drops its `Arc` last.
+        let writer_permit = Arc::clone(&permit);
         let writer_handle = tokio::spawn(async move {
+            let _permit = writer_permit;
             while let Some(out) = out_rx.recv().await {
                 let closing = matches!(out, WsOut::Close { .. });
                 let message = match out {
@@ -1037,6 +1106,10 @@ impl WebSocketServer {
         // Dropping every sender ends the writer task.
         drop(ctx);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer_handle).await;
+        // Explicit rather than implicit: this is the read side's half of the shared permit,
+        // and dropping it here — after the writer has been waited for — is what makes the
+        // slot come back exactly once both halves are done with the connection.
+        drop(permit);
     }
 
     /// Handle one inbound message through the Idle -> Processing -> Accumulating machine.

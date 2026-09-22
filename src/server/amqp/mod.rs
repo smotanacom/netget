@@ -92,6 +92,68 @@ const IDLE_READ_TIMEOUT_SECS: u64 = 600;
 /// How many `accept()` failures in a row before the listener is treated as dead.
 const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 64;
 
+/// Concurrent connections this broker admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HANDSHAKE_TIMEOUT_SECS`] and
+/// [`IDLE_READ_TIMEOUT_SECS`] bound how long *one* peer holds a slot; only a cap bounds how
+/// many of them there can be at once, and the idle bound is ten minutes, so a peer connecting
+/// once a second pins six hundred sockets before the first is even eligible to close.
+///
+/// An AMQP connection is worth more than most in this tree, which argues for the cap rather
+/// than for a larger number: each one is four tasks, and each may open
+/// [`MAX_OPEN_CHANNELS`] channels that each buffer toward [`MAX_BODY_SIZE`], so the
+/// per-connection cost is already a product this cap has to multiply. It is also a long-lived
+/// *session* rather than a request — a consumer holds its connection for the life of the
+/// application, and AMQP clients are built around exactly one per process — so the broker's
+/// live-connection count tracks its client count, not its message rate, and 256 clients is a
+/// plausible deployment well inside the default. A deployment that wants a tighter total
+/// should tighten `frame_max` or [`MAX_BODY_SIZE`], which are the halves of the product that
+/// describe the memory.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// AMQP reply code 320, `CONNECTION_FORCED` (0-9-1 section 4.2.7).
+///
+/// The spec glosses it as the server closing the connection for a reason of its own, and — the
+/// part that decides it here — "the client may retry at some later date", which is the
+/// back-off this refusal wants. 506 `RESOURCE_ERROR` is the near miss: its wording about
+/// resources fits better, but it is a 5xx *hard* error, which tells a client the operation
+/// itself was wrong and should not simply be repeated. A full broker is a transient
+/// condition, so the code that says "come back" is the honest one.
+const REPLY_CONNECTION_FORCED: u16 = 320;
+
+/// The `reply_text` in [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_REPLY_TEXT: &str = "connection limit reached, try again later";
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: a connection-level
+/// `Connection.Close` on channel 0 carrying [`REPLY_CONNECTION_FORCED`].
+///
+/// **The argument is that AMQP explicitly provides for a Close that answers nothing.** The
+/// method's `class-id`/`method-id` fields name the method that provoked it, and 0-9-1 section
+/// 1.4.2.9 says they are *zero* when the close was not provoked by one — which is exactly this
+/// case, and exactly what a peer over the cap needs, because it has not sent a method. That is
+/// what separates this from `ipp`'s `server-error-busy` and MongoDB's OP_MSG, both rejected in
+/// this same sweep: those carry a request identifier that a refused peer has never supplied,
+/// so the reply cannot be matched and is read as a protocol violation. Nothing here is
+/// fabricated.
+///
+/// The frame is written before the peer's 8-byte protocol header has arrived, which is the one
+/// thing worth checking rather than assuming. It is safe: TCP is full-duplex, so the client
+/// writes its header and then reads, and 0-9-1 allows `Connection.Close` at any point after
+/// the connection exists — it is how every broker refuses an authentication failure or a
+/// missing vhost mid-handshake, so no client can treat an early Close as a surprise. Answering
+/// with the protocol header instead (section 4.2.2's "I do not speak your version") was the
+/// alternative and would have been a lie: this broker speaks 0-9-1, it is simply full, and a
+/// client told its version is wrong retries nothing.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    let mut args = Encoder::new();
+    args.u16(REPLY_CONNECTION_FORCED);
+    args.reply_text(CONNECTION_CAP_REPLY_TEXT);
+    // class-id and method-id: zero, "not in reply to any method" (0-9-1 section 1.4.2.9).
+    args.u16(0);
+    args.u16(0);
+    method_frame(0, CLASS_CONNECTION, CONNECTION_CLOSE, &args.into_vec())
+});
+
 /// AMQP reply code 505, `UNEXPECTED_FRAME` (0-9-1 section 4.2.7): the peer sent a frame this
 /// broker could not decode or did not expect where it arrived.
 const REPLY_UNEXPECTED_FRAME: u16 = 505;
@@ -161,9 +223,18 @@ impl AmqpServer {
             // good and released the port while AppState went on reporting the server Running
             // - a server that lies about being up, reached from the other direction.
             let mut consecutive_accept_errors = 0u32;
+            let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "AMQP",
+                    Some(&accept_status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         consecutive_accept_errors = 0;
                         Log::new(Some(&accept_status_tx))
                             .debug(format!("AMQP connection from {}", peer_addr));
@@ -176,6 +247,13 @@ impl AmqpServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection even though `handle_connection` spawns a
+                                // writer: every exit path there drops `out_tx` and then
+                                // `.await`s the writer task, so no task outlives this future
+                                // and `MAX_CONNECTIONS` caps live connections rather than
+                                // accepts.
+                                let _permit = permit;
                                 if let Err(e) = handle_connection(
                                     socket, peer_addr, local_addr, llm_client, app_state,
                                     status_tx, server_id, frame_max, heartbeat,

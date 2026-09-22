@@ -57,23 +57,22 @@ const TIMEOUT_BASELINE: &[&str] = &[];
 
 /// Protocols that open a TCP accept loop without a connection cap.
 ///
-/// Measured 16 September 2026 across all 92. The previous list held 14 — the ones the old
-/// derivation could see — and `accept_bounded` has 17 adopters, so the great majority of this
-/// tree accepts without limit.
+/// Measured 16 September 2026 across all 92. The list held 14 then — the ones the old
+/// derivation could see — and reached 25 once the derivation stopped missing two thirds of the
+/// tree.
+///
+/// **Empty as of 22 September 2026, and it may only stay that way.** Every one of the 92 TCP
+/// accept loops now goes through `crate::server::accept_bounded`. The last ten were `amqp`,
+/// `bgp`, `doh`, `dot`, `llmnr`, `mongodb`, `socks5`, `webrtc`, `webrtc_signaling` and
+/// `websocket`; five of them answer in a protocol vocabulary of their own (SOCKS5's
+/// `NO ACCEPTABLE METHODS`, AMQP's `Connection.Close` 320, BGP's Cease/Out-of-Resources
+/// NOTIFICATION, and an HTTP 503 for the two WebSocket-carried ones), and five refuse with a
+/// plain close because every message they could send would have to echo something the refused
+/// peer never sent — or, for `doh` and `dot`, would be a malformed TLS record rather than a
+/// refusal at all.
 ///
 /// Nothing here makes a cap impossible. This is work left.
-const CAP_BASELINE: &[&str] = &[
-    "amqp",
-    "bgp",
-    "doh",
-    "dot",
-    "llmnr",
-    "mongodb",
-    "socks5",
-    "webrtc",
-    "webrtc_signaling",
-    "websocket",
-];
+const CAP_BASELINE: &[&str] = &[];
 
 /// Ways a read is actually bounded in time — **mechanisms, not names**.
 ///
@@ -260,9 +259,20 @@ fn every_tcp_accept_loop_goes_through_the_shared_connection_cap() {
 }
 
 #[test]
-fn the_eighteen_this_sweep_covered_have_both_bounds() {
-    // Named explicitly rather than derived, because the point of the list is that it was
-    // measured: these are the 18 of 32 that referenced no read or idle timeout at all.
+fn the_protocols_these_sweeps_covered_have_both_bounds() {
+    // Named explicitly rather than derived, because the point of the list is that each entry
+    // was measured by hand and has a wire-driven test of its own.
+    //
+    // The first eighteen are the original sweep: the 18 of 32 that referenced no read or idle
+    // timeout at all. The twenty after them are the two connection-cap batches of
+    // September 2026 — each has a `tests/server/<p>/connection_bounds_test.rs` that fills the
+    // cap from the wire, asserts how the next peer is refused, and asserts that closing one
+    // admitted connection frees exactly one slot.
+    //
+    // A protocol belongs here only when **both** bounds are real, which is why this list is
+    // shorter than "everything that has been touched": the assertions below are the pin, so an
+    // entry that has a cap and no deadline would fail rather than record a gap. Both batches
+    // were checked against these three conditions before being added.
     const SWEPT: &[&str] = &[
         "cassandra",
         "db2",
@@ -282,6 +292,28 @@ fn the_eighteen_this_sweep_covered_have_both_bounds() {
         "tor_relay",
         "torrent_peer",
         "zookeeper",
+        // Connection-cap batch one (September 2026).
+        "finger",
+        "gopher",
+        "hls",
+        "ident",
+        "ipp",
+        "mqtt",
+        "proxy",
+        "smtp",
+        "torrent_tracker",
+        "whois",
+        // Connection-cap batch two, which emptied CAP_BASELINE.
+        "amqp",
+        "bgp",
+        "doh",
+        "dot",
+        "llmnr",
+        "mongodb",
+        "socks5",
+        "webrtc",
+        "webrtc_signaling",
+        "websocket",
     ];
 
     let servers = tcp_servers();

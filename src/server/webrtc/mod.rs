@@ -109,6 +109,57 @@ pub type PeerId = String;
 /// Longest peer identifier accepted from the wire.
 const MAX_PEER_ID_LEN: usize = 128;
 
+/// Concurrent signalling connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. **`max_peers` is not this
+/// bound and cannot be**: it gates *accepted offers*, so it counts peers that have already
+/// completed a WebSocket handshake, sent an SDP offer and been approved by a handler, and a
+/// stranger who merely connects is nowhere near it. [`SIGNALLING_HANDSHAKE_TIMEOUT`] bounds
+/// how long one such stranger holds a socket, but ten seconds times an unbounded arrival rate
+/// is still unbounded, so this is the only bound on the *number* of pre-admission peers.
+///
+/// The house default sits above `max_peers` on purpose. A signalling connection carries
+/// exactly one peer for its lifetime (a second offer on the same socket is refused below), so
+/// in a healthy server the two counts are nearly the same; the headroom is what a peer
+/// negotiating *now* needs in order to reach `max_peers` and be told so in WebRTC's own
+/// vocabulary — a `Rejected` frame naming the limit — rather than being turned away at the
+/// accept with a generic 503. At the default `max_peers` of 32 that headroom is ample.
+///
+/// **Said plainly, because it is the one place these two numbers fight**: `max_peers` is a
+/// startup parameter and may be set as high as 65535, and above 256 this constant becomes the
+/// effective ceiling — offers 257 and beyond are refused at the accept rather than by the
+/// peer registry. That is deliberate rather than an oversight. `accept_bounded`'s own rule is
+/// that a bound decided by configuration is a bound an attacker can ask you to raise, so the
+/// resource cap stays fixed and the configurable one may only make the server *stricter*.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// The body of [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_BODY: &str = "Too many signalling connections, try again later.\n";
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// **WebRTC's own vocabulary does not reach this far, and HTTP's does.** This server has a
+/// `Rejected` signalling frame that names the reason, and it is what a peer over `max_peers`
+/// receives — but a `Rejected` frame is a *WebSocket text message*, and a peer refused at the
+/// accept has not completed the RFC 6455 upgrade, so it has no frame parser running to read
+/// one. Writing signalling JSON onto a socket still expecting an HTTP response is the mis-parse
+/// this codebase refuses to ship.
+///
+/// The handshake it *is* in the middle of is an ordinary HTTP/1.1 GET (RFC 6455 §4.1), so 503
+/// with `Retry-After` is inside the protocol rather than beside it, and every WebSocket client
+/// surfaces a non-101 status as a failed handshake carrying that code. Sending it before the
+/// request head has arrived is legal — RFC 9112 §3.3 lets a server answer before the request is
+/// complete — and `Connection: close` tells a client still writing to stop and read.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    format!(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Type: \
+         text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        CONNECTION_CAP_BODY.len(),
+        CONNECTION_CAP_BODY
+    )
+    .into_bytes()
+});
+
 /// Name used for the `ActionResult::Custom` carrying the model's offer decision.
 pub(crate) const OFFER_DECISION_RESULT: &str = "webrtc_offer_decision";
 
@@ -742,10 +793,20 @@ impl WebRtcServer {
         ));
 
         let accept_state = Arc::clone(&app_state);
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        let cap_status_tx = status_tx.clone();
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "WEBRTC",
+                    Some(&cap_status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let server_data = Arc::clone(&server_data);
                         let app_state = Arc::clone(&app_state);
                         let status_tx = status_tx.clone();
@@ -754,6 +815,12 @@ impl WebRtcServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection: `handle_signalling` spawns a writer task but
+                                // `.await`s it on its only exit path, and the peer connection
+                                // it negotiates is torn down there too, so `MAX_CONNECTIONS`
+                                // caps live signalling connections rather than accepts.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_signalling(
                                     stream,
                                     remote_addr,
