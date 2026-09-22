@@ -46,13 +46,13 @@
 //!
 //! [`WINDOW`] is 5 seconds, and the probe **returns the moment bytes arrive**, so only the
 //! "nothing happened" verdict pays it. A library that speaks inside `connect()` does so in the
-//! same task as the connect: measured here, every one of them is on the wire within **22-72ms**
-//! (postgresql, mssql, cassandra and mongodb at ~22ms, couchdb at ~72ms because it builds a
-//! reqwest client first). The documented worst case for that reqwest build is ~650ms under
-//! heavy process concurrency — the macOS system-proxy probe against configd, see the root
-//! CLAUDE.md — so 5 seconds is ~70x the observed cost and ~7x the pathological one. The whole
-//! file's wall clock is one window (~5.2s measured), because the tests run in parallel and only
-//! the lazy and silent verdicts wait it out.
+//! same task as the connect: measured here, every one of them is on the wire within **22-93ms**
+//! (postgresql, mssql, cassandra and mongodb at ~22ms, couchdb at 72-93ms across runs, because
+//! it builds a reqwest client first). The documented worst case for that reqwest build is
+//! ~650ms under heavy process concurrency — the macOS system-proxy probe against configd, see
+//! the root CLAUDE.md — so 5 seconds is ~50x the observed cost and ~7x the pathological one.
+//! The whole file's wall clock is one window (~5.2s measured), because the tests run in
+//! parallel and only the lazy and silent verdicts wait it out.
 //!
 //! ## One test per protocol, feature-gated
 //!
