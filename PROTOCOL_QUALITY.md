@@ -340,10 +340,37 @@ once these exist.
   `Authorization` nor `X-Amz-Date` reaches the event, so the model cannot make that decision
   either.
 
+  **September 22 2026 added four more: `ssh`, `imap`, `ldap` and `webdav`**, each with the
+  non-vacuity check recorded in the test's own doc comment:
+
+  | protocol | second client | broken to prove the test is not vacuous | what the client then did |
+  |---|---|---|---|
+  | `ssh` | the OpenSSH `ssh` binary | `llm_auth_decision`'s accepted branch → `Ok(!allowed)`; separately, `exec_request`'s success exit status → `69` | `Permission denied`, exit 255 on the admitted session; and — for the second break — **stdout stayed byte-for-byte correct while only `$?` moved** |
+  | `imap` | python3 stdlib `imaplib` | `body.len()` → `body.chars().count()` for the FETCH literal; separately, the `* n EXISTS` line removed from SELECT | `('OK', [None])` from `m.fetch()` and from `m.select()` — **the tagged completion was right both times** |
+  | `ldap` | OpenLDAP `ldapsearch` | the attribute `SET OF` truncated to its first value; separately, `encode_ber_length` forced to the short form | one `objectClass` line instead of three; then no LDIF at all, exit 254, `ldap_result: Local error (-2)` |
+  | `webdav` | `curl -X PROPFIND` | `xml_escape` dropped from `displayname`; separately, `percent_encode_path` dropped from `href` | still `207`, but the body stopped being well-formed XML (`Cannot find ';' after '&'`); then a well-formed body whose href read `/documents/notes & drafts.txt` |
+
+  **`ssh` was the one that found something**: NetGet applies `normalize_line_endings` on the
+  *exec* path, where no PTY exists, so `ssh host cmd` returns CRLF where a real `sshd` returns
+  LF and `OUT=$(ssh host cmd)` keeps a stray `\r`. libssh2 could never have seen it — its tests
+  compare the output against a string the same test wrote, so CRLF on both sides agrees with
+  itself. Not fixed: `src/server/ssh/mod.rs` implements no `pty_request` handler, so the server
+  cannot tell an exec channel from a PTY one, and the honest fix is channel bookkeeping rather
+  than a one-line edit. The test asserts the behaviour **and names it as a deviation**, so a fix
+  fails a test that describes the defect rather than quietly satisfying one that never looked.
+
+  The other three completed their sessions on first contact with no server change required.
+  What that pass cost beyond the tests: one unconditional `quick-xml` dev-dependency (its
+  `[dependencies]` entry is optional and only `saml`/`xmlrpc` turn it on, so a test gated on
+  `webdav` alone could not see it), and one corrected metadata claim — `ldap`'s `e2e_testing`
+  had named "the ldapsearch/ldapadd command-line tools" as evidence while nothing asserting
+  drove them.
+
   Running total: `etcd`, `grpc`, `mysql`, `postgresql`, `redis`, `dns`, `doh`, `dot`, `http`,
-  `sqs`, `dynamo` and `s3` have two clients or more. **Three of the twelve turned out to be
-  broken against every conformant implementation** — which is the answer to whether this item was
-  worth doing.
+  `sqs`, `dynamo`, `s3`, `ssh`, `imap`, `ldap` and `webdav` have two clients or more. **Three of
+  the sixteen turned out to be broken against every conformant implementation**, and a fourth
+  (`ssh`) deviates from the reference server on a path only the second client could reach —
+  which is the answer to whether this item was worth doing.
 
   **The rest of the item, as a map rather than a wish.** Measured against what is installed on
   this machine, the single-client Betas fall into three groups.
@@ -352,12 +379,15 @@ once these exist.
 
   | protocol | current peer | second peer | note |
   |---|---|---|---|
-  | `ssh` | libssh2 (ssh2 crate) | OpenSSH `ssh` | a different implementation entirely, and the one an operator reaches for |
-  | `http` | reqwest | `curl` **and** python3 `http.client` | both installed; two at once |
-  | `imap` | async-imap | python3 `imaplib` (stdlib) | no install needed |
-  | `ldap` | ldap3 | `ldapsearch` | already installed; the metadata used to *claim* it |
-  | `webdav` | reqwest_dav | `curl -X PROPFIND` | generic HTTP, but PROPFIND/MKCOL are WebDAV verbs, not HTTP ones |
-  | `sqs`, `dynamo`, `s3` | AWS SDK crates | `aws` CLI | **handle with care** — the root CLAUDE.md records a client that signed real requests against real AWS because it dropped its target. Pin `--endpoint-url`, a dummy region and dummy credentials. |
+  | ~~`ssh`~~ | libssh2 (ssh2 crate) | OpenSSH `ssh` | **done** — `tests/server/ssh/real_client_test.rs` |
+  | ~~`http`~~ | reqwest | `curl` **and** python3 `http.client` | **done** |
+  | ~~`imap`~~ | async-imap | python3 `imaplib` (stdlib) | **done** — `tests/server/imap/real_client_test.rs` |
+  | ~~`ldap`~~ | ldap3 | `ldapsearch` | **done** — `tests/server/ldap/real_client_test.rs`; the metadata's false claim is corrected in the same commit |
+  | ~~`webdav`~~ | reqwest_dav | `curl -X PROPFIND` | **done** — `tests/server/webdav/real_client_test.rs`. Generic HTTP, but PROPFIND/MKCOL/COPY are WebDAV verbs, not HTTP ones |
+  | ~~`sqs`, `dynamo`, `s3`~~ | AWS SDK crates | `aws` CLI | **done** — **handle with care** — the root CLAUDE.md records a client that signed real requests against real AWS because it dropped its target. Pin `--endpoint-url`, a dummy region and dummy credentials. |
+
+  Every row of that table is now struck through: there is no single-client Beta left whose
+  second client is already installed on this machine. What remains is the two groups below.
 
   *Blocked by the tooling, measured not assumed:*
 
