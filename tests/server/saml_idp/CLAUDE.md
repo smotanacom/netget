@@ -3,6 +3,19 @@
 Three mocked tests over `reqwest`. Feature gate `saml-idp`; declared in `tests/server/mod.rs`
 as `pub mod saml_idp;` (a test directory not declared there is silently never compiled).
 
+**Three files, eight tests**, and this doc named none of them until 22 September 2026:
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 4 | the SSO endpoints and the assertion the model authors |
+| `hardening_test.rs` | 2 | **two ways the IDP could be made to answer `2xx` without a decision behind it** |
+| `connection_bounds_test.rs` | 2 | the first-byte and idle deadlines and the connection cap |
+
+`hardening_test.rs` is the one to read first. An identity provider that returns success
+without a decision is the fail-open shape the project `CLAUDE.md` calls the most dangerous
+pattern in this codebase — the OAuth2 case, where no action meant a hardcoded token and a
+model's explicit denial was indistinguishable from silence.
+
 ```bash
 ./cargo-isolated.sh test --no-default-features --features saml-idp \
     --test server -- --test-threads=100 saml_idp

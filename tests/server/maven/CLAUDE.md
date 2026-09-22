@@ -2,6 +2,19 @@
 
 ## Overview
 
+**Three files, eight tests**, and this doc named none of them until 22 September 2026:
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 3 | the maturity evidence — the real `mvn` binary resolves and downloads from this server, in a test that **fails rather than skips** when mvn is absent |
+| `llm_failure_test.rs` | 2 | what a Maven client gets when the backend fails |
+| `connection_bounds_test.rs` | 3 | the first-byte and idle deadlines and the connection cap, from the wire |
+
+`e2e_test.rs` is the file the Beta rating rests on, and it is worth knowing *why* it counts:
+it used to print `SKIP: … is not installed` and return success, which on a runner without
+mvn is a silent pass. Converting that to a hard failure is what moved maven off the
+not-promoted list.
+
 End-to-end tests for the Maven repository protocol implementation. Tests validate Maven artifact serving using HTTP
 requests and optionally the real Maven CLI.
 

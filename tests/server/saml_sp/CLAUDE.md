@@ -3,6 +3,18 @@
 Five mocked tests over `reqwest`. Feature gate `saml-sp`; declared in `tests/server/mod.rs` as
 `pub mod saml_sp;` (a test directory not declared there is silently never compiled).
 
+**Three files, nine tests**, and this doc named none of them until 22 September 2026:
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 5 | the SP endpoints and the assertion-consumer flow |
+| `hardening_test.rs` | 2 | **two ways `/acs` could be made to answer `200` without a decision behind it** |
+| `connection_bounds_test.rs` | 2 | the first-byte and idle deadlines and the connection cap |
+
+`hardening_test.rs` is the one to read first: an assertion-consumer service that answers
+`200` without having decided anything is the fail-open shape the project `CLAUDE.md` calls
+the most dangerous pattern here.
+
 ```bash
 ./cargo-isolated.sh test --no-default-features --features saml-sp \
     --test server -- --test-threads=100 saml_sp

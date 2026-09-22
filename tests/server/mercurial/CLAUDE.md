@@ -2,6 +2,21 @@
 
 ## Test Overview
 
+**Three files, eight tests**, and this doc named none of them until 22 September 2026:
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 5 | the wire protocol against `reqwest` — capabilities, branchmap, listkeys |
+| `real_client_test.rs` | 1 | the real `hg` 7.2.4 binary completing the handshake |
+| `connection_bounds_test.rs` | 2 | the first-byte deadline, from the wire |
+
+**`real_client_test.rs` is why mercurial is still Experimental rather than Beta**, and the
+reasoning is worth keeping: real `hg` completes the handshake, and the test asserts *through
+hg's own parser* that `sanitize_capabilities` stripped what the model asked for. But `hg id`
+needs `lookup`, which that function hardcodes away, and `hg clone` dies asking for `known`,
+which is not capability-gated. That is the `openvpn` precedent — only the front of the
+protocol — and a passing real-client test does not by itself earn the rating.
+
 Tests Mercurial HTTP server implementation with real HTTP clients (reqwest). Validates that Mercurial wire protocol
 commands work correctly over HTTP transport.
 
