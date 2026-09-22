@@ -452,8 +452,20 @@ jobs:
           sudo apt-get install -y --no-install-recommends -t jammy-backports openvpn
           openvpn --version | head -1
           # The assertion is the exact option the test passes, not the version string: a
-          # backport that renamed or dropped it would satisfy "2.6" and still fail there.
-          openvpn --help 2>&1 | grep -q -- '--peer-fingerprint'
+          # backport that dropped it would satisfy "2.6" and still fail inside the test.
+          #
+          # It is checked by *offering* the option, because `--help` does not list it -
+          # measured on 2.6.12, `openvpn --help | grep peer-fingerprint` finds nothing, and
+          # neither does the installed man page. What does discriminate is the parser: 2.6
+          # accepts the option and rejects the value ("hash fingerprint is wrong length -
+          # expected 32 bytes"), while 2.5.11 says "Unrecognized option ... peer-fingerprint",
+          # which is the exact line the test died on. A deliberately too-short fingerprint
+          # therefore separates the two without needing a real certificate.
+          if openvpn --peer-fingerprint AA:BB 2>&1 | grep -q 'Unrecognized option' ; then
+            echo "this openvpn does not know --peer-fingerprint, so" \
+                 "server::openvpn::e2e_test cannot test anything - it needs 2.6+" >&2
+            exit 1
+          fi
 
       # etcdctl, from the upstream release rather than apt - see the note above: jammy's
       # `etcd-client` is 3.3.25 and defaults to the v2 (HTTP/1.1 REST) API, which is not
