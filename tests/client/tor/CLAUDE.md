@@ -30,6 +30,41 @@ to prove the refusal happens before any I/O.
 
 Nothing here touches the network. That is the point.
 
+### `action_test.rs` — fourteen `#[tokio::test]`, **0 LLM calls**, no network
+
+What `send_tor_data` promises the model and what its executor does with each field.
+`execute_action` is pure, so every assertion here is about bytes, and none of it needs a
+circuit — which matters more for this client than most, because everything else it has is
+either `#[ignore]`d or a refusal test.
+
+The action used to declare one field, `data_hex`, and `hex::decode` it unconditionally; the
+static-mode startup example therefore showed `GET / HTTP/1.1` and a `Host:` header as 74 hex
+characters. It now takes `data` plus an explicit `encoding` (`"utf8"` by default, or `"hex"`),
+the `send_tcp_data` shape.
+
+- **`text_that_looks_like_hex_is_sent_as_its_characters`** is the assertion the original defect
+  would have failed: `"48656c6c6f"`, `"deadbeef"` and `"0123456789abcdef"` go out as their
+  literal characters under `encoding: "utf8"` **and** with `encoding` omitted, while
+  `the_same_string_with_encoding_hex_is_the_decoded_bytes` shows the same strings meaning
+  something entirely different when the sender says so. Nothing is sniffed.
+- `send_tor_data_declares_data_and_encoding_and_not_data_hex` — the declared parameter list is
+  exactly `["data", "encoding"]`, and neither the description nor the parameters mention the
+  deprecated field.
+- `the_legacy_data_hex_field_still_sends_its_bytes` and
+  `supplying_both_spellings_is_refused_by_name` are the backward-compatibility contract:
+  `data_hex` alone still works so an existing static handler does not break, both together is
+  **refused** naming both fields and saying neither takes precedence, and nothing is guessed.
+- `received_bytes_are_readable_when_they_are_text_and_hex_when_they_are_not` and
+  `an_echo_built_from_the_event_reproduces_the_received_bytes` cover the inbound half:
+  `tor_data_received` carried `data_hex` only, so a plain HTTP response arrived as hex. It now
+  carries `data` + `encoding` + `data_length`, and copying those two fields into
+  `send_tor_data` reproduces the bytes — asserted including for a payload whose text form is
+  itself hex-shaped.
+- `every_declared_example_is_accepted_by_its_own_executor`,
+  `declared_event_parameters_match_the_payload` and `no_example_hands_the_model_a_hex_blob`
+  are the local forms of `executable_examples_test` and `example_hex_drift_test`, asserted
+  against the values a running build produces rather than against the source text.
+
 ### `apply_actions_test.rs` — three `#[tokio::test]`, **0 LLM calls**
 
 The shared action executor. `tor_connected` and `tor_bootstrap_complete` both asked the model

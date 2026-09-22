@@ -11,3 +11,6 @@ mod command_channel_test;
 
 #[cfg(all(test, feature = "tor"))]
 mod apply_actions_test;
+
+#[cfg(all(test, feature = "tor"))]
+mod action_test;

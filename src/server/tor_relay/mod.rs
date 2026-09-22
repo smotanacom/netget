@@ -115,8 +115,15 @@ impl TorRelayServer {
         let (cert, key) = generate_tls_certificate()?;
 
         // Configure TLS acceptor
-        // Use aws-lc-rs crypto provider (required for rustls 0.23+)
-        let crypto_provider = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider();
+        // `ring`, which is the provider this tree compiles rustls with: `Cargo.toml` pins
+        // `rustls`/`tokio-rustls` to `default-features = false, features = ["ring", ...]`
+        // because the default `aws_lc_rs` is a C library that does not build for wasm32, and
+        // every other TLS site here (`tls`, `dot`, `proxy`, `openvpn`, the binary's own
+        // `install_default`) uses `ring` for that reason. Naming `aws_lc_rs` here did not
+        // select a different provider - it did not compile at all, so `--features tor` was a
+        // hard build error on its own and only ever got as far as a feature set that happened
+        // to turn the `aws_lc_rs` feature back on.
+        let crypto_provider = tokio_rustls::rustls::crypto::ring::default_provider();
         let tls_config = ServerConfig::builder_with_provider(Arc::new(crypto_provider))
             // TLS 1.2 as well as 1.3. A real Tor relay accepts both -- the link
             // specification's minimum is 1.2 -- and restricted to 1.3 alone this server

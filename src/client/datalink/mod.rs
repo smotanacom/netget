@@ -106,17 +106,60 @@ const MAX_INJECTION_FOLLOWUPS: u8 = 4;
 /// true length is always in `frame_length`.
 pub const MAX_HEX_BYTES_TO_MODEL: usize = 2048;
 
-/// The event payload the model is given for one frame: hex of at most
-/// [`MAX_HEX_BYTES_TO_MODEL`] bytes, with the fields that say so.
+/// The event payload the model is given for one frame: the Ethernet header read out as
+/// fields, the payload with an explicit `payload_encoding`, and the whole frame as hex for
+/// exact replay — all of it cut at [`MAX_HEX_BYTES_TO_MODEL`] bytes, with the fields that
+/// say so.
+///
+/// The header fields exist because the event used to carry `frame_hex` and nothing else, so a
+/// model that wanted to know who a frame was addressed to had to slice hex in its head. They
+/// are the same fields `inject_frame` accepts, in the same spellings, so answering a captured
+/// frame is a matter of copying them rather than re-deriving them.
+///
+/// `dst_mac`, `src_mac` and `ethertype` are `null` for a frame shorter than 14 bytes. A real
+/// Ethernet frame cannot be, but libpcap can hand back a runt and inventing a header for one
+/// would be worse than saying there is none.
 ///
 /// Pure, and public, so it can be asserted against literal frame bytes with no capture handle.
 pub fn frame_event_fields(frame: &[u8]) -> serde_json::Value {
+    use crate::client::datalink::actions::{format_mac, MIN_ETHERNET_FRAME_BYTES};
+
     let shown = frame.len().min(MAX_HEX_BYTES_TO_MODEL);
+    let visible = &frame[..shown];
+
+    let header = (visible.len() >= MIN_ETHERNET_FRAME_BYTES).then(|| {
+        (
+            format_mac(&visible[0..6]),
+            format_mac(&visible[6..12]),
+            format!("0x{:04x}", u16::from_be_bytes([visible[12], visible[13]])),
+        )
+    });
+    let payload = header
+        .as_ref()
+        .map(|_| &visible[MIN_ETHERNET_FRAME_BYTES..])
+        .unwrap_or(&[]);
+
+    // Printable ASCII reaches the model as itself; anything else is hex and `payload_encoding`
+    // says which. Handing the pair straight back to `inject_frame` reproduces these bytes.
+    let (payload_text, payload_encoding) = if payload
+        .iter()
+        .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+    {
+        (String::from_utf8_lossy(payload).to_string(), "utf8")
+    } else {
+        (hex::encode(payload), "hex")
+    };
+
     serde_json::json!({
-        "frame_hex": hex::encode(&frame[..shown]),
+        "frame_hex": hex::encode(visible),
         "frame_length": frame.len(),
         "captured_length": shown,
         "truncated": shown < frame.len(),
+        "dst_mac": header.as_ref().map(|h| h.0.clone()),
+        "src_mac": header.as_ref().map(|h| h.1.clone()),
+        "ethertype": header.as_ref().map(|h| h.2.clone()),
+        "payload": payload_text,
+        "payload_encoding": payload_encoding,
     })
 }
 

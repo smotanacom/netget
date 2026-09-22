@@ -79,28 +79,64 @@ User → NetGet SOCKS5 Client → SOCKS5 Proxy → Target Server
 
 LLM can send initial data to target server in response.
 
+Both events are returned from `get_event_types()` as clones of the statics `mod.rs` actually
+raises. They used to be rebuilt there with `{"type": "placeholder", …}` as their example and no
+parameters at all, so the copy the model is shown carried no fields and one example
+`execute_action` refuses outright — the identical drift the Tor client had, fixed the identical
+way. `declared_event_parameters_match_the_payload` in `tests/client/socks5/action_test.rs` holds
+the declaration to what the payload carries.
+
 **2. `socks5_data_received`** - Fired when target server sends data through tunnel
 
 ```json
 {
-  "data_hex": "48656c6c6f",
-  "data_length": 5
+  "data": "HTTP/1.1 200 OK\r\n\r\nhi",
+  "encoding": "utf8",
+  "data_length": 21
 }
 ```
 
-LLM processes data and decides response.
+Printable ASCII arrives as itself; anything else arrives hex-encoded and `encoding` says
+`"hex"`. Handing `data` and `encoding` straight back to `send_socks5_data` reproduces the
+received bytes exactly. This event used to carry `data_hex` and nothing else, so the single
+most likely payload on this tunnel — an HTTP response — reached the model as hex it had to
+decode in its head.
 
 ### Actions
 
 **Async Actions** (User-triggered):
 
-- `send_socks5_data(data_hex)` - Send data through tunnel
+- `send_socks5_data(data, encoding?)` - Send data through tunnel
 - `disconnect()` - Close tunnel and proxy connection
 
 **Sync Actions** (Response to events):
 
-- `send_socks5_data(data_hex)` - Send data in response to received data
+- `send_socks5_data(data, encoding?)` - Send data in response to received data
 - `wait_for_more()` - Don't respond yet, wait for more data
+
+### `data` and `encoding`, and what happened to `data_hex`
+
+`send_socks5_data` declares two parameters: `data`, the payload, and `encoding`, which is
+`"utf8"` (the default when omitted) or `"hex"`. **Nothing is sniffed.** `"48656c6c6f"` is a
+perfectly good five-byte payload and a perfectly good ten-character one, and only the sender
+knows which it meant — this is the `send_tcp_data` rule in the root CLAUDE.md, applied here.
+
+The action used to declare a single `data_hex` field, so a startup example that wanted to show
+`GET / HTTP/1.1\r\nHost: example.com\r\n\r\n` showed 74 hex characters instead: a request the
+model could not read, could not point at another host or path, and could not check.
+
+Backward compatibility is a decision, not an accident:
+
+| sent | outcome |
+|---|---|
+| `data` (+ optional `encoding`) | the declared path |
+| `data_hex` alone | still decoded as hex — an existing static handler or stored prompt keeps working |
+| **both** | **refused**, naming both fields and saying that neither takes precedence |
+| neither | refused, naming `data` |
+
+`data_hex` is deliberately **not** advertised any more: re-declaring it would put hex back in
+the model's vocabulary, which is the whole thing this change removed. It is executed, not
+documented, and `tests/client/socks5/action_test.rs` pins every row of that table.
 
 ### Action Execution
 
@@ -143,9 +179,10 @@ The `tokio-socks` library handles all handshake details. LLM only sees applicati
 The client registers a command channel (`command_support::register_command_channel`,
 `src/client/socks5/mod.rs`), so `AppState::send_to_client` can execute an action inside the
 running connection loop without the model. `tests/client/socks5/command_channel_test.rs` is
-the evidence: an injected `send_socks5_data` carrying hex `48656c6c6f` arrives as `b"Hello"`
-on a minimal in-test proxy, an unknown action comes back `Rejected`, and `disconnect` returns
-`Disconnected` and drops the handle. Zero LLM calls.
+the evidence: an injected `send_socks5_data` carrying the legacy `data_hex` spelling of
+`48656c6c6f` arrives as `b"Hello"` on a minimal in-test proxy — which doubles as proof that
+the deprecated field really is still executed. An unknown action comes back `Rejected`, and
+`disconnect` returns `Disconnected` and drops the handle. Zero LLM calls.
 
 The three tests in `tests/client/socks5/e2e_test.rs` are all `#[ignore]`d and use a real
 Ollama endpoint rather than the mock harness, so they contribute nothing to CI and call

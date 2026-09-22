@@ -22,6 +22,43 @@ and verifying data transmission.
 - Supports both no-auth and username/password authentication modes
 - Lightweight and fast for CI/CD environments
 
+## `action_test.rs` — fourteen `#[tokio::test]`, **0 LLM calls**, no proxy
+
+The model-facing surface, asserted with nothing running: `execute_action` is pure, so every
+assertion is about bytes. This is the only part of the client covered by tests that run
+everywhere — the three `e2e_test.rs` tests are `#[ignore]`d and point at a real Ollama.
+
+`send_socks5_data` used to declare one field, `data_hex`, and `hex::decode` it
+unconditionally, so the static-mode startup example showed
+`GET / HTTP/1.1\r\nHost: example.com\r\n\r\n` as 74 hex characters. It now takes `data` plus an
+explicit `encoding` (`"utf8"` by default, or `"hex"`), the `send_tcp_data` shape.
+
+- **`text_that_looks_like_hex_is_sent_as_its_characters`** is the assertion the original defect
+  would have failed: `"48656c6c6f"`, `"deadbeef"` and `"0123456789abcdef"` go out as their
+  literal characters under `encoding: "utf8"` **and** with `encoding` omitted, while
+  `the_same_string_with_encoding_hex_is_the_decoded_bytes` shows those same strings meaning
+  something entirely different when the sender says so. Nothing is sniffed — that is the
+  whole point of the field.
+- `send_socks5_data_declares_data_and_encoding_and_not_data_hex` — the declared parameter list
+  is exactly `["data", "encoding"]`, and neither the description nor the parameters mention
+  the deprecated field.
+- `the_legacy_data_hex_field_still_sends_its_bytes` and
+  `supplying_both_spellings_is_refused_by_name` are the backward-compatibility contract:
+  `data_hex` alone still works so an existing static handler does not break, both together is
+  **refused** naming both fields and saying neither takes precedence.
+- `received_bytes_are_readable_when_they_are_text_and_hex_when_they_are_not` and
+  `an_echo_built_from_the_event_reproduces_the_received_bytes` cover the inbound half:
+  `socks5_data_received` carried `data_hex` only, so the most likely payload on this tunnel —
+  an HTTP response — arrived as hex. It now carries `data` + `encoding` + `data_length`, and
+  copying those two fields into `send_socks5_data` reproduces the bytes.
+- `declared_event_parameters_match_the_payload` also pins the `get_event_types()` repair: the
+  two events were rebuilt there with a `{"type": "placeholder"}` example and no parameters,
+  and are now clones of the statics `mod.rs` raises.
+- `every_declared_example_is_accepted_by_its_own_executor` and
+  `no_example_hands_the_model_a_hex_blob` are the local forms of `executable_examples_test`
+  and `example_hex_drift_test`, asserted against the values a running build produces rather
+  than against the source text.
+
 ## LLM Call Budget
 
 **Target:** < 10 LLM calls total

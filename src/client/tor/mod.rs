@@ -613,10 +613,7 @@ impl TorClient {
                                     );
                                     let event = Event::new(
                                         &TOR_CLIENT_DATA_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "data_hex": hex::encode(&data),
-                                            "data_length": data.len(),
-                                        }),
+                                        crate::client::tor::actions::inbound_event_fields(&data),
                                     );
 
                                     match call_llm_for_client(

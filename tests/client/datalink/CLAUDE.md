@@ -29,7 +29,7 @@ should go.
 
 ## Tests
 
-### `action_test.rs` (14 tests, no privilege, no LLM)
+### `action_test.rs` (24 tests, no privilege, no LLM)
 
 - every declared `example`, from async actions, sync actions and every event's action list, is
   accepted by this protocol's own `execute_action`
@@ -43,11 +43,41 @@ should go.
 - `ff:ff:…`, `ff-ff-…` and space-separated hex all decode — a model writing from a packet dump
   writes separators, and they carry no information
 - a runt (< 14 bytes) and an over-long frame (> 65535) are refused **by name**, before libpcap
-- bad hex, an unknown verb and a missing `frame_hex` are refused, each naming what was wrong
+- bad hex, an unknown verb and a missing frame are refused, each naming what was wrong
 - `disconnect` and `wait_for_more` map to their lifecycle results
 - the event payload: a short frame reported whole; a long one cut with `truncated` and
   `captured_length` set and `frame_length` still the true length; the exact boundary uncut; and
   every field it emits declared on the events that carry it
+
+The structured spelling of `inject_frame` (September 2026) is covered in the same file, and
+these are the assertions worth knowing about:
+
+- **`a_utf8_payload_that_looks_like_hex_goes_out_as_those_characters`** is the one the
+  original defect would have failed. `"deadbeef"`, `"48656c6c6f"` and `"0123456789abcdef"` are
+  each injected twice, once with `payload_encoding: "utf8"` and once with `"hex"`, and the
+  test asserts the literal characters in the first case, the decoding in the second, **and
+  that the two frames differ** — which is the whole argument for the field existing. Nothing
+  is sniffed; a string that is valid both ways means whatever the sender said it means.
+- `structured_fields_assemble_the_same_bytes_as_the_hex_spelling` builds the 42-byte ARP frame
+  from `dst_mac` / `src_mac` / `ethertype: "arp"` / a hex payload, and asserts it equals the
+  hex spelling byte for byte.
+- `ethertype_accepts_a_name_a_number_and_a_hex_string_but_not_a_bare_one` — `"arp"`, `"ARP"`,
+  `"0x0806"` and `2054` all mean the same two bytes, every name in `ETHERTYPE_NAMES` means its
+  own value, and a bare `"0806"` is refused with a message saying why it is ambiguous.
+- `a_payload_without_its_encoding_is_refused_rather_than_guessed` — `payload_encoding` has no
+  default, so a payload without it is refused by name; a header-only frame needs neither.
+- `the_structured_and_hex_spellings_cannot_be_combined` — both together is refused naming both
+  and saying neither takes precedence; a half-written structured frame is refused by the name
+  of the missing field rather than completed with zeros.
+- `a_captured_frame_is_reported_as_fields_and_hands_straight_back` — the event's `dst_mac`,
+  `src_mac`, `ethertype`, `payload` and `payload_encoding` copied verbatim into `inject_frame`
+  reproduce the captured bytes, and so does `frame_hex` through the escape hatch.
+  `a_printable_payload_is_reported_as_text` does the same for a payload that is text, and
+  `a_runt_reports_no_header_rather_than_an_invented_one` asserts the null header for a frame
+  too short to have one.
+- `no_example_hands_the_model_a_frame_as_hex` is the local form of
+  `tests/example_hex_drift_test.rs`: asserted against the values a running build produces
+  rather than against the source text.
 
 ### `command_channel_test.rs`
 
