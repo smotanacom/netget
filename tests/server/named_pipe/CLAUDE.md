@@ -2,6 +2,10 @@
 
 ## Strategy
 
+**One file, `e2e_test.rs`, 2 tests** — covering the POSIX FIFO server.
+This doc did not name it until 22 September 2026, which is the starkest form of a test
+directory's doc drifting: a single file, and the doc describing it without ever saying so.
+
 Black-box, prompt-driven, validated against a **real independent FIFO peer** — never
 NetGet-against-NetGet. The test process itself opens the FIFO paths with `std::fs` and drives
 them exactly as a shell `echo > fifo` (writer) and `cat fifo` (reader) would.

@@ -2,6 +2,10 @@
 
 ## Strategy
 
+**One file, `e2e_test.rs`, 1 test** — covering the pseudo-terminal server.
+This doc did not name it until 22 September 2026, which is the starkest form of a test
+directory's doc drifting: a single file, and the doc describing it without ever saying so.
+
 Black-box, prompt-driven, validated against a **real terminal client** — never
 NetGet-against-NetGet. The test process opens the slave PTY device (through the server's
 `link_path` symlink) with `std::fs::OpenOptions` and drives it exactly as `screen`/`cat`/a shell

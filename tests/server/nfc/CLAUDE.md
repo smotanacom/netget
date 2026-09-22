@@ -2,6 +2,10 @@
 
 ## Strategy
 
+**One file, `e2e_test.rs`, 2 tests** — covering NFC virtual tag exchanges.
+This doc did not name it until 22 September 2026, which is the starkest form of a test
+directory's doc drifting: a single file, and the doc describing it without ever saying so.
+
 The virtual tag binds a TCP socket and speaks the vsmartcard `vpcd` framing (u16 big-endian
 length prefix; a 1-byte frame is a control code, anything longer is an ISO 7816-4 APDU), so a
 test client is about twenty lines: write a length-prefixed frame, read a length-prefixed

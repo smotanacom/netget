@@ -2,6 +2,10 @@
 
 ## Strategy
 
+**One file, `e2e_test.rs`, 3 tests** — covering the stdio pipe-filter server.
+This doc did not name it until 22 September 2026, which is the starkest form of a test
+directory's doc drifting: a single file, and the doc describing it without ever saying so.
+
 stdio owns the process's own stdin/stdout, so the shared harness (prompt-as-arg, stdout read as
 logs, stdin never piped) cannot drive it. This test therefore **spawns the NetGet binary directly
 as a real child** (`env!("CARGO_BIN_EXE_netget")`) with piped stdin/stdout — the actual
