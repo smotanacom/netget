@@ -108,6 +108,22 @@ NOT_A_PEER_BINARY = {
     "cargo", "rustc", "unzip", "zip", "tar", "gzip", "cp", "mv", "rm", "mkdir",
 }
 
+# ...with one exception, because `python3` on its own is a language runtime and
+# `python3` driving a stdlib protocol module is a real, independent client.
+#
+# `tests/server/imap/real_client_test.rs` runs `python3 -c "import imaplib; ..."`, and
+# imaplib does the framing, the `{n}` literal reading and the tag matching itself — it is
+# a second implementation of IMAP by any standard, and it needs no install. Excluding it
+# because the binary is spelled `python3` reported that protocol as having only its Rust
+# peer, which is the under-rating direction this script exists to avoid.
+#
+# Only modules that *speak a protocol* belong here. `json`, `subprocess` and friends do
+# not, and a python3 invocation that imports none of these stays excluded.
+PYTHON_STDLIB_PROTOCOL_MODULES = (
+    "imaplib", "smtplib", "poplib", "ftplib", "nntplib", "telnetlib",
+    "http.client", "xmlrpc.client",
+)
+
 SKIP_MESSAGE = re.compile(
     r"""(?ix)
     (?:e?println!|warn!|info!|eprint!)\s*\(\s*
@@ -347,6 +363,13 @@ def scan_tests(directory: Path, known: set[str]) -> dict:
             for m in re.finditer(r'(?:tool|which_in_path|find_binary|require_tool)\(\s*"([a-z0-9_.-]+)"', code):
                 if m.group(1) not in NOT_A_PEER_BINARY:
                     file_binaries.add(m.group(1))
+        # The python-stdlib exception (see PYTHON_STDLIB_PROTOCOL_MODULES): a file that
+        # spawns python3 AND carries a driver importing a stdlib protocol module is
+        # driving that module as a peer, not using python as a shell.
+        if re.search(r'Command::new\(\s*"python3?"', code):
+            for module in PYTHON_STDLIB_PROTOCOL_MODULES:
+                if re.search(r"\b(?:import|from)\s+[\w., ]*\b" + re.escape(module) + r"\b", code):
+                    file_binaries.add(f"python3 -m {module}")
         binaries |= file_binaries
 
         file_tests = len(re.findall(r"#\[(?:tokio::)?test", code))
@@ -624,7 +647,8 @@ def render(selected: list[dict], show_availability: bool, side: str) -> str:
         for b in r["binaries"]:
             mark = ""
             if show_availability:
-                mark = " ✓" if shutil.which(b) else " ✗"
+                # A peer may be spelled `python3 -m imaplib`; only the program is on PATH.
+                mark = " ✓" if shutil.which(b.split()[0]) else " ✗"
             peer_parts.append(f"`{b}`{mark}")
         peer_parts += [f"`{c}`" for c in r["crates"]]
         if not peer_parts:
