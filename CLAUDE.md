@@ -1892,16 +1892,19 @@ Read before assuming a subsystem is sound:
   would write a fabricated MAC into the requester's neighbour cache; OSPF/IGMP/RIP/BOOTP/DHCP
   have no error frame at all. Where the wire cannot carry the distinction, the **log** must:
   tag `decision=model_reject` / `model_silent` / `fail_closed_llm_error` as `radius` does.
-- **Resolved: a static handler with an empty `actions` array DOES suppress the LLM call.**
-  This file used to carry it as an unexplained observation — seen in
+- **A static handler with an empty `actions` array DOES suppress the LLM call — but until
+  September 2026 nothing in this repository had shown that, including the test this section
+  cited.** The claim is now measured; the story of how it was not is the more useful half.
+
+  The question began as an unexplained observation — seen in
   `tests/server/xmpp/peer_inject_test.rs` under full-suite load, where a probe on the `call_llm`
   error branch fired with `{"type":"static","actions":[]}` on a `*` pattern and stopped firing
   when only that JSON became `[{"type":"wait_for_more"}]`. Every candidate mechanism had been
   ruled out by inspection, correctly: there was no mechanism, because there was no defect.
 
-  `tests/empty_static_handler_test.rs` measures it directly instead of through a probe on an
-  error branch — point NetGet at a mock model that **records every call it receives**, and
-  count. Three cases differing only in the routing table:
+  `tests/empty_static_handler_test.rs` answers it directly — point NetGet at a mock model that
+  **records every call it receives**, and count, across cases differing only in the routing
+  table:
 
   | routing | LLM calls |
   |---|---|
@@ -1909,17 +1912,53 @@ Read before assuming a subsystem is sound:
   | `{"type":"static","actions":[]}` | **0** |
   | `{"type":"static","actions":[{"type":"wait_for_more"}]}` | **0** |
 
-  The control is the part that makes the zeros mean anything; without it they are
-  indistinguishable from a mock the server never tried to reach. Holds under a full
-  `--all-features --test-threads=100` run, which is the condition the original was seen in.
+  **That control had never passed.** Not once, from the commit that introduced the file
+  (`74dbb7f4`) until it was fixed. The cause had nothing to do with routing: the harness
+  configures no model, so `ensure_model_selected` fell through to auto-selection — which was
+  hardcoded to `http://localhost:11434` and ignored the endpoint the `AppState` was built with.
+  Every event *did* reach the LLM path and then failed closed at
+  `decision=fail_closed_llm_error … error=Failed to ensure model is selected`, before any
+  request was issued to the mock. So the mock recorded zero in **all three** cases, for two
+  unrelated reasons, and the two rows expecting zero passed. This section's own sentence —
+  "the control is the part that makes the zeros mean anything; without it they are
+  indistinguishable from a mock the server never tried to reach" — described the file's actual
+  state and was read as a description of its design.
 
-  So **`src/tui/modal/form.rs`'s zero-action `<proto>_connected` rule works**, and the earlier
-  advice to prefer `wait_for_more` over an empty list is unnecessary — though harmless, and
-  `wait_for_more` still reads more clearly where the protocol declares it. The lesson worth
-  keeping is about the evidence, not the handler: an indirect probe on an error branch, under
-  load, in a suite doing many other things, produced a confident and wrong attribution that
-  stood in this file for months. Measure the thing itself.
+  Three things generalise, and the first is the one to carry everywhere:
 
+  - **Put the control in the same test as the claim it licenses.** They were three
+    `#[tokio::test]`s, so the run read `7 passed; 1 failed` with both headline claims green —
+    exactly backwards. A dead control must take its dependants down with it, and that is
+    cheaper to encode than to remember. The file is now one test: control first, as a
+    precondition.
+  - **A hardcoded endpoint fails silently at the configured one.** `ensure_model_selected` now
+    takes the endpoint (`AppState::get_ollama_url()`), and errors name the host. The defect was
+    real beyond the test: `--mcp`/`--mcp-http`, `netget --client … --connect …` and the
+    dashboard each set the model only `if let Some(model) = configured_model`, so
+    `--ollama-url http://gpu-box:11434` with no `--model` auto-selected against **localhost** —
+    failing closed while a healthy backend sat idle, or picking a model name the remote endpoint
+    does not have. Its signature is that the configured backend logs **no request at all**, so
+    `tests/model_selection_endpoint_test.rs` counts `/api/tags` hits on a mock: only that
+    distinguishes "asked the right host and it said no" from "asked a different host". Nine
+    in-process tests already pinned a model to work around this; a workaround repeated nine
+    times is a bug report.
+  - **Servers and clients have separate dispatchers, so a server measurement says nothing about
+    a client rule.** This section concluded that **`src/tui/modal/form.rs`'s zero-action
+    `<proto>_connected` rule works** on the strength of the table above — but that table is
+    `try_execute_event_handler` (server) and form.rs's rule is a *client* rule, answered by
+    `try_execute_client_event_handler` with its own `Static` arm and its own caller
+    (`client/llm_budget.rs::call_llm_for_client` vs `action_helper::call_llm`). Nothing makes
+    the two agree. The rule **does** work — `the_dashboards_client_connect_rule_keeps_the_event_off_the_model`
+    now measures the shipped routing on the client side, with its own control — but that was
+    established by measuring it, not by the server table.
+
+  Both assertions were verified by breaking the mechanism: making each dispatcher's `Static`
+  arm return `FallbackToLlm` turns the relevant zero into a 1, and restoring the hardcoded
+  endpoint reproduces the dead control and takes the suppression claims down with it. A zero
+  nobody has tried to turn into a one is not evidence.
+
+  The earlier advice to prefer `wait_for_more` over an empty list is unnecessary — though
+  harmless, and `wait_for_more` still reads more clearly where the protocol declares it.
 - **`ServerForm::create` substitutes a default instruction** (`"You are a {protocol} server.
   Handle requests appropriately."`) whenever `instruction` is `None` — see
   `src/cli/management.rs`. Any non-empty instruction makes `operator_wants_dynamic` true, so a

@@ -111,9 +111,12 @@ pub async fn call_llm_with_actions(
     // FALLBACK TO LLM (normal path if no handler or handler requested fallback)
 
     // Get model from state, auto-select if not set
-    let model = crate::llm::ensure_model_selected(state.get_ollama_model().await)
-        .await
-        .context("Failed to ensure model is selected")?;
+    let model = crate::llm::ensure_model_selected(
+        state.get_ollama_model().await,
+        &state.get_ollama_url().await,
+    )
+    .await
+    .context("Failed to ensure model is selected")?;
 
     // Collect all actions: common + protocol sync + custom
     let mut all_actions = get_network_event_common_actions();
@@ -514,9 +517,12 @@ async fn call_llm_inner(
     // FALLBACK TO LLM (normal path if no script or script failed/requested fallback)
 
     // Get model from state, auto-select if not set
-    let model = crate::llm::ensure_model_selected(state.get_ollama_model().await)
-        .await
-        .context("Failed to ensure model is selected")?;
+    let model = crate::llm::ensure_model_selected(
+        state.get_ollama_model().await,
+        &state.get_ollama_url().await,
+    )
+    .await
+    .context("Failed to ensure model is selected")?;
 
     // Collect all actions: common + event-specific actions
     let mut all_actions = get_network_event_common_actions();
@@ -757,9 +763,10 @@ pub async fn call_llm_for_client(
 
     // Get current model from state, auto-select if not set
     let current_model = state.get_ollama_model().await;
-    let model = crate::llm::ensure_model_selected(current_model.clone())
-        .await
-        .context("Failed to ensure model is selected")?;
+    let model =
+        crate::llm::ensure_model_selected(current_model.clone(), &state.get_ollama_url().await)
+            .await
+            .context("Failed to ensure model is selected")?;
 
     // If model was auto-selected (wasn't set before), notify via status_tx
     if current_model.is_none() {
@@ -969,9 +976,10 @@ pub async fn call_llm_for_feedback(
 
     // Get current model from state, auto-select if not set
     let current_model = state.get_ollama_model().await;
-    let model = crate::llm::ensure_model_selected(current_model.clone())
-        .await
-        .context("Failed to ensure model is selected")?;
+    let model =
+        crate::llm::ensure_model_selected(current_model.clone(), &state.get_ollama_url().await)
+            .await
+            .context("Failed to ensure model is selected")?;
 
     // If model was auto-selected, notify via status_tx
     if current_model.is_none() {

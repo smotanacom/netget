@@ -20,6 +20,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
@@ -31,6 +32,8 @@ pub struct MockOllamaServer {
     pub port: u16,
     /// Mock configuration (shared with handler)
     config: Arc<Mutex<MockLlmConfig>>,
+    /// `/api/tags` hits (shared with the handler)
+    tags_hits: Arc<AtomicUsize>,
     /// Shutdown signal
     _shutdown_tx: oneshot::Sender<()>,
 }
@@ -110,6 +113,13 @@ struct OllamaModel {
 #[derive(Clone)]
 struct ServerState {
     config: Arc<Mutex<MockLlmConfig>>,
+    /// How many `/api/tags` requests this endpoint has received.
+    ///
+    /// Model auto-selection is a `GET /api/tags`, not a chat call, so it is invisible to
+    /// `call_history`. Counting it separately is what distinguishes "asked this endpoint and
+    /// it had nothing" from "asked a different endpoint entirely" — the shape of the bug
+    /// `tests/model_selection_endpoint_test.rs` pins.
+    tags_hits: Arc<AtomicUsize>,
 }
 
 // ============================================================================
@@ -294,8 +304,10 @@ impl MockOllamaServer {
     /// 4. Track call counts for verification
     pub async fn start(config: MockLlmConfig) -> E2EResult<Self> {
         let config = Arc::new(Mutex::new(config));
+        let tags_hits = Arc::new(AtomicUsize::new(0));
         let state = ServerState {
             config: config.clone(),
+            tags_hits: tags_hits.clone(),
         };
 
         // Build router with Ollama-compatible endpoints
@@ -340,6 +352,7 @@ impl MockOllamaServer {
         Ok(Self {
             port,
             config,
+            tags_hits,
             _shutdown_tx,
         })
     }
@@ -347,6 +360,14 @@ impl MockOllamaServer {
     /// Get the base URL for this server
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// How many `/api/tags` requests reached this endpoint.
+    ///
+    /// Model auto-selection lands here rather than in `recorded_calls()`, so this is how a
+    /// test proves NetGet asked *this* endpoint which models it has.
+    pub fn tags_request_count(&self) -> usize {
+        self.tags_hits.load(Ordering::SeqCst)
     }
 
     /// Every call the model actually received, in order.
@@ -817,8 +838,9 @@ async fn handle_generate(
 }
 
 /// Handle GET /api/tags (list models)
-async fn handle_tags() -> Response {
+async fn handle_tags(State(state): State<ServerState>) -> Response {
     debug!("🔧 Mock Ollama received tags request");
+    state.tags_hits.fetch_add(1, Ordering::SeqCst);
 
     // Must advertise every model name tests configure: netget validates
     // --model against this list at startup and refuses to run otherwise.

@@ -141,9 +141,13 @@ pub async fn select_or_validate_model(
     let models = match check_ollama_availability(ollama_url).await {
         Ok(models) => models,
         Err(e) => {
+            // Name the endpoint. "Ollama is not available" without a host is unactionable
+            // precisely when it matters most — the failure this function had was that it
+            // asked a *different* host than the operator configured, and a message that
+            // omits the host cannot show that.
             let error_msg = format!(
-                "✗  Ollama is not available: {}\n   Please ensure Ollama is running: https://ollama.ai\n   Use `/model` to list and select a model once Ollama is running.",
-                e
+                "✗  Ollama is not available at {}: {}\n   Please ensure Ollama is running there: https://ollama.ai\n   Use `/model` to list and select a model once Ollama is running.",
+                ollama_url, e
             );
 
             if interactive {
@@ -215,23 +219,45 @@ pub async fn select_or_validate_model(
     }
 }
 
-/// Ensure we have a model for LLM calls
-/// If no model is set, attempts to auto-select one from Ollama
-/// Returns error if Ollama is not available or no models exist
-pub async fn ensure_model_selected(current_model: Option<String>) -> Result<String> {
+/// Ensure we have a model for LLM calls.
+///
+/// If no model is set, auto-selects one from the LLM endpoint **this process was pointed
+/// at** — `llm_endpoint`, which every caller reads from `AppState::get_ollama_url()`.
+/// Returns an error if that endpoint is unreachable or advertises no models.
+///
+/// The endpoint is a parameter rather than a constant because it used to be
+/// `"http://localhost:11434"`, hardcoded, with a comment claiming this function is "typically
+/// called from interactive TUI mode where ollama_url should already be validated during
+/// startup". That was false for three shipped paths, each of which sets the model only
+/// `if let Some(model) = configured_model`: `--mcp`/`--mcp-http`, `netget --client … --connect …`
+/// (`run_client`, which deliberately skips `select_or_validate_model`), and the dashboard,
+/// which stores `None` when `resolve_startup_model` comes back empty. On any of them,
+/// `netget --mcp --ollama-url http://gpu-box:11434` with no `--model` auto-selected against
+/// **localhost** — so it either failed closed with "Failed to ensure model is selected" while a
+/// perfectly good backend sat waiting, or, worse, picked a model name off a local Ollama and
+/// sent it to the remote endpoint, which does not have it.
+///
+/// The symptom is the giveaway and is worth recognising: the endpoint the operator configured
+/// receives **no request at all**, not even a failing one. `tests/model_selection_endpoint_test.rs`
+/// pins this by counting `/api/tags` hits on a mock, which is the only thing that can tell
+/// "asked the right host and it said no" apart from "asked a different host".
+pub async fn ensure_model_selected(
+    current_model: Option<String>,
+    llm_endpoint: &str,
+) -> Result<String> {
     if let Some(model) = current_model {
         // Model already set
         debug!("Model already selected: {}", model);
         return Ok(model);
     }
 
-    // No model set, try to auto-select one
-    warn!("⚠  No model selected, attempting to auto-select from available models...");
+    // No model set, try to auto-select one from the configured endpoint.
+    warn!(
+        "⚠  No model selected, attempting to auto-select from models available at {}...",
+        llm_endpoint
+    );
 
-    // Default to localhost:11434 since we don't have the ollama_url parameter here
-    // This function is typically called from interactive TUI mode where ollama_url
-    // should already be validated during startup
-    match select_or_validate_model(None, false, "http://localhost:11434").await {
+    match select_or_validate_model(None, false, llm_endpoint).await {
         Ok(Some(model)) => {
             info!("✓  Auto-selected model: {}", model);
             warn!(
@@ -242,7 +268,8 @@ pub async fn ensure_model_selected(current_model: Option<String>) -> Result<Stri
         }
         Ok(None) => {
             anyhow::bail!(
-                "✗  No model available.\n   Please:\n   1. Ensure Ollama is running: https://ollama.ai\n   2. Pull a model: ollama pull qwen2.5-coder:32b\n   3. Use `/model` to select a model"
+                "✗  No model available at {}.\n   Please:\n   1. Ensure Ollama is running there: https://ollama.ai\n   2. Pull a model: ollama pull qwen2.5-coder:32b\n   3. Use `/model` to select a model",
+                llm_endpoint
             )
         }
         Err(e) => Err(e),
