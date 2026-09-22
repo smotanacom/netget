@@ -50,10 +50,10 @@ and drift.
 
 | Measure | Was | Now |
 |---|---|---|
-| Server maturity | 39 Beta · 118 Experimental | **51 Beta** · 106 Experimental |
+| Server maturity | 39 Beta · 118 Experimental · 0 Stable | **2 Stable** · 49 Beta · 106 Experimental |
 | Servers with an LLM path and no `decision=` tag | 27 | **1** (`tor_relay`, baselined) |
-| Servers with a connection cap | 2 | **55 of 92** |
-| TCP accept-loop servers with no read/idle timeout | 52 of 92 | **22 of 92** |
+| Servers with a connection cap | 2 of 92 | **67 of 92** |
+| TCP accept-loop servers with no read/idle timeout | 52 of 92 | **10 of 92** |
 | `spawn_server_task` / `spawn_client_task` sites | 3 | **148** |
 | `get_dependencies()` overrides | 1 | 4 |
 | Hand-rolled control-character filters | 25 (only 12 were filters) | **12**, each with a reason |
@@ -904,6 +904,29 @@ only number in this repository that says whether the model can drive the thing a
 ## Done
 
 Move items here with the date and the commit or PR that verified them.
+
+**16–22 September 2026 — `coap` and `dns` are Stable. No protocol has ever held that rating on
+this bar before.**
+
+All three protocols that held it historically lost it, each because nobody had written down what
+it required. The bar is six conditions; these two were taken through all six, and the two that
+were left — a test per declared bound, and both `CLAUDE.md` files re-verified against source —
+are the ones that found bugs:
+
+- **`coap` declared `max_inbound_bytes` and enforced nothing.** A declared bound with no test is
+  a comment, which is exactly what condition 4 exists to catch.
+- **`dns` fell open** when the model answered with something the server could not send.
+- **The `coap` fuzz target had not compiled since `encode` became fallible**, so condition 3 —
+  "a fuzz target exists and has run clean" — was satisfied on paper by a target that could not
+  run at all. Worth remembering as its own class: a fuzz target is the one kind of test nothing
+  else in CI exercises, so it rots silently.
+
+Each bound was verified by removing it and watching the test fail.
+
+**And the bounds sweep is done.** Four agent slices took the TCP servers from 52 of 92 with no
+read deadline to **10**, and from 2 with a connection cap to **67**. The remainder are on the
+ratchet's shrink-only baselines with reasons rather than silence.
+
 
 **16 September 2026 — circular-evidence audit across all 50 Beta ratings.**
 
