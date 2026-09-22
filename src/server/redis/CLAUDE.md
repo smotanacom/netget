@@ -236,8 +236,8 @@ more. It now declares both halves; the constants and the reasoning live beside t
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_COMMAND_READ_TIMEOUT` | 30s | Every real RESP client speaks immediately — `redis-cli` sends `COMMAND DOCS`, `redis-rs` sends `PING` or its configured `HELLO`/`AUTH`. |
-| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | Deliberately much longer: real Redis ships `timeout 0` — it never closes an idle client — and every pooling client in the ecosystem depends on holding an established connection unused between bursts. Closing those at 30s would break correct clients to fix a problem they are not causing. |
+| `FIRST_COMMAND_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 30s, on the argument that every real RESP client speaks immediately — `redis-cli` sends `COMMAND DOCS`, `redis-rs` sends `PING` or its configured `HELLO`/`AUTH`. True of every third-party client and **false of the one this server most often has.** NetGet's own Redis client (`src/client/redis/mod.rs`) is a bare `TcpStream::connect` that writes nothing until an action says to, and a client made with the dashboard's `[ + redis client ]` is routed `*` → manual: it connects, is answered with nothing, and waits for a person to type into `[ send message ]`. At 30s the server dropped it while the operator was still looking at it — the `tcp` defect, same shape. 300s is the window a `manual` rule gives a human (`src/state/intercepts.rs`) and is this server's own idle bound, so a hand-driven session is bounded the same way before its first command as after it. Cost: one idle stranger holds a slot for 300s rather than 30s, still capped at `MAX_CONNECTIONS` and still answered above that cap. A listener exposed to strangers should set the parameter low; 30 remains a sound choice for one. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s, overridable per server with `idle_timeout_secs` | Real Redis ships `timeout 0` — it never closes an idle client — and every pooling client in the ecosystem depends on holding an established connection unused between bursts. Closing those at 30s would break correct clients to fix a problem they are not causing. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR max number of clients reached`**, byte for byte what real Redis sends in the same situation. `redis-rs` surfaces it as `ResponseError` and `redis-cli` prints it; a simple error can never be mistaken for data, which is what makes it safe unprompted. |
 
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
@@ -245,6 +245,14 @@ rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), 
 every deadline here, so an answer that takes minutes can never close the connection it is an
 answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
+
+Both bounds are declared startup parameters, because the right value is a property of who is
+on the other end and only the operator knows that.
+`tests/server/redis/connection_bounds_test.rs` drives all three claims from a raw socket: a
+short `first_byte_timeout_secs` closes a silent peer, a short `idle_timeout_secs` closes one
+that has been answered (proving the loop switches bounds), and the **default** leaves a silent
+peer alone for 40 seconds — past the 30 this used to be, which is the regression for the defect
+above and the reason that one test is deliberately slow.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
