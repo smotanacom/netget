@@ -39,9 +39,10 @@ queries; each raises its own event. Most clients send one and close.
 **This is a non-conformance, but no longer an open-ended one.** RFC 3912 says the
 server closes as soon as its output is finished, and `whois(1)` reads until EOF —
 so a handler that answers with `send_whois_record` alone used to leave a real
-client blocked forever. It now blocks for `IDLE_AFTER_REPLY_TIMEOUT` (15s) and
-then gets EOF. Pairing the answer with `close_connection` is still the right
-thing to do and is what both `send_*` action descriptions say;
+client blocked forever. It now blocks for `IDLE_AFTER_REPLY_TIMEOUT` (15s by
+default, `idle_timeout_secs` to change it) and then gets EOF. Pairing the answer
+with `close_connection` is still the right thing to do and is what both `send_*`
+action descriptions say;
 `tests/server/whois/e2e_test.rs` proves the real client is satisfied when they
 are paired. The timeout is a floor under the mistake, not a substitute.
 
@@ -71,9 +72,43 @@ line*, not that the words disappear.
 
 A query is a **line**, not a TCP segment. Reads accumulate to a newline under
 `MAX_QUERY_BYTES` (4 KiB); past that the peer gets `% netget: query too long` and
-the connection closes. Waiting for bytes is bounded too —
-`FIRST_QUERY_READ_TIMEOUT` (30s) before the first query,
-`IDLE_AFTER_REPLY_TIMEOUT` (15s) after one has been answered.
+the connection closes. Waiting for bytes is bounded too:
+
+| Bound | Default | Override | Why this number |
+|---|---|---|---|
+| `FIRST_QUERY_READ_TIMEOUT` | **300s** | `first_byte_timeout_secs` | The window a `manual` rule gives a human (`src/state/intercepts.rs`). **This was 30s and it strands NetGet's own client** — see below. |
+| `IDLE_AFTER_REPLY_TIMEOUT` | 15s | `idle_timeout_secs` | Deliberately the *stricter* of the two, which is the reverse of every other protocol here — see below. |
+| `MAX_QUERY_BYTES` | 4 KiB | — | A query is a domain, a handle or an IP; past this it is not one, and buffering it for a peer who may never send a newline is a memory hole reachable by anyone. |
+
+**Thirty seconds was argued about a stranger, and the peer this server usually has
+is not one.** `src/client/whois/mod.rs` opens the socket and sends **nothing**: it
+raises `whois_client_connected` and waits for the model, or for a person. Its own
+comment says as much where it registers the command channel — early, "because a
+manual `*` rule can park [the connected event] for minutes - the operator must be
+able to send the query while it waits". The dashboard's `[ + whois client ]`
+answers that connect event with nothing and then waits for someone to type a
+domain into `[ send message ]`, so the client sits at zero bytes sent for as long
+as the operator takes. Thirty seconds is less than a person takes. What 300s costs
+is that a stranger holds a socket and a task for 300s rather than 30s — still
+bounded, and a WHOIS connection carries nothing but a `MAX_QUERY_BYTES` line
+buffer. A listener genuinely exposed to strangers should set
+`first_byte_timeout_secs` low.
+
+**The idle bound was deliberately *not* raised alongside it, and the asymmetry is
+the point.** Everywhere else in this tree the idle bound is the more generous of
+the two; here it is the stricter, because it is not really an idle bound at all —
+it is the repair for the non-conformance above. When a handler answers without
+`close_connection` this bound is the only thing that ever unblocks a real
+`whois(1)`. Raising it to 300 would make that rescue twenty times slower for every
+real client, in exchange for a second query nobody composes by hand inside a
+session the protocol says is already over. A human issuing several queries down
+one socket should raise `idle_timeout_secs`, not make everyone wait.
+
+`tests/server/whois/connection_bounds_test.rs` drives both from the wire, setting
+each through its startup parameter to a small and *different* value — so a server
+that read one parameter and applied it to both reads fails the second test rather
+than passing it. It also asserts that a query parked for a human survives well
+past both, because the deadline wraps the `read()` and not the answer.
 
 All three bounds replace behaviour that was reachable by anyone who could open a
 socket. The loop previously raised one `whois_query` event per `read()`, so a

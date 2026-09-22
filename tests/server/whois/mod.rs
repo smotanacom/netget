@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "whois"))]
+mod connection_bounds_test;
+#[cfg(all(test, feature = "whois"))]
 mod e2e_test;
 #[cfg(all(test, feature = "whois"))]
 mod line_framing_test;

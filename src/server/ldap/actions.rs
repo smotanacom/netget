@@ -217,16 +217,40 @@ impl LdapProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for LdapProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![crate::llm::actions::ParameterDefinition {
-            name: "send_first".to_string(),
-            type_hint: "boolean".to_string(),
-            description: "Unsupported by this server and refused if set to true. LDAP: \
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "send_first".to_string(),
+                type_hint: "boolean".to_string(),
+                description: "Unsupported by this server and refused if set to true. LDAP: \
                                   the client sends a BindRequest or SearchRequest first and \
                                   every server message is a response framed against one."
-                .to_string(),
-            required: false,
-            example: serde_json::json!(false),
-        }]
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(false),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send no LDAP message before the \
+                              server closes it. Default 300, matching the window a `manual` \
+                              rule gives a human to answer one event - a peer is often \
+                              NetGet's own LDAP client, which sends nothing at all until \
+                              someone uses [ send message ]. Lower it for a listener exposed \
+                              to strangers."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(300),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an established session may send nothing further between \
+                              LDAP messages before the server closes it. Default 900."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(900),
+            },
+        ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         // LDAP doesn't need async actions for now
@@ -411,12 +435,29 @@ impl Server for LdapProtocol {
                 ));
             }
 
+            // Both read bounds are tunable because their right value is a property of who is on
+            // the other end, which only the operator knows. The defaults serve NetGet's own
+            // client waiting on a human at `[ send message ]`; a listener exposed to strangers
+            // wants the first one much lower.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             LdapServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })
