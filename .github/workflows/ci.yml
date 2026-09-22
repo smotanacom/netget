@@ -346,9 +346,8 @@ jobs:
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
       #   libcoap2-bin      - coap (coap-client, libcoap's own C client)
-      #   libmemcached-tools- memcached (memcat/memstat/memping)
-      #   maven (mvn)       - maven
-      #   etcd-client       - etcd (etcdctl; grpc-go, deliberately NOT tonic)
+      #   libmemcached-tools- memcached, but under DIFFERENT NAMES - see the symlink step
+      #                       below, which is what makes memcat/memstat/memping exist
       #   knot-dnsutils     - dns, doh, dot (kdig; Knot, deliberately NOT ISC dig
       #                       and NOT the hickory codec the servers encode with)
       #   mbpoll            - modbus (libmodbus's CLI master)
@@ -369,6 +368,23 @@ jobs:
       #   tor               - tor_relay
       #   wakeonlan         - wol
       #
+      # NOT here, and each absence is load-bearing:
+      #
+      #   etcd-client  - jammy's is etcd **3.3.25**, whose etcdctl defaults to the **v2**
+      #                  API. `etcdctl version` is not a v2 command, so it printed
+      #                  "No help topic for 'version'" and exited 3, and the test's gate
+      #                  refused it - correctly, because v2 is HTTP/1.1 REST and this test
+      #                  exists to drive **gRPC**. Installed from the upstream release
+      #                  tarball in its own step below.
+      #   maven        - the runner image already has Maven **3.9.16** at /usr/bin/mvn, and
+      #                  `apt-get install maven` DOWNGRADES it to jammy's 3.6.3. That is not
+      #                  cosmetic: `-Dmaven.repo.local.tail`, which maven::e2e_test relies on
+      #                  to resolve plugins offline while every remote is mirrored to NetGet,
+      #                  arrived in Maven 3.9. Under 3.6.3 the flag is silently ignored and
+      #                  the run dies with "No plugin found for prefix 'dependency' ...
+      #                  available from the repositories [local, netget-under-test]" - the
+      #                  tail is not in that list at all. See the warm-up step below.
+      #
       # `continue-on-error` on THIS step, deliberately. An unavailable package used to abort
       # the whole job at its fifth step, so no audit and no evidence ran at all and the job
       # still reported green (it is `continue-on-error` at the job level). That is exactly
@@ -381,11 +397,57 @@ jobs:
         continue-on-error: true
         run: |
           sudo apt-get install -y --no-install-recommends \
-            aria2 awscli curl bind9-dnsutils etcd-client ffmpeg freeradius-utils \
-            libcoap2-bin libmemcached-tools maven mbpoll mercurial \
+            aria2 awscli curl bind9-dnsutils ffmpeg freeradius-utils \
+            libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             openvpn postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan
+
+      # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
+      # `memccat`, `memcstat`, `memcping` - while libmemcached's own build and Homebrew's
+      # bottle install them as `memcat`, `memstat`, `memping`, which is what the test
+      # invokes and what upstream's manpages call them. `libmemcached-tools` really was
+      # installed on every run since this list was written; it simply never contained a
+      # file called `memstat`, so the test reported the binary missing and memcached's
+      # Beta rating went unchecked.
+      #
+      # Symlinked rather than taught to the test, following the `kcat`/`kafkacat` step
+      # below: a test that guesses between packaging spellings is a test that can silently
+      # drive the wrong thing.
+      - name: Give libmemcached's tools the names upstream uses
+        continue-on-error: true
+        run: |
+          set -eux
+          for pair in memcat:memccat memstat:memcstat memping:memcping ; do
+            sudo ln -sf "/usr/bin/${pair##*:}" "/usr/local/bin/${pair%%:*}"
+          done
+          # Not decoration: these run the binaries, so a rename or a dropped tool in a
+          # future libmemcached-tools fails HERE, in one line, rather than as memcached's
+          # evidence quietly not running.
+          memcat --version
+          memstat --version
+          memping --version
+
+      # etcdctl, from the upstream release rather than apt - see the note above: jammy's
+      # `etcd-client` is 3.3.25 and defaults to the v2 (HTTP/1.1 REST) API, which is not
+      # the client this test exists to drive. 3.5 defaults to v3, and its clientv3 is
+      # grpc-go, which is the whole point: tonic accepted the trailers bug that grpc-go
+      # refuses, so etcd's Beta rests on a client that is NOT tonic.
+      #
+      # `continue-on-error` for the same reason as the apt step: a download that 404s must
+      # cost etcd's evidence, not everybody else's.
+      - name: Install etcdctl (etcd 3.5, the v3/gRPC client)
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/etcd.tgz \
+            https://github.com/etcd-io/etcd/releases/download/v3.5.17/etcd-v3.5.17-linux-amd64.tar.gz
+          sudo tar -xzf /tmp/etcd.tgz -C /usr/local/bin --strip-components=1 \
+            etcd-v3.5.17-linux-amd64/etcdctl
+          # The test's own gate is `etcdctl version`, and it is the exact invocation that
+          # exited 3 under 3.3.25. Asserting it here means a client in the wrong API mode
+          # fails this step rather than one protocol's test.
+          etcdctl version
 
       # stuntman's `stunclient` drives `stun::real_client_test`, and it is built here rather
       # than installed because it is in NO current apt repository: the `stuntman-client`
@@ -395,21 +457,42 @@ jobs:
       #
       # `continue-on-error` for the same reason as the apt step: a build failure must cost
       # stun's evidence, not everybody else's.
+      #
+      # **A commit on master, not the newest tag, and that is the whole fix.** stuntman's
+      # last tag is `version1.2.13` (2015) and it does not compile against OpenSSL 1.1 or
+      # later: `stuncore/stunreader.cpp` declares `HMAC_CTX ctx = {}` by value and calls
+      # `HMAC_CTX_init`/`HMAC_CTX_cleanup`, all of which OpenSSL 1.1 removed when the struct
+      # became opaque. On jammy (OpenSSL 3.0) that is three hard errors, `make` stops before
+      # linking anything, `sudo install` never runs, and - because this step is
+      # continue-on-error - the step reported success having produced no binary. stun's test
+      # then failed with "stunclient not available (No such file or directory)", which reads
+      # like a missing package and is actually a compile error thirty lines earlier.
+      #
+      # Upstream fixed it on master long ago but has cut no release since, so a pinned SHA is
+      # the only honest choice: a floating `master` would make this job's result depend on
+      # someone else's unreleased work. Re-pin deliberately if stuntman ever tags again.
       - name: Build stuntman's stunclient from source
         continue-on-error: true
         run: |
           set -eux
           sudo apt-get install -y --no-install-recommends libboost-dev libssl-dev g++ make
-          git clone --depth 1 --branch version1.2.13 \
-            https://github.com/jselbie/stunserver.git /tmp/stunserver
-          cd /tmp/stunserver && make -j"$(nproc)"
+          # A full clone: `--depth 1` cannot check out an arbitrary SHA, and the repository
+          # is under 10 MB.
+          git clone https://github.com/jselbie/stunserver.git /tmp/stunserver
+          cd /tmp/stunserver
+          git checkout 1582042ca33f747f88101fbadec4944714aa8bbb
+          make -j"$(nproc)"
           # The Makefile leaves the binaries in the tree rather than an install prefix, and
           # which subdirectory has moved between releases - so find it rather than guess.
           client=$(find /tmp/stunserver -maxdepth 2 -type f -name stunclient -perm -u+x | head -1)
           test -n "$client"
           sudo install -m 0755 "$client" /usr/local/bin/stunclient
-          # `stunclient --help` exits 254 by design, so presence is what is asserted.
-          command -v stunclient
+          # Not decoration, and not `command -v`: a build that half-succeeded, or a `find`
+          # that picked up something else called stunclient, both satisfy presence. This runs
+          # the binary and asserts it identifies itself as stuntman's client. (`--help` exits
+          # 254 by design, so the exit status is deliberately not what is checked - `grep -q`
+          # is, and the pipeline's status is grep's.)
+          stunclient --help 2>&1 | grep -q 'command line app for the STUN protocol'
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry
@@ -455,6 +538,55 @@ jobs:
             sudo ln -s "$(command -v kafkacat)" /usr/local/bin/kcat
           fi
           kcat -V
+
+      # `maven::e2e_test` drives the real `mvn`, and it resolves the dependency plugin from
+      # `~/.m2/repository` on purpose: every remote repository is mirrored to NetGet for the
+      # duration of the test, so a plugin that is not already cached cannot be fetched at all
+      # and the test would either fail or - worse - reach Maven Central, which this
+      # repository's tests may never do. A GitHub runner's `~/.m2` does not exist until
+      # something warms it, so the test failed on its own explicit check, which names this
+      # step's command.
+      #
+      # Two things have to be true and only one of them is the cache:
+      #
+      #  * **Maven must be >= 3.9.** The split local repository (`-Dmaven.repo.local.tail`),
+      #    which is how the test reads that cache while writing into a throwaway head, landed
+      #    in Maven 3.9. Under 3.6.3 the flag is not an error - it is IGNORED - and the run
+      #    dies with `No plugin found for prefix 'dependency' ... available from the
+      #    repositories [local (...), netget-under-test (...)]`, a list with no tail in it.
+      #    The runner image ships 3.9.16; the apt `maven` package (3.6.3) used to be
+      #    installed above and overwrote it, so this job was downgrading itself into the bug.
+      #    The assertion below is what stops that returning silently.
+      #  * **`dependency:get` AND `dependency:unpack`** are both driven by the test, so both
+      #    are warmed here. They are one plugin, and resolving a plugin resolves its whole
+      #    realm, but warming exactly what the test runs costs seconds and leaves nothing to
+      #    reason about.
+      #
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Warm ~/.m2 for maven::e2e_test
+        continue-on-error: true
+        run: |
+          set -eux
+          mvn -version
+          # Fail here, loudly, rather than inside a protocol test that cannot explain why.
+          mvn_version=$(mvn -version | head -1 | awk '{print $3}')
+          case "$mvn_version" in
+            3.9.*|3.1[0-9].*|[4-9].*)
+              echo "maven $mvn_version supports the split local repository" ;;
+            *)
+              echo "maven $mvn_version is too old: maven::e2e_test needs" \
+                   "-Dmaven.repo.local.tail, which arrived in Maven 3.9. Do NOT install the" \
+                   "apt 'maven' package in this job - it downgrades the image's 3.9.x." >&2
+              exit 1 ;;
+          esac
+          # The plugin the test resolves offline. This is the one command in this job that
+          # deliberately contacts Maven Central, and it happens before any server is started.
+          mvn -B dependency:get -Dartifact=junit:junit:4.13.2
+          mvn -B dependency:unpack -Dartifact=junit:junit:4.13.2 \
+            -DoutputDirectory=/tmp/m2-warmup-unpack
+          # The exact directory maven::e2e_test checks for, so a future Maven that resolves a
+          # different plugin coordinate fails here instead of there.
+          test -d "$HOME/.m2/repository/org/apache/maven/plugins/maven-dependency-plugin"
 
       # Each of these asserts something about EVERY registered protocol: that no event
       # is advertised without usable actions, that no response example is left as a

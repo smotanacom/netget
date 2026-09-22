@@ -53,7 +53,12 @@ async fn require_etcdctl() -> E2EResult<String> {
         }
         Ok(out) => Err(format!(
             "`etcdctl version` exited {}: this test's whole point is driving the real etcdctl \
-             binary, which is grpc-go, against NetGet's etcd server",
+             binary, which is grpc-go, against NetGet's etcd server. An etcdctl older than 3.4 \
+             defaults to the **v2** API, where `version` is not a command at all (it prints \
+             \"No help topic for 'version'\" and exits 3) and where the client speaks HTTP/1.1 \
+             REST rather than gRPC — so that binary could not produce this evidence even if \
+             the gate let it through. Ubuntu 22.04's `etcd-client` package is exactly that: \
+             etcd 3.3.25. Install a 3.4+ release instead.",
             out.status
         )
         .into()),
