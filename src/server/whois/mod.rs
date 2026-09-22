@@ -39,7 +39,25 @@ use tokio::sync::{mpsc, Mutex};
 pub const MAX_QUERY_BYTES: usize = 4096;
 
 /// How long to wait for the first query from a peer that has only connected.
-const FIRST_QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// **This was 30 seconds and it strands NetGet's own client.** WHOIS is client-speaks-first and
+/// the server says nothing until a line arrives, so thirty seconds was argued — correctly — about
+/// a stranger holding an unauthenticated socket. The peer this server most often has is not a
+/// stranger: `src/client/whois/mod.rs` opens the socket and sends **nothing**, raising
+/// `whois_client_connected` and waiting for the model or for a person to supply the query. Its
+/// own comment says so where it registers the command channel — early, "because a manual `*`
+/// rule can park [the connected event] for minutes - the operator must be able to send the
+/// query while it waits". The dashboard's `[ + whois client ]` gives that connect event a
+/// zero-action static rule, so the client is answered with nothing and waits at zero bytes sent
+/// for as long as the operator takes to type a domain into `[ send message ]`. Thirty seconds
+/// is less than a person takes.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`). The cost is that a stranger holds a socket and a task for 300
+/// seconds instead of 30 — still bounded, still capped by the accept loop, and a WHOIS
+/// connection carries nothing but a [`MAX_QUERY_BYTES`] line buffer. A listener genuinely
+/// exposed to strangers should set `first_byte_timeout_secs` back down.
+const FIRST_QUERY_READ_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long to wait for a *further* query after one has been answered.
 ///
@@ -47,6 +65,17 @@ const FIRST_QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// point, so anyone still holding it open is the exception. See the module note — this is the
 /// bound that turns "blocked forever" into "blocked briefly" for a client whose handler forgot
 /// `close_connection`.
+///
+/// **Deliberately not raised to 300 alongside the first bound, and the asymmetry is the point.**
+/// Everywhere else in this tree the idle bound is the more generous of the two; here it is the
+/// stricter, because it is not really an idle bound at all — it is a repair for this server's
+/// one known non-conformance. RFC 3912 has the server close when its output is finished and
+/// `whois(1)` reads until EOF, so when a handler answers without `close_connection` this bound
+/// is the *only* thing that ever unblocks the client. Lengthening it to 300 would make that
+/// rescue twenty times slower for every real WHOIS client in exchange for a second query nobody
+/// composes by hand inside a session the protocol says is already over — the right answer for a
+/// human issuing several queries down one socket is to raise `idle_timeout_secs`, which is what
+/// the parameter is for, not to make everyone wait.
 const IDLE_AFTER_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct WhoisServer;
@@ -59,7 +88,18 @@ impl WhoisServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both read bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The default first bound serves NetGet's own
+        // client waiting on a human; a listener exposed to strangers wants it much lower.
+        let first_query_timeout = first_byte_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(FIRST_QUERY_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(IDLE_AFTER_REPLY_TIMEOUT);
         let listener = TcpListener::bind(listen_addr).await?;
         let local_addr = listener.local_addr()?;
 
@@ -121,6 +161,8 @@ impl WhoisServer {
                                     server_id,
                                     protocol_clone,
                                     connection_id_clone,
+                                    first_query_timeout,
+                                    idle_timeout,
                                 )
                                 .await
                             })
@@ -182,6 +224,8 @@ async fn handle_whois_connection(
     server_id: crate::state::ServerId,
     protocol: Arc<actions::WhoisProtocol>,
     connection_id: ConnectionId,
+    first_query_timeout: Duration,
+    idle_timeout: Duration,
 ) {
     let (reader, write_half) = tokio::io::split(socket);
     let write_half = Arc::new(Mutex::new(write_half));
@@ -217,6 +261,8 @@ async fn handle_whois_connection(
         server_id,
         &protocol,
         connection_id,
+        first_query_timeout,
+        idle_timeout,
     )
     .await;
 
@@ -246,6 +292,8 @@ async fn run_whois_session<R, W>(
     server_id: crate::state::ServerId,
     protocol: &Arc<actions::WhoisProtocol>,
     connection_id: ConnectionId,
+    first_query_timeout: Duration,
+    idle_timeout: Duration,
 ) where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -256,9 +304,9 @@ async fn run_whois_session<R, W>(
 
     loop {
         let read_timeout = if answered_one {
-            IDLE_AFTER_REPLY_TIMEOUT
+            idle_timeout
         } else {
-            FIRST_QUERY_READ_TIMEOUT
+            first_query_timeout
         };
 
         let (query, n) = match lines.next_query(read_timeout).await {

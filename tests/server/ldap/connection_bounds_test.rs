@@ -7,7 +7,9 @@
 //!
 //! Three properties are asserted, and each one alone would be satisfied by a bug:
 //!
-//! 1. A peer that connects and **says nothing** is closed at `FIRST_MESSAGE_READ_TIMEOUT`.
+//! 1. A peer that connects and **says nothing** is closed at the first-message bound (set here
+//!    through the `first_byte_timeout_secs` startup parameter, so the test does not have to
+//!    wait out the 300-second default).
 //! 2. A peer that **binds** is answered and survives well past that same bound: the deadline is
 //!    on the silence, not on the connection. A pooling LDAP client holds a bound connection open
 //!    between operations, so a single number applied to both would break it.
@@ -17,7 +19,7 @@
 //!
 //! **How this was proved to fail without the bound**: replace the `tokio::time::timeout(...)`
 //! around `self.stream.read(...)` in `src/server/ldap/mod.rs` with a bare read and the first
-//! test hangs for its whole 70-second window, then fails with "still holding the socket".
+//! test hangs for its whole assertion window, then fails with "still holding the socket".
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features ldap,tcp --test server -- ldap::connection_bounds --test-threads=100
@@ -33,9 +35,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
-/// `src/server/ldap/mod.rs::FIRST_MESSAGE_READ_TIMEOUT`. Deliberately duplicated: if the
-/// constant moves, this test should be re-read rather than silently follow it.
-const FIRST_MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// The first-message bound these tests drive, passed to the server as `first_byte_timeout_secs`.
+///
+/// **Not the default.** `src/server/ldap/mod.rs::FIRST_MESSAGE_READ_TIMEOUT` is 300 seconds —
+/// the window a `manual` rule gives a human — because the peer is most often NetGet's own LDAP
+/// client, which opens the socket and then sends nothing at all until someone uses
+/// `[ send message ]`. A test cannot wait five minutes, and one that asserted the default by
+/// waiting it out would be the slowest thing in the suite, so the bound is a declared startup
+/// parameter and these tests set it small. What is asserted here is that the deadline is applied
+/// to the `read()` and to nothing else; the *value* is the operator's to choose and is argued
+/// where it is declared.
+const FIRST_MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// `src/server/ldap/mod.rs::MAX_CONNECTIONS`.
 const MAX_CONNECTIONS: usize = 256;
@@ -87,6 +97,9 @@ async fn start_server(state: &AppState) -> u16 {
         // An empty instruction really is model-free; `None` would be replaced by a default
         // instruction and every message would consult the LLM.
         instruction: Some(String::new()),
+        startup_params: Some(serde_json::json!({
+            "first_byte_timeout_secs": FIRST_MESSAGE_READ_TIMEOUT.as_secs(),
+        })),
         ..Default::default()
     }
     .create(state, tx)
@@ -103,6 +116,9 @@ async fn start_server_with_manual_rule(state: &AppState) -> u16 {
         protocol: "ldap".to_string(),
         port: Some(0),
         instruction: Some(String::new()),
+        startup_params: Some(serde_json::json!({
+            "first_byte_timeout_secs": FIRST_MESSAGE_READ_TIMEOUT.as_secs(),
+        })),
         event_handlers: Some(vec![serde_json::json!({
             "event_pattern": "*",
             "handler": { "type": "manual", "timeout_secs": 300 }
@@ -126,8 +142,9 @@ async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_message_bo
 
     let started = std::time::Instant::now();
     let mut sink = Vec::new();
-    // Generous against the 30s bound so an ordinary scheduling delay under --test-threads=100
-    // is not mistaken for a missing timeout; the assertion that matters is that it ends at all.
+    // Generous against the configured bound so an ordinary scheduling delay under
+    // --test-threads=100 is not mistaken for a missing timeout; the assertion that matters is
+    // that it ends at all.
     let read = tokio::time::timeout(
         FIRST_MESSAGE_READ_TIMEOUT + Duration::from_secs(40),
         peer.read_to_end(&mut sink),
@@ -150,9 +167,10 @@ async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_message_bo
     );
     assert!(
         elapsed >= FIRST_MESSAGE_READ_TIMEOUT / 2,
-        "closed after only {}ms — that is not the declared 30s bound, it is something else \
+        "closed after only {}ms — that is not the configured {}s bound, it is something else \
          tearing the connection down",
-        elapsed.as_millis()
+        elapsed.as_millis(),
+        FIRST_MESSAGE_READ_TIMEOUT.as_secs()
     );
 }
 
@@ -186,7 +204,7 @@ async fn a_bound_peer_gets_the_longer_idle_bound() {
     );
 
     // Now go quiet for longer than the *first* bound and assert the connection survives: the
-    // idle bound for an established session is 900s, thirty times as long.
+    // idle bound for an established session is 900s and is not overridden here.
     tokio::time::sleep(FIRST_MESSAGE_READ_TIMEOUT + Duration::from_secs(8)).await;
 
     peer.write_all(ANONYMOUS_BIND)
@@ -196,8 +214,8 @@ async fn a_bound_peer_gets_the_longer_idle_bound() {
     let n = tokio::time::timeout(Duration::from_secs(30), peer.read(&mut reply))
         .await
         .expect(
-            "an established session that paused for 38s was closed — the idle bound has \
-             collapsed onto the first-message bound, which would break every pooling client",
+            "an established session that paused well past the first-message bound was closed — \
+             the idle bound has collapsed onto it, which would break every pooling client",
         )
         .expect("read");
     assert!(
@@ -212,7 +230,7 @@ async fn the_connection_past_the_cap_gets_a_notice_of_disconnection_and_the_slot
     let port = start_server(&state).await;
 
     // Fill the cap. These peers say nothing, which is fine: they are admitted, and the
-    // first-message deadline is 30s — far longer than this test needs.
+    // configured first-message deadline is far longer than this test needs.
     let mut held = Vec::with_capacity(MAX_CONNECTIONS);
     for i in 0..MAX_CONNECTIONS {
         held.push(
@@ -276,8 +294,8 @@ async fn a_bind_parked_for_a_human_is_never_closed_by_the_deadline() {
     // The bound that matters most, and the one a careless implementation gets wrong: a `manual`
     // rule parks the event for a **person** at the dashboard, with a 300-second default, and the
     // peer is silent for the whole of that wait because it is waiting for us. If the deadline
-    // covered anything but the `read()` itself, this connection would be torn down at 30 seconds
-    // — while the operator was still reading the question.
+    // covered anything but the `read()` itself, this connection would be torn down at the
+    // first-message bound — while the operator was still reading the question.
     //
     // Nothing answers the intercept here. The assertion is that the connection is *still there*
     // well past the first-message bound, which is exactly the state an operator needs.

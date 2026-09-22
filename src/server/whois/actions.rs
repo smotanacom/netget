@@ -49,6 +49,36 @@ impl WhoisProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for WhoisProtocol {
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send no query before the server \
+                              closes it. Default 300, matching the window a `manual` rule \
+                              gives a human to answer one event - a peer is often NetGet's \
+                              own WHOIS client, which sends nothing at all until someone \
+                              types a domain into [ send message ]. Lower it for a listener \
+                              exposed to strangers."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(300),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds the server keeps reading after it has answered a query, \
+                              for a client that wants to send another down the same socket. \
+                              Default 15, deliberately short: RFC 3912 says the connection is \
+                              over at this point, and this bound is what unblocks a real \
+                              client when a handler answered without close_connection. Raise \
+                              it for a session where a human issues several queries by hand."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(15),
+            },
+        ]
+    }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         Vec::new() // WHOIS has no async actions
     }
@@ -168,12 +198,29 @@ impl Server for WhoisProtocol {
     > {
         Box::pin(async move {
             use crate::server::whois::WhoisServer;
+            // Both read bounds are tunable because their right value is a property of who is on
+            // the other end, which only the operator knows. The first default serves NetGet's
+            // own client waiting on a human at `[ send message ]`; a listener exposed to
+            // strangers wants it much lower.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             WhoisServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

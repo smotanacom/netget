@@ -61,9 +61,23 @@ hundred more. It now declares both halves; the constants and the reasoning live 
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_MESSAGE_READ_TIMEOUT` | 30s | LDAP is client-speaks-first: nothing is sent until a BindRequest or an anonymous SearchRequest arrives, so a peer that has sent nothing has begun no session. |
-| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | There is no interval to sit above — LDAP defines no keepalive and OpenLDAP's own `idletimeout` defaults to **0**. Fifteen minutes is safe because of a property of *this* server: it implements no control and no extended operation, so persistent search and syncrepl — the only shapes in which a client legitimately holds an LDAP connection open in silence — cannot be requested here. Every operation is request/response. |
+| `FIRST_MESSAGE_READ_TIMEOUT` | **300s**, override `first_byte_timeout_secs` | LDAP is client-speaks-first: nothing is sent until a BindRequest or an anonymous SearchRequest arrives, so a peer that has sent nothing has begun no session. **This was 30s and it strands NetGet's own client** — see below. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s, override `idle_timeout_secs` | There is no interval to sit above — LDAP defines no keepalive and OpenLDAP's own `idletimeout` defaults to **0**. Fifteen minutes is safe because of a property of *this* server: it implements no control and no extended operation, so persistent search and syncrepl — the only shapes in which a client legitimately holds an LDAP connection open in silence — cannot be requested here. Every operation is request/response. |
 | `MAX_CONNECTIONS` | 256 | Refusal: LDAP's own **Notice of Disconnection** (RFC 4511 §4.4.1) — an unsolicited `ExtendedResponse` on messageID 0, OID `1.3.6.1.4.1.1466.20036`, `resultCode = unavailable (52)`. `busy (51)` reads closer to the truth and is deliberately not used: §4.4.1 permits only `protocolError`, `strongerAuthRequired` and `unavailable` there, and anything else is a malformed notice. |
+
+**The first bound was 30 seconds, and the peer it was argued about is not the peer this server
+usually has.** Thirty seconds is right about a stranger holding an unauthenticated socket. It is
+wrong about `src/client/ldap/mod.rs`, which opens the socket and sends **nothing**: it raises
+`ldap_client_connected` and waits for the model, or for a person. The dashboard offers
+`[ + ldap client ]` under a server's peers with `[ send message ]` beneath it and answers the
+connect event with nothing, so that client sits at zero bytes sent for as long as the operator
+takes to compose a bind — and the server dropped it while they were still looking at it. 300
+seconds is the window a `manual` rule gives a human (`src/state/intercepts.rs`), which is the
+number this product already uses for "how long someone might take". The cost is that a stranger
+holds a socket, a task and an `AppState` row for 300s rather than 30s — still bounded, still
+capped at `MAX_CONNECTIONS`, so the total exposure is unchanged and only the dwell time moved. A
+listener genuinely exposed to strangers should set `first_byte_timeout_secs` low; that is what
+the parameter is for.
 
 **The deadline wraps the `read()` and nothing else.** `handle_message` may sit in an LLM
 round-trip, or in a `manual` rule parked for a human at the dashboard (300s by default), for
@@ -78,7 +92,10 @@ tagged `decision=fail_closed_idle_timeout`.
 `tests/server/ldap/connection_bounds_test.rs` drives all three from the wire, including that the
 Notice of Disconnection arrives byte for byte on the connection past the cap and that releasing
 one admitted connection frees exactly one slot. Replacing the `tokio::time::timeout` around the
-read with a bare read makes the first test hang for its whole 70-second window and fail.
+read with a bare read makes the first test hang for its whole assertion window and fail. Those
+tests pass `first_byte_timeout_secs` a small value rather than waiting out the 300-second
+default — a suite that waited it out would be the slowest thing in the tree, and what is being
+asserted is that the deadline is applied to the read it names, not what the number should be.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed, and
 `tests/accept_bounded_test.rs` covers the shared helper.
 

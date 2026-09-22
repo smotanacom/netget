@@ -40,6 +40,15 @@ meaning "nothing matched".
 bounded no read, so a peer that connected and said nothing held a socket, a connection task and
 an `AppState` entry forever — pre-authentication, which for LDAP means before any bind at all.
 
+It drives the first-message bound through the **`first_byte_timeout_secs` startup parameter**
+rather than waiting out the default, which is 300 seconds. That default is the window a `manual`
+rule gives a human, and it is 300 rather than 30 because the peer this server usually has is
+NetGet's own LDAP client: it opens the socket and sends nothing until the model or a person
+supplies an operation, so at 30 seconds the server dropped the operator's own client while they
+were still composing a bind. What the test asserts is that the deadline is applied to the
+`read()` and to nothing else — the *value* is the operator's to choose, and is argued beside the
+constant in `src/server/ldap/mod.rs`.
+
 ## Test Strategy
 
 - **Consolidated per operation** - Each test focuses on a specific LDAP operation

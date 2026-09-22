@@ -51,8 +51,28 @@ use actions::{
 /// all — which is the state an unauthenticated flood lives in. The deadline wraps the `read()`
 /// and nothing else, so a model round-trip, or a `manual` rule parking a bind for a human, sits
 /// outside it by construction.
+///
+/// **This was 30 seconds and it strands NetGet's own client.** The argument for 30 was made
+/// about a stranger, and it is sound about a stranger — but the peer this server most often has
+/// is not one. `src/client/ldap/mod.rs` opens the socket and then sends **nothing**: it raises
+/// `ldap_client_connected` and waits for the model, or for a person. The dashboard offers
+/// `[ + ldap client ]` under a server's peers and `[ send message ]` beneath it, and gives the
+/// connect event a zero-action static rule — "answered with nothing" — so that client sits at
+/// zero bytes sent for exactly as long as the operator takes to compose a bind or a search. The
+/// client's own code says so, in the comment above its `register_command_channel` call: the
+/// command channel is registered early precisely because "a manual `*` rule can park [the
+/// connected event] for minutes". Thirty seconds is less than a person takes, and the socket
+/// was gone while they were still looking at it.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for "how long
+/// someone might take". What it costs is that a stranger holds an unauthenticated socket, a
+/// task and an `AppState` row for 300 seconds rather than 30 — still bounded, and still capped
+/// at [`MAX_CONNECTIONS`], so the total exposure is the same 256 sockets it always was and only
+/// the dwell time changed. A listener genuinely exposed to strangers should set
+/// `first_byte_timeout_secs` back down; that is what the parameter is for.
 #[cfg(feature = "ldap")]
-const FIRST_MESSAGE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const FIRST_MESSAGE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// How long a peer that has already been answered may send nothing further.
 ///
@@ -112,7 +132,18 @@ impl LdapServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the other
+        // end, which only the operator knows. The defaults serve NetGet's own client waiting on
+        // a human; a listener exposed to strangers wants the first one much lower.
+        let first_message_timeout = first_byte_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(FIRST_MESSAGE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_MESSAGES_TIMEOUT);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -204,6 +235,8 @@ impl LdapServer {
                                     protocol: protocol_clone.clone(),
                                     authenticated: false,
                                     bind_dn: None,
+                                    first_message_timeout,
+                                    idle_timeout,
                                 };
 
                                 // Handle LDAP session
@@ -250,6 +283,10 @@ struct LdapSession {
     protocol: Arc<LdapProtocol>,
     authenticated: bool,
     bind_dn: Option<String>,
+    /// Resolved [`FIRST_MESSAGE_READ_TIMEOUT`], or the `first_byte_timeout_secs` override.
+    first_message_timeout: std::time::Duration,
+    /// Resolved [`IDLE_BETWEEN_MESSAGES_TIMEOUT`], or the `idle_timeout_secs` override.
+    idle_timeout: std::time::Duration,
 }
 
 #[cfg(feature = "ldap")]
@@ -330,9 +367,9 @@ impl LdapSession {
             // minutes; none of that is this peer being silent, and none of it is inside this
             // timeout.
             let read_deadline = if answered_one {
-                IDLE_BETWEEN_MESSAGES_TIMEOUT
+                self.idle_timeout
             } else {
-                FIRST_MESSAGE_READ_TIMEOUT
+                self.first_message_timeout
             };
             let n = match tokio::time::timeout(read_deadline, self.stream.read(&mut chunk)).await {
                 Err(_) => {
@@ -1423,6 +1460,8 @@ impl LdapServer {
         _app_state: Arc<crate::state::app_state::AppState>,
         _status_tx: mpsc::UnboundedSender<String>,
         _server_id: crate::state::ServerId,
+        _first_byte_timeout_secs: Option<u64>,
+        _idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
         anyhow::bail!("LDAP feature not enabled")
     }

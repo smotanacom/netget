@@ -1,5 +1,22 @@
 # WHOIS E2E Testing
 
+## The files
+
+| file | what it holds |
+|---|---|
+| `e2e_test.rs` | the maturity evidence: the real `whois(1)` binary prints the record |
+| `line_framing_test.rs` | a query is a *line*, not a segment; and CRLF in a record field cannot forge another field |
+| `peer_inject_test.rs` | the dashboard's `[ message this peer ]` / `[ disconnect ]`, with zero LLM calls |
+| `connection_bounds_test.rs` | the two read deadlines, and that each startup parameter reaches the read it names |
+
+**`connection_bounds_test.rs` sets both bounds through startup parameters rather than waiting
+them out**, which is the only reason the suite is still fast: the first-query default is 300
+seconds — the window a `manual` rule gives a human — because the peer this server usually has is
+NetGet's own WHOIS client, which sends nothing at all until someone types into `[ send message ]`.
+It was 30 seconds, and the server dropped the operator's own client while they were looking at
+it. The two bounds are given *different* small values on purpose: a server that read one
+parameter and applied it to both reads passes the first test and fails the second.
+
 ## Test Strategy
 
 `tests/server/whois/e2e_test.rs`. Five tests, **6 LLM calls total**.
