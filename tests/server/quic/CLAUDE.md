@@ -11,6 +11,19 @@ Because the server implements no RFC 9114 framing, these tests speak raw QUIC vi
 and it is also the coverage gap: **nothing in the suite exercises a real HTTP/3
 client**, because nothing could.
 
+**Two files, seven tests**, and this doc named neither until 22 September 2026:
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 6 | the maturity evidence — a `quinn::Endpoint` completes a real handshake and drives bidirectional streams, including two concurrent ones and a binary round trip |
+| `llm_failure_test.rs` | 1 | what a raw-QUIC peer gets when the backend fails: **`RESET_STREAM`, not silence** |
+
+`llm_failure_test.rs` is the one worth knowing about. A QUIC stream that simply stops is
+indistinguishable to the peer from one that is slow, so silence on backend failure reads as a
+server still thinking; `RESET_STREAM` is the frame that says otherwise. That is the same
+argument the project `CLAUDE.md` makes for every protocol that *has* a way to say it — and the
+reason the twenty deliberately-silent protocols are listed separately, because they do not.
+
 ## Test Strategy
 
 - **Isolated test servers**: each test spawns a separate NetGet instance with its
