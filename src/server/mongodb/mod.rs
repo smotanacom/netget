@@ -64,6 +64,43 @@ const FIRST_HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// long park cannot evict a live session. That is the TFTP eviction defect stated in reverse.
 const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`].
+/// [`FIRST_HEADER_READ_TIMEOUT`] and [`IDLE_BETWEEN_MESSAGES_TIMEOUT`] bound how long *one*
+/// peer holds a slot; only a cap bounds how many of them there can be at once, and the idle
+/// bound is ten minutes, so without a cap a peer connecting once a second pins six hundred
+/// sockets before the first is even eligible to close.
+///
+/// A MongoDB connection is a pooled *session*, not a request — a driver opens
+/// `maxPoolSize` (100 by default) per client and keeps them — so this server's live-connection
+/// count is its client population times that pool, and the house default sits deliberately
+/// above two such clients. The per-connection memory is bounded separately by
+/// [`MAX_MESSAGE_SIZE`], which is the half of the product that actually describes the cost;
+/// a deployment that wants a tighter total should tighten that rather than this.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a **plain close**, with nothing written.
+///
+/// MongoDB's wire protocol has a perfectly good way to say "unavailable" — this server already
+/// sends [`MONGODB_TEMPORARILY_UNAVAILABLE`] when the model backend is saturated — and it is
+/// unusable here for the reason `ipp` and `ident` are silent: **every reply is addressed to a
+/// request that a refused peer has not sent.** A wire message's header carries `responseTo`,
+/// which the driver matches against its outstanding `requestID`; nothing has arrived at the
+/// accept, so the only value available is zero.
+///
+/// That is worse than silence rather than merely useless. A driver that receives a reply it
+/// did not ask for does not surface it as an error — it has no request to fail — so an
+/// invented OP_MSG is discarded while the driver goes on waiting for the `hello` it did send,
+/// and the peer we meant to turn away instead blocks until its own `connectTimeoutMS`. An EOF
+/// during the handshake is a case every driver already has: the connection is marked failed
+/// immediately, the pool retries elsewhere, and SDAM records a transient network error rather
+/// than a protocol one.
+///
+/// The refusal is logged with `decision=fail_closed_connection_cap`, and that log line is the
+/// diagnosis.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// The write half of one connection, shared between the session loop and the dashboard's
 /// peer-command task (`server::peer_support`).
 ///
@@ -124,10 +161,19 @@ impl MongodbServer {
         let task_registrar = app_state.clone();
 
         // Spawn the accept loop
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "MONGODB",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         console_debug!(status_tx, "MongoDB connection from {}", addr);
 
                         let connection_id =
@@ -173,6 +219,12 @@ impl MongodbServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection — `handle_connection` spawns nothing that
+                                // outlives it; the dashboard's peer-command task writes
+                                // through a shared write half rather than owning one — so
+                                // `MAX_CONNECTIONS` caps live connections rather than accepts.
+                                let _permit = permit;
                                 if let Err(e) = handler.handle_connection(stream).await {
                                     error!("MongoDB connection error: {:?}", e);
                                 }

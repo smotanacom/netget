@@ -59,6 +59,47 @@ const _REPLY_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
 /// the cost of holding one was a single `connect()`.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 
+/// Concurrent client connections this proxy admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HANDSHAKE_TIMEOUT_SECS`]
+/// bounds how long one peer can hold a slot saying nothing; only a cap bounds how many of
+/// them there can be at once, and no authentication happens before either bound applies.
+///
+/// A SOCKS5 connection is worth more than most in this tree, which argues for a cap rather
+/// than against the number: an established one holds **two** sockets — the client's and the
+/// one this proxy opened to the target on its behalf — plus the relay buffers between them, so
+/// an uncapped accept loop lets a stranger spend this process's descriptors at two apiece and
+/// spend the *target's* at one. A proxy is also the one server here whose legitimate
+/// connection count tracks a browser's parallelism rather than a single application's, so the
+/// house default is the right side of generous: 256 concurrent tunnels is far above a
+/// workstation's working set and far below where descriptor exhaustion starts.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: `05 FF`, the
+/// method-selection message carrying `NO ACCEPTABLE METHODS` (RFC 1928 §3).
+///
+/// **This is the one message RFC 1928 lets a server send without having read anything, and
+/// that is why it is the one used.** The method-selection reply is two self-contained bytes —
+/// a version and a chosen method — and echoes nothing from the greeting, so unlike `ipp`'s
+/// `server-error-busy` or a MongoDB reply it cannot be mis-matched against a request the peer
+/// never sent. §3 then requires the client to close the connection on `X'FF'`, so the refusal
+/// is complete rather than advisory, and it is what `curl`, `ssh -o ProxyCommand` and
+/// tokio-socks all already handle.
+///
+/// The alternative inside the protocol is worse, and it is worth naming so nobody reaches for
+/// it later: `X'01' general SOCKS server failure` is a **request-phase** reply (§6), and a
+/// client still in method negotiation reads those same first two bytes as
+/// `VER=5, METHOD=0x01` — GSSAPI — and starts a GSSAPI exchange with a server that has
+/// already gone. That is precisely the mis-parse this codebase refuses to ship.
+///
+/// The honest cost of `X'FF'` is that RFC 1928 has no "busy" code at all, so the client is
+/// told *that* it was refused and not *why*: an operator reading only the client's log sees
+/// "no acceptable authentication method" and might go looking at auth configuration. The
+/// server-side log line carries the real reason
+/// (`decision=fail_closed_connection_cap`, with the limit), and a clean refusal the client
+/// acts on immediately beats a silent close it has to infer.
+const CONNECTION_CAP_REFUSAL: &[u8] = &[SOCKS5_VERSION, AUTH_METHOD_NO_ACCEPTABLE];
+
 /// Render relayed bytes for the LLM: printable payloads as text, everything else
 /// as hex. Returns the string and the encoding label to put on the event so the
 /// model knows which form it is looking at (and which to echo back).
@@ -225,10 +266,19 @@ impl Socks5Server {
         let protocol = Arc::new(Socks5Protocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "SOCKS5",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -242,6 +292,12 @@ impl Socks5Server {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection: the relay between the client and the target
+                                // runs inline in `handle_connection`, so there is no second
+                                // task to outlive this one and `MAX_CONNECTIONS` caps live
+                                // tunnels rather than accepts.
+                                let _permit = permit;
                                 Log::new(Some(&status_clone)).info(format!(
                                     "SOCKS5 connection {} from {}",
                                     connection_id, remote_addr

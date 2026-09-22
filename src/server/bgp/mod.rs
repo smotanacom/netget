@@ -88,6 +88,51 @@ const MIN_HOLD_TIME: u16 = 3;
 /// this is the window before them.
 const OPEN_HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(240);
 
+/// Concurrent sessions this speaker admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`OPEN_HOLD_TIME`] bounds how
+/// long *one* silent peer holds a slot and it is four minutes by RFC 4271 §8.2.2's own
+/// recommendation, so without a cap a stranger connecting once a second pins two hundred and
+/// forty sockets before the first becomes eligible to close — and every one of those costs a
+/// session task, a writer task, a keepalive timer and an `AppState` row, all of it before a
+/// single OPEN has been validated.
+///
+/// The house default is *generous* for BGP rather than tight, and that is deliberate. A real
+/// speaker peers with tens of neighbours, not hundreds, so a number like 64 would fit the
+/// traffic — and would hand an attacker a cheap way to lock the configured neighbours out by
+/// filling the table with half-open connections. A cap's job is to bound what a stranger can
+/// pin, not to be the smallest number that works, so it sits far above any plausible neighbour
+/// count while still being finite.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: NOTIFICATION
+/// 6/8, Cease / **Out of Resources**.
+///
+/// **BGP is the rare protocol here whose refusal needs nothing from the peer.** A NOTIFICATION
+/// is a complete message on its own — marker, length, type, error code, subcode — with no
+/// field echoing anything the sender has received, so unlike `ipp`'s `server-error-busy` or a
+/// MongoDB reply there is nothing to fabricate. RFC 4271 §6 also allows it in *any* state: a
+/// speaker in Connect or Active that decides not to proceed sends one and closes, which is
+/// precisely this moment. So there is no reason to fall back to silence here.
+///
+/// **6/8 rather than 6/5, and the difference is what the peer does next.** RFC 4486 §4's
+/// `Connection Rejected` reads as the closer match — it is written about a speaker that
+/// disallows a connection *after* accepting the transport connection — but it means a
+/// permanent, policy refusal ("the peer is not configured locally"), and a conforming
+/// implementation treats it as such. A full connection table is transient, and §8's
+/// `Out of Resources` is the subcode whose defined handling is damping and retry. It is also
+/// what this session already sends when the model backend is saturated
+/// ([`SendOutcome::cease_subcode`] maps `WireFailure::Overloaded` to it), so a resource
+/// condition speaks with one voice whichever end of the connection it is discovered at.
+///
+/// Encoded through [`wire::encode_notification`] rather than written as 21 literal bytes, so
+/// the marker, length and type cannot drift from what the decoder on the other side of this
+/// module expects.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    wire::encode_notification(wire::ERR_CEASE, wire::SUB_CEASE_OUT_OF_RESOURCES, &[])
+        .expect("a NOTIFICATION with no data is 21 bytes and cannot exceed the BGP maximum")
+});
+
 /// BGP server that handles routing protocol sessions under LLM policy control.
 pub struct BgpServer;
 
@@ -118,10 +163,19 @@ impl BgpServer {
         let protocol = Arc::new(BgpProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "BGP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id = crate::server::connection::ConnectionId::new(
                             app_state.get_next_unified_id().await,
                         );
@@ -142,6 +196,13 @@ impl BgpServer {
 
                         let session_registrar = app_state.clone();
                         let session_handle = tokio::spawn(async move {
+                            // Released when this task ends, and this task is the whole of the
+                            // session even though `run_session` spawns a writer and a
+                            // keepalive timer: its only exit path aborts the timer, drops the
+                            // last sender and then `.await`s the writer, so nothing outlives
+                            // this future and `MAX_CONNECTIONS` caps live sessions rather than
+                            // accepts.
+                            let _permit = permit;
                             if let Err(e) = run_session(
                                 stream,
                                 connection_id,

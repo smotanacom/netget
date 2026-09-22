@@ -49,6 +49,53 @@ const SIGNALING_MAX_PEERS: usize = 1024;
 /// many times over.
 const MAX_PEER_ID_BYTES: usize = 128;
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// **1024, not the house default of 256, and the number is
+/// [`SIGNALING_MAX_PEERS`] on purpose.** One connection here carries at most one registered
+/// peer for its lifetime, so the accept cap and the registry cap measure the same population
+/// from two sides. Taking
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`] would have silently replaced
+/// this server's declared 1024-peer capacity with an undocumented 256 and made
+/// [`SIGNALING_MAX_PEERS`]'s own refusal path unreachable — a bound that reads as protection
+/// and can never fire, which is the `PrivilegedPort(3690)` failure in a different costume.
+/// Going higher would be the opposite mistake: admitting sockets the registry has already
+/// decided it has no room for, so the extra slots buy nothing but a longer path to the same
+/// refusal.
+///
+/// [`SIGNALING_HANDSHAKE_TIMEOUT`] bounds how long one peer holds a slot before it has
+/// upgraded; only this bounds how many of them there can be at once. The per-connection cost
+/// is a socket, two tasks and at most [`SIGNALING_MAX_MESSAGE_BYTES`] of transient reassembly,
+/// which is what makes 1024 of them a bounded total rather than a large one.
+const MAX_CONNECTIONS: usize = SIGNALING_MAX_PEERS;
+
+/// The body of [`CONNECTION_CAP_REFUSAL`].
+const CONNECTION_CAP_BODY: &str = "Too many signaling connections, try again later.\n";
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// **This server's own refusals are signaling frames, and a refused peer cannot read one.**
+/// A registration turned away by [`SIGNALING_MAX_PEERS`] gets an `error` message that names
+/// the reason — but that is a WebSocket text frame, and a peer refused at the accept has not
+/// completed the RFC 6455 upgrade, so it has no frame parser running. Writing signaling JSON
+/// to a socket still waiting for an HTTP response is the mis-parse this codebase refuses to
+/// ship; the client reports a malformed handshake rather than a full server.
+///
+/// What it *is* in the middle of is an ordinary HTTP/1.1 GET (RFC 6455 §4.1), so 503 with
+/// `Retry-After` is inside the protocol rather than beside it, and every WebSocket client
+/// surfaces a non-101 status as a failed handshake carrying that code. RFC 9112 §3.3 allows
+/// the response before the request is complete, and `Connection: close` tells a client still
+/// writing its head to stop and read.
+static CONNECTION_CAP_REFUSAL: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+    format!(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Type: \
+         text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        CONNECTION_CAP_BODY.len(),
+        CONNECTION_CAP_BODY
+    )
+    .into_bytes()
+});
+
 /// Signaling message types
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
@@ -257,10 +304,20 @@ impl WebRtcSignalingServer {
 
         // Spawn accept loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        let cap_status_tx = status_tx.clone();
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    &CONNECTION_CAP_REFUSAL,
+                    "WEBRTC_SIGNALING",
+                    Some(&cap_status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         info!("Signaling server accepted connection from {}", remote_addr);
 
                         let server_data_clone = Arc::clone(&server_data);
@@ -273,6 +330,12 @@ impl WebRtcSignalingServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection: `handle_connection` spawns a writer task but
+                                // `.await`s it on its only exit path, so there is nothing left
+                                // holding the socket when this future resolves and
+                                // `MAX_CONNECTIONS` caps live connections rather than accepts.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     remote_addr,

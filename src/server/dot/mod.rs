@@ -51,6 +51,39 @@ const IDLE_READ_TIMEOUT: Duration = Duration::from_secs(300);
 /// nothing in the transient case and bounds the pathological one.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`TLS_HANDSHAKE_TIMEOUT`] and
+/// [`IDLE_READ_TIMEOUT`] bound how long *one* peer holds a slot; only a cap bounds how many of
+/// them there can be at once, and `IDLE_READ_TIMEOUT` is deliberately five minutes, so without
+/// a cap a peer that connects once a second holds three hundred connections before the first
+/// one is even eligible to be closed. DoT is the transport a resolver pins and reuses for the
+/// life of its process (RFC 7858 §3.4 is written around exactly that), so a real deployment's
+/// live-connection count is its resolver count — 256 is far above any of those and far below
+/// the descriptor and TLS-session state an unbounded accept loop would let a stranger pin.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a **plain close**, with nothing written.
+///
+/// **DoT's first byte is a TLS record, so there is nothing to say it in.** A DNS response is
+/// not merely inapplicable here — it is unreachable: RFC 7858 puts the whole DNS exchange
+/// *inside* the TLS session, so a length-prefixed DNS message written to this socket is not a
+/// SERVFAIL, it is a malformed TLS record, and the client reports a handshake failure rather
+/// than a busy server. (A DNS refusal would be wrong twice over: a response echoes the query's
+/// ID and question section, and a peer refused at the accept has sent no query.)
+///
+/// Refusing *inside* TLS would mean completing a handshake in order to say no, which hands a
+/// stranger a certificate signature per refused connection — a cap that costs more to enforce
+/// than to ignore. TLS's own record layer has no alert for this: RFC 8446 §6.2 defines nothing
+/// meaning "at capacity", and `internal_error` claims this server is broken when it is merely
+/// full.
+///
+/// So the refusal is EOF before the handshake. This is `smtp`'s implicit-TLS reasoning, and
+/// every DoT client already has a path for it: RFC 7858 §3.1 has the client fall back or
+/// retry when a TLS connection cannot be established. The refusal is logged with
+/// `decision=fail_closed_connection_cap`, which is where the real reason lives.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// DNS-over-TLS server
 pub struct DotServer;
 
@@ -118,9 +151,19 @@ impl DotServer {
             .local_addr()
             .context("Failed to get DoT listener local address")?;
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+
         loop {
-            match listener.accept().await {
-                Ok((stream, peer_addr)) => {
+            match crate::server::accept_bounded::accept_bounded(
+                &listener,
+                &limiter,
+                CONNECTION_CAP_REFUSAL,
+                "DOT",
+                Some(&status_tx),
+            )
+            .await
+            {
+                Ok((stream, peer_addr, permit)) => {
                     Log::new(Some(&status_tx))
                         .debug(format!("DoT TCP connection from {}", peer_addr));
 
@@ -169,6 +212,10 @@ impl DotServer {
                     // stopped DoT server went on serving every connection it had already
                     // accepted.
                     let handle = tokio::spawn(async move {
+                        // Released when this task ends, and this task is the whole of the
+                        // connection — DoT spawns nothing else per peer — so
+                        // `MAX_CONNECTIONS` caps live connections rather than accepts.
+                        let _permit = permit;
                         if let Err(e) = Self::handle_connection(
                             stream,
                             peer_addr,

@@ -53,6 +53,38 @@ pub const MAX_MESSAGE_LEN: usize = 4096;
 /// and short enough that the cost of a stalled peer is bounded.
 const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Concurrent TCP connections this responder admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`TCP_IDLE_TIMEOUT`] bounds how
+/// long one silent querier holds a slot; only a cap bounds how many of them there can be at
+/// once, and thirty seconds times an unbounded arrival rate is still unbounded.
+///
+/// The house default is *generous* here rather than tight, and deliberately so. LLMNR's TCP
+/// path is the rare one — RFC 4795 §2.4 reaches for it only for a unicast query or a response
+/// that would not fit a datagram — so this listener should normally have a handful of
+/// connections at most, and a number like 16 would be defensible on traffic alone. It is not
+/// defensible on *failure*: the cap's job is to bound what a stranger can pin, and a low cap
+/// on a rarely-used side channel is a cheap way for that stranger to deny the TCP path to the
+/// legitimate querier who actually needed it. 256 bounded connections is still bounded, and it
+/// does not turn the cap into the outage.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a **plain close**, with nothing written.
+///
+/// LLMNR's only server message is a DNS response, and every DNS response is an answer to a
+/// question it must echo back: RFC 4795 §2.4 requires the responder to copy the query's ID and
+/// its question section, and §2.1 has the querier silently discard anything whose ID and
+/// question do not match one it has outstanding. A peer refused at the accept has sent no
+/// query, so a fabricated response would be dropped as unmatched — the querier would learn
+/// nothing and wait out its own timeout, which is strictly worse than the immediate EOF it
+/// gets here.
+///
+/// Silence is also what this protocol does everywhere else: RFC 4795 has responders *silently*
+/// discard queries they cannot or must not answer, so an LLMNR querier already treats "nothing
+/// came back" as the normal negative outcome and falls back to its next resolution mechanism.
+/// The refusal is logged with `decision=fail_closed_connection_cap`, which is the diagnosis.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// How this responder arrived at what it did (or did not) put on the wire.
 ///
 /// The whole point of this enum is that **"the model said stay silent" and "the model could
@@ -243,18 +275,33 @@ impl LlmnrServer {
                 Ok(listener) => {
                     info!("LLMNR also listening on TCP {}", local_addr);
                     let tcp_responder = responder.clone();
+                    let limiter =
+                        crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
                     let tcp_handle = tokio::spawn(async move {
                         loop {
-                            let (stream, peer_addr) = match listener.accept().await {
-                                Ok(pair) => pair,
-                                Err(e) => {
-                                    Log::new(Some(&tcp_responder.status_tx))
-                                        .error(format!("LLMNR TCP accept error: {}", e));
-                                    break;
-                                }
-                            };
+                            let (stream, peer_addr, permit) =
+                                match crate::server::accept_bounded::accept_bounded(
+                                    &listener,
+                                    &limiter,
+                                    CONNECTION_CAP_REFUSAL,
+                                    "LLMNR",
+                                    Some(&tcp_responder.status_tx),
+                                )
+                                .await
+                                {
+                                    Ok(triple) => triple,
+                                    Err(e) => {
+                                        Log::new(Some(&tcp_responder.status_tx))
+                                            .error(format!("LLMNR TCP accept error: {}", e));
+                                        break;
+                                    }
+                                };
                             let r = tcp_responder.clone();
                             let task = tokio::spawn(async move {
+                                // Released when this task ends, and this task is the whole of
+                                // the connection — `serve_tcp_connection` spawns nothing — so
+                                // `MAX_CONNECTIONS` caps live connections rather than accepts.
+                                let _permit = permit;
                                 r.serve_tcp_connection(stream, peer_addr).await;
                             });
                             tcp_responder

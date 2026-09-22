@@ -57,6 +57,42 @@ pub const MAX_DOH_BODY_BYTES: u64 = 65_535;
 /// nothing in the transient case and bounds the pathological one.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
+/// Concurrent connections this server admits before it starts refusing.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`TLS_HANDSHAKE_TIMEOUT`]
+/// bounds how long one peer can hold a slot without completing a handshake; only a cap bounds
+/// how many of them there can be at once, and ten seconds times an unbounded arrival rate is
+/// still unbounded. DoH resolvers multiplex every query of a whole client population onto a
+/// handful of long-lived HTTP/2 connections — that is what RFC 8484 chose HTTP/2 for — so a
+/// real deployment's live-connection count is its *resolver* count, not its query rate, and
+/// 256 is far above anything legitimate while still bounding the TLS state an attacker can
+/// make this process hold.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a **plain close**, with nothing written.
+///
+/// **This server's first byte is a TLS record, and there is no TLS alert that means "busy".**
+/// The three HTTP-carried servers that were capped alongside this one — `hls`, `ipp`, `proxy`
+/// — answer 503 with `Retry-After`, and that is right for them because their listeners are
+/// plaintext: the refusal is the first thing on the wire and the client parses it as HTTP.
+/// Here the peer is mid-`ClientHello` and everything it reads is fed to a TLS record parser,
+/// so `HTTP/1.1 503` is not a refusal at all — it is a malformed record, and the client
+/// records a TLS protocol failure (a handshake it cannot complete, which several stacks treat
+/// as evidence of interception) instead of backing off. `smtp` faced exactly this split and
+/// resolved it the same way, speaking 421 on its plain listener and nothing on its
+/// implicit-TLS one.
+///
+/// Answering inside TLS would mean completing a handshake in order to refuse, which hands an
+/// attacker a signature verification per refused connection — a cap that costs more to enforce
+/// than to ignore. The record layer's own vocabulary does not help either: RFC 8446 §6.2 has
+/// no resource-exhaustion alert, and the nearest, `internal_error`, tells the client this
+/// server is broken rather than full.
+///
+/// So the honest answer is EOF before the handshake, which every TLS client already has a
+/// path for and treats as a transient connection failure. The refusal is logged with
+/// `decision=fail_closed_connection_cap`, and that log line is the diagnosis.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// DNS-over-HTTPS server
 pub struct DohServer;
 
@@ -131,9 +167,19 @@ impl DohServer {
             .local_addr()
             .context("Failed to get DoH listener local address")?;
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+
         loop {
-            match listener.accept().await {
-                Ok((stream, peer_addr)) => {
+            match crate::server::accept_bounded::accept_bounded(
+                &listener,
+                &limiter,
+                CONNECTION_CAP_REFUSAL,
+                "DOH",
+                Some(&status_tx),
+            )
+            .await
+            {
+                Ok((stream, peer_addr, permit)) => {
                     Log::new(Some(&status_tx))
                         .debug(format!("DoH TCP connection from {}", peer_addr));
 
@@ -181,6 +227,11 @@ impl DohServer {
                     // stopped DoH server went on answering every connection it had already
                     // accepted.
                     let handle = tokio::spawn(async move {
+                        // Released when this task ends, and this task is the whole of the
+                        // connection — DoH spawns nothing else per peer; hyper's HTTP/2
+                        // service runs inside `handle_connection` — so `MAX_CONNECTIONS`
+                        // caps live connections rather than accepts.
+                        let _permit = permit;
                         if let Err(e) = Self::handle_connection(
                             stream,
                             peer_addr,
