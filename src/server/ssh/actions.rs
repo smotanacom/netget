@@ -130,7 +130,17 @@ impl Protocol for SshProtocol {
                  exec_request's success exit status to 69 (stdout was still byte-for-byte \
                  correct and ONLY the exit code moved, so a test reading stdout alone would \
                  have passed). \
-                 WHAT THE SECOND CLIENT FOUND: NetGet applies normalize_line_endings on the \
+                 WHAT THE SECOND CLIENT FOUND (1), now FIXED: NetGet sent \
+                 SSH_MSG_CHANNEL_CLOSE twice on an exec channel - once from exec_request with \
+                 the exit status, once from channel_eof when the client's own EOF arrived. \
+                 RFC 4254 section 5.3 allows one per party. OpenSSH disconnected with `oclose \
+                 packet referred to nonexistent channel 0` and exit 255 whenever it had \
+                 already freed the channel, so `ssh host cmd` failed about one run in five \
+                 AFTER the output and exit-status 0 had arrived intact. libssh2 ignores the \
+                 second CLOSE, so nothing else here could see it. SshHandler::close_channel_once \
+                 is the fix; measured 4 failures in 20 runs before, 0 in 25 after. \
+                 WHAT THE SECOND CLIENT FOUND (2), NOT fixed: NetGet applies \
+                 normalize_line_endings on the \
                  EXEC path, where no PTY exists, so `ssh host cmd` returns CRLF where a real \
                  sshd returns LF - the CRLF an interactive session shows comes from the pty's \
                  ONLCR, not from the server. `OUT=$(ssh host cmd)` therefore leaves a stray \

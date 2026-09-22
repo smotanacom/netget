@@ -37,9 +37,20 @@ would make the call budget depend on the developer's agent).
 | break | what OpenSSH printed |
 |---|---|
 | `llm_auth_decision`'s accepted branch returns `Ok(!allowed)` | `netget@127.0.0.1: Permission denied (…)`, exit **255**, on the session the model admitted |
+| (the double CLOSE, before it was fixed) | `Disconnecting …: oclose packet referred to nonexistent channel 0`, exit **255**, one run in five — see below |
 | `exec_request`'s success exit status forced to `69` | stdout still byte-for-byte correct; **only** the exit code moved, to 69. A test reading stdout alone would have passed |
 
-**What it found: `ssh host cmd` returns CRLF where a real `sshd` returns LF.**
+**What it found (1): `ssh host cmd` failed with exit 255 about one run in five — a real bug,
+now fixed.** NetGet sent `SSH_MSG_CHANNEL_CLOSE` twice on an exec channel: once from
+`exec_request` with the exit status, once from `channel_eof` when the client's own EOF arrived.
+RFC 4254 §5.3 allows one per party, and by then the client has usually freed the channel, so
+OpenSSH disconnects with `oclose packet referred to nonexistent channel 0`. It failed *after*
+the output and `exit-status 0` had arrived intact, which is exactly why it looked like a flake.
+libssh2 ignores the second CLOSE. `SshHandler::close_channel_once` is the fix — 4 failures in
+20 runs before, 0 in 25 after — and the test asserts OpenSSH's stderr carries no channel
+protocol error, which is the form of the bug that shows on *every* run rather than one in five.
+
+**What it found (2): `ssh host cmd` returns CRLF where a real `sshd` returns LF.**
 `normalize_line_endings` runs on the exec path too, where no PTY exists; the CRLF an
 interactive session shows comes from the pty's `ONLCR`, not from the server. So
 `OUT=$(ssh host cmd)` keeps a trailing `\r`. The libssh2 tests could never see it — they

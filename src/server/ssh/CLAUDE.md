@@ -64,8 +64,28 @@ became `Permission denied`, exit 255) and by forcing `exec_request`'s success ex
 `69` — stdout stayed byte-for-byte correct and *only* the exit code moved, so a test reading
 stdout alone would have passed.
 
-**And the second client immediately found a real deviation from OpenSSH `sshd`.** See
-"Line endings on the exec path" under Known limitations.
+**And the second client immediately found two things, one of them a live bug.**
+
+1. **A double `SSH_MSG_CHANNEL_CLOSE` on the exec path — fixed.** `exec_request` sent
+   exit-status + EOF + CLOSE as soon as the answer was ready, and then the client's own EOF
+   arrived and `channel_eof` sent a *second* CLOSE. RFC 4254 §5.3 allows one per party, and by
+   the time the second arrives the peer has usually freed the channel, so it names a channel
+   number that no longer exists. OpenSSH disconnects:
+
+   ```text
+   channel_by_id: 0: bad id: channel free
+   Disconnecting 127.0.0.1 port N: oclose packet referred to nonexistent channel 0
+   ```
+
+   `ssh host cmd` therefore failed with exit **255 about one run in five** — *after* the
+   output and `exit-status 0` had already arrived intact, which is why it read as a flake
+   rather than as a bug. libssh2 ignores the second CLOSE, so nothing in the rest of the suite
+   could see it. `SshHandler::close_channel_once` is the fix (a per-channel set, cleared in
+   `channel_close` so a reused channel number is not suppressed); measured 4 failures in 20
+   runs before and 0 in 25 after, and the test asserts OpenSSH's stderr carries no channel
+   protocol error, which fails *every* time rather than one in five.
+
+2. **Line endings on the exec path — not fixed.** See Known limitations.
 
 ### Still unproven
 

@@ -350,14 +350,34 @@ once these exist.
   | `ldap` | OpenLDAP `ldapsearch` | the attribute `SET OF` truncated to its first value; separately, `encode_ber_length` forced to the short form | one `objectClass` line instead of three; then no LDIF at all, exit 254, `ldap_result: Local error (-2)` |
   | `webdav` | `curl -X PROPFIND` | `xml_escape` dropped from `displayname`; separately, `percent_encode_path` dropped from `href` | still `207`, but the body stopped being well-formed XML (`Cannot find ';' after '&'`); then a well-formed body whose href read `/documents/notes & drafts.txt` |
 
-  **`ssh` was the one that found something**: NetGet applies `normalize_line_endings` on the
-  *exec* path, where no PTY exists, so `ssh host cmd` returns CRLF where a real `sshd` returns
-  LF and `OUT=$(ssh host cmd)` keeps a stray `\r`. libssh2 could never have seen it — its tests
-  compare the output against a string the same test wrote, so CRLF on both sides agrees with
-  itself. Not fixed: `src/server/ssh/mod.rs` implements no `pty_request` handler, so the server
-  cannot tell an exec channel from a PTY one, and the honest fix is channel bookkeeping rather
-  than a one-line edit. The test asserts the behaviour **and names it as a deviation**, so a fix
-  fails a test that describes the defect rather than quietly satisfying one that never looked.
+  **`ssh` was the one that found something — twice.**
+
+  1. **A live bug, fixed: `ssh host cmd` failed with exit 255 about one run in five.** NetGet
+     sent `SSH_MSG_CHANNEL_CLOSE` **twice** on an exec channel — once from `exec_request` with
+     the exit status, once from `channel_eof` when the client's own EOF arrived. RFC 4254 §5.3
+     allows one per party, and by the time the second arrives the peer has usually freed the
+     channel, so OpenSSH disconnects with `oclose packet referred to nonexistent channel 0`.
+     It failed **after** the output and `exit-status 0` had arrived intact, which is exactly
+     why it read as a flake: the assertion that caught it was the *exit status*, and
+     everything byte-level still passed. libssh2 ignores the second CLOSE.
+     `SshHandler::close_channel_once` is the fix — measured 4 failures in 20 runs before, 0 in
+     25 after — and the test additionally asserts OpenSSH's stderr carries no channel protocol
+     error, which is the surviving-but-noisy form of the same bug and shows on *every* run.
+
+     The general shape is worth keeping: **an intermittent failure in a brand-new real-client
+     test is the finding, not the noise.** Four runs in twenty is what a "load flake" looks
+     like, and the root `CLAUDE.md` says so — every test on this repository's old
+     "only fails under load" list turned out to have a defect underneath it.
+
+  2. **A deviation, not fixed:** NetGet applies `normalize_line_endings` on the *exec* path,
+     where no PTY exists, so `ssh host cmd` returns CRLF where a real `sshd` returns LF and
+     `OUT=$(ssh host cmd)` keeps a stray `\r`. libssh2 could never have seen it — its tests
+     compare the output against a string the same test wrote, so CRLF on both sides agrees
+     with itself. `src/server/ssh/mod.rs` implements no `pty_request` handler, so the server
+     cannot tell an exec channel from a PTY one and the honest fix is channel bookkeeping
+     rather than a one-line edit. The test asserts the behaviour **and names it as a
+     deviation**, so a fix fails a test that describes the defect rather than quietly
+     satisfying one that never looked.
 
   The other three completed their sessions on first contact with no server change required.
   What that pass cost beyond the tests: one unconditional `quick-xml` dev-dependency (its
@@ -367,10 +387,10 @@ once these exist.
   drove them.
 
   Running total: `etcd`, `grpc`, `mysql`, `postgresql`, `redis`, `dns`, `doh`, `dot`, `http`,
-  `sqs`, `dynamo`, `s3`, `ssh`, `imap`, `ldap` and `webdav` have two clients or more. **Three of
-  the sixteen turned out to be broken against every conformant implementation**, and a fourth
-  (`ssh`) deviates from the reference server on a path only the second client could reach —
-  which is the answer to whether this item was worth doing.
+  `sqs`, `dynamo`, `s3`, `ssh`, `imap`, `ldap` and `webdav` have two clients or more. **Four of
+  the sixteen turned out to be broken against a conformant implementation** — `etcd`, `grpc`
+  and `mysql` outright, and `ssh` one run in five — which is the answer to whether this item
+  was worth doing.
 
   **The rest of the item, as a map rather than a wish.** Measured against what is installed on
   this machine, the single-client Betas fall into three groups.

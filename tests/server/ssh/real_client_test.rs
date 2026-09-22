@@ -21,13 +21,42 @@
 //! - **`exec` without a PTY.** `ssh host <command>` opens an exec channel with no terminal
 //!   attached, so the bytes the server writes reach stdout **unmodified** — no line discipline
 //!   in between. That is how the CRLF finding below became visible at all.
+//! - **It enforces the channel state machine.** A `SSH_MSG_CHANNEL_CLOSE` for a channel it has
+//!   already freed is a fatal protocol error to OpenSSH and a no-op to libssh2. See part 1
+//!   below.
 //! - **The exit status is the answer.** `$(ssh host cmd)` captures stdout and a script branches
 //!   on `$?`. OpenSSH surfaces the SSH `exit-status` request as its own exit code, so the
 //!   status the server requested is asserted rather than inferred.
 //! - **A refusal it renders itself.** A denied authentication comes back as OpenSSH's own
 //!   `Permission denied (publickey).` and exit 255.
 //!
-//! # A real deviation from OpenSSH sshd, which only this client could show
+//! # What this client found, part 1: a double `SSH_MSG_CHANNEL_CLOSE` — **fixed**
+//!
+//! `ssh host <command>` failed with exit **255** about one run in five, *after* the command's
+//! output and `exit-status 0` had already arrived intact. OpenSSH at `LogLevel=DEBUG2` says
+//! exactly what happened:
+//!
+//! ```text
+//! debug2: channel 0: rcvd eof
+//! debug2: channel 0: rcvd close
+//! debug2: channel 0: send close for remote id 2
+//! debug1: channel 0: free: client-session, nchannels 1
+//! channel_by_id: 0: bad id: channel free
+//! Disconnecting 127.0.0.1 port N: oclose packet referred to nonexistent channel 0
+//! ```
+//!
+//! RFC 4254 §5.3 lets each party send `SSH_MSG_CHANNEL_CLOSE` once. NetGet sent two:
+//! `exec_request` sends exit-status + EOF + CLOSE as soon as the answer is ready, and then the
+//! client's *own* EOF arrives and `channel_eof` sent a second CLOSE. The race is whether the
+//! client has garbage-collected the channel by then — if not, it is a
+//! `channel 0: protocol error: close rcvd twice` on stderr and the session survives; if it
+//! has, the CLOSE names a channel that no longer exists and OpenSSH disconnects.
+//!
+//! libssh2 ignores the second CLOSE, so nothing in the rest of this directory could see it.
+//! `SshHandler::close_channel_once` is the fix, and the `stderr` assertion below is the guard.
+//! Measured: **4 failures in 20 runs before, 0 in 25 after.**
+//!
+//! # What this client found, part 2: CRLF on the exec path — **not fixed**
 //!
 //! **NetGet translates `\n` to `\r\n` on the exec path, and a real `sshd` does not.**
 //! `SshServerHandler::normalize_line_endings` is applied to every shell response
@@ -64,7 +93,8 @@
 //!    code changed, and OpenSSH reported **69**. A test that read stdout and ignored `$?` would
 //!    have passed against it — which is the whole point of asserting on the status.
 //!
-//! Both were reverted; `git diff src/server/ssh/` is empty.
+//! Both were reverted. (The one change to `src/server/ssh/` that stands is
+//! `close_channel_once`, which is the fix for part 1 above, not a break.)
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features ssh \
@@ -309,6 +339,18 @@ async fn openssh_completes_a_session_against_the_ssh_server() -> E2EResult<()> {
     assert!(
         !stderr.contains("Permission denied"),
         "OpenSSH was refused on the session the model admitted.\nstderr:\n{stderr}"
+    );
+    // The regression guard for the double `SSH_MSG_CHANNEL_CLOSE` (see this file's module
+    // docs, part 1). At `LogLevel=ERROR` a clean session prints nothing at all here, so any
+    // channel-level complaint is the server's doing. The surviving-but-noisy form of that bug
+    // is `channel 0: protocol error: close rcvd twice`; the fatal form disconnects and is
+    // caught by the exit-status assertion above, but only about one run in five — so this is
+    // the assertion that fails every time rather than sometimes.
+    assert!(
+        !stderr.contains("protocol error") && !stderr.contains("nonexistent channel"),
+        "OpenSSH reported a channel protocol error. RFC 4254 §5.3 allows one \
+         SSH_MSG_CHANNEL_CLOSE per party; a second one is fatal once the client has freed the \
+         channel.\nstderr:\n{stderr}"
     );
 
     // The bytes, exactly as they came off the exec channel. No PTY is attached to
