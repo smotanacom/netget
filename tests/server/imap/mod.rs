@@ -12,4 +12,6 @@ pub mod llm_failure_test;
 #[cfg(all(test, feature = "imap"))]
 pub mod peer_inject_test;
 #[cfg(all(test, feature = "imap"))]
+pub mod real_client_test;
+#[cfg(all(test, feature = "imap"))]
 pub mod test;

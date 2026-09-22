@@ -620,16 +620,19 @@ impl Protocol for ImapProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            // Beta: exercised against a real, independent client — async-imap —
-            // covering login, SELECT, FETCH, SEARCH and LOGOUT driven by a real IMAP client. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
+            // Beta: exercised against TWO real, independent clients — async-imap (Rust) and
+            // python3's stdlib imaplib — each completing login, SELECT, FETCH, SEARCH and
+            // LOGOUT. Not Stable: Stable additionally wants spec compliance and scripting
+            // support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
             .implementation(
                 "Manual line-based IMAP4rev1 parsing (tag/command/args split), plain TCP only",
             )
             .llm_control("Authentication + mailbox ops + FETCH")
             .e2e_testing(
-                "async-imap 0.11, a real third-party IMAP client, in \
+                "TWO independent clients, neither of them a crate this server frames with (it \
+                 frames by hand). \
+                 (1) async-imap 0.11, a Rust IMAP client, in \
                  tests/server/imap/e2e_client_test.rs -- eleven tests, none #[ignore]d and none \
                  skip-gated (async-imap is a plain optional dependency the `imap` feature turns \
                  on, so it compiles wherever the feature does). It completes LOGIN success and \
@@ -637,6 +640,21 @@ impl Protocol for ImapProtocol {
                  asserted, FETCH with decoded messages, SEARCH, STATUS, NOOP/LOGOUT and \
                  concurrent sessions -- all through the client's own parser, so a reply it \
                  rejected would fail rather than be counted as bytes on a socket. \
+                 (2) python3's stdlib `imaplib`, in tests/server/imap/real_client_test.rs: a \
+                 single session of greeting, CAPABILITY, LOGIN, SELECT, SEARCH, FETCH and \
+                 LOGOUT, asserted on what imaplib parsed. It adds three things async-imap does \
+                 not reach here -- the literal BYTE count (the fetched body carries multi-byte \
+                 UTF-8, so a `{n}` counted in characters desynchronises the connection), \
+                 imaplib's own CAPABILITY command as distinct from the greeting's capability \
+                 code, and select()'s return value, which is the untagged EXISTS count rather \
+                 than the tagged completion. It FAILS rather than skips when python3 is absent, \
+                 and imaplib needs no install of its own. \
+                 Verified non-vacuous by breaking the server twice: `body.len()` made \
+                 `body.chars().count()` left the FETCH completing OK while imaplib returned no \
+                 FETCH data at all, and removing the `* n EXISTS` line left SELECT completing \
+                 OK while imaplib's select() returned [None]. In both cases the TAGGED response \
+                 was still correct, which is what a test asserting only on the completion would \
+                 have looked at. \
                  This field read `Raw TCP client issuing tagged IMAP commands` for a long time, \
                  which described a test that no longer exists and UNDER-stated the evidence by \
                  the whole distance between a hand-written prober and a real client. \

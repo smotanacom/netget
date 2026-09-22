@@ -3,8 +3,24 @@
 ## Overview
 
 IMAP4rev1 (Internet Message Access Protocol) server covering enough of RFC 3501 for real
-clients (`imaplib`, Thunderbird-style flows) to log in, select a mailbox and fetch messages.
+clients to log in, select a mailbox and fetch messages.
 **Plain TCP on port 143 only** - there is no IMAPS and no STARTTLS.
+
+**Status**: `DevelopmentState::Beta`, on **two** independent clients. Neither is a crate this
+server frames with, because it frames by hand:
+
+| client | file | what only it covers |
+|---|---|---|
+| `async-imap` 0.11 (Rust) | `tests/server/imap/e2e_client_test.rs` | LIST, EXAMINE, STATUS, NOOP, concurrent sessions, LOGIN failure |
+| python3 stdlib `imaplib` | `tests/server/imap/real_client_test.rs` | the literal **byte** count against a multi-byte body, the `CAPABILITY` command as distinct from the greeting's capability code, and `select()`'s return value — the untagged `EXISTS` count rather than the tagged completion |
+
+Neither is `#[ignore]`d or skip-gated; the `imaplib` test **fails** when python3 is absent, and
+`imaplib` itself needs no install. One client can agree with one bug, which is why the second
+exists — and the `imaplib` test was verified non-vacuous by two breaks whose *tagged* response
+stayed correct in both cases: `body.len()` made `body.chars().count()` (FETCH completed `OK`,
+imaplib returned no FETCH data at all) and the `* n EXISTS` line removed (SELECT completed `OK`,
+`imaplib.select()` returned `[None]`). A test asserting only on the completion would have passed
+both.
 
 ## Library Choices
 
@@ -34,7 +50,9 @@ will understand.
 disagree. It is wired at the single choke point in `execute_action`, so it covers every
 `ActionResult::Output` this protocol produces rather than only the one action that needed it.
 The actions that build their own literals are correct by construction and pass unchanged —
-`send_imap_fetch` computes its counts from `body.len()`.
+`send_imap_fetch` computes its counts from `body.len()`, which is a **byte** count — the
+`imaplib` test above fetches a body containing `ü`, `ß` and an em dash precisely so that
+`chars().count()` would be a different, wrong number.
 
 What it accepts and rejects:
 
