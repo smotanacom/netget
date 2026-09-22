@@ -65,16 +65,24 @@ const MAX_INLINE_HEX_BYTES: usize = 16;
 /// outside the scan entirely, which is how a dozen went unnoticed while limbs A and B were
 /// argued case by case.
 ///
-/// They split into two kinds and the split is the work:
+/// They split into **three** kinds, and naming the third is most of what makes the review
+/// tractable:
 ///
 /// * **Opaque identifiers a caller supplies** — a 20-byte BitTorrent info hash or Mercurial
 ///   node id has nothing to drift *from*, and the reasoning already written above for
-///   `A:torrent_dht` applies unchanged. These are probably fine as they are.
-/// * **Wire blobs the protocol could build** — `ntp`'s 56 bytes is an entire NTP packet,
-///   `bitcoin`'s 24 a message header with a checksum the action's own description says is not
-///   computed for you, `datalink`'s 42 an Ethernet frame. A model cannot proofread any of them,
-///   and for these the remedy in the failure message applies: structured fields, or
-///   `hex::encode` of a const.
+///   `A:torrent_dht` applies unchanged. `hls`, `nfc`, `mercurial`, `torrent_dht`,
+///   `torrent_peer` and `torrent_tracker` look like this. Probably fine as they are.
+/// * **A deliberate escape hatch, whose contract IS raw bytes** — `ntp`'s
+///   `send_ntp_response` and `bitcoin`'s `send_bitcoin_message` both say so in their own
+///   descriptions, and both sit *beside* a structured action (`send_ntp_time_response`,
+///   `send_verack`) that the description tells the model to prefer. "Express it as structured
+///   fields" is already done here; the hex action is the exit for what the structured one
+///   cannot say. The remedy the failure message offers does not apply, and forcing it would
+///   remove a capability.
+/// * **Wire blobs with neither excuse** — `datalink`'s 42 bytes is an Ethernet frame,
+///   `icmp`'s 28 an IP+ICMP packet, `ssh_agent`'s 22 and 23 agent messages. No const to build
+///   from, no escape-hatch framing, and a model cannot proofread any of them. These are the
+///   ones worth changing.
 ///
 /// Shrinking this list means deciding which kind each is and acting on it. Removing a line
 /// without doing that is how a baseline becomes a place to put things.
