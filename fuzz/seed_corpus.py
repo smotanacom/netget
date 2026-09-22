@@ -23,7 +23,7 @@ With the guards in place the bombs are refused in microseconds and nothing downs
 sees them, so they cost the running fuzzer nothing. They exist for the day a guard
 regresses.
 
-This file is the provenance for 63 otherwise-opaque binary blobs; edit it rather than
+This file is the provenance for 65 otherwise-opaque binary blobs; edit it rather than
 the blobs.
 """
 import os
@@ -229,6 +229,29 @@ write("coap_message", "empty_ack", bytes([0x60, 0x00]) + struct.pack(">H", 0x123
 post = (bytes([0x40 | 0x02, 0x02]) + struct.pack(">H", 1) + b"\x01\x02" +
         coap_opt(11, b"sensor") + b"\xff" + b"23.5")
 write("coap_message", "post_payload", post)
+
+# CoAP has no nesting, so it has no depth bomb — the equivalent blind spot is the
+# option delta/length *extension* encodings, and none of the three seeds above reaches
+# one. Nibble 13 means "one more byte, +13"; nibble 14 means "two more bytes, +269", and
+# `read_extended` saturates that addition. Every length a peer can state that the walker
+# must then not run past lives behind those two nibbles, so without a seed here a
+# coverage-guided run explores only the 0-12 forms and reports clean for the encoding
+# that actually carries the arithmetic.
+def coap_opt_ext(delta, value):
+    """One option using the 13 form for the delta and, past 12 octets, for the length."""
+    ln = len(value)
+    assert 13 <= delta < 269 and 13 <= ln < 269
+    return bytes([(13 << 4) | 13, delta - 13, ln - 13]) + value
+
+
+ext13 = (bytes([0x40 | 0x02, 0x01]) + struct.pack(">H", 0x4711) + b"\xde\xad\xbe\xef" +
+         coap_opt_ext(60, b"x" * 40))
+write("coap_message", "option_delta_ext13", ext13)
+# The 14 form on both nibbles: delta 600 (-> 331 in two bytes) and a 300-octet value.
+ext14 = (bytes([0x40 | 0x02, 0x01]) + struct.pack(">H", 0x4712) + b"\xde\xad\xbe\xef" +
+         bytes([(14 << 4) | 14]) + struct.pack(">H", 600 - 269) +
+         struct.pack(">H", 300 - 269) + b"y" * 300)
+write("coap_message", "option_delta_ext14", ext14)
 
 # --- HSRP v1 hello and a v2 TLV ----------------------------------------
 v1 = (bytes([0, 0, 3, 1, 100, 1, 10]) + b"cisco\x00\x00\x00" +

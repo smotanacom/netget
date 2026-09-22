@@ -15,6 +15,22 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+/// Longest DNS `<character-string>`, in octets (RFC 1035 §3.3).
+///
+/// A character-string is one length octet followed by that many characters, so 255 is what
+/// the format can describe — not a policy this server chose. `send_dns_txt_response` emits
+/// the TXT record as a single character-string, so this is its ceiling.
+///
+/// It is enforced in `execute_send_dns_txt_response` rather than left to hickory, and the
+/// difference is not cosmetic: hickory's encoder does refuse, but it refuses inside
+/// `message.to_vec()`, which fails the whole action with "Failed to serialize DNS message".
+/// `src/server/dns/mod.rs` then takes its `Ok` branch with no `ActionResult::Output` in hand
+/// and writes **nothing at all** — the peer waits out its own timeout, and the model is told
+/// a serialisation error rather than the one number it needed. Stating the bound here turns a
+/// fail-silent into an error the model can act on, which is the same reason
+/// `coap::codec::MAX_PAYLOAD_LEN` is checked in `decode_payload` instead of at `send_to`.
+pub const MAX_CHARACTER_STRING_LEN: usize = 255;
+
 /// DNS protocol action handler
 pub struct DnsProtocol;
 
@@ -66,30 +82,72 @@ impl Protocol for DnsProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Beta)
+            // STABLE, set 16 September 2026 against the six conditions in the root CLAUDE.md,
+            // each verified in that pass rather than inherited. Read `.e2e_testing` and
+            // `.notes` before quoting it: the rating covers the surface this server
+            // implements, which is plain UDP DNS with one record per answer.
+            .state(DevelopmentState::Stable)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(53))
             .implementation("hickory-proto for parsing and construction; UDP only, no TCP fallback")
             .llm_control("Response records (A, AAAA, MX, TXT, CNAME, NXDOMAIN)")
             .e2e_testing(
-                "TWO independent resolvers, from different projects, neither #[ignore]d and \
-                 neither able to skip -- each FAILS naming its package when absent. \
-                 (1) tests/server/dns/dig_test.rs drives ISC BIND's dig: A rdata, the TXT \
-                 character-string, RCODE 3 for NXDOMAIN, and no id mismatch. \
-                 (2) tests/server/dns/kdig_test.rs drives Knot DNS's kdig (CZ.NIC, a separate \
-                 implementation of the same RFCs): the same three shapes, rendered through its \
-                 own presentation writer, so the rdata assertions are a second independent \
-                 reading of the same bytes. Verified by answering with a fixed transaction id \
-                 instead of the client's, at which point kdig discards the reply. \
-                 Two resolvers that agree with each other and with us is the strongest evidence \
-                 short of the spec; the second exists because one client can agree with one bug, \
-                 which is what etcd and grpc each turned out to be doing in September 2026. \
+                "STABLE rests on all six conditions, each checked against source and by \
+                 running it on 16 September 2026. (1) TWO independent resolvers from different \
+                 projects, neither #[ignore]d and neither able to skip -- each FAILS naming its \
+                 package when absent: dig_test.rs drives ISC BIND's dig and kdig_test.rs drives \
+                 Knot DNS's kdig (CZ.NIC). Between them they decode EVERY record type this \
+                 server can produce -- A, AAAA, CNAME, MX (preference 4660 = 0x1234, so a \
+                 byte-swap reads 13330 rather than something plausible), the TXT \
+                 character-string, and RCODE 3 for NXDOMAIN -- each through that resolver's own \
+                 presentation writer, and each asserts no transaction-id mismatch. Verified by \
+                 answering with a fixed id instead of the client's, at which point kdig \
+                 discards the reply. dig_test.rs additionally runs ONE query as a person would \
+                 actually invoke it, with EDNS offered and no flags, and it resolves: RFC 6891 \
+                 §6.1.1 says a server that does not understand EDNS answers without an OPT \
+                 record and the requestor treats it as non-EDNS. Without that query the whole \
+                 rating would rest on a +noedns configuration nobody uses -- the \
+                 mysql_native_password situation. (2) The pcap oracle reads both SERVFAIL paths \
+                 in llm_failure_test.rs and a NOERROR answer with A rdata in bounds_test.rs, \
+                 and hard-fails when tshark is missing. (3) fuzz/fuzz_targets/dns_message.rs: \
+                 2,777,883 runs in 91s, clean; the corpus includes compression_pointer_loop, \
+                 which is the depth bomb for a format whose recursion is the compression \
+                 pointer. It fuzzes hickory-proto rather than NetGet code because NetGet has no \
+                 DNS parser -- three registered protocols reach that decoder from an \
+                 unauthenticated first datagram. (4) Every declared bound has a test in \
+                 bounds_test.rs -- the 4096-byte receive buffer, query_id and MX preference as \
+                 u16, the 12-octet floor on a raw message, the 255-octet character-string -- \
+                 each verified by REMOVING the bound and recording what failed. (5) Both \
+                 CLAUDE.md files were re-read against source in that pass; several claims were \
+                 false and the corrections are in them. (6) No #[ignore] and no skip gate \
+                 anywhere in tests/server/dns/. \
+                 \
                  tests/server/dns/test.rs covers the same ground with hickory-client -- useful, \
                  but circular on its own, since hickory-client decodes with the same codec \
-                 hickory-proto encoded with. \
-                 UNPROVEN: EDNS0 (not implemented; both clients are run with +noedns), TCP \
-                 transport, DNSSEC, zone transfers, and record types beyond A and TXT.",
+                 hickory-proto encoded with. It is not part of the evidence above. \
+                 \
+                 UNPROVEN, and this is the ceiling on what the two resolvers prove, because \
+                 none of it is implemented: EDNS0 itself (an OPT record in a query is ignored \
+                 and none is added to replies), TCP transport, DNSSEC, zone transfers, \
+                 multi-record answers, and truncation with the TC bit -- an oversize response \
+                 is sent rather than truncated.",
             )
-            .notes("Excellent scripting candidate; static handlers cannot echo the client's transaction ID, use script mode for deterministic answers")
+            .notes(
+                "Stable means the evidence for the implemented surface is complete, NOT that \
+                 RFC 1035 is. Every action the model is offered is now decoded by two \
+                 independent resolvers; what is missing is whole features, each listed in \
+                 e2e_testing and in src/server/dns/CLAUDE.md. \
+                 A query that produces no answer fails closed with SERVFAIL through one exit, \
+                 `send_servfail`, tagged decision=fail_closed_llm_error / _llm_overload / \
+                 _no_action; `ignore_query` is decision=model_silent and is the only path that \
+                 writes nothing. The third of those did not exist before September 2026 and its \
+                 absence was a fail-silent: a model answering with only common actions, or with \
+                 a DNS action execute_action refused, produced no packet at all. \
+                 Excellent scripting candidate; static handlers cannot echo the client's \
+                 transaction ID, so use script mode for deterministic answers. \
+                 Re-check rather than inherit: no CI job builds fuzz/ (it is its own \
+                 workspace), and dig and kdig must be on PATH wherever the suite runs, since \
+                 both tests hard-fail by design.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -428,6 +486,18 @@ impl DnsProtocol {
         let text = required_str(&action, "text")?;
         let ttl = ttl_of(&action);
 
+        if text.len() > MAX_CHARACTER_STRING_LEN {
+            anyhow::bail!(
+                "'text' is {} octets, over the {}-octet limit. RFC 1035 §3.3 defines a DNS \
+                 <character-string> as one length octet followed by that many characters, so \
+                 {} is what a single length octet can describe and this server emits the TXT \
+                 record as one string. Shorten it.",
+                text.len(),
+                MAX_CHARACTER_STRING_LEN,
+                MAX_CHARACTER_STRING_LEN
+            );
+        }
+
         let (mut message, name) =
             new_response(query_id, domain, RecordType::TXT, ResponseCode::NoError)?;
 
@@ -696,7 +766,10 @@ fn send_dns_txt_response_action() -> ActionDefinition {
             Parameter {
                 name: "text".to_string(),
                 type_hint: "string".to_string(),
-                description: "Text data to return".to_string(),
+                description: "Text data to return. At most 255 octets: it is emitted as a \
+                     single DNS <character-string>, whose length is one octet (RFC 1035 \
+                     §3.3). Longer text is refused rather than split."
+                    .to_string(),
                 required: true,
             },
             Parameter {

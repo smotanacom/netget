@@ -101,9 +101,30 @@ netget --mcp   # then call list_protocols / get_protocol_docs
 
 Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/protocol/metadata.rs`):
 
-- **Stable** — **currently none, and the bar is now written down rather than assumed.** Three
-  protocols have held this rating and all three lost it, each for the same reason: nobody had
-  said what it required, so "Stable" meant whoever set it felt good about the code.
+- **Stable** — **two as of 16 September 2026: `coap` and `dns`.** Before that there were none,
+  and three protocols had held the rating and lost it, each for the same reason: nobody had
+  said what it required, so "Stable" meant whoever set it felt good about the code. The bar
+  below is what replaced that, and `coap` and `dns` are the first to be measured against it
+  rather than against a feeling. Each carries its own justification in `metadata()` — read
+  `e2e_testing` and `notes` there, and the "Maturity: the six conditions" section at the foot
+  of each `src/server/<p>/CLAUDE.md`, before quoting either rating: both say in as many words
+  that the rating covers the evidence for the surface the server *implements*, which in both
+  cases is a subset of the RFC.
+
+  **One condition was false for `coap` when that pass began, and how it broke generalises.**
+  `fuzz/fuzz_targets/coap_message.rs` had not compiled since `0996d00f` made
+  `CoapMessage::encode` fallible — hours after the target was written — so "a fuzz target
+  exists and has run clean" was a claim about a file rather than an execution. **No CI job
+  builds `fuzz/` at all**; it is deliberately its own workspace (nightly toolchain, libFuzzer
+  runtime), so `cargo check` at the repository root never sees it. Condition 3 is therefore the
+  one most likely to be silently false for any protocol. Rebuild before believing it:
+
+  ```bash
+  cd fuzz && rustup run nightly-2025-12-04 cargo fuzz build <target>
+  ```
+
+  (`cargo +nightly fuzz` fails on this machine: asdf's shims precede `~/.cargo/bin` on `PATH`,
+  so `cargo` is not the rustup proxy and `+toolchain` is read as a subcommand name.)
 
   A protocol is Stable when **all six** hold. Each one exists because its absence produced a
   false Stable rating here:
@@ -125,13 +146,28 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   6. **No `#[ignore]` and no skip-when-missing gate in its suite.**
 
   **Cheapest candidates, re-derived 16 September 2026 against condition 1 — which is the one
-  that eliminates almost everything.** Three protocols hold conditions 1, 2, 3 and 6 today:
+  that eliminates almost everything.** Three protocols held conditions 1, 2, 3 and 6 that day:
   `coap` (libcoap's `coap-client` plus the coap-lite/coap Rust codecs), `modbus` (tokio-modbus
   plus libmodbus's `mbpoll`) and `dns` (ISC `dig` plus Knot `kdig`). Each names two independent
   clients in its own `e2e_testing`, each has a `tests/server/<p>/` file using `pcap_oracle`, each
-  has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What is left
-  for them is condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
-  re-verified against source).
+  has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What was left
+  for them was condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
+  re-verified against source). **`coap` and `dns` went the rest of the way and are Stable;
+  `modbus` is the remaining candidate.**
+
+  Two things that pass turned up which are worth carrying to `modbus` and to whatever comes
+  after it:
+
+  - **Condition 4 is where the declared number turns out to be the wrong number.** `coap`
+    declared `.max_inbound_bytes(MAX_PAYLOAD_LEN)`, which bounds what the server *writes*;
+    nothing bounded the inbound path at all. The generic `bound + 1` probe could not catch it
+    because it reaches servers over `TcpStream::connect` and skips every UDP protocol. Check
+    which direction a declared bound actually governs, not just that something enforces it.
+  - **Condition 5 turns up fail-silents, because the false doc claim is usually a promise the
+    code does not keep.** `dns`'s CLAUDE.md said a query is answered SERVFAIL when the model
+    "returned nothing usable"; `call_llm` returns `Ok` in exactly that case, so the one clause
+    the sentence existed for was the one that wrote nothing at all. Read the doc's failure
+    section as a list of assertions to test, not as description.
 
   **Ten protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
   before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql`, `mongodb` and
@@ -163,8 +199,9 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (50 protocols as of September 16 2026;
-  re-derive, the count drifts every pass).
+- **Beta** — human-reviewed, works against real clients (49 protocols as of September 16 2026,
+  down one from 50 because `coap` and `dns` went to Stable and `grpc` arrived; re-derive, the
+  count drifts every pass — `python3 scripts/beta_evidence_table.py --check` prints it).
 
   **Do not read the rest of this section as the list. Generate it:**
 

@@ -17,6 +17,27 @@ pub const HEADER_LEN: usize = 4;
 /// Marks the start of the payload, after any options.
 pub const PAYLOAD_MARKER: u8 = 0xFF;
 
+/// Largest **inbound** datagram this server will process, in bytes.
+///
+/// RFC 7252 §4.6 names this number: an endpoint that does not know the path MTU assumes
+/// `MAX_MESSAGE_SIZE` of 1152 bytes, and a constrained endpoint is entitled to refuse
+/// anything larger. Without Block-wise transfer (RFC 7959, not implemented here) there is
+/// no legal way for a peer to send more, so a bigger datagram is either a client that
+/// ignored the specification or somebody probing for a buffer to grow.
+///
+/// Enforced in `mod.rs::handle_datagram`, **before** the message is decoded and before any
+/// model call, and answered in CoAP's own vocabulary with 4.13 Request Entity Too Large
+/// (RFC 7252 §5.9.2.9). This is the number `ProtocolMetadataV2::max_inbound_bytes`
+/// declares.
+///
+/// It used to declare [`MAX_PAYLOAD_LEN`] instead, which is the bound on what the server
+/// *writes*. Nothing inbound was bounded at all: the receive buffer was the only ceiling
+/// and a 2000-byte request was decoded and handed to the model. A declaration naming a
+/// number the inbound path never checks is the exact shape
+/// `max_inbound_bytes`' own doc comment warns about — "the number must be the one the code
+/// enforces, at the point the length is decided".
+pub const MAX_MESSAGE_LEN: usize = 1152;
+
 /// Largest response payload this server will put on the wire, in bytes.
 ///
 /// RFC 7252 §4.6: absent any knowledge of the path MTU, a CoAP endpoint must assume
@@ -89,6 +110,7 @@ pub const CODE_CONTENT: u8 = code(2, 5); // 2.05
 pub const CODE_BAD_REQUEST: u8 = code(4, 0); // 4.00
 pub const CODE_NOT_FOUND: u8 = code(4, 4); // 4.04
 pub const CODE_METHOD_NOT_ALLOWED: u8 = code(4, 5); // 4.05
+pub const CODE_REQUEST_ENTITY_TOO_LARGE: u8 = code(4, 13); // 4.13
 pub const CODE_INTERNAL_SERVER_ERROR: u8 = code(5, 0); // 5.00
 pub const CODE_SERVICE_UNAVAILABLE: u8 = code(5, 3); // 5.03
 
@@ -485,6 +507,41 @@ impl CoapMessage {
     }
 }
 
+/// The part of a message that lives at fixed offsets: the header and the token.
+///
+/// Everything here can be read without walking a single option, which is what makes it
+/// usable for a datagram the server has decided **not** to parse. A refusal still has to
+/// carry the request's message id and token or the client discards it as unsolicited and
+/// the refusal is indistinguishable from silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagePrefix {
+    pub mtype: MessageType,
+    pub code: u8,
+    pub message_id: u16,
+    pub token: Vec<u8>,
+}
+
+/// Read the header and token of a datagram without touching its options or payload.
+///
+/// `None` when the bytes are not a CoAP message at all by the parts this reads — too
+/// short, wrong version, a reserved token length, or a token that runs off the end. In
+/// that case there is nothing to echo and no reply can be matched to anything.
+pub fn message_prefix(buf: &[u8]) -> Option<MessagePrefix> {
+    if buf.len() < HEADER_LEN || buf[0] >> 6 != VERSION {
+        return None;
+    }
+    let tkl = (buf[0] & 0x0F) as usize;
+    if tkl > MAX_TOKEN_LEN || buf.len() < HEADER_LEN + tkl {
+        return None;
+    }
+    Some(MessagePrefix {
+        mtype: MessageType::from_bits(buf[0] >> 4),
+        code: buf[1],
+        message_id: u16::from_be_bytes([buf[2], buf[3]]),
+        token: buf[HEADER_LEN..HEADER_LEN + tkl].to_vec(),
+    })
+}
+
 /// Build the piggybacked/separate response shell for a request.
 ///
 /// The message id and token are taken from the request, which is why the model never
@@ -493,15 +550,43 @@ impl CoapMessage {
 /// id (RFC 7252 §5.2.1); a Non-confirmable request is answered with a Non-confirmable
 /// message carrying a fresh message id.
 pub fn response_to(request: &CoapMessage, fresh_message_id: u16, code: u8) -> CoapMessage {
-    let (mtype, message_id) = match request.mtype {
-        MessageType::Confirmable => (MessageType::Acknowledgement, request.message_id),
+    response_shell(
+        request.mtype,
+        request.message_id,
+        request.token.clone(),
+        fresh_message_id,
+        code,
+    )
+}
+
+/// The same shell, built from a [`MessagePrefix`] — for a datagram that was refused
+/// before it was decoded, which therefore has no [`CoapMessage`] to answer from.
+pub fn response_to_prefix(prefix: &MessagePrefix, fresh_message_id: u16, code: u8) -> CoapMessage {
+    response_shell(
+        prefix.mtype,
+        prefix.message_id,
+        prefix.token.clone(),
+        fresh_message_id,
+        code,
+    )
+}
+
+fn response_shell(
+    request_type: MessageType,
+    request_message_id: u16,
+    token: Vec<u8>,
+    fresh_message_id: u16,
+    code: u8,
+) -> CoapMessage {
+    let (mtype, message_id) = match request_type {
+        MessageType::Confirmable => (MessageType::Acknowledgement, request_message_id),
         _ => (MessageType::NonConfirmable, fresh_message_id),
     };
     CoapMessage {
         mtype,
         code,
         message_id,
-        token: request.token.clone(),
+        token,
         options: Vec::new(),
         payload: Vec::new(),
     }

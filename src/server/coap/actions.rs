@@ -80,10 +80,22 @@ impl Protocol for CoapProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            // Beta: exercised against a real, independent client — coap-lite —
-            // covering RFC 7252 message-layer encode/decode by an independent codec. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
-            .state(DevelopmentState::Beta)
+            // STABLE, set 16 September 2026 against the six conditions in the root CLAUDE.md,
+            // each verified in that pass rather than inherited. Read `.e2e_testing` and
+            // `.notes` below before quoting this: the rating is about the evidence for the
+            // surface this server implements, and that surface is a subset of RFC 7252.
+            //
+            // One of the six was FALSE when the pass began and is worth knowing about, because
+            // nothing in CI can catch it: `fuzz/fuzz_targets/coap_message.rs` had not compiled
+            // since `0996d00f` made `encode` fallible, so "a fuzz target exists and has run
+            // clean" was a claim about a file rather than an execution. `fuzz/` is its own
+            // workspace and no job builds it. Rebuild it before trusting this line again.
+            //
+            // The line this replaces read "Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed" — a bar nobody had written down,
+            // which is precisely how the three previous Stable ratings in this repository were
+            // set and lost.
+            .state(DevelopmentState::Stable)
             // 5683 is above 1023; declaring PrivilegedPort here could never fire.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
@@ -96,30 +108,54 @@ impl Protocol for CoapProtocol {
                  message id and token echo are server-side",
             )
             .e2e_testing(
-                "TWO independent peers, neither #[ignore]d and neither able to skip. \
-                 (1) coap-lite 0.13 and the coap 0.27 UDP client, Rust codecs independent of \
-                 this server's hand-rolled one. (2) libcoap 4.3.5's own `coap-client` binary -- \
-                 a C implementation -- in tests/server/coap/real_client_test.rs::\
-                 test_coap_get_post_and_not_found_against_libcoap_client, which FAILS rather \
-                 than skips when libcoap is absent: a GET whose 2.05 body libcoap parses and \
-                 prints is asserted exactly, a POST whose payload is echoed back in a 2.04 is \
-                 asserted to have survived both directions, and a 4.04 for a missing resource \
-                 is asserted to be reported as an error and to carry no body. UNPROVEN: \
-                 Observe (RFC 7641), Block-wise transfer (RFC 7959), DTLS/CoAPS on 5684, \
-                 separate (non-piggybacked) responses, retransmission of Confirmable \
-                 responses, message deduplication (there is no cache, so a retransmitted CON \
-                 produces a second handler call) and multicast.",
+                "STABLE rests on all six conditions, each checked against source and by \
+                 running it on 16 September 2026. (1) TWO independent clients, neither \
+                 #[ignore]d and neither able to skip: libcoap 4.3.5's own `coap-client` \
+                 binary -- C, a different project -- in real_client_test.rs, which FAILS \
+                 rather than skips when libcoap is absent, asserting the exact 2.05 body \
+                 libcoap parsed and printed, a POST payload echoed back in a 2.04, and a 4.04 \
+                 reported as an error with no body; and the coap 0.27 UDP client over \
+                 coap-lite 0.13, an unconditional dev-dependency, doing its own CON/ACK \
+                 matching so a wrong message id or token is a timeout rather than a pass. \
+                 (Those two crates are ONE family -- coap is built on coap-lite -- so they \
+                 count as one independent peer, not two.) (2) The pcap oracle runs over every \
+                 datagram in e2e_test::exchange and llm_failure_test::exchange, and hard-fails \
+                 when tshark is missing. (3) fuzz/fuzz_targets/coap_message.rs: 292,391 runs \
+                 in 91s, clean, no artefact. Its corpus has no depth bomb because the decoder \
+                 has no recursion -- the equivalent blind spot is the option delta/length \
+                 extension forms, and option_delta_ext13/ext14 seed those. (4) Every declared \
+                 bound has a test in bounds_test.rs -- MAX_MESSAGE_LEN, MAX_TOKEN_LEN in both \
+                 directions, MAX_OPTION_LEN, MAX_PAYLOAD_LEN -- each with an at-limit half and \
+                 each verified by REMOVING the bound and recording what failed. (5) Both \
+                 CLAUDE.md files were re-read against source in that pass; the corrections are \
+                 in them. (6) No #[ignore] and no skip gate anywhere in tests/server/coap/. \
+                 \
+                 UNPROVEN, and this is the ceiling on what the clients above prove, because \
+                 none of it is implemented: Observe (RFC 7641), Block-wise transfer \
+                 (RFC 7959), DTLS/CoAPS on 5684, separate (non-piggybacked) responses, \
+                 retransmission of Confirmable responses, message deduplication (there is no \
+                 cache, so a retransmitted CON produces a second handler call) and multicast. \
+                 All three peers drive the same one-datagram request/response shape, because \
+                 it is the only shape this server has.",
             )
             .notes(
-                "Validated against coap-lite 0.13, an independent codec, which decoded this \
-                 server's replies and encoded the requests it answered: CON/ACK with token \
-                 and message-id echo, Uri-Path and Uri-Query options, Content-Format, 2.05 \
-                 and 4.04 response codes, NON requests, and the RST reply to a CoAP ping. \
-                 Untested/not implemented: Observe (RFC 7641), Block-wise transfer \
-                 (RFC 7959), DTLS/CoAPS on 5684, separate (non-piggybacked) responses, \
-                 retransmission of Confirmable responses, and multicast",
+                "Stable means the evidence for the implemented surface is complete, NOT that \
+                 RFC 7252 is. What is implemented: the 4-byte header, CON/NON/ACK/RST, tokens, \
+                 option delta/length with both extension forms, the payload marker, \
+                 GET/POST/PUT/DELETE, piggybacked responses, the ping->RST reply, RST for a \
+                 malformed CON, and 4.13 for a datagram over MAX_MESSAGE_LEN. An IoT client \
+                 that needs Observe or Block-wise cannot use this server, and no test here \
+                 says otherwise. \
+                 Two things a future reader should re-check rather than inherit: the fuzz \
+                 target (fuzz/ is its own workspace, NO CI job builds it, and this target was \
+                 found uncompilable-since-September in the pass that set this rating), and \
+                 that coap-client is still on PATH wherever the suite runs, since its test \
+                 hard-fails by design.",
             )
-            .max_inbound_bytes(crate::server::coap::codec::MAX_PAYLOAD_LEN)
+            // The bound on what a stranger can send, not on what this server writes.
+            // `MAX_PAYLOAD_LEN` was declared here and governs the outbound direction only,
+            // so the number named nothing the inbound path checked.
+            .max_inbound_bytes(crate::server::coap::codec::MAX_MESSAGE_LEN)
             .build()
     }
 

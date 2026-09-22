@@ -2,18 +2,32 @@
 
 ## Strategy
 
-Two independent peers, neither of which shares a line of code with
-`src/server/coap/codec.rs` (which is hand-rolled precisely so this is true):
+**Three** peers, none of which shares a line of code with `src/server/coap/codec.rs` (which is
+hand-rolled precisely so this is true). This section said "two" and described only the Rust
+crates for as long as `real_client_test.rs` has existed, which had the effect of omitting the
+one peer that is a different language and a different project:
 
-1. **`coap` 0.27 (`UdpCoAPClient`)** — a real CoAP client. It does its own CON/ACK matching, so
+1. **libcoap 4.3.5's `coap-client`** — a C implementation, run as a subprocess and never
+   linked. `real_client_test.rs`; see "The binary peer" below. It is the peer that makes the
+   two Rust crates a cross-check rather than the whole case.
+
+2. **`coap` 0.27 (`UdpCoAPClient`)** — a real CoAP client. It does its own CON/ACK matching, so
    a wrong message id or a dropped token shows up as a *timeout*, not as a passing test. It is
    used for the resource-layer assertions: 2.05 Content with a JSON body, 2.04 Changed after a
    POST, 4.04 Not Found, and the Content-Format option.
 
-2. **`coap-lite` 0.13** — an independent codec, used directly over a raw `UdpSocket` to build
+3. **`coap-lite` 0.13** — an independent codec, used directly over a raw `UdpSocket` to build
    requests with a *chosen* token and message id and to decode the replies field by field. This
    is where the message layer is pinned: ACK type, message-id echo, 8-byte token echo, NON
-   answered by NON with a fresh message id, and the RST reply to a CoAP ping.
+   answered by NON with a fresh message id, and the RST reply to a CoAP ping. `coap` 0.27 is
+   built on it, so these two are one implementation family and count as **one** independent
+   peer for the Beta/Stable bar, not two.
+
+Plus **the pcap oracle** (`tests/helpers/pcap_oracle.rs`) on every datagram `e2e_test::exchange`
+and `llm_failure_test::exchange` send or receive — Wireshark's own CoAP dissector as a third, unrelated reading of RFC 7252.
+CoAP's option encoding is delta-and-length nibbles with extension bytes, so an option that runs
+past the end of a datagram is a silent off-by-one in any codec that trusts its own writer, and
+that is the class the oracle catches ("option longer than the package").
 
 Plus codec assertions against literal RFC bytes: the four header bits
 (`0x40 0x01 0x00 0x01` is Ver=1/CON/TKL=0/GET/MID=1), the code arithmetic (2.05 = 0x45,
@@ -22,18 +36,31 @@ Plus codec assertions against literal RFC bytes: the four header bits
 read what we wrote.
 
 **Nothing here asserts that a datagram arrived.** Every assertion is on a decoded response code,
-option, token or payload.
+option, token or payload — or, in `bounds_test.rs`, on a count of model calls, which is the same
+rule applied to cost rather than to bytes.
 
 ## LLM call budget
 
 | Test | Startup | Events | Total |
 |---|---|---|---|
-| `test_coap_get_post_and_not_found_with_coap_client` | 1 | 3 | **4** |
-| `test_coap_message_layer_echo_and_ping` | 1 | 2 | **3** |
-| `test_codec_*` (two tests) | 0 | 0 | **0** |
+| `e2e_test::test_coap_get_post_and_not_found_with_coap_client` | 1 | 3 | **4** |
+| `e2e_test::test_coap_message_layer_echo_and_ping` | 1 | 2 | **3** |
+| `e2e_test::test_codec_*`, `test_oversize_payload_*` (three tests) | 0 | 0 | **0** |
+| `real_client_test::…_against_libcoap_client` | 1 | ≥3 | **≥4** |
+| `bounds_test::test_inbound_message_bound_…` | 1 | 1 | **2** |
+| `bounds_test::test_reserved_token_length_…` | 1 | 0 | **1** |
+| `bounds_test::test_encode_…`, `test_message_prefix_…` | 0 | 0 | **0** |
+| `llm_failure_test::…_says_which_path_it_took` | 1 | 2 (one answered 500) | **3** |
 
-**Total: 7**, under the ~10 target. The CoAP ping in the second test costs nothing, which is
-part of the point: RFC 7252 §4.3 makes that reply mechanical, so it must not reach the model.
+**Total: 17** across five files, for 11 tests. This table used to read "Total: 7" and list only
+`e2e_test.rs`, which was true when that was the whole suite — derive it rather than reading it,
+because it goes stale the moment a file is added. The libcoap test uses `expect_at_least` rather
+than `expect_calls` because libcoap retransmits a CON whose ACK is slow and this server has no
+deduplication cache, so its event count is a floor.
+
+The two zeros in `bounds_test` are the assertion, not an economy: a CoAP ping and an oversize
+or malformed datagram must all be answered without consulting the model, and both tests read
+the model-call count off the mock to say so.
 
 ## The UDP rule, and how it applies here
 
@@ -41,11 +68,16 @@ part of the point: RFC 7252 §4.3 makes that reply mechanical, so it must not re
 client's random transaction id is echoed dynamically — a static mock with a hardcoded id causes
 client timeouts, and the usual "fix" is to weaken the assertion until it passes.
 
-**Every rule in these tests uses `respond_with_actions_from_event()`.** But the thing being
-derived dynamically is the **request path and query**, not the message id — because this server
-does not make the model handle the message id at all. `codec::response_to` takes the type,
-message id and token from the request the server itself parsed; no action parameter carries any
-of them. See decision 2 in `src/server/coap/CLAUDE.md` for why.
+**Every rule that answers a request dynamically uses `respond_with_actions_from_event()`.** But
+the thing being derived is the **request path and query**, not the message id — because this
+server does not make the model handle the message id at all. `codec::response_to` takes the
+type, message id and token from the request the server itself parsed; no action parameter
+carries any of them. See decision 2 in `src/server/coap/CLAUDE.md` for why.
+
+(This line said "every rule in these tests", which stopped being true with `llm_failure_test.rs`
+and the 4.04 rule in `e2e_test.rs`: a rule whose answer carries nothing derived from the request
+— a bare 4.04, a `show_message` — is correctly static. The rule is about what the answer needs,
+not about which file it is in.)
 
 That removes the hazard the rule exists to prevent (a static mock *cannot* desynchronise an
 identifier here) but it also removes the natural assertion, so the echo is pinned explicitly
@@ -56,8 +88,11 @@ hang the `coap` client in the first test.
 
 ## Mock expectations
 
-Four rules in the first test (startup plus one per path), two in the second (startup plus one
-rule matched twice, once by the CON request and once by the NON one).
+Four rules in the first `e2e_test` (startup plus one per path), two in the second (startup plus
+one rule matched twice, once by the CON request and once by the NON one). `bounds_test`'s two
+socket-driven tests carry two rules and one rule respectively, and both additionally read
+`server.llm_call_count()` — `verify_mocks` asserts against *rule* expectations, so it catches a
+second call that matched a rule and not one that reached the model by some other route.
 
 The response generators echo the request's own view of itself — `"{path}?{query} via {mtype}"` —
 so the assertion `"/status?verbose=1 via CON"` can only hold if the Uri-Path options, the
@@ -65,14 +100,20 @@ Uri-Query option and the message type all decoded correctly and reached the mode
 payload would pass just as well against a correct server and would keep passing after a
 regression in option parsing.
 
-Both tests end with `server.verify_mocks().await?`.
+Every test with a mock ends with `server.verify_mocks().await?`; the four pure-codec tests have
+no mock and no server.
 
 ## Client libraries
 
-Both are dev-dependencies only:
+Two crates, both **unconditional** dev-dependencies — neither is `optional = true`, so the
+evidence compiles wherever the suite does:
 
 - `coap-lite = "0.13"` — MIT OR Apache-2.0, codec only.
 - `coap = "0.27"` — MIT, full UDP client (built on coap-lite).
+
+The third peer is not a dependency at all: libcoap's `coap-client` is a binary that has to be
+on `PATH`, and `real_client_test.rs` **fails** rather than skipping when it is not. That is a
+standing requirement on any machine the suite runs on, by design.
 
 `UdpCoAPClient::get_with_timeout` / `post_with_timeout` are used rather than the untimed
 variants so a broken server fails the test in ten seconds instead of hanging it.
@@ -90,20 +131,56 @@ variants so a broken server fails the test in ten seconds instead of hanging it.
 - Header bit layout, code arithmetic, `parse_code_string` including the `"2.05 Content"` form
 - Option delta extension forms 13 and 14, round-tripped and confirmed by coap-lite
 - Rejection of a short datagram, a wrong version, and a reserved token length
+- **Every declared bound** (`bounds_test.rs`), each verified by removing it and watching the
+  test fail — see the next section
+- **Both 5.03 fail-closed paths** (`llm_failure_test.rs`): a backend that fails and a model
+  answer made only of common actions. Asserted as a *matchable* refusal — ACK, the request's
+  message id, the request's token — and on the log distinguishing
+  `decision=fail_closed_llm_error` from `decision=fail_closed_no_action`, since the peer gets
+  the same five bytes either way
+
+## Bounds (`bounds_test.rs`)
+
+| bound | value | where it is declared | how it is driven |
+|---|---|---|---|
+| `MAX_MESSAGE_LEN` / `max_inbound_bytes` | 1152 | `codec.rs`, `actions.rs::metadata` | a socket: 1152 served, 1153 refused 4.13, model-call count asserted |
+| `MAX_TOKEN_LEN` (decode) | 8 | `codec.rs` | a socket: TKL=9 → RST for a CON, silence for a NON, zero model calls |
+| `MAX_TOKEN_LEN` (encode) | 8 | `codec.rs` | `encode()` directly — unreachable from the wire today, which is itself pinned |
+| `MAX_OPTION_LEN` (encode) | 65535 | `codec.rs` | `encode()` directly |
+| `MAX_PAYLOAD_LEN` (outbound) | 1024 | `codec.rs`, enforced in `actions.rs::decode_payload` | `e2e_test::test_oversize_payload_is_refused_rather_than_silently_dropped` |
+| receive buffer | 2048 | `mod.rs` | implicitly, by the 1153-byte probe arriving intact |
+
+Each has an **at-limit** half as well as an over-limit half, because a guard that refused
+everything would satisfy the over-limit assertion for the wrong reason. Each doc comment
+records what the failure looked like with the bound removed; the tkl one is worth reading,
+because the observed failure is a *timeout* rather than a wrong reply — the encode-side guard
+catches what the decode-side guard stopped catching, and the server writes nothing at all.
 
 ## Coverage gaps
 
 - ~~**No external binary peer.**~~ Closed September 2026: `real_client_test.rs` drives
   libcoap 4.3.5's own `coap-client`, a C implementation — see below. `aiocoap-client` would be
   a fourth and is still not exercised.
-- **Observe and Block-wise are not implemented and not tested.** So is DTLS/CoAPS.
+- **Observe and Block-wise are not implemented and not tested.** So is DTLS/CoAPS. This is the
+  real ceiling on what the three peers above prove: they all drive the same one-datagram
+  request/response shape, because it is the only shape the server has.
 - No test for `send_coap_reset` or `ignore_coap_request` as *model* choices — the RST path is
   covered only via the ping, which the server answers itself.
 - No test for a retransmitted CON (there is no deduplication cache; a retransmission would
   produce a second LLM call).
-- No test for the `"encoding": "hex"` payload path, though `decode_payload` is the same shape as
-  the TCP fix and errors legibly on bad hex.
-- No test of the 5.03 fail-closed path (LLM error / no usable action).
+- ~~No test for the `"encoding": "hex"` payload path.~~ **That was false** — it was never true
+  of `test_oversize_payload_is_refused_rather_than_silently_dropped`, which drives
+  `{"encoding": "hex"}` twice, at the limit and one byte over, specifically to prove the bound
+  counts *decoded* bytes so a hex payload does not get twice the budget. Worth noting as a
+  gap-list failure mode: a gap entry is only as current as the last person who re-read the
+  tests, and an entry claiming something is untested is the kind nobody re-checks.
+- ~~No test of the 5.03 fail-closed path (LLM error / no usable action).~~ **Closed** by
+  `llm_failure_test.rs`, which drives both paths and asserts the `decision=` tags apart. It was
+  a real gap while it stood: `src/server/coap/CLAUDE.md` carried a seven-row decision table
+  that nothing checked.
+- **No test for the model choosing 5.03 itself**, which is the third occupant of that code and
+  the reason the log tags exist at all. A test would be cheap and would make the table's whole
+  premise — three causes, one wire representation — visible in one place.
 
 ## Running
 
@@ -112,7 +189,9 @@ variants so a broken server fails the test in ten seconds instead of hanging it.
     --test server -- --test-threads=100 coap
 ```
 
-About one second; everything is loopback UDP and an in-process mock.
+About four seconds for all 11 tests at `--test-threads=100`, measured 16 September 2026;
+everything is loopback UDP and an in-process mock, except `real_client_test.rs`, which spawns
+the real `coap-client` three times.
 
 ## Failure modes seen so far
 

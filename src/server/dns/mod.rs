@@ -170,9 +170,43 @@ impl DnsServer {
                                                     execution_result.protocol_results.len()
                                                 ));
 
+                                                // Three outcomes have to stay distinct, and
+                                                // two of them look identical on the wire:
+                                                //   * an answer was written                -> model_answer
+                                                //   * `ignore_query` — the model chose to
+                                                //     say nothing, a real decision         -> model_silent
+                                                //   * nothing usable came back at all      -> fail_closed_no_action
+                                                // The third used to be the second by
+                                                // accident: `protocol_results` is empty
+                                                // whenever the model answered with only a
+                                                // common action (`show_message`) or with a
+                                                // protocol action `execute_action` refused
+                                                // — an invalid IP, an out-of-range
+                                                // `query_id`, a TXT string over 255 octets
+                                                // — and this loop then simply ended, having
+                                                // sent nothing. `call_llm` returned `Ok`,
+                                                // so the SERVFAIL path below was never
+                                                // reached and the client waited out its own
+                                                // timeout. This file's own CLAUDE.md
+                                                // claimed the opposite in as many words:
+                                                // "backend down, overloaded, or returned
+                                                // nothing usable" all answered SERVFAIL.
+                                                // Only the first two did.
+                                                let mut wrote_answer = false;
+                                                let mut model_chose_silence = false;
+
                                                 for protocol_result in
                                                     execution_result.protocol_results
                                                 {
+                                                    // `ignore_query` is the only DNS action
+                                                    // that yields `NoAction`; every other one
+                                                    // yields `Output`.
+                                                    if matches!(
+                                                        protocol_result,
+                                                        crate::llm::ActionResult::NoAction
+                                                    ) {
+                                                        model_chose_silence = true;
+                                                    }
                                                     if let Some(output_data) =
                                                         protocol_result.get_all_output().first()
                                                     {
@@ -210,11 +244,48 @@ impl DnsServer {
                                                             peer_addr,
                                                             output_data.len()
                                                         ));
+                                                        wrote_answer = true;
                                                     } else {
                                                         log.debug(
                                                         "DNS protocol result has no output data",
                                                     );
                                                     }
+                                                }
+
+                                                if wrote_answer {
+                                                    log.debug(format!(
+                                                        "DNS query from {peer_addr} \
+                                                         decision=model_answer"
+                                                    ));
+                                                } else if model_chose_silence {
+                                                    // A decision, not an absence of one:
+                                                    // the model asked for a black hole.
+                                                    log.debug(format!(
+                                                        "DNS deliberately sending nothing to \
+                                                         {peer_addr} decision=model_silent"
+                                                    ));
+                                                } else {
+                                                    // Fail closed, in DNS's own vocabulary
+                                                    // and through the same builder the
+                                                    // backend-outage path uses.
+                                                    log.error(format!(
+                                                        "DNS no usable action for the query \
+                                                         from {peer_addr} ({connection_id}); \
+                                                         answering SERVFAIL \
+                                                         decision=fail_closed_no_action \
+                                                         (failures: {:?})",
+                                                        execution_result.failures
+                                                    ));
+                                                    Self::send_servfail(
+                                                        &query,
+                                                        peer_addr,
+                                                        connection_id,
+                                                        server_id,
+                                                        &socket_clone,
+                                                        &state_clone,
+                                                        &log,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                             Err(e) => {
@@ -242,34 +313,16 @@ impl DnsServer {
                                                     peer_addr, connection_id, decision, e
                                                 ));
 
-                                                match actions::build_servfail(&query) {
-                                                    Ok(packet) => {
-                                                        let _ = socket_clone
-                                                            .send_to(&packet, peer_addr)
-                                                            .await;
-                                                        state_clone
-                                                            .update_connection_stats(
-                                                                server_id,
-                                                                connection_id,
-                                                                None,
-                                                                Some(packet.len() as u64),
-                                                                None,
-                                                                Some(1),
-                                                            )
-                                                            .await;
-                                                        log.info(format!(
-                                                            "DNS SERVFAIL to {} ({} bytes)",
-                                                            peer_addr,
-                                                            packet.len()
-                                                        ));
-                                                    }
-                                                    Err(build_err) => {
-                                                        log.error(format!(
-                                                        "DNS failed to build SERVFAIL for {}: {}",
-                                                        peer_addr, build_err
-                                                    ));
-                                                    }
-                                                }
+                                                Self::send_servfail(
+                                                    &query,
+                                                    peer_addr,
+                                                    connection_id,
+                                                    server_id,
+                                                    &socket_clone,
+                                                    &state_clone,
+                                                    &log,
+                                                )
+                                                .await;
                                             }
                                         }
                                     }
@@ -303,5 +356,49 @@ impl DnsServer {
             .await;
 
         Ok(local_addr)
+    }
+
+    /// Answer `query` with SERVFAIL (RCODE 2), echoing its transaction id and question.
+    ///
+    /// The single exit for **every** fail-closed path — a backend outage, an overload, and a
+    /// model answer that produced nothing this server could send. They were separate code
+    /// once and only the first two existed; sharing the builder is what makes the third
+    /// impossible to forget. The caller logs the `decision=` tag, because SERVFAIL is the
+    /// same bytes whatever went wrong and the log is the only place the distinction survives.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_servfail(
+        query: &DnsMessage,
+        peer_addr: SocketAddr,
+        connection_id: ConnectionId,
+        server_id: crate::state::ServerId,
+        socket: &Arc<UdpSocket>,
+        app_state: &Arc<AppState>,
+        log: &Log<'_>,
+    ) {
+        match actions::build_servfail(query) {
+            Ok(packet) => {
+                let _ = socket.send_to(&packet, peer_addr).await;
+                app_state
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        None,
+                        Some(packet.len() as u64),
+                        None,
+                        Some(1),
+                    )
+                    .await;
+                log.info(format!(
+                    "DNS SERVFAIL to {} ({} bytes)",
+                    peer_addr,
+                    packet.len()
+                ));
+            }
+            Err(build_err) => {
+                log.error(format!(
+                    "DNS failed to build SERVFAIL for {peer_addr}: {build_err}"
+                ));
+            }
+        }
     }
 }
