@@ -272,6 +272,185 @@ fn u8_field(action: &serde_json::Value, name: &str, default: Option<u8>) -> Resu
     u8::try_from(raw).with_context(|| format!("'{name}' must be an ICMP code (0-255), got {raw}"))
 }
 
+/// Read an optional 16-bit field, falling back to `default` when it is absent.
+fn u16_field_or(spec: &serde_json::Value, name: &str, default: u16) -> Result<u16> {
+    let Some(raw) = spec.get(name).and_then(|v| v.as_u64()) else {
+        return Ok(default);
+    };
+    u16::try_from(raw).with_context(|| format!("'{name}' must be 0-65535, got {raw}"))
+}
+
+/// The ones' complement sum RFC 1071 defines, over `bytes` plus a pre-seeded `carry`.
+fn ones_complement(bytes: &[u8], carry: u32) -> u16 {
+    let mut sum = carry;
+    let mut chunks = bytes.chunks_exact(2);
+    for pair in &mut chunks {
+        sum += u32::from(u16::from_be_bytes([pair[0], pair[1]]));
+    }
+    if let [odd] = chunks.remainder() {
+        sum += u32::from(*odd) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// Build the 28 bytes RFC 792 asks an ICMP error to quote — the offending IPv4 header plus the
+/// first 64 bits of its transport header — from fields a model can actually read.
+///
+/// This exists because `original_packet_hex` asked the model to *invent* an IPv4 header
+/// whenever it had not literally been handed one: twenty bytes of bit-packed fields ending in
+/// a ones' complement checksum. That is the case `CLAUDE.md`'s "never put raw bytes in action
+/// parameters" rule is about, and a wrong checksum here is silent — the quoted datagram is not
+/// what the peer matches its outstanding probe against, so the error is simply ignored.
+///
+/// The hex escape hatch stays for the one case that genuinely needs it: a relay quoting bytes
+/// it really captured, which it should copy rather than re-derive.
+fn build_quoted_datagram(spec: &serde_json::Value) -> Result<Vec<u8>> {
+    if !spec.is_object() {
+        anyhow::bail!(
+            "'original_packet' must be an object describing the datagram that provoked this \
+             error, e.g. {{\"source_ip\": \"192.168.1.50\", \"destination_ip\": \
+             \"203.0.113.5\", \"protocol\": \"udp\", \"source_port\": 41234, \
+             \"destination_port\": 53}}"
+        );
+    }
+
+    let source: std::net::Ipv4Addr = spec
+        .get("source_ip")
+        .and_then(|v| v.as_str())
+        .context("Missing 'original_packet.source_ip'")?
+        .parse()
+        .context("'original_packet.source_ip' is not an IPv4 address")?;
+    let destination: std::net::Ipv4Addr = spec
+        .get("destination_ip")
+        .and_then(|v| v.as_str())
+        .context("Missing 'original_packet.destination_ip'")?
+        .parse()
+        .context("'original_packet.destination_ip' is not an IPv4 address")?;
+
+    // Accepted as a name or as an IANA number, because both spellings turn up in a model's
+    // vocabulary and neither is ambiguous.
+    let protocol = match spec.get("protocol") {
+        None | Some(serde_json::Value::Null) => 17u8,
+        Some(serde_json::Value::String(name)) => match name.to_ascii_lowercase().as_str() {
+            "udp" => 17,
+            "tcp" => 6,
+            "icmp" => 1,
+            other => anyhow::bail!(
+                "'original_packet.protocol' is {other:?}; use \"udp\", \"tcp\", \"icmp\", or \
+                 supply the whole quotation through 'original_packet_hex'"
+            ),
+        },
+        Some(serde_json::Value::Number(n)) => {
+            let raw = n
+                .as_u64()
+                .context("'original_packet.protocol' must be 0-255")?;
+            u8::try_from(raw).context("'original_packet.protocol' must be 0-255")?
+        }
+        Some(other) => {
+            anyhow::bail!("'original_packet.protocol' must be a string or a number, got {other}")
+        }
+    };
+
+    let ttl = u8_field(spec, "ttl", Some(64))?;
+    let identification = u16_field_or(spec, "identification", 0)?;
+
+    // 20-byte header + the 8 transport bytes the quotation carries. Everything the model can
+    // set is a named field; the two checksums are computed here and never asked for.
+    const TOTAL_LEN: u16 = 28;
+    let mut packet = vec![0u8; TOTAL_LEN as usize];
+    packet[0] = 0x45; // IPv4, 5 * 4 = 20-byte header, no options
+    packet[2..4].copy_from_slice(&TOTAL_LEN.to_be_bytes());
+    packet[4..6].copy_from_slice(&identification.to_be_bytes());
+    packet[8] = ttl;
+    packet[9] = protocol;
+    packet[12..16].copy_from_slice(&source.octets());
+    packet[16..20].copy_from_slice(&destination.octets());
+    let header_checksum = ones_complement(&packet[..20], 0);
+    packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
+
+    match protocol {
+        17 => {
+            let source_port = u16_field_or(spec, "source_port", 0)?;
+            let destination_port = u16_field_or(spec, "destination_port", 0)?;
+            packet[20..22].copy_from_slice(&source_port.to_be_bytes());
+            packet[22..24].copy_from_slice(&destination_port.to_be_bytes());
+            packet[24..26].copy_from_slice(&8u16.to_be_bytes()); // header only, no payload
+                                                                 // Pseudo-header: source, destination, zero, protocol, UDP length.
+            let carry = u32::from(u16::from_be_bytes([packet[12], packet[13]]))
+                + u32::from(u16::from_be_bytes([packet[14], packet[15]]))
+                + u32::from(u16::from_be_bytes([packet[16], packet[17]]))
+                + u32::from(u16::from_be_bytes([packet[18], packet[19]]))
+                + u32::from(protocol)
+                + 8;
+            let checksum = ones_complement(&packet[20..28], carry);
+            // RFC 768: a computed zero is transmitted as all ones, because zero means
+            // "no checksum".
+            let checksum = if checksum == 0 { 0xffff } else { checksum };
+            packet[26..28].copy_from_slice(&checksum.to_be_bytes());
+        }
+        6 => {
+            let source_port = u16_field_or(spec, "source_port", 0)?;
+            let destination_port = u16_field_or(spec, "destination_port", 0)?;
+            // The quotation reaches only as far as the sequence number, which is exactly what
+            // the peer matches an outstanding connection attempt against.
+            let sequence =
+                u32::try_from(spec.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0))
+                    .context("'original_packet.sequence' must fit in 32 bits")?;
+            packet[20..22].copy_from_slice(&source_port.to_be_bytes());
+            packet[22..24].copy_from_slice(&destination_port.to_be_bytes());
+            packet[24..28].copy_from_slice(&sequence.to_be_bytes());
+        }
+        1 => {
+            let icmp_type = u8_field(spec, "icmp_type", Some(8))?;
+            let icmp_code = u8_field(spec, "icmp_code", Some(0))?;
+            let identifier = u16_field_or(spec, "identifier", 0)?;
+            let sequence = u16_field_or(spec, "sequence", 0)?;
+            packet[20] = icmp_type;
+            packet[21] = icmp_code;
+            packet[24..26].copy_from_slice(&identifier.to_be_bytes());
+            packet[26..28].copy_from_slice(&sequence.to_be_bytes());
+            let checksum = ones_complement(&packet[20..28], 0);
+            packet[22..24].copy_from_slice(&checksum.to_be_bytes());
+        }
+        other => anyhow::bail!(
+            "'original_packet.protocol' {other} has no structured form here — only udp (17), \
+             tcp (6) and icmp (1) do. Supply the whole quotation through 'original_packet_hex'."
+        ),
+    }
+
+    Ok(packet)
+}
+
+/// Resolve the quoted datagram from whichever of the two spellings the action used.
+///
+/// Exactly one, never both, and never sniffed: the structured form and the hex form say the
+/// same thing in incompatible ways, and only the sender knows which it meant.
+fn quoted_datagram(action: &serde_json::Value) -> Result<Vec<u8>> {
+    let structured = action.get("original_packet").filter(|v| !v.is_null());
+    let raw = action
+        .get("original_packet_hex")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    match (structured, raw) {
+        (Some(spec), None) => build_quoted_datagram(spec),
+        (None, Some(encoded)) => hex::decode(encoded).context("Invalid hex in original_packet_hex"),
+        (Some(_), Some(_)) => anyhow::bail!(
+            "Give 'original_packet' or 'original_packet_hex', not both — they describe the same \
+             quoted datagram and nothing can tell which one you meant"
+        ),
+        (None, None) => anyhow::bail!(
+            "Missing the quoted datagram. Describe the packet that provoked this error with \
+             'original_packet' ({{\"source_ip\": …, \"destination_ip\": …, \"protocol\": \
+             \"udp\", \"source_port\": …, \"destination_port\": …}}), or pass the bytes you \
+             captured as 'original_packet_hex'"
+        ),
+    }
+}
+
 impl IcmpProtocol {
     /// Execute send_echo_reply action
     fn execute_send_echo_reply(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -345,13 +524,7 @@ impl IcmpProtocol {
 
         let code = u8_field(&action, "code", None)?;
 
-        let original_packet_hex = action
-            .get("original_packet_hex")
-            .and_then(|v| v.as_str())
-            .context("Missing 'original_packet_hex' parameter")?;
-
-        let original_packet =
-            hex::decode(original_packet_hex).context("Invalid hex in original_packet_hex")?;
+        let original_packet = quoted_datagram(&action)?;
 
         // Parse IP addresses
         let source_ip_parsed: std::net::Ipv4Addr =
@@ -387,13 +560,7 @@ impl IcmpProtocol {
         // Default 0 = TTL exceeded in transit.
         let code = u8_field(&action, "code", Some(0))?;
 
-        let original_packet_hex = action
-            .get("original_packet_hex")
-            .and_then(|v| v.as_str())
-            .context("Missing 'original_packet_hex' parameter")?;
-
-        let original_packet =
-            hex::decode(original_packet_hex).context("Invalid hex in original_packet_hex")?;
+        let original_packet = quoted_datagram(&action)?;
 
         // Parse IP addresses
         let source_ip_parsed: std::net::Ipv4Addr =
@@ -519,6 +686,38 @@ fn send_echo_reply_action() -> ActionDefinition {
     }
 }
 
+/// The structured spelling of RFC 792's quoted datagram, shared by both error actions.
+fn quoted_datagram_parameter() -> Parameter {
+    Parameter {
+        name: "original_packet".to_string(),
+        type_hint: "object".to_string(),
+        description: "The datagram that provoked this error, described as fields: \
+                      'source_ip' and 'destination_ip' (required), 'protocol' (\"udp\" \
+                      default, \"tcp\", \"icmp\", or an IANA number), 'source_port' and \
+                      'destination_port' for udp/tcp, 'ttl' (default 64) and \
+                      'identification' (default 0). The server builds the 20-byte IPv4 \
+                      header and the 8 transport bytes RFC 792 quotes, and computes both \
+                      checksums. Prefer this over 'original_packet_hex' — give exactly one."
+            .to_string(),
+        required: false,
+    }
+}
+
+/// The byte-for-byte spelling, for a relay quoting a datagram it actually saw.
+fn quoted_datagram_hex_parameter() -> Parameter {
+    Parameter {
+        name: "original_packet_hex".to_string(),
+        type_hint: "string".to_string(),
+        description: "Escape hatch: the quoted datagram byte for byte as hex (original IP \
+                      header + first 8 bytes of its payload), for bytes you captured rather \
+                      than invented. Nothing is computed for you, and a wrong header \
+                      checksum makes the peer ignore the error silently. Give this or \
+                      'original_packet', not both."
+            .to_string(),
+        required: false,
+    }
+}
+
 /// Action definition for send_destination_unreachable
 fn send_destination_unreachable_action() -> ActionDefinition {
     ActionDefinition {
@@ -543,26 +742,25 @@ fn send_destination_unreachable_action() -> ActionDefinition {
                 description: "Unreachable code: 0=net, 1=host, 2=protocol, 3=port, 4=fragmentation needed, 5=source route failed".to_string(),
                 required: true,
             },
-            Parameter {
-                name: "original_packet_hex".to_string(),
-                type_hint: "string".to_string(),
-                description: "Original IP header + first 8 bytes of original datagram (hex)"
-                    .to_string(),
-                required: true,
-            },
+            quoted_datagram_parameter(),
+            quoted_datagram_hex_parameter(),
         ],
-        // RFC 792 wants the original IP header plus the next 64 bits. The value
-        // here is exactly that and nothing is elided: a 20-byte IPv4 header
-        // (192.168.1.50 -> 203.0.113.5, proto 17, total length 28, header
-        // checksum 0x60ab) followed by the complete 8-byte UDP header
-        // (41234 -> 53, length 8, checksum 0x60b6). Both checksums are real, so
-        // the quoted datagram is one a client can actually match against.
+        // RFC 792 wants the original IP header plus the next 64 bits. Described as fields
+        // rather than as 28 bytes of hex: both checksums in that quotation are ones'
+        // complement sums over the header, which a model cannot compute and cannot proofread,
+        // and a wrong one is silent — the peer simply does not match the error to its probe.
         example: json!({
             "type": "send_destination_unreachable",
             "source_ip": "192.168.1.1",
             "destination_ip": "192.168.1.50",
-            "code": 1,
-            "original_packet_hex": "4500001c1c460000401160abc0a80132cb007105a1120035000860b6"
+            "code": 3,
+            "original_packet": {
+                "source_ip": "192.168.1.50",
+                "destination_ip": "203.0.113.5",
+                "protocol": "udp",
+                "source_port": 41234,
+                "destination_port": 53
+            }
         }),
         log_template: Some(
             LogTemplate::new()
@@ -596,24 +794,26 @@ fn send_time_exceeded_action() -> ActionDefinition {
                 description: "Time exceeded code: 0=TTL exceeded in transit, 1=fragment reassembly time exceeded".to_string(),
                 required: false,
             },
-            Parameter {
-                name: "original_packet_hex".to_string(),
-                type_hint: "string".to_string(),
-                description: "Original IP header + first 8 bytes of original datagram (hex)"
-                    .to_string(),
-                required: true,
-            },
+            quoted_datagram_parameter(),
+            quoted_datagram_hex_parameter(),
         ],
-        // The original IP header plus the next 64 bits (RFC 792), complete and
-        // with real checksums: a classic UDP traceroute probe from 192.168.1.50
-        // to 203.0.113.5 with TTL 1 (header checksum 0x9faa), followed by the
-        // whole 8-byte UDP header (41234 -> 33434, length 8, checksum 0xde50).
+        // The original IP header plus the next 64 bits (RFC 792), as fields: a classic UDP
+        // traceroute probe from 192.168.1.50 to 203.0.113.5 with TTL 1. Written out this way
+        // the `ttl: 1` that makes it a traceroute probe is legible, which it is not when the
+        // same fact is bit 8 of a hex blob.
         example: json!({
             "type": "send_time_exceeded",
             "source_ip": "10.0.0.1",
             "destination_ip": "192.168.1.50",
             "code": 0,
-            "original_packet_hex": "4500001c1c47000001119faac0a80132cb007105a112829a0008de50"
+            "original_packet": {
+                "source_ip": "192.168.1.50",
+                "destination_ip": "203.0.113.5",
+                "protocol": "udp",
+                "source_port": 41234,
+                "destination_port": 33434,
+                "ttl": 1
+            }
         }),
         log_template: Some(
             LogTemplate::new()
@@ -817,8 +1017,14 @@ pub static ICMP_OTHER_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "type": "send_destination_unreachable",
             "source_ip": "192.168.1.1",
             "destination_ip": "192.168.1.50",
-            "code": 1,
-            "original_packet_hex": "4500001c1c460000401160abc0a80132cb007105a1120035000860b6"
+            "code": 3,
+            "original_packet": {
+                "source_ip": "192.168.1.50",
+                "destination_ip": "203.0.113.5",
+                "protocol": "udp",
+                "source_port": 41234,
+                "destination_port": 53
+            }
         }),
     )
     .with_parameters(vec![

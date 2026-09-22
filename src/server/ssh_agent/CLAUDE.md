@@ -151,12 +151,39 @@ the job. `close_connection` declared a `connection_id` parameter the executor di
 always closed the connection that raised the event), so it moved to the sync actions without
 that parameter.
 
-### Hex in event data
+### Hex in event data, and why the two actions no longer start from it
 
-The action-design rule bans raw bytes and base64. Hex is used here deliberately: SSH key blobs
-and signatures *are* opaque byte strings, there is no structured alternative, and hex is the
-one encoding a model can read and write digit by digit. Where structure is available it is
-provided alongside — hence `key_type` and `comment` next to the blob.
+Inbound, hex stays: an SSH key blob on the wire *is* an opaque byte string, `key_type` and
+`comment` are provided alongside so a handler need not decode it, and hex is the one encoding
+a model can read digit by digit.
+
+Outbound it was a mistake, and the evidence was sitting in the advertised examples. Both were
+**wrong**, and had been since they were written:
+
+| Action | Advertised | What it actually was |
+|---|---|---|
+| `send_identities_list` | `0000000b7373682d6564323535313900000020e5a1b3` | `string("ssh-ed25519")` then a length prefix declaring **32** bytes of key followed by **3** |
+| `send_sign_response` | `0000000b7373682d65643235353139000000400a1b2c3d` | the same shape: **64** declared, **4** supplied |
+
+A client reading either walks off the end of the blob. Nothing caught it because nothing
+proofreads hex — `tests/example_hex_drift_test.rs` is the gate that eventually did — and the
+framing is the one part of an invented key or an invented signature that has a right answer
+at all. So the model now says what it means and the server builds the bytes:
+
+- **`send_identities_list`** takes `public_key`, an authorized_keys line
+  (`"ssh-ed25519 AAAAC3Nz… deploy-key"`). That is the form a model has actually seen, its
+  base64 body *is* the wire blob (so this is not "base64 standing in for raw bytes" — it is
+  the protocol's own text spelling of the key), and it works for every key type, unlike a
+  `key_type` + key-material split which is wrong for RSA. The decoded blob's length prefixes
+  must span it exactly, which is what refuses the truncation above.
+- **`send_sign_response`** takes `algorithm`, and the server frames it, fabricating a
+  signature of the size that algorithm requires (64 for ed25519, 256 for RSA) unless
+  `signature_bytes_hex` gives the bytes. The filler is the ASCII `netget-fabricated-signature-`
+  repeated, so a capture says what it is.
+
+`public_key_blob_hex` and `signature_hex` remain as escape hatches for a blob with no text
+form. Giving both spellings of the same thing is an **error**, never resolved by picking one —
+the rule `send_tcp_data` settled. `tests/server/ssh_agent/executor_test.rs` covers all of it.
 
 ## Storage
 
