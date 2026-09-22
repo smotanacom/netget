@@ -937,12 +937,19 @@ The suite is the evidence. Where it lies, the ratings lie.
   EOF
   ```
 
-  **The 21 are where to start**, because a doc that names none of its own tests is not stale in
-  a detail — it is describing something else. They are the nine `bluetooth_ble_*` profiles,
-  `git`, `irc`, `ldap`, `maven`, `mercurial`, `named_pipe`, `nfc`, `pty`, `quic`, `saml_idp`,
-  `saml_sp` and `stdio`. `tcp` was a twenty-second entry until this session:
-  `connection_bounds_test.rs` arrived with the sweep that needed it and nothing pointed at it
-  afterwards, which is the mechanism in one sentence.
+  **The 21 were where to start**, because a doc that names none of its own tests is not stale in
+  a detail — it is describing something else. **Twelve are done (22 September 2026): `git`,
+  `irc`, `ldap`, `maven`, `mercurial`, `named_pipe`, `nfc`, `pty`, `quic`, `saml_idp`,
+  `saml_sp`, `stdio`, and `tcp`'s test doc alongside them. Nine remain, all
+  `bluetooth_ble_*` profiles** — formulaic, and best done as one batch.
+
+  Doing them was not a formatting exercise. Four of `irc`'s five unmentioned files exist because
+  of a defect; `ldap`'s unmentioned `result_code_range_test.rs` guards a narrowing cast where
+  `256 as u8` encoded LDAP **success**; `git`'s status line read "all 5 tests pass" beside a
+  second file with two more. **The files a doc omits skew toward the ones a reader most needs**,
+  because a defect-driven test arrives with the pass that found it and that pass edits the
+  protocol's doc rather than the tests' one. `tcp` is the mechanism in one sentence:
+  `connection_bounds_test.rs` landed with the bounds sweep and nothing pointed at it afterwards.
 
   **Deliberately not made a ratchet.** The only bar a scan can enforce here is "names at least
   one file", which someone satisfies by naming one and ignoring five — a gate weak enough to
