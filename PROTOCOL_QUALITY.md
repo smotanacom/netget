@@ -433,10 +433,20 @@ once these exist.
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
 declare, whether or not anyone has looked at it.
 
-- [ ] **Idle and first-read timeouts on every TCP server without any.** (Re-opened — see the
-  connection-cap item below for why the original measurement was 18 of 32 rather than 52 of 92.)
+- [x] **Idle and first-read timeouts on every TCP server without any.** *(Done 22 September
+  2026 — `TIMEOUT_BASELINE` in `tests/tcp_server_bounds_ratchet_test.rs` is empty, and `SWEPT`
+  pins 38 protocols against losing either bound.)* Started at 52 of 92; five agent sweeps closed
+  it. The numbers were argued per protocol rather than copied, and three ended up nowhere near
+  the 300s the early slices settled on: `xmpp`'s idle bound is 900s because a silent XMPP
+  session is normal and neither ejabberd nor Prosody closes one at all; `usb/*` takes **1800s**
+  because USB/IP has no keepalive and a drive a host imported but never mounted issues no URB;
+  and the USB first-byte bound went *down* to 30s, argued from the fact that NetGet has no
+  USB/IP client and `src/protocol/dual.rs` excludes those servers from `[ + client ]` pairing,
+  so no silent parked peer can exist there. Two bounds nobody asked for turned up on the way: a
+  USB message's fixed tail was read with `read_exact` and no bound at all, and `nfc` gave a
+  2-byte length prefix the established-connection bound rather than the first-byte one.
 
-  **10 left of 92, measured 22 September 2026** — down from 52 across four agent sweeps:
+  (Historical — the state when this item was last open.) **10 left of 92, measured 22 September 2026** — down from 52 across four agent sweeps:
   `nfc`, `ollama`, `openai`, `rtsp`, `xmpp`, and the five USB/IP servers (`usb/keyboard`,
   `usb/mouse`, `usb/msc`, `usb/serial`, `usb/smartcard`). The USB five are one shape and should
   be done together; `ollama` and `openai` are hyper servers and want etcd's `peek` +
@@ -450,8 +460,25 @@ declare, whether or not anyone has looked at it.
   them is a free denial of service on a server with no connection cap. *Verify:* ratchet — any
   `mod.rs` with `TcpListener` must reference a timeout constant. *Effort:* M.
 
-- [ ] **Re-examine every first-byte bound against "the peer is NetGet's own client, parked for a
-  human".** *(Opened 22 September 2026, out of the `tcp` regression above.)* The bounds sweeps
+- [x] **Re-examine every first-byte bound against "the peer is NetGet's own client, parked for a
+  human".** *(Done 22 September 2026.)* **The criterion this item was opened with was itself the
+  wrong test, and that is the finding.** "The server speaks first" exempted `ftp`, `nntp` and
+  `pop3` in their own docs — but the greeting is *ours*, and sending it says nothing about
+  whether the peer will answer. All three NetGet clients read it in their read loop and write
+  nothing until a person types.
+
+  The criterion is now four states, because a byte count conflates the two harmless ones with
+  the dangerous one: **lazy** (no socket until it sends), **speaks inside `connect()`** (bytes
+  on the wire before any model turn), **connected and silent** (the defect), and **no client at
+  all**. Measured across every server with such a bound: 22 lazy, 20 speaks-inside-connect, 10
+  connected-and-silent, 13 no client. Each `src/server/*/CLAUDE.md` bounds table records which
+  it faces, and `tests/silent_peer_probe_test.rs` measures it per protocol rather than leaving
+  it as prose — one test per feature, accepts and bytes counted separately, 5.15s for all of
+  them. Nine servers were raised to 300s: `tcp`, `telnet`, `ldap`, `whois`, `redis`, `ftp`,
+  `nntp`, `pop3`, `torrent_peer`, plus `tls`'s first *application* record (its handshake wait
+  stays at 60s — that phase involves no model and no person and is the cheap phase to abuse).
+
+  (Historical — the reasoning this item opened with.) The bounds sweeps
   argued each first-byte deadline against a **stranger** holding a socket, which is the right
   threat and the wrong peer for this product. The dashboard offers `[ + <proto> client ]` under
   a server's peers with `[ send message ]` beneath it, so the peer is frequently NetGet's own
@@ -528,7 +555,28 @@ declare, whether or not anyone has looked at it.
   application half of `FIRST_RECORD_READ_TIMEOUT`) and `telnet` (120s, and the only one of the
   five originally-changed protocols with no `first_byte_timeout_secs` to raise it with).
 
-- [ ] **A connection cap on every accept loop.** A shared `accept_bounded(listener, max)` helper
+- [x] **A connection cap on every accept loop.** *(Done 22 September 2026 — `CAP_BASELINE` is
+  empty.)* Started at 68 of 92. Every cap was verified twice by mutation: raised to `100_000`,
+  every test fails on its refusal assertion; restored with the permits leaked via
+  `std::mem::forget`, every test fails on the slot never coming back.
+
+  **The refusals are the interesting half, and seven protocols deliberately say nothing.**
+  `ident` closes without a word because every RFC 1413 reply opens by echoing the query's port
+  pair and a refused peer has sent no query; `mongodb` and `llmnr` would have to invent the
+  field that addresses the reply, which a real client discards rather than surfaces, so the peer
+  would wait out its own timeout instead of learning anything; `smtp`, `doh` and `dot` are
+  TLS-first, where plaintext is a decode error rather than a refusal and RFC 8446 §6.2 defines
+  no alert meaning "at capacity"; `nfc` because every frame it can write is a card response and
+  one arriving unprompted desynchronises the ifdhandler. `ipp` declined IPP's own
+  `server-error-busy` for the same class of reason — every IPP status echoes a `request-id` the
+  refused peer never sent.
+
+  One test-design trap is worth keeping: for the five handshaking protocols the held
+  connections complete **real** TLS or RFC 6455 handshakes, because a merely-connected peer is
+  evicted by the handshake deadline within 10–15s and would free slots on its own, passing the
+  slot-return assertion for a reason unrelated to the permit.
+
+  (Original.) A shared `accept_bounded(listener, max)` helper
   in `server/` that every accept loop calls, refusing past the cap with the protocol's own
   "busy" vocabulary where one exists (SMTP 421, HTTP 503, RESP `LOADING`) and a close where none
   does. *Why:* the NFS guard chose 256 for a reason; nothing else chose anything. *Effort:* M.
@@ -941,7 +989,10 @@ The suite is the evidence. Where it lies, the ratings lie.
   `registry-audit` builds `--all-features` with those libraries — but what it cannot see is a
   *standalone* dependency gap, so that hole is real and stated rather than closed.
 
-- [ ] **Five consecutive full sweeps at `--test-threads=100`, any failure investigated.** Not
+- [ ] **Five consecutive full sweeps, any failure investigated.** (This said
+  `--test-threads=100`, which is right for one protocol and wrong for the whole tree: at 100 an
+  `--all-features` sweep was killed by the OS for memory pressure on a 96 GB machine, because
+  ~29 test binaries each link the whole 137-protocol library. Use **32**.) Not
   labelled — investigated. The tuntap/rawip 60s failures turned out to be build contention;
   the doh client failures turned out to be the keychain. Both were "flaky" until someone
   looked. *Effort:* M.
