@@ -16,6 +16,11 @@
 //! `TcpStream::connect` away, so the protocol servers are exercised through the same
 //! accept-split-read-write path they run on natively. The host part of an address is ignored:
 //! there is only one machine.
+//!
+//! [`TcpStream::peek`] is here for the same reason: thirty hyper-based servers wait for the
+//! peer's first byte before handing the socket to `serve_connection`, and a `#[cfg]` in each
+//! of them would cost the browser build that bound. A duplex pipe cannot be read without
+//! consuming, so the read half keeps a small pushback buffer that the next read drains first.
 
 use std::collections::HashMap;
 use std::io;
@@ -238,21 +243,87 @@ impl std::fmt::Debug for TcpListener {
 /// without a second mutable borrow; `AsyncRead`/`AsyncWrite` on the whole stream delegate to
 /// the halves.
 pub struct TcpStream {
-    read: tokio::io::ReadHalf<DuplexStream>,
+    /// Behind a lock because `peek` takes `&self`, as tokio's does, and has to read the pipe
+    /// to see anything. Nothing contends for it: `poll_read` needs `&mut self`, so the
+    /// borrow checker already keeps a peek and a read from overlapping.
+    read: AsyncMutex<PeekableRead>,
     write: tokio::io::WriteHalf<DuplexStream>,
     local: SocketAddr,
     peer: SocketAddr,
+}
+
+/// The read half of a virtual connection, with the pushback buffer that makes `peek` possible.
+///
+/// A duplex pipe has no "look without taking": the only way to see the next byte is to read
+/// it. So `peek` reads, keeps what it read here, and every read drains this before touching
+/// the pipe again. The buffer holds whatever a peek asked for — one byte, for every caller in
+/// NetGet today.
+pub struct PeekableRead {
+    inner: tokio::io::ReadHalf<DuplexStream>,
+    /// Read off the pipe to answer a `peek` and not yet handed to a reader.
+    pushback: Vec<u8>,
+}
+
+impl PeekableRead {
+    /// Fill `buf` with the bytes a subsequent read would return, without consuming them.
+    ///
+    /// Resolves as soon as at least one byte is available, returns `Ok(0)` at end of stream
+    /// (several callers use it as exactly that test), and leaves what it saw in place, so two
+    /// peeks in a row see the same bytes and the read after them sees them once.
+    pub async fn peek(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.pushback.is_empty() {
+            let mut scratch = vec![0u8; buf.len()];
+            // `read` resolves on the first byte available and returns 0 only at EOF, which is
+            // the shape `peek` promises; a closed pipe therefore answers rather than hanging.
+            let n = tokio::io::AsyncReadExt::read(&mut self.inner, &mut scratch).await?;
+            scratch.truncate(n);
+            self.pushback = scratch;
+        }
+        let n = self.pushback.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.pushback[..n]);
+        Ok(n)
+    }
+}
+
+impl AsyncRead for PeekableRead {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let me = &mut *self;
+        if !me.pushback.is_empty() {
+            // A reader whose buffer is smaller than what was peeked takes what fits; the rest
+            // stays for the next read, ahead of anything still in the pipe.
+            let n = me.pushback.len().min(buf.remaining());
+            buf.put_slice(&me.pushback[..n]);
+            me.pushback.drain(..n);
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut me.inner).poll_read(cx, buf)
+    }
 }
 
 impl TcpStream {
     fn from_duplex(io: DuplexStream, local: SocketAddr, peer: SocketAddr) -> Self {
         let (read, write) = tokio::io::split(io);
         TcpStream {
-            read,
+            read: AsyncMutex::new(PeekableRead {
+                inner: read,
+                pushback: Vec::new(),
+            }),
             write,
             local,
             peer,
         }
+    }
+
+    /// See [`PeekableRead::peek`]. Mirrors `tokio::net::TcpStream::peek`, `&self` included.
+    pub async fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read.lock().await.peek(buf).await
     }
 
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<TcpStream> {
@@ -310,21 +381,24 @@ impl TcpStream {
         Ok(())
     }
 
+    /// Splitting carries the pushback with the read half, so bytes peeked before a split are
+    /// still the first thing the read half returns.
     pub fn into_split(self) -> (tcp::OwnedReadHalf, tcp::OwnedWriteHalf) {
         (
-            tcp::OwnedReadHalf { inner: self.read },
+            tcp::OwnedReadHalf {
+                inner: self.read.into_inner(),
+            },
             tcp::OwnedWriteHalf { inner: self.write },
         )
     }
 
     pub fn split(&mut self) -> (tcp::ReadHalf<'_>, tcp::WriteHalf<'_>) {
+        let TcpStream { read, write, .. } = self;
         (
             tcp::ReadHalf {
-                inner: &mut self.read,
+                inner: read.get_mut(),
             },
-            tcp::WriteHalf {
-                inner: &mut self.write,
-            },
+            tcp::WriteHalf { inner: write },
         )
     }
 }
@@ -335,7 +409,7 @@ impl AsyncRead for TcpStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.read).poll_read(cx, buf)
+        Pin::new(self.read.get_mut()).poll_read(cx, buf)
     }
 }
 
@@ -371,7 +445,7 @@ pub mod tcp {
     use super::*;
 
     pub struct OwnedReadHalf {
-        pub(super) inner: tokio::io::ReadHalf<DuplexStream>,
+        pub(super) inner: PeekableRead,
     }
 
     pub struct OwnedWriteHalf {
@@ -379,7 +453,21 @@ pub mod tcp {
     }
 
     pub struct ReadHalf<'a> {
-        pub(super) inner: &'a mut tokio::io::ReadHalf<DuplexStream>,
+        pub(super) inner: &'a mut PeekableRead,
+    }
+
+    impl OwnedReadHalf {
+        /// See [`PeekableRead::peek`].
+        pub async fn peek(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.inner.peek(buf).await
+        }
+    }
+
+    impl ReadHalf<'_> {
+        /// See [`PeekableRead::peek`].
+        pub async fn peek(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.inner.peek(buf).await
+        }
     }
 
     pub struct WriteHalf<'a> {

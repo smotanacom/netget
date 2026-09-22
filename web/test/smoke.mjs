@@ -8,6 +8,15 @@
 // sockets, protocol server, LLM bridge, action executor — works in wasm.
 //
 //   ./web/build.sh && node web/test/smoke.mjs
+//
+// There is deliberately no HTTP leg here, and the reason is worth knowing before adding one:
+// hyper's HTTP/1 server cannot run on wasm32 at all. `proto::h1::dispatch::poll_inner` calls
+// `T::update_date()` on its very first poll, which reaches `std::time::SystemTime::now()` —
+// and that panics on wasm32-unknown-unknown ("time not implemented on this platform"), taking
+// the whole wasm instance down with `RuntimeError: unreachable`. It is inside hyper's own
+// date-header cache, so `crate::utils::clock` cannot reach it. Measured 22 September 2026: a
+// `start_server` for `http` binds and accepts happily, and the first byte of a request kills
+// the page. The same is true of the eighteen other hyper-based servers in the browser build.
 
 import { readFileSync } from 'node:fs';
 import init, { NetGet } from '../../site/demo/pkg/netget_web.js';
