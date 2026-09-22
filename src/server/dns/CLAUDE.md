@@ -523,7 +523,11 @@ see, because our decoder does not care what id it reads.
 
 **Unproven:** EDNS0, TCP transport, DNSSEC, zone transfers, and record types beyond A and TXT.
 
-## Maturity: the six conditions, and which one is missing
+## Maturity: the six conditions
+
+(This heading read "…, and which one is missing" above a table whose every row says **yes**. It
+was left over from the pass that began before condition 4 was satisfied; a reader skimming
+headings would have taken the opposite of what the section says.)
 
 The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
 16 September 2026 rather than inherited:
