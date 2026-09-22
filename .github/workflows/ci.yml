@@ -8,15 +8,12 @@ on:
   pull_request:
   push:
     branches: [master]
-  # Nightly, for `single-feature-full` only - it checks all 133 standalone-buildable
-  # protocol features one at a time and takes hours, far past what a PR gate can hold.
-  # Every other job carries `if: github.event_name != 'schedule'` so the nightly run is
-  # that one job and nothing else.
-  schedule:
-    - cron: '0 6 * * *'
+  # Manual dispatch is the only way to reach `single-feature-full` - it checks all 133
+  # standalone-buildable protocol features one at a time and takes hours, far past what a
+  # PR gate can hold. Every other job runs on every event.
   workflow_dispatch:
 
-# The event name is part of the group on purpose. Without it the nightly run and a
+# The event name is part of the group on purpose. Without it a dispatched run and a
 # push-to-master run share `ci-CI-refs/heads/master`, and `cancel-in-progress` makes each
 # kill the other - a push would abort a multi-hour single-feature-full run partway through
 # and report nothing.
@@ -61,11 +58,11 @@ env:
   # CORE is the blocking half: the transports and the protocols most likely to be
   # touched, plus one representative of each dependency shape that has broken before
   # (h2, quinn+rustls, tungstenite, rasn, rusqlite, rmcp). Sized to the runner's
-  # 30-minute timeout, not to importance - REST is checked nightly.
+  # 30-minute timeout, not to importance - REST is checked by `single-feature-full`.
   SINGLE_FEATURE_CORE: >-
     tcp udp dns http http2 redis tls telnet ftp ldap syslog ntp tftp socks5 mqtt quic
     websocket smtp imap postgresql snmp whois sqlite mcp-stdio
-  # The other 109. Nightly only.
+  # The other 109. `single-feature-full` only.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
     vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger ssdp llmnr
@@ -81,7 +78,6 @@ env:
 jobs:
   lint:
     name: Lint
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -155,7 +151,6 @@ jobs:
   # Until then this exists so the number is visible instead of unknown.
   clippy-wide:
     name: Clippy (wide feature set, advisory)
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     continue-on-error: true
@@ -204,7 +199,6 @@ jobs:
   # several unrelated protocols at once.
   ratchets:
     name: Whole-tree ratchets
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -257,9 +251,24 @@ jobs:
           python3 scripts/beta_evidence_table.py --check
           python3 scripts/beta_evidence_table.py --side client --check
 
+      # BLOCKING. Nothing else in CI touches `fuzz/`, which is how a fuzz target rots in
+      # silence: `fuzz/fuzz_targets/coap_message.rs` stopped compiling hours after it was
+      # written, when `CoapMessage::encode` became fallible, and nobody noticed for weeks —
+      # while the Stable bar's "a fuzz target exists and has run clean" was being satisfied by
+      # a target that could not build.
+      #
+      # `cargo check` rather than `cargo fuzz build`: the fuzz crate's own header says it needs
+      # nightly and libFuzzer's sanitizer runtime, and both of those are about *linking*.
+      # Checking compiles the targets against the current library API, which is the drift that
+      # actually happens, and it runs on stable in about two minutes.
+      #
+      # `--manifest-path` is required: the crate is deliberately its own workspace and is named
+      # under the root `[workspace] exclude`, so no root-level cargo command reaches it.
+      - name: cargo check (fuzz targets still compile)
+        run: cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets
+
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     continue-on-error: true
@@ -449,7 +458,6 @@ jobs:
 
   test:
     name: Test
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -491,7 +499,6 @@ jobs:
 
   single-feature:
     name: Single-feature build
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -528,9 +535,9 @@ jobs:
       # is ~20s each locally with a warm cache and considerably more on a 2-core runner,
       # so the full list does not fit in 30 minutes and never will. SINGLE_FEATURE_CORE
       # is the blocking half, sized to the timeout; `single-feature-full` below runs
-      # CORE + REST nightly with hours to spare. A regression in REST is therefore caught
-      # within a day rather than on the PR - which is the trade the timeout forces, and
-      # is still infinitely better than the 14 features this job checked before.
+      # CORE + REST on a manual dispatch with hours to spare. A regression in REST is
+      # therefore caught when someone asks for it rather than on the PR - which is the
+      # trade the timeout forces, and is still infinitely better than 14 features.
       #
       # Every feature in either list was verified to build standalone. Keep it that way:
       # add a protocol only after checking it, and only if it needs no system library
@@ -585,17 +592,16 @@ jobs:
           fi
           exit $status
 
-  # The other 109 features, nightly. Same check, same rule, same failure message - the
-  # only differences are the list and that it has time to finish. `if:` restricts it to
-  # the cron and to a manual dispatch, so it never runs on a PR; every other job in this
-  # file carries the mirror-image `if` so the nightly run is this job alone.
+  # The other 109 features. Same check, same rule, same failure message - the only
+  # differences are the list and that it has time to finish. `if:` restricts it to a
+  # manual dispatch, so it never runs on a PR or a push.
   #
   # Dispatch it by hand after anything that touches Cargo.toml's [features] table or a
   # widely-shared module - that is when a dependency goes missing from exactly one
   # feature and nothing else notices.
   single-feature-full:
-    name: Single-feature build (all 133, nightly)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Single-feature build (all 133, on dispatch)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     # Generous on purpose: 133 iterations, each compiling the lib and ~160 test targets.
     # A cold cache is the worst case and this is the job that pays for it.
@@ -649,7 +655,6 @@ jobs:
   # for the web, and only a build on that target can show it still does.
   wasm-web:
     name: Browser build
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -681,7 +686,6 @@ jobs:
 
   orphaned-tests:
     name: Orphaned test check
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
