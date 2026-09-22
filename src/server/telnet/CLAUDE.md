@@ -240,16 +240,17 @@ declares both halves; the constants and the reasoning live beside them in
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_LINE_READ_TIMEOUT` | 120s | Two minutes rather than a machine protocol's thirty seconds, because the other end is usually a *person*: they connect, read whatever banner `send_first` produced, and start typing. A scripted client sends immediately, so only someone who has not begun ever reaches this. The banner is generated and written before the read loop starts, so the model's time over it is outside the deadline by construction. |
-| `IDLE_BETWEEN_LINES_TIMEOUT` | 600s | Cisco IOS's `exec-timeout 10 0` default for vty lines — the canonical idle bound for exactly the kind of device an operator points this server at, and therefore the number every telnet user already expects. A session here is long-lived by nature: a person thinks, reads output, and types again. |
+| `FIRST_LINE_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 120s. That argument was right about the peer and wrong about the number: two minutes rather than a machine protocol's thirty seconds, because the other end is usually a *person* who connects, reads whatever banner `send_first` produced, and starts typing. It already knew this bound waits on a human — it just picked a figure this product contradicts elsewhere, because a `manual` rule gives that person **300** seconds (`src/state/intercepts.rs`). NetGet's own telnet client is the strongest case: it writes nothing until an action or `[ send message ]` says to, and a dashboard-made client is routed `*` → manual, so at 120s the server hung up less than halfway through the person's own window. Telnet was also the only one of the five protocols raised in the first pass of this sweep with no parameter to raise it with, so an operator could not even work around it. Cost: one idle stranger holds a slot for 300s rather than 120s, still capped at `MAX_CONNECTIONS`. A listener exposed to strangers should set the parameter low; 120 remains a sound choice for one. The banner is generated and written before the read loop starts, so the model's time over it is outside the deadline by construction. |
+| `IDLE_BETWEEN_LINES_TIMEOUT` | 600s, overridable per server with `idle_timeout_secs` | Cisco IOS's `exec-timeout 10 0` default for vty lines — the canonical idle bound for exactly the kind of device an operator points this server at, and therefore the number every telnet user already expects. A session here is long-lived by nature: a person thinks, reads output, and types again. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain notice line**, `\r\n[netget] too many connections\r\n`. Telnet has no error frame — it is a byte stream with a human on the other end — so the protocol-appropriate refusal is the same fixed notice this file already writes for an over-long line. A terminal prints it; no client can mistake it for a prompt or a login success. |
 
-**NetGet's own telnet client is the *connected-and-silent* case, and this bound is therefore
-still short:** `src/client/telnet/mod.rs` writes nothing until a model action or a human's `[
-send message ]` (its only unprompted write is a reactive IAC reply), so two minutes is less
-than the 300s a `manual` rule gives that same person, and unlike `tcp` there is no
-`first_byte_timeout_secs` for an operator to raise it with — `PROTOCOL_QUALITY.md`'s three-
-state test.
+**NetGet's own telnet client is the *connected-and-silent* case, which is why this bound is
+300s and both bounds are now declared parameters.** `src/client/telnet/mod.rs` writes nothing
+until a model action or a human's `[ send message ]` (its only unprompted write is a reactive
+IAC reply), so the two minutes this bound used to carry were less than half the 300s a `manual`
+rule gives that same person — and, unlike `tcp`, there was no `first_byte_timeout_secs` for an
+operator to raise it with. `PROTOCOL_QUALITY.md`'s three-state test; `src/server/redis/` is the
+shape copied.
 
 **The deadline wraps the read and nothing else.** `TelnetLineReader::next_line` takes the bound
 and applies it to the wait for *more bytes*, so a person on a slow link who is still typing keeps
@@ -257,10 +258,15 @@ the connection. The LLM round-trip and a `manual` rule parking a line for a huma
 (`src/state/intercepts.rs`, 300s by default) happen further down the loop, after a line has
 already been read, so a slow answer can never be timed out from under itself.
 
-`tests/server/telnet/connection_bounds_test.rs` drives all three from the wire: a silent peer is
-closed at the first bound, a connection whose answer is parked for a human is not closed at all,
-and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
-EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
-and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+`tests/server/telnet/connection_bounds_test.rs` drives all five from the wire: a silent peer is
+closed at `first_byte_timeout_secs`, a connection whose answer is parked for a human is not
+closed at all however far past that bound the park runs, an answered connection that goes quiet
+is closed at `idle_timeout_secs` rather than at the first-byte one, and the connection past
+`MAX_CONNECTIONS` is answered with the refusal above and then a clean EOF. The fifth is the
+regression for the raise: with **no parameters passed at all**, a silent peer is still open past
+the 120 seconds this bound used to be, which is why that test is deliberately the slow one. Each
+was verified by removing the thing it tests — the deadline, the parameter read, the busy
+marking, the cap — and watching it fail; the default was verified by putting 120 back and watching
+the regression test fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
 is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
 itself, including that a busy connection is never reported as idle.

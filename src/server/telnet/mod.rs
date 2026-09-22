@@ -45,14 +45,64 @@ pub const MAX_LINE_BYTES: usize = 8192;
 
 /// How long to wait for the first line from a peer that has only connected.
 ///
-/// Two minutes rather than the thirty seconds a machine protocol gets, because the other end of
-/// a telnet session is usually a *person*: they connect, read whatever banner `send_first`
-/// produced, and then start typing. A scripted client sends immediately, so this bound is only
-/// ever reached by someone who has not begun. The banner itself sits outside the deadline by
-/// construction — it is generated and written before this loop starts, so however long the
-/// model takes, the clock below has not started.
+/// **This was 120 seconds, and the argument for it was right about the peer and wrong about
+/// the number.** It read: two minutes rather than the thirty seconds a machine protocol gets,
+/// because the other end of a telnet session is usually a *person* — they connect, read
+/// whatever banner `send_first` produced, and then start typing. That reasoning already knew
+/// this bound waits on a human. It just picked a figure this product contradicts elsewhere.
+///
+/// NetGet's own telnet client is the strongest case of it. `src/client/telnet/mod.rs` opens
+/// the socket, registers its command channel, raises `telnet_connected` and then reads: it
+/// writes nothing of its own, every byte comes from an action, and a client created from the
+/// dashboard's `[ + telnet client ]` is routed `telnet_connected` →
+/// static-with-no-actions and then `*` → manual (`src/tui/modal/form.rs`). So it connects,
+/// is answered with nothing, and waits for a person at `[ send message ]`. That person is
+/// given **300** seconds to answer one event (`src/state/intercepts.rs`); at 120 the server
+/// hung up on them less than halfway through their own window. Telnet was also the only one of
+/// the five protocols raised in the first pass of this sweep that had no startup parameter to
+/// raise it with, so an operator could not even work around it.
+///
+/// 300 seconds is that window, and it is the number this product already uses for how long
+/// someone might take.
+///
+/// What it costs: a stranger holding a socket, a task, an `AppState` row and one of
+/// [`MAX_CONNECTIONS`] slots while saying nothing now gets 300 seconds rather than 120 — two
+/// and a half times longer for one idle slot, not a removal of the bound. The cap still holds
+/// and a peer over it is still answered [`CONNECTION_CAP_REFUSAL`]. A listener genuinely
+/// exposed to strangers should set `first_byte_timeout_secs` low; 120 is the old value and
+/// remains a sound choice for one.
+///
+/// The banner itself sits outside the deadline by construction — it is generated and written
+/// before this loop starts, so however long the model takes, the clock below has not started.
 #[cfg(feature = "telnet")]
-const FIRST_LINE_READ_TIMEOUT: Duration = Duration::from_secs(120);
+const FIRST_LINE_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The two read deadlines for one connection, resolved from the server's startup parameters.
+///
+/// Carried as one value so threading them from `spawn_with_llm_actions` into the connection
+/// task costs one argument rather than two.
+#[cfg(feature = "telnet")]
+#[derive(Clone, Copy)]
+struct ReadDeadlines {
+    /// [`FIRST_LINE_READ_TIMEOUT`], or this server's `first_byte_timeout_secs`.
+    first_byte: Duration,
+    /// [`IDLE_BETWEEN_LINES_TIMEOUT`], or this server's `idle_timeout_secs`.
+    idle: Duration,
+}
+
+#[cfg(feature = "telnet")]
+impl ReadDeadlines {
+    fn resolve(first_byte_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        Self {
+            first_byte: first_byte_secs
+                .map(Duration::from_secs)
+                .unwrap_or(FIRST_LINE_READ_TIMEOUT),
+            idle: idle_secs
+                .map(Duration::from_secs)
+                .unwrap_or(IDLE_BETWEEN_LINES_TIMEOUT),
+        }
+    }
+}
 
 /// How long to wait for a *further* line once the peer has sent one.
 ///
@@ -64,6 +114,9 @@ const FIRST_LINE_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// — the LLM round-trip, and a `manual` rule parking a line for a human to answer
 /// (`src/state/intercepts.rs`, 300s by default) — happens after a read has already returned, so
 /// a slow answer can never be timed out from under itself.
+///
+/// Overridable per server with `idle_timeout_secs`, for the same reason the first bound is:
+/// the right value is a property of who is on the other end, and only the operator knows that.
 #[cfg(feature = "telnet")]
 const IDLE_BETWEEN_LINES_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -261,6 +314,7 @@ pub struct TelnetServer;
 #[cfg(feature = "telnet")]
 impl TelnetServer {
     /// Spawn Telnet server with integrated LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -268,7 +322,14 @@ impl TelnetServer {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
         send_first: bool,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults serve a person at a keyboard
+        // — including NetGet's own telnet client parked at the dashboard waiting for one; a
+        // listener exposed to strangers wants the first one much lower.
+        let deadlines = ReadDeadlines::resolve(first_byte_timeout_secs, idle_timeout_secs);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -459,9 +520,9 @@ impl TelnetServer {
                                 // and a `manual` park both happen further down this loop, after
                                 // a line has already been read.
                                 let read_timeout = if answered_one {
-                                    IDLE_BETWEEN_LINES_TIMEOUT
+                                    deadlines.idle
                                 } else {
-                                    FIRST_LINE_READ_TIMEOUT
+                                    deadlines.first_byte
                                 };
                                 let (line_bytes, n) = match reader.next_line(read_timeout).await {
                                     LineRead::Line(bytes, n) => (bytes, n),
@@ -765,12 +826,16 @@ impl TelnetServer {
 
 #[cfg(not(feature = "telnet"))]
 impl TelnetServer {
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         _listen_addr: SocketAddr,
         _llm_client: OllamaClient,
         _app_state: Arc<AppState>,
         _status_tx: mpsc::UnboundedSender<String>,
         _server_id: crate::state::ServerId,
+        _send_first: bool,
+        _first_byte_timeout_secs: Option<u64>,
+        _idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
         anyhow::bail!("Telnet feature not enabled")
     }

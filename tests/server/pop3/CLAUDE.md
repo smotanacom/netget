@@ -96,3 +96,29 @@ assert!(line.contains("+OK"));
 3. **Message retrieval** - Test RETR command with full email content
 4. **Deletion** - Test DELE command for message deletion
 5. **TLS support** - Test POP3S (implicit TLS on port 995)
+
+## `connection_bounds_test.rs` — 5 in-process tests, **0 LLM calls** (the backend is a dead port)
+
+The read deadlines in `src/server/pop3/mod.rs` — `FIRST_COMMAND_READ_TIMEOUT` (300s) and `IDLE_BETWEEN_COMMANDS_TIMEOUT` (600s) — driven from the wire. No
+mock: these assert on *clocks*, not on answers, and a reachable backend would only add noise.
+Loopback only.
+
+**What each test is for.** A peer that has connected and said nothing must eventually be let go
+of, because nothing else in the process will close that socket. A connection whose answer is
+parked for a human must **not** be let go of, which is what stops the lazy fix of wrapping the
+answer in the deadline as well as the read. The two bounds are different claims, so one test
+drives a connection into the post-answer state and checks it is governed by `idle_timeout_secs`
+rather than by the first-byte one; the connection past `MAX_CONNECTIONS` is refused in POP3's own words and then a clean EOF.
+
+**The last test is the regression, and it is deliberately the slow one.** The first-byte bound
+was 60 seconds, and NetGet's own POP3 client is precisely a peer that bound stranded:
+`src/client/pop3/mod.rs` reads the `+OK` greeting in its read loop and writes nothing until an action or `[ send message ]` says to, and a client made from the dashboard is routed `*` → manual — so it connects and
+waits for a person, who gets 300 seconds (`src/state/intercepts.rs`). It is now 300s. Proving
+that means holding a silent peer open **past 60 seconds with no startup parameters passed at
+all**, so the wait cannot be made cheaper than the claim.
+
+Every other test passes a short override instead of waiting the default out, which is also what
+proves `first_byte_timeout_secs` and `idle_timeout_secs` are read rather than merely declared:
+a parameter that was ignored would leave the 300-second default in force and the test would time
+out. Each bound was verified by removing it and watching its test fail, and the default was
+verified by putting 60 back and watching the regression test fail.

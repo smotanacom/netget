@@ -326,6 +326,11 @@ async fn tls_payload_written_at_handshake_completion_is_answered() {
         status_tx,
         false,
         server_id,
+        // tls_config: generate a self-signed one.
+        None,
+        // handshake / first-record / idle deadlines: the shipped defaults.
+        None,
+        None,
         None,
     )
     .await

@@ -242,12 +242,43 @@ impl Pop3Protocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for Pop3Protocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        // None. Six TLS parameters (`enable_tls`, `tls_common_name`, `tls_san_dns_names`,
+        // No TLS parameters. Six (`enable_tls`, `tls_common_name`, `tls_san_dns_names`,
         // `tls_validity_days`, `tls_organization`, `tls_organizational_unit`) used to be
         // declared here while `spawn` hardcoded `tls_config = None`, so a caller asking for
         // POP3S got a plain-text listener and no warning. Declaring nothing makes
         // `enable_tls: true` fail loudly instead. See the note in `spawn`.
-        Vec::new()
+        //
+        // The two below are the read deadlines. Their right value is a property of who is on
+        // the other end, which only the operator knows.
+        vec![
+            ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send no command at all - not even \
+                              a CAPA or USER after the +OK greeting - before the server closes \
+                              it. Default 300, matching the window a `manual` rule gives a \
+                              human to answer one event. The peer is often NetGet's own POP3 \
+                              client, which reads the greeting in its read loop and writes \
+                              nothing until an action or [ send message ] says to. Lower it to \
+                              60, Dovecot's `login_timeout`, for a listener exposed to \
+                              strangers."
+                    .to_string(),
+                required: false,
+                example: json!(300),
+            },
+            ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an established session may go without a further command \
+                              before the server closes it. Default 600. RFC 1939 section 3 \
+                              says this timer MUST be at least 10 minutes, so a value below \
+                              600 puts the server outside the specification - it is accepted, \
+                              but that is the trade you are making."
+                    .to_string(),
+                required: false,
+                example: json!(600),
+            },
+        ]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -607,6 +638,19 @@ impl Server for Pop3Protocol {
             // parameters rather than accepting ones it silently drops.
             let tls_config = None;
 
+            // Both read deadlines are the operator's to choose: who is on the other end is
+            // the only thing that decides them, and only the operator knows that.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             Pop3Server::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
@@ -614,6 +658,8 @@ impl Server for Pop3Protocol {
                 ctx.status_tx,
                 ctx.server_id,
                 tls_config,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

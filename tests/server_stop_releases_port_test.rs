@@ -69,6 +69,9 @@ async fn stopping_telnet_server_releases_tcp_port() {
         // send_first: this test only checks that stopping releases the port,
         // so no connect-time banner is wanted.
         false,
+        // first-byte / idle read deadlines: the shipped defaults.
+        None,
+        None,
     )
     .await
     .expect("telnet server should start");

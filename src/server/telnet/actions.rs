@@ -71,6 +71,33 @@ impl Protocol for TelnetProtocol {
                     required: false,
                     example: serde_json::json!(true),
                 },
+                crate::llm::actions::ParameterDefinition {
+                    name: "first_byte_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds a connected peer may send no line at all before the \
+                                  server closes it. Default 300, matching the window a \
+                                  `manual` rule gives a human to answer one event - which is \
+                                  the relevant number, because the other end of a telnet \
+                                  session is usually a person, and NetGet's own telnet client \
+                                  writes nothing until an action or [ send message ] says to. \
+                                  Lower it (120 was the old value) for a listener exposed to \
+                                  strangers."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(300),
+                },
+                crate::llm::actions::ParameterDefinition {
+                    name: "idle_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds an established session may go without a further line \
+                                  before the server closes it. Default 600, which is Cisco \
+                                  IOS's `exec-timeout 10 0` for vty lines - a person thinks, \
+                                  reads output and types again, so this is on a human \
+                                  timescale rather than a machine one."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(600),
+                },
             ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -216,6 +243,19 @@ impl Server for TelnetProtocol {
             #[allow(deprecated)]
             let listen_addr = ctx.socket_addr().unwrap_or(ctx.legacy_listen_addr());
 
+            // Both read deadlines are the operator's to choose: who is on the other end is
+            // the only thing that decides them, and only the operator knows that.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             TelnetServer::spawn_with_llm_actions(
                 listen_addr,
                 ctx.llm_client,
@@ -223,6 +263,8 @@ impl Server for TelnetProtocol {
                 ctx.status_tx,
                 ctx.server_id,
                 send_first,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

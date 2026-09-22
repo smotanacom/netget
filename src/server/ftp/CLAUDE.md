@@ -204,26 +204,32 @@ forever. It now declares both halves; the constants and the reasoning live besid
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_COMMAND_READ_TIMEOUT` | 60s | FTP is server-speaks-first, and every real client — `ftp(1)`, `lftp`, curl, a browser — answers the `220` with `USER` from inside its own connect path, with no human in the loop yet. The greeting is generated and written before the command loop begins, so the model's time over it is outside this bound by construction. |
-| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | vsftpd's `idle_session_timeout` default — the idle bound on the FTP control connection that every client in use is already built to tolerate, and which ProFTPD's `TimeoutIdle` only doubles. It has to be on a human timescale: `ftp(1)` prompts the person at it for the password after `USER`, and again for each command, so the silence between two commands is someone typing. |
+| `FIRST_COMMAND_READ_TIMEOUT` | **300s**, overridable per server with `first_byte_timeout_secs` | Was 60s, on the argument that FTP is server-speaks-first and every real client — `ftp(1)`, `lftp`, curl, a browser — answers the `220` with `USER` from inside its own connect path, with no human in the loop yet. True of every third-party client and **irrelevant to the one this server most often has**: the greeting is *ours*, and sending it says nothing about whether the peer will answer it. `src/client/ftp/mod.rs` reads the `220` in its read loop and writes nothing until an action or `[ send message ]` says to, and a client made with the dashboard's `[ + ftp client ]` is routed `*` → manual — so it connects, parks our greeting for a person, and waits. At 60s the server dropped it while the operator was still looking at it. 300s is the window a `manual` rule gives a human (`src/state/intercepts.rs`). Cost: one idle stranger holds a slot for 300s rather than 60s, still capped at `MAX_CONNECTIONS` and still answered above that cap with `421`. A listener exposed to strangers should set the parameter low; 60 remains a sound choice for one. The greeting is generated and written before the command loop begins, so the model's time over it is outside this bound by construction. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s, overridable per server with `idle_timeout_secs` | vsftpd's `idle_session_timeout` default — the idle bound on the FTP control connection that every client in use is already built to tolerate, and which ProFTPD's `TimeoutIdle` only doubles. It has to be on a human timescale: `ftp(1)` prompts the person at it for the password after `USER`, and again for each command, so the silence between two commands is someone typing. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`421 Too many connections, closing control connection`**. RFC 959's own reply for a server declining to open a session, and what real FTP servers send at their client limit. A `4xx` is a transient negative reply, so a client retries later rather than recording a permanent failure. |
 
-**NetGet's own FTP client is the *connected-and-silent* case, and this bound is therefore wrong
-as it stands:** `src/client/ftp/mod.rs` connects, reads the `220` in its read loop and writes
-nothing until a model action or a human's `[ send message ]`, so at 60s the server drops a peer
-the operator is still looking at. Server-speaks-first exempts nothing here: the bound closes a
-peer that is connected and silent, and the greeting is ours, not the peer's. It wants 300s with
-declared `first_byte_timeout_secs`/`idle_timeout_secs`, as `src/server/redis/` has —
-`PROTOCOL_QUALITY.md`'s three-state test.
+**NetGet's own FTP client is the *connected-and-silent* case, which is why this bound is 300s
+and both bounds are declared parameters.** `src/client/ftp/mod.rs` connects, reads the `220` in
+its read loop and writes nothing until a model action or a human's `[ send message ]`; at the
+60s this bound used to carry, the server dropped a peer the operator was still looking at.
+Server-speaks-first exempts nothing here — the bound closes a peer that is connected and
+silent, and the greeting is ours, not the peer's. That was the wrong test, and it is the reason
+this protocol was missed when `tcp`, `telnet`, `ldap`, `whois` and `redis` were raised.
+`PROTOCOL_QUALITY.md`'s three-state test, and `src/server/redis/` is the shape copied.
 
 **The deadline wraps the read and nothing else.** The LLM round-trip, and a `manual` rule parking
 a command for a human (`src/state/intercepts.rs`, 300s by default), happen after a line has
 already been read, so neither can be timed out from under itself.
 
-`tests/server/ftp/connection_bounds_test.rs` drives all three from the wire: a silent peer is
-closed at the first bound, a connection whose answer is parked for a human is not closed at all,
-and the connection past `MAX_CONNECTIONS` is answered with the refusal above and then a clean
-EOF. Each was verified by removing the thing it tests — the deadline, the busy marking, the cap —
-and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
+`tests/server/ftp/connection_bounds_test.rs` drives all five from the wire: a silent peer is
+closed at `first_byte_timeout_secs`, a connection whose answer is parked for a human is not
+closed at all however far past that bound the park runs, an answered connection that goes quiet
+is closed at `idle_timeout_secs` rather than at the first-byte one, and the connection past
+`MAX_CONNECTIONS` is answered with the refusal above and then a clean EOF. The fifth is the
+regression for the raise: with **no parameters passed at all**, a silent peer is still open past
+the 60 seconds this bound used to be, which is why that test is deliberately the slow one. Each
+was verified by removing the thing it tests — the deadline, the parameter read, the busy
+marking, the cap — and watching it fail; the default was verified by putting 60 back and watching
+the regression test fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
 is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
 itself, including that a busy connection is never reported as idle.

@@ -27,16 +27,92 @@ use crate::state::app_state::AppState;
 use crate::utils::WireFailure;
 use actions::{TLS_CONNECTION_OPENED_EVENT, TLS_DATA_RECEIVED_EVENT};
 
-/// How long a peer has to complete the TLS handshake and then send its first application
-/// record.
+/// How long a peer has to complete the TLS handshake.
 ///
-/// Two things are covered by one bound because from the peer's side they are one condition: it
-/// holds a socket and has produced nothing usable. `acceptor.accept()` was previously
-/// unbounded, so a peer that connected and never sent a ClientHello held a task and a rustls
-/// state machine for as long as it liked — cheaper for an attacker than a completed connection.
-/// A real client sends ClientHello immediately and finishes the handshake in one round-trip; a
-/// minute is far beyond that even on a bad link.
-const FIRST_RECORD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// **One constant used to govern this wait and the wait for the first application record**, on
+/// the reasoning that from the peer's side they are one condition: it holds a socket and has
+/// produced nothing usable. They are not one condition, because they face different peers.
+/// This one faces a peer that has opened a TCP socket and not yet sent a ClientHello; the
+/// other faces a peer that has *completed* a handshake. A single number cannot be right for
+/// both, and the number that was right here was wrong there.
+///
+/// Nothing on this side of the split has changed. `acceptor.accept()` was once unbounded, so a
+/// peer that connected and never sent a ClientHello held a task and a rustls state machine for
+/// as long as it liked — cheaper for an attacker than a completed connection. Every real
+/// client sends ClientHello immediately and finishes in one round-trip, and NetGet's own TLS
+/// client is no exception: `src/client/tls/mod.rs` runs `TlsConnector::connect` inside its own
+/// `connect()`, before any model turn or keystroke, so a minute is far beyond what any peer
+/// worth waiting for needs, even on a bad link. Nothing in this phase involves the model, so
+/// the deadline may cover the whole of it.
+///
+/// Overridable per server with `handshake_timeout_secs`.
+const HANDSHAKE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a handshaked peer has to send its first *application* record.
+///
+/// **This was [`HANDSHAKE_READ_TIMEOUT`]'s 60 seconds, and the peer it faces is a different
+/// one.** The handshake is done here: the peer has proved it speaks TLS and has paid for a
+/// rustls state machine of its own. What it has not done is say anything on top — and TLS is a
+/// carrier, so whether it *should* have by now is a property of the application riding on it,
+/// which this server does not know.
+///
+/// What it does know is who is usually there. `src/client/tls/mod.rs` completes the handshake
+/// inside `connect()` and then writes **no application bytes at all** unprompted: every byte
+/// comes from an action, and a client created from the dashboard's `[ + tls client ]` is
+/// routed `tls_client_connected` → static-with-no-actions and then `*` → manual
+/// (`src/tui/modal/form.rs`). So it connects, handshakes, is answered with nothing, and waits
+/// for a person to type into `[ send message ]`. At 60 seconds this server hung up on the
+/// operator's own client while they were still looking at it — and, unlike the handshake
+/// phase, there was nothing the peer could have done about it.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for how long
+/// someone might take, and it is also this server's own [`IDLE_AFTER_DATA_TIMEOUT`] — so a
+/// hand-driven session is now bounded the same way before its first record as after it.
+///
+/// What it costs: a peer that completed a handshake and then said nothing holds a socket, a
+/// task, an `AppState` row and one of [`MAX_CONNECTIONS`] slots for 300 seconds rather than
+/// 60 — a fivefold rise in how long one such slot is held, not a removal of the bound, and a
+/// peer over the cap is still answered [`CONNECTION_CAP_REFUSAL`]. Note that it is also
+/// strictly more expensive for the attacker than the handshake phase, which is untouched: to
+/// reach this bound at all it must complete a real TLS handshake. A listener exposed to
+/// strangers should set `first_byte_timeout_secs` low; 60 is the old value and remains a sound
+/// choice for one.
+const FIRST_RECORD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The three read deadlines for one listener, resolved from its startup parameters.
+///
+/// Carried as one value so threading them from `spawn_with_llm_actions` into the connection
+/// task costs one argument rather than three.
+#[derive(Clone, Copy)]
+struct ReadDeadlines {
+    /// [`HANDSHAKE_READ_TIMEOUT`], or this server's `handshake_timeout_secs`.
+    handshake: std::time::Duration,
+    /// [`FIRST_RECORD_READ_TIMEOUT`], or this server's `first_byte_timeout_secs`.
+    first_byte: std::time::Duration,
+    /// [`IDLE_AFTER_DATA_TIMEOUT`], or this server's `idle_timeout_secs`.
+    idle: std::time::Duration,
+}
+
+impl ReadDeadlines {
+    fn resolve(
+        handshake_secs: Option<u64>,
+        first_byte_secs: Option<u64>,
+        idle_secs: Option<u64>,
+    ) -> Self {
+        Self {
+            handshake: handshake_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(HANDSHAKE_READ_TIMEOUT),
+            first_byte: first_byte_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(FIRST_RECORD_READ_TIMEOUT),
+            idle: idle_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(IDLE_AFTER_DATA_TIMEOUT),
+        }
+    }
+}
 
 /// How long to wait for a *further* record once the peer has sent application data.
 ///
@@ -45,6 +121,10 @@ const FIRST_RECORD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// request/response turnaround an operator would run over it and well below an unbounded hold.
 /// Because the clock counts only *silence* — see the `activity` check at the read site — a peer
 /// waiting on a slow answer of ours is never counted against it.
+///
+/// Overridable per server with `idle_timeout_secs`, for the same reason the two before it are:
+/// the right value is a property of whatever rides on this carrier, and only the operator
+/// knows that.
 const IDLE_AFTER_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Concurrent connections this server admits.
@@ -126,6 +206,7 @@ pub struct TlsServer;
 
 impl TlsServer {
     /// Spawn the TLS server with integrated LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -134,7 +215,19 @@ impl TlsServer {
         send_first: bool,
         server_id: crate::state::ServerId,
         tls_config: Option<Arc<rustls::ServerConfig>>,
+        handshake_timeout_secs: Option<u64>,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // All three bounds are tunable because their right value is a property of who is on
+        // the other end and what rides on this carrier, which only the operator knows. The
+        // first-record default serves NetGet's own TLS client waiting on a human; a listener
+        // exposed to strangers wants it much lower.
+        let deadlines = ReadDeadlines::resolve(
+            handshake_timeout_secs,
+            first_byte_timeout_secs,
+            idle_timeout_secs,
+        );
         // Create TLS configuration (use provided or generate default)
         let tls_config = if let Some(config) = tls_config {
             config
@@ -196,7 +289,7 @@ impl TlsServer {
                                 // ClientHello and the rest of its side of the handshake; nothing in
                                 // it involves the model, so the deadline may cover the whole of it.
                                 let handshake = tokio::time::timeout(
-                                    FIRST_RECORD_READ_TIMEOUT,
+                                    deadlines.handshake,
                                     acceptor.accept(stream),
                                 );
                                 let tls_stream = match handshake.await {
@@ -205,7 +298,7 @@ impl TlsServer {
                                             "TLS handshake with {} produced nothing within {}s; \
                                          closing",
                                             remote_addr,
-                                            FIRST_RECORD_READ_TIMEOUT.as_secs()
+                                            deadlines.handshake.as_secs()
                                         ));
                                         return;
                                     }
@@ -371,9 +464,9 @@ impl TlsServer {
 
                                         loop {
                                             let read_timeout = if seen_data {
-                                                IDLE_AFTER_DATA_TIMEOUT
+                                                deadlines.idle
                                             } else {
-                                                FIRST_RECORD_READ_TIMEOUT
+                                                deadlines.first_byte
                                             };
                                             // Re-arm rather than close whenever the deadline expires
                                             // while an answer is still being produced: a peer waiting

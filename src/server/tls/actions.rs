@@ -45,6 +45,49 @@ impl Protocol for TlsProtocol {
                     required: false,
                     example: serde_json::json!("/path/to/key.pem"),
                 },
+                // Three read deadlines, not two, because the handshake wait and the wait for
+                // the first application record face different peers: one that has not proved
+                // it speaks TLS, and one that has. See src/server/tls/mod.rs.
+                crate::llm::actions::ParameterDefinition {
+                    name: "handshake_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds a peer that has opened a TCP socket may take to \
+                                  complete the TLS handshake. Default 60. Every real client \
+                                  sends ClientHello immediately and finishes in one \
+                                  round-trip, NetGet's own TLS client included, and nothing in \
+                                  this phase involves the model - so this one does not need to \
+                                  be generous."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(60),
+                },
+                crate::llm::actions::ParameterDefinition {
+                    name: "first_byte_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds a peer that has COMPLETED the handshake may send no \
+                                  application record before the server closes it. Default 300, \
+                                  matching the window a `manual` rule gives a human to answer \
+                                  one event. The peer is often NetGet's own TLS client, which \
+                                  handshakes inside connect() and then writes no application \
+                                  bytes until an action or [ send message ] says to. Lower it \
+                                  (60 was the old value) for a listener exposed to strangers."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(300),
+                },
+                crate::llm::actions::ParameterDefinition {
+                    name: "idle_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds a connection that has already carried application \
+                                  data may go without a further record before the server \
+                                  closes it. Default 300. TLS is a carrier, so what counts as \
+                                  idle is a property of whatever rides on it - which is why \
+                                  this is yours to set. Time spent waiting on an answer of \
+                                  ours is not counted against the peer."
+                        .to_string(),
+                    required: false,
+                    example: serde_json::json!(300),
+                },
             ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -199,6 +242,21 @@ impl Server for TlsProtocol {
                 None
             };
 
+            // All three read deadlines are the operator's to choose: who is on the other end
+            // and what rides on this carrier are the only things that decide them, and only
+            // the operator knows either.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let handshake_timeout_secs = secs("handshake_timeout_secs")?;
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             use crate::server::tls::TlsServer;
             TlsServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
@@ -208,6 +266,9 @@ impl Server for TlsProtocol {
                 send_first,
                 ctx.server_id,
                 tls_config,
+                handshake_timeout_secs,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

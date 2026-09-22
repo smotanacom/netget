@@ -38,11 +38,58 @@ const CHOKE_FRAME: [u8; 5] = [0x00, 0x00, 0x00, 0x01, 0x00];
 
 /// How long to wait for a peer's handshake after it has connected.
 ///
-/// BEP 3 has the initiating peer send its 68-byte handshake immediately — it is the first
-/// thing on the wire and nothing precedes it — so a peer that has connected and sent nothing
-/// is not mid-handshake, it is holding a socket. Thirty seconds is far beyond any real
-/// client's send latency and far below what makes an idle hold worth an attacker's time.
-const HANDSHAKE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// **This was 30 seconds, and the argument for 30 described a peer this server rarely has.**
+/// It read: BEP 3 has the initiating peer send its 68-byte handshake immediately — it is the
+/// first thing on the wire and nothing precedes it — so a peer that has connected and sent
+/// nothing is not mid-handshake, it is holding a socket. That is true of every mainline
+/// client. It is false of NetGet's own peer client, and there the two ends deadlock.
+///
+/// `src/client/torrent_peer/mod.rs` connects and its read loop's **first** act is
+/// `read_exact` on the *other* peer's 68-byte handshake. Sending its own is only the
+/// `send_handshake` action, which needs a model turn or a person at `[ send message ]`: a
+/// client created from the dashboard's `[ + torrent_peer client ]` is routed
+/// `torrent_peer_connected` → static-with-no-actions and then `*` → manual
+/// (`src/tui/modal/form.rs`). So both ends sit in `read`, and at 30 seconds this server is the
+/// one that gives up — while the operator is still reading the parked event that would have
+/// unblocked it.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for how long
+/// someone might take. Nothing in BEP 3 argues against it: the specification says when a
+/// handshake is sent, not how long a listener must wait for one.
+///
+/// What it costs: a stranger holding a socket, a task, an `AppState` row and one of
+/// [`MAX_CONNECTIONS`] slots while saying nothing now gets 300 seconds rather than 30 — a
+/// tenfold rise in how long one idle slot is held, not a removal of the bound. The cap still
+/// holds, and a peer over it still gets [`CONNECTION_CAP_REFUSAL`]: a plain close. A listener
+/// genuinely exposed to a public swarm should set `first_byte_timeout_secs` low; 30 is the old
+/// value and remains a sound choice for one.
+const HANDSHAKE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The two read deadlines for one connection, resolved from the server's startup parameters.
+///
+/// Carried as one value so threading them from `spawn_with_llm_actions` into the connection
+/// task costs one argument rather than two.
+#[derive(Clone, Copy)]
+struct ReadDeadlines {
+    /// [`HANDSHAKE_READ_TIMEOUT`], or this server's `first_byte_timeout_secs`.
+    first_byte: std::time::Duration,
+    /// [`IDLE_AFTER_HANDSHAKE_TIMEOUT`], or this server's `idle_timeout_secs`.
+    idle: std::time::Duration,
+}
+
+impl ReadDeadlines {
+    fn resolve(first_byte_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        Self {
+            first_byte: first_byte_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(HANDSHAKE_READ_TIMEOUT),
+            idle: idle_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(IDLE_AFTER_HANDSHAKE_TIMEOUT),
+        }
+    }
+}
 
 /// How long to wait for a *further* message once the handshake is done.
 ///
@@ -51,6 +98,9 @@ const HANDSHAKE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// a dead one, and every mainline client drops a connection that goes quiet for about that
 /// long. Three minutes gives a conforming peer a full missed keep-alive of slack before this
 /// server does what the convention already expects it to do.
+///
+/// Overridable per server with `idle_timeout_secs`, for the same reason the first bound is:
+/// the right value is a property of who is on the other end, and only the operator knows that.
 const IDLE_AFTER_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Concurrent connections this server admits.
@@ -86,13 +136,21 @@ pub struct TorrentPeerServer;
 
 impl TorrentPeerServer {
     /// Spawn BitTorrent Peer server with LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults serve NetGet's own peer
+        // client, which waits for our handshake before it sends its own; a listener on a
+        // public swarm wants the first one much lower.
+        let deadlines = ReadDeadlines::resolve(first_byte_timeout_secs, idle_timeout_secs);
         let listener = TcpListener::bind(listen_addr).await?;
         let local_addr = listener.local_addr()?;
         Log::new(Some(&status_tx)).info(format!(
@@ -174,6 +232,7 @@ impl TorrentPeerServer {
                                     status_clone,
                                     server_id,
                                     protocol_clone,
+                                    deadlines,
                                 )
                                 .await
                                 {
@@ -197,6 +256,7 @@ impl TorrentPeerServer {
         Ok(local_addr)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
         mut read_half: tokio::io::ReadHalf<tokio::net::TcpStream>,
         write_half: Arc<tokio::sync::Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>>,
@@ -208,6 +268,7 @@ impl TorrentPeerServer {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
         protocol: Arc<TorrentPeerProtocol>,
+        deadlines: ReadDeadlines,
     ) -> Result<()> {
         use tokio::io::AsyncReadExt;
 
@@ -250,9 +311,9 @@ impl TorrentPeerServer {
                 // returned, so neither can be cut short by it — what is bounded is only a peer
                 // holding the connection while sending nothing.
                 let read_timeout = if handshake_complete {
-                    IDLE_AFTER_HANDSHAKE_TIMEOUT
+                    deadlines.idle
                 } else {
-                    HANDSHAKE_READ_TIMEOUT
+                    deadlines.first_byte
                 };
                 let n = match tokio::time::timeout(read_timeout, read_half.read(&mut chunk)).await {
                     Ok(read) => read?,

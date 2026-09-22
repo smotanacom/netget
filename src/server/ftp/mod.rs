@@ -36,13 +36,20 @@ pub struct FtpServer;
 #[cfg(feature = "ftp")]
 impl FtpServer {
     /// Spawn FTP server with integrated LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults serve NetGet's own FTP client
+        // waiting on a human; a listener exposed to strangers wants the first one much lower.
+        let deadlines = ReadDeadlines::resolve(first_byte_timeout_secs, idle_timeout_secs);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -120,6 +127,7 @@ impl FtpServer {
                                     state_clone.clone(),
                                     status_clone.clone(),
                                     protocol_clone,
+                                    deadlines,
                                 )
                                 .await
                                 {
@@ -153,13 +161,67 @@ impl FtpServer {
 
 /// How long to wait for the first command after the `220` greeting has been sent.
 ///
-/// FTP is server-speaks-first, and every real client — `ftp(1)`, `lftp`, curl, a browser —
-/// answers the greeting with `USER` from inside its own connect path, with no human in the
-/// loop yet. A minute is far more than that needs. The greeting itself is generated and written
-/// before the command loop begins, so the model's time over it, and a `manual` rule parking it
-/// for a human, are outside this deadline by construction.
+/// **This was 60 seconds, and "FTP is server-speaks-first" was the wrong reason for it.** The
+/// argument read: every real client — `ftp(1)`, `lftp`, curl, a browser — answers the greeting
+/// with `USER` from inside its own connect path, with no human in the loop yet, so a minute is
+/// far more than that needs. Every word of that is true and none of it is about the peer this
+/// server most often has. The greeting is *ours*; sending it says nothing about whether the
+/// other end will answer it.
+///
+/// The question a first-byte bound actually has to answer is whether NetGet's own client of
+/// this protocol can be connected and silent. FTP's can, and is, by default:
+/// `src/client/ftp/mod.rs` opens the socket, splits it, registers the command channel, raises
+/// `ftp_connected`, and then reads the `220` in its read loop. It writes nothing of its own —
+/// every byte it puts on the wire comes from an action, and a client created from the
+/// dashboard's `[ + ftp client ]` is routed `ftp_connected` → static-with-no-actions and then
+/// `*` → manual (`src/tui/modal/form.rs`). So it connects, is answered with nothing, reads our
+/// greeting, parks that too, and waits for a person to type into `[ send message ]`. At 60
+/// seconds this server hung up on the operator's own client while they were still looking at
+/// it.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for how long
+/// someone might take.
+///
+/// What it costs: a stranger holding a socket, a task, an `AppState` row and one of
+/// [`MAX_CONNECTIONS`] slots while saying nothing now gets 300 seconds rather than 60. That is
+/// a fivefold rise in how long one idle slot is held, not a removal of the bound — the cap
+/// still holds and a peer over it is still answered [`CONNECTION_CAP_REFUSAL`]. A listener
+/// genuinely exposed to strangers should set `first_byte_timeout_secs` low; 60 is the old
+/// value and remains a sound choice for one.
+///
+/// The greeting itself is generated and written before the command loop begins, so the model's
+/// time over it, and a `manual` rule parking it for a human, are outside this deadline by
+/// construction — as is every later LLM round-trip, which happens after a line has been read.
 #[cfg(feature = "ftp")]
-const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The two read deadlines for one connection, resolved from the server's startup parameters.
+///
+/// Carried as one value so threading them from `spawn_with_llm_actions` down to the command
+/// loop costs one argument rather than two at each hop.
+#[cfg(feature = "ftp")]
+#[derive(Clone, Copy)]
+struct ReadDeadlines {
+    /// [`FIRST_COMMAND_READ_TIMEOUT`], or this server's `first_byte_timeout_secs`.
+    first_byte: Duration,
+    /// [`IDLE_BETWEEN_COMMANDS_TIMEOUT`], or this server's `idle_timeout_secs`.
+    idle: Duration,
+}
+
+#[cfg(feature = "ftp")]
+impl ReadDeadlines {
+    fn resolve(first_byte_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        Self {
+            first_byte: first_byte_secs
+                .map(Duration::from_secs)
+                .unwrap_or(FIRST_COMMAND_READ_TIMEOUT),
+            idle: idle_secs
+                .map(Duration::from_secs)
+                .unwrap_or(IDLE_BETWEEN_COMMANDS_TIMEOUT),
+        }
+    }
+}
 
 /// How long to wait for a *further* command once one has been answered.
 ///
@@ -173,6 +235,9 @@ const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// The LLM round-trip and a `manual` rule parking a command for a human
 /// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
 /// so neither can be timed out from under itself.
+///
+/// Overridable per server with `idle_timeout_secs`, for the same reason the first bound is:
+/// the right value is a property of who is on the other end, and only the operator knows that.
 #[cfg(feature = "ftp")]
 const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -371,6 +436,7 @@ impl FtpSession {
     /// write through the same half the session does. The peer handle is registered here
     /// (the accept loop has already added the connection) and removed on every exit —
     /// EOF, 421, `close_connection` and errors all funnel through the single return below.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_session(
         stream: tokio::net::TcpStream,
         connection_id: crate::server::connection::ConnectionId,
@@ -379,6 +445,7 @@ impl FtpSession {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<FtpProtocol>,
+        deadlines: ReadDeadlines,
     ) -> Result<()> {
         let (read_half, write_half) = tokio::io::split(stream);
         let write_half = Arc::new(Mutex::new(write_half));
@@ -420,6 +487,7 @@ impl FtpSession {
                 &app_state,
                 &status_tx,
                 protocol,
+                deadlines,
             )
             .await
         }
@@ -578,6 +646,7 @@ impl FtpSession {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: Arc<FtpProtocol>,
+        deadlines: ReadDeadlines,
     ) -> Result<()>
     where
         R: tokio::io::AsyncRead + Unpin,
@@ -594,9 +663,9 @@ impl FtpSession {
             // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
             // human to answer — happens below, after a line has already been read.
             let read_timeout = if answered_one {
-                IDLE_BETWEEN_COMMANDS_TIMEOUT
+                deadlines.idle
             } else {
-                FIRST_COMMAND_READ_TIMEOUT
+                deadlines.first_byte
             };
             let (outcome, n) = match tokio::time::timeout(
                 read_timeout,
@@ -761,12 +830,15 @@ impl FtpSession {
 
 #[cfg(not(feature = "ftp"))]
 impl FtpServer {
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         _listen_addr: SocketAddr,
         _llm_client: OllamaClient,
         _app_state: Arc<AppState>,
         _status_tx: mpsc::UnboundedSender<String>,
         _server_id: crate::state::ServerId,
+        _first_byte_timeout_secs: Option<u64>,
+        _idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
         anyhow::bail!("FTP feature not enabled")
     }

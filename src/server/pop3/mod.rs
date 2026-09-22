@@ -44,16 +44,67 @@ pub const MAX_COMMAND_BYTES: usize = 1024;
 
 /// How long to wait for the first command after the greeting has been sent.
 ///
-/// POP3 is server-speaks-first: the peer gets a `+OK` greeting and every real client answers it
-/// with `CAPA`, `USER` or `AUTH` from inside its own connect path. A minute is Dovecot's
-/// `login_timeout` default, which bounds exactly this pre-authentication phase and is separate
-/// there from the post-login idle timer for the same reason it is separate here.
+/// **This was 60 seconds — Dovecot's `login_timeout` — and "POP3 is server-speaks-first" was
+/// the wrong reason for it.** The argument read: the peer gets a `+OK` greeting and every real
+/// client answers it with `CAPA`, `USER` or `AUTH` from inside its own connect path, and
+/// Dovecot bounds exactly this pre-authentication phase at a minute. True of every third-party
+/// client, and irrelevant to the peer this server most often has: the greeting is *ours*, and
+/// sending it says nothing about whether the other end will answer it.
+///
+/// The question a first-byte bound actually has to answer is whether NetGet's own client of
+/// this protocol can be connected and silent. POP3's can, and is, by default:
+/// `src/client/pop3/mod.rs` opens the socket, registers its command channel, and then reads
+/// the `+OK` greeting in its read loop. It writes nothing of its own — every byte it puts on
+/// the wire comes from an action — and a client created from the dashboard's
+/// `[ + pop3 client ]` is routed `pop3_connected` → static-with-no-actions and then `*` →
+/// manual (`src/tui/modal/form.rs`). So it connects, reads our greeting, parks it for a
+/// person, and waits for someone to type into `[ send message ]`. At 60 seconds this server
+/// hung up on the operator's own client while they were still looking at it.
+///
+/// Dovecot's number is not wrong for Dovecot — it has no client that parks on a human. 300
+/// seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for how long
+/// someone might take.
+///
+/// What it costs: a stranger holding a socket, a task, an `AppState` row and one of
+/// [`MAX_CONNECTIONS`] slots while saying nothing now gets 300 seconds rather than 60 — a
+/// fivefold rise in how long one idle slot is held, not a removal of the bound. The cap still
+/// holds and a peer over it is still answered [`CONNECTION_CAP_REFUSAL`]. A listener exposed
+/// to strangers should set `first_byte_timeout_secs` back to 60, which is Dovecot's own
+/// number and a sound choice for one.
 ///
 /// The greeting itself sits outside this deadline by construction: it is generated and written
 /// before the command loop begins, so however long the model — or a `manual` rule parking it
 /// for a human — takes over it, the clock below has not started.
 #[cfg(feature = "pop3")]
-const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The two read deadlines for one connection, resolved from the server's startup parameters.
+///
+/// Carried as one value so threading them from `spawn_with_llm_actions` down to the command
+/// loop costs one argument rather than two at each hop.
+#[cfg(feature = "pop3")]
+#[derive(Clone, Copy)]
+struct ReadDeadlines {
+    /// [`FIRST_COMMAND_READ_TIMEOUT`], or this server's `first_byte_timeout_secs`.
+    first_byte: Duration,
+    /// [`IDLE_BETWEEN_COMMANDS_TIMEOUT`], or this server's `idle_timeout_secs`.
+    idle: Duration,
+}
+
+#[cfg(feature = "pop3")]
+impl ReadDeadlines {
+    fn resolve(first_byte_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        Self {
+            first_byte: first_byte_secs
+                .map(Duration::from_secs)
+                .unwrap_or(FIRST_COMMAND_READ_TIMEOUT),
+            idle: idle_secs
+                .map(Duration::from_secs)
+                .unwrap_or(IDLE_BETWEEN_COMMANDS_TIMEOUT),
+        }
+    }
+}
 
 /// How long to wait for a *further* command once one has been answered.
 ///
@@ -66,6 +117,10 @@ const FIRST_COMMAND_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// The LLM round-trip and a `manual` rule parking a command for a human
 /// (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read,
 /// so neither can be timed out from under itself.
+///
+/// Overridable per server with `idle_timeout_secs` — but note that RFC 1939's floor means
+/// lowering it below 600 puts this server outside the specification, which the parameter's own
+/// description says.
 #[cfg(feature = "pop3")]
 const IDLE_BETWEEN_COMMANDS_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -96,6 +151,7 @@ impl Pop3Server {
     ///
     /// If tls_config is Some, the server will use implicit TLS (POP3S)
     /// If tls_config is None, the server will use plain text (POP3)
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -103,7 +159,14 @@ impl Pop3Server {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
         tls_config: Option<Arc<rustls::ServerConfig>>,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults serve NetGet's own POP3
+        // client waiting on a human; a listener exposed to strangers wants the first one much
+        // lower.
+        let deadlines = ReadDeadlines::resolve(first_byte_timeout_secs, idle_timeout_secs);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -185,6 +248,7 @@ impl Pop3Server {
                                                 state_clone,
                                                 status_clone,
                                                 protocol_clone,
+                                                deadlines,
                                             )
                                             .await
                                             {
@@ -213,6 +277,7 @@ impl Pop3Server {
                                         state_clone,
                                         status_clone,
                                         protocol_clone,
+                                        deadlines,
                                     )
                                     .await
                                     {
@@ -269,6 +334,7 @@ impl Pop3Session {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<Pop3Protocol>,
+        deadlines: ReadDeadlines,
     ) -> Result<()>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -330,6 +396,7 @@ impl Pop3Session {
             &app_state,
             &status_tx,
             &protocol,
+            deadlines,
         )
         .await;
 
@@ -354,6 +421,7 @@ impl Pop3Session {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<Pop3Protocol>,
+        deadlines: ReadDeadlines,
     ) -> Result<()>
     where
         R: tokio::io::AsyncRead + Unpin,
@@ -436,9 +504,9 @@ impl Pop3Session {
             // take minutes — the LLM round-trip, and a `manual` rule parking the command for a
             // human to answer — happens below, after a line has already been read.
             let read_timeout = if answered_one {
-                IDLE_BETWEEN_COMMANDS_TIMEOUT
+                deadlines.idle
             } else {
-                FIRST_COMMAND_READ_TIMEOUT
+                deadlines.first_byte
             };
             let framed = tokio::time::timeout(
                 read_timeout,
