@@ -228,6 +228,7 @@ jobs:
             --test recursive_decoder_depth_test \
             --test startup_param_drift_test \
             --test tcp_server_bounds_ratchet_test \
+            --test real_client_evidence_is_run_test \
             --test test_suite_hygiene_test \
             -- --test-threads=50
 
