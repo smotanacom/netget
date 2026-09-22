@@ -204,6 +204,10 @@ each live beside them in `src/server/xmlrpc/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 60s | A backstop rather than a keep-alive allowance: XML-RPC's canonical client, Python's `xmlrpc.client.ServerProxy`, opens a connection per call and closes it, so there is no legitimate long idle window to protect. 60s is an order of magnitude past a pooled transport's round trip and well short of letting an abandoned connection sit for minutes. |
 | `MAX_CONNECTIONS` | 256 | The shared default. Each admitted connection may buffer one body of up to 4 MiB, well inside the ~1 GiB ceiling netget's HTTP family is held to; a protocol declares a smaller number only when its per-connection cost is larger. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
 
+**NetGet's own XML-RPC client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/xmlrpc/mod.rs` calls the connection logical and stores a URL, opening no socket
+until a call is made — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
 starts, and it keeps polling the connection for more input *while a request is being answered* —
 so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a

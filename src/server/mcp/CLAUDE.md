@@ -236,6 +236,11 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | A client holds its connection open between calls — an editor with an MCP server attached may go minutes between tool calls while a human thinks. A reaped connection loses nothing: MCP session state lives in this server's own map, keyed by session id rather than by socket. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP `503` carrying a JSON-RPC error with `MCP_SERVER_BUSY_CODE` (-32000)** — both layers of this protocol's vocabulary at once, and the same code this server already returns when the backend is overloaded. |
 
+**NetGet's own MCP client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/mcp/mod.rs` POSTs `initialize` and then the `initialized`
+notification before registering its command channel or calling the model —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** `axum::serve` owns its accept loop and takes a concrete `TcpListener`, so there is no seam inside it — the same wall `src/server/nfs/guard.rs` hit with `NFSTcpListener`, and the same answer: NetGet keeps the public listener and runs axum behind it on a loopback-only ephemeral port. The relay's deadline re-arms instead of closing while `awaiting_response` is set, which for a strict request/response protocol is exactly "the peer is waiting on us". Two costs are worth stating: `handle_jsonrpc` sees the relay as its peer rather than the real client address, and the loopback backend is reachable by other local processes (again as with NFS). The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

@@ -192,6 +192,10 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 900s | A shell's own idle convention is `TMOUT`, which hardening baselines set to 900 seconds — so this is the number an operator already expects a shell session to be reclaimed at, and long enough that reading a long listing, or stepping away mid-engagement, does not cost the session. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain notice line**, `\r\n[netget] too many connections\r\n`. There is no framing to refuse in, but there is a terminal on the other end, so a plain line reaches the one audience that exists. It is deliberately netget's own voice rather than a shell-looking error: the emulated shell never got as far as existing, and a fabricated shell message would assert something about a session that was declined. |
 
+**There is no NetGet reverse-shell client**, so this bound has no peer of ours to strand — the
+fourth exemption in `PROTOCOL_QUALITY.md`'s three-state test; the peer is a person at `nc`,
+which is what the two minutes already argue for.
+
 **The deadline wraps the read and nothing else.** The session-opened consultation happens before
 the loop, and the LLM round-trip and a `manual` rule parking a command for a human
 (`src/state/intercepts.rs`, 300s by default) happen after bytes have already been read.

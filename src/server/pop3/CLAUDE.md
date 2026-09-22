@@ -298,6 +298,14 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | Not a taste: RFC 1939 §3 says a POP3 server's inactivity autologout timer "MUST be of at least 10 minutes' duration". This is that timer, at its minimum. The shorter bound above does not contradict it — what the RFC protects is a *session*, whose deletions are only committed at `QUIT`, and a peer that has issued no command has no session to lose. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR [SYS/TEMP] too many connections`**. `-ERR` in place of the greeting is how POP3 refuses a connection it will not serve, and RFC 3206's `[SYS/TEMP]` says precisely what a cap means — temporary, retry later. A client that understands it backs off; one that does not still reads a well-formed `-ERR`. This file already uses the `[SYS/PERM]` half of the same pair for an over-long command line. |
 
+**NetGet's own POP3 client is the *connected-and-silent* case, and this bound is therefore
+wrong as it stands:** `src/client/pop3/mod.rs` connects, reads the `+OK` in its read loop and
+writes nothing until a model action or a human's `[ send message ]`, so at 60s the server drops
+a peer the operator is still looking at. Server-speaks-first exempts nothing here: the bound
+closes a peer that is connected and silent, and the greeting is ours, not the peer's. It wants
+300s with declared `first_byte_timeout_secs`/`idle_timeout_secs`, as `src/server/redis/` has —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the read and nothing else.** The greeting is written before the command loop
 begins, and the LLM round-trip and a `manual` rule parking a command for a human
 (`src/state/intercepts.rs`, 300s by default) both happen after a line has already been read.

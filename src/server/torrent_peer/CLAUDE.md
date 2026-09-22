@@ -465,6 +465,13 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_AFTER_HANDSHAKE_TIMEOUT` | 180s | The peer wire protocol's own answer: the keep-alive is a zero-length message sent roughly every two minutes precisely so an idle-but-live peer can be told from a dead one, and mainline clients drop a connection quiet for about that long. Three minutes gives a conforming peer a full missed keep-alive of slack. |
 | `MAX_CONNECTIONS` | 256 | Real swarms are far smaller — mainline clients cap global peers in the low hundreds. Refusal: **a plain close.** BEP 3 has no busy, error or free-text message of any kind, and the one refusal it does define (`CHOKE_FRAME`) is legal only *after* a handshake this peer has not sent. Any bytes here would be read as the first 5 of the 68 handshake bytes, so a client would report a malformed handshake rather than a full server — strictly worse than silence. |
 
+**NetGet's own peer-wire client is the *connected-and-silent* case, and this bound is therefore
+wrong as it stands:** `src/client/torrent_peer/mod.rs` connects and its first act is
+`read_exact` on the *peer's* 68 bytes; its own handshake is written only by the
+`send_handshake` action, so both ends wait and at 30s the server drops a peer the operator is
+still looking at. It wants 300s with declared `first_byte_timeout_secs`/`idle_timeout_secs`, as
+`src/server/redis/` has — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

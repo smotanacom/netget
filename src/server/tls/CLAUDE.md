@@ -501,6 +501,14 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plaintext fatal alert record**, level `fatal`, description `internal_error`(80). TLS defines no "server busy" alert and RFC 8446's closest is `internal_error` — what a server sends when it cannot proceed for reasons unrelated to the peer. A client reports "received fatal alert: internal_error" instead of a bare reset. |
 | `MAX_QUEUED_BYTES` | 1 MiB | Application data one connection may accumulate *while an answer is in flight*. 64 maximum-size TLS records (RFC 8446 caps a plaintext record at 2^14), so the number comes from the protocol's own framing rather than a guess about the application riding on it. Refusal: **close_notify, plus `decision=fail_closed_queued_data_overflow` in the log** — see below for why it is not `record_overflow`. |
 
+**NetGet's own TLS client is the *connected-and-silent* case for the second half of this
+bound:** `tokio_rustls` puts the ClientHello on the wire inside `connect()`, so the handshake
+half can never strand it — but the post-handshake loop keeps this same constant until the first
+application record, and `src/client/tls/mod.rs` writes no application bytes until a model
+action or a human's `[ send message ]`, so at 60s the server drops a peer the operator is still
+looking at. It wants the application half at 300s with a declared parameter, as
+`src/server/redis/` has — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** TLS is the one server here whose read loop runs *concurrently* with the answer: `handle_data_with_actions` is spawned and the loop goes straight back to reading, so a record parked for a human sits inside the read deadline while it happens. `ConnectionActivity` is marked busy before the task is spawned and released when it ends, and the read deadline re-arms rather than closing while it is set. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

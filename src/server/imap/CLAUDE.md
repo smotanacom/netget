@@ -186,6 +186,10 @@ hundred more. It now declares both halves; the constants and the reasoning live 
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 2100s (35 min) | **This number exists because of `IDLE`.** A client in IDLE (RFC 2177) is legitimately silent, waiting for the *server* to speak, and this server's own action examples advertise `IDLE` in their capability lists. RFC 2177 §3 requires the client to terminate and re-issue IDLE **at least every 29 minutes**, so 29 minutes is the interval this bound sits above; 35 gives the `DONE` and the re-issued `IDLE` room to cross a slow link and still count as activity. |
 | `MAX_CONNECTIONS` | 256 | Refusal: an untagged **`* BYE [UNAVAILABLE] too many connections`** — IMAP's own way of ending a session unilaterally (RFC 3501 §7.1.5) with RFC 5530's machine-readable reason, the same pair this server already uses for a failed greeting and an oversized command line. There is no tag to echo: the peer has sent nothing. |
 
+**NetGet's own IMAP client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/imap/mod.rs` runs async-imap's `login()`, putting `LOGIN` on the
+wire before any model turn or keystroke — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the read and nothing else**, so `handle_command`'s model round-trip — or a
 `manual` rule parking a command for a human at the dashboard, 300s by default — is never inside
 it. The longer bound is armed on the first *complete command line*, so a peer dripping a partial

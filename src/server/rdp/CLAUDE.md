@@ -183,6 +183,10 @@ forever. It now declares both halves; the constants and the reasoning live besid
 | `IN_FRAME_READ_TIMEOUT` | 15s | A narrower claim than the first bound, so a shorter number: these bytes belong to a TPKT frame whose header has already arrived, and a Connection Request is at most `MAX_X224_LEN` bytes that a real client writes in one go. Nothing legitimate pauses in the middle of it. This server's whole session is one request and one reply, so there is no third case — the model round-trip happens after the request has been read in full. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. RDP's own refusal is a Connection Confirm carrying `RDP_NEG_FAILURE`, and it is a *reply*: a capped peer is refused before its Connection Request has been read, so there is no `srcRef` to answer and no requested protocol to fail. A fabricated Connection Confirm would also be a positive assertion — it tells the client which security protocol to speak next — which is what a refusal must not do. `accept_bounded` logs it at WARN with `decision=fail_closed_connection_cap`. |
 
+**There is no NetGet RDP client**, so this bound has no peer of ours to strand — the fourth
+exemption in `PROTOCOL_QUALITY.md`'s three-state test. Note that the greeting test does not
+apply here: RDP is client-speaks-first.
+
 **The deadlines are applied with `IdleTimeoutReader`, not a `tokio::time::timeout` around one
 call**, because the Connection Request is read in two steps — the TPKT header, then the X.224
 body whose length that header declares — and a peer that sends `0x03` and stalls would otherwise

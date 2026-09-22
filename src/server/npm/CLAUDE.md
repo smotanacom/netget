@@ -278,6 +278,10 @@ halves; the constants and the reasoning live beside them in `src/server/npm/mod.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | npm's own `fetch-timeout` default is 300000 ms (`npm config get fetch-timeout`): the client gives up on a silent server at exactly this point, so closing a connection that has been silent for as long can never be the side that breaks a working install. `npm install` downloads, then unpacks locally — only the gap between two requests is measured. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a packument or a tarball), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — npm retries a 503 with backoff (`fetch-retries`, 2 by default) rather than failing outright. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**NetGet's own npm client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/npm/mod.rs` resolves a registry URL and opens no socket until a packument or
+tarball fetch runs from an action — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

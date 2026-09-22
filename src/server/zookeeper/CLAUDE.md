@@ -194,6 +194,11 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `idle_timeout_for(session)` | the negotiated session timeout × 2, floored at 30s (so at most 80s) | The protocol answers this itself. A real ZooKeeper expires a session when it has heard nothing for the *negotiated* timeout, and the client pings at a third of that interval precisely so an idle-but-live session keeps proving it is alive — so the bound is not a number picked here at all, it is the value this very connection negotiated. Doubled so a client that misses a ping is not punished for it; floored at `MIN_IDLE_AFTER_CONNECT` because `MIN_SESSION_TIMEOUT_MS` is four seconds and eight would be close enough to a scheduling hiccup to matter. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, which is exactly what a real ZooKeeper does. There is no pre-session error frame: the first thing the server may write is a ConnectResponse, and writing one would *admit* the peer rather than refuse it — the fail-open shape this codebase treats as its most dangerous pattern. Real ZooKeeper hitting `maxClientCnxns` closes the socket and logs "Too many connections from …". |
 
+**NetGet's own ZooKeeper client *speaks inside `connect()`*, so it is never the silent peer
+this bound closes:** zookeeper-async's `ZooKeeper::connect` queues and writes the
+ConnectRequest itself, with no model turn in front of it — `PROTOCOL_QUALITY.md`'s three-state
+test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

@@ -168,6 +168,11 @@ The *header* read is bounded separately — see [Connection bounds](#connection-
 | `BODY_READ_TIMEOUT` | 30s | the announced body, once its header has arrived | The rest of a message whose header arrived is in flight by definition. |
 | `MAX_MESSAGE_SIZE` | 48 MB | the announced `messageLength` | The value this server advertises as `maxMessageSizeBytes`. |
 
+**NetGet's own MongoDB client is *lazy*, so it is never the silent peer this bound closes:**
+`MongoClient::with_options` does no I/O at the call site, and the socket the driver's SDAM
+monitor does open sends `hello` on its own initiative within milliseconds —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The header pair is what makes `[ disconnect this peer ]` take effect.** The
 dashboard's disconnect half-closes the write side, which a peer that is not
 reading never notices, so without a deadline on the header read the connection

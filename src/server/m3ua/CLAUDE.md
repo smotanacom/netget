@@ -321,6 +321,9 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | Deliberately long: a signalling link with no traffic is the normal case, not a suspicious one, so this must not be a traffic timer. The protocol's own answer to "is this quiet link alive" is BEAT (RFC 4666 §3.5.5), configured at tens of seconds in deployments — so fifteen minutes is on the order of thirty missed beats. Over TCP there is no SCTP heartbeat underneath to tell the difference. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **an M3UA ERR carrying `Refused - Management Blocking`** (error code 0x0d), which is what that code is for and what this server already sends when it declines an ASP. ERR is a Management-class message either end may send unsolicited, so unlike most protocols here there is a genuinely *correct* thing to say to a peer that has not spoken yet. |
 
+**There is no NetGet M3UA client**, so this bound has no peer of ours to strand — the fourth
+exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. `read_message` bounds the header, the announced body and the alignment padding. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

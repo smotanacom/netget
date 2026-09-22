@@ -211,6 +211,9 @@ mechanism; the server had no read bound at all.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | A driver logs in, submits a query and fetches the result on the same pooled connection, with gaps while the application consumes a result set. A query being answered is a request in flight and held busy for the whole of the model round-trip. Four times nginx's `keepalive_timeout` default of 75s. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a result set), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — a 503 with `Retry-After` reads to a driver's HTTP layer as a retryable server condition. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**There is no NetGet Snowflake client**, so this bound has no peer of ours to strand — the
+fourth exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

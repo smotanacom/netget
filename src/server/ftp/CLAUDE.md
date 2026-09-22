@@ -208,6 +208,14 @@ forever. It now declares both halves; the constants and the reasoning live besid
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | vsftpd's `idle_session_timeout` default — the idle bound on the FTP control connection that every client in use is already built to tolerate, and which ProFTPD's `TimeoutIdle` only doubles. It has to be on a human timescale: `ftp(1)` prompts the person at it for the password after `USER`, and again for each command, so the silence between two commands is someone typing. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`421 Too many connections, closing control connection`**. RFC 959's own reply for a server declining to open a session, and what real FTP servers send at their client limit. A `4xx` is a transient negative reply, so a client retries later rather than recording a permanent failure. |
 
+**NetGet's own FTP client is the *connected-and-silent* case, and this bound is therefore wrong
+as it stands:** `src/client/ftp/mod.rs` connects, reads the `220` in its read loop and writes
+nothing until a model action or a human's `[ send message ]`, so at 60s the server drops a peer
+the operator is still looking at. Server-speaks-first exempts nothing here: the bound closes a
+peer that is connected and silent, and the greeting is ours, not the peer's. It wants 300s with
+declared `first_byte_timeout_secs`/`idle_timeout_secs`, as `src/server/redis/` has —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the read and nothing else.** The LLM round-trip, and a `manual` rule parking
 a command for a human (`src/state/intercepts.rs`, 300s by default), happen after a line has
 already been read, so neither can be timed out from under itself.

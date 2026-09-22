@@ -625,6 +625,11 @@ both halves; the constants and the reasoning live beside them in `src/server/dc/
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | An NMDC client in a hub is never silent for long: a bare `\|` is the protocol's keepalive and DC++ sends one about once a minute when it has nothing else to say, so five minutes is five missed keepalives — a link that is gone, not a user who is quiet. The same bound covers a peer that has begun a command and stalled before its `\|`: `MAX_COMMAND_LEN` bounds how much it can make the hub buffer, and this bounds how long it can sit there having sent less. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`$HubIsFull\|`**. NMDC's own way for a hub to turn a client away, and what a client expects in place of the `$Lock` it was waiting for. A client that does not recognise it still sees a well-formed, `\|`-terminated command followed by a clean close rather than an unexplained disconnection. |
 
+**NetGet's own DC client *speaks inside `connect()`*, so it is never the silent peer this bound
+closes:** `src/client/dc/mod.rs`'s `handle_dc_lock` writes `$Key`, `$ValidateNick` and
+`$Version` unconditionally, and the `dc_client_connected` turn ahead of them is answered with
+nothing by the dashboard's default routing — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the read and nothing else.** The `$Lock` is written before the loop, and the
 LLM round-trip and a `manual` rule parking a command for a human (`src/state/intercepts.rs`, 300s
 by default) both happen after a whole `\|`-terminated command has been read.

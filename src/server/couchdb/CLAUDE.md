@@ -534,6 +534,10 @@ each live beside them in `src/server/couchdb/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 75s | nginx's `keepalive_timeout` default. Replication and `_changes` consumers hold one pooled connection across a whole replication, which looks like an argument for minutes and is not: a `_changes` feed held open — continuous or long-poll — is a request **in flight**, which the watchdog reports as not idle at all. What is left is a pooled connection with nothing outstanding. |
 | `MAX_CONNECTIONS` | 128 | Below the shared `DEFAULT_MAX_CONNECTIONS` of 256 on purpose: each admitted connection may buffer one body of up to 8 MiB, the largest per-connection cost in netget's HTTP family, and the cap is what turns that per-connection bound into a total one. 128 holds the worst case to the same ~1 GiB ceiling the smaller-bodied servers reach at 256. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
 
+**NetGet's own CouchDB client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/couchdb/mod.rs` awaits couch_rs's `check_status()` welcome request
+inline, ahead of any model turn or keystroke — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
 starts, and it keeps polling the connection for more input *while a request is being answered* —
 so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a

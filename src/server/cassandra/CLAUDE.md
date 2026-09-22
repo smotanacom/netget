@@ -236,6 +236,11 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_FRAMES_TIMEOUT` | 900s | Long on purpose: a driver holds a *pool* of persistent connections and most of them are legitimately silent. Both the DataStax and ScyllaDB drivers send a heartbeat OPTIONS on an idle connection every 30s by default, precisely so an idle-but-live connection keeps proving it is live — fifteen minutes is thirty of those. Cassandra's own `native_transport_idle_timeout_in_ms` ships disabled, so there is no upstream default to copy. |
 | `MAX_CONNECTIONS` | 256 | Each connection may buffer a frame of up to `MAX_FRAME_BODY_BYTES` (256 MiB), so the cap is what turns that per-connection bound into a total one. **Refusal: a plain close.** There is a natural vocabulary — an ERROR frame with `Overloaded` — but every CQL frame is stamped with the protocol version, and the version is chosen by the client's first frame, which a refused peer has not sent. Guessing it replaces "server is full" with a version error. Real Cassandra past `native_transport_max_concurrent_connections` closes the channel for the same reason. |
 
+**NetGet's own Cassandra client *speaks inside `connect()`*, so it is never the silent peer
+this bound closes:** `src/client/cassandra/mod.rs`'s `SessionBuilder::build()` completes
+scylla's OPTIONS/STARTUP handshake before returning, ahead of any model turn or keystroke —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

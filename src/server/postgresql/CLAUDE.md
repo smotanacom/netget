@@ -254,6 +254,10 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_SESSION_TIMEOUT` | 600s | Real PostgreSQL's `idle_session_timeout` ships disabled, so there is no upstream default to copy. Ten minutes, for the same reason as MySQL's: no tables, no temp tables, no open transaction, so a reaped pooled connection costs `tokio-postgres`, SQLAlchemy or pgbouncer one transparent reconnect. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a v3 `ErrorResponse` with SQLSTATE `53300 too_many_connections`** — the state real PostgreSQL uses for "sorry, too many clients already", and the one this file already maps backend overload onto, so a driver treats it as transient. Sending it before the StartupMessage is a small liberty that libpq-family clients handle: they write startup, then read, and an ErrorResponse is a legal thing to find there. |
 
+**NetGet's own PostgreSQL client *speaks inside `connect()`*, so it is never the silent peer
+this bound closes:** `tokio_postgres::connect` writes the StartupMessage and completes
+authentication before returning — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** `process_socket` takes a concrete `TcpStream` and owns every read, so the idle bound is a watchdog over `ConnectionActivity` instead. `resolve` holds a busy guard for the whole answer, so a statement waiting on the model or parked for a human is never counted as idle. The connection is dropped rather than sent a FATAL 57P05, because pgwire exposes no way to write into the socket from outside. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

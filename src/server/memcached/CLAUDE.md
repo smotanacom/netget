@@ -188,6 +188,9 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 120s | The shortest of the eighteen, because memcached has no session: every command is independent, the server holds nothing on a client's behalf, and a closed connection costs a pooling client one transparent reconnect. Real memcached's optional `-o idle_timeout` refuses to be set below 30 seconds, which is the protocol's own statement about how short is too short; two minutes is generous against that. |
 | `MAX_CONNECTIONS` | 256 | Each connection may buffer up to `MAX_BUFFERED`. Refusal: **`SERVER_ERROR too many connections`** — the text protocol's one way to say the server failed, already used here for the over-long-command case. No client can read it as a cache hit, a stored value or a successful delete, which is what makes it safe to send to a peer that has not spoken. |
 
+**There is no NetGet memcached client**, so this bound has no peer of ours to strand — the
+fourth exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

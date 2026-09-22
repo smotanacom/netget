@@ -100,6 +100,10 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* commands, not a bound on a transfer. An `hg clone` issues `capabilities`, `heads`, `branchmap`, `listkeys` and `getbundle` on one keep-alive connection, and each answer is a `Full<Bytes>` built before the response is returned, so a slow reader is draining bytes rather than idling. hg sets no keep-alive interval of its own. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`** — the wire protocol here *is* HTTP, so hg reports the status rather than an unexplained reset. |
 
+**There is no NetGet Mercurial client** — `src/client/mercurial/` holds a `CLAUDE.md` and no
+Rust, and nothing registers it — so this bound has no peer of ours to strand, the fourth
+exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline bounds the silence, not the transfer.** hyper owns every read once
 `serve_connection` starts and keeps polling for frames *while a command is being answered*, so a
 deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog

@@ -390,6 +390,11 @@ halves; the constants and the reasoning live beside them in `src/server/rss/mod.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 120s | The shortest in this family, on purpose: RSS has no session — fetch and parse *is* the protocol, so there is no second request a connection is waiting for. The bound covers a poller that left a keep-alive connection open, and pollers run on a minutes-to-hours cycle. Still above nginx's `keepalive_timeout` default of 75s. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a feed document), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — every feed reader is an HTTP client and reads a 503 as an invitation to come back later. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**NetGet's own RSS client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/rss/mod.rs` resolves the address with `lookup_host` and fetches only if the model
+returns `fetch_rss_feed`, so under a `*` → manual rule no socket opens at all —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

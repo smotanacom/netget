@@ -567,6 +567,10 @@ halves; the constants and the reasoning live beside them in `src/server/maven/mo
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | Maven interleaves downloads with the build, so a pooled connection is legitimately unused while javac runs. Four times nginx's `keepalive_timeout` default of 75s, and it costs nothing when it is wrong: Apache HttpClient revalidates a pooled connection and reopens one the server has closed. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a POM, a checksum or a jar), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — Maven's transport retries a 503 against the same repository rather than failing the build. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**NetGet's own Maven client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/maven/mod.rs` resolves a repository URL and opens no socket; its `reqwest::Client`
+is a `OnceCell` built on the first download — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

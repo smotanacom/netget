@@ -197,6 +197,11 @@ them in `src/server/ssh/mod.rs`.
 | `IDLE_SESSION_TIMEOUT` | 3600s | **An interactive shell is legitimately silent for a long time**, and SSH has no keepalive that is on by default to sit above — OpenSSH's `ServerAliveInterval` and `ClientAliveInterval` both default to **0**. An hour is the most aggressive bound that is defensible, and it is what this server was already doing; it is now named and passed to *both* russh's config and the stream wrapper, so the two cannot drift apart. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`Exceeded MaxStartups\r\n`**, the exact line OpenSSH's `sshd` writes over `MaxStartups`, and legal SSH — RFC 4253 §4.2 lets a server send lines before its identification string precisely so it can say something to the user, and clients print them. One honest difference: this cap counts every connection, not only unauthenticated ones, so it is not literally MaxStartups; the text is chosen because it is the line SSH users already recognise for "refusing new connections right now". |
 
+**NetGet's own SSH client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** russh writes the `SSH-2.0-…` identification string and `src/client/ssh/mod.rs`
+then runs `authenticate_password` unconditionally, both before the first model turn —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **Where the deadline lives, and why it is not a `peek`.** russh owns every read once `run_stream`
 is called, so there is no `read()` of ours to wrap. The other hyper-backed servers in this sweep
 solve that with a `TcpStream::peek` before the crate sees the socket — but that makes the bound

@@ -255,6 +255,11 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | etcd's `--grpc-keepalive-interval` defaults to two hours, a bound in name only, so there is no upstream number worth copying. Fifteen minutes is safe here because of a property of *this* server: every RPC is unary — `handle_grpc_request` returns a `Response<GrpcBody>` carrying one message frame and its trailers, so even Watch is one complete message rather than a held-open stream. There is no legitimate long-lived silent request. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately in the older protocol — a refused peer has not sent the HTTP/2 preface, so nothing has been negotiated and a GOAWAY would have to follow a SETTINGS exchange this server is declining. |
 
+**NetGet's own etcd client is *lazy*, so it is never the silent peer this bound closes:**
+`etcd_client::Client::connect` builds a tonic balance channel whose services are
+`Connection::lazy`, so despite the name no socket opens until an RPC is issued —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection` starts, and it keeps polling the connection for new frames *while a request is being answered* — so a deadline on reads would be wrong here, not merely awkward. The idle bound is a watchdog over `ConnectionActivity` instead, which reports a connection with work in flight as not idle at all. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

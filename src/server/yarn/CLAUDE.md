@@ -87,6 +87,9 @@ halves; the constants and the reasoning live beside them in `src/server/yarn/mod
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 180s | The ResourceManager REST API is polled on a seconds-to-minutes cycle, so the silence measured is a poller that has stopped polling. Three minutes is above any scrape interval anyone configures and more than twice nginx's `keepalive_timeout` default. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a JSON response), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — a 503 is what a REST client and a dashboard both already understand. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**There is no NetGet Yarn client**, so this bound has no peer of ours to strand — the fourth
+exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an
