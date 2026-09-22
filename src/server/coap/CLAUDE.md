@@ -150,6 +150,13 @@ as `src/server/radius/` does:
 `grep 'decision=fail_closed_'` finds every request the model did not actually answer. The
 error text stays in the log and never reaches the wire — only the code does.
 
+`tests/server/coap/llm_failure_test.rs` drives both fail-closed rows from a socket and asserts
+that the two tags are **different**, which is the whole claim: the peer receives the same five
+bytes either way, and a backend outage and a model answering badly are opposite problems with
+opposite fixes. It also asserts the refusal is *matchable* — ACK, the request's message id, the
+request's token — because a 5.03 a client discards as unsolicited is the silence this path
+exists to replace. Until September 2026 this table was seven rows that nothing checked.
+
 ### 6. A response has to fit one datagram, and the bound is on the model's side
 
 `codec::MAX_PAYLOAD_LEN` is **1024 bytes** and `decode_payload` enforces it, counting decoded
