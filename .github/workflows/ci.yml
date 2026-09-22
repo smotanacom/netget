@@ -289,6 +289,15 @@ jobs:
       # passed", which is a workflow contradiction rather than a finding about the targets.
       # This step's job is to catch a target that stopped compiling against the current
       # library API; resolution drift is the root workspace's problem and is `--locked` there.
+      # The fuzz crate turns on `lldp`/`cdp` (libpcap) and `nfc`/`nfc-client` (pcsclite), so
+      # checking it needs those headers even though nothing here links libFuzzer.
+      # `.github/workflows/fuzz.yml` installs the same two and its comment says to keep this
+      # list in sync — it was not, because until now no job on this side built `fuzz/` at all.
+      - name: install the fuzz crate's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpcap-dev libpcsclite-dev
+
       - name: cargo check (fuzz targets still compile)
         run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
 

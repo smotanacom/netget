@@ -152,7 +152,24 @@ async fn redis_cli_completes_a_session_against_the_redis_server() -> E2EResult<(
                     }])
                 }
             })
-            .expect_calls(7)
+            // A range, not an exact count, and the reason is the client rather than the server.
+            //
+            // The seven commands this test sends are PING, SET, GET, INCRBY, KEYS, GET of a
+            // missing key, and LPUSH against a string. redis-cli also speaks for itself before
+            // the first of them, and how much it says depends on its version: 7.0.15 on
+            // ubuntu-24.04 issues two commands of its own that valkey-cli 9.1.2 does not, and
+            // swallows their replies, so they never reach stdout. The server answers them with
+            // the fall-through WRONGTYPE — visible in its log as three `redis_error` actions
+            // against the one `(error)` line redis-cli printed.
+            //
+            // `expect_calls(7)` therefore pinned a property of the installed client, and it
+            // failed on CI while every assertion about the session passed. The floor still
+            // catches a server that stopped consulting the model, and the ceiling still
+            // catches the runaway loop `expect_calls` exists for — CLAUDE.md records a rule
+            // that answered its own event 99 times. What carries the evidence here is the
+            // eight assertions on what redis-cli *rendered*, not the arithmetic.
+            .expect_at_least(7)
+            .expect_at_most(20)
             .and()
     });
 
