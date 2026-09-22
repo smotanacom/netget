@@ -59,11 +59,44 @@ const MAX_INLINE_HEX_BYTES: usize = 16;
 /// `CLAUDE.md`'s rule that raw bytes do not belong in action parameters applies to examples
 /// too. Fix: express it as text with an `encoding: "utf8"` field, the way `tcp`'s
 /// `send_tcp_data` settled the same question.
+/// **Limb C's thirteen are UNREVIEWED, and that word is doing real work here.** They are not a
+/// claim that each is fine; they are a claim that nobody has looked. Limb C was added on
+/// 22 September 2026 and every one of these predates it — an `ActionDefinition`'s `example` was
+/// outside the scan entirely, which is how a dozen went unnoticed while limbs A and B were
+/// argued case by case.
+///
+/// They split into two kinds and the split is the work:
+///
+/// * **Opaque identifiers a caller supplies** — a 20-byte BitTorrent info hash or Mercurial
+///   node id has nothing to drift *from*, and the reasoning already written above for
+///   `A:torrent_dht` applies unchanged. These are probably fine as they are.
+/// * **Wire blobs the protocol could build** — `ntp`'s 56 bytes is an entire NTP packet,
+///   `bitcoin`'s 24 a message header with a checksum the action's own description says is not
+///   computed for you, `datalink`'s 42 an Ethernet frame. A model cannot proofread any of them,
+///   and for these the remedy in the failure message applies: structured fields, or
+///   `hex::encode` of a const.
+///
+/// Shrinking this list means deciding which kind each is and acting on it. Removing a line
+/// without doing that is how a baseline becomes a place to put things.
 const LONG_HEX_EXAMPLE_BASELINE: &[&str] = &[
     "A:mercurial:actions.rs:20",
     "A:socks5:actions.rs:37",
     "A:tor:actions.rs:37",
     "A:torrent_dht:actions.rs:20",
+    // Limb C, unreviewed — see above.
+    "C:bitcoin:actions.rs:24",
+    "C:bitcoin:actions.rs:32",
+    "C:datalink:actions.rs:42",
+    "C:hls:actions.rs:21",
+    "C:icmp:actions.rs:28",
+    "C:mercurial:actions.rs:20",
+    "C:nfc:actions.rs:20",
+    "C:ntp:actions.rs:56",
+    "C:ssh_agent:actions.rs:22",
+    "C:ssh_agent:actions.rs:23",
+    "C:torrent_dht:actions.rs:20",
+    "C:torrent_peer:actions.rs:20",
+    "C:torrent_tracker:actions.rs:20",
 ];
 
 /// Bodies whose contents the model reads as a template.
@@ -350,6 +383,17 @@ fn survey() -> BTreeSet<String> {
                 }
             }
 
+            // Limb C — an `ActionDefinition`'s own `example`, which is **more** model-facing
+            // than anything limb A scans: `executable_examples_test` literally sends it, so it
+            // is the text a model copies most directly. It was outside the scan entirely until
+            // 22 September 2026, found while chasing a limb-B false positive in `mercurial` —
+            // the protocol's hex turned out to live here, in a place nothing looked.
+            for body in action_example_bodies(&src) {
+                for bytes in long_hex_literals(&body) {
+                    found.insert(format!("C:{leaf}:{file}:{bytes}"));
+                }
+            }
+
             // Limb B — a transcription living beside the const it should be generated from.
             if file == "actions.rs"
                 && declares_byte_const(&strip_comments(&directory_source(&path)))
@@ -555,4 +599,51 @@ fn the_rule_flags_the_historical_defect_and_not_its_fix() {
         2,
         "both bodies must be scanned"
     );
+}
+
+/// Every `example: json!( … )` block — an `ActionDefinition`'s own example.
+///
+/// Separate from [`bodies_of`], which keys on a function name: this is a struct field, and the
+/// text inside it is what `executable_examples_test` sends through the protocol's executor. It
+/// is the most directly copied text in the tree.
+fn action_example_bodies(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = src.as_bytes();
+    let needle = "example:";
+    let mut from = 0usize;
+    while let Some(rel) = src[from..].find(needle) {
+        let start = from + rel + needle.len();
+        from = start;
+        // Find the opening paren of `json!(`, then balance to its close.
+        let Some(open_rel) = src[start..].find('(') else {
+            break;
+        };
+        let open = start + open_rel;
+        // Only accept `json!(` immediately before it; anything else is a different field.
+        if !src[start..open].trim().ends_with("json!") {
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut end = open;
+        for (i, c) in src[open..].char_indices() {
+            match bytes[open + i] as char {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i;
+                        break;
+                    }
+                }
+                _ => {
+                    let _ = c;
+                }
+            }
+        }
+        if end > open {
+            out.push(src[open..=end].to_string());
+            from = end;
+        }
+    }
+    out
 }
