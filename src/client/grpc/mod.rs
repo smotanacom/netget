@@ -562,7 +562,7 @@ struct GrpcCallReport {
 /// Returns a [`GrpcCallReport`] when the call went out and was answered, or `None` when
 /// the per-connection state machine refused it because another call is in flight. A
 /// caller reporting a [`ClientSendOutcome`] must not turn `None` into `Sent`.
-#[allow(clippy::too_many_arguments)]
+///
 /// Returns a boxed future rather than being a plain `async fn`.
 ///
 /// The error path can retry the call the model asks for, which means this function calls

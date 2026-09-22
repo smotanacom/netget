@@ -1224,9 +1224,6 @@ async fn test_smb_write_approved_reports_byte_count() -> E2EResult<()> {
     Ok(())
 }
 
-/// The payload codec is a bijection: whatever the server shows the model on a write,
-/// feeding it straight back as `smb_read_file` content reproduces the exact bytes.
-
 /// A file operation on a connection that never authenticated must be refused.
 ///
 /// `SmbConnectionState.sessions` was written by the successful SESSION_SETUP path and then
@@ -1300,6 +1297,8 @@ async fn test_smb_file_operation_without_a_session_is_refused() -> E2EResult<()>
     Ok(())
 }
 
+/// The payload codec is a bijection: whatever the server shows the model on a write,
+/// feeding it straight back as `smb_read_file` content reproduces the exact bytes.
 #[test]
 fn smb_payload_encoding_round_trips() {
     use netget::server::smb::actions::{decode_smb_payload, encode_smb_payload};
