@@ -424,9 +424,17 @@ declare, whether or not anyone has looked at it.
 
   **This is not a call to raise them all, and the filter is sharper than it first looks.**
   Where the **server speaks first**, the peer is never the silent one and the bound cannot bite:
-  `ftp`, `pop3`, `nntp`, `ssh` and `telnet` all write a greeting on accept, as do `vnc` and `rdp`
-  by protocol definition. That set is also, not coincidentally, the 60–120s tier — the sweep
-  reasoned about a person for exactly the protocols where a person is watching a banner.
+  `ftp`, `pop3`, `nntp`, `ssh` and `telnet` all write a greeting on accept, and so does `vnc`
+  (`RFB 003.008\n` — its own module header says "RFB is server-speaks-first"). That set is also,
+  not coincidentally, most of the 60–120s tier: the sweep reasoned about a person for exactly
+  the protocols where a person is watching a banner.
+
+  **`rdp` is exempt for a different reason and the distinction matters**, because getting it
+  wrong is how a filter turns into a list nobody trusts. RDP is *client*-speaks-first — its
+  server reads a TPKT-framed X.224 Connection Request before it says anything — so the
+  greeting test does not exempt it. It is exempt because NetGet has no RDP client wired for
+  `[ send ]`, so there is no peer of ours to strand. Two different exemptions; check which one
+  applies.
 
   **The 30-second tier is the problem, because it is the client-speaks-first tier.** `http`,
   `redis`, `etcd`, `kafka`, `mongodb`, `mssql`, `ldap`, `nats` and the rest write nothing until
