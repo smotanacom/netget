@@ -455,6 +455,10 @@ halves; the constants and the reasoning live beside them in `src/server/sqs/mod.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 180s | Long polling is the reason to say what this does *not* bound: `ReceiveMessage` with `WaitTimeSeconds` holds a request open for up to 20 seconds, and that is a request in flight, held busy, outside this clock. Three minutes is nine times SQS's maximum long-poll wait and three times AWS's 60-second load-balancer idle timeout. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a response body), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — a 503 with `Retry-After` is what every AWS SDK's throttling path understands. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**NetGet's own SQS client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/sqs/mod.rs` loads an SDK config and opens no socket until an action issues a
+request — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

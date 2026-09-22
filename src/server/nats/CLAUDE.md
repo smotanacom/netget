@@ -114,6 +114,10 @@ declared now; the constants and the reasoning live beside them in `src/server/na
 | `IDLE_BETWEEN_FRAMES_TIMEOUT` | 600s | **A subscriber is legitimately silent** — it sends `SUB` once and then only receives — so this bound rests on NATS's own keepalive: `nats-server`'s `ping_interval` defaults to **2 minutes** and `async-nats` sends its own `PING` every **60 seconds**. Ten minutes sits above both, with five times the margin on the longer one. It is also well above the 300-second default a `manual` rule gives a human, which matters here in a way it does not elsewhere: the reader keeps reading while the dispatcher answers, so a peer waiting for its own reply is silent on this socket for the whole of that work. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR 'Maximum Connections Exceeded'`**, the exact line `nats-server` itself sends over `max_connections`. The peer has not sent `CONNECT`, so nothing has been negotiated and there is nothing else worth saying. |
 
+**NetGet's own NATS client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/nats/mod.rs` reads `INFO` and writes `CONNECT`, its `SUB`s and
+`PING` in one unconditional write — `PROTOCOL_QUALITY.md`'s three-state test.
+
 The deadline covers the read and nothing else. The idle close writes `-ERR 'Stale Connection'` —
 NATS's own error line, and the phrasing a real server uses when it reaps a connection that
 stopped answering — and logs `decision=fail_closed_idle_timeout`.

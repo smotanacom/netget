@@ -487,6 +487,10 @@ halves; the constants and the reasoning live beside them in `src/server/s3/mod.r
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | Deliberately more permissive than the service this mimics: AWS's own load balancers ship a 60-second idle timeout and S3 closes idle connections of its own accord, so every SDK already has the reopen path. An object body being served is not silence — the response is built under a busy guard and written by hyper. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (an object body — the largest thing this family serves), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — a 503 with `Retry-After` is S3's own overload reply (`SlowDown`), which every SDK's retry path handles. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**NetGet's own S3 client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/s3/mod.rs` builds a config to prove it is usable and drops it, opening no socket
+until an operation runs — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

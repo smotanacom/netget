@@ -216,6 +216,10 @@ each live beside them in `src/server/jsonrpc/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 75s | nginx's `keepalive_timeout` default. The obvious argument for longer is that JSON-RPC's callers are applications rather than browsers and a long-poll client can go minutes without speaking — but a *held-open* long poll is a request **in flight**, which the watchdog reports as not idle at all. What is left is a connection with nothing outstanding. |
 | `MAX_CONNECTIONS` | 256 | The shared default. Each admitted connection may buffer one body of up to 4 MiB, well inside the ~1 GiB ceiling netget's HTTP family is held to; a protocol declares a smaller number only when its per-connection cost is larger. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
 
+**NetGet's own JSON-RPC client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/jsonrpc/mod.rs` stores an endpoint and builds its HTTP client per request, opening
+no socket until an action issues one — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
 starts, and it keeps polling the connection for more input *while a request is being answered* —
 so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a

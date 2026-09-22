@@ -571,6 +571,14 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | A newsreader is idle for as long as the person at it takes to read an article, so the bound has to be on a human timescale — which is why news server operators configure their client timeout in minutes. It is safe to be this generous because this server holds nothing on the client's behalf that a reconnect cannot rebuild: the model answers every command afresh. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`400 too many connections`**. `400` is NNTP's "service temporarily unavailable, the connection is closing" response, and RFC 3977 lets a server send it at any point — including in place of a greeting, which is exactly where a refused peer is. A client reads it as *retry later* rather than as a permanent refusal, which is what a connection cap means. |
 
+**NetGet's own NNTP client is the *connected-and-silent* case, and this bound is therefore
+wrong as it stands:** `src/client/nntp/mod.rs` connects, reads the greeting in its read loop
+and writes nothing until a model action or a human's `[ send message ]`, so at 60s the server
+drops a peer the operator is still looking at. Server-speaks-first exempts nothing here: the
+bound closes a peer that is connected and silent, and the greeting is ours, not the peer's. It
+wants 300s with declared `first_byte_timeout_secs`/`idle_timeout_secs`, as `src/server/redis/`
+has — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the read and nothing else.** The LLM round-trip, and a `manual` rule parking
 a command for a human (`src/state/intercepts.rs`, 300s by default), happen after a line has
 already been read, so neither can be timed out from under itself.

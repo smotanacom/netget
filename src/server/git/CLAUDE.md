@@ -145,6 +145,10 @@ declares both halves; the constants and the reasoning live beside them in `src/s
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* requests, not a bound on a transfer. A clone is two requests on one keep-alive connection; the pack is built into a `Full<Bytes>` before the response is returned, so hyper writes an already-complete body and a slow reader is draining bytes rather than idling. git sets no keep-alive interval of its own; a client that has taken fifteen minutes to decide on its next request has gone away. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`** — Smart HTTP *is* HTTP, so `git` surfaces it as `The requested URL returned error: 503` rather than as an unexplained reset. |
 
+**NetGet's own Git client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/git/mod.rs` opens a local repository at connect and no socket at all; a clone or
+fetch happens only from an executed action — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline bounds the silence, not the transfer.** hyper owns every read once
 `serve_connection` starts and keeps polling for frames *while a request is being answered*, so a
 deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog

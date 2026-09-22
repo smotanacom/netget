@@ -294,6 +294,10 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `MAX_CONNECTIONS` | 256 | Refusal: **an ERR packet carrying error 1040 `ER_CON_COUNT_ERROR`, SQLSTATE `08004`** — precisely what a real MySQL server sends, in precisely this position, in place of the initial handshake as packet sequence 0. `mysql_async` surfaces "Too many connections" and the CLI prints `ERROR 1040 (08004)`. |
 | `packet_limit::MAX_PACKET_BYTES` | 67108864 | The number the server **publishes**. `opensrv-mysql` answers `SELECT @@max_allowed_packet` with 67108864 itself, without consulting the shim, and never compared anything against it — a published ceiling that is not applied is worse than none, because a client sizes its writes by it. Enforcing anything *smaller* would leave the same mismatch pointing the other way. Refusal: **error 1153 `ER_NET_PACKET_TOO_LARGE`, SQLSTATE `08S01`**, with the message text mysqld itself uses. |
 
+**NetGet's own MySQL client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/mysql/mod.rs`'s `Conn::new` has mysql_async answer the greeting
+with HandshakeResponse41 before any model turn — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** `AsyncMysqlIntermediary::run_on` owns the protocol loop, so there is no `read()` of ours to wrap — but it takes a *generic* reader, which is the seam. `IdleTimeoutReader` arms its clock only while a read is actually outstanding, so while `MysqlHandler` is working the reader is not being polled and no clock runs. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

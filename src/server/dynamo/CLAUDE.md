@@ -320,6 +320,10 @@ halves; the constants and the reasoning live beside them in `src/server/dynamo/m
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 180s | Strictly request/response over a pooled connection, and the SDKs' per-attempt read timeouts are measured in seconds, so a client still waiting on us gave up long ago. Three times the 60-second idle timeout AWS's own load balancers ship. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a JSON response), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — a 503 with `Retry-After` is what every AWS SDK's throttling path understands. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**NetGet's own DynamoDB client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/dynamodb/` builds no SDK client at connect and opens no socket until an action
+issues a request — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

@@ -163,6 +163,11 @@ the constants and the reasoning live beside them in `src/server/grpc/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | gRPC keepalive is **off by default** on both sides (grpc-go leaves `keepalive.ClientParameters.Time` unset and its server policy refuses pings more often than five minutes), so there is no interval to copy. Fifteen minutes is safe because of a property of *this* server: it is unary-only — no server-streaming route exists, reflection included — so no legitimate request is held open waiting for something to happen. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately in the older protocol — the same choice `src/server/etcd/mod.rs` makes. A refused peer has not sent the HTTP/2 preface, so nothing has been negotiated and a GOAWAY would have to follow a SETTINGS exchange this server is declining. |
 
+**NetGet's own gRPC client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/grpc/mod.rs` uses tonic's eager `Endpoint::connect()` rather than
+`connect_lazy()`, so the HTTP/2 preface goes out before any model turn —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
 starts, and it keeps polling the connection for new frames *while a request is being answered* —
 so a deadline on reads would be wrong here, not merely awkward. The idle bound is a watchdog over

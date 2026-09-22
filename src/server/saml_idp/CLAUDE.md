@@ -201,6 +201,10 @@ each live beside them in `src/server/saml_idp/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 60s | These endpoints are reached two ways and the two pull in opposite directions: a **browser** does one redirect round and never comes back on that connection (Apache's `KeepAliveTimeout` of 5s is tuned for exactly that), while a **relying party's back-channel** client — token exchange, introspection, a JWKS or metadata fetch — reuses a pooled connection (nginx's 75s is tuned for that). 60s is comfortably past any pooled back-channel round trip and does not let a browser that navigated away hold a slot for minutes. Nothing here streams or long-polls. **The five-minute numbers these specifications do quote are not this number**: an assertion's `NotOnOrAfter` and an `id_token`'s `exp` bound how long a *credential* may be presented, not how long a socket may be silent. |
 | `MAX_CONNECTIONS` | 256 | The shared default. Each admitted connection may buffer one body of up to 256 KiB, well inside the ~1 GiB ceiling netget's HTTP family is held to; a protocol declares a smaller number only when its per-connection cost is larger. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, written straight onto the socket — the peer has sent no request line for hyper to answer — and logged `decision=fail_closed_connection_cap`. Fixed bytes, so nothing derived from an error can reach the wire. |
 
+**NetGet's own SAML client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/saml/` contains no `reqwest`, `TcpStream` or `lookup_host` at all — `initiate_sso`
+builds a redirect URL for a browser to carry — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
 starts, and it keeps polling the connection for more input *while a request is being answered* —
 so a deadline on those reads would be wrong here, not merely awkward. The idle bound is a

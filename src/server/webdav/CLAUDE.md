@@ -183,6 +183,10 @@ live beside them in `src/server/webdav/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* requests, not a bound on a transfer. A `GET` returns whatever the model says the file contains, built into a `Full<Bytes>` before the response is returned, so a client dragging a large file down is draining bytes rather than idling. A mounted share (Finder, gvfs, `reqwest_dav`) polls far more often than fifteen minutes; one silent that long has unmounted or died without closing. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**. A DAV client reports the status; an unexplained reset would have it record a permanent fault. |
 
+**NetGet's own WebDAV client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/webdav/mod.rs` deliberately builds no client at connect; its `reqwest::Client` is
+built on the first request an action makes — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline bounds the silence, not the transfer.** hyper owns every read once
 `serve_connection` starts and keeps polling for frames *while a request is being answered*, so a
 deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog

@@ -247,6 +247,10 @@ beside them in `src/server/stomp/mod.rs`.
 | `IDLE_BETWEEN_FRAMES_TIMEOUT` | 1800s (30 min) | **The one bound here that can close a well-behaved client, stated rather than hidden.** A subscriber sends `SUBSCRIBE` once and then only receives, and this server negotiates heart-beating off unconditionally (`STOMP_HEARTBEAT` is `0,0`, because there is no timer here and promising one would be a lie), so there is no keepalive interval to sit above and no traffic from an idle subscriber at all. A finite bound is still required. Thirty minutes is measured against what a real broker does: ActiveMQ and RabbitMQ negotiate heart-beats at 10–60s and cut a peer at twice the interval, so this is 30–180× more patient. A client that wants longer has a cheap way to say so — a bare EOL is a STOMP heart-beat, the parser drains it as one, and it counts as inbound activity. |
 | `MAX_CONNECTIONS` | 256 | Refusal: a well-formed **`ERROR` frame** with `message:too many connections`, built through `frame::error_frame` rather than as a byte literal so escaping and the `content-length`/NUL rules stay the encoder's job. The spec has the server close after an `ERROR`, which is exactly the shape of a refusal. |
 
+**NetGet's own STOMP client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/stomp/mod.rs` writes its `CONNECT` frame and waits for `CONNECTED`
+before returning — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the `read()` and nothing else**, and here that is stronger than it sounds:
 `handle_frame` is awaited in the same task, so while the model is answering — or a `manual` rule
 is parked for a human — nothing is being read and no clock is running. What the bound measures is

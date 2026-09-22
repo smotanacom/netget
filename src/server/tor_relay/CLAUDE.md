@@ -520,6 +520,10 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_CELLS_TIMEOUT` | 900s | Derived from Tor's own answer to the same question. `KeepalivePeriod` defaults to five minutes: a relay sends a PADDING cell that often on an open connection precisely so an idle-but-live link keeps proving it is live through firewalls. Three of those periods with neither a cell nor a padding keepalive means the peer is gone, not quiet. (`CircuitIdleTimeout`, an hour, is about circuits, not about a connection producing nothing at all.) |
 | `MAX_CONNECTIONS` | 256 | The cap is applied on the raw TCP accept, before the TLS handshake, so the only vocabulary available is TLS's: **a plaintext fatal alert, `internal_error`**. The Tor link protocol has nothing at all that may precede VERSIONS. |
 
+**There is no NetGet client of the relay link protocol**, so this bound has no peer of ours to
+strand; `src/client/tor/` is an Arti circuit client, which would drive its own link handshake
+from inside `connect()` if pointed here — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline is armed immediately before the `select!` and covers only the wait, not the loop body — `handle_cell` awaits the model above it and may park a cell for a human, and none of that time is counted. **Not covered:** the outbound exit-stream forwarder (`spawn_stream_forwarder`) reads from a target this relay dialled out to, not from an inbound peer, so it is outside this bound. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

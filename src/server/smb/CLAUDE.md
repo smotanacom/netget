@@ -624,6 +624,11 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `BODY_READ_TIMEOUT` | 30s | A different claim, and much shorter: the peer has said "this many bytes are coming" and the server has already allocated for them. Every announced-body read now goes through `read_body_exact` / `read_body`; each was an unbounded `read_exact` before. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, as a real SMB server does. Every SMB2 response echoes the request's MessageId, TreeId and SessionId, and a refused peer has sent no request to echo. Samba past `max smbd processes` and Windows past its connection limit both close without a message. |
 
+**NetGet's own SMB client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/smb/mod.rs` only initialises a libsmbclient context, and NEGOTIATE goes out inside
+the library on the first `opendir`/`open` an action runs — `PROTOCOL_QUALITY.md`'s three-state
+test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

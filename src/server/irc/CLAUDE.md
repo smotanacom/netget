@@ -525,6 +525,10 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 1800s | IRC is long-lived by nature: a registered client may sit in a channel for a whole working day without typing, and closing that breaks the protocol's own use rather than defending it. Half an hour is still an order of magnitude above any ircd's own liveness bound — InspIRCd and UnrealIRCd ping an idle client every 120 seconds and drop it after roughly twice that. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **`ERROR :Closing Link: too many connections`**. That is IRC's own way of ending a link before registration and verbatim what a real ircd sends at its connection limit; this file already uses the same form for an over-long line. |
 
+**NetGet's own IRC client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/irc/mod.rs` writes `NICK` and `USER` unconditionally before any
+model turn or keystroke — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline wraps the read and nothing else.** It is a `tokio::time::timeout` around
 `read_irc_line`, which is shared with the IRC *client* and is left untouched. The model
 round-trip, and a `manual` rule parking a message for a human (`src/state/intercepts.rs`, 300s by

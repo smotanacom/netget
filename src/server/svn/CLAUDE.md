@@ -284,6 +284,10 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 180s | ra_svn after the greeting is strictly request/response, so seconds of silence normally means the client is gone. The exception, and the reason this is minutes, is that `svn` prompts for credentials on the user's terminal *mid-session*: a human typing a password is a legitimate multi-minute pause with the connection live and nothing on the wire. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **ra_svn's own `( failure ( ( 210003 … ) ) )` tuple** — apr-err 210003, the code this file already uses for "at capacity" rather than "your request was wrong". A client reading it where it expected a greeting reports malformed data, which is a real limit of speaking before the greeting; what it buys is an operator, a packet capture and a `nc` session that can all see the reason in the bytes. |
 
+**There is no NetGet Subversion client** — `src/client/svn/` holds a `CLAUDE.md` and no Rust,
+and nothing registers it — so this bound has no peer of ours to strand, the fourth exemption in
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read_item()` call in
 this protocol's own loop, and everything that can legitimately take minutes happens after it
 returns. The LLM round-trip, and a `manual`

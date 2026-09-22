@@ -299,6 +299,10 @@ more. It now declares both halves; the constants and the reasoning live beside t
 | `BODY_READ_TIMEOUT` | — | The announced-body read shares the bound above; a peer that declares a packet length and then stalls is closed. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, as a real SQL Server does. TDS has no message a server may send to a client still in PRELOGIN: every server packet is a typed response to a request, and a TABULAR_RESULT with an ERROR token read in that state is a framing violation rather than a diagnosis. |
 
+**NetGet's own MSSQL client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/mssql/mod.rs` hands the socket to tiberius, which sends PRELOGIN
+and LOGIN7 before returning — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an

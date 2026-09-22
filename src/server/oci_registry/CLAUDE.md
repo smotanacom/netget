@@ -257,6 +257,9 @@ halves; the constants and the reasoning live beside them in `src/server/oci_regi
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | The number is about the *gaps* in a pull rather than the pull: `crane pull` fetches a manifest, then each blob, verifying digests and writing layers to disk in between. A blob being served is not silence. Four times nginx's `keepalive_timeout` default of 75s. |
 | `MAX_CONNECTIONS` | 256 | Each admitted connection may hold one whole in-memory response body (a blob or manifest body), so the cap turns that per-connection bound into a total one. Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After: 5`** — the distribution specification's own clients retry a 503 with backoff. Nothing of netget's reaches the wire; the reason is logged under `decision=fail_closed_connection_cap`. |
 
+**There is no NetGet OCI-registry client**, so this bound has no peer of ours to strand — the
+fourth exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The idle bound is a watchdog, not a read deadline, and that is not a stylistic choice.** hyper
 owns every read once `serve_connection` starts and keeps polling the connection for new frames
 *while a request is being answered*, so a deadline on those reads would fire in the middle of an

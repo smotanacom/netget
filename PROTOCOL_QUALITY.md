@@ -422,42 +422,61 @@ declare, whether or not anyone has looked at it.
   grep -rn 'const FIRST_.*from_secs' src/server/*/mod.rs   # the bounds
   ```
 
-  **This is not a call to raise them all, and the filter is sharper than it first looks.**
-  Where the **server speaks first**, the peer is never the silent one and the bound cannot bite:
-  `ftp`, `pop3`, `nntp`, `ssh` and `telnet` all write a greeting on accept, and so does `vnc`
-  (`RFB 003.008\n` — its own module header says "RFB is server-speaks-first"). That set is also,
-  not coincidentally, most of the 60–120s tier: the sweep reasoned about a person for exactly
-  the protocols where a person is watching a banner.
+  **This is not a call to raise them all, and the two exemptions first written here were both
+  the wrong test.** "The server speaks first" and "the client registers no command channel" fit
+  **none** of the protocols later measured: every client examined registers a command channel,
+  and a greeting of *ours* does nothing to make the *peer* speak. A first-byte bound can only
+  close a peer that is **connected and silent**, so the question is the narrower one: *can
+  NetGet's own client of this protocol ever be a connected-and-silent peer?*
 
-  **`rdp` is exempt for a different reason and the distinction matters**, because getting it
-  wrong is how a filter turns into a list nobody trusts. RDP is *client*-speaks-first — its
-  server reads a TPKT-framed X.224 Connection Request before it says anything — so the
-  greeting test does not exempt it. It is exempt because NetGet has no RDP client wired for
-  `[ send ]`, so there is no peer of ours to strand. Two different exemptions; check which one
-  applies.
+  **Three states, and a byte count alone conflates the first with the third — measure accepts
+  and bytes separately.**
 
-  **The 30-second tier is the problem, because it is the client-speaks-first tier.** `http`,
-  `redis`, `etcd`, `kafka`, `mongodb`, `mssql`, `ldap`, `nats` and the rest write nothing until
-  the peer asks — so a NetGet client whose connect event was answered with nothing has sent zero
-  bytes and is holding an idle socket for exactly as long as the person takes. Check it per
-  protocol rather than by tier:
+  - **lazy** — no socket at all until the client sends. A `reqwest`-based client, an AWS or
+    `kube` SDK config, a tonic channel built with `connect_lazy`. There is no connection for
+    the bound to close. Measured: `elasticsearch`, `s3`, `sqs`, `etcd`, `smb`, `http`,
+    `jsonrpc`, `maven`, `npm`, `pypi`, `webdav`, `xmlrpc`, `bitcoin`, `git`, `kubernetes`,
+    `oauth2`, `openapi`, `rss`, `dynamodb`, `saml`, `ipp`.
+  - **speaks inside `connect()`** — connected, and the client's own Rust or its library puts
+    the first bytes on the wire before any model turn or keystroke. Measured: `postgresql`
+    (StartupMessage), `mssql` (PRELOGIN), `cassandra` (OPTIONS), `mongodb`'s SDAM `hello`,
+    `couchdb` (an HTTP request), `imap` (LOGIN), `irc` (NICK/USER), `kafka` (ApiVersions),
+    `nats` (CONNECT), `stomp` (CONNECT), `tls` (ClientHello), `mysql` (HandshakeResponse41),
+    `zookeeper` (ConnectRequest), `ssh` (ident + userauth), `vnc` (the RFB version reply),
+    `nfs` (GETPORT + MNT), `grpc` (tonic's eager `connect()`), `mcp` (`initialize`),
+    `openidconnect` (discovery), `dc` (`$Key`/`$ValidateNick`).
+  - **connected and silent** — a socket is open and the client writes nothing until a model
+    action or a human's `[ send message ]`. **This is the defect**: 30 or 60 seconds is shorter
+    than the 300 a `manual` rule gives that same person (`src/state/intercepts.rs`), so the
+    server drops a peer the operator is still looking at. Measured: `redis` (1 accept, 0
+    bytes), `tcp`, `telnet`, `ldap`, `whois`, `ftp`, `nntp`, `pop3`, `torrent_peer`, and `tls`
+    at the application layer.
 
-  ```bash
-  grep -cE 'write_all\(b"' src/server/<p>/mod.rs   # a greeting on accept means exempt
-  ```
+  A fourth, simpler exemption: **no NetGet client of this protocol at all** — `db2`, `m3ua`,
+  `memcached`, `modbus`, `oci_registry`, `rdp`, `reverse_shell`, `snowflake`, `spark`, `yarn`,
+  `svn`, `mercurial`, `saml_sp` (the SAML client plays the SP role and targets an IdP). Note
+  that `svn`, `mercurial` and `oracle` have a `src/client/<p>/` directory holding only a
+  `CLAUDE.md`, so a directory listing over-reports.
 
-  Where the peer can be a NetGet client waiting on a person, 30 seconds is shorter than a
-  person, and the number this product already uses for "how long someone might take" is 300
-  (`src/state/intercepts.rs`).
+  **Two traps the classification itself produced.** A server-speaks-first protocol is *not*
+  exempt: `ftp`, `nntp` and `pop3` each write a greeting on accept and their own clients still
+  read it and say nothing, which is exactly the case the bound closes. And where a client
+  speaks only *after* its connected-event model turn — `dc` — it is exempt because the
+  dashboard answers a `<proto>_connected` event with a zero-action static rule
+  (`src/tui/modal/form.rs`), not because the turn is fast.
 
-  `tcp` is done and is the worked example: default raised to 300s, and both bounds made
-  declared startup parameters so the value is the operator's rather than ours. *Effort:* M.
+  Derive it per protocol rather than trusting the lists above: read `connect()` and ask whether
+  it opens a socket, and whether anything writes to it before the function returns.
 
-  **The sweep is in flight (22 September 2026), split three ways over the 32 candidates** a
-  scripted scan produced — short bound, drivable client, no greeting found on accept. Each
-  agent is told the scan is **not authoritative** and that it is the check on it: `vnc` is on
-  the list and should come off, because RFB is server-speaks-first and its own module header
-  says so. A protocol correctly reported exempt is as good an outcome as one changed.
+  `tcp`, `redis`, `ldap` and `whois` are done and are the worked examples: default raised to
+  300s, and both bounds made declared startup parameters so the value is the operator's rather
+  than ours. Each `src/server/<p>/CLAUDE.md` with a first-byte bound now records which of the
+  four states its own client is in, beneath the bounds table. *Effort:* M.
+
+  **Still open (22 September 2026), each a measured connected-and-silent client against a short
+  bound:** `ftp` (60s), `nntp` (60s), `pop3` (60s), `torrent_peer` (30s), `tls` (60s, the
+  application half of `FIRST_RECORD_READ_TIMEOUT`) and `telnet` (120s, and the only one of the
+  five originally-changed protocols with no `first_byte_timeout_secs` to raise it with).
 
 - [ ] **A connection cap on every accept loop.** A shared `accept_bounded(listener, max)` helper
   in `server/` that every accept loop calls, refusing past the cap with the protocol's own

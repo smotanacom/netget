@@ -244,6 +244,13 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_LINES_TIMEOUT` | 600s | Cisco IOS's `exec-timeout 10 0` default for vty lines — the canonical idle bound for exactly the kind of device an operator points this server at, and therefore the number every telnet user already expects. A session here is long-lived by nature: a person thinks, reads output, and types again. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain notice line**, `\r\n[netget] too many connections\r\n`. Telnet has no error frame — it is a byte stream with a human on the other end — so the protocol-appropriate refusal is the same fixed notice this file already writes for an over-long line. A terminal prints it; no client can mistake it for a prompt or a login success. |
 
+**NetGet's own telnet client is the *connected-and-silent* case, and this bound is therefore
+still short:** `src/client/telnet/mod.rs` writes nothing until a model action or a human's `[
+send message ]` (its only unprompted write is a reactive IAC reply), so two minutes is less
+than the 300s a `manual` rule gives that same person, and unlike `tcp` there is no
+`first_byte_timeout_secs` for an operator to raise it with — `PROTOCOL_QUALITY.md`'s three-
+state test.
+
 **The deadline wraps the read and nothing else.** `TelnetLineReader::next_line` takes the bound
 and applies it to the wait for *more bytes*, so a person on a slow link who is still typing keeps
 the connection. The LLM round-trip and a `manual` rule parking a line for a human

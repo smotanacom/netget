@@ -273,6 +273,10 @@ the port. It now declares both halves; the constants and the reasoning live besi
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* requests. Every response here is a `Full<Bytes>`, and `?watch=true` — the one long-lived shape the Kubernetes API defines — is explicitly refused rather than streamed, so no legitimate request is held open waiting for something to happen. A real `kube-apiserver` closes an idle HTTP/1 connection well before fifteen minutes; `kubectl` connects, asks and exits. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **plaintext HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately plaintext — a refused peer has not completed a TLS handshake and a TLS alert would have to be preceded by one this server is declining to perform. |
 
+**NetGet's own Kubernetes client is *lazy*, so it is never the silent peer this bound closes:**
+`src/client/kubernetes/mod.rs` builds a `kube::Client` from kubeconfig or in-cluster inference
+and contacts no apiserver until an action does — `PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadline bounds the silence, not the transfer.** hyper owns every read once
 `serve_connection` starts and keeps polling for frames *while a request is being answered*, so a
 deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog

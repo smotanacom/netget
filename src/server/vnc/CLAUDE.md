@@ -245,6 +245,11 @@ live beside them in `src/server/vnc/mod.rs`.
 | `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 1800s | The length is dictated by RFB, not by taste: a viewer that has issued an *incremental* `FramebufferUpdateRequest` is required to say nothing more until the server has an update for it, so a healthy client watching an unchanging screen is silent for as long as the screen does not change. Closing that would be the TFTP mistake — measuring "idle" on a connection in the middle of the protocol's own normal behaviour. Half an hour is longer than any interval an operator leaves a viewer attached across, and still turns "forever" into a bound. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. RFB *has* a refusal — a security-type count of zero followed by a reason string — but it may only be sent after the peer has returned its own ProtocolVersion, and a capped connection is refused before a byte has been read. Writing the version banner and then hanging up would be worse than silence: it starts a handshake this server has already declined, and the viewer reports a truncated connection rather than a refused one. `accept_bounded` logs it at WARN with `decision=fail_closed_connection_cap`. |
 
+**NetGet's own VNC client *speaks inside `connect()`*, so it is never the silent peer this
+bound closes:** `src/client/vnc/mod.rs`'s `perform_handshake` writes `RFB 003.008\n`, the
+security byte, ClientInit and SetEncodings before the first model turn —
+`PROTOCOL_QUALITY.md`'s three-state test.
+
 **The deadlines are applied with `IdleTimeoutReader`, not a `tokio::time::timeout` around one
 call**, because RFB reads are scattered: the version exchange, the security choice, `ClientInit`,
 each message-type octet and each message body are separate reads, and a peer that sends a message
