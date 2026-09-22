@@ -165,9 +165,12 @@ one has been answered, so a connection can never have two calls in flight.
 
 - `tag_type` — `type2`, `type4` (default), `generic`. Reported to the handler in every APDU event.
 - `uid` — hex; a random 7-byte UID is generated when omitted. Also reported in every APDU event.
+- `first_byte_timeout_secs` — seconds a connected reader may send no frame at all (default 30).
+- `idle_timeout_secs` — seconds an established reader may send no further frame (default 300).
 
-Both are declared and both are read. Neither is interpreted by the server: nothing here
-answers `FF CA 00 00` (PC/SC GET UID) on the handler's behalf.
+All four are declared and all four are read. Neither `tag_type` nor `uid` is interpreted by the
+server: nothing here answers `FF CA 00 00` (PC/SC GET UID) on the handler's behalf. The two
+deadlines are argued in "Connection bounds" below.
 
 ## No built-in card logic
 
@@ -201,6 +204,45 @@ storage implemented inside a protocol, which the root CLAUDE.md forbids.
   it "still pulls `pcsc` and `ndef-rs`"; neither is true, and `ndef-rs` has never been in the
   manifest at all. `pcsc` belongs to `nfc-client`, which is the only consumer. There is no
   feature to split.)
+
+## Connection bounds
+
+A reader that connects and says nothing holds a socket, a task and an `AppState` row, and until
+September 2026 it held them forever: this server had no read deadline and accepted without
+limit, so 128 silent connections were a free denial of service on a server that would have
+taken 128 more.
+
+Two deadlines now bound the silence, and only the silence — the deadline wraps the read and
+nothing else, so the model round-trip that answers an APDU (and a `manual` rule parking that
+APDU for a human) sits outside it by construction:
+
+| bound | default | overridable with |
+|---|---|---|
+| first frame from a connected reader | 30s | `first_byte_timeout_secs` |
+| further frames on an established reader | 300s | `idle_timeout_secs` |
+
+**Why 30 seconds is right here and 300 is right for `tcp`/`redis`.** Those protocols settled on
+300 because the peer is frequently NetGet's own client of the same protocol, created from the
+dashboard's `[ + <proto> client ]` and parked at `[ send message ]` waiting for a person — it has
+sent nothing the whole time, and a short bound drops it while the operator watches. That state
+cannot exist here. `src/client/nfc/` is a **PC/SC** client: it establishes a `pcsc::Context` and
+drives a physical reader, and never opens a socket to the address the dashboard pre-fills. Nor
+does this server register a peer channel, so there is no `[ message ]` whose answer a reader
+could be waiting on. Every peer this listener can have — a `vpcd` ifdhandler driven by `pcscd`,
+or a test — speaks first and at once, because vpcd is reader-driven by construction.
+
+The body of an announced frame is bounded by the *same* deadline as its length prefix, not by
+the longer idle one: two bytes must not be enough to buy a peer the established-connection
+bound, or the first-byte bound is one `write` away from being irrelevant.
+
+**Connection cap**: `accept_bounded::DEFAULT_MAX_CONNECTIONS` (256), which turns the 4 KiB
+per-reader buffer into a 1 MiB total. A refused reader is told **nothing** and the socket
+closes. That is deliberate: every frame this server can write is a card *response*, and one
+arriving unprompted would be read by the ifdhandler as the answer to whatever it asks next.
+vpcd framing has no error frame to say "full" with, so this is the deliberately-silent case —
+the refusal is logged `decision=fail_closed_connection_cap` instead.
+
+Tests: `tests/server/nfc/connection_bounds_test.rs`, three cases driven from a raw socket.
 
 ## References
 

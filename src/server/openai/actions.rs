@@ -83,6 +83,34 @@ impl OpenAiProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for OpenAiProtocol {
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description:
+                    "Seconds a connected peer may send no request at all before the server \
+                     closes it. Default 30: HTTP is client-speaks-first, and NetGet's own \
+                     OpenAI client opens no socket until it has a request to send, so nothing \
+                     here is ever connected and waiting on a person."
+                        .to_string(),
+                required: false,
+                example: json!(30),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description:
+                    "Seconds an established connection may sit silent between requests before \
+                     the server closes it. Default 300, chosen to stay above the 90 seconds \
+                     reqwest and most OpenAI SDKs keep an idle pooled connection: a shorter \
+                     bound races the pool and loses a non-idempotent completion request."
+                        .to_string(),
+                required: false,
+                example: json!(300),
+            },
+        ]
+    }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![list_active_chats_action()]
     }
@@ -190,6 +218,20 @@ impl Server for OpenAiProtocol {
     > {
         Box::pin(async move {
             use crate::server::openai::OpenAiServer;
+
+            // Both read deadlines are the operator's to choose: who is on the other end is
+            // the only thing that decides them, and only the operator knows that.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             OpenAiServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
@@ -197,6 +239,8 @@ impl Server for OpenAiProtocol {
                 ctx.status_tx,
                 false,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

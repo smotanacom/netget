@@ -521,6 +521,49 @@ C: </stream:stream>
 S: </stream:stream>
 ```
 
+## Connection bounds
+
+A peer that connects and says nothing holds a socket, a task and an `AppState` row. Until
+September 2026 it held them forever: this server had no read deadline and accepted without
+limit.
+
+| bound | default | overridable with |
+|---|---|---|
+| first bytes from a connected peer | 30s | `first_byte_timeout_secs` |
+| further bytes on an open stream | 900s | `idle_timeout_secs` |
+
+The deadline wraps `read_half.read(&mut temp_buf)` and nothing else, so the model round-trip
+that answers a stanza — and a `manual` rule parking it for a human — sits outside it by
+construction. The switch between the two bounds is `stream_opened`, which is set the moment
+this server writes its first byte; on a server whose opening stream tag *is* the model's answer
+to the peer's first event, that is the honest definition of an established stream.
+
+**Why 30 for the first byte.** RFC 6120 §4.2 puts the opening `<stream:stream>` on the
+initiating entity, so a peer that has sent nothing has begun no stream — and this server cannot
+answer until it has one, because its first event is the peer's own bytes. ejabberd's
+`negotiation_timeout` defaults to 30 seconds for the same phase. NetGet's own XMPP client is
+built on `tokio-xmpp`, which sends that header from inside its connect path, so it is the
+"speaks inside `connect()`" case and never the connected-and-silent one that made `tcp`,
+`redis` and `whois` settle on 300. (In practice it is not a peer here at all: `XmppClient::new`
+dials the JID's domain via SRV, not the `127.0.0.1:<ephemeral>` the dashboard pre-fills.)
+
+**Why 900 for idle.** A silent XMPP session is the normal case, not a broken one: a connected
+person who is not typing sends nothing, and that is what the protocol is for. Neither ejabberd
+nor Prosody closes an authenticated session for idleness at all, so there is no upstream number
+to copy — this bound exists so the socket is not held forever, not to enforce a session policy.
+Fifteen minutes is above every keepalive interval real clients use (RFC 6120 §4.6.1 whitespace
+keepalives and XEP-0199 pings run one to five minutes), so a client that intends to stay
+connected refreshes it several times over.
+
+**Connection cap**: `accept_bounded::DEFAULT_MAX_CONNECTIONS` (256), which turns the 256 KiB
+`MAX_XMPP_BUFFER_BYTES` into a 64 MiB total — and with a fifteen-minute idle bound, a cap is
+the only thing standing between this server and `900s × accept rate` simultaneous silent
+streams. A peer over it gets a `<policy-violation/>` stream error (RFC 6120 §4.9.3.14) wrapped
+in the synthesised opening and closing stream tags §4.9.1.1 requires, then the socket closes.
+
+Tests: `tests/server/xmpp/connection_bounds_test.rs`, driven from a raw socket with a static
+routing rule and zero LLM calls.
+
 ## References
 
 - [RFC 6120: XMPP Core](https://datatracker.ietf.org/doc/html/rfc6120)

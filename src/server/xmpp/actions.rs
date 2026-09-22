@@ -64,13 +64,41 @@ impl XmppProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for XmppProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![crate::llm::actions::ParameterDefinition {
-            name: "domain".to_string(),
-            type_hint: "string".to_string(),
-            description: "XMPP server domain name (e.g., 'localhost', 'example.com')".to_string(),
-            required: false,
-            example: serde_json::json!("localhost"),
-        }]
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "domain".to_string(),
+                type_hint: "string".to_string(),
+                description: "XMPP server domain name (e.g., 'localhost', 'example.com')"
+                    .to_string(),
+                required: false,
+                example: serde_json::json!("localhost"),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description:
+                    "Seconds a connected peer may send nothing at all before the server closes \
+                     it. Default 30, the window ejabberd's `negotiation_timeout` gives for the \
+                     same phase: RFC 6120 §4.2 has the initiating entity send the opening \
+                     stream header first, so a peer that has sent nothing has begun no stream."
+                        .to_string(),
+                required: false,
+                example: serde_json::json!(30),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an established stream may carry no further bytes before the \
+                     server closes it. Default 900. A silent XMPP session is normal — a \
+                     connected person who is not typing sends nothing — and neither ejabberd \
+                     nor Prosody closes one at all, so this bounds the held socket rather than \
+                     enforcing a session policy; it sits above every keepalive interval real \
+                     clients use."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(900),
+            },
+        ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         // XMPP could have async actions like broadcast_message in the future
@@ -207,6 +235,19 @@ impl Server for XmppProtocol {
                 .flatten()
                 .unwrap_or_else(|| DEFAULT_XMPP_DOMAIN.to_string());
 
+            // Both read deadlines are the operator's to choose: who is on the other end is
+            // the only thing that decides them, and only the operator knows that.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             XmppServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
@@ -214,6 +255,8 @@ impl Server for XmppProtocol {
                 ctx.status_tx,
                 ctx.server_id,
                 domain,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

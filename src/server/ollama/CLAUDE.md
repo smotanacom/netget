@@ -276,3 +276,54 @@ Run an Ollama server on 0.0.0.0:11435 that always returns funny responses
 ```
 Create a fake Ollama server for testing on port 8080
 ```
+
+## Connection bounds
+
+A peer that connects and says nothing holds a socket, a task and an `AppState` row. Until
+September 2026 it held them forever: this server had no read deadline and accepted without limit.
+
+| bound | default | overridable with |
+|---|---|---|
+| first request from a connected peer | 30s | `first_byte_timeout_secs` |
+| silence between requests on a keep-alive connection | 300s | `idle_timeout_secs` |
+
+**The two are enforced in different places, and that is the whole design of a hyper server's
+bounds.** hyper owns every read once `serve_connection` starts, and it keeps polling the
+connection for new frames while a request is being answered — so a deadline on *its* reads fires
+in the middle of a model round-trip, which on this server is the normal case rather than the slow
+one. So:
+
+* the first-byte bound is a `TcpStream::peek` **before** `serve_connection` is called. `peek`
+  waits for data without consuming it, so the request line is still there for hyper afterwards;
+* the idle bound is `watch_idle` over a `ConnectionActivity` the service holds busy for the whole
+  of each request. A connection with work in flight is not idle at all, so a model round-trip —
+  and a `manual` rule parking the event for a human — can never be closed from under itself.
+
+This is the shape `etcd` and `s3` established; see `src/server/etcd/mod.rs`.
+
+**Why 30 for the first byte.** HTTP is client-speaks-first, and the peer that made `tcp`,
+`redis` and `whois` settle on 300 cannot exist here. That peer is NetGet's own client of the same
+protocol, created from the dashboard's `[ + ollama client ]` and parked at `[ send message ]`
+having sent nothing — but `src/client/ollama/` normalises the endpoint into a URL, stores it,
+registers a command channel and returns, opening no socket at all. Its first TCP connection is
+made inside the request that carries a body, so there is no state in which it is attached to this
+listener waiting for a person. 30 seconds sits between nginx's `client_header_timeout` default of
+60s and Apache's `RequestReadTimeout header=20`.
+
+**Why 300 for idle — chosen against the clients, not the service.** Every SDK here pools
+connections, and `reqwest` keeps an idle pooled connection for 90 seconds before evicting it. An
+idle bound below that races the pool: the client hands a request to a connection the server has
+just closed, and `/api/generate` is not idempotent, so it surfaces as a failed request rather than
+a retry. At 300 seconds the pool always evicts first.
+
+**Connection cap**: `accept_bounded::DEFAULT_MAX_CONNECTIONS` (256), which turns the 8 MiB
+`MAX_REQUEST_BODY_BYTES` into a total bound. A peer over it is told `503 Service Unavailable` with
+a `Retry-After` and a JSON body carrying `{"error": "..."}` — the envelope real Ollama uses for
+its own errors, so `ollama-rs` surfaces it as a server error with a message rather than as a
+decode failure. A silent close would be indistinguishable from a crash and the client would retry
+immediately and forever.
+
+Tests: `tests/server/ollama/connection_bounds_test.rs`, driven from a raw socket with a static
+routing rule and zero LLM calls. Its third case asserts the refusal's hand-written
+`Content-Length` matches its body — a wrong one hangs every client waiting for bytes that are not
+coming, which is worse than the silent close the refusal replaced.

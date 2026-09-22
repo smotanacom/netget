@@ -30,6 +30,66 @@ use crate::server::ollama::actions::{
 };
 use crate::state::app_state::AppState;
 
+/// How long a peer that has connected and sent nothing at all may hold this connection.
+///
+/// **NetGet's own Ollama client cannot be this peer**, which is what decides the number. The
+/// `[ + ollama client ]` button creates `src/client/ollama/`, and that client opens no socket
+/// in `connect()` at all: it normalises the endpoint into a URL, stores it, registers a command
+/// channel and returns. Its first TCP connection is made by `reqwest` inside the request that
+/// carries a body — the "lazy" case, not the "connected and silent" one that made `tcp`,
+/// `telnet`, `ldap`, `whois` and `redis` settle on 300 seconds. There is no state in which that
+/// client is attached to this listener waiting for a person to type into `[ send message ]`,
+/// because until they do there is no connection to wait on.
+///
+/// So every peer this listener can have is an HTTP client — `ollama-rs`, the `ollama` CLI,
+/// curl, another NetGet — and HTTP is client-speaks-first: the request line is the first thing
+/// on the wire. Thirty seconds sits between nginx's `client_header_timeout` default of 60s and
+/// Apache's `RequestReadTimeout header=20`, which bound exactly this, and it is what `s3` and
+/// `etcd` already use here for the same reason.
+///
+/// Enforced with `TcpStream::peek` **before** hyper sees the socket. hyper owns every read once
+/// `serve_connection` starts and keeps polling for frames while a request is being answered, so
+/// a deadline on its reads would fire in the middle of a model round-trip. `peek` waits for
+/// data without consuming it, so the request line is still there for hyper afterwards.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an established connection may sit **silent** between requests.
+///
+/// This bounds silence and never a request. A request being answered holds
+/// [`ConnectionActivity`](crate::server::accept_bounded::ConnectionActivity) busy for the whole
+/// of it — the model round-trip included, and a `manual` rule parking the event for a human
+/// (`src/state/intercepts.rs`, 300s by default) — and `watch_idle` reports a busy connection as
+/// not idle at all, so the clock only ever runs on a connection with nothing in flight. That
+/// matters more here than for most servers: a `/api/generate` answer *is* model output, and a
+/// perfectly healthy one can take minutes.
+///
+/// Five minutes, chosen against the clients rather than against the service. `ollama-rs` and
+/// every other HTTP client here pool connections, and `reqwest` keeps an idle pooled connection
+/// for 90 seconds before evicting it. An idle bound below that races the pool — the client
+/// hands a request to a connection the server has just closed, and `POST /api/generate` is not
+/// idempotent, so it surfaces as a failed generation rather than a retry. At 300 seconds the
+/// pool always evicts first and the race cannot happen.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent connections this server admits.
+///
+/// [`accept_bounded::DEFAULT_MAX_CONNECTIONS`](crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS).
+/// Each admitted connection may buffer a request of up to [`MAX_REQUEST_BODY_BYTES`], so the
+/// cap is what turns that 8 MiB per-connection bound into a total one. It is far above the pool
+/// any Ollama client opens against one endpoint and far below what socket exhaustion needs.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `503 Service Unavailable` with a `Retry-After`, in the JSON envelope real Ollama uses for
+/// its own errors (`{"error": "..."}`), so `ollama-rs` surfaces it as a server error with a
+/// message rather than as a decode failure. A silent close would be indistinguishable from a
+/// crash, and the client would retry immediately and forever.
+pub const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Type: application/json\r\nContent-Length: 39\r\nRetry-After: 5\r\n\
+    Connection: close\r\n\r\n\
+    {\"error\":\"server at connection limit\"}\n";
+
 /// Ollama-compatible API server with LLM control
 pub struct OllamaServer;
 
@@ -42,7 +102,18 @@ impl OllamaServer {
         status_tx: mpsc::UnboundedSender<String>,
         _send_first: bool,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> anyhow::Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults are argued beside the
+        // constants.
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(FIRST_BYTE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_REQUESTS_TIMEOUT);
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -52,10 +123,19 @@ impl OllamaServer {
 
         // Spawn server loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Ollama",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -98,34 +178,98 @@ impl OllamaServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
-                                let io = TokioIo::new(stream);
+                                // The permit is released when this task ends, which is what
+                                // makes MAX_CONNECTIONS a cap on live connections rather than
+                                // on the accept rate.
+                                let _permit = permit;
 
-                                // Clone for service closure
-                                let status_for_service = status_tx_clone.clone();
-                                let app_state_for_service = app_state_clone.clone();
-
-                                // Create a service that handles Ollama API requests with LLM
-                                let service = service_fn(move |req: Request<Incoming>| {
-                                    let llm_clone = llm_client_clone.clone();
-                                    let state_clone = app_state_for_service.clone();
-                                    let status_clone = status_for_service.clone();
-                                    let protocol_clone = protocol_clone.clone();
-                                    handle_ollama_request(
-                                        req,
-                                        connection_id,
-                                        llm_clone,
-                                        state_clone,
-                                        status_clone,
-                                        protocol_clone,
-                                        server_id,
+                                // First-byte bound, before hyper sees the socket. `peek` waits
+                                // for data without consuming it, so the request line is still
+                                // there for hyper afterwards — see FIRST_BYTE_READ_TIMEOUT for
+                                // why a deadline inside hyper's own reads would be wrong.
+                                let spoke = matches!(
+                                    tokio::time::timeout(
+                                        first_byte_timeout,
+                                        stream.peek(&mut [0u8; 1])
                                     )
-                                });
+                                    .await,
+                                    Ok(Ok(n)) if n > 0
+                                );
 
-                                // Serve HTTP/1 on this connection
-                                if let Err(err) =
-                                    http1::Builder::new().serve_connection(io, service).await
-                                {
-                                    error!("Error serving Ollama API connection: {:?}", err);
+                                if spoke {
+                                    let io = TokioIo::new(stream);
+
+                                    // Clone for service closure
+                                    let status_for_service = status_tx_clone.clone();
+                                    let app_state_for_service = app_state_clone.clone();
+
+                                    // Whether this connection is answering anything. The
+                                    // watchdog below reads it, so only genuine silence — never
+                                    // a model round-trip or an event parked for a human — can
+                                    // close a connection.
+                                    let activity = Arc::new(
+                                        crate::server::accept_bounded::ConnectionActivity::new(),
+                                    );
+                                    let activity_for_service = Arc::clone(&activity);
+
+                                    // Create a service that handles Ollama API requests with LLM
+                                    let service = service_fn(move |req: Request<Incoming>| {
+                                        let llm_clone = llm_client_clone.clone();
+                                        let state_clone = app_state_for_service.clone();
+                                        let status_clone = status_for_service.clone();
+                                        let protocol_clone = protocol_clone.clone();
+                                        let activity = Arc::clone(&activity_for_service);
+                                        async move {
+                                            let _busy = activity.busy();
+                                            handle_ollama_request(
+                                                req,
+                                                connection_id,
+                                                llm_clone,
+                                                state_clone,
+                                                status_clone,
+                                                protocol_clone,
+                                                server_id,
+                                            )
+                                            .await
+                                        }
+                                    });
+
+                                    // Serve HTTP/1 on this connection
+                                    let conn = http1::Builder::new().serve_connection(io, service);
+                                    tokio::pin!(conn);
+                                    tokio::select! {
+                                        result = &mut conn => {
+                                            if let Err(err) = result {
+                                                error!(
+                                                    "Error serving Ollama API connection: {:?}",
+                                                    err
+                                                );
+                                            }
+                                        }
+                                        // The idle bound, over `ConnectionActivity` rather than
+                                        // over a read: hyper owns every read once
+                                        // `serve_connection` starts and keeps polling for frames
+                                        // while a request is being answered, so a deadline on
+                                        // those reads would fire mid-answer.
+                                        _ = crate::server::accept_bounded::watch_idle(
+                                            Arc::clone(&activity),
+                                            idle_timeout,
+                                        ) => {
+                                            Log::new(Some(&status_tx_clone)).debug(format!(
+                                                "Ollama API connection {} idle for {}s; closing \
+                                                 decision=fail_closed_idle_timeout",
+                                                connection_id,
+                                                idle_timeout.as_secs()
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    Log::new(Some(&status_tx_clone)).debug(format!(
+                                        "Ollama API peer {} sent no request within {}s; closing \
+                                         decision=fail_closed_first_byte_timeout",
+                                        remote_addr,
+                                        first_byte_timeout.as_secs()
+                                    ));
                                 }
 
                                 // Mark connection as closed

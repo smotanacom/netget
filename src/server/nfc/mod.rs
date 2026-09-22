@@ -68,6 +68,65 @@ pub use actions::NfcServerProtocol;
 /// reader needing more would have to raise this, not the parser.
 pub const MAX_FRAME_LEN: usize = 4096;
 
+/// How long a reader that has connected and sent no frame at all may hold this connection.
+///
+/// **The peer here is never NetGet's own client, and that is what decides the number.** The
+/// `[ + nfc client ]` button on this server's card does create `src/client/nfc/`, but that
+/// client is a PC/SC one: it calls `pcsc::Context::establish` and drives a physical reader, and
+/// it never opens a socket to the address the dashboard pre-fills. So the "connected and
+/// silent NetGet client waiting for a human at `[ send message ]`" that made `tcp`, `telnet`,
+/// `ldap`, `whois` and `redis` all settle on 300 seconds cannot exist on this listener. Nor can
+/// the operator reach a reader from the dashboard: this server registers no peer channel
+/// (`grep register_peer_channel src/server/nfc/mod.rs` finds nothing), so there is no
+/// `[ message ]` button whose answer a peer could be waiting for.
+///
+/// Every peer this socket can have speaks first, and immediately. vpcd is reader-driven by
+/// construction — the reader sends control codes (`01` power on, `02` reset, `04` request ATR)
+/// and command APDUs, and the tag only ever answers — and the `vpcd` ifdhandler configured
+/// `DEVICENAME /dev/null:<host>:<port>` is opened by `pcscd`, which polls card presence from
+/// the moment the reader exists. A test peer writes a length-prefixed APDU in its next
+/// statement. Thirty seconds is orders of magnitude more than any of that needs, and it is the
+/// same number `etcd` and `s3` argue for the same client-speaks-first reason.
+///
+/// Overridable with `first_byte_timeout_secs`, because a listener's right value is a property
+/// of who is on the other end and only the operator knows that.
+const FIRST_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an established reader may send no further frame.
+///
+/// Much longer than the first bound, because a reader legitimately goes quiet: `pcscd` polls a
+/// reader while an application is watching it, and stops when none is. A vpcd connection with
+/// no traffic is therefore an idle *host*, not a dead one, and closing it makes the virtual
+/// card vanish from a `pcscd` that would have used it again. Five minutes bounds the hold
+/// without making that a normal event, and matches the window this product already uses for
+/// "how long a person might take" (`src/state/intercepts.rs`).
+///
+/// The deadline wraps the read and nothing else: the model round-trip that answers an APDU
+/// happens after the read has returned, so a slow backend — or a `manual` rule parking the
+/// APDU for a human — can never be timed out from under itself.
+const IDLE_BETWEEN_FRAMES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent readers this virtual tag admits.
+///
+/// [`accept_bounded::DEFAULT_MAX_CONNECTIONS`](crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS).
+/// Each admitted reader holds one [`MAX_FRAME_LEN`] buffer, so the cap turns that 4 KiB
+/// per-connection bound into a 1 MiB total one. A physical tag is in exactly one reader's field
+/// at a time and a smaller cap would be defensible on that ground — but the tag state here is
+/// shared and read-only to a reader, several hosts may legitimately mount the same virtual
+/// card, and a cap tight enough to be interesting is a cap that refuses honest use.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a reader over [`MAX_CONNECTIONS`] is told: nothing.
+///
+/// Deliberately empty, for the reason `src/server/accept_bounded.rs` gives for the empty case.
+/// Every frame this server can put on the wire is a *card response* — an ATR, or a response
+/// APDU with a status word — and every one of them is an answer to a command the reader has
+/// not sent. A `6F00` arriving unprompted would be read by the ifdhandler as the answer to
+/// whatever it asks next, desynchronising the exchange; there is no error frame in vpcd framing
+/// to say "full" with. This is the deliberately-silent case: a fabricated reply is worse than
+/// silence, and the refusal is logged with `decision=fail_closed_connection_cap` instead.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// vpcd control codes (1-byte frames).
 const VPCD_CTRL_OFF: u8 = 0x00;
 const VPCD_CTRL_ON: u8 = 0x01;
@@ -126,6 +185,18 @@ impl NfcServer {
                 let random_bytes: Vec<u8> = (0..7).map(|_| rand::random::<u8>()).collect();
                 hex::encode(random_bytes).to_uppercase()
             });
+
+        // Both read deadlines are the operator's to choose: who is on the other end is the
+        // only thing that decides them, and only the operator knows that. The defaults are
+        // argued beside the constants.
+        let first_frame_timeout = startup_params["first_byte_timeout_secs"]
+            .as_u64()
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(FIRST_FRAME_READ_TIMEOUT);
+        let idle_timeout = startup_params["idle_timeout_secs"]
+            .as_u64()
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_FRAMES_TIMEOUT);
 
         // Bind before anything else so a port conflict is reported as a startup
         // failure rather than a server that claims to be Running with no socket.
@@ -217,15 +288,25 @@ impl NfcServer {
         }
 
         let accept_state = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                let (stream, remote_addr) = match listener.accept().await {
-                    Ok(accepted) => accepted,
-                    Err(e) => {
-                        Log::new(Some(&status_tx)).error(format!("NFC accept error: {e}"));
-                        break;
-                    }
-                };
+                let (stream, remote_addr, permit) =
+                    match crate::server::accept_bounded::accept_bounded(
+                        &listener,
+                        &limiter,
+                        CONNECTION_CAP_REFUSAL,
+                        "NFC",
+                        Some(&status_tx),
+                    )
+                    .await
+                    {
+                        Ok(accepted) => accepted,
+                        Err(e) => {
+                            Log::new(Some(&status_tx)).error(format!("NFC accept error: {e}"));
+                            break;
+                        }
+                    };
 
                 let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
                 let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -268,6 +349,9 @@ impl NfcServer {
                 let task_owner = app_state.clone();
                 task_owner
                     .spawn_server_task(server_id, async move {
+                        // The permit is released when this task ends, which is what makes
+                        // MAX_CONNECTIONS a cap on live readers rather than on the accept rate.
+                        let _permit = permit;
                         if let Err(e) = Self::handle_reader(
                             stream,
                             connection_id,
@@ -277,6 +361,8 @@ impl NfcServer {
                             conn_state.clone(),
                             status_tx.clone(),
                             protocol,
+                            first_frame_timeout,
+                            idle_timeout,
                         )
                         .await
                         {
@@ -317,19 +403,41 @@ impl NfcServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<NfcServerProtocol>,
+        first_frame_timeout: std::time::Duration,
+        idle_timeout: std::time::Duration,
     ) -> Result<()> {
         let (mut read_half, mut write_half) = tokio::io::split(stream);
         let mut buffer = vec![0u8; MAX_FRAME_LEN];
         let log = Log::new(Some(&status_tx));
+        // Has this reader completed a frame yet? Until it has, the shorter bound applies.
+        let mut spoke = false;
 
         loop {
-            let frame_len = match read_half.read_u16().await {
-                Ok(len) => len as usize,
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            // The deadline wraps this read alone. Everything that can legitimately take a
+            // long time — the model round-trip answering an APDU, a `manual` rule parking it
+            // for a human — happens below, after the read has already returned, so none of it
+            // sits inside a bound that would close the connection it belongs to.
+            let read_timeout = if spoke {
+                idle_timeout
+            } else {
+                first_frame_timeout
+            };
+            let frame_len = match tokio::time::timeout(read_timeout, read_half.read_u16()).await {
+                Err(_) => {
+                    log.info(format!(
+                        "NFC reader {} sent nothing for {}s; closing idle connection \
+                         decision=fail_closed_read_timeout",
+                        connection_id,
+                        read_timeout.as_secs()
+                    ));
+                    return Ok(());
+                }
+                Ok(Ok(len)) => len as usize,
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     debug!("NFC reader {} closed the connection", connection_id);
                     return Ok(());
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     debug!("NFC reader {} read error: {}", connection_id, e);
                     return Ok(());
                 }
@@ -352,10 +460,32 @@ impl NfcServer {
                 return Ok(());
             }
 
-            if let Err(e) = read_half.read_exact(&mut buffer[..frame_len]).await {
-                debug!("NFC reader {} disconnected mid-frame: {}", connection_id, e);
-                return Ok(());
+            // The body of an announced frame is bounded by the *same* deadline the length
+            // prefix was, not by the longer idle one: two bytes must not be enough to buy a
+            // peer the established-connection bound, or the first-byte bound is one `write`
+            // away from being irrelevant.
+            match tokio::time::timeout(read_timeout, read_half.read_exact(&mut buffer[..frame_len]))
+                .await
+            {
+                Err(_) => {
+                    log.info(format!(
+                        "NFC reader {} announced a {}-byte frame and then sent nothing for {}s; \
+                         closing decision=fail_closed_read_timeout",
+                        connection_id,
+                        frame_len,
+                        read_timeout.as_secs()
+                    ));
+                    return Ok(());
+                }
+                Ok(Err(e)) => {
+                    debug!("NFC reader {} disconnected mid-frame: {}", connection_id, e);
+                    return Ok(());
+                }
+                Ok(Ok(_)) => {}
             }
+            // A complete frame has arrived, so this is an established reader and every later
+            // read gets the longer idle bound.
+            spoke = true;
             let frame = buffer[..frame_len].to_vec();
             log.trace(format!(
                 "NFC <- {} ({} bytes) from {}",

@@ -595,6 +595,32 @@ print(json.dumps({"actions": actions}))"#;
 
                 example: json!("04A1B2C3D4E5F6"),
             },
+            ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description:
+                    "Seconds a connected reader may send no frame at all before the tag closes \
+                     it. Default 30: vpcd is reader-driven, so every peer this socket can have \
+                     speaks first, and NetGet's own NFC client talks to a PC/SC reader rather \
+                     than to this socket, so no peer here is ever waiting on a person."
+                        .to_string(),
+                required: false,
+
+                example: json!(30),
+            },
+            ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description:
+                    "Seconds an established reader may send no further frame before the tag \
+                     closes it. Default 300. A reader goes quiet whenever no application is \
+                     watching it, so raise this rather than lower it if pcscd hosts mount this \
+                     card and use it rarely."
+                        .to_string(),
+                required: false,
+
+                example: json!(300),
+            },
         ]
     }
 }
@@ -615,6 +641,8 @@ impl Server for NfcServerProtocol {
                 serde_json::json!({
                     "tag_type": params.get_optional_string("tag_type")?,
                     "uid": params.get_optional_string("uid")?,
+                    "first_byte_timeout_secs": params.get_optional_u64("first_byte_timeout_secs")?,
+                    "idle_timeout_secs": params.get_optional_u64("idle_timeout_secs")?,
                 })
             } else {
                 serde_json::json!({})
