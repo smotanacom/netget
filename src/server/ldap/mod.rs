@@ -44,6 +44,62 @@ use actions::{
     LDAP_UNBIND_EVENT,
 };
 
+/// How long to wait for a peer's first LDAP message after it connects.
+///
+/// LDAP is client-speaks-first: the server says nothing until a BindRequest or an anonymous
+/// SearchRequest arrives, so a peer that has connected and sent nothing has begun no session at
+/// all — which is the state an unauthenticated flood lives in. The deadline wraps the `read()`
+/// and nothing else, so a model round-trip, or a `manual` rule parking a bind for a human, sits
+/// outside it by construction.
+#[cfg(feature = "ldap")]
+const FIRST_MESSAGE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a peer that has already been answered may send nothing further.
+///
+/// There is no interval to sit above: LDAP defines no keepalive, and OpenLDAP's own
+/// `idletimeout` defaults to **0**, i.e. no bound at all. Fifteen minutes is safe because of a
+/// property of *this* server rather than of LDAP: it implements no control and no extended
+/// operation, so persistent search and syncrepl — the only shapes in which a client legitimately
+/// holds an LDAP connection open in silence, waiting for the server to speak — cannot be
+/// requested here. Every operation is request/response. A bound connection that has issued
+/// nothing for fifteen minutes is a pool entry whose owner has gone.
+///
+/// Deliberately far longer than the first bound, and far longer than the 300-second default a
+/// `manual` rule gives a human to answer: "has said nothing at all" and "has gone quiet
+/// mid-session" are different claims and deserve different answers.
+#[cfg(feature = "ldap")]
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may buffer a message of up to [`MAX_LDAP_MESSAGE`] (1 MiB) before
+/// anything is authenticated, so the cap is what turns that per-connection bound into a total
+/// one.
+#[cfg(feature = "ldap")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: LDAP's own
+/// **Notice of Disconnection** (RFC 4511 §4.4.1).
+///
+/// An unsolicited `ExtendedResponse` on messageID 0 carrying OID `1.3.6.1.4.1.1466.20036` and
+/// `resultCode = unavailable (52)`. That is the protocol's designated way for a server to say
+/// "this connection is over and here is why", and `ldapsearch` prints it rather than reporting
+/// an unexplained reset.
+///
+/// `busy (51)` reads closer to the truth of a connection cap and is deliberately **not** used:
+/// §4.4.1 permits only `protocolError`, `strongerAuthRequired` and `unavailable` in a Notice of
+/// Disconnection, and a result code outside that set is a malformed notice.
+///
+/// The bytes, decoded:
+/// `30 18` SEQUENCE(24) · `02 01 00` messageID 0 · `78 13` \[APPLICATION 24\] ExtendedResponse(19)
+/// · `0A 01 34` resultCode ENUMERATED 52 · `04 00` matchedDN "" · `04 00` diagnosticMessage ""
+/// · `8A 0A 2B 06 01 04 01 8B 3A 81 9C 44` responseName \[10\] = 1.3.6.1.4.1.1466.20036
+#[cfg(feature = "ldap")]
+const CONNECTION_CAP_REFUSAL: &[u8] = &[
+    0x30, 0x18, 0x02, 0x01, 0x00, 0x78, 0x13, 0x0A, 0x01, 0x34, 0x04, 0x00, 0x04, 0x00, 0x8A, 0x0A,
+    0x2B, 0x06, 0x01, 0x04, 0x01, 0x8B, 0x3A, 0x81, 0x9C, 0x44,
+];
+
 /// LDAP server that handles directory operations with LLM
 pub struct LdapServer;
 
@@ -68,10 +124,19 @@ impl LdapServer {
         let protocol = Arc::new(LdapProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "LDAP",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id = crate::server::connection::ConnectionId::new(
                             app_state.get_next_unified_id().await,
                         );
@@ -124,6 +189,11 @@ impl LdapServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the peer is still here, which
+                                // silently un-caps the server.
+                                let _permit = permit;
+
                                 let mut session = LdapSession {
                                     stream,
                                     connection_id,
@@ -196,6 +266,10 @@ impl LdapSession {
 
         let mut buffer: Vec<u8> = Vec::new();
         let mut chunk = vec![0u8; READ_CHUNK];
+        // "Has said nothing at all" and "has gone quiet mid-session" are different claims and
+        // get different deadlines. This flips on the first message actually handled, not on the
+        // first byte: a peer dripping a partial BER envelope has still begun no operation.
+        let mut answered_one = false;
 
         loop {
             // Drain every complete message already buffered before reading more.
@@ -237,6 +311,8 @@ impl LdapSession {
                     self.record_bytes(0, response.len() as u64).await;
                 }
 
+                answered_one = true;
+
                 if close_after {
                     return Ok(());
                 }
@@ -249,10 +325,31 @@ impl LdapSession {
                 return Ok(());
             }
 
-            let n = match self.stream.read(&mut chunk).await {
-                Ok(0) => break, // Connection closed
-                Ok(n) => n,
-                Err(e) => {
+            // The deadline wraps the read and nothing else. `handle_message` above may sit in an
+            // LLM round-trip, or in a `manual` rule parked for a human at the dashboard, for
+            // minutes; none of that is this peer being silent, and none of it is inside this
+            // timeout.
+            let read_deadline = if answered_one {
+                IDLE_BETWEEN_MESSAGES_TIMEOUT
+            } else {
+                FIRST_MESSAGE_READ_TIMEOUT
+            };
+            let n = match tokio::time::timeout(read_deadline, self.stream.read(&mut chunk)).await {
+                Err(_) => {
+                    // No Notice of Disconnection here. The peer is being dropped for silence,
+                    // not refused, and a close is what every LDAP client already understands as
+                    // an idle timeout; the reason lives in the log.
+                    Log::new(Some(&self.status_tx)).info(format!(
+                        "LDAP connection {} sent nothing for {}s; closing \
+                         decision=fail_closed_idle_timeout",
+                        self.connection_id,
+                        read_deadline.as_secs()
+                    ));
+                    break;
+                }
+                Ok(Ok(0)) => break, // Connection closed
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
                     Log::new(Some(&self.status_tx)).error(format!("LDAP read error: {}", e));
                     break;
                 }

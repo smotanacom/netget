@@ -70,6 +70,44 @@ const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 64;
 /// How many parsed frames may wait for the dispatcher before the reader stops reading.
 const FRAME_QUEUE_CAPACITY: usize = 256;
 
+/// How long to wait for a peer's first frame after the `INFO` greeting has gone out.
+///
+/// NATS is server-speaks-first — `INFO` before the client says anything — and every client
+/// answers with `CONNECT` immediately, inside its own connect path. So a peer that has been
+/// greeted and has sent nothing has begun no session, which is the state an unauthenticated
+/// flood lives in.
+const FIRST_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a peer that has already sent a frame may send nothing further.
+///
+/// **A NATS subscriber is legitimately silent**, sometimes for hours: it sends `SUB` once and
+/// then only receives. What keeps this bound from closing one is that NATS has a keepalive and
+/// both ends use it — `nats-server`'s `ping_interval` defaults to **2 minutes** (two missed
+/// PONGs and it drops the client), and `async-nats` sends its own `PING` on a **60-second**
+/// interval. Ten minutes therefore sits above *both* intervals with five times the margin on
+/// the longer one, so any client that is still there has spoken several times over.
+///
+/// It is also comfortably above a model round-trip and above the 300-second default a `manual`
+/// rule gives a human to answer — which matters here in a way it does not for a
+/// request/response protocol: the reader task keeps reading while the dispatcher answers, so a
+/// peer waiting for its own reply is silent on this socket for the whole of that work.
+const IDLE_BETWEEN_FRAMES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection buffers toward `max_payload` plus a control line, and carries a
+/// reader task, a dispatcher task and a 256-frame queue, so the cap is what turns that
+/// per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `-ERR` is NATS's own error line, and this is the exact text `nats-server` itself sends when a
+/// connection arrives over `max_connections`, so a client reports the real reason rather than an
+/// unexplained reset. The peer has not sent `CONNECT`, so nothing has been negotiated and there
+/// is nothing else this server could usefully say.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"-ERR 'Maximum Connections Exceeded'\r\n";
+
 pub struct NatsServer;
 
 // ============================================================================
@@ -454,9 +492,18 @@ impl NatsServer {
             // other direction. Retry with a short backoff, and give up only when the failures
             // are relentless enough that the listener really is dead.
             let mut consecutive_accept_errors = 0u32;
+            let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "NATS",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         consecutive_accept_errors = 0;
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
@@ -474,6 +521,7 @@ impl NatsServer {
                             &protocol,
                             &server_name,
                             max_payload,
+                            permit,
                         )
                         .await
                         {
@@ -522,7 +570,12 @@ async fn accept_connection(
     protocol: &Arc<NatsProtocol>,
     server_name: &str,
     max_payload: u64,
+    permit: crate::server::accept_bounded::ConnectionPermit,
 ) -> Result<()> {
+    // One connection, two tasks: the slot must stay taken until *both* are gone, so the permit
+    // is shared rather than parked in whichever one happens to end last. The dispatcher outlives
+    // the reader by however long its last frame takes.
+    let permit = Arc::new(permit);
     let (read_half, write_half) = tokio::io::split(stream);
     let write_half = Arc::new(Mutex::new(write_half));
 
@@ -597,7 +650,8 @@ async fn accept_connection(
     let (frame_tx, frame_rx) = mpsc::channel::<Frame>(FRAME_QUEUE_CAPACITY);
     let (close_tx, close_rx) = oneshot::channel::<()>();
 
-    let reader_handle = tokio::spawn(run_reader(
+    let reader_permit = Arc::clone(&permit);
+    let reader = run_reader(
         read_half,
         write_half.clone(),
         frame_tx,
@@ -608,8 +662,12 @@ async fn accept_connection(
         connection_id,
         peer_addr,
         max_payload,
-    ));
-    let dispatcher_handle = tokio::spawn(run_dispatcher(
+    );
+    let reader_handle = tokio::spawn(async move {
+        let _permit = reader_permit;
+        reader.await
+    });
+    let dispatcher = run_dispatcher(
         frame_rx,
         close_tx,
         write_half,
@@ -620,7 +678,11 @@ async fn accept_connection(
         connection_id,
         peer_addr,
         protocol.clone(),
-    ));
+    );
+    let dispatcher_handle = tokio::spawn(async move {
+        let _permit = permit;
+        dispatcher.await
+    });
 
     // Both, not just the accept loop: aborting a task does not abort the tasks it spawned,
     // so a connection whose reader was left registered nowhere would keep the socket alive
@@ -688,12 +750,43 @@ async fn run_reader(
     // Set from the client's CONNECT. In verbose mode a real server acknowledges every
     // command with +OK, and clients that asked for it wait for those acknowledgements.
     let mut verbose = false;
+    // "Has said nothing at all" and "has gone quiet mid-session" are different claims and get
+    // different deadlines. This flips on the first byte read: unlike a message-framed protocol,
+    // any inbound byte here is the peer being alive, which is exactly what the bound measures.
+    let mut spoke_once = false;
 
     'session: loop {
+        let read_deadline = if spoke_once {
+            IDLE_BETWEEN_FRAMES_TIMEOUT
+        } else {
+            FIRST_FRAME_READ_TIMEOUT
+        };
         let n = tokio::select! {
             // Resolves when the dispatcher closed the connection, and also (as an Err) when
             // the dispatcher task is gone. Either way there is nothing left to read for.
             _ = &mut close_rx => break 'session,
+            // The deadline covers this read and nothing else. The dispatcher answers on its
+            // own task, so an LLM round-trip — or a `manual` rule parked for a human — never
+            // sits inside it; what it measures is the peer's own silence, which is why the
+            // idle value has to be above the interval at which NATS clients PING.
+            _ = tokio::time::sleep(read_deadline) => {
+                log.info(format!(
+                    "NATS client {} sent nothing for {}s; closing \
+                     decision=fail_closed_idle_timeout",
+                    peer_addr,
+                    read_deadline.as_secs()
+                ));
+                let _ = write_counted(
+                    &write_half,
+                    b"-ERR 'Stale Connection'\r\n",
+                    &app_state,
+                    server_id,
+                    connection_id,
+                )
+                .await;
+                let _ = write_half.lock().await.shutdown().await;
+                break 'session;
+            }
             result = read_half.read(&mut chunk) => match result {
                 Ok(0) => {
                     log.info(format!("NATS client {} disconnected", peer_addr));
@@ -707,6 +800,7 @@ async fn run_reader(
             }
         };
 
+        spoke_once = true;
         buf.extend_from_slice(&chunk[..n]);
         app_state
             .update_connection_stats(

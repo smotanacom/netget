@@ -57,6 +57,45 @@ const ALLOWED_METHODS: &str = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPA
 /// A larger body gets `413 Payload Too Large` before any of it reaches the model.
 pub const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
 
+/// How long to wait for a peer's first byte after it connects.
+///
+/// HTTP is client-speaks-first — the server says nothing until it has a request line — so a peer
+/// that has connected and sent nothing has begun no request at all, which is the state an
+/// unauthenticated flood lives in, and WebDAV has no authentication step at all. Enforced with
+/// `TcpStream::peek` *before* the socket reaches hyper, so the request line is still there for
+/// hyper to parse afterwards.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connection may do nothing at all between requests.
+///
+/// **This bounds the silence, not the transfer.** A `GET` returns whatever the model says the
+/// file contains, built into a `Full<Bytes>` before the response is returned, so hyper writes an
+/// already-complete body and a client dragging a large file down is draining bytes rather than
+/// idling. The watchdog reads `ConnectionActivity`, which reports a connection with a request in
+/// flight as **not idle at all**, so an LLM round-trip — or a `manual` rule parking a `PUT` for
+/// a human to approve — can never close the connection it is an answer for.
+///
+/// Fifteen minutes is the wait between one request finishing and the next one starting. WebDAV
+/// clients that mount a share (Finder, gvfs, `reqwest_dav`) keep a connection pooled and poll
+/// far more often than that; one that has said nothing for fifteen minutes has unmounted or
+/// died without closing.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may buffer a request body of up to [`MAX_REQUEST_BODY`] (8 MiB,
+/// larger than most protocols here) and hold a model round-trip open, so the cap is what turns
+/// that per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// WebDAV is HTTP, so the protocol's own vocabulary for "come back later" is a `503` with
+/// `Retry-After`. A DAV client reports the status; an unexplained reset would have it record a
+/// permanent fault instead.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 /// WebDAV server whose entire filesystem is supplied by the LLM
 pub struct WebDavServer;
 
@@ -85,10 +124,19 @@ impl WebDavServer {
         Log::new(Some(&status_tx)).info(format!("WebDAV server listening on {}", local_addr));
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "WebDAV",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         Log::new(Some(&status_tx)).debug(format!(
@@ -130,28 +178,97 @@ impl WebDavServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the peer is still here, which
+                                // silently un-caps the server.
+                                let _permit = permit;
+
+                                // First-byte bound, before hyper sees the socket. hyper owns
+                                // every read once `serve_connection` starts and keeps polling
+                                // for frames *while a request is being answered*, so a deadline
+                                // on reads would fire in the middle of an LLM round-trip.
+                                // `peek` waits for data without consuming it, so the request
+                                // line is still there for hyper afterwards.
+                                match tokio::time::timeout(
+                                    FIRST_BYTE_READ_TIMEOUT,
+                                    stream.peek(&mut [0u8; 1]),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(0)) | Ok(Err(_)) => {
+                                        app_for_close
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_for_close.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                    Ok(Ok(_)) => {}
+                                    Err(_) => {
+                                        Log::new(Some(&status_for_close)).debug(format!(
+                                            "WebDAV peer {} sent nothing for {}s; closing before \
+                                             the request line",
+                                            peer_addr,
+                                            FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                        ));
+                                        app_for_close
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_for_close.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                }
+
                                 let io = TokioIo::new(stream);
+
+                                // Tracks whether this connection is answering anything. A
+                                // request waiting on the model, or parked for a human at the
+                                // dashboard, holds the count above zero, so the idle watchdog
+                                // below cannot close the connection the answer belongs to
+                                // however long it takes — only genuine silence counts.
+                                let activity = Arc::new(
+                                    crate::server::accept_bounded::ConnectionActivity::new(),
+                                );
+                                let activity_for_service = Arc::clone(&activity);
 
                                 let service = service_fn(move |req: Request<Incoming>| {
                                     let llm = llm_clone.clone();
                                     let state = app_clone.clone();
                                     let status = status_clone.clone();
                                     let proto = protocol_clone.clone();
-                                    handle_webdav_request(
-                                        req,
-                                        connection_id,
-                                        server_id,
-                                        llm,
-                                        state,
-                                        status,
-                                        proto,
-                                    )
+                                    let activity = Arc::clone(&activity_for_service);
+                                    async move {
+                                        let _busy = activity.busy();
+                                        handle_webdav_request(
+                                            req,
+                                            connection_id,
+                                            server_id,
+                                            llm,
+                                            state,
+                                            status,
+                                            proto,
+                                        )
+                                        .await
+                                    }
                                 });
 
-                                if let Err(err) =
-                                    http1::Builder::new().serve_connection(io, service).await
-                                {
-                                    error!("WebDAV connection error: {:?}", err);
+                                let conn = http1::Builder::new().serve_connection(io, service);
+                                tokio::pin!(conn);
+                                tokio::select! {
+                                    result = &mut conn => {
+                                        if let Err(err) = result {
+                                            error!("WebDAV connection error: {:?}", err);
+                                        }
+                                    }
+                                    _ = crate::server::accept_bounded::watch_idle(
+                                        Arc::clone(&activity),
+                                        IDLE_BETWEEN_REQUESTS_TIMEOUT,
+                                    ) => {
+                                        trace!(
+                                            "WebDAV connection {} idle for {}s; closing",
+                                            connection_id,
+                                            IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                                        );
+                                    }
                                 }
 
                                 app_for_close

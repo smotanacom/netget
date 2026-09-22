@@ -180,6 +180,31 @@ Similar to TCP protocol, uses state machine to prevent concurrent LLM calls:
 
 When in `Processing` state, incoming data is queued. After LLM response, queued data is processed.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a read task and an `AppState` row forever, before
+any version handshake, on a server that would happily accept a hundred more. It now declares both
+halves; the constants and the reasoning live beside them in `src/server/bitcoin/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 60s | Bitcoin Core's own `DEFAULT_PEER_CONNECT_TIMEOUT`, after which it disconnects a peer that has not completed the version handshake. This bound is on the first *byte* rather than on the handshake, so it is strictly more permissive than Core's and cannot close a peer Core would keep. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 1800s (30 min) | Bitcoin has a keepalive and every node uses it: Core pings on a `PING_INTERVAL` of **2 minutes** and drops a peer silent for `TIMEOUT_INTERVAL`, **20 minutes**. Thirty sits above Core's own inactivity limit — a peer this server closes is one Core would already have dropped — and the margin is there because `handle_data_with_actions` answers on its own task, so a peer waiting on a model round-trip, or on a `manual` rule parked for a human, is silent on this socket for the whole of that work. |
+| `MAX_CONNECTIONS` | **125** | Bitcoin Core's `-maxconnections` default rather than this project's shared 256: a P2P node's connection count is part of how it behaves, and a Bitcoin server admitting twice what Core does would be conspicuous. It also bounds the total buffering — 125 × `MAX_MESSAGE_BYTES` is 500 MB rather than a gigabyte. Refusal: **nothing**. Bitcoin P2P has no "busy" message (`reject` was removed in Core 0.20 and never applied to a connection), every message this server could send is an assertion about a node that has not handshaked, and Core itself simply drops. The reason lives in the log under `decision=fail_closed_connection_cap`. |
+
+**The deadline wraps the `read()` and nothing else**, so the model round-trip is outside it by
+construction. An idle close writes nothing and logs `decision=fail_closed_idle_timeout`.
+
+`tests/server/bitcoin/connection_bounds_test.rs` drives both halves from the wire against a
+model-free server — a **zero-action** static handler answers `bitcoin_connection_opened`, which
+matters here in a way it does not elsewhere: this protocol fails closed by *disconnecting*, so a
+server left to consult an unreachable model would drop every peer instantly and the test would be
+measuring that instead of the deadline. Replacing the `tokio::time::timeout` around the read with
+the bare call makes the first test hang for its whole 100-second window and fail.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed, and
+`tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Limitations
 
 ### What This Implementation Does

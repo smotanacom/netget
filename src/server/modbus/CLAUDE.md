@@ -262,6 +262,31 @@ That is the only one, and it is read in `actions.rs::spawn` and used in `mod.rs:
 neither declared-but-unread nor read-but-undeclared. Out-of-range values produce a clean `Err`
 from `spawn()`, never a panic.
 
+## Connection bounds
+
+Modbus has **no authentication step of any kind**, so "pre-authentication" here means "anyone who
+can reach the port". Before September 2026 this server accepted without limit and bounded no read
+in time, so such a peer could connect, say nothing, and hold a socket, a read task, a peer handle
+and an `AppState` row forever. It now declares both halves; the constants and the reasoning live
+beside them in `src/server/modbus/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | Modbus TCP is client-speaks-first and a client sends its first PDU inside its own connect path (`tokio-modbus` and `mbpoll` both do), so a peer that has sent nothing has begun no transaction. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 600s | Modbus defines no keepalive, so there is no protocol interval to sit above; what there is, is polling, and a SCADA master polls on a sub-second to few-second cycle. The number is set by *this* server: `handle_data` runs on its own task, so the reader keeps reading while a request is answered and a peer waiting for its own reply — including one parked on a `manual` rule for a human, 300s by default — is silent on this socket for the whole of that work. Ten minutes leaves that a factor of two. Real Modbus/TCP gateways reap an idle connection at ~60s; being ten times more patient is the deliberate price of letting a human answer. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. Every Modbus server message is a reply and carries the transaction identifier, unit id and function code of a request this peer has not sent, so inventing one means inventing a transaction — worse than silence, for the same reason twenty protocols here are deliberately silent on an LLM failure. The reason lives in the log, under `decision=fail_closed_connection_cap`. |
+
+**The deadline wraps the `read()` and nothing else**, so the model round-trip is outside it by
+construction; what it measures is the peer's own silence. An idle close writes nothing and logs
+`decision=fail_closed_idle_timeout`.
+
+`tests/server/modbus/connection_bounds_test.rs` drives both halves from the wire, including that
+the refusal really is silent and that a peer that has sent one request is still answered 38
+seconds later. Replacing the `tokio::time::timeout` around the read with the bare call makes the
+first test hang for its whole 70-second window and fail.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed, and
+`tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Known limitations
 
 1. **TCP only.** No RTU, no ASCII, no serial.

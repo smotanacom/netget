@@ -58,6 +58,45 @@ const NULL_NODE: &str = "0000000000000000000000000000000000000000";
 /// oversized body is refused with 413.
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
+/// How long to wait for a peer's first byte after it connects.
+///
+/// Mercurial's wire protocol v1 rides on HTTP, which is client-speaks-first — the server says
+/// nothing until it has a request line — so a peer that has connected and sent nothing has begun
+/// no command at all, which is the state an unauthenticated flood lives in. Enforced with
+/// `TcpStream::peek` *before* the socket reaches hyper, so the request line is still there for
+/// hyper to parse afterwards.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connection may do nothing at all between commands.
+///
+/// **This bounds the silence, not the transfer.** An `hg clone` is a sequence of commands —
+/// `capabilities`, `heads`, `branchmap`, `listkeys`, `getbundle` — on one keep-alive connection,
+/// and each answer is built into a `Full<Bytes>` before the response is returned, so hyper
+/// writes an already-complete body and a slow reader is draining bytes rather than idling. The
+/// watchdog reads `ConnectionActivity`, which reports a connection with a command in flight as
+/// **not idle at all**, so an LLM round-trip or a `manual` rule parked for a human can never
+/// close the connection it is an answer for.
+///
+/// Fifteen minutes is the wait between one command finishing and the next one starting. hg sets
+/// no keep-alive interval of its own; a client that has taken fifteen minutes to issue its next
+/// command has gone away.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may buffer a request body of up to [`MAX_REQUEST_BODY_BYTES`] and
+/// build a bundle of whatever size the handler describes, so the cap is what turns that
+/// per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// The wire protocol here *is* HTTP, so the protocol's own vocabulary for "come back later" is a
+/// `503` with `Retry-After`, which hg reports as an HTTP error naming the status rather than as
+/// an unexplained connection reset.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 /// Shared per-request context.
 struct RequestContext {
     llm_client: OllamaClient,
@@ -90,10 +129,19 @@ impl MercurialServer {
 
         // Spawn server loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Mercurial",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -138,11 +186,61 @@ impl MercurialServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the peer is still here, which
+                                // silently un-caps the server.
+                                let _permit = permit;
+
+                                // First-byte bound, before hyper sees the socket. hyper owns
+                                // every read once `serve_connection` starts and keeps polling
+                                // for frames *while a request is being answered*, so a deadline
+                                // on reads would fire in the middle of an LLM round-trip.
+                                // `peek` waits for data without consuming it, so the request
+                                // line is still there for hyper afterwards.
+                                match tokio::time::timeout(
+                                    FIRST_BYTE_READ_TIMEOUT,
+                                    stream.peek(&mut [0u8; 1]),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(0)) | Ok(Err(_)) => {
+                                        app_state_clone
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                    Ok(Ok(_)) => {}
+                                    Err(_) => {
+                                        debug!(
+                                            "Mercurial peer {} sent nothing for {}s; closing \
+                                             before the request line",
+                                            remote_addr,
+                                            FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                        );
+                                        app_state_clone
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                }
+
                                 let io = TokioIo::new(stream);
 
                                 // Clone for service closure
                                 let status_for_service = status_tx_clone.clone();
                                 let app_state_for_service = app_state_clone.clone();
+
+                                // Tracks whether this connection is answering anything. A
+                                // command waiting on the model, or parked for a human at the
+                                // dashboard, holds the count above zero, so the idle watchdog
+                                // below cannot close the connection the answer belongs to
+                                // however long it takes — only genuine silence counts.
+                                let activity = Arc::new(
+                                    crate::server::accept_bounded::ConnectionActivity::new(),
+                                );
+                                let activity_for_service = Arc::clone(&activity);
 
                                 // Create a service that handles Mercurial HTTP requests with LLM
                                 let service = service_fn(move |req: Request<Incoming>| {
@@ -155,14 +253,35 @@ impl MercurialServer {
                                         server_id,
                                         remote_addr,
                                     };
-                                    handle_mercurial_request(req, ctx)
+                                    let activity = Arc::clone(&activity_for_service);
+                                    async move {
+                                        let _busy = activity.busy();
+                                        handle_mercurial_request(req, ctx).await
+                                    }
                                 });
 
                                 // Serve HTTP/1 on this connection
-                                if let Err(err) =
-                                    http1::Builder::new().serve_connection(io, service).await
-                                {
-                                    error!("Error serving Mercurial connection: {:?}", err);
+                                let conn = http1::Builder::new().serve_connection(io, service);
+                                tokio::pin!(conn);
+                                tokio::select! {
+                                    result = &mut conn => {
+                                        if let Err(err) = result {
+                                            error!(
+                                                "Error serving Mercurial connection: {:?}",
+                                                err
+                                            );
+                                        }
+                                    }
+                                    _ = crate::server::accept_bounded::watch_idle(
+                                        Arc::clone(&activity),
+                                        IDLE_BETWEEN_REQUESTS_TIMEOUT,
+                                    ) => {
+                                        debug!(
+                                            "Mercurial connection {} idle for {}s; closing",
+                                            connection_id,
+                                            IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                                        );
+                                    }
                                 }
 
                                 // Mark connection as closed

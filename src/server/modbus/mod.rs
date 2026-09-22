@@ -56,6 +56,46 @@ struct ConnectionData {
 /// enough for a peer to push gigabytes into it.
 const MAX_BUFFERED: usize = MAX_ADU_LEN * 8;
 
+/// How long to wait for a peer's first bytes after it connects.
+///
+/// Modbus TCP is client-speaks-first — the server says nothing until it has a request — and a
+/// client sends its first PDU inside its own connect path (`tokio-modbus` and `mbpoll` both do).
+/// So a peer that has connected and sent nothing has begun no transaction at all, which is the
+/// state an unauthenticated flood lives in: Modbus has no authentication step of any kind.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a peer that has already sent something may send nothing further.
+///
+/// Modbus TCP defines no keepalive, so there is no protocol interval to sit above; what there
+/// is, is polling. A SCADA master polls on a sub-second to few-second cycle, so any real client
+/// speaks orders of magnitude more often than this.
+///
+/// The number is set by *this* server rather than by Modbus: `handle_data` runs on its own task,
+/// so the reader keeps reading while a request is being answered, and a peer waiting for its own
+/// reply is silent on this socket for the whole of that work — including a `manual` rule parked
+/// for a human, 300 seconds by default. Ten minutes leaves that a factor of two. Real Modbus/TCP
+/// gateways commonly reap an idle connection at 60 seconds; being ten times more patient is the
+/// deliberate price of letting a human answer.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+///
+/// Each admitted connection may buffer [`MAX_BUFFERED`] bytes and holds a read task, a peer
+/// handle and an `AppState` row, so the cap is what turns those per-connection bounds into total
+/// ones. A real PLC admits single digits; 256 is the shared default and is still far below what
+/// an attacker needs for socket exhaustion to matter.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: **nothing**.
+///
+/// Modbus has no way to say it. Every server message is an exception or a data response, and both
+/// are replies — they carry the transaction identifier, unit id and function code of a request
+/// this peer has not sent. Inventing one means inventing a transaction, which is worse than
+/// silence for the same reason twenty protocols here are deliberately silent on an LLM failure.
+/// So the refusal is a plain close and the reason lives in the log, under the
+/// `decision=fail_closed_connection_cap` tag `accept_bounded` writes.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// Why a request is being answered the way it is.
 ///
 /// The wire cannot carry the distinction: a model that deliberately refuses with exception
@@ -134,9 +174,18 @@ impl ModbusServer {
         let accept_handle = tokio::spawn(async move {
             Log::new(Some(&status_tx)).info(format!("Modbus accept loop started on {local_addr}"));
 
+            let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Modbus",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -219,10 +268,57 @@ impl ModbusServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the peer is still here, which
+                                // silently un-caps the server.
+                                let _permit = permit;
                                 let mut read_buf = vec![0u8; 4096];
                                 let log = Log::new(Some(&status_clone));
+                                // "Has said nothing at all" and "has gone quiet mid-session"
+                                // are different claims and get different deadlines.
+                                let mut spoke_once = false;
                                 loop {
-                                    match read_half.read(&mut read_buf).await {
+                                    let read_deadline = if spoke_once {
+                                        IDLE_BETWEEN_REQUESTS_TIMEOUT
+                                    } else {
+                                        FIRST_BYTE_READ_TIMEOUT
+                                    };
+                                    // The deadline wraps this read and nothing else. Modbus has
+                                    // no message a server may send unprompted, so a peer
+                                    // dropped for silence is closed without a byte — the
+                                    // reason is the log line.
+                                    let read_result = match tokio::time::timeout(
+                                        read_deadline,
+                                        read_half.read(&mut read_buf),
+                                    )
+                                    .await
+                                    {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            log.info(format!(
+                                                "Modbus connection {connection_id} sent nothing \
+                                                 for {}s; closing \
+                                                 decision=fail_closed_idle_timeout",
+                                                read_deadline.as_secs()
+                                            ));
+                                            conns_clone.lock().await.remove(&connection_id);
+                                            state_clone
+                                                .remove_peer_handle(
+                                                    server_id,
+                                                    connection_id.as_u32(),
+                                                )
+                                                .await;
+                                            state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            let _ = status_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                    };
+                                    match read_result {
                                         Ok(0) => {
                                             conns_clone.lock().await.remove(&connection_id);
                                             state_clone
@@ -244,6 +340,7 @@ impl ModbusServer {
                                             break;
                                         }
                                         Ok(n) => {
+                                            spoke_once = true;
                                             let data = read_buf[..n].to_vec();
                                             // Summary + full payload FileOnly: the modbus_* event
                                             // templates render the equivalent line to the TUI.

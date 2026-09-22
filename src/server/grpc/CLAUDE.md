@@ -150,6 +150,34 @@ headers) is not parsed and does not reach the handler at all.
   `register_server_task()`. The accept loop breaks on error rather than spinning. Per-connection
   tasks are untracked (project-wide gap).
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry
+forever, pre-authentication — and this server has no auth at all. It now declares both halves;
+the constants and the reasoning live beside them in `src/server/grpc/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | Enforced with `TcpStream::peek` before the socket reaches hyper, so the HTTP/2 preface is still there afterwards. HTTP/2 is client-speaks-first and every gRPC client sends the preface inside its dial path. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | gRPC keepalive is **off by default** on both sides (grpc-go leaves `keepalive.ClientParameters.Time` unset and its server policy refuses pings more often than five minutes), so there is no interval to copy. Fifteen minutes is safe because of a property of *this* server: it is unary-only — no server-streaming route exists, reflection included — so no legitimate request is held open waiting for something to happen. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately in the older protocol — the same choice `src/server/etcd/mod.rs` makes. A refused peer has not sent the HTTP/2 preface, so nothing has been negotiated and a GOAWAY would have to follow a SETTINGS exchange this server is declining. |
+
+**The deadline covers the read and nothing else.** hyper owns every read once `serve_connection`
+starts, and it keeps polling the connection for new frames *while a request is being answered* —
+so a deadline on reads would be wrong here, not merely awkward. The idle bound is a watchdog over
+`ConnectionActivity` instead, which reports a connection with work in flight as not idle at all.
+The LLM round-trip, and a `manual` rule parking an event for a human
+(`src/state/intercepts.rs`, 300s by default), are outside every deadline here, so an answer that
+takes minutes can never close the connection it is an answer for.
+
+`tests/server/grpc/connection_bounds_test.rs` drives both halves from the wire in raw HTTP/2: a
+peer that says nothing is closed at the bound, and a peer that sent the preface still gets a
+SETTINGS ACK 38 seconds later. Removing the `tokio::time::timeout` around the `peek` makes the
+first test hang for its whole 70-second window and fail.
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed, and
+`tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Known limitations
 
 - **Unary only.** No client, server or bidirectional streaming. Extra length-prefixed frames in

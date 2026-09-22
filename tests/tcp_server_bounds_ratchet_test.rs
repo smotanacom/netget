@@ -47,27 +47,15 @@ use std::path::{Path, PathBuf};
 ///
 /// Nothing here makes a deadline impossible. This is work left.
 const TIMEOUT_BASELINE: &[&str] = &[
-    "bitcoin",
-    "git",
-    "grpc",
-    "imap",
-    "kubernetes",
-    "ldap",
-    "mercurial",
-    "modbus",
-    "nats",
     "nfc",
     "ollama",
     "openai",
     "rtsp",
-    "ssh",
-    "stomp",
     "keyboard",
     "mouse",
     "msc",
     "serial",
     "smartcard",
-    "webdav",
     "xmpp",
 ];
 
@@ -81,25 +69,16 @@ const TIMEOUT_BASELINE: &[&str] = &[
 const CAP_BASELINE: &[&str] = &[
     "amqp",
     "bgp",
-    "bitcoin",
     "doh",
     "dot",
     "finger",
-    "git",
     "gopher",
-    "grpc",
     "hls",
     "ident",
-    "imap",
     "ipp",
-    "kubernetes",
-    "ldap",
     "llmnr",
-    "mercurial",
-    "modbus",
     "mongodb",
     "mqtt",
-    "nats",
     "nfc",
     "ollama",
     "openai",
@@ -107,10 +86,7 @@ const CAP_BASELINE: &[&str] = &[
     "rtsp",
     "smtp",
     "socks5",
-    "ssh",
-    "stomp",
     "torrent_tracker",
-    "webdav",
     "webrtc",
     "webrtc_signaling",
     "websocket",
@@ -226,7 +202,7 @@ fn every_tcp_accept_loop_declares_a_read_deadline() {
         if allowed.contains(leaf(&name)) {
             continue;
         }
-        if !TIMEOUT_TOKENS.iter().any(|token| source.contains(token)) {
+        if !bounds_a_read_in_time(&source) {
             missing.push(name);
         }
     }
@@ -328,4 +304,37 @@ fn the_eighteen_this_sweep_covered_have_both_bounds() {
              the protocol is rather than inherited invisibly"
         );
     }
+}
+
+/// Does this protocol's source actually bound a read in time?
+///
+/// A direct mechanism from [`TIMEOUT_TOKENS`], **or** the `select!`-arm idiom: a
+/// `tokio::time::sleep` racing the read, with a timeout or deadline binding to sleep for.
+///
+/// That second form is why this is a function rather than a flat list. `nats` writes
+///
+/// ```ignore
+/// let read_deadline = if spoke_once { IDLE_BETWEEN_FRAMES_TIMEOUT } else { FIRST_FRAME_READ_TIMEOUT };
+/// tokio::select! {
+///     n = read_half.read(&mut buf) => n?,
+///     _ = tokio::time::sleep(read_deadline) => { /* close */ }
+/// }
+/// ```
+///
+/// which is a real deadline on a real read and matches none of the direct tokens. Flagging it
+/// was a false positive — in the safe direction, but still wrong.
+///
+/// **The conjunct is what keeps this from sliding back into name-matching.** `time::sleep(`
+/// alone would pass any protocol with a retry backoff or a keepalive timer; a `_TIMEOUT`
+/// identifier alone is what silently exempted `snowflake`, whose only match was
+/// `CODE_REQUEST_TIMEOUT = "000629"` — a Snowflake error code, a string, with no timing code
+/// anywhere in the directory. Requiring **both** a real sleep call and a deadline to sleep for
+/// still catches that: a protocol that bounds nothing has no `sleep` to pair with the name.
+fn bounds_a_read_in_time(source: &str) -> bool {
+    if TIMEOUT_TOKENS.iter().any(|token| source.contains(token)) {
+        return true;
+    }
+    let sleeps = source.contains("time::sleep(");
+    let has_deadline = source.contains("_TIMEOUT") || source.contains("_deadline");
+    sleeps && has_deadline
 }

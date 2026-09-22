@@ -259,6 +259,33 @@ Use `--cache-dir` when experimenting: kubectl caches discovery per host:port und
 `~/.kube/cache`, so a restarted server with a different `resources` set will otherwise be
 addressed with a stale RESTMapper.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry
+forever. This server performs no authentication, so that is reachable by anyone who can reach
+the port. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/kubernetes/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | Both shapes are client-speaks-first — plain HTTP says nothing before the request line, TLS nothing before the ClientHello — so a peer that has sent nothing has begun neither. Enforced with `TcpStream::peek` on the raw socket, before *either* the TLS acceptor or hyper sees it, so those bytes are still there for whichever one gets the stream. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* requests. Every response here is a `Full<Bytes>`, and `?watch=true` — the one long-lived shape the Kubernetes API defines — is explicitly refused rather than streamed, so no legitimate request is held open waiting for something to happen. A real `kube-apiserver` closes an idle HTTP/1 connection well before fifteen minutes; `kubectl` connects, asks and exits. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **plaintext HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately plaintext — a refused peer has not completed a TLS handshake and a TLS alert would have to be preceded by one this server is declining to perform. |
+
+**The deadline bounds the silence, not the transfer.** hyper owns every read once
+`serve_connection` starts and keeps polling for frames *while a request is being answered*, so a
+deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog
+over `ConnectionActivity` instead, which reports a connection with a request in flight as not
+idle at all — so an LLM round-trip, or a `manual` rule parked for a human
+(`src/state/intercepts.rs`, 300s by default), can never close the connection it is an answer for.
+
+`tests/server/kubernetes/connection_bounds_test.rs` drives both halves from the wire: a peer
+that says nothing is closed at the bound, and a peer that speaks is still served 38 seconds
+later. Removing the `tokio::time::timeout` around the `peek` makes the first test hang for its
+whole 70-second window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if
+either bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Not implemented
 
 - **Watch.** `?watch=true` returns a `501` `Status`, deliberately — answering a watch with a

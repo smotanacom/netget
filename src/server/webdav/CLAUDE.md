@@ -169,6 +169,33 @@ static handlers cost no LLM call, and static handlers can reach the event with
   idle sweep only where `ProtocolMetadataV2::connectionless` is set, and WebDAV does not
   declare it — correctly, since clients hold keep-alive connections open between bursts.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a connection task and an `AppState` entry
+forever — and WebDAV has no authentication step at all, so "pre-authentication" here means
+"anyone who can reach the port". It now declares both halves; the constants and the reasoning
+live beside them in `src/server/webdav/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 30s | HTTP is client-speaks-first, so a peer that has sent nothing has begun no request. Enforced with `TcpStream::peek` before the socket reaches hyper, so the request line is still there afterwards. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* requests, not a bound on a transfer. A `GET` returns whatever the model says the file contains, built into a `Full<Bytes>` before the response is returned, so a client dragging a large file down is draining bytes rather than idling. A mounted share (Finder, gvfs, `reqwest_dav`) polls far more often than fifteen minutes; one silent that long has unmounted or died without closing. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**. A DAV client reports the status; an unexplained reset would have it record a permanent fault. |
+
+**The deadline bounds the silence, not the transfer.** hyper owns every read once
+`serve_connection` starts and keeps polling for frames *while a request is being answered*, so a
+deadline on reads would be wrong here rather than merely awkward. The idle bound is a watchdog
+over `ConnectionActivity` instead, which reports a connection with a request in flight as not
+idle at all — so an LLM round-trip, or a `manual` rule parking a `PUT` for a human to approve
+(`src/state/intercepts.rs`, 300s by default), can never close the connection it is an answer for.
+
+`tests/server/webdav/connection_bounds_test.rs` drives both halves from the wire: a peer that
+says nothing is closed at the bound, and a peer that speaks is still served 38 seconds later.
+Removing the `tokio::time::timeout` around the `peek` makes the first test hang for its whole
+70-second window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either
+bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
+
 ## Limitations
 
 - **Request bodies are capped at 8 MiB** (`MAX_REQUEST_BODY`). Over that the peer gets `413`

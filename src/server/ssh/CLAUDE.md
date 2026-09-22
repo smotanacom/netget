@@ -182,6 +182,41 @@ truncate.
 Event data is structured. The old `params` field flattened everything into a string
 (`"path='/x', id=3"`) that a script handler had to re-parse.
 
+## Connection bounds
+
+Before September 2026 this server accepted without limit, and its only read bound was russh's
+`inactivity_timeout`, set to 3600 as an unexplained literal. That is not a bound on the state
+that matters: a peer that connected and never sent its identification string held a socket, a
+task and an `AppState` row for an hour, before any authentication, on a server that would happily
+accept a hundred more. Both halves are declared now; the constants and the reasoning live beside
+them in `src/server/ssh/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 60s | Both ends send an identification string as soon as the connection is up (RFC 4253 §4.2). OpenSSH's `LoginGraceTime` for *completing* authentication is 120s; this is half that and applies only to producing a single byte, so it cannot close a peer `sshd` would keep. |
+| `IDLE_SESSION_TIMEOUT` | 3600s | **An interactive shell is legitimately silent for a long time**, and SSH has no keepalive that is on by default to sit above — OpenSSH's `ServerAliveInterval` and `ClientAliveInterval` both default to **0**. An hour is the most aggressive bound that is defensible, and it is what this server was already doing; it is now named and passed to *both* russh's config and the stream wrapper, so the two cannot drift apart. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`Exceeded MaxStartups\r\n`**, the exact line OpenSSH's `sshd` writes over `MaxStartups`, and legal SSH — RFC 4253 §4.2 lets a server send lines before its identification string precisely so it can say something to the user, and clients print them. One honest difference: this cap counts every connection, not only unauthenticated ones, so it is not literally MaxStartups; the text is chosen because it is the line SSH users already recognise for "refusing new connections right now". |
+
+**Where the deadline lives, and why it is not a `peek`.** russh owns every read once `run_stream`
+is called, so there is no `read()` of ours to wrap. The other hyper-backed servers in this sweep
+solve that with a `TcpStream::peek` before the crate sees the socket — but that makes the bound
+depend on the *client* speaking first, and SSH is the one protocol here where the server
+legitimately speaks first. So the socket is wrapped in `DeadlinedStream`, a two-field adapter
+over `accept_bounded::IdleTimeoutReader` with the write half passed straight through.
+
+That reader's deadline is armed **lazily**: only while a read is polled and finds nothing, and
+disarmed the moment bytes arrive. russh awaits a handler inside the `select!` arm that matched
+rather than polling the read alongside it, so during a model round-trip — or a `manual` rule
+parked for a human — no clock is running at all, and the next poll arms a fresh deadline. That is
+the whole correctness argument, and it is the TFTP live-transfer eviction read in reverse.
+
+`tests/server/ssh/connection_bounds_test.rs` drives both halves from the wire: a peer that never
+identifies itself gets the server's `SSH-2.0-…` line and is then closed at the bound, and a peer
+that *has* identified itself is still connected 68 seconds later. Handing `run_stream` the raw
+`TcpStream` instead of the `DeadlinedStream` makes the first test hang for its whole 100-second
+window and fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is
+removed, and `tests/accept_bounded_test.rs` covers the shared helper, including `IdleTimeoutReader`.
+
 ## Known limitations
 
 - **SFTP is read-only.** Only `init`, `opendir`, `readdir`, `open`, `read`, `close`, `lstat`,
