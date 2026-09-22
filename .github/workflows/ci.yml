@@ -31,12 +31,19 @@ env:
   # an MCP integration surface (mcp-stdio). Deliberately not --all-features:
   # that's 3+ min / 3GB+ RAM and needs system libs (protoc, libpcap, dbus,
   # libusb, pcsclite) this workflow does not install.
-  CI_FEATURES: tcp,http,dns,udp,redis,mcp-stdio
+  #
+  # `finger` is here for one reason and it is not coverage of Finger: it is the only
+  # **Experimental** protocol in this set. `min_stability_test`'s refusal half asks the
+  # registry for an Experimental protocol and fails when none is compiled, and every other
+  # feature here has been promoted to Beta or Stable - so the min-stability gate's refusal
+  # path had silently stopped being exercised by the blocking job. Keep at least one
+  # Experimental feature in this list; if `finger` is ever promoted, add another.
+  CI_FEATURES: tcp,http,dns,udp,redis,mcp-stdio,finger
   # CI_FEATURES plus terminal-snapshot, used for the blocking clippy run only.
   # terminal-snapshot gates tests/terminal_snapshot/, which is where the
   # clippy::zombie_processes violation lived that leaked a live `netget` process on
   # every run. Without the feature that whole file is invisible to the gate.
-  LINT_FEATURES: tcp,http,dns,udp,redis,mcp-stdio,terminal-snapshot
+  LINT_FEATURES: tcp,http,dns,udp,redis,mcp-stdio,finger,terminal-snapshot
   # Everything the runner can build without a system library, for the advisory
   # wide-feature clippy job. `dist` is the Linux release feature set (release.yml
   # builds it for x86_64-unknown-linux-gnu), so it is known to compile here.

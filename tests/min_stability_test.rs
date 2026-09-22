@@ -97,7 +97,12 @@ async fn min_stability_beta_refuses_experimental_and_allows_beta() {
         })
         .expect(
             "no Experimental protocol is compiled in, so the refusal half of this test cannot \
-             run. If every protocol has reached Beta, delete this half rather than weakening it.",
+             run — the min-stability gate's whole point is refusing one, so this is a coverage \
+             hole, not a reason to relax the test. Add an Experimental feature to this build's \
+             feature set (`finger` and `ident` are Experimental and pull in no dependencies); \
+             ci.yml's CI_FEATURES carries `finger` for exactly this. Delete this half only if \
+             every protocol in the tree has reached Beta, which is not close to true — the \
+             count was 106 Experimental in September 2026.",
         );
 
     let state = Arc::new(AppState::new());
