@@ -364,9 +364,18 @@ impl ServerInstance {
         }
     }
 
-    /// Get or create a log file path for the given output name
-    /// Returns the path to the log file with format: netget_<output_name>_<timestamp>.log
-    /// The timestamp is based on when the server was created
+    /// Get or create a log file path for the given output name.
+    ///
+    /// Format: `netget_<output_name>_<timestamp>_s<server id>.log`, in the process's working
+    /// directory. The timestamp is when the *server* was created, so every line a server
+    /// writes to one output name lands in one file for that server's whole life.
+    ///
+    /// **The server id is what makes the name unique, and it was missing.** The timestamp has
+    /// one-second resolution, so two servers started in the same second and asked for the same
+    /// output name — which is the norm, since `access_logs` is the name eleven tests and most
+    /// example prompts use — produced the *same path* and appended into each other's file.
+    /// Nothing detected that: each server's own `log_files` map is per-server and perfectly
+    /// consistent, so both believed they owned the file.
     pub fn get_or_create_log_path(&mut self, output_name: &str) -> PathBuf {
         if let Some(path) = self.log_files.get(output_name) {
             return path.clone();
@@ -382,7 +391,12 @@ impl ServerInstance {
         let timestamp = crate::utils::clock::to_local_datetime(created_system_time);
         let timestamp_str = timestamp.format("%Y_%m_%d_%H_%M_%S").to_string();
 
-        let log_filename = format!("netget_{}_{}.log", output_name, timestamp_str);
+        let log_filename = format!(
+            "netget_{}_{}_s{}.log",
+            output_name,
+            timestamp_str,
+            self.id.as_u32()
+        );
         let log_path = PathBuf::from(log_filename);
 
         self.log_files

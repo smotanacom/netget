@@ -544,12 +544,48 @@ async fn test_http_error_responses() -> E2EResult<()> {
     Ok(())
 }
 
+/// Every `netget_access_logs_*.log` currently in the working directory.
+///
+/// The working directory is the repository root and is shared by the whole run, and the
+/// filename `append_to_log` chooses is `netget_<output_name>_<timestamp>_s<server id>.log` —
+/// so a test that wants "its" log must diff this before and after, never take the first match.
+fn existing_access_logs() -> Vec<std::path::PathBuf> {
+    let Ok(dir) = std::env::current_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("netget_access_logs_") && n.ends_with(".log"))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 #[tokio::test]
 async fn test_http_simple_get_with_logging() -> E2EResult<()> {
     println!("\n=== E2E Test: Simple HTTP GET with Access Log ===");
 
     // PROMPT: Simple HTML response with access logging
     let prompt = "listen on port {AVAILABLE_PORT} via http stack. For any GET request, return status 200 with body: <h1>Hello World</h1>. Also, log all access logs to a file named 'access_logs'";
+
+    // Every `append_to_log` in the tree writes `netget_<output_name>_*.log` into the process's
+    // working directory, which is the repository root and shared by every test in the run.
+    // Eleven tests use the output name `access_logs`, so "the" access log file is not a thing
+    // that exists: this test must consider only files that were not already here.
+    //
+    // It did not, and the cost was a wrong diagnosis. It took the first match from an
+    // unordered `read_dir`, which was a stale file left behind by the WHOIS suite
+    // (`WHOIS query from 192.168.1.100 for netget.example`), so the content assertion failed
+    // against another test's log — and presented as a regression in HTTP.
+    let logs_before = existing_access_logs();
 
     // Start the server
     let server = helpers::start_netget_server(NetGetConfig::new(prompt).with_mock(|mock| {
@@ -608,33 +644,36 @@ async fn test_http_simple_get_with_logging() -> E2EResult<()> {
     // Give LLM time to write the log
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    // Check that a log file was created matching pattern: netget_access_logs_*.log
-    let current_dir = std::env::current_dir()?;
-    let entries = std::fs::read_dir(&current_dir)?;
+    // Check that a log file was created matching pattern: netget_access_logs_*.log,
+    // considering ONLY files that appeared while this test ran.
+    let new_logs: Vec<std::path::PathBuf> = existing_access_logs()
+        .into_iter()
+        .filter(|p| !logs_before.contains(p))
+        .collect();
 
-    let mut found_log_file = None;
-    for entry in entries {
-        if let Ok(entry) = entry {
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_string_lossy();
-            if file_name_str.starts_with("netget_access_logs_") && file_name_str.ends_with(".log") {
-                found_log_file = Some(entry.path());
-                break;
+    // Cleaning up must not depend on the assertions below passing. A failing run used to
+    // leave its file behind, so the next run had one more stale candidate to trip over — the
+    // failure was self-perpetuating, which is why it looked deterministic.
+    struct Cleanup(Vec<std::path::PathBuf>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for p in &self.0 {
+                let _ = std::fs::remove_file(p);
             }
         }
     }
+    let _cleanup = Cleanup(new_logs.clone());
 
-    // The mock deterministically emits `append_to_log`, so the log file (and its
-    // content) must exist. This is a hard assertion, not a soft/lenient check:
-    // a mocked response is not subject to LLM interpretation variance.
-    let log_path = found_log_file.expect(
-        "Expected a netget_access_logs_*.log file to be created by the mocked \
-         append_to_log action, but none was found",
+    assert_eq!(
+        new_logs.len(),
+        1,
+        "expected exactly one new netget_access_logs_*.log from the mocked append_to_log \
+         action; got {new_logs:?}"
     );
+    let log_path = &new_logs[0];
     println!("✓ Found access log file: {:?}", log_path);
 
-    // Read the log content
-    let content = std::fs::read_to_string(&log_path)?;
+    let content = std::fs::read_to_string(log_path)?;
     println!("Log file content:\n{}", content);
 
     assert!(
@@ -645,9 +684,7 @@ async fn test_http_simple_get_with_logging() -> E2EResult<()> {
 
     println!("✓ Access log contains the expected content");
 
-    // Clean up the log file
-    std::fs::remove_file(&log_path)?;
-    println!("✓ Cleaned up access log file");
+    println!("✓ Access log cleaned up on the way out");
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after

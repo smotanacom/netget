@@ -160,7 +160,15 @@ endpoints are hit repeatedly. Current tests focus on functionality breadth, not 
 - **Client**: `GET /`
 - **Expected**:
     - Status 200, body "Hello World"
-    - Log file created: `netget_access_logs_*.log`
+    - Log file created: `netget_access_logs_<timestamp>_s<server id>.log`, in the process's
+      working directory — the repository root, shared by the whole run. **Eleven tests use the
+      output name `access_logs`, so there is no such thing as "the" access log file.** This
+      test snapshots the matching files before it starts and considers only what appeared
+      since; taking the first match from an unordered `read_dir` made it fail against a stale
+      log the WHOIS suite had left behind, which presents as a regression in HTTP. It also
+      cleans up from a `Drop` guard rather than at the end of the happy path, because a run
+      that left its file behind gave the next run one more stale candidate — the failure was
+      self-perpetuating, which is what made it look deterministic.
     - Log file contains at least one line
 - **Purpose**: File I/O action, logging capability
 - **Note**: Lenient validation - LLM may interpret logging differently
