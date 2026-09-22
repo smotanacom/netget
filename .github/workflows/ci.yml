@@ -626,7 +626,7 @@ jobs:
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
-          SHARDS: 4
+          SHARDS: "4"
         run: |
           set -uo pipefail
           ALL="$SINGLE_FEATURE_CORE $SINGLE_FEATURE_REST"
