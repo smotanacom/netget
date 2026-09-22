@@ -915,86 +915,30 @@ jobs:
   probe:
     name: PROBE registry-audit client environment
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: maven preinstalled?
+      - name: openvpn availability probe
         run: |
           set +e
-          echo "=== command -v mvn (before apt) ==="
-          command -v mvn; mvn -version
-          ls -d /usr/share/*maven* 2>&1
-          set -e
+          sudo apt-get update >/dev/null
+          echo "=== apt-cache policy openvpn (default pockets) ==="
+          apt-cache policy openvpn
+          echo "=== backports ==="
+          apt-cache policy -t jammy-backports openvpn
+          echo "=== preinstalled? ==="
+          command -v openvpn && openvpn --version | head -2
 
-      - name: install packages
+      - name: openvpn official repo probe
         run: |
+          set -x
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://swupdate.openvpn.net/repos/repo-public.gpg \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/openvpn.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/openvpn.gpg] https://build.openvpn.net/debian/openvpn/stable jammy main" \
+            | sudo tee /etc/apt/sources.list.d/openvpn.list
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends maven libmemcached-tools libboost-dev libssl-dev g++ make
-
-      - name: etcd 3.5 client probe
-        run: |
-          set -eux
-          curl -fsSL -o /tmp/etcd.tgz https://github.com/etcd-io/etcd/releases/download/v3.5.17/etcd-v3.5.17-linux-amd64.tar.gz
-          sudo tar -xzf /tmp/etcd.tgz -C /usr/local/bin --strip-components=1 etcd-v3.5.17-linux-amd64/etcdctl
-          etcdctl version
-
-      - name: memcached tool symlink probe
-        run: |
-          set -x
-          for pair in memcat:memccat memstat:memcstat memping:memcping ; do
-            want=${pair%%:*}; have=${pair##*:}
-            sudo ln -sf "/usr/bin/$have" "/usr/local/bin/$want"
-          done
-          command -v memcat memstat memping
-          set +e
-          memcat --version; echo "memcat --version exit=$?"
-          memstat --version; echo "memstat --version exit=$?"
-          memping --version; echo "memping --version exit=$?"
-          memcat --help 2>&1 | head -5; echo "memcat --help exit=$?"
-
-      - name: stunserver build from master probe
-        run: |
-          set -x
-          git clone https://github.com/jselbie/stunserver.git /tmp/stunserver
-          cd /tmp/stunserver
-          git checkout 1582042ca33f
-          git log --oneline -1
-          make -j"$(nproc)" 2>&1 | tail -25 || echo "MAKE FAILED"
-          find /tmp/stunserver -maxdepth 2 -type f -perm -u+x -name 'stunclient*'
-          set +e
-          /tmp/stunserver/client/stunclient --help 2>&1 | head -20; echo "help exit=$?"
-          /tmp/stunserver/stunclient --help 2>&1 | head -20; echo "help2 exit=$?"
-
-      - name: maven tail-repo experiment
-        run: |
-          set -x
-          mvn -version
-          # warm plainly, exactly as the test's error message prescribes
-          mvn -B dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/warm.log 2>&1 || tail -20 /tmp/warm.log
-          printf '%s\n' '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"><mirrors><mirror><id>netget-under-test</id><url>http://127.0.0.1:1/</url><mirrorOf>*</mirrorOf></mirror></mirrors></settings>' > /tmp/s.xml
-          cat /tmp/s.xml
-          set +e
-          rm -rf /tmp/head
-          mvn -B -s /tmp/s.xml -Dmaven.repo.local=/tmp/head               -Dmaven.repo.local.tail="$HOME/.m2/repository"               dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/tail1.log 2>&1
-          echo "APT-MAVEN tail experiment exit=$?"
-          tail -30 /tmp/tail1.log
-
-      - name: maven 3.9 tail-repo experiment
-        run: |
-          set -x
-          curl -fsSL -o /tmp/mvn.tgz https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
-          sudo tar -xzf /tmp/mvn.tgz -C /opt
-          export PATH=/opt/apache-maven-3.9.9/bin:$PATH
-          mvn -version
-          rm -rf "$HOME/.m2" /tmp/head2
-          mvn -B dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/warm2.log 2>&1 || tail -20 /tmp/warm2.log
-          ls "$HOME/.m2/repository/org/apache/maven/plugins/maven-dependency-plugin"
-          set +e
-          mvn -B -s /tmp/s.xml -Dmaven.repo.local=/tmp/head2               -Dmaven.repo.local.tail="$HOME/.m2/repository"               dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/tail2.log 2>&1
-          echo "MAVEN-3.9 tail experiment exit=$?"
-          tail -40 /tmp/tail2.log
-          echo "=== unpack too ==="
-          mvn -B -s /tmp/s.xml -Dmaven.repo.local=/tmp/head2               -Dmaven.repo.local.tail="$HOME/.m2/repository"               dependency:unpack -Dartifact=junit:junit:4.13.2 -DoutputDirectory=/tmp/unp > /tmp/tail3.log 2>&1
-          echo "MAVEN-3.9 unpack exit=$?"
-          tail -30 /tmp/tail3.log
+          apt-cache policy openvpn
+          sudo apt-get install -y --no-install-recommends openvpn
+          openvpn --version | head -2
+          openvpn --help 2>&1 | grep -i 'peer-fingerprint' || echo "NO peer-fingerprint IN HELP"
+          openvpn --show-tls >/dev/null 2>&1; echo "show-tls exit=$?"
