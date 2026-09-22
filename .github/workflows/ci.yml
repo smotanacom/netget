@@ -789,6 +789,14 @@ jobs:
         with:
           node-version: '22'
 
+      # The shim crates' own tests, which **nothing else runs**. `cargo test` at the root
+      # builds the root package only, so every test under `crates/*/tests/` is invisible to
+      # the blocking `test` job — including the eight covering `TcpStream::peek`, which is
+      # what thirty servers' first-byte deadline rests on in the browser build. They run on
+      # the host: the virtual network is in-memory duplexes and needs no wasm target.
+      - name: cargo test (the wasm shim crates)
+        run: cargo test --locked -p netget-tokio-wasm -p netget-crossterm-wasm
+
       - name: build the bundle
         run: ./web/build.sh
 
