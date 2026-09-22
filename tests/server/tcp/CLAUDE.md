@@ -5,6 +5,33 @@
 Tests the raw TCP server implementation with FTP-like commands and custom protocols. Validates that the LLM can
 construct protocol responses from scratch using raw TCP byte streams.
 
+## `connection_bounds_test.rs` — the deadlines, and why it overrides them
+
+This file was not mentioned here at all until 22 September 2026, which is how a test directory's
+doc drifts: the file arrives with the sweep that needed it and nothing points at it afterwards.
+
+Three assertions, all from the wire, against a server whose LLM endpoint is a dead port — these
+are about *deadlines*, not answers:
+
+1. a peer that connects and sends nothing is closed at the first-byte bound, and **not before**
+   (the lower assertion is what stops something else tearing the connection down from passing
+   this test without the bound existing);
+2. a connection whose answer is **parked for a human** is not closed, which is what stops the
+   first from being satisfiable by a server that hangs up on everybody;
+3. the connection past `MAX_CONNECTIONS` is refused and the slot comes back.
+
+**It passes `first_byte_timeout_secs: 6`, and the override is the point rather than a shortcut.**
+The shipped default is 300 seconds — the window a `manual` rule gives a human, because the peer
+is most often NetGet's own client waiting for someone to use `[ send message ]`. A test cannot
+wait five minutes, and one that asserted the default by waiting it out would be the slowest
+thing in the suite. What is asserted here is that the deadline is *applied* and that work in
+flight suspends it; the value is argued in `src/server/tcp/CLAUDE.md`, where an operator will
+look for it.
+
+**TCP is the only server whose read loop keeps reading while a request is answered**, so it is
+the only one where the deadline and the answer are live at the same moment. That is why
+`read_bounded` consults `ConnectionActivity`, and why assertion 2 exists at all.
+
 ## Test Strategy
 
 - **Isolated test servers**: Each test spawns a separate NetGet instance with specific instructions
