@@ -355,7 +355,6 @@ jobs:
       #   mosquitto-clients - mqtt (mosquitto_pub / mosquitto_sub)
       #   mysql-client      - mysql (the real CLI; the second client, not mysql_async)
       #   npm               - npm
-      #   openvpn           - openvpn
       #   postgresql-client - postgresql (psql; libpq, deliberately NOT tokio-postgres)
       #   python3-pip       - pypi, and oci_registry's script handler
       #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
@@ -376,6 +375,12 @@ jobs:
       #                  refused it - correctly, because v2 is HTTP/1.1 REST and this test
       #                  exists to drive **gRPC**. Installed from the upstream release
       #                  tarball in its own step below.
+      #   openvpn      - jammy's is OpenVPN **2.5.11**, and the real-client test pins the
+      #                  server's fresh self-signed certificate with `--peer-fingerprint`,
+      #                  which is **2.6+**. 2.5 rejects its own command line with
+      #                  "Options error: Unrecognized option ... peer-fingerprint (2.5.11)"
+      #                  and the test says, correctly, that nothing was tested. Installed
+      #                  from jammy-backports (2.6.12) in its own step below.
       #   maven        - the runner image already has Maven **3.9.16** at /usr/bin/mvn, and
       #                  `apt-get install maven` DOWNGRADES it to jammy's 3.6.3. That is not
       #                  cosmetic: `-Dmaven.repo.local.tail`, which maven::e2e_test relies on
@@ -400,7 +405,7 @@ jobs:
             aria2 awscli curl bind9-dnsutils ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
-            openvpn postgresql-client python3-pip redis-tools sipsak \
+            postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan
 
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
@@ -427,6 +432,28 @@ jobs:
           memcat --version
           memstat --version
           memping --version
+
+      # OpenVPN 2.6 from jammy-backports - see the note above. `--peer-fingerprint`, the
+      # option `tests/server/openvpn/e2e_test.rs` uses to trust the server's per-run
+      # self-signed certificate without any PKI, does not exist in jammy's 2.5.11, so the
+      # client refused its own command line and the test reported that nothing was tested.
+      #
+      # jammy-backports rather than OpenVPN's own apt repository: 2.6.12 is there already,
+      # it is signed by the same archive key everything else in this job comes from, and
+      # adding a third-party repository to a CI image is a decision that deserves more than
+      # a test fix. `-t jammy-backports` raises that pocket's priority for this invocation
+      # only.
+      #
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Install OpenVPN 2.6 (jammy-backports)
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo apt-get install -y --no-install-recommends -t jammy-backports openvpn
+          openvpn --version | head -1
+          # The assertion is the exact option the test passes, not the version string: a
+          # backport that renamed or dropped it would satisfy "2.6" and still fail there.
+          openvpn --help 2>&1 | grep -q -- '--peer-fingerprint'
 
       # etcdctl, from the upstream release rather than apt - see the note above: jammy's
       # `etcd-client` is 3.3.25 and defaults to the v2 (HTTP/1.1 REST) API, which is not
