@@ -1306,17 +1306,34 @@ It syncs `site/` to the `netget.net` S3 bucket (assets `max-age=604800`, `index.
 
 Two things about it are load-bearing:
 
-- **`site/` is public and `docs/` is not.** Only `site/` is uploaded. The planning markdown in
-  `docs/` used to be served — GitHub Pages published that whole directory — and is not any
-  more. A new file under `site/` is a new public URL.
+- **`site/` is public and so is `docs/`, which this entry denied for months.** Only `site/` is
+  uploaded by `deploy.sh`, and a new file there is a new public URL — that half is right. But
+  the claim that `docs/` "used to be served … and is not any more" was **false when written and
+  is false now**: `gh api repos/smotanacom/netget/pages` reports Pages still enabled,
+  `build_type: legacy`, source `master:/docs`, status `built`. Every push to master rebuilds it
+  and all 32 files under `docs/` are live at `https://smotanacom.github.io/netget/<name>.html`.
+  Verified by fetching three of them: 200 each.
+
+  Nothing leaked — the repository is **public** (`visibility: public`), so those files are
+  already readable on github.com, and a scan of `docs/` for credentials found only placeholders
+  (`<r2-secret-key>`, `YOUR_ORG_NAME`, `ACCOUNT_ID`, `minioadmin`, and AWS's own documentation
+  example key). The hazard is this sentence rather than the content: anyone reading it would
+  reasonably put something in `docs/` believing it goes nowhere.
+
+  **Why nobody noticed: the site root is a 404.** Only the individual pages resolve, so from the
+  front door it looks dead. There is no workflow file to remove — `build_type: legacy` means
+  GitHub's own builder, driven by a repository setting.
 - **`deploy.sh` excludes itself and every `*.md`.** `site/CLAUDE.md` names the bucket,
   distribution and OAC IDs; the first run of the script published it before the exclusion
   existed. `--delete` skips excluded paths too, so removing such a file from the bucket is a
   manual `aws s3 rm`.
 
 Hosting is S3 + CloudFront (private bucket, OAC, ACM cert, DNS at Porkbun) — the same shape as
-the maintainer's other static sites. It replaced GitHub Pages, which cannot serve a private
-repository. `site/CLAUDE.md` has the resource IDs, the DNS records and how to change them.
+the maintainer's other static sites. It replaced GitHub Pages for the landing page — the
+stated reason was that Pages "cannot serve a private repository", which does not hold today
+since the repository is public, so treat that as history rather than as a constraint. Pages
+itself was never turned off; see the `docs/` note above. `site/CLAUDE.md` has the resource IDs,
+the DNS records and how to change them.
 
 ## Browser build (wasm32) — the landing-page demo
 
