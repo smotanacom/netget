@@ -400,6 +400,38 @@ declare, whether or not anyone has looked at it.
   them is a free denial of service on a server with no connection cap. *Verify:* ratchet — any
   `mod.rs` with `TcpListener` must reference a timeout constant. *Effort:* M.
 
+- [ ] **Re-examine every first-byte bound against "the peer is NetGet's own client, parked for a
+  human".** *(Opened 22 September 2026, out of the `tcp` regression above.)* The bounds sweeps
+  argued each first-byte deadline against a **stranger** holding a socket, which is the right
+  threat and the wrong peer for this product. The dashboard offers `[ + <proto> client ]` under
+  a server's peers with `[ send message ]` beneath it, so the peer is frequently NetGet's own
+  client that has connected, been answered with nothing, and is waiting for a person to type.
+  It has sent zero bytes the whole time.
+
+  **Measured:** 46 servers carry a 30-second first-byte bound and 10 carry 60; of those, **36
+  have a NetGet client wired for `[ send ]`** — `cassandra`, `couchdb`, `elasticsearch`, `etcd`,
+  `git`, `grpc`, `http`, `jsonrpc`, `kafka`, `kubernetes`, `ldap`, `maven`, `mcp`, `mongodb`,
+  `mssql`, `nats`, `npm`, `oauth2`, `openapi`, `pypi`, `redis`, `rss`, `s3`, `smb`, `sqs`,
+  `stomp`, `vnc`, `webdav`, `whois`, `xmlrpc` at 30s, and `bitcoin`, `dc`, `ftp`, `imap`, `irc`,
+  `nntp`, `pop3`, `postgresql`, `ssh`, `tls` at 60.
+
+  Derive it rather than trusting the list:
+
+  ```bash
+  grep -l register_command_channel src/client/*/mod.rs     # clients a human can drive
+  grep -rn 'const FIRST_.*from_secs' src/server/*/mod.rs   # the bounds
+  ```
+
+  **This is not a call to raise them all.** For a protocol where the *server* speaks first
+  (`vnc`, `rdp`) the peer is never the silent one, and for a client whose connect handler
+  immediately issues a request the window is milliseconds. The question to ask per protocol is
+  narrow: *can this server's peer be a NetGet client that has sent nothing and is waiting on a
+  person?* Where the answer is yes, 30 seconds is shorter than a person, and the number this
+  product already uses for "how long someone might take" is 300 (`src/state/intercepts.rs`).
+
+  `tcp` is done and is the worked example: default raised to 300s, and both bounds made
+  declared startup parameters so the value is the operator's rather than ours. *Effort:* M.
+
 - [ ] **A connection cap on every accept loop.** A shared `accept_bounded(listener, max)` helper
   in `server/` that every accept loop calls, refusing past the cap with the protocol's own
   "busy" vocabulary where one exists (SMTP 421, HTTP 503, RESP `LOADING`) and a close where none
