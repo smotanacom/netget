@@ -281,8 +281,16 @@ jobs:
       #
       # `--manifest-path` is required: the crate is deliberately its own workspace and is named
       # under the root `[workspace] exclude`, so no root-level cargo command reaches it.
+      #
+      # **No `--locked` here, and that is not an oversight.** `fuzz/.gitignore` deliberately
+      # ignores `fuzz/Cargo.lock` — that crate exists to be rebuilt against whatever the main
+      # crate resolves, so a pinned lockfile there only ever goes stale. `--locked` then fails
+      # before compiling anything, with "cannot create the lock file … because --locked was
+      # passed", which is a workflow contradiction rather than a finding about the targets.
+      # This step's job is to catch a target that stopped compiling against the current
+      # library API; resolution drift is the root workspace's problem and is `--locked` there.
       - name: cargo check (fuzz targets still compile)
-        run: cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
 
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
