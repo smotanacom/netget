@@ -9,3 +9,6 @@ mod llm_failure_test;
 
 #[cfg(all(test, feature = "usb-msc"))]
 mod guard_test;
+
+#[cfg(all(test, feature = "usb-msc"))]
+mod connection_bounds_test;

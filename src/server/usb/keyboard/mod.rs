@@ -106,6 +106,8 @@ impl UsbKeyboardServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
         // Create and bind TCP server for USB/IP protocol
         let listener =
@@ -117,6 +119,13 @@ impl UsbKeyboardServer {
         let connections = Arc::new(Mutex::new(HashMap::new()));
         let protocol = Arc::new(crate::server::usb::keyboard::UsbKeyboardProtocol::new());
 
+        // The two read deadlines, argued in `src/server/usb/guard.rs` and overridable per
+        // server. Copied into each connection task; the screen is the only thing that reads
+        // from the socket, so it is the only place they can be applied.
+        let deadlines = crate::server::usb::guard::UsbIpDeadlines::from_secs(
+            first_byte_timeout_secs,
+            idle_timeout_secs,
+        );
         let task_registrar = app_state.clone();
         // One emulated device per connection, so the cap is small and lives with the screen.
         let limiter = ConnectionLimiter::new(MAX_USBIP_CONNECTIONS);
@@ -192,6 +201,7 @@ impl UsbKeyboardServer {
                                     connections_clone,
                                     protocol_clone,
                                     server_id,
+                                    deadlines,
                                 )
                                 .await
                                 {
@@ -236,6 +246,7 @@ impl UsbKeyboardServer {
         connections: Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
         protocol: Arc<crate::server::usb::keyboard::UsbKeyboardProtocol>,
         server_id: crate::state::ServerId,
+        deadlines: crate::server::usb::guard::UsbIpDeadlines,
     ) -> Result<()> {
         info!(
             "USB keyboard connection {} from {} - device ready for USB/IP import",
@@ -321,6 +332,7 @@ impl UsbKeyboardServer {
                 connection_id.to_string(),
                 guard_status_tx,
                 Some(import_tx),
+                deadlines,
             )
             .await
             {

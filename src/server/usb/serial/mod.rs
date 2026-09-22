@@ -83,6 +83,8 @@ impl UsbSerialServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
@@ -94,6 +96,13 @@ impl UsbSerialServer {
             Arc::new(Mutex::new(HashMap::new()));
         let protocol = Arc::new(UsbSerialProtocol::new());
 
+        // The two read deadlines, argued in `src/server/usb/guard.rs` and overridable per
+        // server. Copied into each connection task; the screen is the only thing that reads
+        // from the socket, so it is the only place they can be applied.
+        let deadlines = crate::server::usb::guard::UsbIpDeadlines::from_secs(
+            first_byte_timeout_secs,
+            idle_timeout_secs,
+        );
         let task_registrar = app_state.clone();
         // One emulated device per connection, so the cap is small and lives with the screen.
         let limiter = ConnectionLimiter::new(MAX_USBIP_CONNECTIONS);
@@ -165,6 +174,7 @@ impl UsbSerialServer {
                                     connections_clone,
                                     protocol_clone,
                                     server_id,
+                                    deadlines,
                                 )
                                 .await
                                 {
@@ -203,6 +213,7 @@ impl UsbSerialServer {
         connections: Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
         protocol: Arc<UsbSerialProtocol>,
         server_id: crate::state::ServerId,
+        deadlines: crate::server::usb::guard::UsbIpDeadlines,
     ) -> Result<()> {
         let local_addr = stream.local_addr().unwrap_or(remote_addr);
 
@@ -257,6 +268,7 @@ impl UsbSerialServer {
                 connection_id.to_string(),
                 guard_status_tx,
                 Some(import_tx),
+                deadlines,
             )
             .await
             {

@@ -856,6 +856,11 @@ impl UsbFido2Server {
                 connection_id.to_string(),
                 guard_status_tx,
                 Some(import_tx),
+                // The defaults, argued in `src/server/usb/guard.rs`. The other five USB servers
+                // expose them as `first_byte_timeout_secs` / `idle_timeout_secs`; FIDO2 has not
+                // declared those startup parameters, so it takes the shipped numbers. Its peer
+                // is the same USB/IP client, so the same argument applies to it unchanged.
+                crate::server::usb::guard::UsbIpDeadlines::default(),
             )
             .await
             {

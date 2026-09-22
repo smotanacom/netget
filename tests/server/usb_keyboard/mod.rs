@@ -9,3 +9,6 @@ mod attach_on_import_test;
 
 #[cfg(all(test, feature = "usb-keyboard"))]
 mod connection_cap_test;
+
+#[cfg(all(test, feature = "usb-keyboard"))]
+mod connection_bounds_test;
