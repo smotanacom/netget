@@ -40,6 +40,50 @@ fn declares_send_first(src: &str) -> bool {
     src.contains("name: \"send_first\"")
 }
 
+/// The source with every `#[cfg(not(feature = "…"))]` block removed.
+///
+/// A protocol's `mod.rs` carries two `spawn_with_llm_actions`: the real one, and a stub under
+/// `#[cfg(not(feature = "<p>"))]` whose whole body is `bail!("… feature not enabled")`. The
+/// stub must match the real signature, so **every** parameter in it is underscore-prefixed —
+/// that is what the underscore is for, and it is correct code that never runs.
+///
+/// Scanning the whole file therefore reports the stub as "takes `_send_first` and drops it".
+/// `telnet` was flagged for exactly this the day its stub was brought back into sync with the
+/// real signature. That is the **third** false positive of this shape in this one file: the
+/// header above records the `ldap` comment and the `#[cfg(test)]`/`#[ignore]` cases, and the
+/// lesson is the same each time — a source-reading check must know which code is real, or it
+/// measures where a token sits rather than what it does.
+fn without_disabled_feature_stubs(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        if !line.trim_start().starts_with("#[cfg(not(feature") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        // Skip the attribute and the item it guards, by brace depth. Depth only starts
+        // counting once the first `{` is seen, so an attribute on a one-line item is skipped
+        // by the `depth == 0` exit below without swallowing the rest of the file.
+        let mut depth = 0i32;
+        let mut opened = false;
+        for body in lines.by_ref() {
+            depth += body.matches('{').count() as i32;
+            depth -= body.matches('}').count() as i32;
+            if body.contains('{') {
+                opened = true;
+            }
+            if opened && depth <= 0 {
+                break;
+            }
+            if !opened && (body.trim_end().ends_with(';') || body.trim().is_empty()) {
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn actions_files() -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(Path::new("src/server")) else {
@@ -136,6 +180,79 @@ fn a_refusing_protocol_actually_returns_an_error_for_true() {
 /// No protocol may go back to reading `send_first` and dropping it.
 ///
 /// Both discard shapes are covered, because the second is what hid `ldap` for a month: a
+/// The stub-stripper must remove the disabled-feature stub **and nothing else**.
+///
+/// Both halves matter and only one of them is obvious. Removing too little reintroduces the
+/// `telnet` false positive; removing too much silently blinds the check, which is strictly
+/// worse than the false positive because nothing fails to tell you.
+#[test]
+fn the_stub_stripper_removes_the_stub_and_keeps_the_real_impl() {
+    let src = r#"
+#[cfg(feature = "demo")]
+impl DemoServer {
+    pub async fn spawn_with_llm_actions(
+        listen_addr: SocketAddr,
+        send_first: bool,
+    ) -> Result<SocketAddr> {
+        let _ = (listen_addr, send_first);
+        unimplemented!()
+    }
+}
+
+#[cfg(not(feature = "demo"))]
+impl DemoServer {
+    pub async fn spawn_with_llm_actions(
+        _listen_addr: SocketAddr,
+        _send_first: bool,
+    ) -> Result<SocketAddr> {
+        anyhow::bail!("Demo feature not enabled")
+    }
+}
+
+fn after_the_stub() -> u8 {
+    7
+}
+"#;
+    let stripped = without_disabled_feature_stubs(src);
+    assert!(
+        !stripped.contains("_send_first: bool"),
+        "the disabled-feature stub must be gone; got:\n{stripped}"
+    );
+    assert!(
+        stripped.contains("send_first: bool"),
+        "the real implementation must survive; got:\n{stripped}"
+    );
+    assert!(
+        stripped.contains("fn after_the_stub"),
+        "the stripper must not swallow whatever follows the stub — that would blind the check \
+         for every protocol whose real impl sits below its stub; got:\n{stripped}"
+    );
+}
+
+/// The defect the check exists for is still caught once the stub is gone.
+///
+/// The obvious way to prove this — rename the parameter in a real `mod.rs` and re-run — does
+/// **not** compile, because the body still refers to it. So the proof is here, on source the
+/// test owns, where a real implementation carrying `_send_first: bool` is unambiguous.
+#[test]
+fn a_real_impl_that_names_the_flag_away_is_still_visible() {
+    let src = r#"
+#[cfg(feature = "demo")]
+impl DemoServer {
+    pub async fn spawn_with_llm_actions(
+        _listen_addr: SocketAddr,
+        _send_first: bool,
+    ) -> Result<SocketAddr> {
+        unimplemented!()
+    }
+}
+"#;
+    assert!(
+        without_disabled_feature_stubs(src).contains("_send_first: bool"),
+        "a real impl that takes the flag and names it away must still be reported"
+    );
+}
+
 /// `_send_first` parameter in a spawn signature, and a `let _send_first = …` local that
 /// consumes the parameter and throws it away.
 #[test]
@@ -178,7 +295,9 @@ fn no_protocol_reads_send_first_and_discards_it() {
         let actions = std::fs::read_to_string(entry.path().join("actions.rs")).unwrap_or_default();
         let declares = declares_send_first(&actions);
         let refuses = actions.contains("send_first is not supported");
-        if declares && !refuses && src.contains("_send_first: bool") {
+        // The real implementation only — see `without_disabled_feature_stubs`.
+        let real = without_disabled_feature_stubs(&src);
+        if declares && !refuses && real.contains("_send_first: bool") {
             discarding.push(format!(
                 "{name}: mod.rs takes `_send_first` and declares it"
             ));
