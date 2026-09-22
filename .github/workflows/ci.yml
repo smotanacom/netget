@@ -322,7 +322,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            protobuf-compiler libpcap-dev libdbus-1-dev libusb-1.0-0-dev libpcsclite-dev
+            protobuf-compiler libpcap-dev libdbus-1-dev libusb-1.0-0-dev libpcsclite-dev \
+            libsmbclient-dev
+          # Not decoration. `--all-features` turns on `smb-client`, whose `pavao-sys` build
+          # script shells out to pkg-config for `smbclient` and *panics* when it is absent —
+          # so the whole feature set fails to build and every step below this one dies in
+          # about three seconds. That is worse than a test failure: the evidence loop then
+          # reports 37 protocols' clients as failed when not one of them was ever run.
+          pkg-config --exists smbclient
 
       # The third-party clients the real-client tests drive. Every one of these tests
       # FAILS rather than skips when its binary is absent - that is what makes it
@@ -511,6 +518,11 @@ jobs:
         continue-on-error: true
         run: |
           echo "::notice::These are the real-client tests behind the Beta ratings."
+          # Written to the run summary, not just the log. This job is `continue-on-error`
+          # at JOB level, so it reports green whatever happens inside it — which is how it
+          # sat dead for six days on a missing apt package with nobody noticing, and how a
+          # later `--all-features` build failure did the same. A log nobody opens is not a
+          # signal; the summary is on the run's own page.
           failed=""
           for filter in \
             coap::real_client_test dns::dig_test dns::kdig_test \
@@ -540,6 +552,13 @@ jobs:
             echo "::endgroup::"
           done
           if [ -n "$failed" ]; then
+            {
+              echo "### Real-client evidence FAILED"
+              echo
+              echo "These Beta ratings rest on tests that did not pass:"
+              echo
+              for f in $failed; do echo "- \`$f\`"; done
+            } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::real-client evidence failed for:$failed"
             exit 1
           fi
