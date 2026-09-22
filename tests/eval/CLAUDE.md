@@ -21,8 +21,8 @@ attempted case erroring before the model was asked. A low score is a finding
 about an action description, not a broken build, and `NETGET_EVAL_MIN_RATE`
 exists for anyone who wants a floor but is off by default.
 
-The nightly job is `.github/workflows/nightly-eval.yml`, deliberately outside
-`ci.yml`.
+The job is `.github/workflows/nightly-eval.yml`, deliberately outside `ci.yml`
+and dispatched by hand rather than run on a cron.
 
 ## How it is put together
 

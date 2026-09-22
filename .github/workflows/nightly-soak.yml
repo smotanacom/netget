@@ -1,4 +1,4 @@
-# Connection soak — nightly, and blocking within this workflow.
+# Connection soak — on demand, and blocking within this workflow.
 #
 # `tests/connection_soak_test.rs` opens ten thousand short connections against each of four
 # protocol shapes and asserts that nothing grows with the number served: not the tracked
@@ -20,9 +20,6 @@
 name: nightly-soak
 
 on:
-  schedule:
-    # 03:00 UTC, before nightly-eval so the two never contend for the machine.
-    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       features:

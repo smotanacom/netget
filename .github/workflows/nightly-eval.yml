@@ -1,4 +1,4 @@
-# Real-model eval — nightly, never a gate.
+# Real-model eval — on demand, never a gate.
 #
 # Every other job in this repository drives a mock model. This one drives a real
 # one and measures whether it can serve a plain-English operator instruction
@@ -13,15 +13,12 @@
 #
 # `continue-on-error` is therefore on the eval step itself. The job still fails
 # if the *harness* could not run — no Ollama, no model, no cases — because a
-# nightly that silently measures nothing is the exact failure mode this
+# run that silently measures nothing is the exact failure mode this
 # repository keeps finding in its own suite.
 
 name: nightly-eval
 
 on:
-  schedule:
-    # 04:30 UTC daily, well clear of the working day.
-    - cron: "30 4 * * *"
   workflow_dispatch:
     inputs:
       protocols:

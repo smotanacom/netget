@@ -14,5 +14,17 @@ artifacts/
 # spending its budget rediscovering headers. libFuzzer also *writes* every
 # coverage-expanding input it finds back into these directories, and those are not
 # committed: they are thousands of files, they are reproducible from the seeds, and CI
-# uploads the grown corpus as a build artefact instead. Re-seed with
-# `git clean -fd corpus/ && git checkout corpus/` after a local run.
+# uploads the grown corpus as a build artefact instead.
+#
+# The rule below is what keeps that true rather than merely intended. libFuzzer names
+# every input it writes for the SHA-1 of its contents, so a grown input is exactly 40
+# characters and a seed — named for what it is, `krpc_ping`, `depth_bomb`,
+# `compression_pointer_loop` — is not. Forty `?` wildcards is the whole pattern: it
+# needs no `-f` to add a new seed, and it does not hide one that was deleted.
+#
+# Name a new seed descriptively, as every existing one is, and keep it under 40
+# characters. A 40-character seed name would be ignored and silently never committed.
+#
+# Re-seed after a local run with `git clean -fdX corpus/`, which removes the ignored
+# grown inputs and leaves the seeds alone.
+corpus/*/????????????????????????????????????????

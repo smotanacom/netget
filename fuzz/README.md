@@ -54,7 +54,7 @@ Rust stack overflow is a `SIGSEGV` against the guard page that libFuzzer's own s
 handler catches with or without ASan. That is the class this harness exists for, so the
 macOS workaround loses nothing that matters.
 
-Linux is unaffected; the nightly CI job runs on `ubuntu-22.04` with ASan enabled.
+Linux is unaffected; the dispatched CI job runs on `ubuntu-22.04` with ASan enabled.
 
 Bound it the way CI does — and note `-timeout`, which is not optional in practice:
 
