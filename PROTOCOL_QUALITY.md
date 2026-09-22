@@ -422,12 +422,25 @@ declare, whether or not anyone has looked at it.
   grep -rn 'const FIRST_.*from_secs' src/server/*/mod.rs   # the bounds
   ```
 
-  **This is not a call to raise them all.** For a protocol where the *server* speaks first
-  (`vnc`, `rdp`) the peer is never the silent one, and for a client whose connect handler
-  immediately issues a request the window is milliseconds. The question to ask per protocol is
-  narrow: *can this server's peer be a NetGet client that has sent nothing and is waiting on a
-  person?* Where the answer is yes, 30 seconds is shorter than a person, and the number this
-  product already uses for "how long someone might take" is 300 (`src/state/intercepts.rs`).
+  **This is not a call to raise them all, and the filter is sharper than it first looks.**
+  Where the **server speaks first**, the peer is never the silent one and the bound cannot bite:
+  `ftp`, `pop3`, `nntp`, `ssh` and `telnet` all write a greeting on accept, as do `vnc` and `rdp`
+  by protocol definition. That set is also, not coincidentally, the 60–120s tier — the sweep
+  reasoned about a person for exactly the protocols where a person is watching a banner.
+
+  **The 30-second tier is the problem, because it is the client-speaks-first tier.** `http`,
+  `redis`, `etcd`, `kafka`, `mongodb`, `mssql`, `ldap`, `nats` and the rest write nothing until
+  the peer asks — so a NetGet client whose connect event was answered with nothing has sent zero
+  bytes and is holding an idle socket for exactly as long as the person takes. Check it per
+  protocol rather than by tier:
+
+  ```bash
+  grep -cE 'write_all\(b"' src/server/<p>/mod.rs   # a greeting on accept means exempt
+  ```
+
+  Where the peer can be a NetGet client waiting on a person, 30 seconds is shorter than a
+  person, and the number this product already uses for "how long someone might take" is 300
+  (`src/state/intercepts.rs`).
 
   `tcp` is done and is the worked example: default raised to 300s, and both bounds made
   declared startup parameters so the value is the operator's rather than ours. *Effort:* M.
