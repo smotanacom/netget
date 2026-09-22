@@ -406,6 +406,12 @@ jobs:
           python3 scripts/beta_evidence_table.py --all
           python3 scripts/beta_evidence_table.py --experimental-with-evidence
 
+      # `mercurial` and `wol` are Experimental, so strictly they need not be here; they are
+      # because the test exists, is not #[ignore]d, and costs a few seconds. `ollama` is the
+      # reason the three were noticed at all — a Beta whose real-client test this loop did not
+      # run, which is the hole the loop exists to close, found by diffing
+      # `tests/server/*/real_client_test.rs` against this list rather than by reading it.
+      #
       # The real-client evidence itself. These are the tests every Beta rating that
       # names a binary rests on, and this is the only job with those binaries, so it
       # is the only place they can run. Each one fails (never skips) when its client
@@ -437,12 +443,14 @@ jobs:
             kafka::real_client_test kubernetes::e2e_test maven::e2e_test \
             memcached::real_client_test modbus::real_client_test \
             mongodb::real_client_test mqtt::real_client_test \
-            mysql::real_client_test npm::e2e_test \
-            oci_registry::e2e_test openvpn:: postgresql::real_client_test \
+            mercurial::real_client_test mysql::real_client_test npm::e2e_test \
+            oci_registry::e2e_test ollama::real_client_test openvpn:: \
+            postgresql::real_client_test \
             pypi::e2e_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
             sqs::real_client_test stun::real_client_test svn::real_client_test \
-            torrent_tracker::real_client_test websocket::e2e_test ; do
+            torrent_tracker::real_client_test websocket::e2e_test \
+            wol::real_client_test ; do
             echo "::group::$filter"
             if ! cargo test --locked --all-features --test server -- \
                  --test-threads=100 --nocapture "$filter" ; then
