@@ -251,6 +251,27 @@ fn declares_byte_const(src: &str) -> bool {
         if value.starts_with("b\"\"") || value.starts_with("&[]") || value == "\"\"" {
             continue;
         }
+        // **A printable-ASCII byte string is a protocol LINE, not canonical bytes**, and the
+        // same false positive came back wearing a fuller shirt. The empty-const rule above was
+        // added when `torrent_peer` gained `CONNECTION_CAP_REFUSAL: &[u8] = b""`; the
+        // connection-bounds sweeps then gave `bitcoin`, `kubernetes`, `mercurial`, `s3` and
+        // `sqs` the same const with a real HTTP 503 line in it, and every one of them started
+        // arming this limb against hex that has nothing to do with it. `mercurial` is where it
+        // fired: its example carries `1234567890abcdef…`, a 40-character CHANGESET NODE ID,
+        // which is what a Mercurial example is supposed to contain and is not a second copy of
+        // an HTTP status line.
+        //
+        // Limb B's premise is "the canonical bytes now exist twice and one copy will drift".
+        // Nobody writes an HTTP status line as hex, so the premise cannot hold for a const
+        // whose value is plain text. It still holds — and this still arms — for the shape the
+        // limb was built for: a byte ARRAY (`&[0x05, 0x01, …]`, the BLE HID report
+        // descriptors) or a `b"…"` carrying `\x` escapes, both of which are binary a model
+        // might plausibly be asked to copy as hex.
+        let is_plain_text_bytestring =
+            value.starts_with("b\"") && !value.contains("\\x") && !value.contains("\\u");
+        if is_plain_text_bytestring {
+            continue;
+        }
         return true;
     }
     false
@@ -454,6 +475,24 @@ fn the_rule_flags_the_historical_defect_and_not_its_fix() {
     assert!(!declares_byte_const(
         "const CONNECTION_CAP_REFUSAL: &[u8] = b\"\";"
     ));
+    // A printable-ASCII byte string is a protocol LINE, not canonical bytes. The connection-
+    // bounds sweeps gave `bitcoin`, `kubernetes`, `mercurial`, `s3` and `sqs` a
+    // `CONNECTION_CAP_REFUSAL` holding a real HTTP 503, and every one of them started arming
+    // limb B against hex that has nothing to do with it — `mercurial` reported its example's
+    // 40-character changeset node id as drift from an HTTP status line. Nobody writes a status
+    // line as hex, so limb B's premise cannot hold here.
+    assert!(!declares_byte_const(
+        "const CONNECTION_CAP_REFUSAL: &[u8] = b\"HTTP/1.1 503 Service Unavailable\\r\\n\";"
+    ));
+    assert!(!declares_byte_const(
+        "const QUERY_TOO_LONG: &[u8] = b\"finger: query too long\\r\\n\";"
+    ));
+    // But a `b"…"` carrying `\x` escapes IS binary a model might be asked to copy as hex, so
+    // it stays armed — the exclusion is about text, not about the `b"…"` spelling.
+    assert!(declares_byte_const(
+        "const ATR_BYTES: &[u8] = b\"\\x3b\\x00\";"
+    ));
+
     // Whitespace tolerance in the TYPE is what this line is for. Its value used to be `&[]`,
     // which was incidental filler until empty values started meaning "no canonical bytes" —
     // so it now carries a real one, and still tests the spacing it was written for.
