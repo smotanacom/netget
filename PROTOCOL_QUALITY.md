@@ -167,8 +167,8 @@ once these exist.
 - [x] **Fuzz targets for every pre-authentication decoder.** *(harness + 17 targets landed
   15 September 2026; `fuzz/`, `.github/workflows/fuzz.yml`, `fuzz/README.md`.)* `cargo-fuzz`
   with `libfuzzer`, its own workspace root so `cargo test` at the repository root never sees
-  it, nightly job at 300s per target, one matrix job each, crash artefact and grown corpus
-  uploaded. Every target ran 60s clean locally before merging; none crashed. The harness was
+  it, dispatch-only job at 300s per target, one matrix job each, crash artefact and grown
+  corpus uploaded. Every target ran 60s clean locally before merging; none crashed. The harness was
   itself verified by removing `utils::bencode`'s depth guard and confirming the fuzzer finds
   the overflow — the same discipline the AMQP field-table bound was checked with, and the
   only thing that distinguishes "found nothing" from "not looking".
@@ -513,7 +513,7 @@ declare, whether or not anyone has looked at it.
   connections against each of four shapes: `tcp` (a reader NetGet wrote), `http` (hyper's
   `serve_connection`, the shape ~30 protocols share), `redis` (a session with its own framing)
   and `dns` (datagram, `.connectionless()`). ~25 s each by construction, ~100 s for the four,
-  `#[ignore]`d with a reason and run serially by the nightly.
+  `#[ignore]`d with a reason and run serially by `nightly-soak.yml`.
 
   Asserted: the tracked-connection map does not grow with connections served, the registered-task
   count stays a function of *live* connections, RSS is flat, the map returns to zero once traffic
@@ -782,7 +782,7 @@ The suite is the evidence. Where it lies, the ratings lie.
   a time, every one of them green — so there is no under-declared feature in the tree today.
   The job is split because the check does not fit a PR gate: `single-feature` keeps 24 in
   `SINGLE_FEATURE_CORE` under the 30-minute timeout, and `single-feature-full` runs all 133
-  nightly (cron + `workflow_dispatch`, `timeout-minutes: 300`). Both loop rather than matrix,
+  on a manual `workflow_dispatch` (`timeout-minutes: 300`). Both loop rather than matrix,
   so each feature reuses the previous one's dependency graph.
 
   **Two things the sweep corrected in `CLAUDE.md`'s system-library table**, both in the
@@ -904,6 +904,30 @@ only number in this repository that says whether the model can drive the thing a
 ## Done
 
 Move items here with the date and the commit or PR that verified them.
+
+**22 September 2026 — a fuzz target is the one test nothing else builds, and seventeen were in
+that position.**
+
+`fuzz/` is deliberately its own workspace, named under the root `[workspace] exclude`, so no
+root-level `cargo build`, `test` or `check` reaches it. `.github/workflows/fuzz.yml` is
+`workflow_dispatch` only. Between the two, **nothing compiled these targets on any schedule** —
+which is how `coap_message.rs` stopped building hours after it was written, when
+`CoapMessage::encode` became fallible, and stayed broken for weeks while the Stable bar's
+condition 3 was being satisfied by a target that could not run.
+
+The isolation that caused it is correct and stays: a fuzzer is a search, not a check, and
+gating a merge on "did 300 seconds turn something up" fails honest PRs at random. What was
+missing is the cheap half. `ci.yml`'s blocking `ratchets` job now runs
+`cargo check --manifest-path fuzz/Cargo.toml --all-targets` — stable, about two minutes cold,
+no nightly, because linking libFuzzer is what needs nightly and `cargo check` does not link.
+
+Verified both ways: all seventeen compile today, and one call with a changed signature — the
+coap class exactly — fails the check.
+
+**The general shape is worth more than the fix.** Ask of any artefact cited as evidence: *what
+builds it, and when?* If the answer is "a workflow someone dispatches" or "a developer locally",
+it is not being built, and its evidence is a claim about the past.
+
 
 **16–22 September 2026 — `coap` and `dns` are Stable. No protocol has ever held that rating on
 this bar before.**

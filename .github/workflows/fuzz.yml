@@ -1,6 +1,6 @@
 name: Fuzz
 
-# Nightly fuzzing of the pre-authentication decoders. See fuzz/README.md.
+# On-demand fuzzing of the pre-authentication decoders. See fuzz/README.md.
 #
 # This is deliberately NOT a PR gate and must never become one. A fuzzer is a search,
 # not a check: it finds a defect on the run it happens to find it on, so gating a merge
@@ -10,10 +10,19 @@ name: Fuzz
 #
 # What it *can* regress on is the harness itself — a target that stops compiling, or a
 # corpus that stops being readable — and the build step below fails loudly for that.
+#
+# **But only when someone dispatches it, and that is not a check.** This workflow is
+# `workflow_dispatch` only, so between dispatches nothing built these targets at all:
+# `coap_message.rs` stopped compiling hours after it was written, when `CoapMessage::encode`
+# became fallible, and it stayed broken for weeks while the Stable bar's "a fuzz target exists
+# and has run clean" was being satisfied by a target that could not build. The fallback this
+# comment used to offer — run the same search locally — is a fallback nobody runs.
+#
+# `ci.yml`'s `ratchets` job now does `cargo check --manifest-path fuzz/Cargo.toml --all-targets`
+# on every PR. That is stable-only and about two minutes, because compiling the targets against
+# the current library API is the drift that actually happens; linking libFuzzer is what needs
+# nightly, and `cargo check` does not link. The search stays on-demand, as it should.
 on:
-  schedule:
-    # 04:30 UTC daily, after the nightly toolchain has published.
-    - cron: '30 4 * * *'
   workflow_dispatch:
     inputs:
       seconds_per_target:
@@ -27,8 +36,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Per-target budget. The nightly run is 300s x 17 targets ~= 85 minutes of fuzzing
-  # plus the build; a manual dispatch can ask for more.
+  # Per-target budget. A default dispatch is 300s x 17 targets ~= 85 minutes of fuzzing
+  # plus the build; a dispatch can ask for more.
   SECONDS_PER_TARGET: ${{ github.event.inputs.seconds_per_target || '300' }}
 
 jobs:
