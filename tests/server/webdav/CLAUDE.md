@@ -1,16 +1,60 @@
 # WebDAV Protocol E2E Tests
 
-Five tests across two files, both declared in `tests/server/webdav/mod.rs` (which *is* wired
+Six tests across three files, all declared in `tests/server/webdav/mod.rs` (which *is* wired
 into `tests/server/mod.rs` — check before assuming, that is the repo's largest silent test
-hole): three in `test.rs` driven by `reqwest_dav`, and two in `decision_tag_test.rs`.
+hole): three in `test.rs` driven by `reqwest_dav`, one in `real_client_test.rs` driven by the
+real `curl` binary, and two in `decision_tag_test.rs`.
 
-## Client
+## Clients — there are two, and that is the point
 
-`reqwest_dav` — a real WebDAV client library, not hand-rolled `reqwest` requests. That matters
-for PROPFIND: the body is parsed with the library's own `serde_xml_rs` schema
-(`ListMultiStatus` → `ListEntity`), so a malformed multistatus, a `<D:response>` without a
-propstat, or a file entry whose `getlastmodified` is missing or not an HTTP date all fail here.
-A test that only asserted `207` would pass on all three.
+One client can agree with one bug. `reqwest_dav` was the only real peer this server had ever
+faced, and a rating resting on one client rests on that client's leniency — elsewhere in this
+repository `etcd`, `grpc` and `mysql` were each Beta on a single client and each turned out to
+be unusable by every other conformant implementation, with the *error* path accidentally
+correct and the tests asserting on it.
+
+### `reqwest_dav` (`test.rs`)
+
+A real WebDAV client library, not hand-rolled `reqwest` requests. That matters for PROPFIND:
+the body is parsed with the library's own `serde_xml_rs` schema (`ListMultiStatus` →
+`ListEntity`), so a malformed multistatus, a `<D:response>` without a propstat, or a file entry
+whose `getlastmodified` is missing or not an HTTP date all fail here. A test that only asserted
+`207` would pass on all three.
+
+### `curl` (`real_client_test.rs`) — the second client
+
+**curl is a generic HTTP client and the root `CLAUDE.md` rules those out — for a protocol
+layered *on* HTTP.** `PROPFIND`, `MKCOL` and `COPY` are not HTTP verbs; `207 Multi-Status` is
+not an HTTP status; `Depth` and `Destination` are not HTTP headers; `DAV:multistatus` is not an
+HTTP document. All of those are RFC 4918's, which is the layer this server implements, so curl
+issuing them is a real WebDAV client for the part that matters. Same qualification as
+`curl gopher://` counting while `curl` against an HLS playlist does not.
+
+**The test fails rather than skips** when curl is absent, and is not `#[ignore]`d.
+
+Three things it reaches that `reqwest_dav` does not:
+
+- **The multistatus as XML, not as a struct.** `quick-xml` parses the body into responses, so a
+  body that is not well-formed fails outright rather than deserialising into whatever fields a
+  fixed schema happens to recognise. (`quick-xml` is an unconditional `[dev-dependencies]`
+  entry for this reason: its `[dependencies]` entry is optional and only `saml`/`xmlrpc` turn
+  it on, so a test gated on `webdav` alone could not see it.)
+- **`href` percent-encoding against `displayname` XML-escaping**, on one name: `notes &
+  drafts.txt`. RFC 3986 wants `%20` and `%26` in the href; XML wants `&amp;` in the
+  displayname, read back through `Event::unescape` as a literal `&`. Two different rules on the
+  same string, each applied in its own place.
+- **`COPY` with a `Destination` header.** The model echoes the destination it was handed into
+  the response body, so the assertion is that the header was parsed — and it proves it, because
+  the path it echoes (`/documents/notes-copy.txt`) appears nowhere in the request line. Note
+  the server resolves the absolute-URI `Destination` (RFC 4918 §10.3) down to a path before the
+  model sees it.
+
+**Verified non-vacuous** by breaking `DavResource::render` twice:
+
+| break | what curl received |
+|---|---|
+| `xml_escape(&self.name)` → `&self.name` for `displayname` | still `207`, body looks fine to the eye, but the bare `&` makes it invalid XML: the parse failed with `Cannot find ';' after '&'`. A status-code check — or a `body.contains("<D:href>")` check — would have passed |
+| `percent_encode_path(&self.href)` → `&self.href` | a well-formed document whose href read `/documents/notes & drafts.txt`; the test failed naming the expected `/documents/notes%20%26%20drafts.txt` |
 
 The `*_raw` methods are used throughout (`list_raw`, `put_raw`, `get_raw`, `mkcol_raw`,
 `delete_raw`) rather than the checked wrappers, because the wrappers call `dav2xx()` and
@@ -25,7 +69,7 @@ how the previous suite passed against a `MemFs` the model never saw.
 
 ## LLM call budget
 
-**Total: 9.** Every rule uses exact `expect_calls`, so an unexpected extra call fails
+**Total: 15.** Every rule uses exact `expect_calls`, so an unexpected extra call fails
 `verify_mocks()`.
 
 | Test | Startup | Events |
@@ -33,6 +77,7 @@ how the previous suite passed against a `MemFs` the model never saw.
 | `test_webdav_propfind_listing` | 1 | 1 (PROPFIND) |
 | `test_webdav_put_then_get_round_trip` | 1 | 2 (PUT, GET) |
 | `test_webdav_write_statuses_refusal_and_options` | 1 | 3 (MKCOL, DELETE, GET) |
+| `curl_completes_a_webdav_session_against_the_webdav_server` | 1 | 5 (PROPFIND, MKCOL, PUT, GET, COPY) |
 
 Event rules are declared **before** the startup rule in each builder chain: rules match in
 order, and the specific ones must win.
@@ -117,7 +162,10 @@ concluding anything.
 
 ## Not covered
 
-COPY and MOVE (the event carries `destination`/`overwrite`, but no test drives them) ·
-PROPPATCH · LOCK/UNLOCK response bodies (only that OPTIONS advertises them) · `Depth: infinity`
-· non-UTF-8 PUT bodies (`body_is_binary`) · script and static handler modes · a model returning
-an out-of-range status · percent-encoded paths with spaces or non-ASCII names.
+MOVE · PROPPATCH · LOCK/UNLOCK response bodies (only that OPTIONS advertises them) ·
+`Depth: infinity` · non-UTF-8 PUT bodies (`body_is_binary`) · script and static handler modes ·
+a model returning an out-of-range status · non-ASCII names in hrefs (ASCII names needing
+percent-encoding *are* covered, by `real_client_test.rs`).
+
+COPY and its `destination` were on this list until `real_client_test.rs` drove them; MOVE still
+is.

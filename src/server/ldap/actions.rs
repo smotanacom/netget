@@ -290,8 +290,9 @@ impl Protocol for LdapProtocol {
         use crate::protocol::metadata::PrivilegeRequirement;
 
         ProtocolMetadataV2::builder()
-            // Beta: exercised against a real, independent client — ldap3 —
-            // covering bind and search driven by a real LDAP client. Not Stable: Stable additionally wants spec
+            // Beta: exercised against TWO real, independent clients — ldap3 (Rust) and
+            // OpenLDAP's own `ldapsearch` (C) — covering bind and search, with the write
+            // operations covered by ldap3 alone. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
             // 389 is below 1024 and is the port every LDAP client defaults to, so the
@@ -301,21 +302,31 @@ impl Protocol for LdapProtocol {
             .implementation("Manual ASN.1 BER encoding/decoding, no LDAP crate")
             .llm_control("Bind decisions, search results, add/modify/delete outcomes")
             .e2e_testing(
-                "ldap3 0.11, a real third-party LDAP client, in \
-                 tests/server/ldap/e2e_test.rs -- not #[ignore]d and not skip-gated (ldap3 is a \
-                 plain optional dependency the `ldap` feature turns on, so it compiles wherever \
-                 the feature does). It binds, searches, and parses entries through \
-                 SearchEntry::construct, so a reply it rejected would fail rather than be \
-                 counted as bytes on a socket. It is independent of `ldap3_proto`, the crate \
-                 this server frames with: different project, different authors, despite the \
-                 similar name. \
-                 THIS FIELD USED TO CLAIM `the ldapsearch/ldapadd command-line tools` AS WELL, \
-                 AND NOTHING ASSERTING DRIVES THEM. ldapsearch appears only in tests/eval, the \
+                "TWO independent clients, neither of them the crate this server frames with. \
+                 (1) ldap3 0.11, a Rust LDAP client, in tests/server/ldap/e2e_test.rs: it \
+                 binds, searches, adds, modifies and deletes, and parses entries through its \
+                 own SearchEntry::construct, so a reply it rejected would fail rather than be \
+                 counted as bytes on a socket. It is independent of `ldap3_proto` despite the \
+                 similar name: different project, different authors. \
+                 (2) OpenLDAP's `ldapsearch` -- C, written by the project that wrote the RFC -- \
+                 in tests/server/ldap/real_client_test.rs: it completes a simple bind and a \
+                 search, and the test parses the LDIF it rendered and asserts every value of \
+                 each multi-valued SET OF, an entry long enough to force the long-form BER \
+                 length, the bind diagnosticMessage, and noSuchObject (32) read off \
+                 ldapsearch's own exit status. \
+                 NEITHER is #[ignore]d and NEITHER is skip-gated: ldap3 is a plain optional \
+                 dependency the `ldap` feature turns on, and the ldapsearch test FAILS, naming \
+                 the install command, when no ldapsearch is found. \
+                 The ldapsearch test was verified non-vacuous by breaking the server twice and \
+                 watching the client's rendering change: truncating the attribute SET OF to its \
+                 first value made ldapsearch print one objectClass instead of three, and \
+                 forcing encode_ber_length to the short form made it print no LDIF at all and \
+                 exit 254 with `ldap_result: Local error (-2)`. \
+                 THIS FIELD ONCE CLAIMED `the ldapsearch/ldapadd command-line tools` WHILE \
+                 NOTHING ASSERTING DROVE THEM -- ldapsearch appeared only in tests/eval, the \
                  real-model harness, which skips unless NETGET_USE_OLLAMA=1 and reports rather \
-                 than asserts -- its own header says it must never gate a PR. An eval probe is \
-                 a useful signal and is not maturity evidence. \
-                 So this rating rests on ONE client, which is the open item a second one would \
-                 close; `ldapsearch` is installed on this machine and is the obvious candidate. \
+                 than asserts. That claim is now true for ldapsearch; `ldapadd` is still driven \
+                 by nothing. \
                  UNPROVEN: LDAPS and StartTLS, SASL, referrals, and the write operations, which \
                  are acknowledged without anything changing.",
             )

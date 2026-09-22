@@ -1,9 +1,30 @@
 # WebDAV Protocol Implementation
 
-**Status**: `DevelopmentState::Beta` — exercised against `reqwest_dav`, a real and independent
-WebDAV client, in a test that is neither `#[ignore]`d nor gated on an external binary. Not
-Stable: the property model is fixed (no PROPPATCH dead-property storage), locks are accepted
-and never enforced, and spec compliance has not been reviewed.
+**Status**: `DevelopmentState::Beta`, on **two** independent clients:
+
+| client | file | what only it covers |
+|---|---|---|
+| `reqwest_dav` | `tests/server/webdav/test.rs` | the multistatus deserialised through a production client's own `serde_xml_rs` schema; DELETE; OPTIONS; the fail-closed 503 |
+| the real `curl` binary | `tests/server/webdav/real_client_test.rs` | the multistatus read back as **XML** (a body that is not well-formed fails outright); `href` percent-encoding against `displayname` XML-escaping on the same name; `COPY` with a `Destination` header |
+
+Neither is `#[ignore]`d and neither skips: the curl test **fails**, naming the install command,
+when curl is absent.
+
+**curl is a generic HTTP client, and the root `CLAUDE.md` rules those out as evidence — for a
+protocol layered *on* HTTP.** The qualification is that `PROPFIND`, `MKCOL` and `COPY` are not
+HTTP verbs, `207 Multi-Status` is not an HTTP status, `Depth` and `Destination` are not HTTP
+headers, and `DAV:multistatus` is not an HTTP document. Every one of those is RFC 4918's, which
+is the layer this server implements, so curl issuing them is a real client for it. The same
+qualification is why `curl gopher://` counts and `curl` against an HLS playlist does not.
+
+One client can agree with one bug, which is why the second exists — the curl test was verified
+non-vacuous by two breaks in `DavResource::render`: dropping `xml_escape` from `displayname`
+still answered `207` but made the body invalid XML (`Cannot find ';' after '&'`), and dropping
+`percent_encode_path` from the `href` left a perfectly well-formed document whose href read
+`/documents/notes & drafts.txt`.
+
+Not Stable: the property model is fixed (no PROPPATCH dead-property storage), locks are
+accepted and never enforced, and spec compliance has not been reviewed.
 
 WebDAV (RFC 4918) over HTTP/1.1. `hyper` v1.0 carries the requests; this module answers the
 DAV methods itself and generates the `DAV:multistatus` XML. **There is no filesystem** — the
@@ -226,7 +247,8 @@ bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
 ## Testing
 
 `tests/server/webdav/test.rs` — three mocked E2E tests driven by `reqwest_dav`, 9 LLM calls
-total. See `tests/server/webdav/CLAUDE.md`.
+total. `tests/server/webdav/real_client_test.rs` — one session driven by the real `curl`
+binary, 6 LLM calls. See `tests/server/webdav/CLAUDE.md`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features webdav \

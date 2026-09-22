@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId, CryptoVec};
 use russh_keys::key::KeyPair;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -457,6 +457,13 @@ pub struct SshHandler {
     shell_buffers: Arc<Mutex<HashMap<ChannelId, Vec<u8>>>>,
     /// Track if we've sent initial data for each channel (for banner vs empty enter)
     channel_initialized: Arc<Mutex<HashMap<ChannelId, bool>>>,
+    /// Channels this side has already sent `SSH_MSG_CHANNEL_CLOSE` for.
+    ///
+    /// RFC 4254 §5.3 lets each party send `SSH_MSG_CHANNEL_CLOSE` **once**. Without this set
+    /// an exec channel got two: `exec_request` sends exit-status + EOF + CLOSE when the answer
+    /// is ready, and then the client's own EOF arrives and `channel_eof` sent a second CLOSE.
+    /// See `close_channel_once`.
+    channels_closed: Arc<Mutex<HashSet<ChannelId>>>,
 }
 
 /// Type of SSH channel
@@ -489,6 +496,42 @@ impl SshHandler {
             channels: Arc::new(Mutex::new(HashMap::new())),
             shell_buffers: Arc::new(Mutex::new(HashMap::new())),
             channel_initialized: Arc::new(Mutex::new(HashMap::new())),
+            channels_closed: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Send `SSH_MSG_CHANNEL_CLOSE` for this channel, at most once.
+    ///
+    /// RFC 4254 §5.3: "each side ... MUST send an SSH_MSG_CHANNEL_CLOSE message" — one, after
+    /// which "the channel is considered closed for a party" and the number may be reused.
+    /// Sending a second one is not a harmless duplicate: by the time it arrives the peer has
+    /// usually freed the channel, so the message refers to a channel number that no longer
+    /// exists.
+    ///
+    /// **OpenSSH treats that as fatal and disconnects**, which is how this was found — by the
+    /// real `ssh` binary in `tests/server/ssh/real_client_test.rs`, failing about one run in
+    /// five with
+    ///
+    /// ```text
+    /// Disconnecting 127.0.0.1 port N: oclose packet referred to nonexistent channel 0
+    /// ```
+    ///
+    /// and exit 255, *after* the command's output and `exit-status 0` had already arrived
+    /// intact. libssh2 — the only client that had ever driven this server — ignores the
+    /// second CLOSE, so nothing in the rest of the suite could see it.
+    ///
+    /// The race is whether the peer has garbage-collected the channel yet: the client sends
+    /// its EOF at about the same moment the server answers, so `channel_eof` fired either
+    /// before the client freed the channel (harmless, `close rcvd twice` on stderr) or after
+    /// it (fatal).
+    async fn close_channel_once(&self, session: &mut Session, channel_id: ChannelId) {
+        if self.channels_closed.lock().await.insert(channel_id) {
+            session.close(channel_id);
+        } else {
+            debug!(
+                "SSH channel {} already closed by this side; not sending a second                  SSH_MSG_CHANNEL_CLOSE",
+                channel_id
+            );
         }
     }
 
@@ -1072,7 +1115,7 @@ impl russh::server::Handler for SshHandler {
         // Close channel after exec
         session.exit_status_request(channel_id, exit_status);
         session.eof(channel_id);
-        session.close(channel_id);
+        self.close_channel_once(session, channel_id).await;
 
         Ok(())
     }
@@ -1266,7 +1309,7 @@ impl russh::server::Handler for SshHandler {
                                 if failure.is_overloaded() { 75 } else { 69 },
                             );
                             session.eof(channel_id);
-                            session.close(channel_id);
+                            self.close_channel_once(session, channel_id).await;
                             session.disconnect(
                                 russh::Disconnect::ServiceNotAvailable,
                                 description,
@@ -1301,7 +1344,7 @@ impl russh::server::Handler for SshHandler {
 
                                 session.exit_status_request(channel_id, 0);
                                 session.eof(channel_id);
-                                session.close(channel_id);
+                                self.close_channel_once(session, channel_id).await;
                             } else {
                                 // Send a prompt after the response so user knows where to type next
                                 // This prevents commands from being echoed on the same line as output
@@ -1342,7 +1385,10 @@ impl russh::server::Handler for SshHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         debug!("SSH channel {} EOF", channel_id);
-        session.close(channel_id);
+        // The peer will send no more data. Closing here is what ends a shell channel whose
+        // client closed stdin — but on an exec channel the answer has usually already been
+        // written and closed, so this must not be a second CLOSE. See `close_channel_once`.
+        self.close_channel_once(session, channel_id).await;
         Ok(())
     }
 
@@ -1356,6 +1402,10 @@ impl russh::server::Handler for SshHandler {
         self.channels.lock().await.remove(&channel_id);
         self.shell_buffers.lock().await.remove(&channel_id);
         self.channel_initialized.lock().await.remove(&channel_id);
+        // The peer has closed too, so this channel number is finished with and may be reused
+        // by a later channel on the same connection. Forgetting it here keeps the
+        // close-once guard scoped to one channel rather than to one connection.
+        self.channels_closed.lock().await.remove(&channel_id);
         Ok(())
     }
 }

@@ -2,8 +2,53 @@
 
 ## Test Overview
 
-Tests IMAP4rev1 server with raw TCP clients validating RFC 3501 command/response sequences, including authentication,
-mailbox operations, and message retrieval.
+Tests IMAP4rev1 server with raw TCP clients validating RFC 3501 command/response sequences,
+including authentication, mailbox operations, and message retrieval — plus **two real
+third-party clients**, which are where the maturity rating actually rests:
+
+| file | peer | what only it covers |
+|---|---|---|
+| `e2e_client_test.rs` | `async-imap` 0.11 (Rust) | LIST, EXAMINE, STATUS, NOOP, concurrent sessions, LOGIN failure |
+| `real_client_test.rs` | python3 stdlib `imaplib` | the literal **byte** count, the `CAPABILITY` command, `select()`'s `EXISTS` return |
+| `test.rs` | hand-written TCP | the command/response shapes, trimmed |
+
+## `real_client_test.rs` — the second client
+
+One client can agree with one bug. `async-imap` was the only real peer this server had ever
+faced, and a rating resting on one client rests on that client's leniency — elsewhere in this
+repository `etcd`, `grpc` and `mysql` were each Beta on a single client and each turned out to
+be unusable by every other conformant implementation.
+
+`imaplib` is python's standard library: no install, no C, no line of code shared with
+`async-imap`. The test **fails rather than skips** when python3 is absent, and is not
+`#[ignore]`d.
+
+It drives one session — greeting, `CAPABILITY`, `LOGIN`, `SELECT`, `SEARCH`, `FETCH`, `LOGOUT`
+— through a python driver that prints what imaplib *parsed* as JSON, which the Rust side then
+asserts on. The driver is told nothing about what to expect, so a wrong answer arrives as a
+wrong value rather than as a passing test.
+
+Three things it reaches that nothing else here does:
+
+- **The literal byte count.** The fetched body carries `ü`, `ß` and an em dash, so its byte
+  length (146) and character length (142) differ. `imaplib` reads *exactly* `n` bytes and then
+  resumes line parsing, so a `{n}` counted in characters desynchronises the connection.
+- **`CAPABILITY` the command**, not the greeting's `[CAPABILITY ...]` code. `imaplib.__init__`
+  issues a real one and refuses to proceed without `IMAP4REV1`. The mock answers the command
+  with a strict superset of the greeting (it adds `NAMESPACE`), so the assertion can tell the
+  two apart.
+- **`select()`'s return value**, which is `untagged_responses.get('EXISTS', [None])` — the
+  count, not the tagged line.
+
+**Verified non-vacuous, and note which half stayed correct both times:**
+
+| break | what imaplib reported |
+|---|---|
+| `body.len()` → `body.chars().count()` in `execute_send_imap_fetch` | FETCH completed `OK`; `m.fetch()` returned `('OK', [None])` — no literal at all |
+| the `* n EXISTS` line removed from `execute_send_imap_select` | SELECT completed `OK`; `m.select()` returned `('OK', [None])` |
+
+In both cases the **tagged completion was still right**. A test asserting only on `typ == 'OK'`
+would have passed against both broken servers.
 
 ## Test Strategy
 
@@ -26,7 +71,9 @@ mailbox operations, and message retrieval.
 - `test_imap_logout()`: 1 startup call + 1 LOGOUT command
 - `test_imap_noop()`: 1 startup call + 2 commands (LOGIN, NOOP)
 - `test_imap_status()`: 1 startup call + 2 commands (LOGIN, STATUS)
-- **Total: 32 LLM calls** (11 startups + 21 command calls)
+- `imaplib_completes_a_session_against_the_imap_server()`: 1 startup + 1 greeting + 1
+  CAPABILITY + 1 LOGIN + SELECT/SEARCH/FETCH/LOGOUT = **8**
+- **Total: 40 LLM calls** (12 startups + 28 command calls)
 
 ## Scripting Usage
 
