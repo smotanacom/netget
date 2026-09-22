@@ -914,6 +914,41 @@ The suite is the evidence. Where it lies, the ratings lie.
   reads what the tests drive rather than what the docs say, which is the right direction to
   measure in.
 
+  **One thing about this item that was vague is now a number.** "Re-read every protocol's two
+  docs" gives no way to start. Measured 22 September 2026, over `tests/server/*/CLAUDE.md`
+  against the `.rs` files sitting beside each:
+
+  | | count |
+  |---|---|
+  | docs naming **every** one of their test files | 65 |
+  | docs naming some but not all | 71 |
+  | docs naming **none** of them | **21** |
+
+  ```bash
+  python3 - <<'EOF'
+  import pathlib
+  for d in sorted(pathlib.Path('tests/server').iterdir()):
+      doc = d / 'CLAUDE.md'
+      if not d.is_dir() or not doc.exists(): continue
+      text = doc.read_text(errors='ignore')
+      files = [f.name for f in d.glob('*.rs') if f.name != 'mod.rs']
+      if files and not any(f in text or f[:-3] in text for f in files):
+          print(d.name, files)
+  EOF
+  ```
+
+  **The 21 are where to start**, because a doc that names none of its own tests is not stale in
+  a detail — it is describing something else. They are the nine `bluetooth_ble_*` profiles,
+  `git`, `irc`, `ldap`, `maven`, `mercurial`, `named_pipe`, `nfc`, `pty`, `quic`, `saml_idp`,
+  `saml_sp` and `stdio`. `tcp` was a twenty-second entry until this session:
+  `connection_bounds_test.rs` arrived with the sweep that needed it and nothing pointed at it
+  afterwards, which is the mechanism in one sentence.
+
+  **Deliberately not made a ratchet.** The only bar a scan can enforce here is "names at least
+  one file", which someone satisfies by naming one and ignoring five — a gate weak enough to
+  dilute the ones that do work. The number is the useful artefact; re-run the snippet to see it
+  move.
+
 - [x] **Correct `CLAUDE.md` on the two counts this file measured**: command-channel adoption is
   99 clients; the panic hook does not log. *Effort:* S.
 
