@@ -8,7 +8,18 @@ fully mocked (no Ollama required) and assert genuine protocol correctness — a 
 `git clone` succeeding with exact file content, not just an HTTP 200 or a non-panicking
 response.
 
-**Status (as of the `git_repository` redesign, commit `67c14fd6`)**: all 5 tests pass. See
+**Two files, seven tests**, and this section said "all 5" for as long as the second file has
+existed — `connection_bounds_test.rs` arrived with the connection-bounds sweep and nothing here
+pointed at it. That is the whole mechanism by which a test directory's doc goes stale: the file
+lands with the pass that needed it, and the pass edits the protocol's doc rather than the
+tests' one.
+
+| file | tests | what it holds |
+|---|---|---|
+| `e2e_test.rs` | 5 | the maturity evidence — a real `git clone` over Smart HTTP, `git fsck --full` over the pack we sent, and `git show HEAD:README.md` asserting exact blob bytes |
+| `connection_bounds_test.rs` | 2 | the first-byte deadline and the connection cap, driven from the wire. Before September 2026 this server accepted without limit and bounded no read, so a peer that connected and said nothing held a socket, a task and an `AppState` entry forever |
+
+The five in `e2e_test.rs` pass as of the `git_repository` redesign (commit `67c14fd6`); see
 "History" below for what was wrong before and why it stayed green.
 
 ## Actions under test
