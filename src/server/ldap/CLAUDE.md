@@ -1,10 +1,22 @@
 # LDAP Protocol Implementation
 
-**Status**: `DevelopmentState::Beta`. The evidence is `tests/server/ldap/e2e_test.rs`, which
-drives the server with **ldap3** — a real, independent LDAP client — through bind, search, add,
-modify and delete. It is not `#[ignore]`d and does not skip when anything is missing, so it runs
-on every pass. Not Stable: filters and scope are parsed but not evaluated, and no third-party
-client has been taken through SASL or StartTLS because neither exists here.
+**Status**: `DevelopmentState::Beta`, on **two** independent clients, neither of them the crate
+this server frames with:
+
+| client | what it is | file | what only it covers |
+|---|---|---|---|
+| `ldap3` 0.11 | a Rust LDAP client (independent of `ldap3_proto` despite the name — different project, different authors) | `tests/server/ldap/e2e_test.rs` | add, modify, delete |
+| OpenLDAP `ldapsearch` | C, from the project that wrote the RFC | `tests/server/ldap/real_client_test.rs` | the rendered LDIF, every value of a multi-valued `SET OF`, the long-form BER length, the bind `diagnosticMessage`, `noSuchObject` as an exit status |
+
+Neither is `#[ignore]`d and neither skips when something is missing: the `ldapsearch` test
+**fails**, naming the install command, on a machine without the binary. One client can agree
+with one bug, which is why the second exists — the `ldapsearch` test was verified non-vacuous by
+breaking the encoder twice (truncating the attribute `SET OF` to its first value; forcing
+`encode_ber_length` to the short form) and watching what `ldapsearch` printed change, to one
+`objectClass` line and then to no LDIF at all.
+
+Not Stable: filters and scope are parsed but not evaluated, and no third-party client has been
+taken through SASL or StartTLS because neither exists here.
 (This line said `Experimental` while the code said `Beta`; the code was right.)
 **Privilege**: `PrivilegeRequirement::PrivilegedPort(389)` — 389 is below 1024 and is where
 every LDAP client looks by default, so the preflight check in `server_startup.rs` fires rather
@@ -270,6 +282,12 @@ with modify's two changes decoded (`2 changes` in the log).
 filtered search, add, modify, delete). All pass. Note the add/modify/delete tests define no
 mock for their own event and assert nothing about the result code, which is how those
 operations could be entirely unimplemented while the tests stayed green.
+
+`tests/server/ldap/real_client_test.rs` — the second client. One `ldapsearch` binary, two
+sessions against one server: a bind + search whose LDIF is parsed back into entries and
+attribute-value lists, and a search the model refuses with `noSuchObject`, read off
+`ldapsearch`'s exit status (32). The verified-by-breaking method is in the file's own doc
+comment. The manual `ldapsearch` transcript above is a transcript; this is the assertion.
 
 ## References
 

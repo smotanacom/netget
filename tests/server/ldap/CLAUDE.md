@@ -2,20 +2,27 @@
 
 ## Test Overview
 
-Tests the LDAP server with a real third-party client library, `ldap3`, driving bind and search
-and parsing the entries back through its own `SearchEntry::construct` — so a reply it rejected
-would fail rather than be counted as bytes on a socket.
+Tests the LDAP server with **two** real third-party clients, neither of which is the crate the
+server frames with:
 
-**`ldap3` is one client, and the protocol's `e2e_testing` says so.** That field used to claim
-"the ldapsearch/ldapadd command-line tools" as well; nothing asserting drives them. `ldapsearch`
-appears only in `tests/eval/`, the real-model harness, which skips unless `NETGET_USE_OLLAMA=1`
-and reports rather than asserts. An eval probe is a useful signal and is not maturity evidence.
+- `ldap3` 0.11 (Rust) drives bind, search, add, modify and delete, parsing entries back through
+  its own `SearchEntry::construct` — so a reply it rejected would fail rather than be counted as
+  bytes on a socket.
+- OpenLDAP's `ldapsearch` (C, from the project that wrote the RFC) completes a bind and a search
+  and *renders* the result, which is the half a deserialiser cannot check.
 
-## The four files, and what each is for
+**`ldap3` used to be the only one, and the protocol's `e2e_testing` said so.** That field once
+claimed "the ldapsearch/ldapadd command-line tools" as well while nothing asserting drove them:
+`ldapsearch` appeared only in `tests/eval/`, the real-model harness, which skips unless
+`NETGET_USE_OLLAMA=1` and reports rather than asserts. An eval probe is a useful signal and is
+not maturity evidence. `real_client_test.rs` is what that claim always should have been.
+`ldapadd` is still driven by nothing.
 
-This doc described `e2e_test.rs` alone until 22 September 2026 — three of the four files beside
-it went unmentioned, including the two that exist because of real defects. A test nothing points
-at is a test nobody re-reads.
+## The five files, and what each is for
+
+This doc described `e2e_test.rs` alone until 22 September 2026 — the files beside it went
+unmentioned, including the two that exist because of real defects. A test nothing points at is a
+test nobody re-reads.
 
 | file | what it holds |
 |---|---|
@@ -23,6 +30,7 @@ at is a test nobody re-reads.
 | `llm_failure_test.rs` | what a client gets when the backend fails — `unavailable` (52) |
 | `result_code_range_test.rs` | a narrowing cast that encoded LDAP **success** |
 | `connection_bounds_test.rs` | the read deadlines and the connection cap, driven from the wire |
+| `real_client_test.rs` | the **second** client: OpenLDAP's `ldapsearch`, asserted on the LDIF it rendered |
 
 **`result_code_range_test.rs` is the one to read first.** A model-supplied `result_code` was
 narrowed with `as u8`, and the wrap lands on the worst possible value: `256 as u8` is `0`, and
@@ -65,7 +73,15 @@ constant in `src/server/ldap/mod.rs`.
 - `test_ldap_add_entry()`: 1 startup call + 2 operations (bind, add)
 - `test_ldap_modify_entry()`: 1 startup call + 2 operations (bind, modify)
 - `test_ldap_delete_entry()`: 1 startup call + 2 operations (bind, delete)
-- **Total: 19 LLM calls** (7 startups + 12 operations)
+- `ldapsearch_completes_a_session_against_the_ldap_server()`: 1 startup + 2 binds + 2 searches
+  + up to 2 unbinds = **7** (one server, two `ldapsearch` invocations against it)
+- **Total: 26 LLM calls** (8 startups + 18 operations)
+
+The unbind calls are why the `ldap_unbind` rule is `expect_at_most(2)` rather than
+`expect_calls`: RFC 4511 forbids a response to an unbind and the event declares no actions, so
+the server raises it on a tracked task whose result is discarded — and that task races the
+test's own teardown. The rule exists so the mock is not asked to answer a request it has no rule
+for (an unmatched request is an HTTP 500), not because anything asserts on it.
 
 **Note**: Target was <10 calls but LDAP test coverage prioritizes completeness.
 
@@ -77,9 +93,34 @@ constant in `src/server/ldap/mod.rs`.
 - Script generation not beneficial for stateful operations
 - LLM interprets each operation with full session context
 
-## Client Library
+## Client Libraries
 
-**ldap3** v0.11+ - Async LDAP client
+### `ldapsearch` — the second client (`real_client_test.rs`)
+
+OpenLDAP's command-line tool, located by searching `PATH` first and then the places the
+OpenLDAP tools hide when a distribution keeps them out of it (Homebrew's keg-only `openldap`,
+`/usr/lib/openldap`, `/usr/libexec/openldap`). **The test fails rather than skips** when none is
+found, naming `brew install openldap` / `apt-get install -y ldap-utils`: a
+`println!("SKIP")` + `Ok(())` is a silent pass on every runner without the binary, and a
+maturity rating resting on a test like that rests on nothing wherever the suite actually runs.
+
+It asserts on what `ldapsearch` *rendered*, parsed back out of the LDIF rather than
+substring-matched:
+
+- one `dn:` per entry, in the order the `SearchResultEntry` messages were written
+- every value of each multi-valued `SET OF` — the break that made this assertion fail was
+  `for val in arr.iter().take(1)`, after which `ldapsearch` printed `objectClass: person` alone
+- a `description` long enough that the entry's BER length needs the long form. Forcing
+  `encode_ber_length` to the short form made `ldapsearch` print no LDIF at all and exit 254
+  with `ldap_result: Local error (-2)`
+- the bind `diagnosticMessage`, which `ldapsearch` prints as `ldap_bind: Success (0)` plus
+  `additional info:`
+- `noSuchObject` (32), read off `ldapsearch`'s own exit status — it exits with the resultCode
+
+LDIF folding at 78 columns is real here (the long `description` folds), so the parser
+reassembles continuation lines; a parser that ignored them would silently truncate.
+
+### `ldap3` v0.11+ — Async LDAP client (`e2e_test.rs`)
 
 - `LdapConnAsync::new()` - Connect to server
 - `simple_bind()` - Authenticate with DN and password
