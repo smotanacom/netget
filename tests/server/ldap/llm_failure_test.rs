@@ -73,16 +73,13 @@ async fn test_ldap_answers_unavailable_when_llm_fails() -> E2EResult<()> {
     )
     .await
     .map_err(|_| "No LDAP SearchResultDone within 20s")??;
-    let (entries, result) = search.success().map_or_else(
-        |e| {
-            // ldap3 turns a non-zero result code into an error carrying the LdapResult.
-            match e {
-                ldap3::LdapError::LdapResult { result } => (Vec::new(), result),
-                other => panic!("unexpected LDAP error: {other:?}"),
-            }
-        },
-        |(entries, result)| (entries, result),
-    );
+    // ldap3 turns a non-zero result code into an error carrying the LdapResult, so the
+    // refusal we are asserting on arrives through `Err` while a success arrives through `Ok`.
+    let (entries, result) = match search.success() {
+        Ok((entries, result)) => (entries, result),
+        Err(ldap3::LdapError::LdapResult { result }) => (Vec::new(), result),
+        Err(other) => panic!("unexpected LDAP error: {other:?}"),
+    };
     println!("search rc={} entries={}", result.rc, entries.len());
     assert_eq!(
         result.rc, RESULT_UNAVAILABLE,
