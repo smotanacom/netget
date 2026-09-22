@@ -915,30 +915,26 @@ jobs:
   probe:
     name: PROBE registry-audit client environment
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
-      - name: openvpn availability probe
+      - name: openvpn 2.6 assertion candidates
         run: |
           set +e
           sudo apt-get update >/dev/null
-          echo "=== apt-cache policy openvpn (default pockets) ==="
-          apt-cache policy openvpn
-          echo "=== backports ==="
-          apt-cache policy -t jammy-backports openvpn
-          echo "=== preinstalled? ==="
-          command -v openvpn && openvpn --version | head -2
-
-      - name: openvpn official repo probe
-        run: |
-          set -x
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://swupdate.openvpn.net/repos/repo-public.gpg \
-            | sudo gpg --dearmor -o /etc/apt/keyrings/openvpn.gpg
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/openvpn.gpg] https://build.openvpn.net/debian/openvpn/stable jammy main" \
-            | sudo tee /etc/apt/sources.list.d/openvpn.list
-          sudo apt-get update
-          apt-cache policy openvpn
-          sudo apt-get install -y --no-install-recommends openvpn
-          openvpn --version | head -2
-          openvpn --help 2>&1 | grep -i 'peer-fingerprint' || echo "NO peer-fingerprint IN HELP"
-          openvpn --show-tls >/dev/null 2>&1; echo "show-tls exit=$?"
+          sudo apt-get install -y --no-install-recommends -t jammy-backports openvpn
+          echo "=== version ==="
+          openvpn --version | head -1
+          echo "=== A: help grep ==="
+          openvpn --help 2>&1 | grep -c -- 'peer-fingerprint'; echo "A exit=$?"
+          echo "=== B: --peer-fingerprint with --show-ciphers ==="
+          timeout 10 openvpn --peer-fingerprint AA:BB --show-ciphers 2>&1 | head -6
+          echo "=== C: --peer-fingerprint alone ==="
+          timeout 10 openvpn --peer-fingerprint AA:BB 2>&1 | head -6
+          echo "C rc above"
+          echo "=== D: unrecognized option control ==="
+          timeout 10 openvpn --definitely-not-an-option 2>&1 | head -4
+          echo "=== E: show-tls with fingerprint ==="
+          timeout 10 openvpn --peer-fingerprint AA:BB --show-tls 2>&1 | head -4
+          echo "=== F: man page installed? ==="
+          ls /usr/share/man/man8/openvpn* 2>&1
+          zcat /usr/share/man/man8/openvpn.8.gz 2>/dev/null | grep -c peer-fingerprint
