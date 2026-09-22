@@ -87,6 +87,7 @@ pub struct UsbSmartCardServer;
 
 impl UsbSmartCardServer {
     /// Bind the USB/IP listener and start exporting the virtual reader.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -94,6 +95,8 @@ impl UsbSmartCardServer {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: ServerId,
         card_type: Option<String>,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
         let card_type = card_type.unwrap_or_else(|| "generic".to_string());
 
@@ -167,6 +170,13 @@ impl UsbSmartCardServer {
             );
         }
 
+        // The two read deadlines, argued in `src/server/usb/guard.rs` and overridable per
+        // server. Copied into each connection task; the screen is the only thing that reads
+        // from the socket, so it is the only place they can be applied.
+        let deadlines = crate::server::usb::guard::UsbIpDeadlines::from_secs(
+            first_byte_timeout_secs,
+            idle_timeout_secs,
+        );
         let task_registrar = app_state.clone();
         // One emulated device per connection, so the cap is small and lives with the screen.
         let limiter = ConnectionLimiter::new(MAX_USBIP_CONNECTIONS);
@@ -251,6 +261,7 @@ impl UsbSmartCardServer {
                             conn_app_state.clone(),
                             status_tx.clone(),
                             protocol,
+                            deadlines,
                         )
                         .await
                         {
@@ -289,6 +300,7 @@ impl UsbSmartCardServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<UsbSmartCardProtocol>,
+        deadlines: crate::server::usb::guard::UsbIpDeadlines,
     ) -> Result<()> {
         // `handle_urb` is synchronous and cannot await an LLM call, so XfrBlock payloads cross
         // to this task on a channel and the answer is queued back on the handler.
@@ -327,6 +339,7 @@ impl UsbSmartCardServer {
                 connection_id.to_string(),
                 guard_status_tx,
                 Some(import_tx),
+                deadlines,
             )
             .await
             {

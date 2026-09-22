@@ -51,11 +51,6 @@ const TIMEOUT_BASELINE: &[&str] = &[
     "ollama",
     "openai",
     "rtsp",
-    "keyboard",
-    "mouse",
-    "msc",
-    "serial",
-    "smartcard",
     "xmpp",
 ];
 
@@ -149,14 +144,24 @@ fn tcp_servers() -> Vec<(String, String)> {
             .replace(std::path::MAIN_SEPARATOR, "/");
 
         let mut combined = String::new();
-        for file in std::fs::read_dir(&entry)
-            .expect("read protocol dir")
+        // A protocol's own directory, plus — for one that nests a level deeper — its family
+        // directory. `nfs` declares both its bounds in `nfs/guard.rs`, a sibling module, and
+        // this walk has always picked that up because it is in the same directory. The USB
+        // family is the same arrangement one level out: all six protocols hand their socket to
+        // `usb/guard.rs`, which is the only thing in the process that reads from it, so
+        // `usb/keyboard` declaring the bound in its own `mod.rs` would mean six copies of one
+        // number. Without this, the check measured a token's *location* rather than whether a
+        // read is bounded — the same class of blind spot as the `TcpListener` one above.
+        for dir in [Some(entry.as_path()), family_dir(&root, &entry)]
+            .into_iter()
             .flatten()
         {
-            let path = file.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Ok(text) = std::fs::read_to_string(&path) {
-                    combined.push_str(&text);
+            for file in std::fs::read_dir(dir).expect("read protocol dir").flatten() {
+                let path = file.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        combined.push_str(&text);
+                    }
                 }
             }
         }
@@ -165,6 +170,16 @@ fn tcp_servers() -> Vec<(String, String)> {
 
     found.sort();
     found
+}
+
+/// The family directory of a protocol that nests one level deeper (`src/server/usb` for
+/// `src/server/usb/keyboard`), or `None` for a top-level protocol.
+///
+/// Only the family's own `.rs` files are read, never a sibling protocol's, so `usb/keyboard`
+/// cannot be exempted by something `usb/msc` declares.
+fn family_dir<'a>(root: &Path, entry: &'a Path) -> Option<&'a Path> {
+    let parent = entry.parent()?;
+    (parent != root).then_some(parent)
 }
 
 /// `src/server/<p>` and `src/server/<family>/<p>` — the USB and Bluetooth families nest one

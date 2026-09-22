@@ -18,6 +18,7 @@ pub mod netget;
 pub mod ollama_test_builder;
 pub mod pcap_oracle;
 pub mod server;
+pub mod usbip_bounds;
 pub mod usbip_client;
 
 // Re-export commonly used types and functions for convenience

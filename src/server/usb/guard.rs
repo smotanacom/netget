@@ -58,6 +58,16 @@
 //!   debug or test build, swallowed by `tokio::spawn` and leaving the peer hung,
 //! - a payload the peer announced and then stopped sending ([`URB_BODY_TIMEOUT`]).
 //!
+//! # It also bounds silence
+//!
+//! A peer that connects and says nothing, or that goes quiet mid-session, holds a socket, a
+//! task, an `AppState` row and one of [`MAX_USBIP_CONNECTIONS`] slots -- pre-authentication,
+//! because USB/IP has none. [`UsbIpDeadlines`] gives the wait for the *start* of a message a
+//! deadline: a short one before the peer's first message and a long one after it, each argued
+//! at its constant and each overridable per server (`first_byte_timeout_secs`,
+//! `idle_timeout_secs`). The two numbers are far apart on purpose; the argument for the gap is
+//! on [`DEFAULT_FIRST_MESSAGE_TIMEOUT`] and [`DEFAULT_IDLE_TIMEOUT`].
+//!
 //! **A refusal closes the connection rather than answering it, and that is a real limitation
 //! rather than the only option.** `USBIP_RET_SUBMIT` has a `status` field that could carry
 //! `-EINVAL`, but a well-formed reply also has to echo the `seqnum` and `devid` of a URB the
@@ -140,12 +150,112 @@ pub const MAX_USBIP_CONNECTIONS: usize = 32;
 /// case `accept_bounded`'s empty-slice arm exists for.
 pub const USBIP_NO_REFUSAL: &[u8] = &[];
 
-/// How long a peer may stall part-way through a payload it has already announced.
+/// How long a peer may stall part-way through a message it has already begun.
 ///
-/// Only the payload is bounded, never the wait for the *next* message: a USB host that has
-/// attached a device and is asking nothing of it is idle by design, and closing that connection
-/// would be the live-transfer eviction the project `CLAUDE.md` records TFTP learning about.
+/// This governs everything after the first four bytes of a message: the rest of its fixed
+/// header, and the payload a `USBIP_CMD_SUBMIT` announced. A peer that has written a command
+/// word has made a claim and not honoured it, which is a different thing from a peer that is
+/// simply quiet *between* messages -- that one is governed by [`UsbIpDeadlines::idle`], which is
+/// far longer, for the reasons given there.
+///
+/// The tail read used to have no bound at all, so four bytes bought a connection held for as
+/// long as the peer liked.
 const URB_BODY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a peer that has only completed a TCP handshake may send nothing at all.
+///
+/// **The 300 seconds `tcp`, `telnet`, `ldap`, `whois` and `redis` each settled on does not
+/// transfer here, and the reason is worth stating rather than copying the number.** For those,
+/// the peer is frequently NetGet's own client of the same protocol -- created from the
+/// dashboard's `[ + <proto> client ]`, routed `*` -> manual, and parked at `[ send message ]`
+/// waiting for a person to type. It has sent nothing since it connected and it is *correct*
+/// that it has, so the bound must be at least the window a `manual` rule gives a human
+/// (`src/state/intercepts.rs`, 300 seconds).
+///
+/// **That peer cannot exist in front of a USB/IP server**, and every part of this is checkable:
+///
+/// * **NetGet has no USB/IP client.** The only `usb` client is `src/client/usb`, which drives a
+///   real local device through `nusb`. It opens no socket and cannot import one of these.
+/// * **The dashboard cannot create one either.** `src/protocol/dual.rs` deliberately pairs no
+///   `USB-*` profile server with the generic "USB" client -- the generic clients "speak the base
+///   transport, not a specific profile" -- so `[ + client ]` on one of these cards is the
+///   disabled button reading "no client implementation for this protocol is compiled in".
+/// * **Nothing can park in front of the first message.** The attach event does not hang off the
+///   accept; it hangs off the first admitted `OP_REQ_IMPORT` (see the module docs above). So
+///   before a peer has spoken there is no event, no model call and no `manual` window to wait
+///   out. A peer silent here is waiting for nobody.
+/// * **USB/IP is unconditionally client-speaks-first.** The server writes nothing until it is
+///   asked: `usbip list -r` sends `OP_REQ_DEVLIST` and `usbip attach` sends `OP_REQ_IMPORT`,
+///   each assembled before the socket is opened and written as soon as it connects, and
+///   `tests/helpers/usbip_client.rs` does the same.
+///
+/// So the honest default is a short one. 30 seconds is generous by orders of magnitude for
+/// writing eight bytes -- it absorbs a slow link and a scheduler stall in a
+/// `--test-threads=100` run -- and what it buys is that a stranger who connects and says
+/// nothing holds one of [`MAX_USBIP_CONNECTIONS`] slots for half a minute rather than forever.
+/// Overridable per server with `first_byte_timeout_secs`.
+pub const DEFAULT_FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long an established session may go between messages.
+///
+/// Deliberately very long, and for the opposite reason to the bound above. USB/IP has no
+/// keepalive, no ping and no heartbeat: nothing in the protocol obliges an attached host to say
+/// anything, and a host asking nothing of a device it has imported is not misbehaving -- it is
+/// the ordinary state of an attached device. A mass-storage device a host has attached but not
+/// mounted issues no URB at all; the HID and CDC cases only look busy because their kernel
+/// drivers poll. Closing those is unplugging a device from a host that did nothing wrong, which
+/// is the live-transfer eviction the project `CLAUDE.md` records TFTP learning about.
+///
+/// So this bound exists to reap a peer that is *gone* in a way TCP has not noticed -- a dropped
+/// route, a killed VM -- rather than to police one that is present. Half an hour is longer than
+/// any pause a hand-driven or test session produces and still turns "forever" into a number;
+/// together with [`MAX_USBIP_CONNECTIONS`] it bounds what a peer that got as far as one valid
+/// import can hold. A server exporting to strangers rather than to a host the operator controls
+/// should set `idle_timeout_secs` far lower.
+///
+/// **It is armed while the device may still owe the host a reply, and that is safe here in a
+/// way it would not be in most of this tree.** Every `UsbInterfaceHandler::handle_urb` under
+/// `src/server/usb/` is synchronous and answers out of state the connection already holds, so
+/// no URB ever waits on an LLM round-trip or on a 300-second `manual` park -- the model call an
+/// event raises runs in the connection task beside this loop (the `select!` in each
+/// `usb/*/mod.rs`), never in front of a reply. A host that is quiet is quiet by its own choice.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// The two read deadlines a USB server hands the screen.
+///
+/// Both are startup parameters (`first_byte_timeout_secs`, `idle_timeout_secs`) because the
+/// right value is a property of who is on the other end, which only the operator knows.
+#[derive(Clone, Copy, Debug)]
+pub struct UsbIpDeadlines {
+    /// Waiting for the first message of a connection. [`DEFAULT_FIRST_MESSAGE_TIMEOUT`].
+    pub first_message: Duration,
+    /// Waiting for a further message once one has been admitted. [`DEFAULT_IDLE_TIMEOUT`].
+    pub idle: Duration,
+}
+
+impl Default for UsbIpDeadlines {
+    fn default() -> Self {
+        Self {
+            first_message: DEFAULT_FIRST_MESSAGE_TIMEOUT,
+            idle: DEFAULT_IDLE_TIMEOUT,
+        }
+    }
+}
+
+impl UsbIpDeadlines {
+    /// Build from the two startup parameters, falling back to the defaults for whichever the
+    /// caller left out. One line per protocol, so the argument for the numbers lives here
+    /// rather than being restated -- and drifting -- in six `actions.rs`.
+    pub fn from_secs(first_message_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        let default = Self::default();
+        Self {
+            first_message: first_message_secs
+                .map(Duration::from_secs)
+                .unwrap_or(default.first_message),
+            idle: idle_secs.map(Duration::from_secs).unwrap_or(default.idle),
+        }
+    }
+}
 
 /// Bytes read from the peer in one go while streaming an admitted payload.
 ///
@@ -291,6 +401,10 @@ enum Relayed {
     Complete,
     /// The peer closed, reset, or the crate-side pipe went away. Ordinary, not a refusal.
     PeerGone,
+    /// The peer began no message before its deadline. Not a refusal either: nothing was
+    /// malformed and nothing was asked for, so this is logged at INFO and the session ends the
+    /// way a close does.
+    WentQuiet,
 }
 
 /// Run a USB/IP session for `stream` with every inbound message screened first.
@@ -312,6 +426,7 @@ pub async fn run_guarded_usbip(
     peer: String,
     status_tx: UnboundedSender<String>,
     on_import: Option<tokio::sync::oneshot::Sender<()>>,
+    deadlines: UsbIpDeadlines,
 ) -> std::io::Result<()> {
     let log = Log::new(Some(&status_tx));
     let _ = stream.set_nodelay(true);
@@ -334,10 +449,40 @@ pub async fn run_guarded_usbip(
 
     let mut chunk = vec![0u8; RELAY_CHUNK_BYTES];
     let mut on_import = on_import;
+    // The first message is bounded far more tightly than the ones after it, because a peer that
+    // has not spoken yet is waiting for nothing this server is doing. See the two constants.
+    let mut admitted_one = false;
     let refusal = loop {
-        match relay_one_message(&mut from_peer, &mut to_crate, &mut chunk, &mut on_import).await {
-            Ok(Relayed::Complete) => {}
+        let deadline = if admitted_one {
+            deadlines.idle
+        } else {
+            deadlines.first_message
+        };
+        match relay_one_message(
+            &mut from_peer,
+            &mut to_crate,
+            &mut chunk,
+            &mut on_import,
+            deadline,
+        )
+        .await
+        {
+            Ok(Relayed::Complete) => admitted_one = true,
             Ok(Relayed::PeerGone) => break None,
+            Ok(Relayed::WentQuiet) => {
+                log.info(format!(
+                    "{} closed a USB/IP connection from {} that sent {} for {}s",
+                    device,
+                    peer,
+                    if admitted_one {
+                        "no further message"
+                    } else {
+                        "nothing at all"
+                    },
+                    deadline.as_secs()
+                ));
+                break None;
+            }
             Err(refusal) => break Some(refusal),
         }
     };
@@ -391,14 +536,20 @@ async fn relay_one_message<R, W>(
     to_crate: &mut W,
     chunk: &mut [u8],
     on_import: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    start_deadline: Duration,
 ) -> Result<Relayed, Refusal>
 where
     R: AsyncReadExt + Unpin,
     W: AsyncWriteExt + Unpin,
 {
+    // `start_deadline` covers this read and nothing else: the caller arms it only once the
+    // previous message has been relayed in full, and every later await in this function is
+    // bounded by `URB_BODY_TIMEOUT` instead, because by then the peer has begun a message.
     let mut head = [0u8; 4];
-    if from_peer.read_exact(&mut head).await.is_err() {
-        return Ok(Relayed::PeerGone);
+    match tokio::time::timeout(start_deadline, from_peer.read_exact(&mut head)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => return Ok(Relayed::PeerGone),
+        Err(_) => return Ok(Relayed::WentQuiet),
     }
     let version = u16::from_be_bytes([head[0], head[1]]);
     let command = u16::from_be_bytes([head[2], head[3]]);
@@ -421,8 +572,12 @@ where
     let mut message = Vec::with_capacity(4 + tail_len);
     message.extend_from_slice(&head);
     message.resize(4 + tail_len, 0);
-    if from_peer.read_exact(&mut message[4..]).await.is_err() {
-        return Ok(Relayed::PeerGone);
+    // A peer that has written a command word has begun a message, so the body bound governs from
+    // here -- not the much longer idle one, which is about a peer that has begun nothing.
+    match tokio::time::timeout(URB_BODY_TIMEOUT, from_peer.read_exact(&mut message[4..])).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => return Ok(Relayed::PeerGone),
+        Err(_) => return Err(Refusal::BodyStalled),
     }
 
     // Both command messages carry `direction`, and the crate only `debug_assert!`s that it is

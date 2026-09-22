@@ -329,18 +329,48 @@ impl UsbMscProtocol {
 #[cfg(feature = "usb-msc")]
 impl Protocol for UsbMscProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![crate::llm::actions::ParameterDefinition {
-            name: "disk_image".to_string(),
-            type_hint: "string".to_string(),
-            description: "OPTIONAL path to a disk image file to serve instead of an \
-                          LLM-supplied volume. Leave it out for the normal case: the device \
-                          then starts with an empty in-memory FAT16 volume and the model fills \
-                          it with serve_files. Naming a path here is host state you are \
-                          choosing to expose; it is created if it does not exist."
-                .to_string(),
-            required: false,
-            example: serde_json::json!("/tmp/prepared.img"),
-        }]
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "disk_image".to_string(),
+                type_hint: "string".to_string(),
+                description: "OPTIONAL path to a disk image file to serve instead of an \
+                              LLM-supplied volume. Leave it out for the normal case: the device \
+                              then starts with an empty in-memory FAT16 volume and the model \
+                              fills it with serve_files. Naming a path here is host state you \
+                              are choosing to expose; it is created if it does not exist."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!("/tmp/prepared.img"),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a peer that has only connected may send no USB/IP message \
+                              at all before the server closes it. Default 30. USB/IP is \
+                              client-speaks-first and nothing here answers a peer that has not \
+                              asked - `usbip attach` and `usbip list -r` both write their \
+                              request as soon as the socket is up - so a short bound is the \
+                              honest one. Raise it only if your host is reached over a link \
+                              where a handshake can take that long."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(30),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an attached host may go without sending a further USB/IP \
+                              message before the server closes the session. Default 1800. \
+                              USB/IP has no keepalive and nothing obliges an attached host to \
+                              speak - a drive a host has imported and has not mounted issues no \
+                              URB at all - so this is deliberately long and exists to reap a \
+                              peer that is gone rather than to police one that is here. Lower \
+                              it if you are exporting to strangers."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(1800),
+            },
+        ]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -500,6 +530,22 @@ impl Server for UsbMscProtocol {
                 .flatten()
                 .map(std::path::PathBuf::from);
 
+            // Read here rather than through a shared helper so the parameter names appear
+            // in this protocol's own source: `tests/startup_param_drift_test.rs` proves a
+            // declared knob is wired by finding its name outside the declaration, and a read
+            // one directory up is invisible to it — and to the next person reading this file.
+            // The numbers and the argument for them are in `src/server/usb/guard.rs`.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             crate::server::usb::msc::UsbMscServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
@@ -507,6 +553,8 @@ impl Server for UsbMscProtocol {
                 ctx.status_tx,
                 ctx.server_id,
                 disk_image,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await
         })

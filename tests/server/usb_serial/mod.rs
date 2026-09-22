@@ -6,3 +6,6 @@ mod llm_failure_test;
 
 #[cfg(all(test, feature = "usb-serial"))]
 mod line_coding_test;
+
+#[cfg(all(test, feature = "usb-serial"))]
+mod connection_bounds_test;

@@ -35,8 +35,8 @@ id and no credential, so 48 bytes from a peer that has not even imported a devic
 `nfsserve`, the precedent in `src/server/nfs/guard.rs` — no second listener is needed. NetGet
 keeps the real socket, hands the crate a `tokio::io::duplex` pipe, and copies only admitted
 messages into it. **Every one of the six protocols goes through
-`guard::run_guarded_usbip(stream, server, device, peer, status_tx, on_import)`; none of them
-calls `usbip::handler` directly.**
+`guard::run_guarded_usbip(stream, server, device, peer, status_tx, on_import, deadlines)`; none
+of them calls `usbip::handler` directly.**
 
 The screen reads one whole USB/IP message at a time and decides it from the numbers the peer
 *announced*, before the bytes they describe are read and before any arithmetic on them:
@@ -45,7 +45,27 @@ The screen reads one whole USB/IP message at a time and decides it from the numb
 |---|---|---|
 | `MAX_TRANSFER_BUFFER_BYTES` | 1 MiB | **A NetGet policy choice, not a spec figure** — the field is a bare `u32` and the protocol names no ceiling. HID reports are 4-8 bytes, CTAPHID frames 64, CCID messages a few hundred; the largest legitimate transfer here is an MSC data phase, well inside this |
 | `MAX_ISO_PACKETS` | 1024 | This one *is* the number other implementations use: the Linux kernel's own USB/IP stub defines `USBIP_MAX_ISO_PACKETS` as 1024 in `drivers/usb/usbip/usbip_common.h` and rejects more on the submit path in `stub_rx.c`. No device here declares an isochronous endpoint, so a working session only ever sends the two exempt values `0` and `0xFFFFFFFF` |
-| `URB_BODY_TIMEOUT` | 30s | An announced payload that then stalls. Only the payload is bounded — never the wait for the *next* message, because an attached device with nothing being asked of it is idle by design |
+| `URB_BODY_TIMEOUT` | 30s | A message the peer has *begun* and then stalled on — the rest of its fixed header, and a payload it announced. The tail read used to have no bound at all, so four bytes held a connection for as long as the peer liked |
+| `DEFAULT_FIRST_MESSAGE_TIMEOUT` | 30s | A peer that has only completed a TCP handshake. **Short, unlike the 300 seconds `tcp`/`telnet`/`ldap`/`whois`/`redis` settled on**, because the peer those protect — NetGet's own client parked at `[ send message ]` — cannot exist here: NetGet has no USB/IP client, `src/protocol/dual.rs` deliberately pairs no `USB-*` server with the generic USB client, and no event can park in front of the first message because the attach event follows `OP_REQ_IMPORT`. USB/IP is client-speaks-first, so a silent peer is waiting for nobody |
+| `DEFAULT_IDLE_TIMEOUT` | 1800s | A peer that has spoken and then gone quiet. **Deliberately long**: USB/IP has no keepalive, nothing obliges an attached host to say anything, and a drive a host has imported and not mounted issues no URB at all — so this reaps a peer that is *gone* rather than policing one that is present. Closing an idle attached host would be the live-transfer eviction the project `CLAUDE.md` records TFTP learning about |
+
+The last two are startup parameters (`first_byte_timeout_secs`, `idle_timeout_secs`) on all five
+of `usb-keyboard`, `usb-mouse`, `usb-msc`, `usb-serial` and `usb-smartcard`; `usb-fido2` takes
+the defaults and declares no knob. Each protocol declares them in its own
+`get_startup_parameters()` — an undeclared key is refused at startup — and reads them in its own
+`spawn()`, which is what `tests/startup_param_drift_test.rs` looks for.
+
+**The deadline covers the read and nothing else, and that is easier to guarantee here than
+elsewhere in the tree**: every `UsbInterfaceHandler::handle_urb` under `src/server/usb/` is
+synchronous and answers out of state the connection already holds, so no URB ever waits on an
+LLM round-trip or on a 300-second `manual` park. The model call an event raises runs in the
+connection task beside the screen's loop, never in front of a reply.
+
+`tests/helpers/usbip_bounds.rs` drives both bounds from a raw socket and each protocol's
+`tests/server/usb_*/connection_bounds_test.rs` calls it. Verified by removal: take the deadline
+off the head read and all ten checks fail on their own windows; collapse the two bounds onto the
+short one and the five idle checks fail, along with the one that holds an attached-and-quiet
+host open past 30 seconds.
 
 Two more things are refused, and both are the same class of defect one level down: the crate
 `debug_assert!`s that `direction` is a single bit and that an operation-code message's `status`
@@ -127,9 +147,10 @@ reading source, so it applies at any feature set.
 - **Only framing is screened, not USB semantics.** An admitted URB still reaches the protocol's
   own `UsbInterfaceHandler`, which decides whether the endpoint, the setup packet and the
   payload make sense. A 1 MiB URB on an 8-byte interrupt endpoint is the handler's problem.
-- **There is no first-message deadline.** A peer can connect and say nothing, which costs a
-  socket, a task, an `AppState` entry and one of the 32 slots until it goes away. It no longer
-  costs a model call, which was the expensive half.
+- **An admitted session is bounded at half an hour, not at a minute.** That is the right
+  number for a host that has imported a device (see `DEFAULT_IDLE_TIMEOUT`), but it does mean a
+  peer that sends one valid `OP_REQ_DEVLIST` buys 1800 seconds of a slot rather than 30. Lower
+  `idle_timeout_secs` on a listener exposed to strangers.
 - **Nothing bounds how *many* messages a peer sends.** Each is individually small and the
   screen holds none of them, but a peer can submit URBs as fast as it likes and each admitted
   one is work for the protocol's handler — and, where the handler raises an event, a model call.
