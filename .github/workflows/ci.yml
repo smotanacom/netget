@@ -915,66 +915,86 @@ jobs:
   probe:
     name: PROBE registry-audit client environment
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
-      - name: apt state
+      - name: maven preinstalled?
         run: |
-          sudo apt-get update
-          echo "=== apt-cache policy ==="
-          apt-cache policy etcd-client libmemcached-tools maven || true
-
-      - name: install etcd-client + libmemcached-tools + maven
-        run: |
-          sudo apt-get install -y --no-install-recommends etcd-client libmemcached-tools maven
-
-      - name: etcdctl probe
-        run: |
-          echo "=== dpkg -L etcd-client ==="
-          dpkg -L etcd-client | grep -E 'bin/' || true
-          echo "=== which etcdctl ==="
-          command -v etcdctl || true
-          echo "=== etcdctl version ==="
           set +e
-          etcdctl version; echo "exit=$?"
-          echo "=== etcdctl --version ==="
-          etcdctl --version; echo "exit=$?"
-          echo "=== ETCDCTL_API=3 etcdctl version ==="
-          ETCDCTL_API=3 etcdctl version; echo "exit=$?"
-          echo "=== ETCDCTL_API=2 etcdctl version ==="
-          ETCDCTL_API=2 etcdctl version; echo "exit=$?"
-          echo "=== etcdctl --help (head) ==="
-          etcdctl --help 2>&1 | head -40; echo "exit=$?"
+          echo "=== command -v mvn (before apt) ==="
+          command -v mvn; mvn -version
+          ls -d /usr/share/*maven* 2>&1
           set -e
 
-      - name: libmemcached probe
+      - name: install packages
         run: |
-          echo "=== dpkg -L libmemcached-tools ==="
-          dpkg -L libmemcached-tools
-          echo "=== apt-file style: what provides memstat ==="
-          ls -l /usr/bin/mem* 2>&1 || true
-          echo "=== packages matching memcache ==="
-          apt-cache search memcache || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends maven libmemcached-tools libboost-dev libssl-dev g++ make
 
-      - name: stunserver build probe
+      - name: etcd 3.5 client probe
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/etcd.tgz https://github.com/etcd-io/etcd/releases/download/v3.5.17/etcd-v3.5.17-linux-amd64.tar.gz
+          sudo tar -xzf /tmp/etcd.tgz -C /usr/local/bin --strip-components=1 etcd-v3.5.17-linux-amd64/etcdctl
+          etcdctl version
+
+      - name: memcached tool symlink probe
         run: |
           set -x
-          sudo apt-get install -y --no-install-recommends libboost-dev libssl-dev g++ make
-          git clone --depth 1 --branch version1.2.13 https://github.com/jselbie/stunserver.git /tmp/stunserver
+          for pair in memcat:memccat memstat:memcstat memping:memcping ; do
+            want=${pair%%:*}; have=${pair##*:}
+            sudo ln -sf "/usr/bin/$have" "/usr/local/bin/$want"
+          done
+          command -v memcat memstat memping
+          set +e
+          memcat --version; echo "memcat --version exit=$?"
+          memstat --version; echo "memstat --version exit=$?"
+          memping --version; echo "memping --version exit=$?"
+          memcat --help 2>&1 | head -5; echo "memcat --help exit=$?"
+
+      - name: stunserver build from master probe
+        run: |
+          set -x
+          git clone https://github.com/jselbie/stunserver.git /tmp/stunserver
           cd /tmp/stunserver
-          make -j"$(nproc)" 2>&1 | tail -60 || echo "MAKE FAILED rc=$?"
-          echo "=== tree ==="
-          find /tmp/stunserver -maxdepth 2 -type f -perm -u+x -name 'stun*' || true
-          ls -l /tmp/stunserver | head -40
+          git checkout 1582042ca33f
+          git log --oneline -1
+          make -j"$(nproc)" 2>&1 | tail -25 || echo "MAKE FAILED"
+          find /tmp/stunserver -maxdepth 2 -type f -perm -u+x -name 'stunclient*'
+          set +e
+          /tmp/stunserver/client/stunclient --help 2>&1 | head -20; echo "help exit=$?"
+          /tmp/stunserver/stunclient --help 2>&1 | head -20; echo "help2 exit=$?"
 
-      - name: maven warm-up probe
+      - name: maven tail-repo experiment
         run: |
           set -x
-          mvn --version
-          ls -la "$HOME/.m2" || echo "no ~/.m2"
-          mvn -B dependency:get -Dartifact=junit:junit:4.13.2 2>&1 | tail -20
-          echo "=== .m2 plugins ==="
-          ls "$HOME/.m2/repository/org/apache/maven/plugins" || true
-          ls "$HOME/.m2/repository/org/apache/maven/plugins/maven-dependency-plugin" || true
-          find "$HOME/.m2/repository/org/apache/maven/plugins" -maxdepth 2 -name 'maven-metadata*' | head
+          mvn -version
+          # warm plainly, exactly as the test's error message prescribes
+          mvn -B dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/warm.log 2>&1 || tail -20 /tmp/warm.log
+          printf '%s\n' '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"><mirrors><mirror><id>netget-under-test</id><url>http://127.0.0.1:1/</url><mirrorOf>*</mirrorOf></mirror></mirrors></settings>' > /tmp/s.xml
+          cat /tmp/s.xml
+          set +e
+          rm -rf /tmp/head
+          mvn -B -s /tmp/s.xml -Dmaven.repo.local=/tmp/head               -Dmaven.repo.local.tail="$HOME/.m2/repository"               dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/tail1.log 2>&1
+          echo "APT-MAVEN tail experiment exit=$?"
+          tail -30 /tmp/tail1.log
+
+      - name: maven 3.9 tail-repo experiment
+        run: |
+          set -x
+          curl -fsSL -o /tmp/mvn.tgz https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz
+          sudo tar -xzf /tmp/mvn.tgz -C /opt
+          export PATH=/opt/apache-maven-3.9.9/bin:$PATH
+          mvn -version
+          rm -rf "$HOME/.m2" /tmp/head2
+          mvn -B dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/warm2.log 2>&1 || tail -20 /tmp/warm2.log
+          ls "$HOME/.m2/repository/org/apache/maven/plugins/maven-dependency-plugin"
+          set +e
+          mvn -B -s /tmp/s.xml -Dmaven.repo.local=/tmp/head2               -Dmaven.repo.local.tail="$HOME/.m2/repository"               dependency:get -Dartifact=junit:junit:4.13.2 > /tmp/tail2.log 2>&1
+          echo "MAVEN-3.9 tail experiment exit=$?"
+          tail -40 /tmp/tail2.log
+          echo "=== unpack too ==="
+          mvn -B -s /tmp/s.xml -Dmaven.repo.local=/tmp/head2               -Dmaven.repo.local.tail="$HOME/.m2/repository"               dependency:unpack -Dartifact=junit:junit:4.13.2 -DoutputDirectory=/tmp/unp > /tmp/tail3.log 2>&1
+          echo "MAVEN-3.9 unpack exit=$?"
+          tail -30 /tmp/tail3.log
