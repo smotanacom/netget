@@ -159,10 +159,17 @@ Three things each test asserts, and each is there for a different failure:
 `handle_urb`, so it costs no model budget. That is a claim about price, not the discriminator —
 unguarded, the crate never reaches the handler either.
 
-Each test costs 3 LLM calls: startup, the attach call the attacking connection provokes on
-accept, and the attach call the control connection provokes. The attach call is unavoidable and
-predates the guard — it fires on TCP accept, not on `OP_REQ_IMPORT` — which is why each test
-waits for `"USB MSC LLM call completed (attach)"` before sending anything.
+Each test costs 3 LLM calls: startup, the attach call the attacking connection provokes, and
+the attach call the control connection provokes. The attach call fires on the peer's first
+admitted `OP_REQ_IMPORT`, not on the TCP accept — the same thing line 95 above says — which is
+why each test waits for `"USB MSC LLM call completed (attach)"` before sending anything.
+
+(This paragraph said the opposite for a long time: "it fires on TCP accept, not on
+`OP_REQ_IMPORT`", contradicting both the code and its own file ninety lines earlier. The
+distinction is not cosmetic — if attach really did hang off the accept, a silent peer would
+provoke a model call before saying anything, and the first-byte deadline in `usb/guard.rs`
+would have to be argued against a peer that might be parked waiting for a human answer. It
+does not, which is why 30 seconds is the right number there.)
 
 **Verified by removing the guard**: pointing `msc/mod.rs` back at `usbip::handler(&mut stream,
 ...)` makes both tests fail, on the missing tag and then on the 20s timeout.
