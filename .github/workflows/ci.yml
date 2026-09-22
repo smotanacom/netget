@@ -8,15 +8,18 @@ on:
   pull_request:
   push:
     branches: [master]
-  # Manual dispatch is the only way to reach `single-feature-full` - it checks all 133
-  # standalone-buildable protocol features one at a time and takes hours, far past what a
-  # PR gate can hold. Every other job runs on every event.
+  # Every job runs on every event. Manual dispatch is kept so a run can be forced against
+  # a branch without pushing to it - no job is gated behind it any more. One used to be:
+  # `single-feature-full`, the only check that covered 109 of the 133 protocol features,
+  # which meant those 109 were never checked. See the `single-feature` job.
   workflow_dispatch:
 
 # The event name is part of the group on purpose. Without it a dispatched run and a
 # push-to-master run share `ci-CI-refs/heads/master`, and `cancel-in-progress` makes each
-# kill the other - a push would abort a multi-hour single-feature-full run partway through
-# and report nothing.
+# kill the other, so a push would abort a dispatched run partway through and report
+# nothing. That mattered most when a dispatch was the only way to check 109 of the
+# features; it still keeps a deliberate manual run from being cancelled by unrelated
+# traffic on the same ref.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
@@ -49,20 +52,26 @@ env:
     jsonrpc,saml,saml-idp,saml-sp,wireguard,ipsec,bgp,rip,bitcoin,mcp,mcp-stdio,
     mcp-http,xmlrpc,tor,vnc,openapi,openid,git,mercurial,torrent-tracker,
     torrent-dht,torrent-peer,webdav,nfs,smb,mdns,ipp,rss,dc,webrtc,amqp
-  # The two halves of the standalone-build check (`single-feature` /
-  # `single-feature-full`). Space-separated, one feature per loop iteration. Together
-  # they are the complete set of features verified to build with
-  # `--no-default-features --features <f> --tests` and nothing else - see the long
-  # comment on the `single-feature` job for what that catches and what is excluded.
+  # The standalone-build check's feature list, in two halves for readability only - the
+  # `single-feature` matrix concatenates them and checks all 133 on every event. They were
+  # once two *gates*, one blocking and one dispatch-only; that is what left 109 features
+  # unchecked, and it is gone. Keep both lists sorted into the shape they have: the
+  # matrix slices CORE+REST contiguously, so related features stay in one shard and that
+  # shard builds their shared dependencies once.
   #
-  # CORE is the blocking half: the transports and the protocols most likely to be
-  # touched, plus one representative of each dependency shape that has broken before
-  # (h2, quinn+rustls, tungstenite, rasn, rusqlite, rmcp). Sized to the runner's
-  # 30-minute timeout, not to importance - REST is checked by `single-feature-full`.
+  # Space-separated, one feature per loop iteration. Together they are the complete set of
+  # features verified to build with `--no-default-features --features <f> --tests` and
+  # nothing else - see the long comment on the `single-feature` job for what that catches
+  # and what is excluded.
+  #
+  # CORE is the transports and the protocols most likely to be touched, plus one
+  # representative of each dependency shape that has broken before (h2, quinn+rustls,
+  # tungstenite, rasn, rusqlite, rmcp). It is checked no harder than REST now; it is
+  # simply first, so shard 1 fails fastest on the features most likely to break.
   SINGLE_FEATURE_CORE: >-
     tcp udp dns http http2 redis tls telnet ftp ldap syslog ntp tftp socks5 mqtt quic
     websocket smtp imap postgresql snmp whois sqlite mcp-stdio
-  # The other 109. `single-feature-full` only.
+  # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
     vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger ssdp llmnr
@@ -514,17 +523,31 @@ jobs:
             -- --test-threads=100
 
   single-feature:
-    name: Single-feature build
+    name: Single-feature build (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    # 45, not 30: a shard is ~34 features at ~25s each (~14 min) once its cache is warm,
+    # but the first run after a cache key changes compiles that shard's whole dependency
+    # graph cold. The shards run in parallel, so the headroom costs wall-clock only in the
+    # case where it is actually needed.
+    timeout-minutes: 45
+    strategy:
+      # Every shard reports. Without this one broken feature cancels the other three and
+      # the run tells you about one failure when there may be four.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # One cache per shard: each shard builds a different quarter of the feature list, so
+      # a shared entry would thrash. Four entries replace the two this job used to need
+      # (`single-feature` + the deleted `single-feature-full`), a net +2 against the
+      # repository's 10 GB cache budget.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: single-feature
+          key: single-feature-${{ matrix.shard }}
 
       # Guards a class of breakage that no other job in this file can catch.
       #
@@ -541,19 +564,36 @@ jobs:
       # visibly. Three test targets were found in exactly that state (stale arity
       # after a parameter was added, an E0282 on an all-feature-gated vec).
       #
-      # One job looping rather than a matrix: the iterations share a single cargo cache
-      # and target dir, so later features reuse the earlier builds' dependencies instead
-      # of each matrix leg paying for its own cold start. At this many features that is
-      # the difference between a job that fits in the runner's timeout and one that does
-      # not.
+      # WHY A SHARDED MATRIX, AND WHY IT BLOCKS. All 133 features are checked here, on
+      # every PR and every push. This used to be two jobs: a blocking one over
+      # SINGLE_FEATURE_CORE (24 features) and a `single-feature-full` over all 133 gated
+      # behind `if: github.event_name == 'workflow_dispatch'`. Nothing dispatches itself,
+      # so the other 109 features had no automatic compile coverage at all - and in
+      # September 2026 `tor` was found not to compile AT ALL (src/server/tor_relay/mod.rs
+      # named rustls' `aws_lc_rs` provider while Cargo.toml pins rustls to `ring`), for an
+      # unknown length of time, with every CI run green throughout. A gate nobody triggers
+      # is not a gate.
       #
-      # WHY THIS IS SPLIT IN TWO. 133 features were verified; a `cargo check --tests` run
-      # is ~20s each locally with a warm cache and considerably more on a 2-core runner,
-      # so the full list does not fit in 30 minutes and never will. SINGLE_FEATURE_CORE
-      # is the blocking half, sized to the timeout; `single-feature-full` below runs
-      # CORE + REST on a manual dispatch with hours to spare. A regression in REST is
-      # therefore caught when someone asks for it rather than on the PR - which is the
-      # trade the timeout forces, and is still infinitely better than 14 features.
+      # The numbers, measured rather than assumed. The old 24-feature job took 9-12 min on
+      # this runner with a warm cache - ~25s per feature, near enough constant because each
+      # iteration recompiles the lib plus ~170 test targets whatever the feature is. 133 of
+      # those is ~55 min, which is why one job never fitted the 30-minute timeout. Four
+      # shards of ~34 are ~14 min each and run in parallel, so the wall-clock cost to a PR
+      # is roughly what the 24-feature job already cost, and the whole list is covered.
+      #
+      # What it costs, stated plainly: ~4x the runner-minutes this job used to burn (~10
+      # min -> ~60), and 3 more concurrent jobs (11 in a PR run, against the 20-job limit
+      # for a public repository). The repository is public, so those minutes are free; the
+      # only real budget it spends is the Actions cache, see the cache step below.
+      #
+      # REJECTED, and why. (1) Folding SINGLE_FEATURE_REST into one unsharded job: ~55 min
+      # against a 30-minute timeout - it does not fit, which is the whole reason for the
+      # old split. (2) A nightly `schedule:` trigger: no workflow in this repository is on
+      # a cron, and the dispatch-only ones (fuzz, nightly-soak, nightly-eval) are searches
+      # and measurements, where a nightly cadence is the right shape. This is a gate - it
+      # answers yes or no about the commit in front of it - so it belongs on the commit,
+      # not on the clock. Nightly would also have caught `tor`, a day late and on master
+      # rather than on the PR that broke it.
       #
       # Every feature in either list was verified to build standalone. Keep it that way:
       # add a protocol only after checking it, and only if it needs no system library
@@ -584,69 +624,29 @@ jobs:
       # rather than papered over with an install step and an unverified list.
       - name: cargo check --tests, one protocol feature at a time
         shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "4"
         run: |
           set -uo pipefail
-          FEATURES="$SINGLE_FEATURE_CORE"
-          status=0
-          failed=""
-          for f in $FEATURES; do
-            echo "::group::cargo check --tests --features $f"
-            if cargo check --locked --no-default-features --features "$f" --tests; then
-              echo "OK: $f builds standalone"
-            else
-              echo "::error::Feature '$f' does not build standalone (--no-default-features --features $f --tests)."
-              failed="$failed $f"
-              status=1
-            fi
-            echo "::endgroup::"
-          done
-          if [ "$status" != "0" ]; then
-            echo "::error::Under-declared feature(s):$failed"
-            echo "Each listed feature builds under --all-features but not on its own, which means"
-            echo "its Cargo.toml entry is missing a dependency that another feature happens to"
-            echo "supply. Add the missing optional dep to that feature's list in Cargo.toml."
-          fi
-          exit $status
-
-  # The other 109 features. Same check, same rule, same failure message - the only
-  # differences are the list and that it has time to finish. `if:` restricts it to a
-  # manual dispatch, so it never runs on a PR or a push.
-  #
-  # Dispatch it by hand after anything that touches Cargo.toml's [features] table or a
-  # widely-shared module - that is when a dependency goes missing from exactly one
-  # feature and nothing else notices.
-  single-feature-full:
-    name: Single-feature build (all 133, on dispatch)
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-22.04
-    # Generous on purpose: 133 iterations, each compiling the lib and ~160 test targets.
-    # A cold cache is the worst case and this is the job that pays for it.
-    timeout-minutes: 300
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      # A cache key distinct from `single-feature`: this job's target dir accumulates
-      # every feature's dependency graph, which is far larger than the core's and would
-      # otherwise evict it.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: single-feature-full
-
-      - name: cargo check --tests, one protocol feature at a time (full list)
-        shell: bash
-        run: |
-          set -uo pipefail
-          FEATURES="$SINGLE_FEATURE_CORE $SINGLE_FEATURE_REST"
-          total=$(echo $FEATURES | wc -w | tr -d ' ')
-          echo "::notice::Checking $total features standalone."
+          ALL="$SINGLE_FEATURE_CORE $SINGLE_FEATURE_REST"
+          total=$(echo $ALL | wc -w | tr -d ' ')
+          # Contiguous slices, not round-robin. Per-feature cost is dominated by a constant
+          # (the lib plus ~170 test targets recompile every time), so equal counts are
+          # already balanced; what differs between features is their dependency graph, and
+          # neighbours in these lists are related (the aws trio, the torrent trio, the saml
+          # trio). Keeping them in one shard is what lets that shard build those deps once.
+          FEATURES=$(echo $ALL | tr ' ' '\n' \
+            | awk -v s="$SHARD" -v n="$SHARDS" -v t="$total" \
+                'BEGIN { per = int((t + n - 1) / n) } NR > (s-1)*per && NR <= s*per')
+          count=$(echo $FEATURES | wc -w | tr -d ' ')
+          echo "::notice::Shard $SHARD/$SHARDS: checking $count of $total features standalone."
           status=0
           failed=""
           n=0
           for f in $FEATURES; do
             n=$((n + 1))
-            echo "::group::[$n/$total] cargo check --tests --features $f"
+            echo "::group::[$n/$count] cargo check --tests --features $f"
             if cargo check --locked --no-default-features --features "$f" --tests; then
               echo "OK: $f builds standalone"
             else
