@@ -1041,6 +1041,16 @@ commit and so suit a nightly cadence. A compile check is a *gate* — it answers
 the commit in front of it — so it belongs on the commit. Nightly would have caught `tor` too, a
 day late and on `master` rather than on the change that broke it.
 
+**In fact none of the three is on a cron any more**: `fuzz.yml`, `nightly-soak.yml` and
+`nightly-eval.yml` are all `workflow_dispatch` only, so between dispatches nothing runs them at
+all. Dispatch them by hand after changing the surface they cover. That is the right cadence for
+a search, but it has a cost worth knowing, because `fuzz.yml`'s own header records paying it:
+`coap_message.rs` stopped compiling hours after it was written and stayed broken for weeks,
+while the Stable bar's "a fuzz target exists and has run clean" was being satisfied by a target
+that could not build. The fix was not to put the search on a cron — it was to have `ratchets`
+do `cargo check --manifest-path fuzz/Cargo.toml --all-targets` on every PR. **Separate the
+search from the check it depends on, and gate the check.**
+
 ### Terminal (PTY) tests
 
 `tests/terminal_snapshot/` drives the real binary through a pty. Four traps cost a full debugging
