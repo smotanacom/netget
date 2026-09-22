@@ -118,6 +118,9 @@ enum Verdict {
     /// Running and the port is held, but by a datagram socket — there is no handshake
     /// to complete, so "held" is as far as verification goes.
     ListeningDatagram,
+    /// Running and the port is held by an **SCTP** socket. Same reasoning as the datagram
+    /// case: this probe cannot complete an SCTP association, so "held" is as far as it goes.
+    ListeningSctp,
     /// Running but `spawn()` reported no endpoint. Cannot be verified here.
     RunningNoSocket,
     /// Running with an address that is not a probeable local endpoint (a multicast
@@ -150,6 +153,7 @@ impl Verdict {
         match self {
             Verdict::Listening => "LISTENING",
             Verdict::ListeningDatagram => "LISTENING-udp",
+            Verdict::ListeningSctp => "LISTENING-sctp",
             Verdict::RunningNoSocket => "no-socket",
             Verdict::RunningUnverifiable => "unverifiable",
             Verdict::LiedAboutListening => "LIED",
@@ -220,6 +224,35 @@ enum Held {
     Tcp,
     /// Only the UDP half is taken.
     Udp,
+    /// Neither the TCP nor the UDP half is taken, but an **SCTP** socket holds the port.
+    ///
+    /// SCTP is IP protocol 132 and has its own port namespace, so a listening SCTP socket
+    /// leaves both `TcpListener::bind` and `UdpSocket::bind` free. Without this arm the
+    /// probe reads a correctly listening SCTP server as an empty port and calls it a liar —
+    /// which is what it did to `m3ua`, the one protocol here whose transport RFC 4666
+    /// section 1.4.1 defines as SCTP.
+    Sctp,
+}
+
+/// Is `addr` held by a listening SCTP socket?
+///
+/// `None` when the question cannot be asked: a host with no SCTP stack (macOS ships neither
+/// kernel support nor headers; a Linux kernel without the `sctp` module behaves the same)
+/// fails at `socket(2)`, and on such a host `m3ua` refuses to start in the first place, so
+/// the probe never reaches here for it.
+fn sctp_holds(addr: SocketAddr) -> Option<bool> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    /// IANA protocol number for SCTP, as `src/server/m3ua/mod.rs` names it.
+    const IPPROTO_SCTP: i32 = 132;
+
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::from(IPPROTO_SCTP))).ok()?;
+    // No SO_REUSEADDR: the point is to find out whether the address is taken.
+    Some(socket.bind(&addr.into()).is_err())
 }
 
 fn probe_port(addr: SocketAddr) -> Held {
@@ -228,7 +261,12 @@ fn probe_port(addr: SocketAddr) -> Held {
     match (tcp_free, udp_free) {
         (false, _) => Held::Tcp,
         (true, false) => Held::Udp,
-        (true, true) => Held::Nothing,
+        // Ask about SCTP only once TCP and UDP are both free, so the cheap checks stay
+        // first and a host without an SCTP stack answers exactly as it did before.
+        (true, true) => match sctp_holds(addr) {
+            Some(true) => Held::Sctp,
+            _ => Held::Nothing,
+        },
     }
 }
 
@@ -397,6 +435,7 @@ async fn probe_protocol(
             (Some(ServerStatus::Running), Some(a)) => match probe_port(a) {
                 Held::Nothing => Verdict::LiedAboutListening,
                 Held::Udp => Verdict::ListeningDatagram,
+                Held::Sctp => Verdict::ListeningSctp,
                 Held::Tcp => {
                     if tcp_accepts(a) {
                         Verdict::Listening
