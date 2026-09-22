@@ -453,6 +453,12 @@ declare, whether or not anyone has looked at it.
   `tcp` is done and is the worked example: default raised to 300s, and both bounds made
   declared startup parameters so the value is the operator's rather than ours. *Effort:* M.
 
+  **The sweep is in flight (22 September 2026), split three ways over the 32 candidates** a
+  scripted scan produced — short bound, drivable client, no greeting found on accept. Each
+  agent is told the scan is **not authoritative** and that it is the check on it: `vnc` is on
+  the list and should come off, because RFB is server-speaks-first and its own module header
+  says so. A protocol correctly reported exempt is as good an outcome as one changed.
+
 - [ ] **A connection cap on every accept loop.** A shared `accept_bounded(listener, max)` helper
   in `server/` that every accept loop calls, refusing past the cap with the protocol's own
   "busy" vocabulary where one exists (SMTP 421, HTTP 503, RESP `LOADING`) and a close where none
