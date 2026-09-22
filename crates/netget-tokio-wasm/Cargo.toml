@@ -21,3 +21,10 @@ pin-project-lite = "0.2"
 # performance.now() for `time::Instant`
 js-sys = "0.3"
 wasm-bindgen = "0.2"
+
+# Integration tests only (the crate's own tests live in `tests/`, per the repository's
+# test-location policy). `futures::executor::block_on` drives them: this crate's executor is
+# the browser's event loop, and the virtual network itself needs no runtime, so a bare
+# block_on is enough to exercise it on the host.
+[dev-dependencies]
+futures = "0.3"

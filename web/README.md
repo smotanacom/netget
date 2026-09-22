@@ -90,6 +90,18 @@ Left out, and why (re-derive with the probe below rather than trusting this):
   protocols, usb-*, bluetooth-*, nfc, pty/stdio/named_pipe/socket_file, tuntap, wireguard,
   tor, openvpn. m3ua reaches for socket2 directly.
 
+**Compiling is not running, and the hyper servers are the standing example.** `http`,
+`http2`, `openapi`, `jsonrpc`, `oauth2`, `openid`, `ollama`, `elasticsearch`, `npm`, `pypi`,
+`maven`, `yarn`, `spark`, `snowflake`, `rss`, `mercurial`, `oci-registry`, `saml-idp`,
+`saml-sp` and `kubernetes-server` are all in the build and all bind, accept and log happily —
+and every one of them kills the page on the first byte of a request. `hyper`'s HTTP/1
+dispatcher calls `T::update_date()` at the top of its **first poll**, which reaches
+`std::time::SystemTime::now()`; on `wasm32-unknown-unknown` that panics, and a panic inside
+hyper's own date-header cache is not somewhere `crate::utils::clock` can reach. Measured
+22 September 2026 against the real bundle. There is no fix short of patching hyper, so treat
+"in the feature list" as "compiles", never as "works", and prove a protocol with a round trip
+through `web/test/smoke.mjs` before claiming it runs.
+
 To re-derive the list, run the probe: for each feature, `cargo check --target
 wasm32-unknown-unknown --no-default-features --features tcp,udp,telnet,http,<f> --lib`
 and sort the failures by where the first error lands — inside `src/client/<f>/` means the
@@ -106,5 +118,11 @@ its dependency does.
    fails at runtime.
 3. `std::time::Instant` and `SystemTime` are already `crate::utils::clock::*` throughout
    `src/`; keep new code on that alias. On wasm the shim's `Instant` is its own type, so a
-   stray `std::time::Instant` is a **compile** error there, not a runtime panic.
-4. Build, then extend `web/test/smoke.mjs` or the page with a client for it.
+   stray `std::time::Instant` is a **compile** error there, not a runtime panic. A
+   *dependency* calling `SystemTime::now()` is the one this does not cover — that is a
+   runtime panic and it is what rules out every hyper server above.
+4. The virtual `TcpStream` supports `peek`, so the first-byte deadline the hyper-based
+   servers take before `serve_connection` compiles and behaves the same way here: it reads,
+   holds what it read in a pushback buffer, and the next read returns those bytes first. See
+   `crates/netget-tokio-wasm/tests/tcp_peek_test.rs`.
+5. Build, then extend `web/test/smoke.mjs` or the page with a client for it.
