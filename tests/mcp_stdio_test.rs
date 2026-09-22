@@ -507,11 +507,25 @@ async fn client_tools_manage_a_real_connection() {
         text_of(&call(&client, "list_clients", serde_json::json!({})).await).contains("No clients")
     );
 
-    // Something to connect to.
+    // Something to connect to. The `*` -> static-with-no-actions rule is load-bearing,
+    // not decoration: without it the server's `tcp_connected` event goes to whatever LLM
+    // endpoint this process was started with, and when that call fails the TCP server
+    // fails closed by half-closing — so the client reads EOF and moves itself to
+    // `Disconnected` before `client_status` is asked. That is correct product behaviour
+    // and it raced this test under load. `tests/empty_static_handler_test.rs` measures
+    // that an empty static handler suppresses the model call outright, which is what makes
+    // the `Connected` assertion below deterministic rather than lucky.
+    let no_model = serde_json::json!([
+        {"event_pattern": "*", "handler": {"type": "static", "actions": []}}
+    ]);
     let started = call(
         &client,
         "start_server",
-        serde_json::json!({ "protocol": "tcp", "port": 0 }),
+        serde_json::json!({
+            "protocol": "tcp",
+            "port": 0,
+            "event_handlers": no_model,
+        }),
     )
     .await;
     let port = parse_number_after(&text_of(&started), "listening on 127.0.0.1:") as u16;
@@ -524,6 +538,7 @@ async fn client_tools_manage_a_real_connection() {
             "protocol": "tcp",
             "remote_addr": format!("127.0.0.1:{}", port),
             "instruction": "no-op",
+            "event_handlers": no_model,
         }),
     )
     .await;
@@ -550,8 +565,10 @@ async fn client_tools_manage_a_real_connection() {
         )
         .await,
     );
+    // The whole rendered line, not the bare word: `Disconnected` contains `Connected`, so
+    // a substring check here passed on a client that had already read EOF and given up.
     assert!(
-        status.contains("Connected"),
+        status.contains("- **Status**: Connected\n"),
         "expected a connected client: {}",
         status
     );
