@@ -1,9 +1,10 @@
 # Redis Protocol E2E Tests
 
-Five files, all declared in `tests/server/redis/mod.rs`.
+Six files, all declared in `tests/server/redis/mod.rs`.
 
 | File | Tests | What it proves | LLM calls |
 |---|---|---|---|
+| `connection_bounds_test.rs` | 3 | Both read deadlines, from a raw socket | 0 |
 | `e2e_test.rs` | 6 | Every RESP2 reply type, through `redis-rs` | 13 |
 | `real_client_test.rs` | 1 | A whole session through the real `redis-cli` binary | 8 |
 | `resp_framing_test.rs` | 3 | Model output cannot split a frame; `stop_server` stops sessions | 0 |
@@ -118,6 +119,22 @@ itself does.
 
 The decisive assertion is not that the first reply is well-formed; it is that the
 **second** command gets its own reply rather than the tail of the first.
+
+## `connection_bounds_test.rs` — deadlines, not answers
+
+Three tests, no model: the LLM endpoint is a dead port and the instruction is empty, so a call
+that escaped would fail rather than pass quietly.
+
+| Test | Claim |
+|---|---|
+| `a_peer_that_connects_and_sends_no_command_is_closed_at_the_first_byte_bound` | `first_byte_timeout_secs` is read and applied — 6s here, and the close is asserted to take at least half of it so something else tearing the socket down cannot pass for the bound |
+| `once_a_command_has_been_answered_the_idle_bound_governs_not_the_first_byte_one` | the loop switches bounds. The two are set the wrong way round on purpose (first-byte 60s, idle 3s), so a loop that never switched would hold the connection for a minute and fail the assertion. Its `PING` is answered by a static rule |
+| `the_default_leaves_a_silent_peer_alone_for_longer_than_a_person_takes` | the **default** is no longer 30s. No startup parameters at all, a silent peer, 40 seconds |
+
+That last one is the slowest test in this directory and cannot be made cheaper: the claim is
+about a number larger than 30, so the wait has to be larger than 30 too. The other two use
+short overrides for exactly the reason the parameters exist — a test asserting the 300-second
+default by waiting it out would be the slowest thing in the suite.
 
 ## Scripting
 

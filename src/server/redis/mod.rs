@@ -30,11 +30,36 @@ pub const MAX_PENDING_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// How long to wait for the first byte of the first command from a peer that has only
 /// connected.
 ///
-/// Every real RESP client speaks immediately — `redis-cli` sends `COMMAND DOCS`, `redis-rs`
-/// sends `PING` or the `HELLO`/`AUTH` it was configured with, and a bare `nc` user types
-/// within seconds. A peer that has connected and said nothing has made no claim on the server
-/// at all, so this is short.
-const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// **This was 30 seconds, and the argument for 30 was about the wrong peer.** It read: every
+/// real RESP client speaks immediately — `redis-cli` sends `COMMAND DOCS`, `redis-rs` sends
+/// `PING` or the `HELLO`/`AUTH` it was configured with — so a peer that has connected and said
+/// nothing has made no claim on the server. That is true of every *third-party* client and
+/// false of the one this server most often has.
+///
+/// NetGet's own Redis client (`src/client/redis/mod.rs`) is a bare `TcpStream::connect` and
+/// nothing else: it puts no byte on the wire until an action says to. The dashboard offers
+/// `[ + redis client ]` under a server's peers, and a client created there is routed
+/// `<proto>_connected` → static-with-no-actions and then `*` → manual
+/// (`src/tui/modal/form.rs`), so it connects, is answered with nothing, and waits for a person
+/// to type into `[ send message ]`. The same is true from this side: `run` registers a peer
+/// channel before the first read precisely so `[ message ]` reaches a peer that has not spoken
+/// yet. With a 30-second bound the server dropped that peer while the operator was still
+/// looking at it — the same defect `src/server/tcp/mod.rs` had, found there by
+/// `tests/mcp_stdio_test.rs::client_tools_manage_a_real_connection` reporting `Disconnected`.
+///
+/// 300 seconds is the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), which is the number this product already uses for how long
+/// someone might take, and it is also this server's own
+/// [`IDLE_BETWEEN_COMMANDS_TIMEOUT`] — so a hand-driven session is now bounded the same way
+/// before its first command as after it.
+///
+/// What it costs: a stranger holding a socket, a task and an `AppState` row while saying
+/// nothing now gets 300 seconds rather than 30. That is still bounded, still capped at
+/// [`MAX_CONNECTIONS`], and still answered above that cap with real Redis's own
+/// `-ERR max number of clients reached`; the change is a tenfold rise in how long one idle
+/// slot is held, not a removal of the bound. A listener genuinely exposed to strangers should
+/// set `first_byte_timeout_secs` low — 30 is the old value and remains a sound choice for one.
+const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// How long to wait for a *further* command once one has been answered.
 ///
@@ -44,6 +69,9 @@ const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// established connection unused between bursts. Closing those at 30s would break correct
 /// clients to fix a problem they are not causing. Five minutes still bounds the hold, and a
 /// client that reconnects after it reconnects transparently.
+///
+/// Overridable per server with `idle_timeout_secs`, for the same reason the first bound is:
+/// the right value is a property of who is on the other end, and only the operator knows that.
 const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Concurrent connections this server admits.
@@ -93,7 +121,18 @@ impl RedisServer {
         status_tx: mpsc::UnboundedSender<String>,
         _send_first: bool,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<SocketAddr> {
+        // Both bounds are tunable because their right value is a property of who is on the
+        // other end, which only the operator knows. The defaults serve NetGet's own client
+        // waiting on a human; a listener exposed to strangers wants the first one much lower.
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(FIRST_COMMAND_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_COMMANDS_TIMEOUT);
         let listener = TcpListener::bind(listen_addr).await?;
         let actual_addr = listener.local_addr()?;
 
@@ -161,6 +200,8 @@ impl RedisServer {
                             app_state: server.app_state.clone(),
                             status_tx: status_tx.clone(),
                             server_id: server.server_id,
+                            first_byte_timeout,
+                            idle_timeout,
                         };
 
                         let conn_handle = tokio::spawn(async move {
@@ -209,6 +250,10 @@ struct RedisHandler {
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
     server_id: Option<crate::state::ServerId>,
+    /// [`FIRST_COMMAND_READ_TIMEOUT`], or the value of this server's `first_byte_timeout_secs`.
+    first_byte_timeout: std::time::Duration,
+    /// [`IDLE_BETWEEN_COMMANDS_TIMEOUT`], or the value of this server's `idle_timeout_secs`.
+    idle_timeout: std::time::Duration,
 }
 
 impl RedisHandler {
@@ -240,6 +285,9 @@ impl RedisHandler {
     }
 
     async fn run(self, stream: TcpStream) -> Result<()> {
+        // Copied out before `self` is partially moved into the tasks below.
+        let first_byte_timeout = self.first_byte_timeout;
+        let idle_timeout = self.idle_timeout;
         let protocol = Arc::new(RedisProtocol::new(
             self.connection_id,
             self.app_state.clone(),
@@ -291,9 +339,9 @@ impl RedisHandler {
             // What is bounded is only the time a peer may hold this connection while sending
             // nothing, which is the resource an idle attacker is actually consuming.
             let read_timeout = if answered_one {
-                IDLE_BETWEEN_COMMANDS_TIMEOUT
+                idle_timeout
             } else {
-                FIRST_COMMAND_READ_TIMEOUT
+                first_byte_timeout
             };
             let mut chunk = vec![0u8; 4096];
             let read = match tokio::time::timeout(read_timeout, read_half.read(&mut chunk)).await {
