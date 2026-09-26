@@ -658,6 +658,26 @@ def client_groups(rows_in: list[dict]) -> list[tuple[str, list[str]]]:
     ]
 
 
+# Where `tests/helpers/real_server.rs` (`find_binary`) looks after PATH. A server binary the
+# helper can spawn is installed for the purpose of this table, whether or not it is on PATH:
+# Homebrew keeps `slapd` in openldap's libexec, Ubuntu keeps `sshd`/`slapd`/`mysqld` in
+# /usr/sbin and the PostgreSQL server binaries in /usr/lib/postgresql/<major>/bin.
+HELPER_FALLBACK_DIRS = (
+    "/opt/homebrew/sbin", "/opt/homebrew/bin", "/opt/homebrew/opt/openldap/libexec",
+    "/usr/local/sbin", "/usr/local/bin", "/usr/local/opt/openldap/libexec",
+    "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+)
+
+
+def is_installed(program: str) -> bool:
+    """`shutil.which`, then the directories the real-server helper also searches."""
+    if shutil.which(program):
+        return True
+    dirs = [Path(d) for d in HELPER_FALLBACK_DIRS]
+    dirs += sorted(Path("/usr/lib/postgresql").glob("*/bin"), reverse=True)
+    return any((d / program).is_file() for d in dirs)
+
+
 def render(selected: list[dict], show_availability: bool, side: str) -> str:
     extra = " | self-served |" if side == "client" else " |"
     lines = [
@@ -671,7 +691,7 @@ def render(selected: list[dict], show_availability: bool, side: str) -> str:
             mark = ""
             if show_availability:
                 # A peer may be spelled `python3 -m imaplib`; only the program is on PATH.
-                mark = " ✓" if shutil.which(b.split()[0]) else " ✗"
+                mark = " ✓" if is_installed(b.split()[0]) else " ✗"
             peer_parts.append(f"`{b}`{mark}")
         peer_parts += [f"`{c}`" for c in r["crates"]]
         if not peer_parts:

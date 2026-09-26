@@ -377,6 +377,20 @@ jobs:
       #   mosquitto         - the mqtt client (Eclipse Mosquitto, C; NetGet's client is rumqttc)
       #   nginx             - the http client (NetGet's client is reqwest/hyper)
       #   redis-server      - the redis client (NetGet frames RESP itself)
+      #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
+      #                       client is tokio-postgres). Ubuntu keeps the server binaries in
+      #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
+      #                       searches there, so nothing is symlinked
+      #   mysql-server      - the mysql client (Oracle's mysqld; NetGet's client is
+      #                       mysql_async). Its AppArmor profile confines it to
+      #                       /var/lib/mysql, so the step after this one unloads it
+      #   slapd             - the ldap client (OpenLDAP; NetGet's client is the ldap3 crate).
+      #                       Run from a slapd.conf in a temp dir, not the packaged cn=config,
+      #                       so the package's own debconf answers are never used. Same
+      #                       AppArmor note as mysqld. ldapadd/ldapsearch are ldap-utils, above
+      #   openssh-server    - the ssh client (OpenSSH sshd, run unprivileged from a temp-dir
+      #                       config with public-key auth as the runner user; NetGet's client
+      #                       is russh). ssh-keygen comes from openssh-client, above
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -412,14 +426,33 @@ jobs:
       # running.
       - name: Install the third-party clients the real-client tests drive
         continue-on-error: true
+        # slapd's postinst asks debconf for a domain and an admin password; without this the
+        # install blocks on a prompt nobody answers.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          sudo -E apt-get install -y --no-install-recommends \
             aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan \
-            mosquitto nginx redis-server
+            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server
+
+      # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
+      # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
+      # tests run each one unprivileged against a data directory in a fresh temp dir, which the
+      # profile refuses - mysqld's --initialize fails on its first write. Unloading the profile
+      # affects only this throwaway runner. `continue-on-error` like the installs above: a
+      # missing profile must cost at most those two protocols' evidence.
+      - name: Unload the AppArmor profiles that confine mysqld and slapd
+        continue-on-error: true
+        run: |
+          for profile in usr.sbin.mysqld usr.sbin.slapd; do
+            if [ -f "/etc/apparmor.d/$profile" ]; then
+              sudo apparmor_parser -R "/etc/apparmor.d/$profile" || true
+            fi
+          done
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -810,8 +843,11 @@ jobs:
             websocket::e2e_test \
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
-            client/mqtt::keepalive_test client/mqtt::real_server_test client/nats::e2e_test \
-            client/redis::real_server_test ; do
+            client/ldap::real_server_test \
+            client/mqtt::keepalive_test client/mqtt::real_server_test \
+            client/mysql::real_server_test client/nats::e2e_test \
+            client/postgresql::real_server_test \
+            client/redis::real_server_test client/ssh::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
             # from the `client` test target; everything else is a real client against a

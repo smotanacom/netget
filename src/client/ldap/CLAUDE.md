@@ -27,12 +27,22 @@ LDAP connections are stateful and persistent:
 ### LLM Integration
 
 - **Event-driven** - LDAP operations trigger events that call LLM for next action
-- **Five event types**:
-    - `LDAP_CLIENT_CONNECTED_EVENT` - Initial connection established
-    - `LDAP_CLIENT_BIND_RESPONSE_EVENT` - Bind (authentication) response
-    - `LDAP_CLIENT_SEARCH_RESULTS_EVENT` - Search results received
-    - `LDAP_CLIENT_MODIFY_RESPONSE_EVENT` - Add/modify/delete response
+- **Four event types**:
+    - `ldap_connected` - Initial connection established (`remote_addr`)
+    - `ldap_bind_response` - `dn`, `success`, `message`
+    - `ldap_search_results` - `base_dn`, `filter`, `success`, `message` (when refused),
+      `entries`, `count`
+    - `ldap_modify_response` - answers an add, modify **or** delete: `operation` (`add` /
+      `modify` / `delete`), `dn`, `success`, `message`. Without `operation` and `dn` the model
+      could not tell which of several writes a response belonged to
 - **Action-based operations** - LLM returns JSON actions for directory operations
+- **The chain is followed and bounded.** Every response's answer is executed and its own
+  response comes back in turn (`execute_ldap_action` ↔ `call_llm_with_event`, a boxed `+ Send`
+  future), so bind → search → add → modify → delete is one chain of model decisions. It is
+  bounded by `MAX_FOLLOWUP_DEPTH` (4): the response at the bound is shown to the model and its
+  answer dropped with a warning. `tests/client/ldap/real_server_test.rs` asserts the bound from
+  slapd's own log (exactly five searches for a model that searches forever), verified by
+  removing it
 
 ### Authentication
 
@@ -46,13 +56,21 @@ LDAP connections are stateful and persistent:
 - **Scope control** - Base, OneLevel, or Subtree scope
 - **Filter syntax** - Standard LDAP filter syntax (e.g., "(objectClass=person)", "(cn=john)")
 - **Attribute selection** - Specify attributes to retrieve or use "*" for all
-- **Result parsing** - Search results converted to JSON with DN and attributes
+- **Result parsing** - Search results converted to JSON with DN and attributes; attributes
+  whose values are not UTF-8 (`jpegPhoto`, certificates) are left out
+- **A refused search is a response, not an error** - `noSuchObject`, a bad filter or
+  insufficient access produce `ldap_search_results` with `success: false` and the server's
+  result in `message` (e.g. `rc: 32`), exactly as a failed bind or add does. Only a transport
+  failure ends the chain without an event
 
 ### Modify Operations
 
 Three modification types:
 
-- **Add** - Create new LDAP entry with DN and attributes
+- **Add** - Create new LDAP entry with DN and attributes. Each attribute value may be an array
+  of strings or a single string (`{"cn": "Ada"}`); anything else is rejected as a bad action
+  rather than silently dropped, because a dropped required attribute comes back from the
+  server as an object class violation naming an attribute the model did supply
 - **Modify** - Modify existing entry (add/delete/replace attribute values)
 - **Delete** - Delete existing entry by DN
 
@@ -162,7 +180,8 @@ User: "Connect to LDAP at localhost:389, bind as cn=admin,dc=example,dc=com with
 ## Error Handling
 
 - **Bind errors** - Invalid credentials return bind response with success=false
-- **Search errors** - Invalid filter/DN returns error via anyhow::Result
+- **Search errors** - a search the server refuses is reported to the model as
+  `ldap_search_results` with `success: false`
 - **Modify errors** - Entry not found, constraint violations return response with success=false
 - **Connection errors** - Network errors propagate to ClientStatus::Error
 - **LLM errors** - Logged and reported to status_tx, don't crash client
@@ -202,7 +221,8 @@ Connect to LDAP at localhost:389, bind as admin and change mail for cn=alice,dc=
 
 ## Testing
 
-See `tests/client/ldap/CLAUDE.md` for E2E testing strategy.
+See `tests/client/ldap/CLAUDE.md`. The evidence is `tests/client/ldap/real_server_test.rs`,
+against OpenLDAP's `slapd`.
 
 ## References
 
@@ -243,3 +263,26 @@ than being upgraded to a success or downgraded to an error.
 Test: `tests/client/ldap/command_channel_test.rs` (zero LLM calls; a NetGet LDAP server with a
 zero-action `*` static handler falls through to its own fail-closed default, which is the only
 way to get a response carrying the request's real messageID — a static handler cannot echo it).
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/ldap/real_server_test.rs` (see `tests/client/ldap/CLAUDE.md`):
+
+1. **Real third-party server** — OpenLDAP's `slapd` (C), configured per test with an `mdb`
+   database, seeded with `ldapadd` and read back with `ldapsearch`. NetGet's side is the `ldap3`
+   crate, which shares no code with OpenLDAP. (NetGet's own LDAP *server* is `ldap3_proto`; it
+   is not involved.)
+2. **Fails rather than skips** — a missing `slapd`, `ldapadd` or `ldapsearch`, or no OpenLDAP
+   schema directory, is a test failure naming the brew formula and the Ubuntu package;
+   nothing is `#[ignore]`d. CI's `registry-audit` installs `slapd` and runs the suite in its
+   evidence loop.
+3. **A real session** — simple bind as the rootdn, a one-level search, and add / modify /
+   delete, each response parsed and handed to the model.
+4. **Acts on the model's answer, asserted on the wire** — `ldapsearch` finds the entry the model
+   added (with a description it built from the search result), the mail it replaced, and the
+   entry it deleted gone; after a refused search it finds the OU the model created in response.
+   Verified by mutation: dropping the actions the model returns makes all three tests fail.
+
+Not covered by that evidence: SASL, LDAPS/StartTLS, paged results, referrals, binary
+attributes.

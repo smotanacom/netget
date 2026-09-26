@@ -67,19 +67,25 @@ use super::common::E2EResult;
 /// How many fresh probe ports to try when a server loses the bind race.
 pub const BIND_ATTEMPTS: usize = 5;
 
-/// Directories searched after `PATH`. Ubuntu installs `mosquitto` and `nginx` into
-/// `/usr/sbin`, and Homebrew installs `mosquitto` into `/opt/homebrew/sbin` — neither of which
-/// is on every user's `PATH`.
+/// Directories searched after `PATH`. Ubuntu installs `mosquitto`, `nginx`, `slapd`, `sshd`
+/// and `mysqld` into `/usr/sbin`, Homebrew installs `mosquitto` into `/opt/homebrew/sbin` and
+/// keeps `slapd` under openldap's `libexec` — none of which is on every user's `PATH`.
 const FALLBACK_DIRS: &[&str] = &[
     "/opt/homebrew/sbin",
     "/opt/homebrew/bin",
+    "/opt/homebrew/opt/openldap/libexec",
     "/usr/local/sbin",
     "/usr/local/bin",
+    "/usr/local/opt/openldap/libexec",
     "/usr/sbin",
     "/usr/bin",
     "/sbin",
     "/bin",
 ];
+
+/// Where Debian and Ubuntu put PostgreSQL's server binaries: `/usr/lib/postgresql/<major>/bin`,
+/// never on `PATH` (only the client wrappers are). Searched newest major first.
+const POSTGRESQL_LIB_DIR: &str = "/usr/lib/postgresql";
 
 /// Where to get a binary, for the error a missing one produces.
 #[derive(Clone, Copy, Debug)]
@@ -124,8 +130,34 @@ pub fn find_binary(binary: &str) -> Option<PathBuf> {
     path_dirs
         .into_iter()
         .chain(FALLBACK_DIRS.iter().map(PathBuf::from))
+        .chain(postgresql_bin_dirs())
         .map(|dir| dir.join(binary))
         .find(|candidate| candidate.is_file())
+}
+
+/// `/usr/lib/postgresql/<major>/bin` for every installed major, newest first.
+fn postgresql_bin_dirs() -> Vec<PathBuf> {
+    let mut majors: Vec<(u32, PathBuf)> = std::fs::read_dir(POSTGRESQL_LIB_DIR)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| {
+                    let major = e.file_name().to_str()?.parse::<u32>().ok()?;
+                    Some((major, e.path().join("bin")))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    majors.sort_by_key(|(major, _)| std::cmp::Reverse(*major));
+    majors.into_iter().map(|(_, dir)| dir).collect()
+}
+
+/// A command run to completion in the server's temporary directory before the server starts
+/// (`initdb`, `mysqld --initialize-insecure`, `ssh-keygen`).
+struct SetupCommand {
+    binary: String,
+    hint: InstallHint,
+    args: Vec<String>,
 }
 
 /// How the server's listening port is decided.
@@ -143,14 +175,38 @@ pub struct RealServerBuilder {
     hint: InstallHint,
     args: Vec<String>,
     files: Vec<(String, String)>,
+    setup: Vec<SetupCommand>,
     port: PortSource,
     extra_ports: usize,
     ready_log: Option<Regex>,
     ready_tcp: bool,
     timeout: Duration,
+    #[cfg(unix)]
+    graceful_stop: Option<(nix::sys::signal::Signal, Duration)>,
 }
 
 impl RealServerBuilder {
+    /// Run `binary args…` to completion in the server's temporary directory before the server
+    /// starts, after the [`config_file`](Self::config_file)s are written. The same placeholders
+    /// as [`args`](Self::args) are substituted. Setup commands run in the order given; a
+    /// non-zero exit fails the start with the command's output, and a missing binary fails it
+    /// with [`missing_binary`] naming `hint`.
+    ///
+    /// For the servers whose data directory must exist before they will start: `initdb`,
+    /// `mysqld --initialize-insecure`, and `ssh-keygen` for a host key.
+    pub fn setup_command<I, S>(mut self, binary: &str, hint: InstallHint, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.setup.push(SetupCommand {
+            binary: binary.to_string(),
+            hint,
+            args: args.into_iter().map(Into::into).collect(),
+        });
+        self
+    }
+
     /// Command-line arguments. `{port}`, `{port1}`…`{portN}` and `{dir}` are substituted.
     pub fn args<I, S>(mut self, args: I) -> Self
     where
@@ -197,6 +253,21 @@ impl RealServerBuilder {
     /// Do not additionally require a TCP connect to the port (on by default).
     pub fn without_tcp_readiness(mut self) -> Self {
         self.ready_tcp = false;
+        self
+    }
+
+    /// On drop, send `signal` to the server and give it `grace` to exit on its own before the
+    /// process group is killed.
+    ///
+    /// For a server that leaves something *outside* its temporary directory behind when it is
+    /// SIGKILLed. PostgreSQL is the case: every postmaster holds a small System V shared memory
+    /// segment keyed to its data directory, only a clean shutdown removes it, and macOS allows
+    /// 32 segments system-wide (`kern.sysv.shmmni`) — so a suite that SIGKILLs a postmaster per
+    /// test stops being able to start one after a few runs. `SIGINT` is its fast shutdown,
+    /// which disconnects clients rather than waiting for them.
+    #[cfg(unix)]
+    pub fn graceful_stop(mut self, signal: nix::sys::signal::Signal, grace: Duration) -> Self {
+        self.graceful_stop = Some((signal, grace));
         self
     }
 
@@ -275,6 +346,36 @@ impl RealServerBuilder {
             }
             std::fs::write(&path, substitute(contents))?;
         }
+        for step in &self.setup {
+            let Some(setup_program) = find_binary(&step.binary) else {
+                return Err(missing_binary(
+                    &step.binary,
+                    step.hint,
+                    "not found on PATH or in any of the usual install directories",
+                ));
+            };
+            let mut command = Command::new(setup_program);
+            command
+                .args(step.args.iter().map(|a| substitute(a)))
+                .current_dir(dir.path())
+                .stdin(Stdio::null());
+            let (binary, hint) = (step.binary.clone(), step.hint);
+            let output = tokio::task::spawn_blocking(move || command.output())
+                .await
+                .map_err(|e| format!("setup `{binary}` task failed: {e}"))?
+                .map_err(|e| missing_binary(&step.binary, hint, e))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "setup step `{}` for `{}` exited with {}.\nstdout:\n{}\nstderr:\n{}",
+                    step.binary,
+                    self.binary,
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+        }
         let args: Vec<String> = self.args.iter().map(|a| substitute(a)).collect();
 
         let mut command = Command::new(program);
@@ -313,6 +414,8 @@ impl RealServerBuilder {
             child,
             log,
             tie,
+            #[cfg(unix)]
+            graceful_stop: self.graceful_stop,
         };
 
         let deadline = Instant::now() + self.timeout;
@@ -391,6 +494,8 @@ pub struct RealServer {
     child: Child,
     log: Arc<Mutex<String>>,
     tie: Option<DeathTie>,
+    #[cfg(unix)]
+    graceful_stop: Option<(nix::sys::signal::Signal, Duration)>,
 }
 
 impl RealServer {
@@ -402,11 +507,14 @@ impl RealServer {
             hint,
             args: Vec::new(),
             files: Vec::new(),
+            setup: Vec::new(),
             port: PortSource::Probe,
             extra_ports: 0,
             ready_log: None,
             ready_tcp: true,
             timeout: Duration::from_secs(30),
+            #[cfg(unix)]
+            graceful_stop: None,
         }
     }
 
@@ -474,6 +582,17 @@ impl Drop for RealServer {
         {
             use nix::sys::signal::{kill, killpg, Signal};
             use nix::unistd::Pid;
+            if let Some((signal, grace)) = self.graceful_stop {
+                if kill(Pid::from_raw(pid), signal).is_ok() {
+                    let deadline = Instant::now() + grace;
+                    while Instant::now() < deadline {
+                        if !matches!(self.child.try_wait(), Ok(None)) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                }
+            }
             let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
             let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
         }

@@ -140,3 +140,81 @@ async fn dropping_the_guard_kills_the_whole_process_group() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// Setup commands run to completion in the server's own temp dir, with placeholders
+/// substituted, before the server is spawned — the shape `initdb` and
+/// `mysqld --initialize-insecure` need. The server proves it by reading what setup wrote.
+#[tokio::test]
+async fn setup_commands_run_in_the_server_dir_before_it_starts() {
+    let server = RealServer::builder("/bin/sh", HINT)
+        .setup_command(
+            "/bin/sh",
+            HINT,
+            ["-c", "echo prepared-{port} > {dir}/marker"],
+        )
+        .args(["-c", "echo \"server read $(cat marker)\"; exec sleep 60"])
+        .ready_when_log_matches(r"server read prepared-\d+")
+        .without_tcp_readiness()
+        .start()
+        .await
+        .expect("the server should see what its setup step wrote");
+    assert!(
+        server
+            .log()
+            .contains(&format!("server read prepared-{}", server.port)),
+        "setup must see the same substituted port as the server: {}",
+        server.log()
+    );
+}
+
+/// A failing setup step is an error carrying its own output, and the server never starts.
+#[tokio::test]
+async fn a_failing_setup_command_is_an_error_with_its_output() {
+    let result = RealServer::builder("/bin/sh", HINT)
+        .setup_command(
+            "/bin/sh",
+            HINT,
+            ["-c", "echo 'initdb: bad locale' >&2; exit 2"],
+        )
+        .args(["-c", "echo started; exec sleep 60"])
+        .ready_when_log_matches("started")
+        .without_tcp_readiness()
+        .start()
+        .await;
+    let err = match result {
+        Ok(_) => panic!("a failed setup step must not lead to a running server"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("initdb: bad locale"),
+        "the error must carry the setup step's stderr: {err}"
+    );
+}
+
+/// `graceful_stop` delivers its signal and waits for the server to exit on its own before the
+/// process group is killed. The shell traps SIGINT and writes a marker into a directory this
+/// test owns; a bare SIGKILL could never run the trap.
+#[tokio::test]
+async fn graceful_stop_signals_before_it_kills() {
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("clean-shutdown");
+    let script = format!(
+        "trap \"touch '{m}'; exit 0\" INT; echo ready; while :; do sleep 0.05; done",
+        m = marker.display()
+    );
+    let server = RealServer::builder("/bin/sh", HINT)
+        .args(["-c", script.as_str()])
+        .ready_when_log_matches("ready")
+        .without_tcp_readiness()
+        .graceful_stop(nix::sys::signal::Signal::SIGINT, Duration::from_secs(10))
+        .start()
+        .await
+        .expect("the shell should start");
+
+    drop(server);
+
+    assert!(
+        marker.exists(),
+        "the server was killed without first receiving its graceful-stop signal"
+    );
+}

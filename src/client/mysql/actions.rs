@@ -40,15 +40,36 @@ pub static MYSQL_CLIENT_RESULT_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::n
     )
     .with_parameters(vec![
         Parameter {
-            name: "result".to_string(),
+            name: "query".to_string(),
             type_hint: "string".to_string(),
-            description: "The query result as JSON".to_string(),
+            description: "The SQL query this result belongs to".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "result".to_string(),
+            type_hint: "array".to_string(),
+            description: "The rows returned, one object per row keyed by column name".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "row_count".to_string(),
+            type_hint: "number".to_string(),
+            description: "Number of rows returned".to_string(),
             required: true,
         },
         Parameter {
             name: "affected_rows".to_string(),
             type_hint: "number".to_string(),
-            description: "Number of rows affected (for INSERT/UPDATE/DELETE)".to_string(),
+            description: "Rows the server reports as affected (INSERT/UPDATE/DELETE); 0 for a \
+                          SELECT"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "last_insert_id".to_string(),
+            type_hint: "number".to_string(),
+            description: "The AUTO_INCREMENT id the statement generated, when it generated one"
+                .to_string(),
             required: false,
         },
     ])
@@ -180,10 +201,29 @@ impl Protocol for MysqlClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
-            .implementation("mysql_async library with connection pooling")
+            .state(DevelopmentState::Beta)
+            .implementation(
+                "mysql_async, one connection, text protocol. Each query's rows and the server's \
+                 affected_rows / last_insert_id go back to the model as mysql_result_received, \
+                 and the model's answer is executed in turn, bounded at four follow-ups",
+            )
             .llm_control("Full control over SQL queries and transactions")
-            .e2e_testing("Docker MySQL container")
+            .e2e_testing(
+                "tests/client/mysql/real_server_test.rs, 6 LLM calls, against a real mysqld \
+                 (--initialize-insecure, then mysqld on a loopback port) read back with the \
+                 mysql CLI. The client connects with the database startup parameter; the model \
+                 creates a table, inserts a row, selects it, and inserts a second row built \
+                 from the SELECT's rows. The INSERT's result is matched on affected_rows 1 and \
+                 last_insert_id 1, the SELECT's on the row it carries, and the CLI must read \
+                 both rows back exactly. Not #[ignore]d; a missing mysqld or mysql fails the \
+                 test rather than skipping it.",
+            )
+            .notes(
+                "No TLS, and only a passwordless account is exercised against a real server. A \
+                 query the server rejects marks the client Error and raises no event, so the \
+                 model does not learn of the error. Text protocol only; no prepared \
+                 statements.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

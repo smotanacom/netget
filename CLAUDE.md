@@ -533,6 +533,38 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     rather than an extra LLM call; and nginx's echo quoting the previous response back made a
     looser rule answer both responses until the follow-up depth cap stopped the loop.
 
+  **The same day's second half made it nine: `postgresql`, `mysql`, `ldap` and `ssh` are Beta —
+  nine Beta clients, 89 Experimental.** The peers are the PostgreSQL server (`initdb` +
+  `postgres`, read back with `psql`), Oracle's `mysqld` (`--initialize-insecure`, read back with
+  the `mysql` CLI), OpenLDAP's `slapd` (a temp-dir `slapd.conf`, seeded with `ldapadd`, read back
+  with `ldapsearch`) and OpenSSH's `sshd` run **unprivileged** (a temp-dir `sshd_config`,
+  `ssh-keygen` keys, public-key auth as the current user — an unprivileged sshd can log in no one
+  else and check no password). `RealServer` grew `setup_command` for the data directory a server
+  needs before it will start, and `graceful_stop`, because a SIGKILLed postmaster leaks a System
+  V shared memory segment and macOS allows 32. CI installs all four in `registry-audit` only
+  (none is in `CI_FEATURES`), and unloads Ubuntu's AppArmor profiles for `mysqld` and `slapd`,
+  which confine them to their packaged paths.
+
+  Every one of the four had defects NetGet's own servers had never shown, which is the point of
+  the exercise and worth expecting of the next client:
+
+  - **A result that did not say what it was.** MySQL reported the *row count* as
+    `affected_rows`, so an `INSERT` read as affecting nothing; LDAP's one response event for add,
+    modify and delete named neither the operation nor the DN; SSH's output event did not name
+    its command. A mock matched on the server's own answer (`affected_rows` 1, `last_insert_id`
+    1, `operation` add) is what caught each.
+  - **A real server's normal sequence breaking a loop written against our own.** The SSH client
+    stopped reading at the channel's EOF; OpenSSH sends `exit-status` *after* EOF, so every exit
+    status was lost.
+  - **A refusal that raised nothing.** A search slapd answered with `noSuchObject` ended the LDAP
+    chain silently, and an attribute written as a plain string (`{"cn": "Ada"}`) was dropped
+    from an add. Both reached the model only once the server said no.
+  - **Chains that were one step deep, or unbounded.** PostgreSQL executed the model's answer to
+    a result and dropped that query's rows, so create → insert → select → act was impossible;
+    LDAP and SSH followed the chain with no bound at all. All three now follow it and stop at
+    `MAX_FOLLOWUP_DEPTH` 4, as MySQL already did, and each bound has a test that fails without
+    it — the LDAP one counts the searches in slapd's own log.
+
   **Do not read the four groups above as the list — generate them:**
 
   ```bash
@@ -550,7 +582,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   can check is condition 4 — that the client acts on the model's answer — and the script says so
   instead of implying it passed. It reads a server spawned through `RealServer::builder("<bin>")`
   as a binary peer, since the helper, not the test file, is what spawns it. Re-derived
-  26 September 2026 after the promotions above: Beta 5, Experimental 93 — 59 self-served, 9
+  26 September 2026 after the promotions above: Beta 9, Experimental 89 — 55 self-served, 9
   wrong peer, 25 with no peer, and none left in either "real peer" group.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (107 of the 158 `src/server/*/actions.rs` the script below walks, re-derived

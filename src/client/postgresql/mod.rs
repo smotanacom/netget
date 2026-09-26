@@ -6,8 +6,8 @@ pub use actions::PostgresqlClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tracing::{error, info, trace};
+use tokio::sync::mpsc;
+use tracing::{error, info, trace, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::postgresql::actions::{
@@ -33,6 +33,14 @@ enum Applied {
     /// The action executed but touched the connection in no way.
     Nothing(&'static str),
 }
+
+/// How many action -> query -> result -> action turns one client will take before stopping.
+///
+/// The chain is genuinely self-referential, so it needs a bound rather than silence: a model
+/// that answers every result with another query would otherwise run forever. Four covers
+/// connect → create → insert → select → react to the rows, and a runaway costs five LLM calls
+/// rather than an unbounded number. The MySQL client uses the same bound.
+const MAX_FOLLOWUP_DEPTH: usize = 4;
 
 /// PostgreSQL client that connects to a PostgreSQL server
 pub struct PostgresqlClient;
@@ -141,7 +149,7 @@ impl PostgresqlClient {
         // The driver's `Client` is shared: the connected-event LLM task and the injected
         // command loop both issue queries through it. Holding it in the command loop is
         // also what keeps the session alive for a client with no instruction.
-        let client_arc = Arc::new(Mutex::new(client));
+        let client_arc = Arc::new(client);
         let protocol = Arc::new(PostgresqlClientProtocol::new());
 
         // Command channel for injected actions (the dashboard's [ send ]).
@@ -215,6 +223,7 @@ impl PostgresqlClient {
                                 &app_state_clone,
                                 &llm_client_clone,
                                 &status_tx_clone,
+                                0,
                             )
                             .await
                             {
@@ -243,7 +252,7 @@ impl PostgresqlClient {
     async fn command_loop(
         mut command_rx: mpsc::Receiver<ClientCommand>,
         protocol: Arc<PostgresqlClientProtocol>,
-        pg_client: Arc<Mutex<tokio_postgres::Client>>,
+        pg_client: Arc<tokio_postgres::Client>,
         client_id: ClientId,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
@@ -325,6 +334,7 @@ impl PostgresqlClient {
                     &app_state,
                     &llm_client,
                     &status_tx,
+                    0,
                 )
                 .await;
             }
@@ -334,50 +344,61 @@ impl PostgresqlClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
-    /// Execute one action produced by the LLM.
-    async fn execute_llm_action(
+    /// Execute one action produced by the model and, if it ran a query, report the rows back.
+    ///
+    /// Returns an explicitly boxed `+ Send` future rather than being an `async fn`: this and
+    /// [`Self::report_query_result`] call each other (a query's rows go to the model, whose
+    /// answer may be another query), and naming the type is what lets the compiler prove
+    /// `Send` for the cycle — required because the chain runs inside a `tokio::spawn`. The
+    /// cycle is bounded by [`MAX_FOLLOWUP_DEPTH`].
+    #[allow(clippy::too_many_arguments)]
+    fn execute_llm_action<'a>(
         client_id: ClientId,
         action: serde_json::Value,
-        protocol: &Arc<PostgresqlClientProtocol>,
-        pg_client: &Arc<Mutex<tokio_postgres::Client>>,
-        app_state: &Arc<AppState>,
-        llm_client: &OllamaClient,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
-        match Self::apply_action(protocol.execute_action(action)?, pg_client, client_id).await {
-            Ok(Applied::Query { query, rows }) => {
-                Self::report_query_result(
-                    client_id, &query, rows, pg_client, protocol, app_state, llm_client, status_tx,
-                )
-                .await;
+        protocol: &'a Arc<PostgresqlClientProtocol>,
+        pg_client: &'a Arc<tokio_postgres::Client>,
+        app_state: &'a Arc<AppState>,
+        llm_client: &'a OllamaClient,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            match Self::apply_action(protocol.execute_action(action)?, pg_client, client_id).await {
+                Ok(Applied::Query { query, rows }) => {
+                    Self::report_query_result(
+                        client_id, &query, rows, pg_client, protocol, app_state, llm_client,
+                        status_tx, depth,
+                    )
+                    .await;
+                }
+                Ok(Applied::Disconnect) => {
+                    info!("PostgreSQL client {} disconnecting", client_id);
+                    Self::mark_disconnected(client_id, app_state, status_tx).await;
+                }
+                Ok(Applied::Nothing(what)) => {
+                    trace!(
+                        "PostgreSQL client {} action had no effect: {}",
+                        client_id,
+                        what
+                    );
+                }
+                Err(e) => {
+                    error!("PostgreSQL client {} query error: {}", client_id, e);
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] PostgreSQL client {} query error: {}",
+                        client_id, e
+                    ));
+                }
             }
-            Ok(Applied::Disconnect) => {
-                info!("PostgreSQL client {} disconnecting", client_id);
-                Self::mark_disconnected(client_id, app_state, status_tx).await;
-            }
-            Ok(Applied::Nothing(what)) => {
-                trace!(
-                    "PostgreSQL client {} action had no effect: {}",
-                    client_id,
-                    what
-                );
-            }
-            Err(e) => {
-                error!("PostgreSQL client {} query error: {}", client_id, e);
-                let _ = status_tx.send(format!(
-                    "[CLIENT] PostgreSQL client {} query error: {}",
-                    client_id, e
-                ));
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Run one executed action against the connection. Shared by the LLM path and injected
     /// commands so the query path exists exactly once.
     async fn apply_action(
         result: ClientActionResult,
-        pg_client: &Arc<Mutex<tokio_postgres::Client>>,
+        pg_client: &Arc<tokio_postgres::Client>,
         client_id: ClientId,
     ) -> Result<Applied> {
         match result {
@@ -390,13 +411,13 @@ impl PostgresqlClient {
 
                 trace!("PostgreSQL client {} executing: {}", client_id, query);
 
-                let rows = {
-                    let guard = pg_client.lock().await;
-                    guard
-                        .query(query.as_str(), &[])
-                        .await
-                        .context("Failed to execute query")?
-                };
+                // `query` takes `&self`: tokio_postgres pipelines requests over its own
+                // connection task, so the client is shared by `Arc` and no lock is held
+                // across the round-trip to the server.
+                let rows = pg_client
+                    .query(query.as_str(), &[])
+                    .await
+                    .context("Failed to execute query")?;
 
                 let result = rows
                     .iter()
@@ -440,17 +461,24 @@ impl PostgresqlClient {
         }
     }
 
-    /// Raise `postgresql_query_result` with a query's rows and store any memory update.
+    /// Raise `postgresql_query_result` with a query's rows and run whatever the model answers.
+    ///
+    /// The answer is **executed** through [`Self::execute_llm_action`], so a follow-up query's
+    /// own rows come back to the model in turn: connect → `CREATE TABLE` → `INSERT` → `SELECT`
+    /// → react to the rows is a chain of four results, each decided by the model after it has
+    /// seen the previous one. The chain stops at [`MAX_FOLLOWUP_DEPTH`]; past it the model's
+    /// actions are dropped with a warning rather than looping.
     #[allow(clippy::too_many_arguments)]
     async fn report_query_result(
         client_id: ClientId,
         query: &str,
         rows: Vec<serde_json::Value>,
-        pg_client: &Arc<Mutex<tokio_postgres::Client>>,
+        pg_client: &Arc<tokio_postgres::Client>,
         protocol: &Arc<PostgresqlClientProtocol>,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: usize,
     ) {
         let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
             return;
@@ -470,20 +498,9 @@ impl PostgresqlClient {
             .await
             .unwrap_or_default();
 
-        // Execute what the model asked for.
-        //
-        // The result was matched as `actions: _, memory_updates: Some(mem)`, which threw
-        // the actions away AND silently skipped the whole arm whenever the model returned
-        // no memory update -- so on the common path nothing happened at all. A model that
-        // read query results and wanted to issue the next query was ignored.
-        //
-        // `apply_action` runs a query and raises no event, so a follow-up cannot trigger
-        // another result event and drive the model in circles, and the async type stays
-        // non-recursive as tokio::spawn's Send bound requires.
-        // `match`, not `if let Ok(..)`: an LLM error here was silently dropped, unlike the
-        // connected-event path which logs it. A client that goes quiet because its model
-        // failed should say so.
-        let result = match call_llm_for_client(
+        // `match`, not `if let Ok(..)`: a client that goes quiet because its model failed
+        // should say so.
+        let (actions, memory_updates) = match call_llm_for_client(
             llm_client,
             app_state,
             client_id.to_string(),
@@ -495,58 +512,51 @@ impl PostgresqlClient {
         )
         .await
         {
-            Ok(result) => Some(result),
+            Ok(ClientLlmResult {
+                actions,
+                memory_updates,
+            }) => (actions, memory_updates),
             Err(e) => {
                 error!(
                     "LLM error for PostgreSQL client {} on a query result: {}",
                     client_id, e
                 );
-                None
+                return;
             }
         };
-        if let Some(ClientLlmResult {
-            actions,
-            memory_updates,
-        }) = result
-        {
-            if let Some(mem) = memory_updates {
-                app_state.set_memory_for_client(client_id, mem).await;
-            }
-            for action in actions {
-                let decoded = match protocol.execute_action(action.clone()) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!(
-                            "PostgreSQL client {} rejected its own follow-up action: {}",
-                            client_id, e
-                        );
-                        continue;
-                    }
-                };
-                match Self::apply_action(decoded, pg_client, client_id).await {
-                    Ok(Applied::Query { query, rows }) => info!(
-                        "PostgreSQL client {} follow-up query returned {} row(s): {}",
-                        client_id,
-                        rows.len(),
-                        crate::utils::truncate_for_log(&query, 80)
-                    ),
-                    Ok(Applied::Nothing(detail)) => info!(
-                        "PostgreSQL client {} follow-up produced no query: {}",
-                        client_id, detail
-                    ),
-                    Ok(Applied::Disconnect) => {
-                        info!(
-                            "PostgreSQL client {} follow-up requested disconnect",
-                            client_id
-                        );
-                        Self::mark_disconnected(client_id, app_state, status_tx).await;
-                        break;
-                    }
-                    Err(e) => error!(
-                        "PostgreSQL client {} follow-up action failed: {}",
-                        client_id, e
-                    ),
-                }
+        if let Some(mem) = memory_updates {
+            app_state.set_memory_for_client(client_id, mem).await;
+        }
+        if actions.is_empty() {
+            return;
+        }
+        if depth >= MAX_FOLLOWUP_DEPTH {
+            warn!(
+                "PostgreSQL client {} reached the follow-up depth bound ({}); dropping {} \
+                 action(s) rather than looping",
+                client_id,
+                MAX_FOLLOWUP_DEPTH,
+                actions.len()
+            );
+            return;
+        }
+        for action in actions {
+            if let Err(e) = Self::execute_llm_action(
+                client_id,
+                action,
+                protocol,
+                pg_client,
+                app_state,
+                llm_client,
+                status_tx,
+                depth + 1,
+            )
+            .await
+            {
+                error!(
+                    "PostgreSQL client {} rejected its own follow-up action: {}",
+                    client_id, e
+                );
             }
         }
     }
@@ -558,8 +568,8 @@ impl PostgresqlClient {
     /// still ran and the dashboard still offered `[ send ]`. Only the *injected* disconnect
     /// path ended the loop, because it breaks out of it directly.
     ///
-    /// `tokio_postgres::Client` closes when the last handle drops, and it is held behind an
-    /// `Arc<Mutex<..>>` shared with `command_loop`, so ending that loop is what releases it.
+    /// `tokio_postgres::Client` closes when the last handle drops, and it is an `Arc` shared
+    /// with `command_loop`, so ending that loop is what releases it.
     async fn mark_disconnected(
         client_id: ClientId,
         app_state: &Arc<AppState>,

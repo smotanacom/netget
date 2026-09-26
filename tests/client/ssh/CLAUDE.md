@@ -1,240 +1,88 @@
-# SSH Client Test Strategy
+# SSH Client E2E Tests
 
-## Overview
+Two files, declared in `tests/client/ssh/mod.rs`. Nothing is `#[ignore]`d.
 
-E2E tests for the SSH client verify LLM-controlled command execution against a real SSH server.
+| File | Peer | Tests | LLM calls |
+|---|---|---|---|
+| `real_server_test.rs` | **OpenSSH `sshd`**, run unprivileged | 3 | 12 |
+| `command_channel_test.rs` | NetGet's own SSH server | 2 | 0 |
 
-## Test Approach
+## Running
 
-**Strategy:** Black-box testing using the NetGet binary with a test SSH server.
-
-**Test Environment:**
-
-- SSH server: OpenSSH server (dockerized recommended)
-- Host: localhost (127.0.0.1)
-- Port: 2222 (configurable via SSH_TEST_PORT)
-- Test user: testuser (configurable via SSH_TEST_USER)
-- Test password: testpass (configurable via SSH_TEST_PASS)
-
-## SSH Server Setup
-
-### Option 1: Docker (Recommended)
+`--test` names a **target**, not a module path:
 
 ```bash
-# Start OpenSSH server container
-docker run -d --name test-ssh -p 2222:22 \
-  -e PUID=1000 -e PGID=1000 \
-  -e PASSWORD_ACCESS=true \
-  -e USER_NAME=testuser \
-  -e USER_PASSWORD=testpass \
-  linuxserver/openssh-server
-
-# Verify server is running
-ssh -p 2222 testuser@localhost  # password: testpass
-
-# Stop and remove when done
-docker stop test-ssh
-docker rm test-ssh
+./cargo-isolated.sh test --no-default-features --features ssh \
+    --test client -- client::ssh --test-threads=100
 ```
 
-### Option 2: Local OpenSSH Server
+## `real_server_test.rs` — the evidence the rating rests on
 
-```bash
-# Install OpenSSH server (Ubuntu/Debian)
-sudo apt-get install openssh-server
+`start_sshd` uses `tests/helpers/real_server.rs` setup commands to make three ed25519 keys with
+`ssh-keygen` in the guard's temp dir (host, user, stranger), authorises the user key, and runs
+`sshd -D -e -f <dir>/sshd_config` from the resolved absolute path (sshd re-executes itself and
+refuses a relative one). The config: `ListenAddress 127.0.0.1`, `Port <probed>`, the temp-dir
+`HostKey`, `PidFile` and `AuthorizedKeysFile`, `StrictModes no` (the temp dir's permissions are
+the harness's, not a home directory's), `UsePAM no`, password and keyboard-interactive off,
+`LogLevel VERBOSE`. Ready when it logs `Server listening on 127.0.0.1 port N`. **It fails, never
+skips,** when `sshd` or `ssh-keygen` is missing, naming `openssh-server` / `openssh-client`.
 
-# Create test user
-sudo useradd -m -s /bin/bash testuser
-echo "testuser:testpass" | sudo chpasswd
+**An unprivileged sshd can log in only the user it runs as**, so the client authenticates as
+the current OS user (`getpwuid(getuid())`) with the generated key through the
+`private_key_path` startup parameter. That parameter did not exist: the client supported
+password authentication only, and an unprivileged sshd cannot check a password. Public-key
+authentication is the feature this suite made necessary.
 
-# Configure SSH to accept password auth
-sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-sudo systemctl restart sshd
+Checked on macOS (Darwin 27) with OpenSSH 10.3p1: unprivileged `sshd` starts, accepts the key, runs
+commands and logs one harmless `BSM audit: … Operation not permitted` line per login.
 
-# Configure to use port 2222 (optional, to avoid conflicts)
-echo "Port 2222" | sudo tee -a /etc/ssh/sshd_config
-sudo systemctl restart sshd
-```
+### `ssh_client_runs_the_models_commands_against_openssh` (4 calls)
 
-### Option 3: GitHub Actions CI
+`ssh_connected` (matched on the username) → a command that `tee`s `hello from the model` into
+`out.txt`, writes `a warning` to stderr and exits 3; its `ssh_output_received` (matched on
+`exit_code` 3, the stdout and the stderr) → a command appending `the model saw: <stdout> (exit
+<code>, stderr: <stderr>)`, all three from the event; that output (`exit_code` 0) →
+`disconnect`. Then `out.txt` must hold exactly both lines, and sshd's log must show `Accepted
+publickey for <user>` and `Received disconnect from 127.0.0.1`.
 
-```yaml
-# In .github/workflows/test.yml
-jobs:
-  test-ssh-client:
-    runs-on: ubuntu-latest
-    services:
-      ssh-server:
-        image: linuxserver/openssh-server
-        ports:
-          - 2222:22
-        env:
-          PUID: 1000
-          PGID: 1000
-          PASSWORD_ACCESS: true
-          USER_NAME: testuser
-          USER_PASSWORD: testpass
-    steps:
-      - name: Run SSH client tests
-        run: cargo test --features ssh --test client::ssh::e2e_test
-```
+### `ssh_client_is_refused_with_an_unauthorised_key_by_openssh` (1 call)
 
-## Test Coverage
+The client connects with the stranger's key. It must print `SSH authentication failed`, the
+model must be asked nothing after startup (there is no `ssh_connected` rule, so a connect event
+would be an unmatched request), and sshd must not log an accepted key.
 
-### Test Cases
+### `ssh_client_follow_up_chain_is_bounded_against_openssh` (7 calls)
 
-1. **Connection & Authentication** (`test_ssh_client_connect_and_authenticate`)
-    - Verify client can connect to SSH server
-    - Verify password authentication works
-    - **LLM calls:** 1
+The model answers every output with `echo tick >> ticks.txt`. The connect event's command runs
+at depth 0; the output at `MAX_FOLLOWUP_DEPTH` (4) is shown and its answer dropped, so the file
+sshd's shell wrote must hold exactly five ticks.
 
-2. **Command Execution** (`test_ssh_client_execute_command`)
-    - Execute simple command (`uname -s`)
-    - Verify output is received
-    - **LLM calls:** 2
+### What the real server found
 
-3. **Multiple Commands** (`test_ssh_client_multiple_commands`)
-    - Execute sequence of commands (pwd, whoami, echo)
-    - Verify all commands execute in order
-    - **LLM calls:** 4
+- **Every exit status was lost.** The read loop stopped at the channel's EOF, and OpenSSH sends
+  `exit-status` after EOF. NetGet's own SSH server never showed it. Verified by mutation:
+  stopping at EOF again fails the first and third tests (neither `exit_code` rule matches).
+- **Stderr was discarded**; it is now its own field. Verified by mutation.
+- **The chain had no bound.** Verified by removing it: the third test fails.
 
-4. **Authentication Failure** (`test_ssh_client_auth_failure`)
-    - Test with incorrect password
-    - Verify graceful error handling
-    - **LLM calls:** 1
+### Why this is condition 4 of the client bar
 
-5. **Disconnect** (`test_ssh_client_disconnect`)
-    - Connect, execute command, disconnect
-    - Verify clean disconnect
-    - **LLM calls:** 2
+The file is written by sshd's shell running commands the model chose, one built from the
+output it was shown. Verified by mutation: dropping the actions the model returns for an
+output makes the first and third tests fail.
 
-### Total LLM Budget
+## `command_channel_test.rs` (0 calls)
 
-**Total LLM calls:** 10 (within budget)
+An `execute_command` injected through `AppState::send_to_client` (the dashboard's `[ send ]`)
+runs against NetGet's own SSH server, and an unknown action is rejected rather than swallowed.
 
-**Breakdown:**
+The five `#[ignore]`d tests that needed an external password-auth SSH server (`e2e_test.rs`:
+connect-and-authenticate, execute-command, multiple-commands, auth-failure, disconnect) were
+deleted: the real-server suite covers each against an `sshd` it starts itself — with a key, not
+a password.
 
-- Connection: 1 call
-- Command execution: 2 calls
-- Multiple commands: 4 calls
-- Auth failure: 1 call
-- Disconnect: 2 calls
+## Not covered
 
-## Running Tests
-
-### Prerequisites
-
-1. Start SSH server (see setup above)
-2. Ensure Ollama is running with model available
-3. Set environment variables if using custom config:
-   ```bash
-   export SSH_TEST_PORT=2222
-   export SSH_TEST_USER=testuser
-   export SSH_TEST_PASS=testpass
-   ```
-
-### Run Tests
-
-```bash
-# Run all SSH client tests (requires SSH server)
-./cargo-isolated.sh test --no-default-features --features ssh --test client::ssh::e2e_test -- --ignored
-
-# Run specific test
-./cargo-isolated.sh test --no-default-features --features ssh --test client::ssh::e2e_test -- --ignored test_ssh_client_execute_command
-
-# Run without ignored flag (skips tests requiring SSH server)
-./cargo-isolated.sh test --no-default-features --features ssh --test client::ssh::e2e_test
-```
-
-**Note:** Tests are marked with `#[ignore]` because they require an external SSH server. Use `--ignored` flag to run
-them.
-
-## Expected Runtime
-
-**Per-test timing:**
-
-- Connection test: ~2 seconds
-- Command execution test: ~3 seconds
-- Multiple commands test: ~5 seconds
-- Auth failure test: ~2 seconds
-- Disconnect test: ~3 seconds
-
-**Total suite:** ~15 seconds (excluding LLM latency)
-
-**With LLM:** ~30-45 seconds (depends on Ollama response time)
-
-## Known Issues
-
-### Issue 1: Server Startup Delay
-
-**Problem:** SSH server may not be ready immediately after container start.
-
-**Workaround:** Add delay before running tests:
-
-```bash
-docker run -d --name test-ssh ...
-sleep 2
-cargo test --features ssh ...
-```
-
-### Issue 2: Host Key Verification
-
-**Problem:** Client may fail on first connection due to unknown host key.
-
-**Solution:** Current implementation disables host key verification (for testing only).
-
-### Issue 3: Password Authentication Disabled
-
-**Problem:** Some SSH servers disable password authentication by default.
-
-**Solution:** Explicitly enable password authentication in SSH server config or use recommended Docker image.
-
-### Issue 4: Port Conflicts
-
-**Problem:** Port 2222 may be in use.
-
-**Solution:** Configure different port via SSH_TEST_PORT environment variable.
-
-## Security Notes
-
-**⚠️ IMPORTANT:** These tests use weak credentials and disabled security features.
-
-**For Testing Only:**
-
-- Host key verification disabled
-- Weak password (testpass)
-- Password authentication enabled
-
-**DO NOT use these configurations in production.**
-
-## Future Test Enhancements
-
-### Phase 1 (Current)
-
-- ✅ Password authentication
-- ✅ Command execution
-- ✅ Output capture
-
-### Phase 2 (Next)
-
-- [ ] Public key authentication tests
-- [ ] PTY allocation tests
-- [ ] Long-running command tests
-
-### Phase 3 (Advanced)
-
-- [ ] SFTP file transfer tests
-- [ ] Port forwarding tests
-- [ ] Interactive shell tests
-
-### Phase 4 (Expert)
-
-- [ ] Multiple concurrent connections
-- [ ] Connection timeout tests
-- [ ] Large output handling
-
-## References
-
-- [OpenSSH Docker Image](https://hub.docker.com/r/linuxserver/openssh-server)
-- [russh documentation](https://docs.rs/russh/)
-- [SSH Protocol RFC 4253](https://datatracker.ietf.org/doc/html/rfc4253)
+- Password authentication against a real server.
+- Host key verification (there is none).
+- PTY allocation, SFTP, forwarding, an SSH agent.

@@ -49,15 +49,27 @@ pub static SSH_CLIENT_OUTPUT_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new
     )
     .with_parameters(vec![
         Parameter {
+            name: "command".to_string(),
+            type_hint: "string".to_string(),
+            description: "The command this output belongs to".to_string(),
+            required: true,
+        },
+        Parameter {
             name: "output".to_string(),
             type_hint: "string".to_string(),
-            description: "Command output as UTF-8 string".to_string(),
+            description: "The command's stdout as a UTF-8 string".to_string(),
             required: true,
+        },
+        Parameter {
+            name: "stderr".to_string(),
+            type_hint: "string".to_string(),
+            description: "The command's stderr, when it wrote any".to_string(),
+            required: false,
         },
         Parameter {
             name: "exit_code".to_string(),
             type_hint: "number".to_string(),
-            description: "Command exit code (if available)".to_string(),
+            description: "The command's exit status, when the server sent one".to_string(),
             required: false,
         },
     ])
@@ -163,19 +175,30 @@ impl Protocol for SshClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
-            .implementation("russh 0.45; password authentication only")
+            .state(DevelopmentState::Beta)
+            .implementation(
+                "russh 0.45; password or public-key authentication (private_key_path). One \
+                 session channel per command; stdout, stderr and exit status go back to the \
+                 model, and its answer is executed in turn, bounded at four follow-ups",
+            )
             .llm_control("Execute commands and read output")
             .e2e_testing(
-                "tests/client/ssh/command_channel_test.rs runs. All five tests in \
-                 tests/client/ssh/e2e_test.rs need an external OpenSSH server and are \
-                 #[ignore]d, so no automated test connects this client to a real server.",
+                "tests/client/ssh/real_server_test.rs, 12 LLM calls, against OpenSSH's sshd run \
+                 unprivileged from a temp-dir config with ssh-keygen keys, public-key auth as \
+                 the current user. The model's first command writes a file and exits 3 with \
+                 stderr; its second, built from that stdout, stderr and exit status, appends \
+                 to the file; it then disconnects. The file must hold both lines exactly and \
+                 sshd's log must show the publickey login and the disconnect. A key sshd does \
+                 not know is refused, and a model that commands forever runs exactly five \
+                 commands. Not #[ignore]d; a missing sshd or ssh-keygen fails the test.",
             )
             .notes(
-                "Password authentication only: no public-key, no keyboard-interactive, and \
-                 no key file or agent is ever read - the credentials come from startup \
-                 parameters. The host key is accepted unconditionally (no known_hosts \
-                 check), so this client is not safe against an active network attacker.",
+                "The host key is accepted unconditionally (no known_hosts check, no pinning), \
+                 so this client is not safe against an active network attacker. Password \
+                 authentication is not exercised against a real server (an unprivileged sshd \
+                 cannot check one). No SSH agent, keyboard-interactive, certificates, PTY, \
+                 SFTP or forwarding. The private key is read from the operator's path at \
+                 connect and never reaches the model.",
             )
             .build()
     }
@@ -207,10 +230,28 @@ impl Protocol for SshClientProtocol {
             ParameterDefinition {
                 name: "auth_method".to_string(),
                 type_hint: "string".to_string(),
-                description: "Authentication method: 'password' or 'publickey' (default: password)"
+                description: "Authentication method: 'password' or 'publickey' (default: \
+                              publickey when private_key_path is given, otherwise password)"
                     .to_string(),
                 required: false,
-                example: json!("password"),
+                example: json!("publickey"),
+            },
+            ParameterDefinition {
+                name: "private_key_path".to_string(),
+                type_hint: "string".to_string(),
+                description: "Path to an OpenSSH-format private key file for publickey \
+                              authentication. Read once at connect; its contents never reach \
+                              the model"
+                    .to_string(),
+                required: false,
+                example: json!("/home/user/.ssh/id_ed25519"),
+            },
+            ParameterDefinition {
+                name: "private_key_passphrase".to_string(),
+                type_hint: "string".to_string(),
+                description: "Passphrase for an encrypted private_key_path".to_string(),
+                required: false,
+                example: json!("key passphrase"),
             },
         ]
     }
