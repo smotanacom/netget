@@ -709,6 +709,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1000),
+                default: None,
             },
             ParameterDefinition {
                 name: "server_header".to_string(),
@@ -720,6 +721,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("Linux/6.1 UPnP/1.1 MiniDLNA/1.3.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "join_multicast".to_string(),
@@ -732,6 +734,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             ParameterDefinition {
                 name: "multicast_interface".to_string(),
@@ -743,6 +746,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "notify_target".to_string(),
@@ -759,6 +763,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("239.255.255.250:1900"),
+                default: None,
             },
         ]
     }

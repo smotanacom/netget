@@ -883,6 +883,7 @@ impl Protocol for M3uaProtocol {
                     .to_string(),
                 required: false,
                 example: json!("sctp"),
+                default: None,
             },
             ParameterDefinition {
                 name: "routing_context".to_string(),
@@ -893,6 +894,7 @@ impl Protocol for M3uaProtocol {
                     .to_string(),
                 required: false,
                 example: json!(100),
+                default: None,
             },
             ParameterDefinition {
                 name: "network_appearance".to_string(),
@@ -903,6 +905,7 @@ impl Protocol for M3uaProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
         ]
     }

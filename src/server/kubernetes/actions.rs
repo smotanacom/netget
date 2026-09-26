@@ -219,6 +219,7 @@ impl Protocol for KubernetesProtocol {
             ),
             required: false,
             example: json!("v1.29.4"),
+            default: None,
         });
         params.push(ParameterDefinition {
             name: "resources".to_string(),
@@ -238,6 +239,7 @@ impl Protocol for KubernetesProtocol {
                 {"group": "example.com", "version": "v1", "name": "widgets", "kind": "Widget",
                  "namespaced": true, "shortNames": ["wd"]}
             ]),
+            default: None,
         });
         params
     }

@@ -172,6 +172,7 @@ impl Protocol for NetbiosNsProtocol {
                 ),
                 required: false,
                 example: json!(3600),
+                default: None,
             },
             ParameterDefinition {
                 name: "node_type".to_string(),
@@ -183,6 +184,7 @@ impl Protocol for NetbiosNsProtocol {
                         .to_string(),
                 required: false,
                 example: json!("b"),
+                default: None,
             },
         ]
     }

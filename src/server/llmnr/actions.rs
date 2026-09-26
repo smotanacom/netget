@@ -107,6 +107,7 @@ impl Protocol for LlmnrProtocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             ParameterDefinition {
                 name: "multicast_interface".to_string(),
@@ -117,6 +118,7 @@ impl Protocol for LlmnrProtocol {
                     .to_string(),
                 required: false,
                 example: json!("192.168.1.10"),
+                default: None,
             },
             ParameterDefinition {
                 name: "enable_tcp".to_string(),
@@ -128,6 +130,7 @@ impl Protocol for LlmnrProtocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
         ]
     }

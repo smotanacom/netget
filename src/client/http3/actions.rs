@@ -107,6 +107,7 @@ impl Protocol for Http3ClientProtocol {
                 "User-Agent": "NetGet-HTTP3/1.0",
                 "Accept": "application/json"
             }),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

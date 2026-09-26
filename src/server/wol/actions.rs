@@ -71,6 +71,7 @@ impl Protocol for WolProtocol {
                 .to_string(),
             required: false,
             example: json!(false),
+            default: None,
         }]
     }
 

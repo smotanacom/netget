@@ -272,6 +272,7 @@ impl Protocol for PostgresqlClientProtocol {
                 description: "Database name (default: postgres)".to_string(),
                 required: false,
                 example: json!("mydb"),
+                default: None,
             },
             ParameterDefinition {
                 name: "user".to_string(),
@@ -279,6 +280,7 @@ impl Protocol for PostgresqlClientProtocol {
                 description: "Username (default: postgres)".to_string(),
                 required: false,
                 example: json!("admin"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -286,6 +288,7 @@ impl Protocol for PostgresqlClientProtocol {
                 description: "Password (default: empty)".to_string(),
                 required: false,
                 example: json!("secret123"),
+                default: None,
             },
         ]
     }

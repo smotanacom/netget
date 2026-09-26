@@ -411,6 +411,7 @@ impl Protocol for GtpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(2152),
+                default: None,
             },
             ParameterDefinition {
                 name: "enable_user_plane".to_string(),
@@ -422,6 +423,7 @@ impl Protocol for GtpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
         ]
     }

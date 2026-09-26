@@ -317,6 +317,7 @@ impl Protocol for EtcdProtocol {
                 .to_string(),
             required: false,
             example: json!("my-cluster"),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

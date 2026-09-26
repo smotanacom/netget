@@ -82,6 +82,7 @@ impl Protocol for SqsClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue"),
+                default: None,
             },
             ParameterDefinition {
                 name: "region".to_string(),
@@ -89,6 +90,7 @@ impl Protocol for SqsClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("us-east-1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "endpoint_url".to_string(),
@@ -97,6 +99,7 @@ impl Protocol for SqsClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("http://localhost:9324"),
+                default: None,
             },
             // Without these the SDK falls back to its default chain — environment,
             // ~/.aws/credentials, then IMDS — so a client the model created would sign with
@@ -111,6 +114,7 @@ impl Protocol for SqsClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("AKIAIOSFODNN7EXAMPLE"),
+                default: None,
             },
             ParameterDefinition {
                 name: "secret_access_key".to_string(),
@@ -118,6 +122,7 @@ impl Protocol for SqsClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+                default: None,
             },
         ]
     }

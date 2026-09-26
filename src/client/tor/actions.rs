@@ -262,6 +262,7 @@ impl Protocol for TorClientProtocol {
                 description: "Custom Tor relay address (e.g., '127.0.0.1:9001') to bootstrap from, using BEGIN_DIR (directory over circuit) instead of the public Tor network. Pair with a local tor_relay server for offline use. Exactly one of this or allow_public_tor_network must be given; without either the client refuses to start.".to_string(),
                 required: false,
                 example: json!("127.0.0.1:9001"),
+                default: None,
             },
             ParameterDefinition {
                 name: crate::client::tor::ALLOW_PUBLIC_TOR_NETWORK_PARAM.to_string(),
@@ -269,6 +270,7 @@ impl Protocol for TorClientProtocol {
                 description: "Opt in to bootstrapping against the REAL Tor directory authorities on the public internet. Off by default: bootstrapping contacts third parties before the requested destination is even looked at, so opening a Tor client would otherwise reach the internet no matter what you asked it to connect to. Set true only when you intend outbound public traffic.".to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
         ]
     }

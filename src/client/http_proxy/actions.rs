@@ -110,6 +110,7 @@ impl Protocol for HttpProxyClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("username:password"),
+                default: None,
             },
             ParameterDefinition {
                 name: "default_target".to_string(),
@@ -117,6 +118,7 @@ impl Protocol for HttpProxyClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("example.com:80"),
+                default: None,
             },
         ]
     }

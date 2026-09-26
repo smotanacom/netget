@@ -126,6 +126,7 @@ impl Protocol for NpmClientProtocol {
             type_hint: "string".to_string(),
             required: false,
             example: json!("https://registry.npmjs.org"),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

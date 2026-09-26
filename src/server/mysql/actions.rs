@@ -46,6 +46,7 @@ impl Protocol for MysqlProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(false),
+                    default: None,
                 },
             ]
     }

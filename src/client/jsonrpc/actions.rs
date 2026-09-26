@@ -77,6 +77,7 @@ impl Protocol for JsonRpcClientProtocol {
                 "Authorization": "Bearer token123",
                 "Content-Type": "application/json"
             }),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

@@ -80,6 +80,7 @@ impl Protocol for HsrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
             ParameterDefinition {
                 name: "join_multicast".to_string(),
@@ -92,6 +93,7 @@ impl Protocol for HsrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             ParameterDefinition {
                 name: "multicast_interface".to_string(),
@@ -102,6 +104,7 @@ impl Protocol for HsrpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("192.168.1.10"),
+                default: None,
             },
         ]
     }

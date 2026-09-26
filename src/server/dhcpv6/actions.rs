@@ -605,6 +605,7 @@ impl Protocol for Dhcpv6Protocol {
                     .to_string(),
             required: false,
             example: json!(0),
+            default: None,
         }]
     }
 

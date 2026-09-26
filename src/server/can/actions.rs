@@ -409,6 +409,7 @@ impl Protocol for CanProtocol {
                 ),
                 required: false,
                 example: json!("vcan0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "transport".to_string(),
@@ -420,6 +421,7 @@ impl Protocol for CanProtocol {
                         .to_string(),
                 required: false,
                 example: json!("socketcan"),
+                default: None,
             },
             ParameterDefinition {
                 name: "udp_peer".to_string(),
@@ -430,6 +432,7 @@ impl Protocol for CanProtocol {
                         .to_string(),
                 required: false,
                 example: json!("127.0.0.1:34567"),
+                default: None,
             },
         ]
     }

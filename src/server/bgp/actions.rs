@@ -641,6 +641,7 @@ impl Protocol for BgpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(65001),
+                default: None,
             },
             ParameterDefinition {
                 name: "router_id".to_string(),
@@ -648,6 +649,7 @@ impl Protocol for BgpProtocol {
                 description: "BGP router ID in IPv4 dotted-quad form, not 0.0.0.0".to_string(),
                 required: false,
                 example: json!("192.168.1.1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "hold_time".to_string(),
@@ -658,6 +660,7 @@ impl Protocol for BgpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(180),
+                default: None,
             },
         ]
     }

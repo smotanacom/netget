@@ -705,6 +705,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
             ParameterDefinition {
                 name: "variant".to_string(),
@@ -717,6 +718,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("vrrp"),
+                default: None,
             },
             ParameterDefinition {
                 name: "version".to_string(),
@@ -730,6 +732,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(3),
+                default: None,
             },
             ParameterDefinition {
                 name: "vrid".to_string(),
@@ -741,6 +744,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
             ParameterDefinition {
                 name: "priority".to_string(),
@@ -754,6 +758,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(100),
+                default: None,
             },
             ParameterDefinition {
                 name: "advert_interval".to_string(),
@@ -769,6 +774,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
             ParameterDefinition {
                 name: "addresses".to_string(),
@@ -781,6 +787,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(["192.168.1.1"]),
+                default: None,
             },
             ParameterDefinition {
                 name: "advskew".to_string(),
@@ -793,6 +800,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "carp_passphrase".to_string(),
@@ -806,6 +814,7 @@ impl Protocol for VrrpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("lab-passphrase"),
+                default: None,
             },
         ]
     }

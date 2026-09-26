@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleProximityProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-Proximity"),
+            default: None,
         }]
     }
 

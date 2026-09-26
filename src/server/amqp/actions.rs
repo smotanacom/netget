@@ -791,6 +791,7 @@ impl Protocol for AmqpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(131072),
+                default: Some(serde_json::json!(super::DEFAULT_FRAME_MAX)),
             },
             ParameterDefinition {
                 name: "heartbeat_secs".to_string(),
@@ -801,6 +802,7 @@ impl Protocol for AmqpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(60),
+                default: Some(serde_json::json!(super::DEFAULT_HEARTBEAT)),
             },
         ]
     }

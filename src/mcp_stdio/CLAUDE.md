@@ -103,7 +103,9 @@ no MCP caller can invoke. `docs.rs` renders what an MCP caller actually has:
   written without guessing;
 - its action names with parameter schemas and JSON examples — **async ones included**, since
   `send_to_client` and `send_to_peer` make them invocable from MCP;
-- its `startup_params` schema, privilege requirement and maturity;
+- its `startup_params` schema — each parameter with `default: <v>` where the protocol declares
+  the value it falls back to (`ParameterDefinition::default`) — privilege requirement and
+  maturity;
 - for a server, its `failure_mode` (what the peer gets when the model cannot answer) and
   whether it is `connectionless`.
 

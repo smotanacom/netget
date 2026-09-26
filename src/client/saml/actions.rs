@@ -87,6 +87,7 @@ impl Protocol for SamlClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("https://example.com/saml/sp"),
+                default: None,
             },
             ParameterDefinition {
                 name: "acs_url".to_string(),
@@ -94,6 +95,7 @@ impl Protocol for SamlClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("https://example.com/saml/acs"),
+                default: None,
             },
             ParameterDefinition {
                 name: "binding".to_string(),
@@ -101,6 +103,7 @@ impl Protocol for SamlClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("redirect"),
+                default: None,
             },
         ]
     }

@@ -51,6 +51,7 @@ impl Protocol for RtpProtocol {
             ),
             required: false,
             example: json!(30),
+            default: None,
         }]
     }
 

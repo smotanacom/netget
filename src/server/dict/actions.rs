@@ -45,6 +45,7 @@ impl Protocol for DictProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::FIRST_COMMAND_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -56,6 +57,7 @@ impl Protocol for DictProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }

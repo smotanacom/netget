@@ -88,6 +88,7 @@ impl Protocol for McpClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("netget-client"),
+                default: None,
             },
             ParameterDefinition {
                 name: "client_version".to_string(),
@@ -95,6 +96,7 @@ impl Protocol for McpClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("1.0.0"),
+                default: None,
             },
         ]
     }

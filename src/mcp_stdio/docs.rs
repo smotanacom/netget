@@ -504,9 +504,20 @@ fn render_parameter(out: &mut String, param: &Parameter) {
 
 fn render_startup_param(out: &mut String, param: &ParameterDefinition) {
     let example = serde_json::to_string(&param.example).unwrap_or_default();
+    // The value the server uses when the parameter is omitted, where the protocol declares one.
+    let default = param
+        .default
+        .as_ref()
+        .map(|d| {
+            format!(
+                ", default: `{}`",
+                serde_json::to_string(d).unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
     let _ = writeln!(
         out,
-        "- `{}` ({}, {}) — {} Example: `{}`",
+        "- `{}` ({}, {}{}) — {} Example: `{}`",
         param.name,
         param.type_hint,
         if param.required {
@@ -514,6 +525,7 @@ fn render_startup_param(out: &mut String, param: &ParameterDefinition) {
         } else {
             "optional"
         },
+        default,
         param.description,
         example
     );

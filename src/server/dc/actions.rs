@@ -133,6 +133,7 @@ impl Protocol for DcProtocol {
                 description: "Name of the DC hub".to_string(),
                 required: false,
                 example: serde_json::json!("NetGet DC Hub"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "hub_topic".to_string(),
@@ -140,6 +141,7 @@ impl Protocol for DcProtocol {
                 description: "Hub topic/description".to_string(),
                 required: false,
                 example: serde_json::json!("Welcome to NetGet DC Hub"),
+                default: None,
             },
         ]
     }

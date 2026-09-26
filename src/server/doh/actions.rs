@@ -94,6 +94,9 @@ impl Protocol for DohProtocol {
                 .to_string(),
             required: false,
             example: json!(300),
+            default: Some(serde_json::json!(
+                super::IDLE_BETWEEN_QUERIES_TIMEOUT.as_secs()
+            )),
         }]
     }
     fn get_async_actions(&self, state: &AppState) -> Vec<ActionDefinition> {

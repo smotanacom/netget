@@ -51,7 +51,10 @@ in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.
 Everything applies through `cli::management`'s `ServerForm`/`ClientForm`/`update_*`, so
 validation and the hot-apply vs restart split are identical to the LLM and MCP paths. The forms
 submit only *changed* fields — re-sending an unchanged port or host reads as a change and forces
-a needless restart.
+a needless restart. A startup parameter's declared `default` (`ParameterDefinition::default`) is
+pre-filled as its value, marked `(default)`, and counts as unchanged on create as well as edit,
+so an untouched default is never submitted and the new instance's `startup_params` records only
+what the operator chose.
 
 **Every action is an `InstanceAction`** (`cards.rs`), executed by `actions::run` whether it
 came from a letter (`x` stop, `e` edit, `r` rules, `m` driver, `c` connect a client to a
@@ -928,6 +931,16 @@ dead weight the model will try to use (nine were found in the cloud protocols al
 parameter read but never declared is rejected at startup. Both are worth a grep when you touch
 `get_startup_parameters()`.
 
+**Declare `default` where the code falls back to a fixed value** — every read deadline
+(`first_byte_timeout_secs`, `idle_timeout_secs`, `handshake_timeout_secs`) and size cap does.
+Point it at the constant the code uses, `default: Some(json!(super::IDLE_TIMEOUT.as_secs()))`,
+so the form, `get_protocol_docs` and the model's prompt show the number the server will actually
+use; a literal copy drifts the first time someone tunes the constant.
+`tests/startup_param_defaults_test.rs` refuses a literal (source scan, every feature set) and a
+default that does not parse as its `type_hint` or sits on a required parameter (registry walk,
+compiled protocols only). `default: None` is right where omitting the parameter switches a
+feature off or derives the value from something else — no single number describes that.
+
 ## Testing
 
 Black-box and prompt-driven: the LLM (or a mock of it) interprets an instruction, and tests
@@ -1165,6 +1178,8 @@ of the test file**, not out of this table):
 | `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | **4 params** |
 | `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | **empty** |
 | `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
+| `well_known_port_declaration_test` | a server with no declared well-known port and no stated reason; a `PrivilegedPort(n)` or transport disagreeing with it | `NO_WELL_KNOWN_PORT` — finished answers, not a queue |
+| `startup_param_defaults_test` | a declared parameter `default` written as a literal instead of the constant the code uses (the type check is a registry walk) | **empty** |
 
 A third check worth understanding: `event_action_declarations_test` probes each advertised
 name with a bare `{"type": name}`, which finds *unknown action* but can never find a wrong

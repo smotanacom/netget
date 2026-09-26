@@ -569,6 +569,7 @@ impl Protocol for CouchDbProtocol {
                 description: "Enable HTTP basic authentication (default: false)".to_string(),
                 required: false,
                 example: serde_json::json!(false),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "admin_username".to_string(),
@@ -576,6 +577,7 @@ impl Protocol for CouchDbProtocol {
                 description: "Admin username (if auth enabled)".to_string(),
                 required: false,
                 example: serde_json::json!("admin"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "admin_password".to_string(),
@@ -583,6 +585,7 @@ impl Protocol for CouchDbProtocol {
                 description: "Admin password (if auth enabled)".to_string(),
                 required: false,
                 example: serde_json::json!("password"),
+                default: None,
             },
         ]
     }

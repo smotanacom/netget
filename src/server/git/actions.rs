@@ -52,6 +52,7 @@ impl Protocol for GitProtocol {
                     .to_string(),
             required: false,
             example: json!("main"),
+            default: None,
         }]
     }
 

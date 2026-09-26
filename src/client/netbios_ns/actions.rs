@@ -437,6 +437,7 @@ impl Protocol for NetbiosNsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(137),
+                default: None,
             },
             ParameterDefinition {
                 name: "query_timeout_secs".to_string(),
@@ -446,6 +447,7 @@ impl Protocol for NetbiosNsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(3),
+                default: None,
             },
         ]
     }

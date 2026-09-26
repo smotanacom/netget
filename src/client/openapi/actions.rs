@@ -134,6 +134,7 @@ impl Protocol for OpenApiClientProtocol {
                 example: json!(
                     "openapi: 3.1.0\ninfo:\n  title: My API\n  version: 1.0.0\npaths:\n  /users:\n    get:\n      operationId: listUsers\n      responses:\n        '200':\n          description: List users"
                 ),
+                default: None,
             },
             ParameterDefinition {
                 name: "spec_file".to_string(),
@@ -141,6 +142,7 @@ impl Protocol for OpenApiClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("/path/to/openapi.yaml"),
+                default: None,
             },
             ParameterDefinition {
                 name: "base_url".to_string(),
@@ -150,6 +152,7 @@ impl Protocol for OpenApiClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("https://api.example.com"),
+                default: None,
             },
         ]
     }

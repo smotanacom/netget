@@ -70,6 +70,7 @@ impl Protocol for TelnetProtocol {
                     description: "Set true to raise the telnet_connection_opened event as soon as a client connects, so you can send a login banner or prompt before the client types anything. Left false (the default) the server stays silent until the first line arrives".to_string(),
                     required: false,
                     example: serde_json::json!(true),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "first_byte_timeout_secs".to_string(),
@@ -85,6 +86,7 @@ impl Protocol for TelnetProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(300),
+                    default: Some(serde_json::json!(super::FIRST_LINE_READ_TIMEOUT.as_secs())),
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "idle_timeout_secs".to_string(),
@@ -97,6 +99,7 @@ impl Protocol for TelnetProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(600),
+                    default: Some(serde_json::json!(super::IDLE_BETWEEN_LINES_TIMEOUT.as_secs())),
                 },
             ]
     }

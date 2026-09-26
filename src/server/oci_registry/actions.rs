@@ -488,6 +488,7 @@ impl Protocol for OciRegistryProtocol {
                     .to_string(),
             required: false,
             example: json!("auto"),
+            default: None,
         }]
     }
 

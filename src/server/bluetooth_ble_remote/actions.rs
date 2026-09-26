@@ -48,6 +48,7 @@ impl Protocol for BluetoothBleRemoteProtocol {
             description: "Bluetooth device name to advertise (default: NetGet-Remote)".to_string(),
             required: false,
             example: json!("NetGet-Remote"),
+            default: None,
         }]
     }
 

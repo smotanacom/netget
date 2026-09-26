@@ -38,6 +38,7 @@ impl Protocol for MdnsProtocol {
                 description: "Service type (e.g., '_http._tcp.local.')".to_string(),
                 required: false,
                 example: json!("_http._tcp.local."),
+                default: None,
             },
             ParameterDefinition {
                 name: "service_name".to_string(),
@@ -45,6 +46,7 @@ impl Protocol for MdnsProtocol {
                 description: "Service instance name".to_string(),
                 required: false,
                 example: json!("My Web Server"),
+                default: None,
             },
             ParameterDefinition {
                 name: "port".to_string(),
@@ -52,6 +54,7 @@ impl Protocol for MdnsProtocol {
                 description: "Port advertised in the SRV record - the port clients will connect to. Defaults to the server's own port, or 8080 if that is 0".to_string(),
                 required: false,
                 example: json!(8080),
+                default: None,
             },
             ParameterDefinition {
                 name: "properties".to_string(),
@@ -59,6 +62,7 @@ impl Protocol for MdnsProtocol {
                 description: "TXT record properties (key-value pairs)".to_string(),
                 required: false,
                 example: json!({"path": "/", "version": "1.0"}),
+                default: None,
             },
             ParameterDefinition {
                 name: "services".to_string(),
@@ -67,6 +71,7 @@ impl Protocol for MdnsProtocol {
                     .to_string(),
                 required: false,
                 example: json!([{"service_type": "_http._tcp.local.", "service_name": "Web", "port": 8080, "properties": {"path": "/"}}]),
+                default: None,
             },
         ]
     }

@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-FileTransfer"),
+            default: None,
         }]
     }
 

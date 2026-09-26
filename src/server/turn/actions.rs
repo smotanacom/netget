@@ -57,6 +57,7 @@ impl Protocol for TurnProtocol {
                         .to_string(),
                 required: false,
                 example: json!("203.0.113.5"),
+                default: None,
             },
             ParameterDefinition {
                 name: "peer_scope".to_string(),
@@ -72,6 +73,7 @@ impl Protocol for TurnProtocol {
                     .to_string(),
                 required: false,
                 example: json!("public"),
+                default: None,
             },
         ]
     }

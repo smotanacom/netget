@@ -447,6 +447,7 @@ impl Protocol for MqttProtocol {
                     .to_string(),
             required: false,
             example: json!(262144),
+            default: Some(serde_json::json!(super::DEFAULT_MAX_PACKET_SIZE)),
         },
         ParameterDefinition {
             name: "first_byte_timeout_secs".to_string(),
@@ -457,6 +458,7 @@ impl Protocol for MqttProtocol {
                     .to_string(),
             required: false,
             example: json!(30),
+            default: Some(serde_json::json!(super::CONNECT_TIMEOUT.as_secs())),
         },
         ParameterDefinition {
             name: "idle_timeout_secs".to_string(),
@@ -469,6 +471,7 @@ impl Protocol for MqttProtocol {
                     .to_string(),
             required: false,
             example: json!(900),
+            default: Some(serde_json::json!(super::IDLE_WITHOUT_KEEP_ALIVE.as_secs())),
         },
         ]
     }

@@ -301,6 +301,7 @@ impl Protocol for NfsClientProtocol {
                 type_hint: "number".to_string(),
                 required: false,
                 example: json!(111),
+                default: None,
             },
             ParameterDefinition {
                 name: "mount_port".to_string(),
@@ -309,6 +310,7 @@ impl Protocol for NfsClientProtocol {
                 type_hint: "number".to_string(),
                 required: false,
                 example: json!(2049),
+                default: None,
             },
             ParameterDefinition {
                 name: "nfs_port".to_string(),
@@ -318,6 +320,7 @@ impl Protocol for NfsClientProtocol {
                 type_hint: "number".to_string(),
                 required: false,
                 example: json!(2049),
+                default: None,
             },
             ParameterDefinition {
                 name: "privileged_source_port".to_string(),
@@ -327,6 +330,7 @@ impl Protocol for NfsClientProtocol {
                 type_hint: "boolean".to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
         ]
     }

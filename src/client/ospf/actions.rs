@@ -472,6 +472,7 @@ impl Protocol for OspfClientProtocol {
                 description: "OSPF router ID (defaults to interface IP)".to_string(),
                 required: false,
                 example: json!("1.1.1.1"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "area_id".to_string(),
@@ -479,6 +480,7 @@ impl Protocol for OspfClientProtocol {
                 description: "OSPF area ID (default: 0.0.0.0)".to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
         ]
     }

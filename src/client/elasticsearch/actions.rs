@@ -83,6 +83,7 @@ impl Protocol for ElasticsearchClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("elastic"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -90,6 +91,7 @@ impl Protocol for ElasticsearchClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("changeme"),
+                default: None,
             },
             ParameterDefinition {
                 name: "default_index".to_string(),
@@ -97,6 +99,7 @@ impl Protocol for ElasticsearchClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("my-index"),
+                default: None,
             },
         ]
     }

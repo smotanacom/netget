@@ -407,6 +407,7 @@ impl Protocol for YarnProtocol {
                     .to_string(),
                 required: false,
                 example: json!("3.3.6"),
+                default: None,
             },
             ParameterDefinition {
                 name: "cluster_id".to_string(),
@@ -416,6 +417,7 @@ impl Protocol for YarnProtocol {
                     .to_string(),
                 required: false,
                 example: json!("1476912658570"),
+                default: None,
             },
         ]
     }

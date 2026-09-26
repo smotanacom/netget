@@ -82,6 +82,7 @@ impl Protocol for XmlRpcClientProtocol {
             type_hint: "number".to_string(),
             required: false,
             example: json!(30),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

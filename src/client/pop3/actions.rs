@@ -74,6 +74,7 @@ impl Protocol for Pop3ClientProtocol {
             type_hint: "boolean".to_string(),
             required: false,
             example: json!(false),
+            default: None,
         }]
     }
 

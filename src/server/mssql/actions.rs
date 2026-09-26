@@ -46,6 +46,7 @@ impl Protocol for MssqlProtocol {
                     .to_string(),
             required: false,
             example: serde_json::json!(false),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

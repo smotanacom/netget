@@ -553,6 +553,9 @@ fn form_lines_with_offsets<'a>(
             } else {
                 first.to_string()
             }
+        } else if field.is_default() {
+            // Says the value is the protocol's own, which is why it will not be submitted.
+            format!("{}  (default)", field.value)
         } else {
             field.value.clone()
         };

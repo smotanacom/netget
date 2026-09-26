@@ -49,6 +49,7 @@ impl Protocol for IppProtocol {
                 .to_string(),
             required: false,
             example: serde_json::json!(false),
+            default: None,
         }]
     }
 

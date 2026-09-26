@@ -70,6 +70,7 @@ impl Protocol for WebSocketClientProtocol {
                         .to_string(),
                 required: false,
                 example: json!("/ws"),
+                default: None,
             },
             ParameterDefinition {
                 name: "subprotocols".to_string(),
@@ -81,6 +82,7 @@ impl Protocol for WebSocketClientProtocol {
                         .to_string(),
                 required: false,
                 example: json!(["chat", "superchat"]),
+                default: None,
             },
             ParameterDefinition {
                 name: "headers".to_string(),
@@ -92,6 +94,7 @@ impl Protocol for WebSocketClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!({"Origin": "https://example.com"}),
+                default: None,
             },
         ]
     }

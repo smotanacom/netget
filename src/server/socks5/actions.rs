@@ -106,6 +106,7 @@ impl Protocol for Socks5Protocol {
                     description: "Array of allowed authentication methods: 'none' (no auth) or 'username_password' (RFC 1929)".to_string(),
                     required: false,
                     example: json!(["none", "username_password"]),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "default_action".to_string(),
@@ -113,6 +114,7 @@ impl Protocol for Socks5Protocol {
                     description: "Default action when no filter matches: 'allow' or 'deny'".to_string(),
                     required: false,
                     example: json!("allow"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "filter_mode".to_string(),
@@ -120,6 +122,7 @@ impl Protocol for Socks5Protocol {
                     description: "Filter mode: 'allow_all', 'deny_all', 'ask_llm', or 'selective'".to_string(),
                     required: false,
                     example: json!("selective"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "filter".to_string(),
@@ -130,6 +133,7 @@ impl Protocol for Socks5Protocol {
                         "target_host_patterns": [".*\\.example\\.com"],
                         "target_port_ranges": [[80, 80], [443, 443]]
                     }),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "mitm_by_default".to_string(),
@@ -137,6 +141,7 @@ impl Protocol for Socks5Protocol {
                     description: "Enable Man-in-the-Middle inspection for all allowed connections by default".to_string(),
                     required: false,
                     example: json!(false),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "idle_timeout_secs".to_string(),
@@ -148,6 +153,7 @@ impl Protocol for Socks5Protocol {
                         .to_string(),
                     required: false,
                     example: json!(3600),
+                    default: Some(serde_json::json!(super::RELAY_IDLE_TIMEOUT.as_secs())),
                 },
             ]
     }

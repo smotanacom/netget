@@ -365,6 +365,7 @@ impl Protocol for BluetoothBleBeaconProtocol {
                         .to_string(),
                 required: false,
                 example: json!("NetGet-Beacon"),
+                default: None,
             },
             ParameterDefinition {
                 name: "adapter".to_string(),
@@ -374,6 +375,7 @@ impl Protocol for BluetoothBleBeaconProtocol {
                     .to_string(),
                 required: false,
                 example: json!("hci0"),
+                default: None,
             },
         ]
     }

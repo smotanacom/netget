@@ -359,6 +359,7 @@ impl Protocol for RawIpProtocol {
                         .to_string(),
                 required: true,
                 example: json!(47),
+                default: None,
             },
             ParameterDefinition {
                 name: "ip_version".to_string(),
@@ -369,6 +370,7 @@ impl Protocol for RawIpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("ipv4"),
+                default: None,
             },
             ParameterDefinition {
                 name: "transport".to_string(),
@@ -381,6 +383,7 @@ impl Protocol for RawIpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
         ]
     }

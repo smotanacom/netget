@@ -750,6 +750,7 @@ impl Protocol for RadiusProtocol {
                 .to_string(),
             required: true,
             example: json!("testing123"),
+            default: None,
         }]
     }
 

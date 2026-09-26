@@ -146,6 +146,7 @@ impl Protocol for MavenClientProtocol {
             type_hint: "string".to_string(),
             required: false,
             example: json!("https://repo.maven.apache.org/maven2"),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

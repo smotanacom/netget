@@ -41,6 +41,9 @@ impl Protocol for Http2Protocol {
                 .to_string(),
             required: false,
             example: json!(30),
+            default: Some(serde_json::json!(
+                super::h2_server::FIRST_BYTE_READ_TIMEOUT.as_secs()
+            )),
         });
         params.push(crate::llm::actions::ParameterDefinition {
             name: "idle_timeout_secs".to_string(),
@@ -52,6 +55,9 @@ impl Protocol for Http2Protocol {
                 .to_string(),
             required: false,
             example: json!(300),
+            default: Some(serde_json::json!(
+                super::h2_server::IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+            )),
         });
         params
     }

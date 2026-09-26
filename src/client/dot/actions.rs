@@ -86,6 +86,7 @@ impl Protocol for DotClientProtocol {
                 type_hint: "boolean".to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             ParameterDefinition {
                 name: "server_name".to_string(),
@@ -95,6 +96,7 @@ impl Protocol for DotClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("dns.google"),
+                default: None,
             },
         ]
     }

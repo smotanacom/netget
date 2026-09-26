@@ -524,6 +524,7 @@ impl Protocol for KafkaProtocol {
                     .to_string(),
                 required: false,
                 example: json!("netget-kafka-1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "broker_id".to_string(),
@@ -532,6 +533,7 @@ impl Protocol for KafkaProtocol {
                     .to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "advertised_host".to_string(),
@@ -542,6 +544,7 @@ impl Protocol for KafkaProtocol {
                     .to_string(),
                 required: false,
                 example: json!("localhost"),
+                default: None,
             },
         ]
     }

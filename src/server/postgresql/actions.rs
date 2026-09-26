@@ -48,6 +48,7 @@ impl Protocol for PostgresqlProtocol {
                         .to_string(),
                     required: false,
                     example: json!(false),
+                    default: None,
                 },
             ]
     }

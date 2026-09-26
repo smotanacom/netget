@@ -198,6 +198,9 @@ impl Protocol for FtpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::FIRST_COMMAND_READ_TIMEOUT.as_secs()
+                )),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -210,6 +213,9 @@ impl Protocol for FtpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_COMMANDS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }

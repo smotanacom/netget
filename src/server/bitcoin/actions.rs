@@ -62,6 +62,7 @@ impl Protocol for BitcoinProtocol {
                     .to_string(),
             required: false,
             example: json!("mainnet"),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

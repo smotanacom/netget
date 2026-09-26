@@ -76,6 +76,7 @@ impl Protocol for NatsProtocol {
                     .to_string(),
                 required: false,
                 example: json!("netget-nats"),
+                default: None,
             },
             ParameterDefinition {
                 name: "max_payload".to_string(),
@@ -88,6 +89,7 @@ impl Protocol for NatsProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1_048_576),
+                default: Some(serde_json::json!(DEFAULT_MAX_PAYLOAD)),
             },
         ]
     }

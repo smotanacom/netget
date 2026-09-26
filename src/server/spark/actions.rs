@@ -293,6 +293,7 @@ impl Protocol for SparkProtocol {
                 .to_string(),
             required: false,
             example: json!("3.5.1"),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

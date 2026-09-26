@@ -799,6 +799,7 @@ impl Protocol for VncProtocol {
                 ),
                 required: false,
                 example: json!(1024),
+                default: None,
             },
             ParameterDefinition {
                 name: "height".to_string(),
@@ -810,6 +811,7 @@ impl Protocol for VncProtocol {
                 ),
                 required: false,
                 example: json!(768),
+                default: None,
             },
             ParameterDefinition {
                 name: "desktop_name".to_string(),
@@ -819,6 +821,7 @@ impl Protocol for VncProtocol {
                         .to_string(),
                 required: false,
                 example: json!("NetGet Desktop"),
+                default: None,
             },
         ]
     }

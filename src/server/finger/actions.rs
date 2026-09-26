@@ -197,6 +197,7 @@ impl Protocol for FingerProtocol {
                 .to_string(),
             required: false,
             example: json!(false),
+            default: None,
         }]
     }
 
