@@ -8,8 +8,6 @@ pub mod arp;
 pub mod beanstalkd;
 #[cfg(feature = "bgp")]
 pub mod bgp;
-#[cfg(feature = "bolt")]
-pub mod bolt;
 #[cfg(feature = "bitcoin")]
 pub mod bitcoin;
 #[cfg(feature = "bluetooth-ble")]
@@ -46,6 +44,8 @@ pub mod bluetooth_ble_running;
 pub mod bluetooth_ble_thermometer;
 #[cfg(feature = "bluetooth-ble-weight-scale")]
 pub mod bluetooth_ble_weight_scale;
+#[cfg(feature = "bolt")]
+pub mod bolt;
 #[cfg(feature = "bootp")]
 pub mod bootp;
 #[cfg(feature = "can")]
