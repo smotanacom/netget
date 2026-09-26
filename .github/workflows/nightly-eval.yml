@@ -55,11 +55,22 @@ jobs:
         # `client-missing` in the results, which is visible and honest; the run
         # is still worth doing for the protocols whose clients are present.
         run: |
-          for bin in curl dig whois redis-cli psql mysql ldapsearch ipptool nc ftp; do
+          for bin in curl dig whois redis-cli psql mysql ldapsearch ipptool nc ftp \
+                     dict promtool docker vault cypher-shell zabbix_sender gearman gearadmin \
+                     mosquitto_sub mosquitto_pub coap-client snmpget sipsak websocat; do
             if command -v "$bin" >/dev/null 2>&1; then
               echo "present: $bin"
             else
               echo "MISSING: $bin — its cases will be recorded as client-missing"
+            fi
+          done
+          # Python client libraries. A missing one does NOT read as client-missing: the probe
+          # dies before connecting, so its cases record event_never_reached_model. Say so here.
+          for mod in pymemcache pymodbus greenstalk ignition; do
+            if python3 -c "import $mod" >/dev/null 2>&1; then
+              echo "present: python3 $mod"
+            else
+              echo "MISSING: python3 $mod — its cases will read as event_never_reached_model"
             fi
           done
 
