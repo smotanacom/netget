@@ -7,12 +7,12 @@
 
 #![cfg(feature = "docker")]
 
-use super::real_client_test::{docker, require_docker};
+use super::real_client_test::{docker, require_tool};
 use crate::server::helpers::{start_netget_server, E2EResult, NetGetConfig};
 
 #[tokio::test]
 async fn test_docker_answers_500_with_a_category_when_the_llm_fails() -> E2EResult<()> {
-    let bin = require_docker();
+    let bin = require_tool("docker");
     let config =
         NetGetConfig::new_no_scripts("listen on port {AVAILABLE_PORT} via docker. A small host")
             .with_mock(|mock| {

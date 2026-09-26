@@ -31,15 +31,15 @@ use tokio::sync::mpsc;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-pub fn require_docker() -> String {
+pub fn require_tool(name: &str) -> String {
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let candidate = std::path::Path::new(prefix).join("docker");
+        let candidate = std::path::Path::new(prefix).join(name);
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
     }
     panic!(
-        "the `docker` CLI was not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin). \
+        "`{name}` was not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin). \
          These tests drive the real Docker CLI against NetGet's Engine API, and that is the only \
          independent check that the documents NetGet renders decode in Docker's own Go types. \
          Skipping would leave the Docker server's maturity rating resting on nothing, so this is \
@@ -176,7 +176,7 @@ fn rows(stdout: &str) -> Vec<&str> {
 
 #[tokio::test]
 async fn the_docker_cli_prints_exactly_what_the_handler_said() -> TestResult {
-    let bin = require_docker();
+    let bin = require_tool("docker");
     let config = tempfile::TempDir::new()?;
     let (_state, port) = start_docker(vec![json!({
         "event_pattern": "docker_api_request",
@@ -357,7 +357,7 @@ async fn the_docker_cli_prints_exactly_what_the_handler_said() -> TestResult {
 #[tokio::test]
 async fn the_documented_script_example_drives_the_cli() -> TestResult {
     use netget::llm::actions::protocol_trait::Protocol;
-    let bin = require_docker();
+    let bin = require_tool("docker");
     let config = tempfile::TempDir::new()?;
     let handlers = netget::server::DockerProtocol::new()
         .get_startup_examples()

@@ -11,13 +11,13 @@
 
 #![cfg(feature = "docker")]
 
-use super::real_client_test::{docker, require_docker};
+use super::real_client_test::{docker, require_tool};
 use crate::server::helpers::{self, E2EResult, NetGetConfig};
 use serde_json::json;
 
 #[tokio::test]
 async fn test_docker_cli_against_a_mocked_model() -> E2EResult<()> {
-    let bin = require_docker();
+    let bin = require_tool("docker");
     let config =
         NetGetConfig::new("Open a Docker Engine API on port {AVAILABLE_PORT} for a CI host")
             .with_mock(|mock| {

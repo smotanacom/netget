@@ -13,7 +13,7 @@ passes `-H` explicitly, removes `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_TLS_VER
 `netget-fixture` marker and row counts are asserted exactly, so output from a real daemon could
 not pass.
 
-`require_docker()` **hard-fails** when the CLI is absent. No daemon is needed.
+`require_tool("docker")` **hard-fails** when the CLI is absent. No daemon is needed.
 
 ## Files
 
