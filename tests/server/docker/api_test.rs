@@ -125,6 +125,120 @@ fn ports_status_and_timestamps_render_as_docker_writes_them() {
     assert_eq!(one["State"]["Running"], false);
 }
 
+/// What llama3.1:8b actually wrote for "a container named eval-web" and "a stopped container
+/// that exited with code 0" in the eval. Every one of these was refused, so `docker ps` printed
+/// an error for a request the model had understood.
+#[test]
+fn a_name_for_an_id_a_stopped_state_and_a_codeless_exit_status_render_as_docker_writes_them() {
+    // The name written as the ID: rendered with the ID derived from that name — letters and
+    // digits only, and the same one `ps` and `inspect` derive when the ID is left out.
+    let named = render_container_list(&json!([{
+        "id": "eval-web", "names": ["eval-web"], "image": "nginx:1.27"
+    }]))
+    .unwrap();
+    let omitted =
+        render_container_list(&json!([{"names": ["eval-web"], "image": "nginx:1.27"}])).unwrap();
+    let id = named[0]["Id"].as_str().unwrap();
+    assert_eq!(id.len(), 64, "{id}");
+    assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+    assert_eq!(named[0]["Id"], omitted[0]["Id"]);
+    let inspected = render_container(&json!({
+        "id": "eval-web", "names": ["eval-web"], "image": "nginx:1.27"
+    }))
+    .unwrap();
+    assert_eq!(inspected["Id"], named[0]["Id"]);
+    // Letters and digits are still used exactly as given.
+    let given =
+        render_container_list(&json!([{"id": "abc123", "names": ["w"], "image": "x"}])).unwrap();
+    assert_eq!(given[0]["Id"], "abc123");
+    // An image ID written the same way.
+    let img = render_images(&json!([{"id": "my-image", "repo_tags": ["api:2"]}])).unwrap();
+    let img_id = img[0]["Id"].as_str().unwrap();
+    assert!(
+        img_id.starts_with("sha256:") && img_id.len() == 71,
+        "{img_id}"
+    );
+
+    // "stopped" is the word for what Docker calls exited.
+    let stopped = render_container_list(&json!([{
+        "names": ["eval-migrate"], "image": "api:2", "state": "stopped", "exit_code": 0
+    }]))
+    .unwrap();
+    assert_eq!(stopped[0]["State"], "exited");
+    assert_eq!(stopped[0]["Status"], "Exited (0)");
+
+    // An exited container's status always carries its code, in the daemon's form.
+    for (given, expected) in [
+        ("Exited 10 minutes ago", "Exited (0) 10 minutes ago"),
+        ("Stopped", "Exited (0)"),
+        ("Exited (0) 3 hours ago", "Exited (0) 3 hours ago"),
+    ] {
+        let c = render_container_list(&json!([{
+            "names": ["m"], "image": "api:2", "state": "exited", "exit_code": 0, "status": given
+        }]))
+        .unwrap();
+        assert_eq!(c[0]["Status"], expected, "{given}");
+    }
+    // A running container's wording is the model's own.
+    let up = render_container_list(&json!([{
+        "names": ["w"], "image": "x", "state": "running", "status": "Up 2 hours"
+    }]))
+    .unwrap();
+    assert_eq!(up[0]["Status"], "Up 2 hours");
+}
+
+/// `answer_with` names the action for the route, and for an inspect the 404 with Docker's
+/// own message — the one thing the eval's missing-container case needed and the model missed.
+#[test]
+fn every_modelled_route_names_its_answer() {
+    let none = json!({});
+    assert_eq!(
+        Route::Version.answer_with(&none).as_deref(),
+        Some("send_docker_version")
+    );
+    let inspect = Route::ContainerInspect("eval-ghost".into())
+        .answer_with(&none)
+        .unwrap();
+    assert!(inspect.starts_with("send_docker_container "), "{inspect}");
+    assert!(
+        inspect.contains("send_docker_error with status 404")
+            && inspect.contains("No such container: eval-ghost"),
+        "{inspect}"
+    );
+    let running = Route::ContainerList.answer_with(&none).unwrap();
+    let all = Route::ContainerList
+        .answer_with(&json!({"all": "1"}))
+        .unwrap();
+    // A list route names the array, not just the action: told only the action, the model
+    // sent it empty.
+    assert!(
+        running.contains("containers array") && running.contains("the running containers"),
+        "{running}"
+    );
+    assert!(
+        all.contains("containers array") && all.contains("running or not"),
+        "{all}"
+    );
+    assert_eq!(
+        Route::Info.answer_with(&none).as_deref(),
+        Some("send_docker_info")
+    );
+    for (route, array) in [
+        (Route::ImageList, "images array"),
+        (Route::NetworkList, "networks array"),
+        (Route::VolumeList, "volumes array"),
+    ] {
+        let hint = route.answer_with(&none).unwrap();
+        assert!(
+            hint.starts_with(route.answering_action().unwrap()) && hint.contains(array),
+            "{hint}"
+        );
+    }
+    for route in [Route::Ping, Route::Mutating, Route::NotFound] {
+        assert_eq!(route.answer_with(&none), None);
+    }
+}
+
 #[test]
 fn every_malformed_answer_is_refused_with_a_reason() {
     let cases = [

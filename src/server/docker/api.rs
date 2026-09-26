@@ -68,6 +68,40 @@ impl Route {
             Route::Ping | Route::Mutating | Route::NotFound => None,
         }
     }
+
+    /// The event's `answer_with`: which action answers this request, and what it must say.
+    ///
+    /// The event description maps every resource to its action, but a small model answering
+    /// one request reads the request, not the table: asked to inspect a container that did not
+    /// exist, llama3.1:8b answered with `send_docker_version`. Naming the action, and the 404
+    /// for a missing container, in the request itself is what it follows.
+    ///
+    /// A list route names the array the action carries, not just the action: told only
+    /// "send_docker_containers with the running containers", the same model answered with
+    /// `{"type": "send_docker_containers"}` and nothing in it, 13 times in 15.
+    pub fn answer_with(&self, query: &Value) -> Option<String> {
+        let all = query.get("all").and_then(Value::as_str) == Some("1");
+        Some(match self {
+            Route::Version => "send_docker_version".to_string(),
+            Route::Info => "send_docker_info".to_string(),
+            Route::ContainerList if all => "send_docker_containers with a containers array \
+                 holding every container, running or not, each with its names, image and state \
+                 (a stopped container has state exited and its exit_code)"
+                .to_string(),
+            Route::ContainerList => "send_docker_containers with a containers array holding \
+                 the running containers, each with its names, image and state"
+                .to_string(),
+            Route::ContainerInspect(id) => format!(
+                "send_docker_container with the fields of the container named {id} (or whose \
+                 ID starts with {id}); if there is no such container, send_docker_error with \
+                 status 404 and message \"No such container: {id}\""
+            ),
+            Route::ImageList => "send_docker_images with an images array".to_string(),
+            Route::NetworkList => "send_docker_networks with a networks array".to_string(),
+            Route::VolumeList => "send_docker_volumes with a volumes array".to_string(),
+            Route::Ping | Route::Mutating | Route::NotFound => return None,
+        })
+    }
 }
 
 /// Split an optional `/v<major>.<minor>` prefix off a path.
@@ -206,6 +240,27 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
+/// The ID a container or image is rendered with, from the `id` the model gave.
+///
+/// Letters and digits are used as given. A model very often writes the object's *name* as its
+/// ID (`"id": "eval-web"`); that is not an ID Docker would ever report, and it is not an error
+/// either, so a name-shaped value stands in for the seed a missing ID is derived from — the
+/// same 64-hex ID as omitting it, so `ps` and `inspect` still agree. Anything else (spaces,
+/// slashes, punctuation) is refused. Either way the client only ever receives letters and
+/// digits.
+fn id_from(given: &str, kind: &str, what: &str) -> Result<String, String> {
+    let bare = given.trim_start_matches("sha256:");
+    if valid_id(bare) {
+        Ok(bare.to_string())
+    } else if valid_name(bare) {
+        Ok(derived_id(&format!("{kind}:{bare}")))
+    } else {
+        Err(format!(
+            "{what}: id {given:?} must be letters and digits (or omit it and NetGet derives one)"
+        ))
+    }
+}
+
 /// Docker's own rule for container names: `[a-zA-Z0-9][a-zA-Z0-9_.-]+`.
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -265,6 +320,13 @@ fn state_of(obj: &Value, what: &str) -> Result<String, String> {
             .to_ascii_lowercase(),
         Some(_) => return Err(format!("{what} state must be a string")),
     };
+    // `docker stop` leaves a container `exited`; "stopped" is what people call that, and
+    // what a model writes when told a container is stopped.
+    let raw = if raw == "stopped" {
+        "exited".to_string()
+    } else {
+        raw
+    };
     if STATES.contains(&raw.as_str()) {
         Ok(raw)
     } else {
@@ -284,6 +346,30 @@ fn default_status(state: &str, exit_code: i64) -> String {
         "created" => "Created".to_string(),
         "removing" => "Removal In Progress".to_string(),
         _ => "Dead".to_string(),
+    }
+}
+
+/// The `Status` column. The model's own wording is kept, except that an exited container's
+/// always carries its exit code the way the daemon writes it — `Exited (0) 10 minutes ago` —
+/// because that code is the one fact the column exists to show, and a model writing
+/// "Exited 10 minutes ago" or "Stopped" leaves it out.
+fn status_of(given: Option<String>, state: &str, exit_code: i64) -> String {
+    let Some(given) = given.filter(|s| !s.trim().is_empty()) else {
+        return default_status(state, exit_code);
+    };
+    if state != "exited" || given.starts_with("Exited (") {
+        return given;
+    }
+    let lower = given.to_ascii_lowercase();
+    let ago = lower.find(" ago").and_then(|end| {
+        let words: Vec<&str> = given[..end].split_whitespace().collect();
+        // "… 10 minutes ago", "… About an hour ago": the last two words before "ago".
+        (words.len() >= 2)
+            .then(|| format!("{} {} ago", words[words.len() - 2], words[words.len() - 1]))
+    });
+    match ago {
+        Some(ago) => format!("Exited ({exit_code}) {ago}"),
+        None => default_status(state, exit_code),
     }
 }
 
@@ -392,13 +478,7 @@ fn container(obj: &Value, index: usize) -> Result<Container, String> {
         ));
     }
     let id = match str_field(obj, &["id", "Id", "ID"]) {
-        Some(id) => {
-            let id = id.trim_start_matches("sha256:").to_string();
-            if !valid_id(&id) {
-                return Err(format!("{what}: id {id:?} must be letters and digits"));
-            }
-            id
-        }
+        Some(id) => id_from(&id, "container", &what)?,
         None => derived_id(&format!("container:{name}")),
     };
     let image = str_field(obj, &["image", "Image"]).unwrap_or_default();
@@ -409,8 +489,7 @@ fn container(obj: &Value, index: usize) -> Result<Container, String> {
     let exit_code = field(obj, &["exit_code", "ExitCode"])
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let status =
-        str_field(obj, &["status", "Status"]).unwrap_or_else(|| default_status(&state, exit_code));
+    let status = status_of(str_field(obj, &["status", "Status"]), &state, exit_code);
     let (command, path, args) = command_of(obj);
     let env = string_list(obj, &["env", "Env"]);
     Ok(Container {
@@ -556,13 +635,7 @@ pub fn render_images(images: &Value) -> Result<Value, String> {
             .cloned()
             .unwrap_or_else(|| format!("image-{i}"));
         let id = match str_field(img, &["id", "Id", "ID"]) {
-            Some(id) => {
-                let bare = id.trim_start_matches("sha256:").to_string();
-                if !valid_id(&bare) {
-                    return Err(format!("image {i}: id {id:?} must be letters and digits"));
-                }
-                format!("sha256:{bare}")
-            }
+            Some(id) => format!("sha256:{}", id_from(&id, "image", &format!("image {i}"))?),
             None => format!("sha256:{}", derived_id(&format!("image:{seed}"))),
         };
         let size = u64_field(img, &["size", "Size"], "size")?.unwrap_or(0);

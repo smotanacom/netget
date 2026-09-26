@@ -34,6 +34,7 @@ and dispatched by hand rather than run on a cron.
 | `classify.rs` | turning a failed run into a named diagnosis with evidence |
 | `runner.rs` | the run loop, the repetitions, the scoring |
 | `report.rs` | the JSON and the Markdown |
+| `probe_check.rs` | each case's own probe and `Expect`, against a **mocked** model that answers correctly after 5 s — proves the harness before the model is blamed |
 
 The server is started by `helpers::llm_live::LiveRequestTest`, which runs
 `netget --server <proto> --port N "<instruction>"` — **no model call at setup**.
@@ -139,6 +140,29 @@ Each of these cost a debugging pass and every one presented as a model failure.
   on an `Executing action` line, which is how every nested JSON object ends —
   an IPP attribute group or an HTTP header map was reported as a copied
   `{{…}}` template. It now requires `{{` followed by a name.
+- **A `"…\n\` continuation in a Rust string eats Python's indentation.** The
+  continuation drops the next line's leading whitespace, so the greenstalk
+  probe raised `IndentationError` before connecting and all 15 beanstalkd runs
+  scored `event_never_reached_model`. Multi-line scripts are raw strings
+  (`r#"…"#`).
+- **A client that writes to stderr before the exchange is killed by the
+  settle.** ignition (Python's `CryptographyDeprecationWarning` during the TLS
+  handshake) and cypher-shell (the JVM's `ThreadPriorityPolicy` warning at
+  startup) each printed a first byte and then waited for the model; two quiet
+  seconds later the probe killed them, and gemini and bolt scored 0/15 each as
+  `client_left_before_model_answered`. Both use `until_exit()`, and both give up
+  on their own well inside the probe timeout (ignition's `timeout=230`,
+  cypher-shell once the query is answered or refused — it has no connection
+  timeout flag, and needs none: the Java driver waited out every model call).
+- **So every probe is checked against a mocked model first.**
+  `probe_check.rs` takes a published case by id — instruction, probe and
+  `Expect` unchanged — and answers its event correctly after 5 s, longer than
+  the settle. It requires the model to have been asked (`expect_calls`), the
+  probe to have waited, and the case's own `Expect` to accept the answer; each
+  of the three defects above fails it, and was checked by putting it back. Add
+  a check for every new case. The tests use `NetGetConfig::with_forced_mock()`
+  because `run-eval.sh` runs the same binary with `NETGET_USE_OLLAMA=1`, which
+  otherwise sends a mocked test to the real model.
 - **Never let a harness bug score against the model.** A bad regex in an
   `Expect` returns `HARNESS: …` and is classified as `harness_error`, not as a
   miss.
@@ -190,3 +214,6 @@ neither is visible to a mocked test.
    model call is how the `whois` and `nc` traps above were found, and each cost
    a full pass. Note that server-speaks-first protocols (mysql, ftp) send
    nothing to a silent listener; that is expected, not a probe bug.
+4. A test per case in `probe_check.rs`: the mocked answer a correct model
+   would give. Run it (`./cargo-isolated.sh test --no-default-features
+   --features <p> --test eval -- probe_check`) before the first real-model run.

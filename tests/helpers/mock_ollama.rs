@@ -678,6 +678,16 @@ async fn handle_chat(
                 .await
                 .record_call(context.clone(), idx, description)
                 .await;
+            let delay = state
+                .config
+                .lock()
+                .await
+                .rules
+                .get(idx)
+                .and_then(|r| r.delay);
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
             rendered
         }
         None => {
@@ -859,6 +869,16 @@ async fn handle_generate(
                 .await
                 .record_call(context.clone(), idx, description)
                 .await;
+            let delay = state
+                .config
+                .lock()
+                .await
+                .rules
+                .get(idx)
+                .and_then(|r| r.delay);
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
             rendered
         }
         None => {

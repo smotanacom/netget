@@ -448,6 +448,9 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
     if let Route::ContainerInspect(id) = &route {
         data["id"] = json!(id);
     }
+    if let Some(answer_with) = route.answer_with(&data["query"]) {
+        data["answer_with"] = json!(answer_with);
+    }
 
     console_debug!(ctx.status_tx, "Calling LLM for Docker {} {}", method, path);
     let event = Event::new(&actions::DOCKER_API_REQUEST_EVENT, data);

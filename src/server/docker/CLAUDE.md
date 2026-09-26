@@ -34,10 +34,18 @@ the swarm types — so an unknown name costs two model calls (the container and 
 | the filler fields in every document | `/images/json`, `/networks`, `/volumes` → `send_docker_images` / `_networks` / `_volumes` |
 | | any of them → `send_docker_error {status, message}` |
 
-The event is `docker_api_request {method, path, api_version, query, resource, id?}`; `path` is
-without the version prefix, `query` is decoded (`all`, `filters` as its JSON string), `resource`
-is one of `version`, `info`, `containers`, `container`, `images`, `networks`, `volumes`, and
-`id` is set for `container`.
+The event is `docker_api_request {method, path, api_version, query, resource, id?,
+answer_with}`; `path` is without the version prefix, `query` is decoded (`all`, `filters` as its
+JSON string), `resource` is one of `version`, `info`, `containers`, `container`, `images`,
+`networks`, `volumes`, and `id` is set for `container`. `answer_with` (`Route::answer_with`)
+names the action for this one request — for a list, the array it carries (and for
+`/containers/json` whether stopped containers belong in it), for an inspect the 404 and its
+`No such container: <id>` message. The event description carries the same table for every
+route, and llama3.1:8b still answered an inspect of a missing container with
+`send_docker_version` 5 times in 5: a small model reads the request in front of it, not the
+table. Naming the array matters as much as naming the action: a hint that said only
+"send_docker_containers with the running containers" was answered with
+`{"type": "send_docker_containers"}` and nothing else in 13 of 15 list requests.
 
 **The server picks the action that answers the route.** A response carrying several actions —
 which is what a static handler is, since it answers every `docker_api_request` identically — is
@@ -55,11 +63,24 @@ Fills: a 64-hex ID derived deterministically from the name when none is given (s
 list of `/version`, and the ~40 fields of `/info` (`Swarm.LocalNodeState: inactive`, plugins,
 runtimes). `created` is unix seconds or RFC 3339.
 
+Three things a model writes that Docker would not, rendered the way Docker would rather than
+refused (each was the whole of a 0/15 eval case, `api_test.rs` pins each):
+
+- **A name as the ID** (`"id": "eval-web"`). Letters and digits are used as given; a value
+  shaped like a container name is the seed a missing ID is derived from, so it renders as the
+  same 64-hex ID omitting it would, and `ps` and `inspect` agree. The client only ever receives
+  letters and digits.
+- **`"state": "stopped"`** is `exited` — what `docker stop` leaves.
+- **An exited container's `status` without its code** ("Exited 10 minutes ago", "Stopped") is
+  written `Exited (<exit_code>) 10 minutes ago` / `Exited (<exit_code>)`, the daemon's form. A
+  running container's wording is the model's own.
+
 Refuses, with a reason: a container with no name or image, a name Docker would refuse
 (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`), a state outside `created|running|paused|restarting|removing|
-exited|dead`, a port outside 1..=65535, a port type other than tcp/udp/sctp, a non-alphanumeric
-ID, an unparseable timestamp, a tag with whitespace, an `api_version` that is not `N.M`, a
-negative count. Refusals happen in `execute_action`, so they reach the log and access log
+exited|dead` (after the `stopped` alias), a port outside 1..=65535, a port type other than
+tcp/udp/sctp, an ID that is neither letters and digits nor name-shaped (spaces, slashes,
+punctuation), an unparseable timestamp, a tag with whitespace, an `api_version` that is not
+`N.M`, a negative count. Refusals happen in `execute_action`, so they reach the log and access log
 (`list_access_logs`) as a failed action; the network path does not re-prompt the model with them.
 
 ## Failure behaviour
