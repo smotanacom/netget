@@ -143,7 +143,11 @@ Also bounded now:
 
 - **Message size** — `MAX_LDAP_MESSAGE` (1 MiB). A long-form BER length can promise 4 GiB.
 - **Filter nesting** — `MAX_FILTER_DEPTH` (32). `render_filter` recurses over client-supplied
-  structure, so an unbounded renderer overflows the stack on a deliberately deep filter.
+  structure, so an unbounded renderer overflows the stack on a deliberately deep filter. A
+  search needs no bind, so this is reachable from the first message. The pure decoders —
+  `ldap_message_len`, `decode_ldap_message`, `parse_search_request` — are public so
+  `fuzz/fuzz_targets/ldap_filter.rs` drives the session's own path; with the check disabled its
+  60 000-level `depth_bomb` seed (~280 KB, under `MAX_LDAP_MESSAGE`) kills it with `SIGSEGV`.
 - **Integer width** — `ber_integer` rejects INTEGERs wider than 8 bytes and sign-extends
   properly, rather than shifting an arbitrary number of bytes into an `i32`.
 

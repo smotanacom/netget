@@ -45,16 +45,28 @@ struct ConnectionData {
     /// Doubles as the framing accumulator and the queue for bytes that arrive mid-call.
     buffer: Vec<u8>,
     write_half: Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
+    /// Signalled by [`ModbusServer::close`] so the connection's reader stops too.
+    ///
+    /// `close` runs on a `handle_data` task, not on the reader, and shutting the write half
+    /// only half-closes the socket. Without this signal the reader goes on reading from a peer
+    /// the server has already dropped — holding the read half, and with it the connection-cap
+    /// permit, until the peer hangs up or stays quiet for the whole idle bound. A peer could
+    /// then occupy a slot by sending one malformed header and keeping its end open.
+    closed: Arc<tokio::sync::Notify>,
 }
 
 /// How much one connection may accumulate before we give up on it: eight ADUs' worth.
 ///
 /// The buffer is both the framing accumulator and the queue for bytes that arrive while a
-/// request is with the model, so this bound has to be enforced on *append* as well as in
-/// the framing loop. Checking it only in the loop leaves the queue unbounded for the whole
-/// duration of an LLM call, which at the shipped `--llm-queue-timeout` of 120s is long
-/// enough for a peer to push gigabytes into it.
-const MAX_BUFFERED: usize = MAX_ADU_LEN * 8;
+/// request is with the model. It is enforced on *append*, in `handle_data`, which is the only
+/// code that grows the buffer — the framing loop only drains it. The placement is the point:
+/// while a request is with the model the framing loop does not run at all, so a bound checked
+/// there would leave the queue unbounded for the whole LLM call, which at the shipped
+/// `--llm-queue-timeout` of 120s is long enough for a peer to push gigabytes into it.
+///
+/// Outside a model call a peer cannot reach it: an incomplete ADU is at most `MAX_ADU_LEN - 1`
+/// octets, so only bytes queued behind an in-flight request add up to it.
+pub const MAX_BUFFERED: usize = MAX_ADU_LEN * 8;
 
 /// How long to wait for a peer's first bytes after it connects.
 ///
@@ -62,7 +74,9 @@ const MAX_BUFFERED: usize = MAX_ADU_LEN * 8;
 /// client sends its first PDU inside its own connect path (`tokio-modbus` and `mbpoll` both do).
 /// So a peer that has connected and sent nothing has begun no transaction at all, which is the
 /// state an unauthenticated flood lives in: Modbus has no authentication step of any kind.
-const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+///
+/// This is the default; the `first_byte_timeout_secs` startup parameter overrides it.
+pub const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How long a peer that has already sent something may send nothing further.
 ///
@@ -76,7 +90,10 @@ const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// for a human, 300 seconds by default. Ten minutes leaves that a factor of two. Real Modbus/TCP
 /// gateways commonly reap an idle connection at 60 seconds; being ten times more patient is the
 /// deliberate price of letting a human answer.
-const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+///
+/// This is the default; the `idle_timeout_secs` startup parameter overrides it. An operator
+/// exposing the port to strangers with no human in the loop wants it near the gateway figure.
+pub const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Concurrent connections this server admits.
 ///
@@ -84,7 +101,7 @@ const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::
 /// handle and an `AppState` row, so the cap is what turns those per-connection bounds into total
 /// ones. A real PLC admits single digits; 256 is the shared default and is still far below what
 /// an attacker needs for socket exhaustion to matter.
-const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+pub const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
 
 /// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: **nothing**.
 ///
@@ -120,6 +137,11 @@ enum Decision {
     /// The model answered a different question: bits for a register read, a write ack for
     /// a read, or the wrong number of values for the quantity requested.
     FailClosedWrongShape,
+    /// The stream stopped being Modbus: a protocol id other than 0, or an MBAP length outside
+    /// `2..=254`. Not a request, so nothing is answered; the connection is closed.
+    FailClosedFramingError,
+    /// More than [`MAX_BUFFERED`] octets queued on one connection. Closed, not answered.
+    FailClosedBufferOverflow,
 }
 
 impl Decision {
@@ -132,6 +154,8 @@ impl Decision {
             Decision::FailClosedLlmError => "fail_closed_llm_error",
             Decision::FailClosedNoAction => "fail_closed_no_action",
             Decision::FailClosedWrongShape => "fail_closed_wrong_shape",
+            Decision::FailClosedFramingError => "fail_closed_framing_error",
+            Decision::FailClosedBufferOverflow => "fail_closed_buffer_overflow",
         }
     }
 
@@ -141,6 +165,8 @@ impl Decision {
             Decision::FailClosedLlmError
                 | Decision::FailClosedNoAction
                 | Decision::FailClosedWrongShape
+                | Decision::FailClosedFramingError
+                | Decision::FailClosedBufferOverflow
         )
     }
 }
@@ -153,6 +179,7 @@ impl ModbusServer {
     ///
     /// Returns `Err` if the socket cannot be bound, so `server_startup` records
     /// `ServerStatus::Error` rather than a server that is not listening.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -160,6 +187,8 @@ impl ModbusServer {
         status_tx: mpsc::UnboundedSender<String>,
         unit_id_filter: Option<u8>,
         server_id: crate::state::ServerId,
+        first_byte_timeout: std::time::Duration,
+        idle_timeout: std::time::Duration,
     ) -> Result<SocketAddr> {
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
@@ -227,12 +256,14 @@ impl ModbusServer {
 
                         // Register before spawning the reader, so a client that writes
                         // immediately after connect() cannot have its first frame dropped.
+                        let closed = Arc::new(tokio::sync::Notify::new());
                         connections.lock().await.insert(
                             connection_id,
                             ConnectionData {
                                 state: ConnectionState::Idle,
                                 buffer: Vec::new(),
                                 write_half: write_half.clone(),
+                                closed: closed.clone(),
                             },
                         );
 
@@ -279,20 +310,24 @@ impl ModbusServer {
                                 let mut spoke_once = false;
                                 loop {
                                     let read_deadline = if spoke_once {
-                                        IDLE_BETWEEN_REQUESTS_TIMEOUT
+                                        idle_timeout
                                     } else {
-                                        FIRST_BYTE_READ_TIMEOUT
+                                        first_byte_timeout
                                     };
                                     // The deadline wraps this read and nothing else. Modbus has
                                     // no message a server may send unprompted, so a peer
                                     // dropped for silence is closed without a byte — the
                                     // reason is the log line.
-                                    let read_result = match tokio::time::timeout(
-                                        read_deadline,
-                                        read_half.read(&mut read_buf),
-                                    )
-                                    .await
-                                    {
+                                    let timed_read = tokio::select! {
+                                        // `close` has already torn the connection down; stop
+                                        // reading so the socket and the permit go with it.
+                                        _ = closed.notified() => break,
+                                        r = tokio::time::timeout(
+                                            read_deadline,
+                                            read_half.read(&mut read_buf),
+                                        ) => r,
+                                    };
+                                    let read_result = match timed_read {
                                         Ok(v) => v,
                                         Err(_) => {
                                             log.info(format!(
@@ -454,9 +489,12 @@ impl ModbusServer {
             // without bound for the whole duration of the call.
             if conn.buffer.len() > MAX_BUFFERED {
                 error!(
-                    "Modbus {} buffered {} bytes without a complete frame; closing",
+                    "Modbus {} queued {} bytes, past the {} one connection may buffer; closing \
+                     decision={}",
                     connection_id,
-                    conn.buffer.len()
+                    conn.buffer.len(),
+                    MAX_BUFFERED,
+                    Decision::FailClosedBufferOverflow.as_str()
                 );
                 conn.buffer.clear();
                 drop(conns);
@@ -489,26 +527,8 @@ impl ModbusServer {
                     return;
                 };
 
-                // Guard against a peer that never sends a parseable frame.
-                if conn.buffer.len() > MAX_BUFFERED {
-                    error!(
-                        "Modbus {} buffered {} bytes without a complete frame; closing",
-                        connection_id,
-                        conn.buffer.len()
-                    );
-                    conn.buffer.clear();
-                    drop(conns);
-                    Self::close(
-                        connection_id,
-                        server_id,
-                        &app_state,
-                        &connections,
-                        &status_tx,
-                    )
-                    .await;
-                    return;
-                }
-
+                // No MAX_BUFFERED check here: this loop only drains the buffer, and the append
+                // above is the one place it grows.
                 match codec::try_parse_adu(&conn.buffer) {
                     Ok(Some((adu, consumed))) => {
                         conn.buffer.drain(..consumed);
@@ -534,7 +554,10 @@ impl ModbusServer {
                 Err(e) => {
                     // Neither error is answerable: we no longer know where the next frame
                     // starts, so the only honest signal is to close.
-                    log.error(format!("Modbus framing error on {connection_id}: {e}"));
+                    log.error(format!(
+                        "Modbus framing error on {connection_id}: {e}; closing decision={}",
+                        Decision::FailClosedFramingError.as_str()
+                    ));
                     Self::close(
                         connection_id,
                         server_id,
@@ -981,10 +1004,16 @@ impl ModbusServer {
         connections: &Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
-        let write_half = {
+        let removed = {
             let mut conns = connections.lock().await;
-            conns.remove(&connection_id).map(|c| c.write_half)
+            conns.remove(&connection_id)
         };
+        let write_half = removed.map(|c| {
+            // `notify_one` stores a permit when the reader is not parked on `notified()` at this
+            // instant, so the wake-up cannot be lost to a read that is mid-flight.
+            c.closed.notify_one();
+            c.write_half
+        });
         if let Some(write_half) = write_half {
             let mut w = write_half.lock().await;
             let _ = w.shutdown().await;

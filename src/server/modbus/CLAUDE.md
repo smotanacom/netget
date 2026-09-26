@@ -6,13 +6,19 @@ Modbus TCP server. The LLM plays the device: it decides what a coil or register 
 whether a write is accepted, and which exception to raise when it is not. NetGet owns the wire
 format, so the model never sees a transaction id, a byte count or a bit-packing rule.
 
-**Status**: Beta — `metadata()` says so, and the evidence is
-`test_modbus_reads_writes_and_exceptions_against_tokio_modbus`, which drives the real
-`tokio-modbus` 0.17 client, is not `#[ignore]`d, and has no skip-when-missing gate.
-`tokio-modbus` is an **unconditional** dev-dependency, so the evidence compiles wherever the
-suite does. (This line said "Experimental" while the code said `Beta` — the code was right.)
-Note that the blocking CI `test` job runs `tcp,http,dns,udp,redis,mcp-stdio` only, so it does
-not execute this test; run it yourself.
+**Status**: **Stable**, set 26 September 2026. See "Maturity: the six conditions" at the foot of
+this file for what was checked, what was false when it was checked, and what the rating does
+*not* cover. Two independent clients drive every function code the server implements:
+
+| peer | what it is | test |
+|---|---|---|
+| `tokio-modbus` 0.17 | a Rust client, not linked by the server | `e2e_test.rs::test_modbus_reads_writes_and_exceptions_against_tokio_modbus` |
+| `mbpoll` | a C program on libmodbus | `real_client_test.rs::test_modbus_reads_writes_and_exceptions_against_mbpoll` |
+
+Neither is `#[ignore]`d and neither can skip: `require_mbpoll` **fails** when the binary is
+absent, and `tokio-modbus` is an unconditional dev-dependency, so that evidence compiles wherever
+the suite does. The blocking CI `test` job runs `tcp,http,dns,udp,redis,mcp-stdio` only, so it
+executes none of this; run it yourself.
 **Spec**: MODBUS Application Protocol Specification V1.1b3; MODBUS Messaging on TCP/IP
 Implementation Guide V1.0b
 **Port**: 502, declared as `PrivilegeRequirement::PrivilegedPort(502)`
@@ -28,8 +34,8 @@ is unaffected.
 
 ## Library choice
 
-**Hand-rolled**, in `codec.rs` (~370 lines). `tokio-modbus` has a `tcp-server` feature and was
-considered, but:
+**Hand-rolled**, in `codec.rs`. `tokio-modbus` has a `tcp-server` feature and was considered,
+but:
 
 - Its server API wants a `Service` returning a `Response` enum, which would put the crate's own
   encoder between the model and the wire. Using it on both sides of the tests would then mean
@@ -37,7 +43,8 @@ considered, but:
 - The format is genuinely small: a 7-byte MBAP header and eight function codes.
 
 `tokio-modbus` 0.17 (MIT OR Apache-2.0) is instead a **dev-dependency**, used as the independent
-client in `tests/server/modbus/e2e_test.rs`. That asymmetry is the point.
+client in `tests/server/modbus/e2e_test.rs`. That asymmetry is the point: `grep -rn tokio_modbus
+src/` finds nothing.
 
 ## What is implemented
 
@@ -52,9 +59,10 @@ client in `tests/server/modbus/e2e_test.rs`. That asymmetry is the point.
 | 0x0F | Write Multiple Coils | start+quantity+bytes → start+quantity |
 | 0x10 | Write Multiple Registers | start+quantity+bytes → start+quantity |
 
-Exception responses are `function_code | 0x80` followed by the exception code: 0x01 illegal
-function, 0x02 illegal data address, 0x03 illegal data value, 0x04 server device failure,
-0x0B gateway target device failed to respond.
+Exception responses are `function_code | 0x80` followed by the exception code. The server itself
+produces 0x01 illegal function, 0x02 illegal data address, 0x03 illegal data value, 0x04 server
+device failure and 0x0B gateway target device failed to respond; the model may choose any code
+the specification defines (1-6, 8, 10, 11).
 
 **Not implemented**: Modbus RTU and ASCII (this is TCP only), FC 0x07/0x08/0x0B/0x0C/0x11/0x14/
 0x15/0x16/0x17/0x18/0x2B, and Modbus Security (TLS).
@@ -76,9 +84,11 @@ SQLite facility. A protocol-local database would be the wrong answer.
 ### 2. Spec-determined failures never reach the model
 
 `codec::parse_request` returns `Err(exception_code)` for everything the specification decides on
-its own: an unknown function code is *always* 0x01, a quantity of 0 or 2001 coils is *always*
-0x03, a range running past 0xFFFF is *always* 0x02. Those are answered directly from
-`mod.rs`, with no LLM call.
+its own: an unknown function code is *always* 0x01; a quantity outside 1-2000 (bit reads),
+1-125 (register reads), 1-1968 (coil writes) or 1-123 (register writes) is *always* 0x03, as is
+a byte count that disagrees with the quantity, a single-coil value other than 0x0000/0xFF00, and
+a PDU too short to carry its fields; a range running past 0xFFFF is *always* 0x02. Those are
+answered directly from `mod.rs`, with no LLM call.
 
 The model is only asked the questions a device actually answers: what does this read return, and
 do I accept this write.
@@ -120,17 +130,25 @@ exception 0x04 and `decision=fail_closed_encode` rather than unwrapping it.
 
 ### 4. Fail closed
 
-`pdu_from_results` answers with exception **0x04 server device failure** and an ERROR log when:
+The server answers with exception **0x04 server device failure** and an ERROR log when:
 
-- the LLM call itself failed;
-- no usable action came back;
-- the model returned the wrong *kind* of answer (bits for a register read, a write-ack for a
-  read);
-- the model returned the wrong *number* of values for the requested quantity;
-- a register value was outside 0-65535, which drops it and so makes the count wrong.
+- the LLM call itself failed (`fail_closed_llm_error`);
+- the model answered with an action this event does not offer — bits for a register read, a
+  write-ack for a read. Each event offers the model only its own actions, so the LLM layer treats
+  such an answer as an *unknown action*, re-asks once (`MAX_UNKNOWN_ACTION_RETRIES` in
+  `src/llm/conversation.rs`), and then fails the call: it arrives here as an LLM error and is
+  logged `fail_closed_llm_error`, after a `LLM failed to use valid actions` line;
+- no usable action came back — including an empty answer, and a `send_modbus_registers` carrying
+  a value outside 0-65535, which `execute_action` refuses outright so no action survives
+  (`fail_closed_no_action`);
+- a static or script rule, which is not held to the event's vocabulary, answered the wrong
+  *kind* (`fail_closed_wrong_shape`);
+- the answer carried the wrong *number* of values for the requested quantity
+  (`fail_closed_wrong_shape`).
 
 None of those produces a plausible-looking response. A truncated register block would be worse
-than an exception: the client would believe it.
+than an exception: the client would believe it. `tests/server/modbus/llm_failure_test.rs` drives
+every clause from the wire and asserts both the PDU and the per-request `decision=` line.
 
 **Silence is the wrong answer here, and that is not the general rule.** ~20 protocols in this
 project are deliberately silent on LLM failure because every reply they define is a positive
@@ -151,12 +169,23 @@ stable `decision=` token, as `src/server/radius/` does:
 | `model_reject` | the model chose an exception itself | DEBUG |
 | `spec_reject` | `parse_request` decided; the model was never asked | DEBUG |
 | `unit_mismatch` | addressed to another unit id | WARN |
-| `fail_closed_llm_error` | the LLM backend failed | **ERROR** |
+| `fail_closed_llm_error` | the LLM call failed — the backend, or an answer outside the event's vocabulary | **ERROR** |
 | `fail_closed_no_action` | the model was asked and returned nothing usable | **ERROR** |
-| `fail_closed_wrong_shape` | wrong kind of answer, or wrong number of values | **ERROR** |
+| `fail_closed_wrong_shape` | wrong number of values, or a rule answered the wrong kind | **ERROR** |
+| `fail_closed_encode` | an encoder refused a PDU (unreachable today; a ratchet) | **ERROR** |
 
-`grep 'decision=fail_closed_'` finds every request the model did not actually answer. The
-error text itself never reaches the wire — only the exception code does.
+Those are per request. Four more close a connection rather than answer anything:
+
+| token | meaning | level |
+|---|---|---|
+| `fail_closed_framing_error` | protocol id not 0, or MBAP length outside `2..=254` | **ERROR** |
+| `fail_closed_buffer_overflow` | more than `MAX_BUFFERED` octets queued | **ERROR** |
+| `fail_closed_idle_timeout` | a read deadline expired | INFO |
+| `fail_closed_connection_cap` | over `MAX_CONNECTIONS`, refused at accept (written by `accept_bounded`) | WARN |
+
+`grep 'decision=fail_closed_'` finds every request the model did not actually answer and every
+connection the server dropped. The error text itself never reaches the wire — only the
+exception code does, or nothing.
 
 ### 4c. Model-supplied numbers are refused, never narrowed
 
@@ -186,17 +215,24 @@ task is spawned, for the same reason TCP does it: a client that writes immediate
 `connect()` must not lose its first frame.
 
 A framing error (`protocol_id != 0`, or an MBAP length outside 2..=254) closes the connection.
-Neither is answerable — we no longer know where the next frame starts — and the buffer is capped
-at `MAX_BUFFERED` (eight ADUs' worth) so a peer that never sends a parseable frame cannot grow
-it without bound.
+Neither is answerable — we no longer know where the next frame starts.
 
-**That cap is enforced on append as well as in the framing loop, and the loop alone was not
-enough.** While a request is with the model, `handle_data` appends the new bytes and returns
-early; the loop-side check does not run again until the LLM call returns. At the shipped
-`--llm-queue-timeout` of 120s that left the queue unbounded for two minutes per request, which
-is long enough for a flooding peer to push gigabytes into it. Both sites now check, and both
-close the connection rather than trimming — a peer that overruns the frame accumulator has
-desynchronised anyway.
+**Closing means the whole connection, reader included.** `close` runs on a `handle_data` task
+and shuts the write half, so the peer reads EOF; it also signals the connection's `closed`
+`Notify`, and the reader's `select!` stops on it. Without that signal the reader went on reading
+the still-open socket and held the connection-cap permit until the peer hung up or went quiet for
+the idle bound — so a peer could keep a slot by sending one malformed header and holding its end
+open. `bounds_test.rs::the_connection_cap_refuses_silently_and_every_close_returns_its_slot`
+asserts the slot comes back while the peer is still connected.
+
+The buffer is capped at `MAX_BUFFERED` (eight ADUs' worth), enforced **on append**, in
+`handle_data`, which is the only code that grows it — the framing loop only drains. That
+placement is what matters: while a request is with the model, `handle_data` appends the new
+bytes and returns early, and the framing loop does not run until the LLM call returns, so a
+loop-side check would leave the queue unbounded for the whole call (two minutes at the shipped
+`--llm-queue-timeout`). Outside a model call the bound cannot be reached, since an incomplete ADU
+is at most 259 octets. An overrun closes the connection rather than trimming — a peer that
+overruns the queue has desynchronised anyway.
 
 ### 6. Dashboard injection (peer handle)
 
@@ -257,10 +293,12 @@ decision 2.
 | Name | Type | Effect |
 |---|---|---|
 | `unit_id` | integer 0-255, optional | When set, requests addressed to a different unit id are answered with exception 0x0B, as a Modbus/TCP gateway would. When omitted the server answers on every unit id, which is what most Modbus/TCP devices do. |
+| `first_byte_timeout_secs` | integer ≥ 1, optional | Seconds a new connection may send nothing before it is closed. Default 30 (`FIRST_BYTE_READ_TIMEOUT`). |
+| `idle_timeout_secs` | integer ≥ 1, optional | Seconds a connection that has sent a request may then send nothing. Default 600 (`IDLE_BETWEEN_REQUESTS_TIMEOUT`). |
 
-That is the only one, and it is read in `actions.rs::spawn` and used in `mod.rs::handle_data` —
-neither declared-but-unread nor read-but-undeclared. Out-of-range values produce a clean `Err`
-from `spawn()`, never a panic.
+All three are read in `actions.rs::spawn` and used in `mod.rs` — neither declared-but-unread nor
+read-but-undeclared. An out-of-range `unit_id` or a zero timeout produces a clean `Err` from
+`spawn()`, never a panic.
 
 ## Connection bounds
 
@@ -272,6 +310,8 @@ beside them in `src/server/modbus/mod.rs`.
 
 | Bound | Value | Why this number |
 |---|---|---|
+| `codec::MAX_ADU_LEN`, declared as `max_inbound_bytes` | 260 octets | The specification's maximum: a 7-octet MBAP header and a 253-octet PDU. It governs the **inbound** direction through the MBAP length field — 254 is the largest legal value and 255 is refused by closing. Outbound, the encoders refuse anything past it, and every response to a legal request fits. |
+| `MAX_BUFFERED` | 2080 octets | Eight ADUs' worth of bytes queued behind a request that is with the model; see decision 5. |
 | `FIRST_BYTE_READ_TIMEOUT` | 30s | Modbus TCP is client-speaks-first and a client sends its first PDU inside its own connect path (`tokio-modbus` and `mbpoll` both do), so a peer that has sent nothing has begun no transaction. |
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 600s | Modbus defines no keepalive, so there is no protocol interval to sit above; what there is, is polling, and a SCADA master polls on a sub-second to few-second cycle. The number is set by *this* server: `handle_data` runs on its own task, so the reader keeps reading while a request is answered and a peer waiting for its own reply — including one parked on a `manual` rule for a human, 300s by default — is silent on this socket for the whole of that work. Ten minutes leaves that a factor of two. Real Modbus/TCP gateways reap an idle connection at ~60s; being ten times more patient is the deliberate price of letting a human answer. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. Every Modbus server message is a reply and carries the transaction identifier, unit id and function code of a request this peer has not sent, so inventing one means inventing a transaction — worse than silence, for the same reason twenty protocols here are deliberately silent on an LLM failure. The reason lives in the log, under `decision=fail_closed_connection_cap`. |
@@ -283,12 +323,16 @@ exemption in `PROTOCOL_QUALITY.md`'s three-state test.
 construction; what it measures is the peer's own silence. An idle close writes nothing and logs
 `decision=fail_closed_idle_timeout`.
 
-`tests/server/modbus/connection_bounds_test.rs` drives both halves from the wire, including that
-the refusal really is silent and that a peer that has sent one request is still answered 38
-seconds later. Replacing the `tokio::time::timeout` around the read with the bare call makes the
-first test hang for its whole 70-second window and fail.
-`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed, and
-`tests/accept_bounded_test.rs` covers the shared helper.
+`tests/server/modbus/connection_bounds_test.rs` drives the two deadline defaults from the wire,
+including that the refusal really is silent and that a peer that has sent one request is still
+answered 38 seconds later. Replacing the `tokio::time::timeout` around the read with the bare
+call makes the first test hang for its whole 70-second window and fail.
+`tests/server/modbus/bounds_test.rs` drives every other bound — `MAX_ADU_LEN` at 260 and 261
+octets, `MAX_BUFFERED` at exactly 2080 queued octets and one more, `MAX_CONNECTIONS` at 256 and
+257 plus the slot coming back after both kinds of close, both deadline parameters, the four
+quantity limits and the `unit_id` filter — and each was verified by removing the bound and
+watching its test fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if a deadline
+or the cap is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
 
 ## Known limitations
 
@@ -298,9 +342,7 @@ first test hang for its whole 70-second window and fail.
    asked to guess.
 3. **No Observe-style push.** A Modbus server never initiates; `get_async_actions()` is
    deliberately empty.
-4. **Per-connection tasks are untracked**, as elsewhere in the project: `stop_server` aborts the
-   accept loop and releases the port, but does not cancel connections already in flight.
-5. **Concurrency is per-connection serial.** Pipelined requests on one socket are answered in
+4. **Concurrency is per-connection serial.** Pipelined requests on one socket are answered in
    order, one LLM call at a time. That is correct but not fast; use script or static handlers for
    throughput.
 
@@ -321,6 +363,72 @@ Impersonate a temperature transmitter. Input registers 0 and 1 hold a 32-bit
 big-endian value which is degrees Celsius times 100. Reject every write with
 illegal_function - this device is read-only.
 ```
+
+## Maturity: the six conditions
+
+The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
+26 September 2026 rather than inherited. All six hold; three of them only after this pass
+repaired something:
+
+| # | condition | holds? |
+|---|---|---|
+| 1 | two independent third-party clients, no skip, no `#[ignore]` | **yes** — `tokio-modbus` 0.17 and libmodbus's `mbpoll`, each driving all eight function codes; `require_mbpoll` hard-fails; the server does not link `tokio-modbus` |
+| 2 | the pcap oracle is green over its wire traffic | **yes, as of this pass** — `pcap_oracle_test.rs` runs `mbtcp` over a session of all eight function codes and an exception, both directions |
+| 3 | a fuzz target exists and has run clean, with a corpus | **yes** — `modbus_adu`, 226,125 runs in 61s, clean; see below |
+| 4 | every declared bound has a test | **yes, as of this pass** — `bounds_test.rs` and `connection_bounds_test.rs`, each verified by removal |
+| 5 | both `CLAUDE.md` files verified against source in this pass | **yes** — this file and `tests/server/modbus/CLAUDE.md`; the corrections are below |
+| 6 | no `#[ignore]`, no skip-when-missing gate | **yes** — `grep -rn '#\[ignore\]' tests/server/modbus/` is empty |
+
+**Condition 1 was true of a sample, not the surface.** Both clients existed, but `tokio-modbus`
+never issued FC 2, 5 or 15 and `mbpoll` never issued FC 2, 5, 15 or 16 — while `metadata()`
+named `read_discrete_inputs` among the calls `tokio-modbus` had decoded. Both tests now cover all
+eight, and the coil writes are accepted only if the bits each client packed reach the model
+exactly as sent, so FC 15's bit field is checked by two independent packers.
+
+**Condition 2 was satisfied by exceptions alone.** The only ADUs ever handed to `mbtcp` were
+the spec-rejected ones in `test_modbus_spec_exceptions_and_mbap_framing`, because the success
+paths are read by `tokio-modbus`, which never shows the test the bytes. Register blocks, packed
+coil bytes and write echoes — most of what `codec.rs` writes — had never been dissected.
+
+**Condition 4 turned up a real defect, not just missing tests.** `MAX_CONNECTIONS` was declared
+and enforced at accept, but a connection the server closed for a framing error or a queue
+overrun kept its permit for as long as the peer held its end open (see decision 5). The
+declared bound `max_inbound_bytes(MAX_ADU_LEN)` governs the direction it reads as — inbound,
+through the MBAP length field — unlike `coap`'s, which governed what it wrote; the outbound side
+is `tests/codec_property_test.rs`. The idle deadline could not be tested at its ten-minute
+default, which is why it is now a startup parameter as `tcp`'s is. `MAX_BUFFERED` was checked at
+two sites, one of which could never fire; it is now checked at the one that can.
+
+**Condition 5 turned up claims the code did not keep**, all now true or removed: the wrong-kind
+failure was said to be logged `fail_closed_wrong_shape` and is `fail_closed_llm_error` when the
+model produces it; an out-of-range register value was said to be "dropped, which makes the count
+wrong" and is in fact refused whole by `execute_action`; per-connection tasks were said to be
+untracked and are spawned with `spawn_server_task`; `MAX_BUFFERED` was said to be checked at two
+sites; "the only" startup parameter was one of three; and the codec's line count was wrong.
+
+**Condition 3 needs no depth bomb, and why is the point.** Modbus has no nesting: an ADU is a
+flat header and a flat PDU, and nothing in `codec.rs` calls itself, so there is no recursion
+class for a depth bomb to reach. What a peer controls is every length it declares, so the
+corpus has a seed on each — `max_adu` (length 254), `over_max_adu` (255),
+`declared_longer_than_sent`, `zero_length`, `not_modbus`, each quantity limit at its maximum,
+and a byte count that disagrees with its quantity. The target also asserts three invariants the
+server relies on without checking: framing round-trips through `encode_adu`, every read
+`parse_request` accepts can be answered and framed, and an FC 5/6 acknowledgement parses back as
+its request. Rebuild before believing it:
+
+```bash
+cd fuzz && rustup run nightly-2025-12-04 cargo fuzz run -s none modbus_adu <copy of corpus> \
+    -- -max_total_time=60 -timeout=25 -rss_limit_mb=2048
+```
+
+### What Stable does *not* mean here
+
+It means the evidence for the surface this server implements is complete. The surface is a
+subset of Modbus: **TCP only (no RTU, no ASCII), eight function codes (1-6, 15, 16), no Modbus
+Security, no real PLC ever pointed at it.** A master that needs FC 0x17 or device identification
+(0x2B/0x0E) gets exception 0x01, correctly, and cannot use this server for that. The `openvpn`
+precedent does not apply: a Modbus master can use this server for what Modbus is for — two
+independent ones did, for every function code it implements, with the bytes asserted.
 
 ## References
 

@@ -56,7 +56,7 @@ task. `src/utils/bencode.rs` is the same lesson in a different format.
 
 | Bound | Value | Applied to |
 |---|---|---|
-| `MAX_TUPLE_DEPTH` | 64 | nested lists. `(` is one byte, so without it 64 KiB buys ~64 000 frames |
+| `MAX_TUPLE_DEPTH` | 64 | nested lists. The reader is iterative, but the `Item` it builds is walked recursively (`Display`, `to_json`, `Drop`); without the cap 64 KiB of closed lists is a 32 000-deep `Item` and a `SIGSEGV`. `fuzz/fuzz_targets/svn_tuple.rs` crashes on its `depth_bomb` seed with the check disabled |
 | `MAX_COMMAND_BYTES` | 64 KiB | the whole message |
 | declared string length | the remaining budget | the number the peer **declares**, checked before anything is allocated — `1073741824:` is twelve bytes on the wire |
 

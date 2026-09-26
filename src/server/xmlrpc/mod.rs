@@ -487,10 +487,14 @@ pub enum XmlRpcValue {
 
 /// Maximum `<array>`/`<struct>`/`<value>` nesting accepted from a client.
 ///
-/// The parser is iterative, so deep nesting cannot overflow the stack, but each
-/// level costs a heap frame; this bounds what one request can allocate.
+/// The parser is iterative, so *parsing* a deep document cannot overflow the stack — but the
+/// `XmlRpcValue` it returns is recursive, and the request path walks it recursively
+/// (`actions::create_method_call_event` converts it to JSON for the model, and `Drop` recurses).
+/// Without this cap a 4 MiB body is a value ~100 000 deep, and 16 000 levels already overflow
+/// an 8 MiB stack: `fuzz/fuzz_targets/xmlrpc_value.rs`'s `depth_bomb` seed `SIGSEGV`s with the
+/// check disabled. It also bounds the parser's own container stack.
 #[cfg(feature = "xmlrpc")]
-const MAX_VALUE_DEPTH: usize = 64;
+pub const MAX_VALUE_DEPTH: usize = 64;
 
 /// A container currently being filled.
 #[cfg(feature = "xmlrpc")]
@@ -514,8 +518,11 @@ enum Container {
 ///
 /// This version tracks the active type element, closes each value at `</value>`,
 /// and validates the document shape.
+///
+/// Public for `fuzz/fuzz_targets/xmlrpc_value.rs`, which hands whatever this accepts to
+/// `actions::create_method_call_event` exactly as the request path does.
 #[cfg(feature = "xmlrpc")]
-fn parse_method_call(xml: &str) -> Result<MethodCall> {
+pub fn parse_method_call(xml: &str) -> Result<MethodCall> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 

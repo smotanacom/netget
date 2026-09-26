@@ -16,3 +16,6 @@ pub mod real_client_test;
 // Raw OP_MSG over a socket; decodes replies with `bson`, which `mongodb-server` already brings.
 #[cfg(all(test, feature = "mongodb-server"))]
 pub mod bson_depth_test;
+// Raw OP_MSG kind-1 sections, plus one driver test gated inside the file on `mongodb`.
+#[cfg(all(test, feature = "mongodb-server"))]
+pub mod document_sequence_test;
