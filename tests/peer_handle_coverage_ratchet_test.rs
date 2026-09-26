@@ -204,6 +204,7 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("openapi", Reason::HyperOwnsSocket),
     ("openid", Reason::HyperOwnsSocket),
     ("postgresql", Reason::Reviewed),
+    ("prometheus", Reason::HyperOwnsSocket),
     ("proxy", Reason::Tunnel),
     ("pypi", Reason::HyperOwnsSocket),
     ("rss", Reason::HyperOwnsSocket),

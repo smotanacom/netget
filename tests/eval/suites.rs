@@ -56,6 +56,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(ftp());
     #[cfg(feature = "udp")]
     cases.extend(udp());
+    #[cfg(feature = "prometheus")]
+    cases.extend(prometheus());
     cases
 }
 
@@ -773,6 +775,55 @@ fn udp() -> Vec<EvalCase> {
             "Send every datagram straight back to whoever sent it, unchanged.",
             nc_udp("netget-eval-datagram\n"),
             Expect::contains(&["netget-eval-datagram"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus — curl fetches /metrics and pipes it to promtool, the Prometheus
+// project's own parser and linter. `PROMTOOL-OK` is printed only when promtool
+// exits 0, so a case passes only if the model's metrics rendered into an
+// exposition a real scraper accepts. `tee /dev/stderr` keeps the body in the
+// probe output for the content checks.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "prometheus")]
+fn promtool_scrape() -> Probe {
+    Probe::client(
+        "sh",
+        &[
+            "-c",
+            "curl -sS --max-time 230 http://127.0.0.1:{PORT}/metrics | tee /dev/stderr \
+             | promtool check metrics && echo PROMTOOL-OK",
+        ],
+    )
+}
+
+#[cfg(feature = "prometheus")]
+fn prometheus() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "prometheus/queue-depth-gauge",
+            "prometheus",
+            "Expose a gauge named netget_eval_queue_depth whose value is 17.",
+            promtool_scrape(),
+            Expect::contains(&["netget_eval_queue_depth 17", "PROMTOOL-OK"]),
+        ),
+        EvalCase::new(
+            "prometheus/requests-by-status",
+            "prometheus",
+            "Count HTTP requests by status code: 1500 requests answered 200 and 12 answered \
+             404 so far.",
+            promtool_scrape(),
+            Expect::contains(&["PROMTOOL-OK"]).matching(r#"(?i)="?200"?[,}][^\n]* 1500"#),
+        ),
+        EvalCase::new(
+            "prometheus/latency-histogram",
+            "prometheus",
+            "Report request latency in seconds as a histogram with buckets at 0.1, 0.5 and 1 \
+             second; 40 requests so far, 30 of them under 0.1s.",
+            promtool_scrape(),
+            Expect::contains(&["_bucket", "le=\"+Inf\"", "PROMTOOL-OK"]),
         ),
     ]
 }

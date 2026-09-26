@@ -314,6 +314,9 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "webrtc",
         "webrtc_signaling",
         "websocket",
+        // Programme 4 new HTTP-layered servers, each with a connection_bounds_test.rs driving
+        // the shared tests/helpers/http_bounds.rs checks.
+        "prometheus",
     ];
 
     let servers = tcp_servers();

@@ -186,6 +186,8 @@ pub mod ospf;
 pub mod pop3;
 #[cfg(feature = "postgresql")]
 pub mod postgresql;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 #[cfg(all(feature = "pty", unix))]

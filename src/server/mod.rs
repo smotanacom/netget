@@ -754,6 +754,13 @@ pub use kubernetes::actions::KubernetesProtocol;
 #[cfg(feature = "kubernetes-server")]
 pub use kubernetes::KubernetesServer;
 
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
+#[cfg(feature = "prometheus")]
+pub use prometheus::actions::PrometheusProtocol;
+#[cfg(feature = "prometheus")]
+pub use prometheus::PrometheusServer;
+
 #[cfg(feature = "openai")]
 pub mod openai;
 #[cfg(feature = "openai")]
