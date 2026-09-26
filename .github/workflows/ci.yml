@@ -377,6 +377,10 @@ jobs:
       #   mosquitto         - the mqtt client (Eclipse Mosquitto, C; NetGet's client is rumqttc)
       #   nginx             - the http client (NetGet's client is reqwest/hyper)
       #   redis-server      - the redis client (NetGet frames RESP itself)
+      #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
+      #                       client is tokio-postgres). Ubuntu keeps the server binaries in
+      #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
+      #                       searches there, so nothing is symlinked
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -419,7 +423,7 @@ jobs:
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan \
-            mosquitto nginx redis-server
+            mosquitto nginx redis-server postgresql
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -760,6 +764,7 @@ jobs:
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
             client/mqtt::real_server_test client/nats::e2e_test \
+            client/postgresql::real_server_test \
             client/redis::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
