@@ -53,6 +53,11 @@ use std::path::{Path, PathBuf};
 /// `ConnectionActivity` shape `etcd` and `s3` established rather than a deadline inside hyper's
 /// own reads, because hyper keeps polling a connection while a request is being answered and
 /// such a deadline fires in the middle of a model round-trip.
+///
+/// That "every one of the 92" was true of the population this test measured and false of the
+/// tree: when the population was widened on 26 September 2026 (see [`tcp_servers`]) it grew to
+/// 95, and the three it had missed — `http2`, `socket_file`, `ssh_agent` — had no deadline at
+/// all. They were fixed rather than baselined, so the list is still empty.
 const TIMEOUT_BASELINE: &[&str] = &[];
 
 /// Protocols that open a TCP accept loop without a connection cap.
@@ -70,6 +75,10 @@ const TIMEOUT_BASELINE: &[&str] = &[];
 /// plain close because every message they could send would have to echo something the refused
 /// peer never sent — or, for `doh` and `dot`, would be a malformed TLS record rather than a
 /// refusal at all.
+///
+/// The widened population of 26 September 2026 found three more with no cap — `http2`,
+/// `socket_file` and `ssh_agent` — and all three now go through `accept_bounded` or its Unix
+/// twin `accept_bounded_unix`.
 ///
 /// Nothing here makes a cap impossible. This is work left.
 const CAP_BASELINE: &[&str] = &[];
@@ -104,22 +113,32 @@ fn server_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server")
 }
 
-/// Every protocol directory under `src/server` whose `mod.rs` opens a TCP accept loop, with the
-/// whole directory's Rust source concatenated — a protocol may put its bounds in a sibling
-/// module, and `nfs` does exactly that.
+/// Every protocol directory under `src/server` that opens a stream accept loop — TCP or Unix
+/// domain — with the whole directory's Rust source concatenated, because a protocol may put its
+/// bounds in a sibling module, and `nfs` does exactly that.
+///
+/// **The listener is looked for in every `.rs` file of the directory, not only `mod.rs`.**
+/// Until 26 September 2026 only `mod.rs` was read for it, and three servers were invisible:
+/// `http2` binds in `h2_server.rs`, while `socket_file` and `ssh_agent` bind a `UnixListener`,
+/// which was not counted as a listener at all. All three had neither a connection cap nor a read
+/// deadline — the "counted a token, not the thing" blind spot the module comment describes, one
+/// file over. Widening the population added exactly those three directories and no other, so it
+/// costs no false positives; the run on the unfixed tree flagged all three in both checks.
 fn tcp_servers() -> Vec<(String, String)> {
     let root = server_root();
     let mut found = Vec::new();
 
     for entry in walk_dirs(&root) {
-        let mod_rs = entry.join("mod.rs");
-        let Ok(mod_src) = std::fs::read_to_string(&mod_rs) else {
-            continue;
-        };
-        // Both ways a server opens a TCP accept loop. Matching only the first is what hid 60
-        // of 92 protocols from this test: `create_reusable_tcp_listener` returns a
-        // `TcpListener` without its caller ever writing the type.
-        if !mod_src.contains("TcpListener") && !mod_src.contains("create_reusable_tcp_listener") {
+        let own_source = rust_sources(&entry);
+        // Every way a server here opens a stream accept loop, looked for in every file of the
+        // directory. Matching only `TcpListener` is what hid 60 of 92 protocols from this test:
+        // `create_reusable_tcp_listener` returns a `TcpListener` without its caller ever
+        // writing the type. `UnixListener` is the same accept-loop shape over a filesystem
+        // socket, with the same exposure to a peer that connects and says nothing.
+        if !LISTENER_TOKENS
+            .iter()
+            .any(|token| own_source.contains(token))
+        {
             continue;
         }
         let name = entry
@@ -128,7 +147,6 @@ fn tcp_servers() -> Vec<(String, String)> {
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
 
-        let mut combined = String::new();
         // A protocol's own directory, plus — for one that nests a level deeper — its family
         // directory. `nfs` declares both its bounds in `nfs/guard.rs`, a sibling module, and
         // this walk has always picked that up because it is in the same directory. The USB
@@ -137,24 +155,37 @@ fn tcp_servers() -> Vec<(String, String)> {
         // `usb/keyboard` declaring the bound in its own `mod.rs` would mean six copies of one
         // number. Without this, the check measured a token's *location* rather than whether a
         // read is bounded — the same class of blind spot as the `TcpListener` one above.
-        for dir in [Some(entry.as_path()), family_dir(&root, &entry)]
-            .into_iter()
-            .flatten()
-        {
-            for file in std::fs::read_dir(dir).expect("read protocol dir").flatten() {
-                let path = file.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        combined.push_str(&text);
-                    }
-                }
-            }
+        let mut combined = own_source;
+        if let Some(family) = family_dir(&root, &entry) {
+            combined.push_str(&rust_sources(family));
         }
         found.push((name, combined));
     }
 
     found.sort();
     found
+}
+
+/// How a server opens a stream accept loop. See [`tcp_servers`].
+const LISTENER_TOKENS: &[&str] = &[
+    "TcpListener",
+    "create_reusable_tcp_listener",
+    "UnixListener",
+];
+
+/// Every `.rs` file directly in `dir`, concatenated. Nested directories are protocols of their
+/// own in [`walk_dirs`], so they are not folded in here.
+fn rust_sources(dir: &Path) -> String {
+    let mut combined = String::new();
+    for file in std::fs::read_dir(dir).expect("read protocol dir").flatten() {
+        let path = file.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                combined.push_str(&text);
+            }
+        }
+    }
+    combined
 }
 
 /// The family directory of a protocol that nests one level deeper (`src/server/usb` for
@@ -314,6 +345,12 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "webrtc",
         "webrtc_signaling",
         "websocket",
+        // The three the widened population found (26 September 2026). Each has a
+        // `connection_bounds_test.rs` that fills the cap from the wire and drives both read
+        // bounds from the peer's side.
+        "http2",
+        "socket_file",
+        "ssh_agent",
     ];
 
     let servers = tcp_servers();
@@ -321,7 +358,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         let (_, source) = servers
             .iter()
             .find(|(name, _)| leaf(name) == *protocol)
-            .unwrap_or_else(|| panic!("{protocol} no longer binds a TcpListener in its mod.rs"));
+            .unwrap_or_else(|| panic!("{protocol} no longer opens a listener in its directory"));
 
         assert!(
             TIMEOUT_TOKENS.iter().any(|token| source.contains(token)),
