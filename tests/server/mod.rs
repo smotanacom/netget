@@ -6,6 +6,8 @@ pub mod amqp;
 pub mod arp;
 #[cfg(feature = "bgp")]
 pub mod bgp;
+#[cfg(feature = "bolt")]
+pub mod bolt;
 #[cfg(feature = "bitcoin")]
 pub mod bitcoin;
 #[cfg(feature = "bluetooth-ble")]
