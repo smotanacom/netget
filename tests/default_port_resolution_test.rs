@@ -48,16 +48,16 @@ fn a_well_known_port_at_or_above_1024_is_taken_without_privilege() {
         "the kernel hands out unprivileged ephemeral ports"
     );
     let resolved = resolve_default_port(Some(port), PortTransport::Tcp, "127.0.0.1", &caps(false));
-    assert_eq!(
-        resolved,
-        DefaultPort {
-            port,
-            well_known: Some(port),
-            transport: PortTransport::Tcp,
-            fallback: None,
-        }
+    assert_eq!(resolved.well_known, Some(port));
+    assert_ne!(
+        resolved.fallback,
+        Some(PortFallback::NeedsPrivilege),
+        "privilege is never the reason at or above 1024"
     );
-    assert_eq!(resolved.describe(), format!("well-known port {port}"));
+    assert_released_port_is_the_default(port, &resolved);
+    if resolved.fallback.is_none() {
+        assert_eq!(resolved.describe(), format!("well-known port {port}"));
+    }
 }
 
 #[test]
@@ -104,9 +104,24 @@ fn a_well_known_port_in_use_falls_back_with_the_reason() {
 
     drop(held);
     let resolved = resolve_default_port(Some(port), PortTransport::Tcp, "127.0.0.1", &caps(true));
-    assert_eq!(
-        resolved.port, port,
-        "released, the same port is the default again — the probe reads the present"
+    assert_released_port_is_the_default(port, &resolved);
+}
+
+/// Released, the same port is the default again — the probe reads the present.
+///
+/// An ephemeral port nobody holds is the kernel's to hand to the next `bind(0)`, and in a
+/// whole-suite run some other test in some other process is always asking. So a fallback is
+/// accepted only when the port really is held by someone else right now; a fallback on a free
+/// port is the defect this assertion exists for.
+fn assert_released_port_is_the_default(port: u16, resolved: &DefaultPort) {
+    if resolved.port == port {
+        assert_eq!(resolved.fallback, None);
+        return;
+    }
+    assert_eq!(resolved.fallback, Some(PortFallback::InUse));
+    assert!(
+        port_is_in_use("127.0.0.1", port, PortTransport::Tcp),
+        "fell back from {port}, but nothing holds it"
     );
 }
 
