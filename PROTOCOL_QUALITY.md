@@ -129,6 +129,14 @@ connect event only with `send_first`: the full run predates that change and show
 6/15, the rerun 15/15. Raising the event on every connection was built, measured and kept for
 `telnet` only (every telnet banner case had been 0/5).
 
+The eval now also covers `smtp`, `pop3`, `imap`, `nntp`, `memcached`, `mqtt`, `coap`, `modbus`,
+`snmp`, `sip` and `websocket` (25 cases, 36 protocols in all). Their first measurement is 30 of 125
+runs (24%), every case either 5/5 or 0/5, and none of the failures is the harness: each probe
+passes against a mock that answers correctly. The dominant failure is the model reusing the wrong
+action (SMTP and NNTP answering commands with the greeting action) or copying an action's own
+example values (SNMP, CoAP, memcached stats), which the eval's `copied_example_content` diagnosis
+now labels; it had never fired before.
+
 The first measurement of the new servers is the next thing to act on: `gemini`, `bolt`,
 `beanstalkd` and `docker` scored 0/15, `zabbix` 3/10, `gearman` 7/10, and `dict`,
 `prometheus` and `vault` 10/15.
