@@ -1,4 +1,4 @@
-//! The connection cap on a real, running DoH server, driven from the wire.
+//! The connection cap and the idle bound on a real, running DoH server, driven from the wire.
 //!
 //! `TLS_HANDSHAKE_TIMEOUT` (10s) bounds how long *one* peer holds a connection before it has
 //! handshaken, and after that hyper owns the HTTP/2 session. Neither bound says anything about
@@ -13,8 +13,9 @@
 //!    completing a real TLS handshake. That is not decoration: a peer that merely opens a
 //!    socket is evicted by `TLS_HANDSHAKE_TIMEOUT` after ten seconds, which would free slots on
 //!    its own and let claim 3 below pass for a reason that has nothing to do with the permit.
-//!    A handshaken connection is parked in hyper's HTTP/2 session instead, where nothing evicts
-//!    it, so the cap is the only thing this test can be measuring.
+//!    A handshaken connection is parked in hyper's HTTP/2 session instead, where only the idle
+//!    bound evicts it — 300 seconds at the default this test runs with, far past its own
+//!    length — so the cap is the only thing this test can be measuring.
 //! 2. The next one is closed **with nothing written**, and that is the right answer rather than
 //!    a shortcut. The three plaintext HTTP servers capped alongside this one answer 503 with
 //!    `Retry-After`; here the peer is mid-`ClientHello` and feeds everything it reads to a TLS
@@ -35,6 +36,8 @@
 //! The server is model-free: an empty instruction really is model-free, where `None` is
 //! replaced by a default one. No HTTP request is ever sent, so no model call is provoked.
 //! Loopback only.
+//!
+//! The idle bound has three tests of its own, described where they start below.
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features doh --test server -- doh::connection_bounds --test-threads=100
@@ -230,5 +233,187 @@ async fn the_handshake_past_the_cap_is_refused_before_it_starts_and_the_slot_com
         admitted,
         "the cap never freed its slot after an admitted connection ended — the permit is being \
          held past the life of the connection, which wedges the server shut"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The idle bound
+// ---------------------------------------------------------------------------------------------
+//
+// `TLS_HANDSHAKE_TIMEOUT` ends at the handshake. After it hyper owns the HTTP/2 session and
+// applies no idle bound of its own, so `IDLE_BETWEEN_QUERIES_TIMEOUT` (300s, declared as
+// `idle_timeout_secs`) is what lets go of a connection that has stopped asking. It is a
+// `watch_idle` over a `ConnectionActivity` that every request holds busy — so the three tests
+// below are: silent after the handshake, silent after an answered query, and busy on a query
+// parked for a human. Removing the `watch_idle` arm makes the first two hang to their windows;
+// removing the `busy()` guard makes the third see its connection closed.
+
+/// The idle bound these tests drive, as `idle_timeout_secs`.
+const SHORT_IDLE: Duration = Duration::from_secs(3);
+
+async fn start_server_with(
+    state: &AppState,
+    startup_params: serde_json::Value,
+    event_handlers: Vec<serde_json::Value>,
+) -> (ServerId, u16) {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let server_id = ServerForm {
+        protocol: "doh".to_string(),
+        port: Some(0),
+        instruction: Some(String::new()),
+        startup_params: Some(startup_params),
+        event_handlers: Some(event_handlers),
+        ..Default::default()
+    }
+    .create(state, tx)
+    .await
+    .expect("create doh server");
+    let port = wait_for_port(state, server_id).await;
+    (server_id, port)
+}
+
+async fn has_live_connection(state: &AppState, id: ServerId) -> bool {
+    state
+        .get_server(id)
+        .await
+        .map(|s| {
+            s.connections
+                .values()
+                .any(|c| !matches!(c.status, netget::state::server::ConnectionStatus::Closed))
+        })
+        .unwrap_or(false)
+}
+
+/// An HTTP/2 client over a completed DoH TLS handshake, with its connection driver spawned. The
+/// driver's task ends when the server closes the connection.
+async fn h2_session(
+    port: u16,
+) -> (
+    h2::client::SendRequest<bytes::Bytes>,
+    tokio::task::JoinHandle<Result<(), h2::Error>>,
+) {
+    let tls = handshake(port, &connector()).await.expect("TLS handshake");
+    let (client, connection) = h2::client::handshake(tls).await.expect("h2 handshake");
+    let driver = tokio::spawn(connection);
+    let client = client.ready().await.expect("h2 client ready");
+    (client, driver)
+}
+
+#[tokio::test]
+async fn a_handshaken_peer_that_never_speaks_http2_is_closed_at_the_idle_bound() {
+    use tokio::io::AsyncReadExt;
+
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        serde_json::json!({"idle_timeout_secs": SHORT_IDLE.as_secs()}),
+        vec![],
+    )
+    .await;
+
+    // A completed TLS handshake and then nothing: no HTTP/2 preface. Before the idle bound this
+    // was the one state nothing ever ended — past the handshake deadline, never inside hyper's.
+    let mut tls = handshake(port, &connector()).await.expect("TLS handshake");
+    let started = std::time::Instant::now();
+    let mut sink = Vec::new();
+    let ended = tokio::time::timeout(Duration::from_secs(45), tls.read_to_end(&mut sink)).await;
+    let elapsed = started.elapsed();
+    assert!(
+        ended.is_ok(),
+        "a peer that completed TLS and never sent the HTTP/2 preface was still connected after \
+         45s — nothing bounds a DoH connection past its handshake"
+    );
+    assert!(
+        elapsed >= SHORT_IDLE / 2,
+        "closed after {}ms, which is not the declared {}s idle bound",
+        elapsed.as_millis(),
+        SHORT_IDLE.as_secs()
+    );
+}
+
+#[tokio::test]
+async fn an_answered_connection_that_goes_quiet_is_closed_at_the_idle_bound() {
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        serde_json::json!({"idle_timeout_secs": SHORT_IDLE.as_secs()}),
+        vec![],
+    )
+    .await;
+
+    // A GET with no `dns=` parameter is answered 400 by the server itself — no model — so this
+    // is an answered query on a live HTTP/2 connection with nothing in flight afterwards.
+    let (mut client, driver) = h2_session(port).await;
+    let request = http::Request::builder()
+        .method("GET")
+        .uri(format!("https://localhost:{port}/dns-query"))
+        .body(())
+        .expect("build request");
+    let (response, _) = client.send_request(request, true).expect("send request");
+    let response = tokio::time::timeout(Duration::from_secs(20), response)
+        .await
+        .expect("no answer to a malformed DoH GET within 20s")
+        .expect("response");
+    assert_eq!(
+        response.status(),
+        400,
+        "the malformed GET was not answered 400"
+    );
+
+    let started = std::time::Instant::now();
+    let ended = tokio::time::timeout(Duration::from_secs(45), driver).await;
+    let elapsed = started.elapsed();
+    assert!(
+        ended.is_ok(),
+        "an answered DoH connection that then carried no query was never closed — \
+         `idle_timeout_secs` is not read, or nothing watches ConnectionActivity"
+    );
+    assert!(
+        elapsed >= SHORT_IDLE / 2,
+        "closed after {}ms, which is not the declared {}s idle bound",
+        elapsed.as_millis(),
+        SHORT_IDLE.as_secs()
+    );
+}
+
+#[tokio::test]
+async fn a_query_parked_for_a_human_keeps_its_connection() {
+    let state = new_state().await;
+    let (server_id, port) = start_server_with(
+        &state,
+        serde_json::json!({"idle_timeout_secs": SHORT_IDLE.as_secs()}),
+        vec![serde_json::json!({
+            "event_pattern": "*",
+            "handler": {"type": "manual", "timeout_secs": 600}
+        })],
+    )
+    .await;
+
+    // One A query for `a.`, id 0x1234, POSTed as RFC 8484's `application/dns-message`.
+    let query: &[u8] = &[
+        0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, b'a', 0x00,
+        0x00, 0x01, 0x00, 0x01,
+    ];
+    let (mut client, driver) = h2_session(port).await;
+    let request = http::Request::builder()
+        .method("POST")
+        .uri(format!("https://localhost:{port}/dns-query"))
+        .header("content-type", "application/dns-message")
+        .body(())
+        .expect("build request");
+    let (_response, mut body) = client.send_request(request, false).expect("send request");
+    body.send_data(bytes::Bytes::from_static(query), true)
+        .expect("send query body");
+
+    // Four times the idle bound, well inside the 600-second window the human has to answer in.
+    tokio::time::sleep(SHORT_IDLE * 4).await;
+    assert!(
+        !driver.is_finished(),
+        "the DoH server closed a connection whose query was parked for a human — the idle \
+         watchdog is not honouring ConnectionActivity::busy"
+    );
+    assert!(
+        has_live_connection(&state, server_id).await,
+        "the server no longer has a live connection for a query parked for a human"
     );
 }

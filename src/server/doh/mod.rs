@@ -37,6 +37,29 @@ use tracing::{debug, error};
 /// `acceptor.accept()` — and the task around it — open forever, at no cost to itself.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long an established connection may carry no query at all before it is closed.
+///
+/// [`TLS_HANDSHAKE_TIMEOUT`] ends at the handshake, and after it hyper owns the HTTP/2 session
+/// and applies no idle bound of its own — so a peer that completed TLS and then went quiet, or
+/// never sent the HTTP/2 preface, held its slot forever. 300 seconds, chosen to stay above the
+/// 90 seconds `reqwest` keeps an idle pooled connection: NetGet's own DoH client is a pooled
+/// `reqwest` client, and a bound below the pool's races it and loses a query. RFC 8484 sets no
+/// number; resolvers multiplex onto few long-lived connections, and [`MAX_CONNECTIONS`] bounds
+/// how many of those can sit idle at once.
+///
+/// **A query still being answered is not silence.** Each request's service future holds the
+/// connection's `ConnectionActivity` busy for the whole of its answer — a model round-trip, or a
+/// `manual` rule parked for a human — and the watchdog never fires while anything is in flight.
+/// HTTP/2 PING frames are answered by hyper and are not activity. On expiry the connection gets
+/// a GOAWAY (`graceful_shutdown`) rather than a bare close, which a client reads as "reconnect
+/// for the next query". Declared as the `idle_timeout_secs` startup parameter.
+pub const IDLE_BETWEEN_QUERIES_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the GOAWAY sent at the idle bound is given to reach the peer. The connection is idle
+/// by definition, so there is nothing to drain; this only stops a peer that has stopped reading
+/// from holding the close open.
+const GOAWAY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Largest DoH request body accepted, in bytes.
 ///
 /// A DNS message is at most 65535 bytes by construction (its length is carried in 16 bits
@@ -111,6 +134,7 @@ impl DohServer {
         app_state: Arc<AppState>,
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
+        idle_timeout: Duration,
     ) -> Result<SocketAddr> {
         // Generate TLS configuration (default self-signed cert), advertising `h2`.
         //
@@ -139,7 +163,13 @@ impl DohServer {
         let task_registrar = app_state.clone();
         let handle = tokio::spawn(async move {
             if let Err(e) = Self::run(
-                listener, tls_config, llm_client, app_state, server_id, status_tx,
+                listener,
+                tls_config,
+                llm_client,
+                app_state,
+                server_id,
+                status_tx,
+                idle_timeout,
             )
             .await
             {
@@ -161,6 +191,7 @@ impl DohServer {
         app_state: Arc<AppState>,
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
+        idle_timeout: Duration,
     ) -> Result<()> {
         let acceptor = TlsAcceptor::from(tls_config);
         let local_addr = listener
@@ -241,6 +272,7 @@ impl DohServer {
                             app_state,
                             server_id,
                             status_tx,
+                            idle_timeout,
                         )
                         .await
                         {
@@ -272,6 +304,7 @@ impl DohServer {
         app_state: Arc<AppState>,
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
+        idle_timeout: Duration,
     ) -> Result<()> {
         let closer = app_state.clone();
         let close_tx = status_tx.clone();
@@ -284,6 +317,7 @@ impl DohServer {
             app_state,
             server_id,
             status_tx,
+            idle_timeout,
         )
         .await;
 
@@ -306,6 +340,7 @@ impl DohServer {
         app_state: Arc<AppState>,
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
+        idle_timeout: Duration,
     ) -> Result<()> {
         // Perform TLS handshake, bounded. An unbounded `accept` is a task a peer can park
         // forever by connecting and saying nothing.
@@ -324,13 +359,23 @@ impl DohServer {
         // Wrap in TokioIo for hyper compatibility
         let io = TokioIo::new(tls_stream);
 
+        // Whether this connection is answering anything. Every request holds it busy for the
+        // whole of its answer, so the idle watchdog below cannot close a connection whose query
+        // is waiting on the model or parked for a human. Created after the handshake, so a peer
+        // that handshakes and then never sends the HTTP/2 preface is on this clock too.
+        let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+        let activity_for_service = Arc::clone(&activity);
+        let idle_log_tx = status_tx.clone();
+
         // Create service closure
         let service = service_fn(move |req: Request<hyper::body::Incoming>| {
             let llm_client = llm_client.clone();
             let app_state = app_state.clone();
             let status_tx = status_tx.clone();
+            let busy = activity_for_service.busy();
 
             async move {
+                let _busy = busy;
                 Self::handle_request(
                     req,
                     peer_addr,
@@ -344,10 +389,27 @@ impl DohServer {
             }
         });
 
-        // Serve HTTP/2
-        let result = http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-            .serve_connection(io, service)
-            .await;
+        // Serve HTTP/2, raced against the idle watchdog. hyper keeps polling the connection
+        // while a request is answered, so a deadline on its reads would fire mid-answer; the
+        // watchdog reads ConnectionActivity instead, which is busy for exactly that time.
+        let conn =
+            http2::Builder::new(hyper_util::rt::TokioExecutor::new()).serve_connection(io, service);
+        tokio::pin!(conn);
+        let result = tokio::select! {
+            result = conn.as_mut() => result,
+            _ = crate::server::accept_bounded::watch_idle(Arc::clone(&activity), idle_timeout) => {
+                Log::new(Some(&idle_log_tx)).debug(format!(
+                    "DoH connection {} from {} carried no query for {}s; sending GOAWAY",
+                    connection_id,
+                    peer_addr,
+                    idle_timeout.as_secs()
+                ));
+                conn.as_mut().graceful_shutdown();
+                timeout(GOAWAY_DRAIN_TIMEOUT, conn.as_mut())
+                    .await
+                    .unwrap_or(Ok(()))
+            }
+        };
 
         if let Err(e) = result {
             debug!("DoH HTTP/2 connection error: {}", e);

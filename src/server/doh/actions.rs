@@ -83,6 +83,19 @@ impl DohProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for DohProtocol {
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        vec![crate::llm::actions::ParameterDefinition {
+            name: "idle_timeout_secs".to_string(),
+            type_hint: "number".to_string(),
+            description: "Seconds an established DoH connection may carry no query before the \
+                          server sends GOAWAY and closes it. Default 300, above the 90 seconds \
+                          reqwest keeps an idle pooled connection. A query still being \
+                          answered never counts as idle."
+                .to_string(),
+            required: false,
+            example: json!(300),
+        }]
+    }
     fn get_async_actions(&self, state: &AppState) -> Vec<ActionDefinition> {
         self.dns_protocol.get_async_actions(state)
     }
@@ -214,12 +227,23 @@ impl Server for DohProtocol {
             // DohServer::spawn binds the listener before returning, so bind
             // failures surface here and the address it returns is the real
             // bound address (resolving port 0 to the OS-assigned port).
+            // The idle bound is the operator's to tune; the default is argued beside
+            // IDLE_BETWEEN_QUERIES_TIMEOUT in mod.rs.
+            let idle_timeout = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_u64("idle_timeout_secs"))
+                .transpose()?
+                .flatten()
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(crate::server::doh::IDLE_BETWEEN_QUERIES_TIMEOUT);
             DohServer::spawn(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.server_id,
                 ctx.status_tx,
+                idle_timeout,
             )
             .await
         })
