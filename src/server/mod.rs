@@ -768,6 +768,13 @@ pub use docker::actions::DockerProtocol;
 #[cfg(feature = "docker")]
 pub use docker::DockerServer;
 
+#[cfg(feature = "vault")]
+pub mod vault;
+#[cfg(feature = "vault")]
+pub use vault::actions::VaultProtocol;
+#[cfg(feature = "vault")]
+pub use vault::VaultServer;
+
 #[cfg(feature = "openai")]
 pub mod openai;
 #[cfg(feature = "openai")]

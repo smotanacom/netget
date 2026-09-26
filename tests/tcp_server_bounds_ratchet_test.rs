@@ -318,6 +318,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         // the shared tests/helpers/http_bounds.rs checks.
         "prometheus",
         "docker",
+        "vault",
     ];
 
     let servers = tcp_servers();

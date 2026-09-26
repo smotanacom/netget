@@ -217,6 +217,7 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("spark", Reason::HyperOwnsSocket),
     ("sqs", Reason::HyperOwnsSocket),
     ("ssh", Reason::RusshOwnsSocket),
+    ("vault", Reason::HyperOwnsSocket),
     ("webdav", Reason::HyperOwnsSocket),
     ("webrtc", Reason::WebSocketFrames),
     ("webrtc_signaling", Reason::WebSocketFrames),

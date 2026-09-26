@@ -88,7 +88,7 @@ env:
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
     jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server prometheus docker git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus docker vault git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:
@@ -587,6 +587,19 @@ jobs:
           set -eux
           docker --version
 
+      # The vault CLI drives vault::real_client_test. HashiCorp's release zip rather than
+      # its apt repository, which would also install and enable a vault server unit. The test
+      # runs the CLI with a cleared environment and a temp HOME, against NetGet only.
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Install the vault CLI (HashiCorp release)
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/vault.zip \
+            https://releases.hashicorp.com/vault/1.18.3/vault_1.18.3_linux_amd64.zip
+          sudo unzip -o /tmp/vault.zip vault -d /usr/local/bin
+          vault version
+
       # kcat drives the kafka real-client test. ubuntu-22.04 still ships it under the
       # pre-rename package name `kafkacat`, whose binary may be either `kcat` or
       # `kafkacat` depending on the build - the test invokes `kcat`, so symlink when
@@ -737,7 +750,7 @@ jobs:
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \
             svn::real_client_test \
-            torrent_tracker::real_client_test webdav::real_client_test \
+            torrent_tracker::real_client_test vault::real_client_test webdav::real_client_test \
             websocket::e2e_test \
             wol::real_client_test ; do
             echo "::group::$filter"

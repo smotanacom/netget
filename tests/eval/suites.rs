@@ -60,6 +60,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(prometheus());
     #[cfg(feature = "docker")]
     cases.extend(docker());
+    #[cfg(feature = "vault")]
+    cases.extend(vault());
     cases
 }
 
@@ -871,6 +873,48 @@ fn docker() -> Vec<EvalCase> {
             "Act as a Docker host with no containers at all.",
             docker_cli(&["inspect", "eval-ghost"]),
             Expect::default().matching(r"(?i)no such (object|container)"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Vault — HashiCorp's vault CLI with VAULT_ADDR at NetGet. HOME is a throwaway
+// path so no token helper from the operator's own config is read.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "vault")]
+fn vault_cli(args: &[&str]) -> Probe {
+    Probe::client("vault", args)
+        .env("VAULT_ADDR", "http://127.0.0.1:{PORT}")
+        .env("VAULT_TOKEN", "hvs.netget-eval")
+        .env("HOME", "/tmp/netget-eval-vault-home")
+}
+
+#[cfg(feature = "vault")]
+fn vault() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "vault/read-a-field",
+            "vault",
+            "Act as a Vault server. The secret at app/db in the secret mount holds the username \
+             payments and the password NETGET-EVAL-PW.",
+            vault_cli(&["kv", "get", "-field=password", "secret/app/db"]),
+            Expect::contains(&["NETGET-EVAL-PW"]),
+        ),
+        EvalCase::new(
+            "vault/list-keys",
+            "vault",
+            "Act as a Vault server whose secret mount has three secrets under app: db, stripe \
+             and smtp.",
+            vault_cli(&["kv", "list", "secret/app"]),
+            Expect::contains(&["db", "stripe", "smtp"]),
+        ),
+        EvalCase::new(
+            "vault/missing-secret",
+            "vault",
+            "Act as a Vault server with an empty secret mount.",
+            vault_cli(&["kv", "get", "secret/app/nothing"]),
+            Expect::default().matching(r"(?i)no value found"),
         ),
     ]
 }

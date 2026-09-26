@@ -137,6 +137,7 @@ portable-base = [
     "kubernetes-server",
     "prometheus",
     "docker",
+    "vault",
     "etcd",
     "zookeeper",
     "torrent-tracker",
@@ -333,6 +334,7 @@ kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client 
 kubernetes-server = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
 prometheus = []  # Prometheus exporter (/metrics) - hyper only, exposition rendered by NetGet
 docker = ["urlencoding"]  # Docker Engine API (read-only) - hyper only, documents rendered by NetGet
+vault = []  # HashiCorp Vault KV v2 - hyper only, envelope rendered by NetGet; the model holds the secrets
 git = ["dep:git2"]  # Git client support
 mercurial = ["http", "urlencoding"]  # Mercurial HTTP server with LLM-controlled virtual repositories
 kafka = ["dep:kafka-protocol"]  # Apache Kafka broker and client, both pure Rust on kafka-protocol (rdkafka/librdkafka removed - aborted in malloc)
@@ -518,6 +520,7 @@ dist-windows = [
     "kubernetes-server",
     "prometheus",
     "docker",
+    "vault",
     "etcd",
     "zookeeper",
     "torrent-tracker",
@@ -660,6 +663,7 @@ all-protocols = [
     "kubernetes-server",
     "prometheus",
     "docker",
+    "vault",
     "etcd",
     "zookeeper",
     "torrent-tracker",

@@ -300,6 +300,8 @@ pub mod usb_msc;
 pub mod usb_serial;
 #[cfg(feature = "usb-smartcard")]
 pub mod usb_smartcard;
+#[cfg(feature = "vault")]
+pub mod vault;
 #[cfg(feature = "vnc")]
 pub mod vnc;
 #[cfg(feature = "vrrp")]
