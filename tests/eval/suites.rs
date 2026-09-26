@@ -40,6 +40,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(beanstalkd());
     #[cfg(feature = "zabbix")]
     cases.extend(zabbix());
+    #[cfg(feature = "gearman")]
+    cases.extend(gearman());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -454,6 +456,52 @@ fn zabbix() -> Vec<EvalCase> {
              for any other host cannot be stored.",
             zabbix_probe("mystery-box", "system.cpu.load", "0.42"),
             Expect::contains(&["processed: 0; failed: 1"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Gearman — the gearmand project's gearman(1) client, which prints a job's
+// WORK_DATA and WORK_COMPLETE payloads and exits 1 with "Job failed" on
+// WORK_FAIL.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gearman")]
+fn gearman_probe(function: &str, workload: &str) -> Probe {
+    Probe::client(
+        "gearman",
+        &[
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-t",
+            "230000",
+            "-f",
+            function,
+            workload,
+        ],
+    )
+}
+
+#[cfg(feature = "gearman")]
+fn gearman() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "gearman/reverse-text",
+            "gearman",
+            "You are a Gearman worker. The function reverse returns its input \
+             spelled backwards.",
+            gearman_probe("reverse", "stressed"),
+            Expect::contains(&["desserts"]),
+        ),
+        EvalCase::new(
+            "gearman/unknown-function-fails",
+            "gearman",
+            "You are a Gearman worker that only knows the function reverse. Any \
+             other function must fail.",
+            gearman_probe("translate", "hello"),
+            Expect::contains(&["Job failed"]),
         ),
     ]
 }

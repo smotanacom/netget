@@ -86,6 +86,8 @@ pub mod etcd;
 pub mod finger;
 #[cfg(feature = "ftp")]
 pub mod ftp;
+#[cfg(feature = "gearman")]
+pub mod gearman;
 #[cfg(feature = "gemini")]
 pub mod gemini;
 #[cfg(feature = "git")]
