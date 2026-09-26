@@ -53,7 +53,8 @@ pub mod http_common;
     feature = "smtp",
     feature = "pop3",
     feature = "tls",
-    feature = "kubernetes-server"
+    feature = "kubernetes-server",
+    feature = "gemini"
 ))]
 pub mod tls_cert_manager;
 
@@ -312,6 +313,18 @@ pub mod ident;
 pub use ident::actions::IdentProtocol;
 #[cfg(feature = "ident")]
 pub use ident::IdentServer;
+#[cfg(feature = "gemini")]
+pub mod gemini;
+#[cfg(feature = "gemini")]
+pub use gemini::actions::GeminiProtocol;
+#[cfg(feature = "gemini")]
+pub use gemini::GeminiServer;
+#[cfg(feature = "dict")]
+pub mod dict;
+#[cfg(feature = "dict")]
+pub use dict::actions::DictProtocol;
+#[cfg(feature = "dict")]
+pub use dict::DictServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]

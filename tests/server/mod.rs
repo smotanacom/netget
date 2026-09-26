@@ -64,6 +64,8 @@ pub mod dc;
 pub mod dhcp;
 #[cfg(feature = "dhcpv6")]
 pub mod dhcpv6;
+#[cfg(feature = "dict")]
+pub mod dict;
 #[cfg(feature = "dns")]
 pub mod dns;
 #[cfg(feature = "doh")]
@@ -82,6 +84,8 @@ pub mod etcd;
 pub mod finger;
 #[cfg(feature = "ftp")]
 pub mod ftp;
+#[cfg(feature = "gemini")]
+pub mod gemini;
 #[cfg(feature = "git")]
 pub mod git;
 #[cfg(feature = "gopher")]

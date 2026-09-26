@@ -308,6 +308,22 @@ async fn stopping_a_whois_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("WHOIS", b"").await;
 }
 
+/// DICT greets first and then waits for a command, so the peer holds an idle, greeted
+/// connection — the state its 300-second first-command bound would otherwise cover.
+#[cfg(feature = "dict")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_dict_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("DICT", b"").await;
+}
+
+/// A Gemini peer that has connected and not yet started its TLS handshake is held by a task
+/// waiting on the ClientHello; the stop must end it rather than the handshake deadline.
+#[cfg(feature = "gemini")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_gemini_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Gemini", b"").await;
+}
+
 /// An HTTP connection with a request in flight must not survive the stop.
 ///
 /// The task here is hyper's `serve_connection`, not a read loop netget wrote, so this is the

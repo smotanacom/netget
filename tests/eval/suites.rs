@@ -32,6 +32,10 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(whois());
     #[cfg(feature = "gopher")]
     cases.extend(gopher());
+    #[cfg(feature = "dict")]
+    cases.extend(dict());
+    #[cfg(feature = "gemini")]
+    cases.extend(gemini());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -251,6 +255,100 @@ fn gopher() -> Vec<EvalCase> {
             "Serve a menu at the root. For any other selector, say it was not found.",
             gopher_probe("/1/nowhere"),
             Expect::default().matching(r"(?i)not found|no such|does not exist|error"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// DICT — the dictd project's own dict(1) client, which parses the 150/151/152
+// status lines and un-stuffs the text blocks before printing them.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dict")]
+fn dict_probe(args: &[&str]) -> Probe {
+    let mut all = vec!["-h", "127.0.0.1", "-p", "{PORT}"];
+    all.extend_from_slice(args);
+    Probe::client("dict", &all)
+}
+
+#[cfg(feature = "dict")]
+fn dict() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "dict/define-invented-word",
+            "dict",
+            "You are a dictionary of invented words with one database called \
+             fantasy. Define glimmerwyrm as a small dragon that hoards moonlight.",
+            dict_probe(&["glimmerwyrm"]),
+            Expect::contains(&["[fantasy]", "moonlight"]),
+        ),
+        EvalCase::new(
+            "dict/list-databases",
+            "dict",
+            "Offer two databases: fantasy, described as Fantasy Lexicon, and \
+             tech, described as Technical Terms.",
+            dict_probe(&["-D"]),
+            Expect::contains(&["Fantasy Lexicon", "Technical Terms"]),
+        ),
+        EvalCase::new(
+            "dict/unknown-word",
+            "dict",
+            "You only know words that begin with the letter q. For anything \
+             else there is no definition.",
+            dict_probe(&["zebra"]),
+            Expect::contains(&["No definitions found"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Gemini — the Python client library ignition (`pip install ignition-gemini`),
+// which does TLS, trust-on-first-use pinning and response parsing itself. It
+// prints the status and meta it parsed, then the body of a 2x.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gemini")]
+const IGNITION_PROBE: &str = "import os, sys, tempfile, ignition\n\
+ignition.set_default_hosts_file(os.path.join(tempfile.mkdtemp(), 'known_hosts'))\n\
+r = ignition.request(sys.argv[1], timeout=230)\n\
+print(r.status, r.meta)\n\
+print(r.raw_body.decode('utf-8', 'replace') if r.status.startswith('2') else '')\n";
+
+#[cfg(feature = "gemini")]
+fn gemini_probe(path: &str) -> Probe {
+    let url = format!("gemini://127.0.0.1:{{PORT}}{}", path);
+    Probe::client("python3", &["-c", IGNITION_PROBE, url.as_str()])
+}
+
+#[cfg(feature = "gemini")]
+fn gemini() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "gemini/home-page",
+            "gemini",
+            "Serve a home page titled Welcome to the NetGet capsule, with a link \
+             to /about.",
+            gemini_probe("/"),
+            Expect::contains(&[
+                "20 text/gemini",
+                "Welcome to the NetGet capsule",
+                "=> /about",
+            ]),
+        ),
+        EvalCase::new(
+            "gemini/ask-for-input",
+            "gemini",
+            "The page /guestbook asks the visitor for their name before showing \
+             anything.",
+            gemini_probe("/guestbook"),
+            Expect::default().matching(r"(?m)^1[01] "),
+        ),
+        EvalCase::new(
+            "gemini/not-found",
+            "gemini",
+            "Only the home page exists. Every other page does not exist.",
+            gemini_probe("/nowhere"),
+            Expect::default().matching(r"(?m)^51 "),
         ),
     ]
 }

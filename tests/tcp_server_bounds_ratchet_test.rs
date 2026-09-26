@@ -314,6 +314,9 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "webrtc",
         "webrtc_signaling",
         "websocket",
+        // New protocols, born with both bounds (Programme 4).
+        "dict",
+        "gemini",
     ];
 
     let servers = tcp_servers();
