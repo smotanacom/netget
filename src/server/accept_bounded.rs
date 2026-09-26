@@ -164,12 +164,50 @@ pub async fn accept_bounded(
     }
 }
 
+/// [`accept_bounded`] for a Unix domain socket listener (`socket_file`, `ssh_agent`).
+///
+/// A filesystem socket is exposed to every local process that can write the node, and a peer
+/// that connects and says nothing holds a task and an `AppState` entry exactly as a TCP peer
+/// does, so it needs the same cap. There is no peer address to log, so the refusal line names
+/// the listener's own path instead.
+#[cfg(unix)]
+pub async fn accept_bounded_unix(
+    listener: &tokio::net::UnixListener,
+    limiter: &ConnectionLimiter,
+    refusal: &[u8],
+    protocol: &str,
+    status_tx: Option<&mpsc::UnboundedSender<String>>,
+) -> std::io::Result<(tokio::net::UnixStream, ConnectionPermit)> {
+    loop {
+        let (socket, _) = listener.accept().await?;
+
+        match limiter.try_acquire() {
+            Some(permit) => return Ok((socket, permit)),
+            None => {
+                let path = listener
+                    .local_addr()
+                    .ok()
+                    .and_then(|a| a.as_pathname().map(|p| p.display().to_string()))
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                Log::new(status_tx).warn(format!(
+                    "{} connection on {} refused decision=fail_closed_connection_cap \
+                     (limit {} concurrent)",
+                    protocol,
+                    path,
+                    limiter.max()
+                ));
+                refuse(socket, refusal).await;
+            }
+        }
+    }
+}
+
 /// Write the protocol's "busy" bytes and close.
 ///
 /// Both halves are best-effort and time-bounded: the peer is already being refused, so nothing
 /// here may block the accept loop. Bytes first, then an explicit shutdown so the peer reads the
 /// refusal followed by a clean EOF rather than a reset that discards it.
-async fn refuse(mut socket: TcpStream, refusal: &[u8]) {
+async fn refuse<S: tokio::io::AsyncWrite + Unpin>(mut socket: S, refusal: &[u8]) {
     let _ = tokio::time::timeout(REFUSAL_WRITE_TIMEOUT, async {
         if !refusal.is_empty() {
             let _ = socket.write_all(refusal).await;
