@@ -10,20 +10,20 @@ rediscovering the header of every protocol. These are the shapes the real decode
 accept, from the protocols' own tests and their RFCs, so libFuzzer starts at the edges
 that matter instead of at byte zero.
 
-**Depth bombs**, for the three decoders that have a nesting guard. Coverage-guided
+**Depth bombs**, for the decoders that have a nesting guard. Coverage-guided
 fuzzing gives *no gradient toward depth*: a value nested 10,000 deep executes exactly
 the same basic blocks as one nested 3 deep, so libFuzzer scores it as uninteresting and
 throws it away. It will not grow one on its own. This was measured, not assumed — with
 `utils::bencode`'s guard removed and no deep seed, 300 seconds and 15.5M executions
 found nothing; with the bomb seeded, the same build died in 2.8 seconds. Every one of
-this repository's six stack overflows is in that class, so a corpus without depth in it
-cannot find the seventh.
+this repository's seven stack overflows is in that class, so a corpus without depth in it
+cannot find the next one.
 
 With the guards in place the bombs are refused in microseconds and nothing downstream
 sees them, so they cost the running fuzzer nothing. They exist for the day a guard
 regresses.
 
-This file is the provenance for 65 otherwise-opaque binary blobs; edit it rather than
+This file is the provenance for 74 otherwise-opaque binary blobs; edit it rather than
 the blobs.
 """
 import os
@@ -314,6 +314,29 @@ write("nfs_record_guard", "many_fragments",
       b"".join(struct.pack(">I", 512) for _ in range(8)) +
       struct.pack(">I", LAST | 512))
 write("nfs_record_guard", "oversized_announce", struct.pack(">I", LAST | 0x7FFFFFFF))
+
+
+# --- RESP2: what redis-cli and redis-rs send, and the shapes utils::resp refuses ---
+def resp_command(*args):
+    out = b"*%d\r\n" % len(args)
+    for a in args:
+        out += b"$%d\r\n%s\r\n" % (len(a), a)
+    return out
+
+
+write("resp_frame", "ping", resp_command(b"PING"))
+write("resp_frame", "set", resp_command(b"SET", b"key", b"value"))
+write("resp_frame", "pipelined", resp_command(b"PING") + resp_command(b"GET", b"k"))
+write("resp_frame", "reply_shapes",
+      b"*5\r\n+OK\r\n:42\r\n$-1\r\n*-1\r\n*2\r\n$0\r\n\r\n-ERR no\r\n")
+write("resp_frame", "incomplete_bulk", b"*1\r\n$10\r\nabc")
+write("resp_frame", "at_depth_limit", b"*1\r\n" * 32 + b":1\r\n")
+# A declared length the 64 MiB buffer can never satisfy, refused on the header line.
+write("resp_frame", "huge_declared_len", b"*4000000000\r\n")
+write("resp_frame", "huge_declared_bulk", b"*1\r\n$4000000000\r\n")
+# 65,536 levels at four bytes each: enough to overflow the fuzzer's 8 MiB main thread
+# when the guard is removed (verified), and the input that sets libFuzzer's -max_len.
+write("resp_frame", "depth_bomb", b"*1\r\n" * 65536 + b":1\r\n")
 
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
