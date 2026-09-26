@@ -103,7 +103,7 @@ impl Protocol for GeminiProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // 1965 is unprivileged.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(

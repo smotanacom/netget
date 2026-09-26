@@ -4,7 +4,7 @@ Gemini (gemini://) capsule over TLS. The model writes the capsule: which status 
 gets, the gemtext pages, input prompts, redirects and failures. NetGet writes every byte of
 framing.
 
-**State**: Experimental. **Privilege**: `None` — the well-known port is 1965.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 1965.
 **Stack**: `ETH>IP>TCP>TLS>GEMINI`. **Feature**: `gemini` (`rustls`, `tokio-rustls`,
 `rustls-pemfile`, `rcgen` — the same optional set `tls` and `http` use).
 
@@ -138,7 +138,9 @@ TLS, not that the Gemini inside is right (ignition's parse is the evidence for t
 
 ## Maturity
 
-Experimental. The evidence is `tests/server/gemini/real_client_test.rs`: the Python client
+Beta, promoted after the whole suite (21 tests, the real-client file included) passed three
+consecutive runs at `--test-threads=100` and `scripts/beta_evidence_table.py --check` stayed
+green with `python3 ignition` as the peer. The evidence is `tests/server/gemini/real_client_test.rs`: the Python client
 library `ignition` 1.0.0 (MPL-2.0, `pip install ignition-gemini`), driven as a subprocess —
 TLS through CPython's `ssl` (OpenSSL, not rustls), TOFU pinning into a temporary known-hosts
 file (re-validated on every later request in the same run), and its own header/body parser. It
@@ -150,3 +152,7 @@ skips, when `python3` or `ignition` is missing.
 installed, which is why the evidence is a library rather than a binary. The raw-socket suites use
 a rustls client, which is the server's own TLS stack; `scripts/beta_evidence_table.py` therefore
 lists `rustls`/`tokio_rustls` as circular — correct, and not what any rating rests on.
+
+What Beta does not cover: one client (a second — `gemget`, or Go's `go-gemini` — is Stable's
+condition 1); the pcap oracle sees TLS records only, not the Gemini inside; no fuzz target;
+browser-style clients (Lagrange, amfora) have not been pointed at it by hand.
