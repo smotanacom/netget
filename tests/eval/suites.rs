@@ -32,6 +32,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(whois());
     #[cfg(feature = "gopher")]
     cases.extend(gopher());
+    #[cfg(feature = "dict")]
+    cases.extend(dict());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -251,6 +253,48 @@ fn gopher() -> Vec<EvalCase> {
             "Serve a menu at the root. For any other selector, say it was not found.",
             gopher_probe("/1/nowhere"),
             Expect::default().matching(r"(?i)not found|no such|does not exist|error"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// DICT — the dictd project's own dict(1) client, which parses the 150/151/152
+// status lines and un-stuffs the text blocks before printing them.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dict")]
+fn dict_probe(args: &[&str]) -> Probe {
+    let mut all = vec!["-h", "127.0.0.1", "-p", "{PORT}"];
+    all.extend_from_slice(args);
+    Probe::client("dict", &all)
+}
+
+#[cfg(feature = "dict")]
+fn dict() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "dict/define-invented-word",
+            "dict",
+            "You are a dictionary of invented words with one database called \
+             fantasy. Define glimmerwyrm as a small dragon that hoards moonlight.",
+            dict_probe(&["glimmerwyrm"]),
+            Expect::contains(&["[fantasy]", "moonlight"]),
+        ),
+        EvalCase::new(
+            "dict/list-databases",
+            "dict",
+            "Offer two databases: fantasy, described as Fantasy Lexicon, and \
+             tech, described as Technical Terms.",
+            dict_probe(&["-D"]),
+            Expect::contains(&["Fantasy Lexicon", "Technical Terms"]),
+        ),
+        EvalCase::new(
+            "dict/unknown-word",
+            "dict",
+            "You only know words that begin with the letter q. For anything \
+             else there is no definition.",
+            dict_probe(&["zebra"]),
+            Expect::contains(&["No definitions found"]),
         ),
     ]
 }

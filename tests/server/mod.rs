@@ -84,6 +84,8 @@ pub mod finger;
 pub mod ftp;
 #[cfg(feature = "git")]
 pub mod git;
+#[cfg(feature = "dict")]
+pub mod dict;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "grpc")]
