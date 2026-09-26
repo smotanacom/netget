@@ -54,6 +54,9 @@ impl Protocol for HlsProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // The request head is all an HLS peer sends that is read; a declared body is
+            // refused with 413 unread. Tested in tests/server/hls/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::hls::MAX_REQUEST_HEAD_BYTES)
             .implementation(
                 "Minimal HTTP/1.1 server routing .m3u8 vs segment requests to distinct events; \
                  playlists assembled from structured segment lists or served verbatim",

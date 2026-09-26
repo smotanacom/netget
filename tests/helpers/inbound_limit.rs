@@ -156,3 +156,23 @@ impl InboundLimitServer {
         let _ = self.state.remove_server(self.server_id).await;
     }
 }
+
+/// The status line and headers of an HTTP response, for an assertion message that should not
+/// print a megabyte of body.
+pub fn head_of(response: &str) -> &str {
+    match response.find("\r\n\r\n") {
+        Some(end) => &response[..end],
+        None => truncate_str(response, 400),
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut cut = max;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
+}

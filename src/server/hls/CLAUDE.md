@@ -120,8 +120,23 @@ storage" rule — the model supplies the bytes.
 
 ## Request reading is bounded in both dimensions
 
-Headers are capped at 64 KiB **and** at a 30-second deadline (`HEADER_READ_TIMEOUT`). The size
-cap alone was not enough: a peer that connects and sends one byte, or nothing, parked the task
+The request head is capped at `MAX_REQUEST_HEAD_BYTES` (64 KiB, the declared
+`max_inbound_bytes`) **and** at a 30-second deadline (`HEADER_READ_TIMEOUT`). The size cap is
+exact: each read asks for at most one byte past it, so a head that ends inside the bound is
+told apart from one that does not, and the buffer never grows further. A head over it is
+answered `431 Request Header Fields Too Large` and closed, logged
+`decision=fail_closed_head_too_large`.
+
+The head is the only thing read. HLS clients send bodiless GETs, and a request that declares a
+body (`Content-Length` other than 0, or any `Transfer-Encoding`) is answered
+`413 Content Too Large` without reading it, logged `decision=fail_closed_body_not_accepted` —
+otherwise its body would sit unread and the model would be asked about a request whose content
+it never saw. A complete head whose request line cannot be parsed gets 400. All three refusals
+send a fixed body, then read and discard whatever the peer is still sending for at most
+`LINGER_AFTER_REFUSAL` (2s) so the close does not become a reset that destroys the response.
+`tests/server/hls/inbound_limit_test.rs` drives each from the wire.
+
+The size cap alone was not enough: a peer that connects and sends one byte, or nothing, parked the task
 and its socket for as long as it cared to hold the connection open, which is the whole of
 slowloris. The path is additionally truncated to `MAX_PATH_LEN` (512) before it reaches the log,
 the status stream or the model's prompt, since all three used to take it at whatever length the

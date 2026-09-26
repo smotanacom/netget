@@ -216,10 +216,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "a shared response helper, not a protocol: no impl Protocol, no registry entry",
     ),
     (
-        "hls",
-        "its MAX_PATH_LEN bounds a path, not a message; the whole-request bound is underived",
-    ),
-    (
         "mcp",
         "its MAX_TRACE_BYTES is log truncation; the whole-request bound is underived",
     ),
