@@ -11,6 +11,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
 use crate::server::coap::codec::{content_format_id, MAX_PAYLOAD_LEN};
 use crate::state::app_state::AppState;
@@ -230,14 +231,24 @@ fn common_params(with_payload: bool) -> Vec<Parameter> {
 }
 
 fn all_actions() -> Vec<ActionDefinition> {
-    let def =
-        |name: &str, description: &str, params: Vec<Parameter>, example: Value| ActionDefinition {
+    let def = |name: &str, description: &str, params: Vec<Parameter>, example: Value| {
+        let info = match name {
+            "coap_get" => "-> CoAP GET {path} {query}",
+            "coap_post" => "-> CoAP POST {path} {query} {preview(payload,60)}",
+            "coap_put" => "-> CoAP PUT {path} {query} {preview(payload,60)}",
+            "coap_delete" => "-> CoAP DELETE {path} {query}",
+            "coap_observe" => "-> CoAP observe {path}",
+            "coap_observe_cancel" => "-> CoAP cancel observation of {path}",
+            _ => "-> CoAP stop",
+        };
+        ActionDefinition {
             name: name.to_string(),
             description: description.to_string(),
             parameters: params,
             example,
-            log_template: None,
-        };
+            log_template: Some(LogTemplate::new().with_info(info)),
+        }
+    };
     vec![
         def(
             "coap_get",

@@ -10,6 +10,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
 use crate::server::modbus::codec::{encode_request, ModbusRequest};
 use crate::state::app_state::AppState;
@@ -216,7 +217,9 @@ fn read_action(name: &str, what: &str, max: u16) -> ActionDefinition {
             unit_id_param(),
         ],
         example: json!({"type": name, "address": 0, "quantity": 2}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info(format!(
+            "-> {name} {{address}}+{{quantity}} unit={{unit_id}}"
+        ))),
     }
 }
 
@@ -243,18 +246,29 @@ fn all_actions() -> Vec<ActionDefinition> {
                 unit_id_param(),
             ],
             example: json!({"type": "modbus_write_single_coil", "address": 3, "value": true}),
-            log_template: None,
+            log_template: Some(
+                LogTemplate::new()
+                    .with_info("-> modbus_write_single_coil {address}={value} unit={unit_id}"),
+            ),
         },
         ActionDefinition {
             name: "modbus_write_single_register".to_string(),
             description: "Write one holding register (FC 6)".to_string(),
             parameters: vec![
                 param("address", "number", "The register's address", true),
-                param("value", "number", "0-65535", true),
+                param(
+                    "value",
+                    "number",
+                    "The register's new value, an integer 0-65535",
+                    true,
+                ),
                 unit_id_param(),
             ],
             example: json!({"type": "modbus_write_single_register", "address": 5, "value": 1234}),
-            log_template: None,
+            log_template: Some(
+                LogTemplate::new()
+                    .with_info("-> modbus_write_single_register {address}={value} unit={unit_id}"),
+            ),
         },
         ActionDefinition {
             name: "modbus_write_multiple_coils".to_string(),
@@ -274,7 +288,9 @@ fn all_actions() -> Vec<ActionDefinition> {
                 "address": 0,
                 "values": [true, false, true]
             }),
-            log_template: None,
+            log_template: Some(LogTemplate::new().with_info(
+                "-> modbus_write_multiple_coils {address} {json(values)} unit={unit_id}",
+            )),
         },
         ActionDefinition {
             name: "modbus_write_multiple_registers".to_string(),
@@ -294,14 +310,16 @@ fn all_actions() -> Vec<ActionDefinition> {
                 "address": 10,
                 "values": [1, 2, 3]
             }),
-            log_template: None,
+            log_template: Some(LogTemplate::new().with_info(
+                "-> modbus_write_multiple_registers {address} {json(values)} unit={unit_id}",
+            )),
         },
         ActionDefinition {
             name: "disconnect".to_string(),
-            description: "Close the connection".to_string(),
+            description: "Close the connection to the Modbus device".to_string(),
             parameters: vec![],
             example: json!({"type": "disconnect"}),
-            log_template: None,
+            log_template: Some(LogTemplate::new().with_info("-> modbus disconnect")),
         },
     ]
 }

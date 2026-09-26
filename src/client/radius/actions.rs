@@ -10,6 +10,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
 use crate::server::radius::packet::{
     attribute_info, AttrKind, Attribute, ATTR_ACCT_SESSION_ID, ATTR_ACCT_STATUS_TYPE,
@@ -253,7 +254,12 @@ fn all_actions() -> Vec<ActionDefinition> {
             name: "radius_access_request".to_string(),
             description: "Ask the server to authenticate a user (Access-Request)".to_string(),
             parameters: vec![
-                param("user_name", "string", "User-Name", true),
+                param(
+                    "user_name",
+                    "string",
+                    "The user to authenticate (User-Name)",
+                    true,
+                ),
                 param("password", "string", "The user's password, as text", false),
                 param(
                     "method",
@@ -275,7 +281,10 @@ fn all_actions() -> Vec<ActionDefinition> {
                 "user_name": "alice",
                 "password": "wonderland"
             }),
-            log_template: None,
+            log_template: Some(
+                LogTemplate::new()
+                    .with_info("-> RADIUS Access-Request user={user_name} method={method}"),
+            ),
         },
         ActionDefinition {
             name: "radius_accounting_request".to_string(),
@@ -289,7 +298,12 @@ fn all_actions() -> Vec<ActionDefinition> {
                     true,
                 ),
                 param("session_id", "string", "Acct-Session-Id", true),
-                param("user_name", "string", "User-Name", false),
+                param(
+                    "user_name",
+                    "string",
+                    "The session's user (User-Name)",
+                    false,
+                ),
                 param(
                     "nas_identifier",
                     "string",
@@ -304,7 +318,9 @@ fn all_actions() -> Vec<ActionDefinition> {
                 "session_id": "s-1",
                 "user_name": "alice"
             }),
-            log_template: None,
+            log_template: Some(LogTemplate::new().with_info(
+                "-> RADIUS Accounting-Request {status_type} session={session_id} user={user_name}",
+            )),
         },
         ActionDefinition {
             name: "radius_status_server".to_string(),
@@ -318,14 +334,14 @@ fn all_actions() -> Vec<ActionDefinition> {
                 false,
             )],
             example: json!({"type": "radius_status_server"}),
-            log_template: None,
+            log_template: Some(LogTemplate::new().with_info("-> RADIUS Status-Server port={port}")),
         },
         ActionDefinition {
             name: "disconnect".to_string(),
             description: "Stop: forget every pending request and close the socket".to_string(),
             parameters: vec![],
             example: json!({"type": "disconnect"}),
-            log_template: None,
+            log_template: Some(LogTemplate::new().with_info("-> RADIUS disconnect")),
         },
     ]
 }

@@ -18,6 +18,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
 use crate::server::memcached::protocol::MAX_VALUE_LEN;
 use crate::state::app_state::AppState;
@@ -72,7 +73,7 @@ pub static MEMCACHED_VALUE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({"type": "memcached_set", "key": "seen", "value": "yes"}),
     )
     .with_parameters(vec![
-        key_param("The key"),
+        key_param("The key the request named"),
         param("value", "string", "The stored value, as text", true),
         param(
             "flags",
@@ -115,7 +116,10 @@ pub static MEMCACHED_NOT_STORED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
          condition did not hold (NOT_STORED)",
         json!({"type": "memcached_set", "key": "greeting", "value": "hello"}),
     )
-    .with_parameters(vec![command_param(), key_param("The key")])
+    .with_parameters(vec![
+        command_param(),
+        key_param("The key the request named"),
+    ])
 });
 
 pub static MEMCACHED_EXISTS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -124,7 +128,10 @@ pub static MEMCACHED_EXISTS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "A cas was refused because the item changed since its CAS unique was read (EXISTS)",
         json!({"type": "memcached_gets", "keys": ["counter"]}),
     )
-    .with_parameters(vec![command_param(), key_param("The key")])
+    .with_parameters(vec![
+        command_param(),
+        key_param("The key the request named"),
+    ])
 });
 
 pub static MEMCACHED_NOT_FOUND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -133,7 +140,10 @@ pub static MEMCACHED_NOT_FOUND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "The key the request named does not exist (NOT_FOUND)",
         json!({"type": "memcached_set", "key": "counter", "value": "0"}),
     )
-    .with_parameters(vec![command_param(), key_param("The key")])
+    .with_parameters(vec![
+        command_param(),
+        key_param("The key the request named"),
+    ])
 });
 
 pub static MEMCACHED_DELETED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -161,7 +171,12 @@ pub static MEMCACHED_COUNTER_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({"type": "memcached_incr", "key": "hits", "delta": 1}),
     )
     .with_parameters(vec![
-        param("command", "string", "incr or decr", true),
+        param(
+            "command",
+            "string",
+            "The request answered: incr or decr",
+            true,
+        ),
         key_param("The counter's key"),
         param(
             "value",
@@ -214,7 +229,12 @@ pub static MEMCACHED_OK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "The server acknowledged a flush_all (OK)",
         json!({"type": "memcached_get", "keys": ["greeting"]}),
     )
-    .with_parameters(vec![param("command", "string", "flush_all", true)])
+    .with_parameters(vec![param(
+        "command",
+        "string",
+        "The request acknowledged: flush_all",
+        true,
+    )])
 });
 
 pub static MEMCACHED_ERROR_EVENT: LazyLock<EventType> =
@@ -292,12 +312,20 @@ fn store_action(verb: &str, description: &str, cas: bool) -> ActionDefinition {
         ));
         example["cas_unique"] = json!(12);
     }
+    let cas_part = if cas { " cas={cas_unique}" } else { "" };
     ActionDefinition {
         name: format!("memcached_{verb}"),
         description: description.to_string(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(
+            LogTemplate::new()
+                .with_info(format!("-> memcached {verb} {{key}}{cas_part}"))
+                .with_debug(format!(
+                    "memcached {verb}: key={{key}} flags={{flags}} exptime={{exptime}}{cas_part} \
+                     value={{preview(value,80)}}"
+                )),
+        ),
     }
 }
 
@@ -307,12 +335,24 @@ fn simple_action(
     parameters: Vec<Parameter>,
     example: Value,
 ) -> ActionDefinition {
+    let info = match name {
+        "memcached_get" => "-> memcached get {json(keys)}",
+        "memcached_gets" => "-> memcached gets {json(keys)}",
+        "memcached_delete" => "-> memcached delete {key}",
+        "memcached_incr" => "-> memcached incr {key} by {delta}",
+        "memcached_decr" => "-> memcached decr {key} by {delta}",
+        "memcached_touch" => "-> memcached touch {key} exptime={exptime}",
+        "memcached_stats" => "-> memcached stats {group}",
+        "memcached_version" => "-> memcached version",
+        "memcached_flush_all" => "-> memcached flush_all confirm={confirm} delay={delay}",
+        _ => "-> memcached disconnect",
+    };
     ActionDefinition {
         name: name.to_string(),
         description: description.to_string(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info(info)),
     }
 }
 
@@ -353,7 +393,7 @@ fn all_actions() -> Vec<ActionDefinition> {
         ),
         simple_action(
             "memcached_delete",
-            "Delete a key",
+            "Delete a key and its value from the server",
             vec![key_param("The key to delete")],
             json!({"type": "memcached_delete", "key": "greeting"}),
         ),
@@ -384,7 +424,7 @@ fn all_actions() -> Vec<ActionDefinition> {
             "memcached_touch",
             "Change a key's expiration time without reading it",
             vec![
-                key_param("The key"),
+                key_param("The key whose expiration time changes"),
                 param(
                     "exptime",
                     "number",
@@ -432,7 +472,7 @@ fn all_actions() -> Vec<ActionDefinition> {
         ),
         simple_action(
             "disconnect",
-            "Close the connection",
+            "Close the connection to the memcached server",
             vec![],
             json!({"type": "disconnect"}),
         ),
