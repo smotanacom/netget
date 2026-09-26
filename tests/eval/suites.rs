@@ -544,6 +544,9 @@ const IPPTOOL_GET_ATTRS: &str = "/usr/share/cups/ipptool/get-printer-attributes.
 
 #[cfg(feature = "ipp")]
 fn ipptool() -> Probe {
+    // `-v` echoes the request before it is sent and the answer only once it
+    // arrives, with the whole model call in between — so this client is done
+    // when it exits, never when it goes quiet.
     Probe::client(
         "ipptool",
         &[
@@ -554,6 +557,7 @@ fn ipptool() -> Probe {
             IPPTOOL_GET_ATTRS,
         ],
     )
+    .until_exit()
 }
 
 #[cfg(feature = "ipp")]

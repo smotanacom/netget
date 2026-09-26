@@ -66,6 +66,15 @@ pub struct Probe {
     /// that own their own connection lifecycle (curl, dig, psql, ftp) want the
     /// EOF and set this false.
     pub hold_stdin: bool,
+    /// Wait for the client to exit instead of settling after two quiet seconds.
+    ///
+    /// For a client that prints part of its output *before* the exchange and
+    /// then waits for the server. `ipptool -v` echoes the request it is about
+    /// to send, goes quiet for as long as the model takes, and prints the
+    /// response when it arrives — so the idle settle killed it two seconds into
+    /// a model call, the server saw the connection drop, the call was
+    /// abandoned, and every run scored as a model that answered with nothing.
+    pub until_exit: bool,
 }
 
 impl Probe {
@@ -78,6 +87,7 @@ impl Probe {
             env: Vec::new(),
             independence: Independence::ProtocolClient,
             hold_stdin: false,
+            until_exit: false,
         }
     }
 
@@ -89,6 +99,12 @@ impl Probe {
             hold_stdin: true,
             ..Self::client(bin, args)
         }
+    }
+
+    /// See [`Probe::until_exit`]: completion is the client exiting, not a pause.
+    pub fn until_exit(mut self) -> Self {
+        self.until_exit = true;
+        self
     }
 
     pub fn stdin(mut self, data: &str) -> Self {

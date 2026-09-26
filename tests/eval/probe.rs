@@ -96,6 +96,14 @@ fn substitute(template: &str, port: u16) -> String {
         .replace("{ADDR}", &format!("127.0.0.1:{}", port))
 }
 
+/// Read whatever an exited client left in a pipe, bounded so a pipe some
+/// grandchild still holds open cannot stall the run.
+async fn drain<R: tokio::io::AsyncRead + Unpin>(pipe: &mut R, buf: &mut Vec<u8>) {
+    let mut rest = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(2), pipe.read_to_end(&mut rest)).await;
+    buf.extend_from_slice(&rest);
+}
+
 /// Run the client against `127.0.0.1:port` and capture everything it said.
 ///
 /// A timeout is not an error here — it is an observation ("the client waited and
@@ -164,8 +172,9 @@ pub async fn run(probe: &Probe, port: u16, timeout: Duration) -> Result<ProbeOut
             break;
         }
         // Settle: something arrived and then went quiet, so the response is
-        // complete as far as any of these clients will tell us.
-        if last_data_at.is_some_and(|t| t.elapsed() >= IDLE_AFTER_FIRST_BYTE) {
+        // complete as far as any of these clients will tell us. Not for a
+        // client that talks before the exchange — see `Probe::until_exit`.
+        if !probe.until_exit && last_data_at.is_some_and(|t| t.elapsed() >= IDLE_AFTER_FIRST_BYTE) {
             break;
         }
 
@@ -207,6 +216,20 @@ pub async fn run(probe: &Probe, port: u16, timeout: Duration) -> Result<ProbeOut
                 exited = status.code();
                 break;
             }
+        }
+    }
+
+    // A client that exited may still have output sitting in its pipes: the
+    // loop notices the exit between two 250ms reads, and whatever the client
+    // wrote last — for `ipptool`, the entire response — arrived after the read
+    // that timed out. Without this drain a response that reached the client
+    // was recorded as a client that printed nothing after the request echo.
+    if exited.is_some() {
+        if let Some(p) = stdout.as_mut() {
+            drain(p, &mut out_buf).await;
+        }
+        if let Some(p) = stderr.as_mut() {
+            drain(p, &mut err_buf).await;
         }
     }
 

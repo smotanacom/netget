@@ -115,6 +115,25 @@ Each of these cost a debugging pass and every one presented as a model failure.
   appended `-- --use-ollama`, which libtest rejects outright
   (`error: Unrecognized option: 'use-ollama'`), so the binary exited before any
   test ran. The env var was always the mechanism.
+- **The idle settle killed `ipptool` two seconds into every model call.**
+  `probe.rs` calls a response complete after two quiet seconds *following the
+  first byte*, and `ipptool -v` prints the request it is about to send before
+  sending it — so the first byte came before the exchange, the client was
+  killed mid-wait, the IPP server saw the connection drop, the model call was
+  abandoned with it, and all ten runs scored `model_answered_with_no_actions`
+  (0/10 in the September 2026 baseline). `Probe::until_exit()` makes a client's
+  exit the only completion signal; `ipptool` uses it. The classifier now names
+  this shape — asked, never answered, client gone before its own timeout — as
+  `client_left_before_model_answered` instead of blaming the model.
+- **An exited client's last output was left in the pipe.** The loop notices an
+  exit between two 250ms reads, so whatever the client wrote last — for
+  `ipptool`, the whole response — could arrive after the read that timed out
+  and never be read. The run then looked like a client that printed nothing
+  past the request echo. The probe now drains both pipes after an exit.
+- **`}}` is not a placeholder.** `copied_example_placeholder` matched any `}}`
+  on an `Executing action` line, which is how every nested JSON object ends —
+  an IPP attribute group or an HTTP header map was reported as a copied
+  `{{…}}` template. It now requires `{{` followed by a name.
 - **Never let a harness bug score against the model.** A bad regex in an
   `Expect` returns `HARNESS: …` and is classified as `harness_error`, not as a
   miss.
