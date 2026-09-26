@@ -431,6 +431,18 @@ jobs:
           python3 -m pip install --user ignition-gemini==1.0.0
           python3 -c "import ignition; print('ignition', ignition.__version__)"
 
+      # gemini::real_client_test also runs the pcap oracle over the TLS it recorded, and the
+      # oracle FAILS rather than skips without tshark. jammy's tshark 3.6 has the `tls`
+      # dissector that check needs; only the Test job's redis case needs >= 4.0 (`resp`).
+      # The preseed answers the capture-permission prompt that would otherwise hang the job.
+      - name: install tshark (the pcap oracle in the Gemini evidence)
+        continue-on-error: true
+        run: |
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
+          tshark --version | head -1
+
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
       # `memccat`, `memcstat`, `memcping` - while libmemcached's own build and Homebrew's
       # bottle install them as `memcat`, `memstat`, `memping`, which is what the test
