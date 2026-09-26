@@ -116,6 +116,8 @@ already fixed and are now marked so in their headings (7, 9, 16, 32, 39, 42, 50)
     (`src/logging/emit.rs`); 42 still hand-roll dual logging. Derive with
     `grep -L 'Log::new\|crate::logging::Log' src/server/*/mod.rs`.
 
+11. **RTP failed the startup smoke test once in CI, and passes otherwise (item 82).** See below.
+
 ### Patterns worth auditing for
 
 **Collapsing "the handler declined to decide" into "the handler could not run."** This is the
@@ -582,6 +584,23 @@ Worth a rule alongside item 47: a protocol test must assert on decoded protocol 
 transport success.
 
 ---
+
+### 82. RTP read as "not listening", then its port as leaked, in one registry-audit run **[verified once, not reproduced]**
+
+In `registry-audit` run 36267858809 (26 September 2026, `--all-features`, Ubuntu 22.04),
+`tests/protocol_startup_smoke_test.rs` reported `RTP ... LIED` with `PORT LEAK after stop
+(127.0.0.1:52926)`. Both halves together say RTP's socket was **not** on its recorded address
+while the server read `Running`, and that something else held that address after the stop. The
+next run of the same job passed (`LISTENING-udp`), and `--features rtp,tcp` passes locally every
+time.
+
+What is known: the smoke test passes an explicit port 0, so the default-port resolver is not
+involved; `spawn_with_llm_actions` records the address its own `UdpSocket` returned; the accept
+loop only logs a `recv_from` error and continues. The binary's second test, the client
+connect-refusal smoke, runs concurrently in the same process and binds ephemeral UDP sockets,
+which would explain the address being taken after RTP's socket went away, but not why the socket
+went away first. **Do not label this flaky.** Next step: make the smoke test print the RTP
+server's own log and status on this verdict, so the next occurrence says what closed the socket.
 
 ## Archive — fixed items and recorded findings
 
