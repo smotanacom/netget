@@ -384,6 +384,10 @@ jobs:
       #   mysql-server      - the mysql client (Oracle's mysqld; NetGet's client is
       #                       mysql_async). Its AppArmor profile confines it to
       #                       /var/lib/mysql, so the step after this one unloads it
+      #   slapd             - the ldap client (OpenLDAP; NetGet's client is the ldap3 crate).
+      #                       Run from a slapd.conf in a temp dir, not the packaged cn=config,
+      #                       so the package's own debconf answers are never used. Same
+      #                       AppArmor note as mysqld. ldapadd/ldapsearch are ldap-utils, above
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -419,14 +423,18 @@ jobs:
       # running.
       - name: Install the third-party clients the real-client tests drive
         continue-on-error: true
+        # slapd's postinst asks debconf for a domain and an admin password; without this the
+        # install blocks on a prompt nobody answers.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          sudo -E apt-get install -y --no-install-recommends \
             aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan \
-            mosquitto nginx redis-server postgresql mysql-server
+            mosquitto nginx redis-server postgresql mysql-server slapd
 
       # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
       # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
@@ -781,6 +789,7 @@ jobs:
             websocket::e2e_test \
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
+            client/ldap::real_server_test \
             client/mqtt::real_server_test client/mysql::real_server_test \
             client/nats::e2e_test \
             client/postgresql::real_server_test \
