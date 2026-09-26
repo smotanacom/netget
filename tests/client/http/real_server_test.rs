@@ -33,9 +33,12 @@ const NGINX: InstallHint = InstallHint {
 /// nginx as an unprivileged, foreground, single-worker server rooted in its temp dir.
 ///
 /// Every path nginx would otherwise take from its compiled-in prefix (pid, logs, the five temp
-/// paths) is pointed into `{dir}`, and `-e stderr` keeps it from opening the system error log
-/// before it has read this config. `start worker processes` is logged only after the listening
-/// socket is bound.
+/// paths) is pointed into `{dir}`, and `error_log stderr` takes over once the config is read.
+/// There is deliberately no `-e stderr`: that flag arrived in nginx 1.19.5, and Ubuntu 22.04 (the
+/// `registry-audit` runner) ships 1.18, which exits on it with `invalid option: "e"`. Without it,
+/// an unprivileged nginx first fails to open its compiled-in error log, which it reports as a
+/// non-fatal `[alert]` and carries on. `start worker processes` is logged only after the
+/// listening socket is bound.
 async fn start_nginx() -> E2EResult<RealServer> {
     RealServer::builder("nginx", NGINX)
         .config_file("www/hello.txt", "hello from nginx\n")
@@ -65,7 +68,7 @@ http {
 }
 "#,
         )
-        .args(["-p", "{dir}", "-e", "stderr", "-c", "{dir}/nginx.conf"])
+        .args(["-p", "{dir}", "-c", "{dir}/nginx.conf"])
         .ready_when_log_matches("start worker processes")
         .start()
         .await

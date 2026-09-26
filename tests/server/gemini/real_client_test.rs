@@ -34,6 +34,9 @@ use std::time::Duration;
 /// Requests each URL with ignition and prints one JSON object per response: the class name
 /// ignition chose, the status and meta it parsed, and the body decoded as text for a 2x.
 const IGNITION_DRIVER: &str = r#"import json, sys
+# ignition 1.0.0 reaches cryptography.hazmat.primitives.serialization as an attribute
+# without importing it, which works only if something else already imported it.
+import cryptography.hazmat.primitives.serialization
 import ignition
 ignition.set_default_hosts_file(sys.argv[1])
 ignition.set_default_timeout(60)
