@@ -806,6 +806,13 @@ pub use vault::actions::VaultProtocol;
 #[cfg(feature = "vault")]
 pub use vault::VaultServer;
 
+#[cfg(feature = "bolt")]
+pub mod bolt;
+#[cfg(feature = "bolt")]
+pub use bolt::actions::BoltProtocol;
+#[cfg(feature = "bolt")]
+pub use bolt::BoltServer;
+
 #[cfg(feature = "openai")]
 pub mod openai;
 #[cfg(feature = "openai")]

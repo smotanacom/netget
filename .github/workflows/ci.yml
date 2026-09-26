@@ -88,7 +88,7 @@ env:
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
     jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server prometheus docker vault git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:
@@ -372,6 +372,9 @@ jobs:
       #   subversion (svn)  - svn (the real ra_svn client; info/ls/log)
       #   tor               - tor_relay
       #   wakeonlan         - wol
+      #
+      # Installed by their own steps below rather than apt: the vault CLI (vault), and
+      # cypher-shell (bolt; Neo4j's release zip, run on the runner image's own Java 21).
       #
       # And the third-party SERVERS the client real-server tests drive
       # (tests/client/<p>/real_server_test.rs, spawned by tests/helpers/real_server.rs on a
@@ -705,6 +708,26 @@ jobs:
           sudo unzip -o /tmp/vault.zip vault -d /usr/local/bin
           vault version
 
+      # cypher-shell drives bolt::real_client_test. The smallest route on Ubuntu is Neo4j's
+      # release zip (~45 MB, the same artifact Homebrew installs): Neo4j's apt repository
+      # would need its signing key and source list, and its `cypher-shell` package pulls a JRE
+      # the image already has. cypher-shell 2026.x needs Java 21, which the ubuntu-22.04
+      # image ships as JAVA_HOME_21_X64; the wrapper points the launcher at it so the job's
+      # default JAVA_HOME (used by maven) is left alone.
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Install cypher-shell (Neo4j release zip)
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/cypher-shell.zip \
+            https://dist.neo4j.org/cypher-shell/cypher-shell-2026.09.0.zip
+          sudo unzip -q -o /tmp/cypher-shell.zip -d /opt
+          printf '%s\n' '#!/bin/sh' \
+            'JAVA_HOME="${JAVA_HOME_21_X64:-$JAVA_HOME}" exec /opt/cypher-shell-2026.09.0/bin/cypher-shell "$@"' \
+            | sudo tee /usr/local/bin/cypher-shell > /dev/null
+          sudo chmod +x /usr/local/bin/cypher-shell
+          cypher-shell --version
+
       # kcat drives the kafka real-client test. ubuntu-22.04 still ships it under the
       # pre-rename package name `kafkacat`, whose binary may be either `kcat` or
       # `kafkacat` depending on the build - the test invokes `kcat`, so symlink when
@@ -839,6 +862,7 @@ jobs:
           # signal; the summary is on the run's own page.
           failed=""
           for filter in \
+            bolt::real_client_test \
             coap::real_client_test dict::real_client_test dns::dig_test dns::kdig_test \
             gemini::real_client_test beanstalkd::real_client_test zabbix::real_client_test \
             gearman::real_client_test \

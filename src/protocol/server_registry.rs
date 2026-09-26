@@ -402,6 +402,9 @@ impl ServerRegistry {
         #[cfg(feature = "vault")]
         self.register(Arc::new(crate::server::VaultProtocol::new()));
 
+        #[cfg(feature = "bolt")]
+        self.register(Arc::new(crate::server::BoltProtocol::new()));
+
         #[cfg(feature = "ipp")]
         self.register(Arc::new(crate::server::IppProtocol::new()));
 
@@ -1248,6 +1251,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Prometheus", "prometheus"),
     ("Docker", "docker"),
     ("Vault", "vault"),
+    ("Bolt", "bolt"),
     ("IPP", "ipp"),
     ("WebDAV", "webdav"),
     ("NFS", "nfs"),

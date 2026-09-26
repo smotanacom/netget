@@ -72,6 +72,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(docker());
     #[cfg(feature = "vault")]
     cases.extend(vault());
+    #[cfg(feature = "bolt")]
+    cases.extend(bolt());
     cases
 }
 
@@ -1166,6 +1168,62 @@ fn vault() -> Vec<EvalCase> {
             "Act as a Vault server with an empty secret mount.",
             vault_cli(&["kv", "get", "secret/app/nothing"]),
             Expect::default().matching(r"(?i)no value found"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Bolt — Neo4j's own cypher-shell (Java, neo4j-java-driver). HOME is a
+// throwaway path so no history or config from the operator's own profile is
+// read, and --non-interactive keeps it from waiting on a terminal.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "bolt")]
+fn bolt_shell(query: &str) -> Probe {
+    Probe::client(
+        "cypher-shell",
+        &[
+            "-a",
+            "bolt://127.0.0.1:{PORT}",
+            "-u",
+            "neo4j",
+            "-p",
+            "netget-eval",
+            "--non-interactive",
+            "--format",
+            "plain",
+            query,
+        ],
+    )
+    .env("HOME", "/tmp/netget-eval-cypher-shell-home")
+}
+
+#[cfg(feature = "bolt")]
+fn bolt() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "bolt/people-by-name",
+            "bolt",
+            "Act as a Neo4j graph database that accepts any login. The graph has three Person \
+             nodes, named Ada, Grace and Linus.",
+            bolt_shell("MATCH (p:Person) RETURN p.name AS name"),
+            Expect::contains(&["name", "Ada", "Grace", "Linus"]),
+        ),
+        EvalCase::new(
+            "bolt/count",
+            "bolt",
+            "Act as a Neo4j graph database that accepts any login. It holds exactly 42 Movie \
+             nodes and nothing else.",
+            bolt_shell("MATCH (m:Movie) RETURN count(m) AS movies"),
+            Expect::contains(&["movies", "42"]),
+        ),
+        EvalCase::new(
+            "bolt/syntax-error",
+            "bolt",
+            "Act as a Neo4j graph database that accepts any login. Reject any query that is \
+             not valid Cypher with Neo4j's syntax error.",
+            bolt_shell("SELECT name FROM people"),
+            Expect::default().matching(r"(?i)(invalid|syntax|unexpected|expected)"),
         ),
     ]
 }

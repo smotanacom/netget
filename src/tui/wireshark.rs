@@ -228,6 +228,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
         // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
         "dict" => PLAIN_TCP,
+        // Neo4j's Bolt (TCP 7687) has no dissector in this Wireshark build (4.6.8): `tshark -G
+        // protocols` lists nothing matching bolt, neo4j or packstream. Plain TCP; the chunked
+        // PackStream is binary, so "Follow TCP Stream" in hex is what a capture offers.
+        "bolt" => PLAIN_TCP,
         // Beanstalkd (TCP 11300) has no dissector in this Wireshark build: `tshark -G protocols`
         // lists none. Plain TCP; its text protocol reads fine in "Follow TCP Stream".
         "beanstalkd" => PLAIN_TCP,

@@ -340,6 +340,15 @@ async fn stopping_a_gearman_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("Gearman", b"").await;
 }
 
+/// A Bolt client that has sent the magic and not yet its version proposals is held by a task
+/// waiting on the rest of the 20-byte handshake for up to 30 seconds; the stop must end it
+/// rather than that deadline.
+#[cfg(feature = "bolt")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_bolt_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Bolt", &[0x60, 0x60, 0xB0, 0x17]).await;
+}
+
 /// A Gemini peer that has connected and not yet started its TLS handshake is held by a task
 /// waiting on the ClientHello; the stop must end it rather than the handshake deadline.
 #[cfg(feature = "gemini")]
