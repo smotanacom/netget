@@ -4,7 +4,7 @@
 
 etcd client for connecting to etcd v3 servers and performing key-value operations under LLM control.
 
-**Status**: Experimental
+**Status**: Beta (see "Maturity: Beta" at the foot)
 **Protocol Version**: etcd v3 (gRPC)
 **Default Port**: 2379
 
@@ -441,3 +441,19 @@ a manual rule parking that LLM call cannot wedge the command loop.
 
 The old 5-second idle-poll task is gone; the command loop ends when `remove_client` drops the
 command sender.
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/etcd/real_server_test.rs` (see `tests/client/etcd/CLAUDE.md`):
+
+1. **Real third-party server** — the official Go `etcd`, read back with the official `etcdctl`; NetGet's side is `etcd-client` on tonic, while etcd is grpc-go, so no code is shared.
+2. **Fails rather than skips** — a missing `etcd` or `etcdctl` is a test failure naming the brew formula and the
+   Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d. CI's
+   `registry-audit` installs the peer and runs the suite in its evidence loop.
+3. **A real session** — the protocol's own exchange, with the server's answers parsed and handed
+   to the model, not a connect.
+4. **Acts on the model's answer, asserted on the wire** — `etcdctl` reads back a value the model built from a GET response, and finds the key it deleted gone. Verified by mutation: dropping
+   the actions the model returned makes the test fail.
+
+Not covered by that evidence: range reads, transactions, watches, leases, auth and TLS.
