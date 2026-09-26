@@ -354,6 +354,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         // New protocols, born with both bounds (Programme 4).
         "dict",
         "gemini",
+        "bolt",
         // Programme 4 new HTTP-layered servers, each with a connection_bounds_test.rs driving
         // the shared tests/helpers/http_bounds.rs checks.
         "prometheus",
