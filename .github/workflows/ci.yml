@@ -353,7 +353,7 @@ jobs:
       #   freeradius-utils  - radius (radclient)
       #   libcoap2-bin      - coap (coap-client, libcoap's own C client)
       #   libmemcached-tools- memcached, but under DIFFERENT NAMES - see the symlink step
-      #                       below, which is what makes memcat/memstat/memping exist
+      #                       below, which is what makes memcat/memstat/memping/memcp exist
       #   knot-dnsutils     - dns, doh, dot (kdig; Knot, deliberately NOT ISC dig
       #                       and NOT the hickory codec the servers encode with)
       #   mbpoll            - modbus (libmodbus's CLI master)
@@ -383,6 +383,14 @@ jobs:
       #   mosquitto         - the mqtt client (Eclipse Mosquitto, C; NetGet's client is rumqttc)
       #   nginx             - the http client (NetGet's client is reqwest/hyper)
       #   redis-server      - the redis client (NetGet frames RESP itself)
+      #   memcached         - the memcached client (NetGet frames the text protocol itself;
+      #                       read back with libmemcached's memcat/memcp, above)
+      #   pymodbus          - the modbus client (a Python device; pip, in its own step below)
+      #   coap-server       - the coap client (libcoap's example server; the same
+      #                       libcoap2-bin package as coap-client, above)
+      #   freeradius        - the radius client (FreeRADIUS radiusd, run unprivileged from a
+      #                       minimal raddb in a temp dir). Ubuntu names the binary
+      #                       `freeradius`; the step below links it to `radiusd`
       #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
       #                       client is tokio-postgres). Ubuntu keeps the server binaries in
       #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
@@ -443,7 +451,8 @@ jobs:
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan zabbix-sender gearman-tools \
-            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server
+            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached \
+            freeradius
 
       # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
       # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
@@ -496,10 +505,21 @@ jobs:
           python3 -m pip install --user greenstalk==2.1.1
           python3 -c "import greenstalk; print('greenstalk', greenstalk.__version__)"
 
+      # client/modbus::real_server_test runs a pymodbus 3.15 device (its own framer and
+      # datastore, in Python; NetGet's Modbus client frames with NetGet's codec) and reads what
+      # the model wrote back with mbpoll, installed above. 3.15 because the test's device script
+      # uses the SimData/SimDevice API that replaced ModbusSlaveContext; the import check makes
+      # a failed install surface here rather than as the modbus client's evidence absent.
+      - name: Install the Modbus device library (pymodbus)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user 'pymodbus==3.15.*'
+          python3 -c "import pymodbus; from pymodbus.simulator import SimDevice; print('pymodbus', pymodbus.__version__)"
+
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
-      # `memccat`, `memcstat`, `memcping` - while libmemcached's own build and Homebrew's
-      # bottle install them as `memcat`, `memstat`, `memping`, which is what the test
-      # invokes and what upstream's manpages call them. `libmemcached-tools` really was
+      # `memccat`, `memcstat`, `memcping`, `memccp` - while libmemcached's own build and Homebrew's
+      # bottle install them as `memcat`, `memstat`, `memping`, `memcp`, which is what the tests
+      # invoke and what upstream's manpages call them. `libmemcached-tools` really was
       # installed on every run since this list was written; it simply never contained a
       # file called `memstat`, so the test reported the binary missing and memcached's
       # Beta rating went unchecked.
@@ -511,7 +531,7 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          for pair in memcat:memccat memstat:memcstat memping:memcping ; do
+          for pair in memcat:memccat memstat:memcstat memping:memcping memcp:memccp ; do
             sudo ln -sf "/usr/bin/${pair##*:}" "/usr/local/bin/${pair%%:*}"
           done
           # Not decoration: these run the binaries, so a rename or a dropped tool in a
@@ -520,6 +540,17 @@ jobs:
           memcat --version
           memstat --version
           memping --version
+          memcp --version
+
+      # Ubuntu installs FreeRADIUS's server as /usr/sbin/freeradius; upstream, Homebrew and
+      # the test call it `radiusd`. Linked, like libmemcached's tools above, rather than
+      # taught to the test: a test that guesses between spellings can drive the wrong thing.
+      - name: Give FreeRADIUS's server the name upstream uses
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo ln -sf /usr/sbin/freeradius /usr/local/bin/radiusd
+          radiusd -v | head -1
 
       # OpenVPN 2.6 from jammy-backports - see the note above. `--peer-fingerprint`, the
       # option `tests/server/openvpn/e2e_test.rs` uses to trust the server's per-run
@@ -886,6 +917,9 @@ jobs:
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
             client/ldap::real_server_test \
+            client/coap::real_server_test \
+            client/memcached::real_server_test client/modbus::real_server_test \
+            client/radius::real_server_test \
             client/mqtt::keepalive_test client/mqtt::real_server_test \
             client/mysql::real_server_test client/nats::e2e_test \
             client/postgresql::real_server_test \

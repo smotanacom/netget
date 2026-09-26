@@ -14,6 +14,8 @@ pub mod bluetooth;
 pub mod bootp;
 #[cfg(feature = "cassandra")]
 pub mod cassandra;
+#[cfg(feature = "coap")]
+pub mod coap;
 #[cfg(feature = "couchdb")]
 pub mod couchdb;
 #[cfg(feature = "datalink")]
@@ -82,6 +84,10 @@ pub mod maven;
 pub mod mcp;
 #[cfg(feature = "mdns")]
 pub mod mdns;
+#[cfg(feature = "memcached")]
+pub mod memcached;
+#[cfg(feature = "modbus")]
+pub mod modbus;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
 #[cfg(feature = "mqtt")]
@@ -122,6 +128,8 @@ pub mod pop3;
 pub mod postgresql;
 #[cfg(feature = "pypi")]
 pub mod pypi;
+#[cfg(feature = "radius")]
+pub mod radius;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "rip")]

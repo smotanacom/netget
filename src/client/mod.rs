@@ -553,6 +553,30 @@ pub use netbios_ns::actions::NetbiosNsClientProtocol;
 pub mod nats;
 #[cfg(feature = "nats")]
 pub use nats::actions::NatsClientProtocol;
+
+// memcached client
+#[cfg(feature = "memcached")]
+pub mod memcached;
+#[cfg(feature = "memcached")]
+pub use memcached::actions::MemcachedClientProtocol;
+
+// modbus client
+#[cfg(feature = "modbus")]
+pub mod modbus;
+#[cfg(feature = "modbus")]
+pub use modbus::actions::ModbusClientProtocol;
+
+// coap client
+#[cfg(feature = "coap")]
+pub mod coap;
+#[cfg(feature = "coap")]
+pub use coap::actions::CoapClientProtocol;
+
+// radius client
+#[cfg(feature = "radius")]
+pub mod radius;
+#[cfg(feature = "radius")]
+pub use radius::actions::RadiusClientProtocol;
 // ssdp client
 #[cfg(feature = "ssdp")]
 pub mod ssdp;

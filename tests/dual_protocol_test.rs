@@ -101,6 +101,11 @@ fn normalized_duals_map() {
         client_protocol_for_server("BLUETOOTH_BLE"),
         Some("Bluetooth (BLE)")
     );
+    // Server protocols that gained a client of the same name.
+    assert_eq!(client_protocol_for_server("RADIUS"), Some("RADIUS"));
+    assert_eq!(client_protocol_for_server("Modbus"), Some("Modbus"));
+    assert_eq!(client_protocol_for_server("CoAP"), Some("CoAP"));
+    assert_eq!(client_protocol_for_server("Memcached"), Some("Memcached"));
 }
 
 /// Server-only protocols must return None — a false positive here would make
@@ -108,13 +113,9 @@ fn normalized_duals_map() {
 #[test]
 fn server_only_protocols_have_no_dual() {
     for server in [
-        "RADIUS",
         "RDP",
         "TFTP",
         "SVN",
-        "Modbus",
-        "CoAP",
-        "Memcached",
         "QUIC",
         "Mercurial",
         "Reverse Shell",

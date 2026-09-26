@@ -316,8 +316,14 @@ beside them in `src/server/modbus/mod.rs`.
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 600s | Modbus defines no keepalive, so there is no protocol interval to sit above; what there is, is polling, and a SCADA master polls on a sub-second to few-second cycle. The number is set by *this* server: `handle_data` runs on its own task, so the reader keeps reading while a request is answered and a peer waiting for its own reply — including one parked on a `manual` rule for a human, 300s by default — is silent on this socket for the whole of that work. Ten minutes leaves that a factor of two. Real Modbus/TCP gateways reap an idle connection at ~60s; being ten times more patient is the deliberate price of letting a human answer. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **nothing**. Every Modbus server message is a reply and carries the transaction identifier, unit id and function code of a request this peer has not sent, so inventing one means inventing a transaction — worse than silence, for the same reason twenty protocols here are deliberately silent on an LLM failure. The reason lives in the log, under `decision=fail_closed_connection_cap`. |
 
-**There is no NetGet Modbus client**, so this bound has no peer of ours to strand — the fourth
-exemption in `PROTOCOL_QUALITY.md`'s three-state test.
+**NetGet's own Modbus client (`src/client/modbus/`) is a peer these bounds can close.** It
+sends nothing until the model or the operator asks for a read or a write — a dashboard-created
+client answers its connect event with nothing — so, pointed at this server and left alone past
+`first_byte_timeout_secs` (or `idle_timeout_secs` after its last request), it is closed here and
+reports `Disconnected`. That is the right outcome rather than a stranding: a real Modbus/TCP
+device reaps an idle master far sooner (~60s), so the client is written to report the close,
+not to keep the socket alive. It frames with this module's `codec.rs` (`encode_request` and
+`parse_response` sit beside the server's decoder so the two directions cannot drift).
 
 **The deadline wraps the `read()` and nothing else**, so the model round-trip is outside it by
 construction; what it measures is the peer's own silence. An idle close writes nothing and logs
