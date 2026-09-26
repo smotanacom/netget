@@ -5,7 +5,7 @@ a Neo4j graph database. The model is the graph database: it decides whether a lo
 and what each Cypher query returns. NetGet stores no graph, owns the whole protocol state
 machine, and writes every byte.
 
-**State**: Experimental (see Maturity). **Privilege**: `None` — the well-known port is 7687.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 7687.
 **Stack**: `ETH>IP>TCP>BOLT`. **Feature**: `bolt` (no dependencies).
 
 ## Library choice
@@ -224,15 +224,15 @@ pcap-oracle test.
 
 ## Maturity
 
-Experimental. The evidence for Beta exists: `tests/server/bolt/real_client_test.rs` drives
-Neo4j's own `cypher-shell` (Java, neo4j-java-driver 6.2; not linked, not written by us, and the
-server uses no Bolt library) through rows, nodes, relationships and paths both ways, write
-statistics, a model-chosen error classified by the driver, a wrong password, an explicit
-transaction with `-d` and `-P`, `neo4j://` routing, and a mocked model's rows. It is not
-`#[ignore]`d and fails, never skips, when cypher-shell or its Java runtime is absent; CI's
-`registry-audit` installs the release zip and runs it. Promotion is a separate step, gated on
-three consecutive green runs at `--test-threads=100` and `scripts/beta_evidence_table.py
---check`.
+Beta. Evidence: `tests/server/bolt/real_client_test.rs` drives Neo4j's own `cypher-shell`
+(Java, neo4j-java-driver 6.2; not linked, not written by us, and the server uses no Bolt
+library) through rows, nodes, relationships and paths both ways, write statistics, a
+model-chosen error classified by the driver, a wrong password, an explicit transaction with
+`-d` and `-P`, `neo4j://` routing, and a mocked model's rows. It is not `#[ignore]`d and fails,
+never skips, when cypher-shell or its Java runtime is absent; CI's `registry-audit` installs the
+release zip and runs it. Promoted after the whole suite passed three consecutive runs at
+`--test-threads=100` and `scripts/beta_evidence_table.py --check` stayed green with
+`cypher-shell` ✓ as the peer.
 
 What would still be missing for Stable: a second independent client (the Python `neo4j`
 driver, or a Go/JS driver — condition 1); a pcap oracle (no dissector exists — condition 2).

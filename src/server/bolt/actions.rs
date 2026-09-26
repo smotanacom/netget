@@ -132,7 +132,7 @@ impl Protocol for BoltProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .well_known_port(7687)
             // 7687 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
