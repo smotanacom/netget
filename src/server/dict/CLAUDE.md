@@ -4,7 +4,7 @@ DICT (RFC 2229) dictionary server. The model is the dictionary: it supplies defi
 matches, the database and strategy lists and the informational texts; NetGet writes every byte
 of framing.
 
-**State**: Experimental. **Privilege**: `None` — the well-known port is 2628.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 2628.
 **Stack**: `ETH>IP>TCP>DICT`. **Feature**: `dict` (no dependencies).
 
 ## Library choice
@@ -157,9 +157,15 @@ there is no pcap-oracle test.
 
 ## Maturity
 
-Experimental. Evidence: `tests/server/dict/real_client_test.rs` drives the real `dict(1)` 1.13
-(dictd project; not linked, not written by us) for a lookup, `-m -s prefix`, `-D`, `-S`, `-i`,
-`-I`, `-M` and a no-match lookup, and asserts on what it printed; it fails, never skips, when the
-binary is absent. That meets the Beta bar's evidence clause; promotion is a separate step gated
-on three consecutive green runs at `--test-threads=100` and `scripts/beta_evidence_table.py
---check`.
+Beta. Evidence: `tests/server/dict/real_client_test.rs` drives the real `dict(1)` 1.13
+(dictd project; C, not linked, not written by us, and sharing no code with the server, which
+uses no DICT library at all) for a lookup, `-m -s prefix`, `-D`, `-S`, `-i`, `-I`, `-M` and a
+no-match lookup, and asserts on what it parsed and printed. It is not `#[ignore]`d and fails,
+never skips, when the binary is absent; CI's `registry-audit` installs Ubuntu's `dict` and runs
+it. Promoted after the whole suite passed three consecutive runs at `--test-threads=100` and
+`scripts/beta_evidence_table.py --check` stayed green with `dict` ✓ as the peer.
+
+What Beta does **not** cover, and what Stable would need: one client only (a second
+independent DICT client — e.g. Python's `dictionary-client`, or GNU `dico` — is condition 1 of
+the Stable bar); no pcap oracle (no dissector exists); no fuzz target (the parser is a flat line
+splitter with no recursion, but condition 3 asks for one regardless).

@@ -95,7 +95,7 @@ impl Protocol for DictProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // 2628 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
