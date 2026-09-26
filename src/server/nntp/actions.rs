@@ -35,11 +35,12 @@ impl NntpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'message' field")?;
 
-        // Ensure message ends with \r\n
+        // Ensure message ends with \r\n. A bare trailing \n is replaced, not added to: appending
+        // \r after it put "\n\r" on the wire, which ends no NNTP line.
         let formatted = if message.ends_with("\r\n") {
             message.to_string()
-        } else if message.ends_with('\n') {
-            format!("{}\r", message)
+        } else if let Some(line) = message.strip_suffix('\n') {
+            format!("{}\r\n", line)
         } else {
             format!("{}\r\n", message)
         };
