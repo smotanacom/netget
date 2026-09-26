@@ -12,7 +12,10 @@
 //      the tools, everything). The page answers with WebLLM (a model running on your GPU
 //      via WebGPU), a local Ollama you opened up to it, or — the default — you, typing.
 //
-// The wasm bundle is built by ./web/build.sh into docs/demo/pkg/.
+// The wasm bundle is built by ./web/build.sh into site/demo/pkg/. When you are the model,
+// ./composer.js turns the actions NetGet offers into a form.
+
+import { mountComposer, offeredActions } from './composer.js';
 
 const PKG = '../demo/pkg/netget_web.js';
 const WEBLLM_URL = 'https://esm.run/@mlc-ai/web-llm@0.2.85';
@@ -205,10 +208,10 @@ function addRequestCard(req) {
       <header class="llm-card-head">
         <span class="llm-id">#${req.id}</span>
         <span class="llm-kind">${escapeHtml(req.kind)}</span>
-        <span class="llm-meta">${req.messages.length} message${req.messages.length === 1 ? '' : 's'}${toolNames.length ? ' · ' + toolNames.length + ' tools' : ''}</span>
+        <span class="llm-meta">${req.messages.length} message${req.messages.length === 1 ? '' : 's'}${offeredActions(req).length ? ' · ' + offeredActions(req).length + ' actions offered' : ''}${toolNames.length ? ' · ' + toolNames.length + ' tools' : ''}</span>
         <span class="llm-status">waiting for the model…</span>
       </header>
-      <details class="llm-section" open>
+      <details class="llm-section"${app.mode === 'manual' && offeredActions(req).length ? '' : ' open'}>
         <summary>Prompt (what NetGet sends)</summary>
         <div class="llm-messages">
           ${req.messages.map((m) => `<div class="llm-msg llm-role-${escapeHtml(m.role)}"><span class="llm-role">${escapeHtml(m.role)}</span><pre>${escapeHtml(m.content)}</pre></div>`).join('')}
@@ -275,41 +278,11 @@ async function handleLlmRequest(json) {
 function answerManually(req, card) {
     card.setStatus('waiting for YOU');
     card.el.classList.add('is-manual');
-    const toolNames = (req.tools || []).map((t) => t.function?.name || t.name).filter(Boolean);
-    const hint = req.kind === 'generate'
-        ? 'Reply the way the prompt above asks — usually a JSON object with an "actions" array.'
-        : (toolNames.length
-            ? 'This request offers tools. Reply with text, or call one: <code>[{"name":"' + escapeHtml(toolNames[0]) + '","arguments":{…}}]</code>.'
-            : 'Reply with text.');
-    const root = card.form(`
-      <div class="llm-reply-label">Your reply</div>
-      <p class="llm-hint">${hint}</p>
-      <textarea class="llm-input" rows="6" placeholder='{"actions": [ ... ]}'></textarea>
-      ${toolNames.length ? '<textarea class="llm-tools-input" rows="3" placeholder="Tool calls as JSON (optional)"></textarea>' : ''}
-      <div class="llm-actions">
-        <button class="btn btn-primary llm-send">Send reply</button>
-        <button class="btn llm-fail">Refuse (fail closed)</button>
-      </div>
-    `);
-    const ta = $('.llm-input', root);
-    ta.focus();
+    const root = card.form('');
     return new Promise((resolve, reject) => {
-        $('.llm-send', root).addEventListener('click', () => {
-            const reply = { content: ta.value };
-            const toolsTa = $('.llm-tools-input', root);
-            if (toolsTa && toolsTa.value.trim()) {
-                try {
-                    reply.tool_calls = JSON.parse(toolsTa.value);
-                } catch (e) {
-                    toolsTa.classList.add('is-invalid');
-                    return;
-                }
-            }
-            resolve(reply);
-        });
-        $('.llm-fail', root).addEventListener('click', () => reject(new Error('refused by the person at the keyboard')));
-        ta.addEventListener('keydown', (ev) => {
-            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') $('.llm-send', root).click();
+        mountComposer(root, req, {
+            onSend: resolve,
+            onRefuse: () => reject(new Error('refused by the person at the keyboard')),
         });
     });
 }

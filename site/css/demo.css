@@ -226,6 +226,7 @@
 .btn-primary { background: var(--cyan); color: #0b0e14; border-color: transparent; font-weight: 600; }
 
 .demo input[type="text"],
+.demo input[type="number"],
 .demo select,
 .demo textarea {
     font: inherit;
@@ -371,6 +372,58 @@
 .llm-actions { display: flex; gap: 0.4rem; padding: 0 0.6rem 0.6rem; }
 .llm-dim { color: var(--muted); }
 .llm-empty { padding: 0.6rem 0.2rem; color: var(--muted); font-size: 0.85rem; }
+
+/* ---- the "you are the model" composer (js/composer.js) ------------------------------- */
+
+.cmp-tabs { display: flex; gap: 0.25rem; padding: 0 0.6rem 0.4rem; }
+.cmp-tabs button {
+    font: inherit; font-size: 0.78rem; padding: 0.2rem 0.6rem; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+}
+.cmp-tabs button.is-active { background: var(--panel); color: var(--text); border-color: var(--yellow); }
+.cmp-tabs button:focus-visible, .cmp-entry :focus-visible, .llm-actions .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+
+.cmp-form { display: flex; flex-direction: column; gap: 0.5rem; padding: 0 0.6rem 0.5rem; }
+.cmp-form[hidden], .cmp-raw[hidden] { display: none; }
+.cmp-entry { margin: 0; padding: 0.45rem 0.55rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); min-width: 0; }
+.cmp-entry legend { padding: 0 0.3rem; font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.cmp-pick { display: flex; gap: 0.4rem; align-items: center; }
+.cmp-pick select { flex: 1 1 auto; width: 100%; }
+.cmp-about { margin: 0.35rem 0 0.2rem; color: var(--muted); font-size: 0.78rem; }
+.cmp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.cmp-field { display: grid; grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr); gap: 0.1rem 0.6rem; align-items: start; padding: 0.3rem 0; border-top: 1px dashed var(--border); }
+.cmp-field > label { display: block; padding-top: 0.3rem; color: var(--text); font-size: 0.8rem; }
+.cmp-field > label code { font-family: var(--mono); }
+.cmp-control { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; min-width: 0; }
+.cmp-control input[type="text"], .cmp-control input[type="number"], .cmp-control select, .cmp-control textarea { width: 100%; box-sizing: border-box; }
+.cmp-kind-bool .cmp-control { padding-top: 0.3rem; }
+.cmp-desc { grid-column: 2; color: var(--muted); font-size: 0.74rem; }
+.cmp-field-error { color: var(--red); }
+.cmp-req { color: var(--yellow); margin-left: 0.1rem; }
+.cmp-type { font-family: var(--mono); font-size: 0.7rem; color: var(--cyan); display: block; }
+.cmp-dim { color: var(--muted); font-size: 0.76rem; margin: 0.3rem 0 0; }
+.cmp-crlf { font-size: 0.72rem !important; }
+.cmp-unset { font: inherit; font-size: 0.72rem; background: none; border: none; color: var(--muted); text-decoration: underline; cursor: pointer; padding: 0; }
+.demo .cmp-control [aria-invalid="true"] { border-color: var(--red); }
+.cmp-schema { margin-top: 0.4rem; }
+.cmp-schema summary { cursor: pointer; color: var(--muted); font-size: 0.74rem; }
+.cmp-schema pre { margin: 0.3rem 0 0; }
+.cmp-add { align-self: flex-start; }
+
+.cmp-raw { padding: 0; }
+.cmp-raw-input[aria-invalid="true"] { border-color: var(--red); }
+.cmp-raw-status { padding: 0 0.6rem 0.4rem; font-size: 0.74rem; color: var(--muted); }
+.cmp-raw-status.is-bad { color: var(--red); }
+.cmp-raw-status.is-ok { color: var(--green); }
+.cmp-error { padding: 0 0.6rem; color: var(--red); font-size: 0.78rem; }
+.cmp-error:empty { display: none; }
+.llm-actions { flex-wrap: wrap; }
+
+@media (max-width: 600px) {
+    .cmp-field { grid-template-columns: minmax(0, 1fr); }
+    .cmp-desc { grid-column: 1; }
+}
 
 /* ---- notes ---------------------------------------------------------------------------- */
 
