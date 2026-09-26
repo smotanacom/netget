@@ -137,6 +137,17 @@ impl Protocol for Socks5Protocol {
                     required: false,
                     example: json!(false),
                 },
+                ParameterDefinition {
+                    name: "idle_timeout_secs".to_string(),
+                    type_hint: "number".to_string(),
+                    description: "Seconds an established tunnel may move no data in either \
+                                  direction before the proxy closes it (default 3600). Traffic \
+                                  either way keeps it open. Raise it for long-idle protocols \
+                                  such as SSH without keepalives."
+                        .to_string(),
+                    required: false,
+                    example: json!(3600),
+                },
             ]
     }
     fn group_name(&self) -> &'static str {

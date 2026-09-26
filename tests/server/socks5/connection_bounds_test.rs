@@ -1,4 +1,5 @@
-//! The connection cap on a real, running SOCKS5 proxy, driven from the wire.
+//! The connection cap and the relay idle bound on a real, running SOCKS5 proxy, driven from the
+//! wire. The idle tests are described where they start, below the cap test.
 //!
 //! `HANDSHAKE_TIMEOUT_SECS` is 30 seconds and it bounds *one* peer: a stranger who connects and
 //! says nothing holds a socket, a task and an `AppState` row for half a minute, and nothing
@@ -166,5 +167,258 @@ async fn the_connection_past_the_cap_gets_no_acceptable_methods_and_the_slot_com
         admitted,
         "the cap never freed its slot after an admitted connection ended — the permit is being \
          held past the life of the connection, which wedges the proxy shut"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The relay idle bound
+// ---------------------------------------------------------------------------------------------
+//
+// `HANDSHAKE_TIMEOUT_SECS` ends at the CONNECT reply. After it, `RELAY_IDLE_TIMEOUT` (3600s,
+// declared as `idle_timeout_secs`) closes a tunnel that has moved nothing **in either
+// direction**: a byte read from the client *or* the target resets one shared clock. Four tests:
+// silent both ways is closed; traffic only upstream keeps it open; traffic only downstream keeps
+// it open; a MITM chunk parked for a human keeps it open.
+//
+// Removing the `watch_idle` arm from the passthrough relay makes the first hang to its window.
+// A per-direction clock would fail the second and third (the silent direction would expire).
+// Removing the `busy()` guard from the MITM relay makes the fourth see its tunnel closed.
+
+/// The relay idle bound these tests drive, as `idle_timeout_secs`.
+const SHORT_IDLE: Duration = Duration::from_secs(2);
+
+async fn start_proxy(
+    state: &AppState,
+    startup_params: serde_json::Value,
+    event_handlers: Vec<serde_json::Value>,
+) -> u16 {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let server_id = ServerForm {
+        protocol: "socks5".to_string(),
+        port: Some(0),
+        instruction: Some(String::new()),
+        startup_params: Some(startup_params),
+        event_handlers: Some(event_handlers),
+        ..Default::default()
+    }
+    .create(state, tx)
+    .await
+    .expect("create socks5 server");
+    wait_for_port(state, server_id).await
+}
+
+/// A loopback target for the tunnel, and the one connection the proxy opens to it.
+async fn target() -> (u16, tokio::task::JoinHandle<TcpStream>) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind target");
+    let port = listener.local_addr().expect("target addr").port();
+    let accepted = tokio::spawn(async move { listener.accept().await.expect("accept").0 });
+    (port, accepted)
+}
+
+/// Greet with no-auth, CONNECT to `127.0.0.1:target_port`, and return the established tunnel.
+async fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
+    use tokio::io::AsyncWriteExt;
+
+    let mut client = TcpStream::connect(("127.0.0.1", proxy_port))
+        .await
+        .expect("connect to proxy");
+    client.write_all(&[5, 1, 0]).await.expect("greeting");
+    let mut method = [0u8; 2];
+    tokio::time::timeout(Duration::from_secs(20), client.read_exact(&mut method))
+        .await
+        .expect("no method selection within 20s")
+        .expect("read method selection");
+    assert_eq!(method, [5, 0], "the proxy did not select no-auth");
+    let [hi, lo] = target_port.to_be_bytes();
+    client
+        .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, hi, lo])
+        .await
+        .expect("CONNECT");
+    let mut reply = [0u8; 10];
+    tokio::time::timeout(Duration::from_secs(20), client.read_exact(&mut reply))
+        .await
+        .expect("no CONNECT reply within 20s")
+        .expect("read CONNECT reply");
+    assert_eq!(reply[1], 0, "the proxy refused the CONNECT: {reply:?}");
+    client
+}
+
+/// Read until EOF and say how long it took, or `None` if it never came inside `window`.
+async fn time_to_eof(stream: &mut TcpStream, window: Duration) -> Option<Duration> {
+    let started = std::time::Instant::now();
+    let mut sink = Vec::new();
+    match tokio::time::timeout(window, stream.read_to_end(&mut sink)).await {
+        Ok(_) => Some(started.elapsed()),
+        Err(_) => None,
+    }
+}
+
+fn allow_all() -> serde_json::Value {
+    serde_json::json!({
+        "filter_mode": "allow_all",
+        "idle_timeout_secs": SHORT_IDLE.as_secs(),
+    })
+}
+
+#[tokio::test]
+async fn a_tunnel_silent_both_ways_is_closed_at_the_idle_bound() {
+    let state = new_state().await;
+    let proxy = start_proxy(&state, allow_all(), vec![]).await;
+    let (target_port, accepted) = target().await;
+    let mut client = open_tunnel(proxy, target_port).await;
+    let mut far_end = accepted.await.expect("target accepted");
+
+    let elapsed = time_to_eof(&mut client, Duration::from_secs(45))
+        .await
+        .expect(
+            "a tunnel that moved nothing either way was never closed — the relay has no idle bound",
+        );
+    assert!(
+        elapsed >= SHORT_IDLE / 2 && elapsed < Duration::from_secs(40),
+        "closed after {}ms, which is not the declared {}s idle bound",
+        elapsed.as_millis(),
+        SHORT_IDLE.as_secs()
+    );
+    assert!(
+        time_to_eof(&mut far_end, Duration::from_secs(10))
+            .await
+            .is_some(),
+        "the client's side closed but the proxy kept its socket to the target open"
+    );
+}
+
+#[tokio::test]
+async fn traffic_only_upstream_keeps_the_tunnel_open() {
+    use tokio::io::AsyncWriteExt;
+
+    let state = new_state().await;
+    let proxy = start_proxy(&state, allow_all(), vec![]).await;
+    let (target_port, accepted) = target().await;
+    let mut client = open_tunnel(proxy, target_port).await;
+    let mut far_end = accepted.await.expect("target accepted");
+
+    // The client sends a byte every 500ms for four idle bounds; the target never answers. A
+    // per-direction clock would expire the silent direction and close this tunnel.
+    let ticks = (SHORT_IDLE * 4).as_millis() / 500;
+    let mut got = [0u8; 1];
+    for i in 0..ticks {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        client.write_all(&[i as u8]).await.unwrap_or_else(|e| {
+            panic!("the proxy closed an upstream-busy tunnel at tick {i}: {e}")
+        });
+        tokio::time::timeout(Duration::from_secs(10), far_end.read_exact(&mut got))
+            .await
+            .unwrap_or_else(|_| panic!("byte {i} never reached the target"))
+            .unwrap_or_else(|e| panic!("the target side was closed at tick {i}: {e}"));
+        assert_eq!(got[0], i as u8, "the tunnel reordered or lost a byte");
+    }
+
+    // Now silent both ways: it must go.
+    assert!(
+        time_to_eof(&mut client, Duration::from_secs(45))
+            .await
+            .is_some(),
+        "the tunnel was not closed once it went silent both ways"
+    );
+}
+
+#[tokio::test]
+async fn traffic_only_downstream_keeps_the_tunnel_open() {
+    use tokio::io::AsyncWriteExt;
+
+    let state = new_state().await;
+    let proxy = start_proxy(&state, allow_all(), vec![]).await;
+    let (target_port, accepted) = target().await;
+    let mut client = open_tunnel(proxy, target_port).await;
+    let mut far_end = accepted.await.expect("target accepted");
+
+    // The target sends a byte every 500ms for four idle bounds; the client never writes — a
+    // download.
+    let ticks = (SHORT_IDLE * 4).as_millis() / 500;
+    let mut got = [0u8; 1];
+    for i in 0..ticks {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        far_end.write_all(&[i as u8]).await.unwrap_or_else(|e| {
+            panic!("the proxy closed a downstream-busy tunnel at tick {i}: {e}")
+        });
+        tokio::time::timeout(Duration::from_secs(10), client.read_exact(&mut got))
+            .await
+            .unwrap_or_else(|_| panic!("byte {i} never reached the client"))
+            .unwrap_or_else(|e| panic!("the client side was closed at tick {i}: {e}"));
+        assert_eq!(got[0], i as u8, "the tunnel reordered or lost a byte");
+    }
+}
+
+#[tokio::test]
+async fn a_mitm_chunk_parked_for_a_human_keeps_the_tunnel_open() {
+    use tokio::io::AsyncWriteExt;
+
+    let state = new_state().await;
+    let proxy = start_proxy(
+        &state,
+        serde_json::json!({
+            "filter_mode": "allow_all",
+            "mitm_by_default": true,
+            "idle_timeout_secs": SHORT_IDLE.as_secs(),
+        }),
+        vec![serde_json::json!({
+            "event_pattern": "socks5_data_to_target",
+            "handler": {"type": "manual", "timeout_secs": 600}
+        })],
+    )
+    .await;
+    let (target_port, accepted) = target().await;
+    let mut client = open_tunnel(proxy, target_port).await;
+    let mut far_end = accepted.await.expect("target accepted");
+
+    // The chunk is parked for a human; nothing moves either way while it is.
+    client.write_all(b"hello").await.expect("write chunk");
+    let closed = time_to_eof(&mut client, SHORT_IDLE * 4).await;
+    assert!(
+        closed.is_none(),
+        "the proxy closed a MITM tunnel after {closed:?} while its chunk was parked for a human \
+         — the idle clock is running against a decision"
+    );
+    let mut buf = [0u8; 16];
+    let forwarded = tokio::time::timeout(Duration::from_millis(200), far_end.read(&mut buf)).await;
+    assert!(
+        forwarded.is_err(),
+        "the target received {forwarded:?} before the parked chunk was decided"
+    );
+
+    // The human answers — four idle bounds after the chunk arrived. The chunk is forwarded, and
+    // the answer itself is activity: the tunnel must get a fresh bound from here, not be closed
+    // the moment the relay loop comes back and finds the clock long expired. The relay does not
+    // poll the clock while the answer is outstanding, so this is the half of the claim that
+    // `busy()` exists for.
+    let intercept = state
+        .list_intercepts()
+        .await
+        .into_iter()
+        .find(|i| i.event_type == "socks5_data_to_target")
+        .expect("the chunk is not parked as an intercept");
+    state
+        .resolve_intercept(
+            intercept.id,
+            vec![serde_json::json!({"type": "forward_socks5_data"})],
+        )
+        .await
+        .expect("answer the parked chunk");
+    let mut got = [0u8; 5];
+    tokio::time::timeout(Duration::from_secs(10), far_end.read_exact(&mut got))
+        .await
+        .expect("the answered chunk never reached the target")
+        .expect("read the forwarded chunk");
+    assert_eq!(
+        &got, b"hello",
+        "the answered chunk was not forwarded intact"
+    );
+    let after_answer = time_to_eof(&mut client, SHORT_IDLE / 2).await;
+    assert!(
+        after_answer.is_none(),
+        "the tunnel was closed {after_answer:?} after its parked chunk was answered — the answer \
+         did not count as activity, so the clock that ran out during the park closed it at once"
     );
 }
