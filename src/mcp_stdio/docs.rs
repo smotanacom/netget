@@ -10,7 +10,13 @@
 //! arguments that apply, the protocol's event ids with their field names and
 //! types (needed to write an `event_handlers` script), its action names with
 //! parameter schemas and examples, its startup parameters, its privilege
-//! requirement, and its maturity.
+//! requirement, its maturity, what it writes when the model cannot answer
+//! (`failure_mode`), and whether it keeps per-connection state (`connectionless`).
+//!
+//! Every action is rendered in full — parameters and a JSON example — including
+//! the async ones, because those are invocable from MCP: a client's through
+//! `send_to_client`, a server's through `send_to_peer` on a connection whose
+//! protocol registers a peer handle.
 //!
 //! Nothing here mentions `open_server`, `open_client` or `base_stack`.
 
@@ -79,6 +85,22 @@ pub async fn render_protocol_docs(protocol: &str, state: &AppState) -> Option<St
         let _ = writeln!(out, "- **network stack**: {}", server.stack_name());
         let _ = writeln!(out, "- **implementation**: {}", metadata.implementation);
         let _ = writeln!(out, "- **LLM controls**: {}", metadata.llm_control);
+        let _ = writeln!(
+            out,
+            "- **when the model cannot answer**: {}",
+            failure_mode_text(metadata.failure_mode)
+        );
+        let _ = writeln!(
+            out,
+            "- **connections**: {}",
+            if metadata.connectionless {
+                "connectionless — each datagram stands alone; a peer idle for ~10s is \
+                 forgotten, and there is no per-connection state to rely on"
+            } else {
+                "connection-oriented — each peer has a connection id (see `server_status`) \
+                 that lives until either side closes it"
+            }
+        );
         if let Some(notes) = metadata.notes {
             let _ = writeln!(out, "- **notes**: {}", notes);
         }
@@ -230,19 +252,21 @@ pub async fn render_protocol_docs(protocol: &str, state: &AppState) -> Option<St
             }
         }
 
-        let async_actions = server.get_async_actions(state);
+        let async_actions: Vec<ActionDefinition> = server
+            .get_async_actions(state)
+            .into_iter()
+            .filter(|a| !sync_actions.iter().any(|s| s.name == a.name))
+            .collect();
         if !async_actions.is_empty() {
-            let names: Vec<String> = async_actions
-                .iter()
-                .map(|a| format!("`{}`", a.name))
-                .collect();
-            let _ = writeln!(
-                out,
-                "### Server-level actions\n\n{} — these act on the server as a whole rather \
-                 than on one event. They are available to the `instruction` LLM; there is no \
-                 MCP tool that invokes them directly.\n",
-                names.join(", ")
+            out.push_str(
+                "### Server-level actions\n\nThese are not tied to one event. The \
+                 `instruction` LLM can use them, and on a live connection whose protocol \
+                 registers a peer handle (`server_status` marks those) `send_to_peer` \
+                 accepts them alongside the response actions above.\n\n",
             );
+            for action in &async_actions {
+                render_action(&mut out, action);
+            }
         }
 
         // --- startup params ---------------------------------------------------
@@ -346,17 +370,24 @@ pub async fn render_protocol_docs(protocol: &str, state: &AppState) -> Option<St
             }
         }
 
-        let async_actions = client.get_async_actions(state);
+        let async_actions: Vec<ActionDefinition> = client
+            .get_async_actions(state)
+            .into_iter()
+            .filter(|a| !sync_actions.iter().any(|s| s.name == a.name))
+            .collect();
         if !async_actions.is_empty() {
-            let names: Vec<String> = async_actions
-                .iter()
-                .map(|a| format!("`{}`", a.name))
-                .collect();
-            let _ = writeln!(
-                out,
-                "### Client-level actions\n\n{} — available to the `instruction` LLM; no MCP \
-                 tool invokes them directly.\n",
-                names.join(", ")
+            out.push_str(
+                "### Client actions\n\nWhat the client can do on its own initiative. The \
+                 `instruction` LLM and handlers can use them, and `send_to_client` puts any \
+                 of them — or of the response actions above — on the wire now.\n\n",
+            );
+            for action in &async_actions {
+                render_action(&mut out, action);
+            }
+        } else if !sync_actions.is_empty() {
+            out.push_str(
+                "`send_to_client` accepts any of the response actions above to put one on \
+                 the wire now.\n\n",
             );
         }
 
@@ -370,6 +401,21 @@ pub async fn render_protocol_docs(protocol: &str, state: &AppState) -> Option<St
     }
 
     Some(out)
+}
+
+/// What `failure_mode` means for a peer, in one sentence.
+fn failure_mode_text(mode: crate::protocol::metadata::FailureMode) -> &'static str {
+    match mode {
+        crate::protocol::metadata::FailureMode::Answers => {
+            "answers — the peer gets the protocol's own error reply carrying a category \
+             (overloaded or unavailable), never an invented success and never the error text"
+        }
+        crate::protocol::metadata::FailureMode::DeliberatelySilent => {
+            "deliberately silent — nothing is written, because every reply this protocol \
+             defines would assert something the server does not know; the log records \
+             `decision=…` instead"
+        }
+    }
 }
 
 fn render_event(out: &mut String, event: &EventType) {

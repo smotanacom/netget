@@ -93,6 +93,7 @@ fn populated() -> RailSnapshot {
             description: "GET /admin".into(),
             event_data: None,
             created_unix_ms: 1_700_000_004_000,
+            timeout_secs: 300,
         }],
     };
     let broken = ServerRow {

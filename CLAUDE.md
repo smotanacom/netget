@@ -1440,6 +1440,13 @@ Re-verified September 2026 against `src/mcp_stdio/`:
 | `get_protocol_docs` returns TUI docs describing an uninvokable API | **Fixed** — `docs.rs` is MCP-shaped and mentions neither `open_server` nor `base_stack` |
 | `stop_server`/`stop_all` skip `cleanup_server_tasks()` | **Fixed** — teardown moved inside `AppState::remove_server`, pinned by `tests/mcp_stop_cleanup_test.rs` |
 
+**Everything the dashboard's buttons do is a tool too** — `send_to_client`, `send_to_peer`,
+`disconnect_peer`, `list_intercepts`, `answer_intercept` (`[]` = answer with nothing) and
+`fail_intercept`. Each validates the action `type` against the target's own set before handing
+it to a running loop; `server_status` lists connection ids and which accept `send_to_peer`.
+There is no `dismiss_intercept` tool on purpose: dismissing *is* failing closed. Details in
+`src/mcp_stdio/CLAUDE.md` ("Driving by hand").
+
 **Two remain:**
 
 - **Unknown action names in `event_handlers` are still accepted at startup** — only the

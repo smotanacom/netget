@@ -257,6 +257,7 @@ fn a_parked_request_is_flagged_once_and_links_to_its_answer() {
         description: "GET /".into(),
         event_data: None,
         created_unix_ms: 1_700_000_000_000,
+        timeout_secs: 300,
     });
     let events = tracker.diff(&snap(vec![s.clone()], Vec::new()));
     assert_eq!(

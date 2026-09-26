@@ -2752,6 +2752,14 @@ const COMMON_ACTION_NAMES: &[&str] = &[
     "delete_database",
 ];
 
+/// The action names every protocol accepts (the [`crate::llm::CommonAction`] variants), for
+/// callers outside this module that validate a handler-shaped answer — the MCP
+/// `answer_intercept` tool holds an operator's answer to the same rule a static handler is
+/// held to here.
+pub fn common_action_names() -> &'static [&'static str] {
+    COMMON_ACTION_NAMES
+}
+
 /// How many valid action names to spell out in an error before summarising the rest.
 const MAX_LISTED_ACTIONS: usize = 40;
 

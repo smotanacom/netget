@@ -895,6 +895,7 @@ impl AppState {
         event_type: &str,
         description: &str,
         event_data: Option<serde_json::Value>,
+        timeout_secs: u64,
     ) -> (u64, tokio::sync::oneshot::Receiver<Vec<serde_json::Value>>) {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let mut inner = self.inner.write().await;
@@ -911,6 +912,7 @@ impl AppState {
                 description: description.to_string(),
                 event_data,
                 created_unix_ms: crate::state::intercepts::now_unix_ms(),
+                timeout_secs,
                 reply_tx: Some(reply_tx),
             });
         (id, reply_rx)

@@ -66,11 +66,17 @@ OllamaClient (3 backends)
 | `start_server` | Start protocol server | `server_startup::start_server_from_action()` |
 | `stop_server` | Stop server by ID (aborts its tasks + cancels its scheduled tasks) | `AppState::remove_server()` |
 | `list_servers` | List running servers | `AppState::get_all_servers()` |
-| `server_status` | Detailed server status | `AppState::get_server()` |
+| `server_status` | Detailed server status, including each connection's id and whether it accepts `send_to_peer` | `AppState::get_server()` |
 | `start_client` | Connect a protocol client to a remote server | `client_startup::start_client_from_action()` |
-| `stop_client` | Forget a client by ID (**does not stop its network loop** — see below) | `AppState::remove_client()` |
+| `stop_client` | Stop a client by ID (aborts its registered tasks) — see below | `AppState::remove_client()` |
 | `list_clients` | List clients | `AppState::get_all_clients()` |
 | `client_status` | Detailed client status | `AppState::get_client()` |
+| `send_to_client` | Put one of a client's actions on the wire now (the dashboard's `[ send ]`) | `AppState::send_to_client()` |
+| `send_to_peer` | Put one of a server's actions on the wire to one live connection (`[ message ]`) | `AppState::send_to_peer()` |
+| `disconnect_peer` | Hang up one live connection from the server side (`[ disconnect ]`) | `AppState::send_to_peer()` with `close_connection` |
+| `list_intercepts` | Requests parked by a `manual` handler, with what they may be answered with and time left | `AppState::list_intercepts()` |
+| `answer_intercept` | Answer a parked request with actions, or with `[]` ("say nothing") | `AppState::resolve_intercept()` |
+| `fail_intercept` | Refuse a parked request now — the peer gets the fail-closed reply | `AppState::dismiss_intercept()` |
 | `get_status` | Overall NetGet status | AppState model + server count |
 | `set_model` | Change LLM model | `AppState::set_ollama_model()` |
 | `get_protocol_docs` | MCP-shaped protocol documentation | `mcp_stdio::docs::render_protocol_docs()` |
@@ -95,8 +101,11 @@ no MCP caller can invoke. `docs.rs` renders what an MCP caller actually has:
   (interface-bound protocols get `interface`/`mac_address` instead of `port`/`host`);
 - its event ids with field names and types, so `event_handlers` scripts can be
   written without guessing;
-- its action names with parameter schemas and JSON examples;
-- its `startup_params` schema, privilege requirement and maturity.
+- its action names with parameter schemas and JSON examples — **async ones included**, since
+  `send_to_client` and `send_to_peer` make them invocable from MCP;
+- its `startup_params` schema, privilege requirement and maturity;
+- for a server, its `failure_mode` (what the peer gets when the model cannot answer) and
+  whether it is `connectionless`.
 
 `llm::actions::tools::execute_read_documentation` is untouched — the TUI's
 `/docs` command and the internal LLM still use it.
@@ -127,6 +136,41 @@ Related: clients also carry a per-session LLM call budget
 (`AppState::try_consume_client_llm_call`, default 100, override with
 `NETGET_CLIENT_LLM_CALL_LIMIT`, `0` = unlimited) so a non-converging client cannot
 loop forever.
+
+## Driving by hand (`send_to_client`, `send_to_peer`, intercepts)
+
+Six tools give an MCP caller what the dashboard's buttons give a human. Each wraps an
+`AppState` method the dashboard already calls; what the tool adds is **validation before
+anything reaches a running loop** (`src/mcp_stdio/control.rs`): an action whose `type` the
+target cannot execute is refused with the list of names it can, instead of travelling into the
+connection task and coming back as an executor error.
+
+- **`send_to_client {client_id, action, timeout_secs?}`** — `action` is checked against
+  `client_llm_action_set` (async ∪ sync, what the model is shown). A client with no command
+  channel (not connected, or a protocol that never registered one) fails **at once**; it does
+  not wait out the timeout. If the client's loop is parked on a manual question, the error
+  says so and names the request — its loop drains no commands until that is answered.
+- **`send_to_peer {server_id, connection_id, action, timeout_secs?}`** — checked against the
+  server protocol's sync ∪ async actions; needs a peer handle (`server/peer_support.rs`),
+  which `server_status` now reports per connection alongside the connection ids a caller
+  needs. **`disconnect_peer`** sends the protocol's own `close_connection` through the same
+  handle and refuses on a protocol that declares none.
+- **`list_intercepts`** — every request parked by a `manual` handler: id, owner and
+  connection, event type and data, the actions it may be answered with (`name(param*, …)`),
+  and seconds until it fails closed (`PendingIntercept::timeout_secs`, recorded at park time).
+- **`answer_intercept {intercept_id, actions}`** — checked against the firing event's own
+  actions ∪ the protocol's sync actions (for a client, its whole set) plus the common actions
+  — the catalog a static handler for that event is held to. A refused answer leaves the
+  request waiting. **`[]` is a real answer**: nothing is written and the connection carries
+  on, which is distinct from a timeout.
+- **`fail_intercept {intercept_id}`** — refuses now; the dispatcher takes the fail-closed path
+  (TCP half-closes, HTTP answers an error status). There is deliberately **no separate
+  `dismiss_intercept` tool**: `AppState::dismiss_intercept` *is* the dashboard's `[ Fail
+  closed ]` — dropping the reply sender is what wakes the dispatcher onto the fail-closed
+  branch — so a second tool would be the same call under another name.
+
+`tests/mcp_client_send_test.rs` and `tests/mcp_intercept_test.rs` assert each of these from the
+peer's side of a real socket (bytes read, EOF observed), not from the tool's text.
 
 ## In-place update (`update_server` / `update_client`)
 
@@ -308,7 +352,8 @@ All logging goes to stderr (stdout is JSON-RPC). Status messages from protocol s
 
 Automated in-process smoke tests (no Ollama, no real stdio) live in
 `tests/mcp_stdio_test.rs` — see `tests/mcp_stdio_CLAUDE.md`. Teardown regressions are
-pinned separately in `tests/mcp_stop_cleanup_test.rs`. Both drive the real tools over
+pinned separately in `tests/mcp_stop_cleanup_test.rs`, and the hand-driving tools in
+`tests/mcp_client_send_test.rs` and `tests/mcp_intercept_test.rs`. All drive the real tools over
 `tokio::io::duplex`, so they are root-level test files rather than entries in
 `tests/server/mod.rs` and are compiled without the mod.rs footgun.
 

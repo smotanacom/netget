@@ -394,6 +394,74 @@ pub struct AnswerLlmRequestParams {
     pub actions: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SendToClientParams {
+    /// Client ID (from list_clients)
+    #[serde(deserialize_with = "deserialize_u32_flexible")]
+    pub client_id: u32,
+    /// One of the client protocol's actions, as a JSON object with a `type` field naming it
+    /// plus its parameters, e.g. {"type":"send_tcp_data","data":"hello\n"}. get_protocol_docs
+    /// lists the actions a client accepts, with parameters and examples.
+    pub action: serde_json::Value,
+    /// Seconds to wait for the client's loop to execute the action and report (default 30,
+    /// max 120).
+    #[serde(default, deserialize_with = "deserialize_option_u32_flexible")]
+    pub timeout_secs: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SendToPeerParams {
+    /// Server ID (from list_servers)
+    #[serde(deserialize_with = "deserialize_u32_flexible")]
+    pub server_id: u32,
+    /// Connection ID of the live peer (server_status lists them, and marks which accept
+    /// send_to_peer)
+    #[serde(deserialize_with = "deserialize_u32_flexible")]
+    pub connection_id: u32,
+    /// One of the server protocol's actions, as a JSON object with a `type` field, e.g.
+    /// {"type":"send_tcp_data","data":"hello\n"}.
+    pub action: serde_json::Value,
+    /// Seconds to wait for the connection to execute the action and report (default 30,
+    /// max 120).
+    #[serde(default, deserialize_with = "deserialize_option_u32_flexible")]
+    pub timeout_secs: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DisconnectPeerParams {
+    /// Server ID (from list_servers)
+    #[serde(deserialize_with = "deserialize_u32_flexible")]
+    pub server_id: u32,
+    /// Connection ID of the live peer to hang up on (from server_status)
+    #[serde(deserialize_with = "deserialize_u32_flexible")]
+    pub connection_id: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnswerInterceptParams {
+    /// The parked request's id (from list_intercepts)
+    #[serde(deserialize_with = "deserialize_u64_flexible")]
+    pub intercept_id: u64,
+    /// The answer: a JSON array of action objects, each {"type":"<name>", ...parameters},
+    /// using only the actions list_intercepts offers for this request. An EMPTY array is a
+    /// real answer — "acknowledge, say nothing": nothing is written and the connection
+    /// carries on. `{{event.<field>}}` references are filled from the request's event data,
+    /// exactly as in a static handler.
+    pub actions: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FailInterceptParams {
+    /// The parked request's id (from list_intercepts)
+    #[serde(deserialize_with = "deserialize_u64_flexible")]
+    pub intercept_id: u64,
+}
+
+/// Default wait for `send_to_client` / `send_to_peer`, the dashboard composer's own figure.
+const INJECT_TIMEOUT_DEFAULT_SECS: u32 = 30;
+/// Ceiling on a caller-supplied wait, under typical MCP client tool-call timeouts.
+const INJECT_TIMEOUT_MAX_SECS: u32 = 120;
+
 /// Ensure a named pipe (FIFO) exists at `path`, creating it if absent.
 #[cfg(unix)]
 fn ensure_fifo(path: &std::path::Path) -> anyhow::Result<()> {
@@ -947,6 +1015,37 @@ impl NetGetMcpService {
                         &server.memory
                     },
                 );
+                let mut result = result;
+
+                // Connections, with the id send_to_peer / disconnect_peer take and whether
+                // each accepts them (only protocols that register a peer handle do).
+                let mut connections: Vec<_> = server.connections.values().collect();
+                connections.sort_by_key(|c| c.id.as_u32());
+                if connections.is_empty() {
+                    result.push_str("- **Connections**: none\n");
+                } else {
+                    result.push_str("\n### Connections\n\n");
+                    for conn in connections {
+                        let injectable = self
+                            .state
+                            .app_state
+                            .has_peer_handle(server_id, conn.id.as_u32())
+                            .await;
+                        result.push_str(&format!(
+                            "- connection_id **{}** — {} ({:?}), {} byte(s) in / {} out{}\n",
+                            conn.id.as_u32(),
+                            conn.remote_addr,
+                            conn.status,
+                            conn.bytes_received,
+                            conn.bytes_sent,
+                            if injectable {
+                                " — accepts send_to_peer / disconnect_peer"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
+                }
                 Ok(CallToolResult::success(vec![Content::text(result)]))
             }
             None => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -1475,6 +1574,345 @@ impl NetGetMcpService {
     }
 
     #[tool(
+        description = "Put one action on the wire through a RUNNING client, now, without waiting for an event — the dashboard's [ send ]. `action` is one of the client protocol's actions as a JSON object ({\"type\":\"send_tcp_data\",\"data\":\"hello\\n\"}); its `type` is checked against the client's action set first (get_protocol_docs lists them with parameters and examples). The client's own connection loop executes it and the result says what happened: bytes sent, executed without writing, rejected by the protocol, or disconnected. Clients whose protocol has not adopted the command channel return an error immediately rather than hanging."
+    )]
+    async fn send_to_client(
+        &self,
+        Parameters(params): Parameters<SendToClientParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let client_id = crate::state::ClientId::new(params.client_id);
+        let Some(client) = self.state.app_state.get_client(client_id).await else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Client #{} not found",
+                params.client_id
+            ))]));
+        };
+
+        let vocabulary = match crate::mcp_stdio::control::client_vocabulary(
+            &self.state.app_state,
+            &client.protocol_name,
+        ) {
+            Ok(v) => v,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        if let Err(e) = crate::mcp_stdio::control::check_action_types(
+            std::slice::from_ref(&params.action),
+            &vocabulary,
+            &[],
+        ) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Client #{} ({}): {}",
+                params.client_id, client.protocol_name, e
+            ))]));
+        }
+
+        // Fail fast rather than waiting out the timeout on a client that has no channel.
+        if !self.state.app_state.has_client_handle(client_id).await {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Client #{} ({}, {}) does not accept injected actions: it is not connected, or \
+                 its protocol has not adopted the command channel. Its actions can only be \
+                 produced by its instruction or event_handlers.",
+                params.client_id, client.protocol_name, client.status
+            ))]));
+        }
+
+        let timeout = std::time::Duration::from_secs(
+            params
+                .timeout_secs
+                .unwrap_or(INJECT_TIMEOUT_DEFAULT_SECS)
+                .clamp(1, INJECT_TIMEOUT_MAX_SECS) as u64,
+        );
+        match self
+            .state
+            .app_state
+            .send_to_client(client_id, params.action, timeout)
+            .await
+        {
+            Ok(crate::state::client_handles::ClientSendOutcome::Rejected { error }) => {
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Client #{}: the protocol rejected the action: {}",
+                    params.client_id, error
+                ))]))
+            }
+            Ok(outcome) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Client #{}: {}",
+                params.client_id,
+                crate::mcp_stdio::control::describe_outcome(&outcome)
+            ))])),
+            Err(e) => {
+                // A client parks its events for a manual handler inside its own loop, so
+                // while one of its requests waits in list_intercepts nothing drains the
+                // command channel. Say so, or the failure reads as a dead client.
+                let waiting = self
+                    .state
+                    .app_state
+                    .list_intercepts()
+                    .await
+                    .into_iter()
+                    .filter(|v| {
+                        v.owner == crate::state::intercepts::InterceptOwner::Client(client_id)
+                    })
+                    .map(|v| format!("#{}", v.id))
+                    .collect::<Vec<_>>();
+                let hint = if waiting.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " — its loop is parked on request {} waiting for an answer \
+                         (list_intercepts / answer_intercept); it takes commands again once \
+                         that is answered",
+                        waiting.join(", ")
+                    )
+                };
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "{e}{hint}"
+                ))]))
+            }
+        }
+    }
+
+    #[tool(
+        description = "Put one action on the wire to ONE live peer of a running server, now, without waiting for the peer to speak — the dashboard's [ message ] on a peer row. `connection_id` comes from server_status, which also marks the connections that accept this (only protocols that register a peer handle do; tcp and telnet among them). `action` is one of the server protocol's actions ({\"type\":\"send_tcp_data\",\"data\":\"hi\\n\"}), checked against its action set first. Errors clearly when the protocol or connection has no peer handle."
+    )]
+    async fn send_to_peer(
+        &self,
+        Parameters(params): Parameters<SendToPeerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let server_id = crate::state::ServerId::new(params.server_id);
+        let Some(server) = self.state.app_state.get_server(server_id).await else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Server #{} not found",
+                params.server_id
+            ))]));
+        };
+        let vocabulary = match crate::mcp_stdio::control::peer_vocabulary(
+            &self.state.app_state,
+            &server.protocol_name,
+        ) {
+            Ok(v) => v,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        if let Err(e) = crate::mcp_stdio::control::check_action_types(
+            std::slice::from_ref(&params.action),
+            &vocabulary,
+            &[],
+        ) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Server #{} ({}): {}",
+                params.server_id, server.protocol_name, e
+            ))]));
+        }
+        self.inject_into_peer(
+            server_id,
+            &server.protocol_name,
+            params.connection_id,
+            params.action,
+            params.timeout_secs,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Hang up on ONE live peer of a running server from the server's side — the dashboard's [ disconnect ]. Runs the protocol's own close_connection through the connection's peer handle (half-close, and the connection is marked closed at once). Only for protocols that register a peer handle and declare close_connection; errors clearly otherwise."
+    )]
+    async fn disconnect_peer(
+        &self,
+        Parameters(params): Parameters<DisconnectPeerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let server_id = crate::state::ServerId::new(params.server_id);
+        let Some(server) = self.state.app_state.get_server(server_id).await else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Server #{} not found",
+                params.server_id
+            ))]));
+        };
+        let declares_close = crate::mcp_stdio::control::peer_vocabulary(
+            &self.state.app_state,
+            &server.protocol_name,
+        )
+        .map(|v| v.iter().any(|a| a.name == "close_connection"))
+        .unwrap_or(false);
+        if !declares_close {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Server #{} ({}) declares no close_connection action, so there is no \
+                 server-side hang-up to run for one peer. stop_server closes every connection.",
+                params.server_id, server.protocol_name
+            ))]));
+        }
+        self.inject_into_peer(
+            server_id,
+            &server.protocol_name,
+            params.connection_id,
+            serde_json::json!({"type": "close_connection"}),
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "List every request parked for a human answer by a `manual` event handler ({\"event_pattern\":\"*\",\"handler\":{\"type\":\"manual\",\"timeout_secs\":300}}) — the dashboard's \"waiting for YOUR answer\" rows. For each: its id, the server or client and connection it came from, the event type and its data, the actions it may be answered with (name(params), * = required), and how many seconds remain before it fails closed on its own. Answer with answer_intercept, refuse with fail_intercept."
+    )]
+    async fn list_intercepts(&self) -> Result<CallToolResult, McpError> {
+        let views = self.state.app_state.list_intercepts().await;
+        if views.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No requests are waiting for an answer.",
+            )]));
+        }
+        let now = crate::state::intercepts::now_unix_ms();
+        let mut out = format!("## Requests waiting for an answer ({})\n\n", views.len());
+        for view in &views {
+            let (protocol, vocabulary) =
+                match crate::mcp_stdio::control::intercept_vocabulary(&self.state.app_state, view)
+                    .await
+                {
+                    Ok(pair) => pair,
+                    Err(e) => (format!("unknown — {e}"), Vec::new()),
+                };
+            let owner = match view.owner {
+                crate::state::intercepts::InterceptOwner::Server(id) => {
+                    format!("server #{} ({})", id.as_u32(), protocol)
+                }
+                crate::state::intercepts::InterceptOwner::Client(id) => {
+                    format!("client #{} ({})", id.as_u32(), protocol)
+                }
+            };
+            let data = view
+                .event_data
+                .as_ref()
+                .map(|d| serde_json::to_string(d).unwrap_or_else(|_| d.to_string()))
+                .unwrap_or_else(|| "(none)".to_string());
+            let answers: Vec<String> = vocabulary
+                .iter()
+                .map(crate::mcp_stdio::control::action_signature)
+                .collect();
+            out.push_str(&format!(
+                "### intercept_id {}\n\
+                 - **From**: {}{}\n\
+                 - **Event**: `{}` — {}\n\
+                 - **Event data**: `{}`\n\
+                 - **Answer with**: {}\n\
+                 - **Fails closed in**: {}s (of {}s)\n\n",
+                view.id,
+                owner,
+                view.connection_id
+                    .map(|c| format!(", connection #{c}"))
+                    .unwrap_or_default(),
+                view.event_type,
+                view.description,
+                data,
+                if answers.is_empty() {
+                    "(no protocol actions — answer with [] or fail it)".to_string()
+                } else {
+                    answers.join(", ")
+                },
+                view.seconds_until_fail_closed(now),
+                view.timeout_secs,
+            ));
+        }
+        out.push_str(
+            "answer_intercept {intercept_id, actions:[…]} answers (an empty array = \
+             acknowledge and say nothing); fail_intercept {intercept_id} refuses now, and the \
+             peer gets the protocol's fail-closed reply. get_protocol_docs has each action's \
+             parameters and an example.",
+        );
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
+    #[tool(
+        description = "Answer a parked request (from list_intercepts) — the dashboard's [ Compose answer… ] / [ Answer with nothing ]. `actions` is a JSON array of action objects using only the actions list_intercepts offers for it; they run exactly as a static handler's would (same executor, same {{event.field}} interpolation). An EMPTY array is a real answer: acknowledge and say nothing — nothing is written, the connection carries on — which is distinct from letting it time out (that fails closed). Errors if the request is no longer waiting (answered, refused, timed out, or its connection closed)."
+    )]
+    async fn answer_intercept(
+        &self,
+        Parameters(params): Parameters<AnswerInterceptParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(view) = self
+            .state
+            .app_state
+            .list_intercepts()
+            .await
+            .into_iter()
+            .find(|v| v.id == params.intercept_id)
+        else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Request #{} is not waiting (already answered, refused, timed out, or its \
+                 connection closed). list_intercepts shows what is.",
+                params.intercept_id
+            ))]));
+        };
+
+        let (protocol, vocabulary) =
+            match crate::mcp_stdio::control::intercept_vocabulary(&self.state.app_state, &view)
+                .await
+            {
+                Ok(pair) => pair,
+                Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+            };
+        if let Err(e) = crate::mcp_stdio::control::check_action_types(
+            &params.actions,
+            &vocabulary,
+            crate::events::handler::common_action_names(),
+        ) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Request #{} ({} `{}`) was NOT answered and is still waiting: {}",
+                params.intercept_id, protocol, view.event_type, e
+            ))]));
+        }
+
+        let names: Vec<String> = params
+            .actions
+            .iter()
+            .filter_map(|a| a.get("type").and_then(|t| t.as_str()).map(str::to_string))
+            .collect();
+        match self
+            .state
+            .app_state
+            .resolve_intercept(params.intercept_id, params.actions)
+            .await
+        {
+            Ok(()) if names.is_empty() => {
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Answered request #{} with nothing: acknowledged, no reply written, the \
+                     connection carries on.",
+                    params.intercept_id
+                ))]))
+            }
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Answered request #{} with {}. The waiting connection executes them now; \
+                 list_access_logs shows the outcome.",
+                params.intercept_id,
+                names.join(", ")
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(
+        description = "Refuse a parked request (from list_intercepts) now instead of letting it wait out its timeout — the dashboard's [ Fail closed ]. The peer gets exactly what it would get if the model had failed: the protocol's own fail-closed reply (for tcp, a half-close; for http, an error status), never an invented success. There is no separate 'dismiss': refusing a parked request IS failing it closed."
+    )]
+    async fn fail_intercept(
+        &self,
+        Parameters(params): Parameters<FailInterceptParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if self
+            .state
+            .app_state
+            .dismiss_intercept(params.intercept_id)
+            .await
+        {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Refused request #{}: the peer gets the protocol's fail-closed reply.",
+                params.intercept_id
+            ))]))
+        } else {
+            Ok(CallToolResult::error(vec![Content::text(format!(
+                "Request #{} is not waiting (already answered, refused or timed out).",
+                params.intercept_id
+            ))]))
+        }
+    }
+
+    #[tool(
         description = "Agent-LLM mode only (netget --llm-agent): fetch the next queued LLM request for a protocol server so YOU (the calling agent) can answer it in place of a model. Optionally long-poll with wait_seconds. Returns the request id, the prompt (server instruction + the triggering event), and the actions you may use. Reply by calling answer_llm_request with that id and a JSON array of actions. Returns '(no pending requests)' if none arrive within the wait."
     )]
     async fn get_next_llm_request(
@@ -1588,6 +2026,62 @@ impl NetGetMcpService {
 }
 
 impl NetGetMcpService {
+    /// Shared body of `send_to_peer` and `disconnect_peer`: check the connection has a peer
+    /// handle (a clear error when the protocol or connection has none), then execute the
+    /// action inside that connection's own task and report the outcome.
+    async fn inject_into_peer(
+        &self,
+        server_id: crate::state::ServerId,
+        protocol_name: &str,
+        connection_id: u32,
+        action: serde_json::Value,
+        timeout_secs: Option<u32>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self
+            .state
+            .app_state
+            .has_peer_handle(server_id, connection_id)
+            .await
+        {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Connection #{} on server #{} ({}) does not accept injected actions: either \
+                 it is not a live connection of that server (server_status lists them), or \
+                 the {} protocol does not register a peer handle for its connections.",
+                connection_id,
+                server_id.as_u32(),
+                protocol_name,
+                protocol_name
+            ))]));
+        }
+        let timeout = std::time::Duration::from_secs(
+            timeout_secs
+                .unwrap_or(INJECT_TIMEOUT_DEFAULT_SECS)
+                .clamp(1, INJECT_TIMEOUT_MAX_SECS) as u64,
+        );
+        match self
+            .state
+            .app_state
+            .send_to_peer(server_id, connection_id, action, timeout)
+            .await
+        {
+            Ok(crate::state::client_handles::ClientSendOutcome::Rejected { error }) => {
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Connection #{} on server #{}: the protocol rejected the action: {}",
+                    connection_id,
+                    server_id.as_u32(),
+                    error
+                ))]))
+            }
+            Ok(outcome) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Connection #{} on server #{}: {}",
+                connection_id,
+                server_id.as_u32(),
+                crate::mcp_stdio::control::describe_outcome(&outcome)
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     /// The `AppState` this service drives.
     ///
     /// `SharedState` is crate-private and the `#[tool]` methods are private to the
@@ -1625,6 +2119,12 @@ impl ServerHandler for NetGetMcpService {
                  instead of listening. They take the same instruction and event_handlers \
                  arguments plus a remote_addr. stop_client aborts the client's background \
                  tasks, releasing its socket and stopping further LLM calls.\n\n\
+                 DRIVING BY HAND: send_to_client puts one of a client's actions on the wire \
+                 now; send_to_peer / disconnect_peer do the same for one live connection of a \
+                 server (server_status lists connection ids). A `manual` event handler parks \
+                 each matching event for YOU: list_intercepts shows them, answer_intercept \
+                 answers (an empty array acknowledges without replying), fail_intercept \
+                 refuses with the protocol's fail-closed reply.\n\n\
                  AGENT-LLM MODE (when netget was started with --llm-agent): there is no \
                  model — YOU answer the LLM calls. When a server needs a reasoned \
                  response it queues a request; fetch it with get_next_llm_request \
