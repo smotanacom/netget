@@ -34,6 +34,8 @@ pub struct MockOllamaServer {
     config: Arc<Mutex<MockLlmConfig>>,
     /// `/api/tags` hits (shared with the handler)
     tags_hits: Arc<AtomicUsize>,
+    /// Top-level request fields other than the prompt/messages, per request, in order.
+    request_fields: RecordedFields,
     /// Shutdown signal
     _shutdown_tx: oneshot::Sender<()>,
 }
@@ -49,6 +51,10 @@ struct OllamaChatRequest {
     #[serde(default)]
     #[allow(dead_code)]
     format: Option<serde_json::Value>,
+    /// Every other top-level field (`options`, `tools`, …), kept verbatim so a test can
+    /// assert what NetGet put on the wire. See [`MockOllamaServer::recorded_request_fields`].
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Ollama message format
@@ -85,6 +91,10 @@ struct OllamaGenerateRequest {
     #[serde(default)]
     #[allow(dead_code)]
     format: Option<serde_json::Value>,
+    /// Every other top-level field (`options`, `tools`, …), kept verbatim so a test can
+    /// assert what NetGet put on the wire. See [`MockOllamaServer::recorded_request_fields`].
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Ollama generate response format
@@ -120,6 +130,30 @@ struct ServerState {
     /// it had nothing" from "asked a different endpoint entirely" — the shape of the bug
     /// `tests/model_selection_endpoint_test.rs` pins.
     tags_hits: Arc<AtomicUsize>,
+    /// `(endpoint, fields)` for every `/api/chat` and `/api/generate` request.
+    request_fields: RecordedFields,
+}
+
+/// `(endpoint, top-level fields other than the prompt/messages)` per request.
+type RecordedFields = Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+
+fn record_request_fields(
+    state: &ServerState,
+    endpoint: &str,
+    stream: bool,
+    format: &Option<serde_json::Value>,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) {
+    let mut fields = extra.clone();
+    fields.insert("stream".to_string(), serde_json::json!(stream));
+    if let Some(format) = format {
+        fields.insert("format".to_string(), format.clone());
+    }
+    state
+        .request_fields
+        .lock()
+        .expect("request_fields poisoned")
+        .push((endpoint.to_string(), serde_json::Value::Object(fields)));
 }
 
 // ============================================================================
@@ -305,9 +339,11 @@ impl MockOllamaServer {
     pub async fn start(config: MockLlmConfig) -> E2EResult<Self> {
         let config = Arc::new(Mutex::new(config));
         let tags_hits = Arc::new(AtomicUsize::new(0));
+        let request_fields: RecordedFields = Default::default();
         let state = ServerState {
             config: config.clone(),
             tags_hits: tags_hits.clone(),
+            request_fields: request_fields.clone(),
         };
 
         // Build router with Ollama-compatible endpoints
@@ -353,6 +389,7 @@ impl MockOllamaServer {
             port,
             config,
             tags_hits,
+            request_fields,
             _shutdown_tx,
         })
     }
@@ -368,6 +405,17 @@ impl MockOllamaServer {
     /// test proves NetGet asked *this* endpoint which models it has.
     pub fn tags_request_count(&self) -> usize {
         self.tags_hits.load(Ordering::SeqCst)
+    }
+
+    /// For every `/api/chat` and `/api/generate` request, in order: the endpoint and every
+    /// top-level field except the prompt, the messages and the model — `options`, `tools`,
+    /// `stream`, `format`. This is the wire, not NetGet's idea of it, so it is how a test
+    /// proves which sampling options were (or were not) sent.
+    pub fn recorded_request_fields(&self) -> Vec<(String, serde_json::Value)> {
+        self.request_fields
+            .lock()
+            .expect("request_fields poisoned")
+            .clone()
     }
 
     /// Every call the model actually received, in order.
@@ -502,6 +550,13 @@ async fn handle_chat(
     State(state): State<ServerState>,
     Json(request): Json<OllamaChatRequest>,
 ) -> Response {
+    record_request_fields(
+        &state,
+        "/api/chat",
+        request.stream,
+        &request.format,
+        &request.extra,
+    );
     debug!(
         "🔧 Mock Ollama received chat request: model={}, messages={}",
         request.model,
@@ -720,6 +775,13 @@ async fn handle_generate(
     State(state): State<ServerState>,
     Json(request): Json<OllamaGenerateRequest>,
 ) -> Response {
+    record_request_fields(
+        &state,
+        "/api/generate",
+        request.stream,
+        &request.format,
+        &request.extra,
+    );
     debug!(
         "🔧 Mock Ollama received generate request: model={}, prompt_len={}",
         request.model,

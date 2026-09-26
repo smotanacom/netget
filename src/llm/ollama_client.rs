@@ -1038,6 +1038,41 @@ pub fn client_for_endpoint_with_timeout(
 /// `--llm-max-tokens`.
 pub const DEFAULT_MAX_TOKENS: u32 = 32768;
 
+/// Sampling overrides sent to the backend with every request.
+///
+/// Both fields are `None` unless the operator set them, and a `None` field is **absent from
+/// the request body** — not sent as a default — so a run without `--llm-seed` or
+/// `--llm-temperature` puts exactly the bytes on the wire it always did and the model's own
+/// Modelfile decides. `tests/llm_sampling_options_test.rs` pins both halves.
+///
+/// Ollama reads them from the `options` object of `/api/generate` and `/api/chat`; the
+/// OpenAI-compatible API takes them as top-level `seed` and `temperature`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SamplingOptions {
+    /// Sampler seed. With a fixed seed and an identical prompt, Ollama's sampler draws the
+    /// same tokens; a prompt that differs (a new port, a new query id) still diverges.
+    pub seed: Option<u64>,
+    /// Sampling temperature. `0.0` is greedy decoding.
+    pub temperature: Option<f32>,
+}
+
+impl SamplingOptions {
+    /// Whether any override is set.
+    pub fn is_empty(&self) -> bool {
+        self.seed.is_none() && self.temperature.is_none()
+    }
+
+    /// Write the set fields into `target` (an Ollama `options` object or an OpenAI body).
+    fn apply_to(&self, target: &mut serde_json::Value) {
+        if let Some(seed) = self.seed {
+            target["seed"] = serde_json::json!(seed);
+        }
+        if let Some(temperature) = self.temperature {
+            target["temperature"] = serde_json::json!(temperature);
+        }
+    }
+}
+
 /// LLM API client supporting Ollama and OpenAI-compatible backends
 #[derive(Clone)]
 pub struct OllamaClient {
@@ -1051,6 +1086,9 @@ pub struct OllamaClient {
     request_timeout: std::time::Duration,
     /// Completion-token budget for a single backend call.
     max_tokens: u32,
+    /// Sampling overrides (`--llm-seed`, `--llm-temperature`). Empty by default, and
+    /// an empty value adds nothing to any request body.
+    sampling: SamplingOptions,
 }
 
 impl OllamaClient {
@@ -1096,6 +1134,7 @@ impl OllamaClient {
             breaker: std::sync::Arc::new(CircuitBreaker::default()),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_tokens: DEFAULT_MAX_TOKENS,
+            sampling: SamplingOptions::default(),
         }
     }
 
@@ -1118,6 +1157,7 @@ impl OllamaClient {
             breaker: std::sync::Arc::new(CircuitBreaker::default()),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_tokens: DEFAULT_MAX_TOKENS,
+            sampling: SamplingOptions::default(),
         }
     }
 
@@ -1138,6 +1178,7 @@ impl OllamaClient {
             breaker: std::sync::Arc::new(CircuitBreaker::default()),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_tokens: DEFAULT_MAX_TOKENS,
+            sampling: SamplingOptions::default(),
         }
     }
 
@@ -1155,6 +1196,7 @@ impl OllamaClient {
             breaker: std::sync::Arc::new(CircuitBreaker::default()),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_tokens: DEFAULT_MAX_TOKENS,
+            sampling: SamplingOptions::default(),
         }
     }
 
@@ -1172,6 +1214,7 @@ impl OllamaClient {
             breaker: std::sync::Arc::new(CircuitBreaker::default()),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_tokens: DEFAULT_MAX_TOKENS,
+            sampling: SamplingOptions::default(),
         }
     }
 
@@ -1420,6 +1463,17 @@ impl OllamaClient {
         self
     }
 
+    /// Set the sampling overrides sent with every request. See [`SamplingOptions`].
+    pub fn with_sampling(mut self, sampling: SamplingOptions) -> Self {
+        self.sampling = sampling;
+        self
+    }
+
+    /// The sampling overrides this client sends.
+    pub fn sampling(&self) -> SamplingOptions {
+        self.sampling
+    }
+
     /// Replace the circuit breaker (thresholds are per-breaker; see
     /// [`crate::llm::circuit_breaker`]).
     ///
@@ -1567,6 +1621,7 @@ impl OllamaClient {
                     // data, and reasoning models that think before answering).
                     "options": { "num_predict": self.max_tokens },
                 });
+                self.sampling.apply_to(&mut body["options"]);
                 if format.is_some() {
                     body["format"] = serde_json::json!("json");
                 }
@@ -1639,6 +1694,7 @@ impl OllamaClient {
                     "stream": true,
                     "stream_options": { "include_usage": true },
                 });
+                self.sampling.apply_to(&mut body);
 
                 if format.is_some() {
                     body["response_format"] = serde_json::json!({ "type": "json_object" });
@@ -2025,6 +2081,11 @@ impl OllamaClient {
             // single-object body is handled as the one-line degenerate case.
             "stream": true,
         });
+        // No `options` object at all unless an override is set: this path never sent one.
+        if !self.sampling.is_empty() {
+            body["options"] = serde_json::json!({});
+            self.sampling.apply_to(&mut body["options"]);
+        }
 
         // Add tools if any
         if !request.tools.is_empty() {
@@ -2144,6 +2205,7 @@ impl OllamaClient {
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        self.sampling.apply_to(&mut body);
 
         if !request.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(request.tools.clone());

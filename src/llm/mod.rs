@@ -54,7 +54,7 @@ pub use action_helper::{
 pub use ollama_client::{
     accumulate_ollama_stream, accumulate_openai_stream, CommandAction, CommandInterpretation,
     GenerateResponse, HttpLlmResponse, LlmResponse, OllamaClient, OllamaResponseKind,
-    OpenAiStreamAcc, StreamAccumulation, TokenUsage,
+    OpenAiStreamAcc, SamplingOptions, StreamAccumulation, TokenUsage,
 };
 pub use prompt::PromptBuilder;
 pub use response_handler::{handle_llm_response, ProcessedResponse};

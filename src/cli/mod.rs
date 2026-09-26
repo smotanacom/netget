@@ -45,6 +45,10 @@ pub fn create_llm_client(args: &Args) -> Result<OllamaClient> {
     if let Some(max_tokens) = args.llm_max_tokens {
         client = client.with_max_tokens(max_tokens);
     }
+    client = client.with_sampling(crate::llm::SamplingOptions {
+        seed: args.llm_seed,
+        temperature: args.llm_temperature,
+    });
     Ok(client)
 }
 
