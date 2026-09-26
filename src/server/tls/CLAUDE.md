@@ -97,17 +97,15 @@ If data arrives during LLM processing:
 
 #### `tls_connection_opened`
 
-Triggered when the TLS handshake completes, for every connection. It used to be raised only for
-`send_first` servers, so a server started from an instruction alone could never greet (the
-same defect as `tcp_connection_opened`, IMPROVEMENTS item 78). The connection is registered
-`Processing` while it is answered, so application data that arrives meanwhile queues behind it;
-`handle_connection_opened` then moves it to `Idle` and processes the queue. With nothing to say
-the model answers with no actions (`decision=model_no_actions`); a backend failure there is
-logged `decision=connect_event_failed` and the session goes on. **`send_first`** means the peer is
-owed a greeting: nothing is read until the event is answered, a silent answer is WARN
-`decision=model_silent`, and a failure closes with close_notify. A peer that leaves before the
-answer abandons the call (`decision=peer_left_before_answer`). A dashboard-created server answers
-the event with a zero-action static rule (it is declared `.raised_on_every_connection()`).
+Triggered when the TLS handshake completes, only for a server started with **`send_first`**,
+which means the peer is owed a greeting: nothing is read until the event is answered, a silent
+answer is WARN `decision=model_silent`, and a failure closes with close_notify. The connection is
+registered `Processing` while it is answered, so application data that arrives meanwhile queues
+behind it; `handle_connection_opened` then moves it to `Idle` and processes the queue. A peer that
+leaves before the answer abandons the call (`decision=peer_left_before_answer`). Without
+`send_first` the connection starts `Idle` and costs no model call until the client sends
+something. Raising it on every connection was measured on `tcp` and rejected (see
+`src/server/tcp/CLAUDE.md` section 4).
 
 Event parameters: None (just notification)
 

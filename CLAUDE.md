@@ -790,10 +790,11 @@ async actions (user-triggered) and sync actions (network-event-triggered), in
    "answered with nothing" and does not park — several clients handle their connect event inline
    in `connect()`, so parking it would stall creation itself. Everything after the connect
    handshake still falls through to `*` → manual. **Servers get the same treatment for the events
-   they raise on every connection** — `EventType::raised_on_every_connection()`, e.g.
-   `tcp_connection_opened`, `telnet_connection_opened` — one zero-action static rule each, then
-   `*` → manual. Those events fire for every connection whether or not `send_first` is set, so
-   without the rule a person would be asked about every connection before its first message.
+   they raise on every connection** — `EventType::raised_on_every_connection()`, today
+   `telnet_connection_opened` — one zero-action static rule each, then `*` → manual. Without the
+   rule a person would be asked about every connection before its first message. `tcp` and
+   `tls` raise their connect event only with `send_first`: raising it everywhere was measured to
+   cost a model call per connection and to make a small model greet clients nobody asked it to.
 4. **LLM** — one model round-trip per event (the fallback when no rule matches)
 
 Scripts and static handlers are the right default for deterministic behavior (echo, canned

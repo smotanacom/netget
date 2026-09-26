@@ -956,12 +956,13 @@ async fn test_tcp_alternative_examples() -> E2EResult<()> {
                         .respond_with_actions(llm_mode_with_port_0.clone())
                         .expect_calls(1)
                         .and()
-                        // `tcp_connection_opened` is raised for every connection, `send_first`
-                        // or not, and this server has nothing to say first — so it is answered
-                        // with no actions, before the data below is looked at.
+                        // No expectation: `tcp_connection_opened` is raised from
+                        // `send_banner`, which runs for `send_first` servers only, and this
+                        // startup example sets no `send_first`. The rule is kept so a future
+                        // example that does speak first is answered rather than falling
+                        // through, but it cannot fire here and pinning it asserted a lie.
                         .on_event("tcp_connection_opened")
-                        .respond_with_actions(json!([]))
-                        .expect_calls(1)
+                        .respond_with_actions(json!({"type": "wait_for_more"}))
                         .and()
                         // The point of the test: the alternative example the protocol
                         // documents must be the answer the server is actually given.

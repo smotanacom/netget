@@ -377,13 +377,19 @@ impl TlsServer {
                                 // the I/O driver. 15 of 16 clients that wrote at handshake
                                 // completion had their request dropped with no response and no log
                                 // line.
-                                // Registered `Processing`: `tls_connection_opened` is being
-                                // answered, and application data that arrives meanwhile queues
-                                // behind it instead of raising a concurrent model call.
+                                // A `send_first` server registers it `Processing`:
+                                // `tls_connection_opened` is being answered, and application data
+                                // that arrives meanwhile queues behind it instead of raising a
+                                // concurrent model call. Without `send_first` no connect event is
+                                // raised, so it starts `Idle`.
                                 connections_clone.lock().await.insert(
                                     connection_id,
                                     ConnectionData {
-                                        state: ConnectionState::Processing,
+                                        state: if send_first {
+                                            ConnectionState::Processing
+                                        } else {
+                                            ConnectionState::Idle
+                                        },
                                         queued_data: Vec::new(),
                                         write_half: write_half_arc.clone(),
                                     },
@@ -419,18 +425,17 @@ impl TlsServer {
                                     status_tx_clone.clone(),
                                 );
 
-                                // `tls_connection_opened` is raised for EVERY connection, as
-                                // `tcp_connection_opened` is: it used to be raised only for
-                                // `send_first` servers, so a server started from an
-                                // instruction alone could never greet. `send_first` now means
-                                // the peer is owed a greeting and nothing is read until the
-                                // event is answered. See `handle_connection_opened`.
+                                // `tls_connection_opened` is raised only for a `send_first`
+                                // server, as `tcp_connection_opened` is: the peer is owed a
+                                // greeting and nothing is read until the event is answered. A
+                                // server that speaks second pays no model call per connection.
+                                // See `handle_connection_opened`.
                                 let (opened_tx, opened_rx) = tokio::sync::oneshot::channel::<()>();
                                 // Dropped by the reader on every exit path, which tells the
                                 // connect task its peer is gone.
                                 let (reader_alive_tx, reader_alive_rx) =
                                     tokio::sync::oneshot::channel::<()>();
-                                {
+                                if send_first {
                                     let llm_client_for_conn = llm_client_clone.clone();
                                     let app_state_for_conn = app_state_clone.clone();
                                     let status_tx_for_conn = status_tx_clone.clone();
@@ -459,6 +464,9 @@ impl TlsServer {
                                             .await;
                                         })
                                         .await;
+                                } else {
+                                    drop(opened_tx);
+                                    drop(reader_alive_rx);
                                 }
 
                                 // Spawn reader task
@@ -747,12 +755,11 @@ impl TlsServer {
     }
 
     /// Answer `tls_connection_opened` for a new connection, then release whatever the peer
-    /// sent while it was being answered. The TLS twin of `tcp`'s function of the same name:
-    ///
-    /// * `send_first`: the peer is owed a greeting. No bytes is WARN `decision=model_silent`,
-    ///   and a backend failure closes with close_notify (`decision=fail_closed_llm_error_*`).
-    /// * otherwise: no bytes is the ordinary answer (`decision=model_no_actions`), and a
-    ///   backend failure is logged `decision=connect_event_failed` and the session goes on.
+    /// sent while it was being answered. The TLS twin of `tcp`'s function of the same name,
+    /// called only for a `send_first` server, whose peer is owed a greeting: no bytes is WARN
+    /// `decision=model_silent`, and a backend failure closes with close_notify
+    /// (`decision=fail_closed_llm_error_*`). The branch for a server without `send_first` is
+    /// kept so the function stays correct if it is ever called for one.
     ///
     /// `opened` is signalled once the answer is on the wire; a `send_first` reader waits for
     /// it. `reader_alive` resolves when the reader ends, which abandons the call.

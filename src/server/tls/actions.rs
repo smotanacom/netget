@@ -27,7 +27,7 @@ impl Protocol for TlsProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "The peer is owed a greeting after the handshake: nothing it sends is read until tls_connection_opened has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. tls_connection_opened is raised for every connection either way.".to_string(),
+                    description: "Set true when the server speaks first after the handshake (a banner or prompt). It is the only way tls_connection_opened is raised: then nothing the peer sends is read until that event has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. Left false (the default), no connect event is raised and a connection costs no model call until the client sends something.".to_string(),
                     required: false,
                     example: serde_json::json!(false),
                     default: None,
@@ -441,11 +441,10 @@ pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
 pub static TLS_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "tls_connection_opened",
-        "TLS handshake complete; the client has sent nothing yet. Raised for every \
-         connection. If the instruction asks to greet connecting clients or to speak first, \
-         send it now with send_tls_data. Otherwise answer with no actions at all \
-         ({\"actions\": []}) and wait for the client - do not invent a greeting nobody asked \
-         for.",
+        "TLS handshake complete; the client has sent nothing yet. Raised only when the \
+         server was started with send_first, which means the client is owed a greeting: send \
+         the banner or prompt now with send_tls_data. Nothing the client sends is read until \
+         this is answered.",
         json!({
             "type": "send_tls_data",
             "data": "220 Welcome to secure server\r\n"
@@ -457,7 +456,6 @@ pub static TLS_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         CLOSE_THIS_CONNECTION_ACTION.clone(),
     ])
     .with_parameters(crate::protocol::event_type::connect_event_parameters())
-    .raised_on_every_connection()
     .with_log_template(
         LogTemplate::new()
             .with_info("{client_ip} TLS connected")

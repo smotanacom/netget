@@ -69,11 +69,6 @@ async fn llm_event_handler_instruction_reaches_the_model() -> E2EResult<()> {
             .and()
             // 3. Catch-all for the same event, placed after 2 (first match wins). It
             //    fires only when the instruction was dropped — the pre-fix behaviour.
-            .on_event("tcp_connection_opened")
-            // Raised for every connection; this server has nothing to say first.
-            .respond_with_actions(serde_json::json!([]))
-            .expect_calls(1)
-            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([
                 { "type": "send_tcp_data", "data": "INSTRUCTION-WAS-DROPPED", "encoding": "utf8" }

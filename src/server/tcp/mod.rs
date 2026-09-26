@@ -235,14 +235,20 @@ impl TcpServer {
                         // error and no log line. Inserting synchronously in the accept loop
                         // closes the window: the reader task does not exist yet.
                         //
-                        // It starts in `Processing`: `tcp_connection_opened` is being answered,
-                        // and anything the peer sends meanwhile queues behind it rather than
-                        // raising a second, concurrent model call on the same connection. The
-                        // connect task moves it to `Idle` and hands over the queue.
+                        // A `send_first` server starts it in `Processing`: `tcp_connection_opened`
+                        // is being answered, and anything the peer sends meanwhile queues behind
+                        // it rather than raising a second, concurrent model call on the same
+                        // connection. The connect task moves it to `Idle` and hands over the
+                        // queue. Without `send_first` no connect event is raised, so it starts
+                        // `Idle`.
                         connections.lock().await.insert(
                             connection_id,
                             ConnectionData {
-                                state: ConnectionState::Processing,
+                                state: if send_first {
+                                    ConnectionState::Processing
+                                } else {
+                                    ConnectionState::Idle
+                                },
                                 queued_data: Vec::new(),
                                 memory: String::new(),
                                 write_half: write_half_arc.clone(),
@@ -270,23 +276,22 @@ impl TcpServer {
                             status_tx.clone(),
                         );
 
-                        // Raise `tcp_connection_opened` for EVERY connection. It used to be raised
-                        // only for `send_first` servers, so an instruction like "greet everyone who
-                        // connects" could not be served by a server started from a one-line
-                        // instruction, which has no way to set a startup parameter — the event was
-                        // advertised and never fired. The model answers with no actions when the
-                        // instruction does not ask for a greeting; a dashboard-created instance
-                        // routes it to a zero-action static rule and pays nothing.
+                        // Raise `tcp_connection_opened` only for a `send_first` server, where the
+                        // peer is owed a greeting and nothing is read until it is on the wire.
                         //
-                        // `send_first` now means "hold the first read until this is answered" and
-                        // "the peer is owed a greeting", which decides what silence and failure
-                        // mean below.
+                        // Raising it for every connection was measured and rejected: generic TCP
+                        // is client-speaks-first, so a model-driven server paid one extra model
+                        // call per connection to learn there was nothing to say, and the real-model
+                        // eval showed the cost in behaviour as well as time - told to upper-case
+                        // the client's text, llama3.1:8b answered the empty connect event with a
+                        // greeting and the client's real answer arrived seconds later. A greeting
+                        // is what `send_first` is for, and its description says so.
                         let (opened_tx, opened_rx) = tokio::sync::oneshot::channel::<()>();
                         // Dropped by the reader task on every exit path (EOF, error, deadline,
                         // abort), which tells the connect task its peer is gone.
                         let (reader_alive_tx, reader_alive_rx) =
                             tokio::sync::oneshot::channel::<()>();
-                        {
+                        if send_first {
                             let llm_client_clone = llm_client.clone();
                             let app_state_clone = app_state.clone();
                             let status_tx_clone = status_tx.clone();
@@ -319,6 +324,9 @@ impl TcpServer {
                                     .await;
                                 })
                                 .await;
+                        } else {
+                            drop(opened_tx);
+                            drop(reader_alive_rx);
                         }
 
                         // Spawn reader task
@@ -543,14 +551,12 @@ impl TcpServer {
     /// Answer `tcp_connection_opened` for a new connection, then release whatever the peer
     /// sent while it was being answered.
     ///
-    /// Raised for every connection. What silence and failure mean depends on `send_first`:
-    ///
-    /// * `send_first`: the peer is owed a greeting. No bytes is `decision=model_silent` (a
-    ///   warning), and a backend failure half-closes the connection, because the peer is
-    ///   waiting for something that is not coming.
-    /// * otherwise: no bytes is the ordinary answer (`decision=model_no_actions`), and a
-    ///   backend failure is logged as `decision=connect_event_failed` and the connection goes
-    ///   on — the peer speaks first and has not been failed by anything yet.
+    /// The accept loop calls this only for a `send_first` server, whose peer is owed a greeting:
+    /// no bytes is `decision=model_silent` (a warning), and a backend failure half-closes the
+    /// connection, because the peer is waiting for something that is not coming. The branch for
+    /// a server without `send_first` (no bytes is `decision=model_no_actions`, a failure is
+    /// logged `decision=connect_event_failed`) is kept so the function stays correct if it is
+    /// ever called for one.
     ///
     /// `opened` is signalled once the answer is on the wire; a `send_first` reader waits for it.
     /// `reader_alive` resolves when the reader task ends, and abandons the call: a peer that
@@ -578,9 +584,9 @@ impl TcpServer {
         );
 
         // A peer that connects and leaves before the connect event is answered has nobody
-        // left to greet. The call is abandoned rather than finished: every connection now
-        // raises this event, so a port scan would otherwise cost one model call per probe,
-        // each running on after its socket was gone.
+        // left to greet. The call is abandoned rather than finished, so a port scan against a
+        // `send_first` server does not cost one model call per probe, each running on after its
+        // socket was gone.
         let answer = tokio::select! {
             answer = call_llm(
                 &llm_client,

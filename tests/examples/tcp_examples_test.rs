@@ -77,11 +77,11 @@ async fn example_test_tcp_connection_opened() -> E2EResult<()> {
                     "port": 0,
                     "base_stack": "TCP",
                     "instruction": "Send welcome banner on connection",
-                    // No `send_first`, deliberately. `tcp_connection_opened` used to be raised
-                    // only for `send_first` servers, so a server started from an instruction
-                    // alone could never greet (IMPROVEMENTS item 78, and every telnet banner
-                    // case in the real-model eval). It is raised for every connection now,
-                    // and this test is the proof: without the flag the banner still arrives.
+                    // `tcp_connection_opened` is raised only by `send_first` servers
+                    // (src/server/tcp/mod.rs::send_greeting). Without this the event never
+                    // fires and no banner is ever sent - which is what this test found the
+                    // first time it was able to fail.
+                    "startup_params": {"send_first": true}
                 }]))
                 .and()
                 // Mock 2: Connection opened event.
@@ -163,12 +163,11 @@ async fn example_test_tcp_data_received() -> E2EResult<()> {
                     "instruction": "Echo received data"
                 }]))
                 .and()
-                // Mock 2: Connection opened. Raised for every connection and answered before
-                // the data below is looked at; this server has nothing to say first. This is
-                // the extra model call item 78 costs: three calls here, where there were two.
+                // Mock 2: Connection opened (may trigger first)
                 .on_event("tcp_connection_opened")
-                .respond_with_actions(json!([]))
-                .expect_calls(1)
+                .respond_with_actions(json!({
+                    "type": "wait_for_more"
+                }))
                 .and()
                 // Mock 3: Data received event.
                 // Taken from the protocol; the hardcoded copy that used to live here had
@@ -306,7 +305,10 @@ async fn example_test_tcp_startup_static_mode() -> E2EResult<()> {
                     "port": 0,
                     "base_stack": "TCP",
                     "instruction": "Send static greeting on connection",
-                    // No `send_first`: tcp_connection_opened is raised for every connection.
+                    // See the note in example_test_tcp_connection_opened: without
+                    // send_first the tcp_connection_opened event never fires, so the static
+                    // handler below would never run.
+                    "startup_params": {"send_first": true},
                     "event_handlers": [{
                         "event_pattern": "tcp_connection_opened",
                         "handler": {

@@ -204,12 +204,7 @@ fn echo_server() -> serde_json::Value {
         "protocol": "tcp",
         "port": 0,
         "instruction": "echo",
-        // `tcp_connection_opened` is raised for every connection; answered with nothing here so
-        // no event in this file ever needs a model.
         "event_handlers": [{
-            "event_pattern": "tcp_connection_opened",
-            "handler": {"type": "static", "actions": []}
-        }, {
             "event_pattern": "tcp_data_received",
             "handler": {"type": "static", "actions": [
                 {"type": "send_tcp_data", "data": "{{event.data}}"}
@@ -252,16 +247,14 @@ fn run_for_exits_zero_when_the_duration_elapses() {
     );
 }
 
-/// Two servers, `--exit-after-events 4`: both are reported and served, the first exchange does
-/// not end the run, the second (on the other server) does. Each exchange is two events — the
-/// connection's `tcp_connection_opened`, then its `tcp_data_received` — so the first brings the
-/// count to 2 and the second to 4.
+/// Two servers, `--exit-after-events 2`: both are reported and served, the first exchange does
+/// not end the run, the second (on the other server) does.
 #[test]
 fn exit_after_events_counts_events_across_every_server() {
     let mut netget = Netget::spawn(
         "events",
         serde_json::json!([echo_server(), echo_server()]),
-        &["--exit-after-events", "4"],
+        &["--exit-after-events", "2"],
     );
     netget.wait_line("Waiting for connections", Duration::from_secs(20));
     let running = netget.lines_containing("is running on 127.0.0.1:");
@@ -278,13 +271,13 @@ fn exit_after_events_counts_events_across_every_server() {
     exchange(second, b"one\n");
     netget.assert_alive_for(
         Duration::from_millis(600),
-        "one exchange (two events) must not satisfy --exit-after-events 4",
+        "one handled event must not satisfy --exit-after-events 2",
     );
     exchange(first, b"two\n");
     let status = netget.wait_exit(Duration::from_secs(10));
     assert!(status.success(), "exit status {status}");
     assert!(
-        !netget.lines_containing("--exit-after-events 4").is_empty(),
+        !netget.lines_containing("--exit-after-events 2").is_empty(),
         "the run says why it stopped: {:?}",
         netget.seen
     );

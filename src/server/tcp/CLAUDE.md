@@ -63,27 +63,24 @@ few seconds — could grow NetGet's memory as fast as its link allows, pre-authe
 
 ### 4. The connect event, and what `send_first` means
 
-`tcp_connection_opened` is raised for **every** connection, before anything the peer sends is
-answered. It used to be raised only for `send_first` servers, so a server started from a one-line
-instruction ("greet everyone who connects") could never greet: the event was advertised and never
-fired (IMPROVEMENTS item 78), and the real-model eval scored every telnet banner case 0.
+`tcp_connection_opened` is raised only for a server started with **`send_first`**, which means
+the peer is owed a greeting: the reader does not read at all until the connect event is answered,
+a silent answer is WARN `decision=model_silent`, and a backend failure half-closes
+(`decision=fail_closed_llm_error`). Without `send_first` the connection is registered `Idle` and
+no model call happens until the peer sends something; generic TCP is client-speaks-first.
 
-- The connection is registered `Processing`, so bytes that arrive while the connect event is
-  being answered queue behind it; `handle_connection_opened` then moves it to `Idle` and hands the
-  queue to `handle_data_with_actions`. One model call at a time per connection, as before.
-- With nothing to say, the model answers with no actions (`decision=model_no_actions`), and a
-  backend failure is logged `decision=connect_event_failed` and the connection goes on — the
-  peer speaks first and nothing has failed it yet.
-- **`send_first`** now means the peer is owed a greeting: the reader does not read at all until
-  the connect event is answered, a silent answer is WARN `decision=model_silent`, and a backend
-  failure half-closes (`decision=fail_closed_llm_error`).
+Raising it for every connection was built and measured, and rejected. It cost one model call per
+connection for any server with no rule for the event, and in the seeded real-model eval
+llama3.1:8b answered the empty connect event with a greeting nobody asked for, taking `tcp` from
+15/15 to 10/15. The event and parameter descriptions say `send_first` is how a server greets, which
+is what IMPROVEMENTS item 78 asked for. `telnet`, where the server is expected to speak first, does
+raise its connect event on every connection.
+
+- With `send_first` the connection is registered `Processing`, so bytes that arrive while the
+  connect event is answered queue behind it; `handle_connection_opened` then moves it to `Idle`
+  and hands the queue to `handle_data_with_actions`. One model call at a time per connection.
 - A peer that disconnects before the connect event is answered abandons the call
-  (`decision=peer_left_before_answer`): every connection now raises the event, and a port scan
-  would otherwise cost one model call per probe, each running on after its socket had gone.
-- The cost is one model call per connection for a server with no rule for the event. A
-  dashboard-created server pays nothing: the event is declared `.raised_on_every_connection()`,
-  and `src/tui/modal/form.rs` answers every such event with a zero-action static rule ahead of
-  its `*` → manual wildcard (`tests/empty_static_handler_test.rs` measures it).
+  (`decision=peer_left_before_answer`).
 
 ### 5. Stream Splitting
 
@@ -109,7 +106,7 @@ The LLM responds to TCP events with actions:
 
 **Events**:
 
-- `tcp_connection_opened` - New connection accepted (every connection; see section 4)
+- `tcp_connection_opened` - New connection accepted (only with `send_first`; see section 4)
 - `tcp_data_received` - Data received from client
 
 **Available Actions**:

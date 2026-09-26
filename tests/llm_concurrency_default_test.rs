@@ -145,11 +145,6 @@ async fn concurrent_tcp_connections_are_all_answered_at_the_default_concurrency(
             ]))
             .expect_calls(1)
             .and()
-            .on_event("tcp_connection_opened")
-            // Raised for every connection; this server has nothing to say first.
-            .respond_with_actions(serde_json::json!([]))
-            .expect_calls(CONCURRENT_PEERS)
-            .and()
             .on_event("tcp_data_received")
             .and_event_data_contains("data", "PING")
             .respond_with_actions(serde_json::json!([

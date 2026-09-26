@@ -180,7 +180,7 @@ Delete an entry once its context is no longer useful.
 | 29/50 — dead documentation gate | (earlier) | One gate remains, behind a documented compile-time `false`; the second is gone |
 | 32 — validator accepted a superset | `272acbc0` | `advertised_user_input_actions()` narrows to what the prompt rendered, mirroring the network-event path |
 | 39 — doc gate broke mocked tests | (earlier) | The retry no longer fires; 35 tests recovered from the `#[ignore]` it caused |
-| 78 — connect events fired only with `send_first` | `527e07f3` | `tcp_connection_opened`, `telnet_connection_opened` and `tls_connection_opened` are raised for every connection; `send_first` now means "the peer is owed a greeting" (reads held until it is answered, silence warned, failure closes). Dashboard servers answer them with a zero-action static rule via `EventType::raised_on_every_connection()`. Real-model eval: telnet banner and login-prompt 0/5 → 5/5 each. `socket_file`, `pty`, `stdio` not converted |
+| 78 — connect events fired only with `send_first` | `527e07f3`, then narrowed | `telnet_connection_opened` is raised for every connection, answered by a zero-action rule on dashboard servers via `EventType::raised_on_every_connection()`. `tcp_connection_opened` and `tls_connection_opened` stay gated on `send_first`, and their event and parameter descriptions now say so: raising them everywhere cost a model call per connection and cut the real-model eval's `tcp` score from 15/15 to 10/15. |
 | 47 — tests passing while broken | `1b7f26e5`, `180c01ac`, `f0c7e42c` | NTP now requires the client to succeed; three assertion-free tests no longer count as coverage; the FIDO2 test awaits the future it was only constructing |
 | 76 — transport-level-only asserts | `1e989ba5` | nfs/ipp/vnc/webdav decode and assert real protocol output |
 | — 43 stale blanket `#[ignore]`s | `025ff3f5`, `2e3c8fbc`, `8009299b` | svn/whois/USB/bitcoin/sip/tls running; arp/igmp ignored for the real privilege reason |
@@ -533,19 +533,20 @@ malformed `COM_STMT_EXECUTE` shapes, including an explicit `panic!("bad column t
 client-chosen byte) and `kafka-protocol`'s unbounded element counts are the same shape and are
 documented in the panic audit.
 
-### 78. `tcp_connection_opened` is advertised unconditionally and fires only for `send_first` servers **[verified, fixed for tcp/telnet/tls in `527e07f3`]**
+### 78. `tcp_connection_opened` is advertised unconditionally and fires only for `send_first` servers **[verified, fixed: telnet raises it always, tcp/tls document the gate]**
 
-**Resolution.** The second option below was taken: the event is raised on every connection and
-the handler decides whether to write anything, for `tcp`, `telnet` and `tls`. The model answers
-with no actions when there is nothing to say; `send_first` now means the peer is owed a greeting
-(reads are held until the connect event is answered, a silent answer is `decision=model_silent`,
-a failed one closes). The cost is one model call per connection for a server with no rule for
-the event; a dashboard-created server answers it with a zero-action static rule
-(`EventType::raised_on_every_connection()`, read by `src/tui/modal/form.rs`), and a TCP/TLS peer
-that leaves before the answer abandons the call. `tests/examples/tcp_examples_test.rs` now greets
-without `send_first`. **Still gated:** `socket_file` (left alone because Programme 4 W1 is
-changing that server in another worktree), `pty` and `stdio` (single-session servers whose
-`*_opened`/`*_started` event has the same shape).
+**Resolution.** Both options below were taken, per protocol. `telnet` raises its connect event on
+every connection: a telnet server is expected to speak first, the model answers with no actions
+when there is nothing to say, and a dashboard-created server answers it with a zero-action static
+rule (`EventType::raised_on_every_connection()`, read by `src/tui/modal/form.rs`). `tcp` and `tls`
+were converted the same way in `527e07f3` and then narrowed back to `send_first` only, with their
+event and parameter descriptions saying that `send_first` is how a server greets. The measurement
+decided it: generic TCP is client-speaks-first, so raising the event everywhere cost one model
+call per connection, and in the seeded real-model eval llama3.1:8b answered the empty connect
+event with an unrequested greeting, taking `tcp` from 15/15 to 10/15. `send_first` means the peer
+is owed a greeting: reads are held until the connect event is answered, a silent answer is
+`decision=model_silent`, and a failed one closes. **Still gated, unchanged:** `socket_file`, `pty`
+and `stdio`.
 
 `src/server/tcp/actions.rs:490` describes the event as *"New TCP connection established (send
 initial greeting/banner if needed)"* and ships a `response_example` that sends a `220 Welcome`
