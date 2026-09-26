@@ -454,6 +454,10 @@ impl Protocol for MemcachedProtocol {
             .state(DevelopmentState::Beta)
             // 11211 is above 1023; PrivilegedPort here would be dead code.
             .privilege_requirement(PrivilegeRequirement::None)
+            // The one peer-chosen length in the text protocol is a storage command's declared
+            // `<bytes>`; it is refused against this before any of the data block is read.
+            // Tested from the wire in tests/server/memcached/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::memcached::protocol::MAX_VALUE_LEN)
             .implementation(
                 "Hand-rolled memcached *text* protocol (src/server/memcached/protocol.rs) \
                  over TCP. get/gets/set/add/replace/append/prepend/cas/delete/incr/decr/\

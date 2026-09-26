@@ -18,7 +18,14 @@ pub const MAX_COMMAND_LINE: usize = 8 * 1024;
 /// Upstream memcached's key limit (`KEY_MAX_LENGTH`).
 pub const MAX_KEY_LEN: usize = 250;
 
-/// Upstream memcached's default item size limit (1 MiB).
+/// Upstream memcached's default item size limit (1 MiB), and this server's declared
+/// `max_inbound_bytes`.
+///
+/// It is the only length in the text protocol a peer chooses: every other unit is one
+/// CRLF-terminated line under [`MAX_COMMAND_LINE`]. It is checked against the `<bytes>` the
+/// storage command **declares**, before a single octet of the data block is buffered, so a
+/// `set k 0 0 4000000000` costs its header line and nothing more. Over it, the peer is told
+/// `SERVER_ERROR object too large for cache` and the connection closes (see `Parsed::Fatal`).
 pub const MAX_VALUE_LEN: usize = 1024 * 1024;
 
 /// A parsed client command.
@@ -106,7 +113,13 @@ pub enum Parsed {
     /// self-delimiting (one CRLF-terminated line), so the parser can skip it and carry on;
     /// a storage command whose length is unknown or unbufferable has no such boundary, and
     /// guessing one would put the peer's payload back on the command path.
-    Fatal { message: String },
+    ///
+    /// `too_large` separates the one fatal case that is a *size* refusal — a declared
+    /// `<bytes>` over [`MAX_VALUE_LEN`] — from a length that is missing or not a number. The
+    /// two get different replies: upstream memcached answers an oversized item with
+    /// `SERVER_ERROR object too large for cache`, and a client keys its retry logic on that
+    /// exact text.
+    Fatal { message: String, too_large: bool },
 }
 
 /// Try to take one command from the front of `buffer`.
@@ -318,6 +331,7 @@ fn parse_storage(cmd: &str, parts: &[&str], buffer: &[u8], header_len: usize) ->
     let Some(bytes_field) = parts.get(4) else {
         return Parsed::Fatal {
             message: format!("bad data chunk: {} needs {} arguments", cmd, min_parts - 1),
+            too_large: false,
         };
     };
     let bytes = match bytes_field.parse::<usize>() {
@@ -326,6 +340,7 @@ fn parse_storage(cmd: &str, parts: &[&str], buffer: &[u8], header_len: usize) ->
             return Parsed::Fatal {
                 message: "bad command line format: bytes must be a non-negative integer"
                     .to_string(),
+                too_large: false,
             }
         }
     };
@@ -334,6 +349,7 @@ fn parse_storage(cmd: &str, parts: &[&str], buffer: &[u8], header_len: usize) ->
         // them away, which is the allocation the cap exists to prevent.
         return Parsed::Fatal {
             message: format!("object too large for cache ({} bytes)", bytes),
+            too_large: true,
         };
     }
 

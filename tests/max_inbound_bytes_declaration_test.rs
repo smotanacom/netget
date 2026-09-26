@@ -224,10 +224,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "its MAX_TRACE_BYTES is log truncation; the whole-request bound is underived",
     ),
     (
-        "memcached",
-        "its MAX_VALUE_LEN bounds a value, not a command; whole-message bound underived",
-    ),
-    (
         "nats",
         "bounded by MAX_CONTROL_LINE plus a runtime max_payload, so there is no single const",
     ),

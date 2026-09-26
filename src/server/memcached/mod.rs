@@ -40,6 +40,21 @@ use protocol::{Command, Parsed};
 /// client grow the buffer without bound.
 const MAX_BUFFERED: usize = protocol::MAX_VALUE_LEN + protocol::MAX_COMMAND_LINE + 16;
 
+/// How long an oversized storage command's data block is read and discarded after the
+/// refusal, before the socket is dropped. Bounded in time, and the bytes go into the reused
+/// read chunk, so the peer cannot turn the refusal into an allocation.
+const LINGER_AFTER_REFUSAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Read and discard until EOF, an error or [`LINGER_AFTER_REFUSAL`].
+async fn linger_discard<R: tokio::io::AsyncRead + Unpin>(reader: &mut R, chunk: &mut [u8]) {
+    let deadline = tokio::time::Instant::now() + LINGER_AFTER_REFUSAL;
+    while let Ok(Ok(n)) = tokio::time::timeout_at(deadline, reader.read(chunk)).await {
+        if n == 0 {
+            break;
+        }
+    }
+}
+
 /// How long to wait for the first byte of the first command from a peer that has only
 /// connected.
 ///
@@ -74,6 +89,15 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 /// send to a peer that has not spoken yet: the worst a client does is report a server error
 /// for its first command, which is exactly what happened.
 const CONNECTION_CAP_REFUSAL: &[u8] = b"SERVER_ERROR too many connections\r\n";
+
+/// What a storage command declaring more than [`protocol::MAX_VALUE_LEN`] bytes is told
+/// before the connection closes.
+///
+/// Upstream memcached's own text for the case, byte for byte (`SERVER_ERROR object too large
+/// for cache`), so a client that recognises it — libmemcached maps it to
+/// `MEMCACHED_E2BIG` — reports "value too large" rather than a generic server fault. The
+/// declared length is not echoed: it goes to the log.
+const VALUE_TOO_LARGE_REFUSAL: &str = "SERVER_ERROR object too large for cache\r\n";
 
 pub struct MemcachedServer;
 
@@ -317,20 +341,36 @@ impl MemcachedServer {
                         }
                         Self::count_sent(state, server_id, connection_id, line.len()).await;
                     }
-                    Parsed::Fatal { message } => {
+                    Parsed::Fatal { message, too_large } => {
                         // A storage command whose `<bytes>` is missing, unparseable or larger
                         // than the cap. There is no boundary to skip to, so continuing would
                         // mean parsing the peer's payload as commands. Reply and close.
                         let received = buffer.len();
                         buffer.clear();
-                        warn!(
-                            "Memcached {} decision=connection_closed_unframable: {}; closing, \
-                             because the data block's extent is unknown and skipping it would \
-                             put the peer's payload on the command path",
-                            peer_addr, message
-                        );
+                        let line = if too_large {
+                            // The declared length alone decided this: not one octet of the
+                            // data block has been buffered. Swallowing it as upstream does
+                            // would mean reading up to 4 GiB purely to discard it, so the
+                            // connection closes instead. Fixed text, upstream's own: the
+                            // peer's number stays in the log.
+                            warn!(
+                                "Memcached {} decision=fail_closed_value_too_large: {}; the \
+                                 cap is {} bytes, closing before the data block is read",
+                                peer_addr,
+                                message,
+                                protocol::MAX_VALUE_LEN
+                            );
+                            VALUE_TOO_LARGE_REFUSAL.to_string()
+                        } else {
+                            warn!(
+                                "Memcached {} decision=connection_closed_unframable: {}; \
+                                 closing, because the data block's extent is unknown and \
+                                 skipping it would put the peer's payload on the command path",
+                                peer_addr, message
+                            );
+                            format!("CLIENT_ERROR {}\r\n", message)
+                        };
                         Self::count_received(state, server_id, connection_id, received).await;
-                        let line = format!("CLIENT_ERROR {}\r\n", message);
                         {
                             let mut writer = write_half.lock().await;
                             writer.write_all(line.as_bytes()).await?;
@@ -338,6 +378,14 @@ impl MemcachedServer {
                             let _ = writer.shutdown().await;
                         }
                         Self::count_sent(state, server_id, connection_id, line.len()).await;
+                        if too_large {
+                            // A real client sends the data block straight behind the header.
+                            // Closing with it unread makes the kernel answer with a reset,
+                            // which can destroy the refusal before the client reads it; so
+                            // the tail is read and discarded — never buffered — for a short,
+                            // fixed time first.
+                            linger_discard(&mut reader, &mut chunk).await;
+                        }
                         return Ok(());
                     }
                     Parsed::Complete { command, consumed } => {
@@ -463,7 +511,8 @@ impl MemcachedServer {
 
             if buffer.len() > MAX_BUFFERED {
                 warn!(
-                    "Memcached {} buffered {} bytes without a complete command; closing",
+                    "Memcached {} decision=fail_closed_buffer_too_large: buffered {} bytes \
+                     without a complete command; closing",
                     peer_addr,
                     buffer.len()
                 );

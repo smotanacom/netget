@@ -6,6 +6,7 @@ pub mod common;
 pub mod event_trigger;
 pub mod example_test_framework;
 pub mod http_bounds;
+pub mod inbound_limit;
 pub mod llm_live;
 pub mod llm_live_case;
 pub mod mock;
