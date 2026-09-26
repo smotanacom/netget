@@ -171,6 +171,9 @@ bonding that HID-over-GATT requires is not something `ble-peripheral-rust` 0.2 c
 
 ## Failure behaviour
 
+`metadata()` declares this with `.answers_on_failure()` (`FailureMode::Answers`), which
+`tests/failure_mode_declaration_test.rs` checks: the answer is ATT Unlikely Error (0x0E).
+
 **This profile is not deliberately silent, and the root `CLAUDE.md` lists it as such by family
 membership rather than by decision.** GATT has an error frame and the base stack uses it: a read
 it cannot satisfy is answered with ATT Unlikely Error (0x0E), which the central surfaces as a

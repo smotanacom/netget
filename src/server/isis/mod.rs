@@ -685,9 +685,9 @@ impl IsisServer {
                 // is distinguishable from a broken one.
                 let category = crate::utils::WireFailure::classify(&e);
                 let decision = if category.is_overloaded() {
-                    "llm_error_overloaded_silent"
+                    "fail_closed_llm_overloaded"
                 } else {
-                    "llm_error_unavailable_silent"
+                    "fail_closed_llm_error"
                 };
                 error!(
                     "IS-IS {} from {} decision={} (no PDU emitted; IS-IS has no error PDU): {}",

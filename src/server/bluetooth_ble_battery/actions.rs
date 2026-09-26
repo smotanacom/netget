@@ -96,6 +96,9 @@ impl Protocol for BluetoothBleBatteryProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // Answers on failure: the base stack replies ATT Unlikely Error (0x0E) to a read it
+            // cannot satisfy, which the central surfaces as a failed read. No value is invented.
+            .answers_on_failure()
             .implementation(
                 "bluetooth-ble base stack (ble-peripheral-rust) plus an instruction preamble for the Battery Service (0x180F)",
             )

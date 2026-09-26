@@ -51,6 +51,9 @@ impl Protocol for SyslogProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Deliberately silent: syslog is one-way. RFC 5424/5426 define no reply message at all,
+            // so there is nothing to answer a sender with, whatever the model does.
+            .deliberately_silent()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(514))
             .implementation("syslog_loose v0.22 for parsing RFC 3164/5424 messages")

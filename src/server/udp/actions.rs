@@ -65,6 +65,10 @@ impl Protocol for UdpProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Deliberately silent: raw UDP has no error vocabulary of its own. Whatever the payload
+            // protocol is, NetGet does not know it on this path, so any bytes sent on failure would
+            // be a guess a peer might parse as an answer.
+            .deliberately_silent()
             .state(DevelopmentState::Beta)
             .implementation("Manual UDP socket handling with tokio")
             .llm_control("Full datagram control - all sent/received data")

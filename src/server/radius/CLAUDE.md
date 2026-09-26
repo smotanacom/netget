@@ -9,6 +9,10 @@ Files: `packet.rs` (pure codec, no I/O), `actions.rs` (LLM vocabulary + executor
 
 ## The single most important property: it fails closed
 
+`FailureMode` is `Answers`, declared with `.answers_on_failure()` in `metadata()`: every
+undecided Access-Request gets a correctly signed Access-Reject. RADIUS is **not** a
+deliberately-silent protocol, whatever older lists said — it has a denial on the wire, and uses it.
+
 This protocol grants network access, so the OAuth2 post-mortem in the root `CLAUDE.md`
 applies with full force. There, "the LLM returned nothing" fell through to a hardcoded
 access token, and a model's explicit denial was indistinguishable from its silence.

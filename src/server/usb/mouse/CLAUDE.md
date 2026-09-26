@@ -114,6 +114,10 @@ one matters: events report `connection_id.to_string()`, which is `"conn-2"`, not
 
 ## When the LLM call fails
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 A HID mouse owes the host no reply — the interrupt IN endpoint is NAKed whenever the pointer is
 not moving, which is most of the time — so the failure path writes nothing to the wire, on
 purpose. There is no HID way to say "the device's brain is unreachable": a STALL is a fault a

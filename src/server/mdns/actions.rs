@@ -96,6 +96,10 @@ impl Protocol for MdnsProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Deliberately silent: mDNS has no error frame, and the only thing a responder can say
+            // is an announcement that a name maps to an address, multicast to the link and cached by
+            // every listener for its TTL. A fabricated one outlives the outage.
+            .deliberately_silent()
             // Experimental, demoted from Beta (September 2026), for two independent
             // reasons — either one is disqualifying.
             //

@@ -269,6 +269,10 @@ Other devices discover services by:
 
 ## Failure behaviour
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 **mDNS is deliberately silent, and stays that way.** It is on the root `CLAUDE.md`
 deliberately-silent list and belongs there twice over. There is no peer waiting: the only LLM
 call this server makes is the `mdns_server_startup` event asking *which services to advertise*,

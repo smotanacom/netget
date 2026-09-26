@@ -367,6 +367,10 @@ impl Protocol for UsbMouseProtocol {
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         crate::protocol::metadata::ProtocolMetadataV2::builder()
             .state(crate::protocol::metadata::DevelopmentState::Experimental)
+            // Deliberately silent: every HID input report asserts movement or a click. A mouse
+            // with nothing to report is NAKed on the interrupt endpoint, which is the normal state,
+            // and STALL would make the host reset the device. So a failure moves nothing.
+            .deliberately_silent()
             .implementation("Virtual USB HID mouse device using USB/IP protocol")
             .llm_control("LLM controls mouse movement, clicks, and scrolling")
             .e2e_testing("E2E tests using Linux usbip client")

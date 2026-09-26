@@ -37,6 +37,10 @@ ARP events and returning `send_arp_reply` therefore describes the opt-in path, n
 
 ### LLM failure: silence is the correct answer, and the log says which silence
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 ARP has **no error message**. The only frame this server can emit is a reply asserting that some
 MAC owns the queried IP — and that MAC is exactly what the failed LLM call was supposed to decide.
 Fabricating one would poison the requester's neighbour cache; a requester that hears nothing simply

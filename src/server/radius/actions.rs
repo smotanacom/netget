@@ -663,6 +663,10 @@ impl Protocol for RadiusProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: every undecided Access-Request gets a correctly signed
+            // Access-Reject (decision=fail_closed_*), which denies rather than asserts. Nothing here
+            // can synthesise an Access-Accept.
+            .answers_on_failure()
             // Beta, September 2026. The bar this file's own CLAUDE.md sets is a real
             // third-party client, not #[ignore]d, that FAILS rather than skips when the
             // client is missing. tests/server/radius/real_client_test.rs is now all three:

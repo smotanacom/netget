@@ -21,7 +21,7 @@
 //!
 //! So the failure is dual-logged at ERROR and nothing is sent. The log carries a `decision=`
 //! tag so the three outcomes an operator would otherwise see as one quiet keyboard stay apart:
-//! `decision=llm_error` (the backend failed), `decision=model_no_actions` (the model answered
+//! `decision=fail_closed_llm_error` (the backend failed), `decision=model_no_actions` (the model answered
 //! and asked for no keystrokes) and `decision=model_actions` (something was typed).
 //! `tests/server/usb_keyboard/llm_failure_test.rs` pins both halves.
 
@@ -511,7 +511,7 @@ impl UsbKeyboardServer {
             }
             Err(e) => console_error!(
                 status_tx,
-                "LLM call failed for USB keyboard led_status on connection {} decision=llm_error: \
+                "LLM call failed for USB keyboard led_status on connection {} decision=fail_closed_llm_error: \
                  {}; the keyboard stays silent (see the module docs for why silence is the \
                  refusal here)",
                 connection_id,
@@ -566,7 +566,7 @@ impl UsbKeyboardServer {
         match &result {
             Err(e) => console_error!(
                 status_tx,
-                "LLM call failed for USB keyboard detach on connection {} decision=llm_error: {}",
+                "LLM call failed for USB keyboard detach on connection {} decision=fail_closed_llm_error: {}",
                 connection_id,
                 e
             ),
@@ -692,7 +692,7 @@ impl UsbKeyboardServer {
                 // dual-logged at ERROR rather than only reaching `netget.log`.
                 console_error!(
                     status_tx,
-                    "LLM call failed for USB keyboard connection {} decision=llm_error: {}; no \
+                    "LLM call failed for USB keyboard connection {} decision=fail_closed_llm_error: {}; no \
                      HID report will be sent, so the host sees a keyboard nobody is typing on",
                     connection_id,
                     e
