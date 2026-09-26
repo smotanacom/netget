@@ -421,6 +421,46 @@ pub async fn watch_idle(activity: Arc<ConnectionActivity>, idle: Duration) {
     }
 }
 
+/// [`watch_idle`] for a session protocol whose client may legitimately say nothing for a long
+/// time: resolve once `activity` has been idle for `idle`, having called `probe` once at half
+/// of it.
+///
+/// This is the shape for WebSocket-carried servers (`websocket`, `webrtc`, `webrtc_signaling`):
+/// the probe queues a Ping, every RFC 6455 endpoint answers a Ping with a Pong by itself, and the
+/// caller touches `activity` on every inbound frame — so a live-but-silent client is never
+/// closed, and what reaches the bound is a peer that has stopped reading or vanished without a
+/// FIN. The bound is on liveness, not on conversation.
+///
+/// The probe fires once per silent stretch, not per tick: any activity starts a new stretch, and
+/// a busy connection (work in flight) is neither probed nor reported idle.
+pub async fn watch_idle_with_probe<F: FnMut()>(
+    activity: Arc<ConnectionActivity>,
+    idle: Duration,
+    mut probe: F,
+) {
+    let tick = (idle / 20).clamp(Duration::from_millis(100), Duration::from_secs(15));
+    let mut probed = false;
+    loop {
+        tokio::time::sleep(tick).await;
+        match activity.idle_for() {
+            Some(elapsed) if elapsed >= idle => return,
+            Some(elapsed) if elapsed >= idle / 2 => {
+                if !probed {
+                    probe();
+                    probed = true;
+                }
+            }
+            // Busy, or heard from recently: the next silent stretch gets its own probe.
+            _ => probed = false,
+        }
+    }
+}
+
+/// The payload of the keepalive Ping the WebSocket-carried servers send through
+/// [`watch_idle_with_probe`]. A Pong echoes it (RFC 6455 §5.5.3); it is not checked, because any
+/// frame is proof of life, but it makes the Ping identifiable in a capture.
+pub const KEEPALIVE_PING_PAYLOAD: &[u8] = b"netget-keepalive";
+
 /// Milliseconds on a monotonic clock. `utils::clock` rather than `std::time::Instant`, which
 /// panics on wasm32 (see the project CLAUDE.md).
 fn now_millis() -> u64 {

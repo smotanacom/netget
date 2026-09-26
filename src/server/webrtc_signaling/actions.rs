@@ -201,7 +201,17 @@ impl Default for WebRtcSignalingProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for WebRtcSignalingProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![]
+        vec![ParameterDefinition {
+            name: "idle_timeout_secs".to_string(),
+            type_hint: "integer".to_string(),
+            description: "Seconds a signaling WebSocket may carry no frame at all before the \
+                          server closes it (default 600). The server pings at half of it and \
+                          every WebSocket client answers automatically, so a registered peer \
+                          waiting for an offer is never closed."
+                .to_string(),
+            required: false,
+            example: json!(600),
+        }]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -390,12 +400,21 @@ impl Server for WebRtcSignalingProtocol {
     > {
         Box::pin(async move {
             use crate::server::webrtc_signaling::WebRtcSignalingServer;
+            let idle_timeout = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_u64("idle_timeout_secs"))
+                .transpose()?
+                .flatten()
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(crate::server::webrtc_signaling::IDLE_TIMEOUT);
             WebRtcSignalingServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                idle_timeout,
             )
             .await
         })

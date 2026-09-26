@@ -197,7 +197,7 @@ Every one is declared and read; nothing is declared and unused.
 | Bound | Default | Mechanism |
 |---|---|---|
 | Request head | 15s (`HANDSHAKE_TIMEOUT_SECS`) | `timeout` around reading the HTTP head, before the upgrade |
-| Upgraded, no frame from the peer | 600s (`idle_timeout_secs`) | `watch_idle_with_keepalive` over a `ConnectionActivity`, raced against the frame loop |
+| Upgraded, no frame from the peer | 600s (`idle_timeout_secs`) | `accept_bounded::watch_idle_with_probe` over a `ConnectionActivity`, the probe a Ping, raced against the frame loop |
 | Connections | 256 | `accept_bounded`; the peer over the cap reads `503` + `Retry-After` |
 
 **The upgraded bound is on liveness, not on conversation.** A WebSocket client is entitled to

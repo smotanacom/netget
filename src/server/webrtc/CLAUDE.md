@@ -123,8 +123,26 @@ the live server data; if server async actions ever become reachable, wire them t
 |---|---|---|
 | `ice_servers` | `[]` | STUN/TURN URLs. **Empty by default**: host candidates only, which works on localhost and LAN and contacts no third party. The old code hardcoded Google STUN, which meant every start reached out to Google and every test would have too. |
 | `max_peers` | 32 | Offers past this limit are refused with a `rejected` frame. |
+| `idle_timeout_secs` | 600 | The signalling socket is closed after this long with no frame from the peer, which ends the peer. See below. |
 
-Both are read. Neither is decorative.
+All three are read. None is decorative.
+
+**The signalling socket is bounded on the peer's liveness, not its conversation.**
+`IDLE_TIMEOUT` (600s, `idle_timeout_secs`) is `accept_bounded::watch_idle_with_probe` over a
+`ConnectionActivity` touched by every inbound frame: at half of it the server sends a Ping
+(`netget-keepalive`), every RFC 6455 endpoint — a browser tab, tungstenite, NetGet's own client —
+answers with a Pong by itself, and any frame resets the clock. That matters here because the signalling socket *is* the peer's lifetime:
+after the answer it is normally silent while the data channel carries the traffic, so a bound on
+silence alone would tear down working peers. What reaches the bound is a
+peer that has stopped reading or vanished without a FIN; it is sent Close 1001 and logged
+`decision=idle_timeout`. The handlers that decide on a frame run inline, so the watchdog is not
+polled while a model — or a human, through a `manual` rule — decides. 600 rather than 300
+because NetGet's own WebRTC client does not read its signalling socket during its connected-event
+model turn, which a `manual` rule parks for up to 300 seconds.
+
+A peer that has upgraded and not yet offered is bounded the same way, and — deliberately — by
+nothing shorter: a real application may open signalling and offer only when its user acts.
+`MAX_CONNECTIONS` (256) bounds how many such peers there can be.
 
 ## Per-peer state machine
 
@@ -156,10 +174,9 @@ the peer-connection state callback (`Failed`/`Closed`/`Disconnected`), the signa
 socket's cleanup, the `disconnect` action, and the negotiation-failure path in
 `accept_offer`. (This said "three places" and listed the first three.)
 
-`spawn` registers the accept loop via `AppState::register_server_task`, so `stop_server`
-releases the socket. Per-connection tasks are untracked — the codebase-wide limitation, not
-specific to this protocol — so a `stop_server` releases the listener while established peer
-connections and their data channels keep running.
+`spawn` registers the accept loop via `AppState::register_server_task`, and every signalling
+connection runs in a task spawned through `spawn_server_task`, so `stop_server` releases the
+listener and aborts the connections with it.
 
 ## Peer-controlled input
 

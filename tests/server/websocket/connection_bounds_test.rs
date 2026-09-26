@@ -208,7 +208,7 @@ async fn the_handshake_past_the_cap_gets_a_503_and_the_slot_comes_back() {
 // answers pings is kept; a message parked for a human keeps its connection even from a peer
 // that never answers (busy is not idle, and a busy connection is not even pinged).
 //
-// Removing the `watch_idle_with_keepalive` arm makes the first hang to its window; removing the
+// Removing the `watch_idle_with_probe` arm makes the first hang to its window; removing the
 // keepalive Ping makes the second see its live client closed; removing the `busy()` guard makes
 // the third see a Ping and then a close under its parked message.
 

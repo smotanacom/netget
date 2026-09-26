@@ -1,4 +1,5 @@
-//! The connection cap on a real, running WebRTC server, driven from the wire.
+//! The connection cap and the idle bound on a real, running WebRTC server, driven from the
+//! wire. The idle tests are described where they start, below the cap test.
 //!
 //! `SIGNALLING_HANDSHAKE_TIMEOUT` (10s) bounds how long *one* peer holds a socket before it has
 //! upgraded, and `max_peers` bounds how many *offers* are accepted — but `max_peers` counts
@@ -179,5 +180,224 @@ async fn the_handshake_past_the_cap_gets_a_503_and_the_slot_comes_back() {
         admitted,
         "the cap never freed its slot after an upgraded connection ended — the permit is being \
          held past the life of the connection, which wedges the server shut"
+    );
+}
+
+/// The protocol these idle tests start, by registry name.
+const PROTOCOL: &str = "webrtc";
+
+/// The first signal the parked test sends. A minimal SDP offer: it parses, so the offer decision runs — and parks.
+const PARKED_SIGNAL: &str = "{\"type\":\"offer\",\"peer_id\":\"p1\",\"sdp\":\"v=0\\r\\no=- 0 0 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\n\"}";
+
+/// Whether the server legitimately writes a frame before the parked handler answers.
+const PARKED_EXPECTS_FRAMES: bool = false;
+
+// ---------------------------------------------------------------------------------------------
+// The idle bound
+// ---------------------------------------------------------------------------------------------
+//
+// `IDLE_TIMEOUT` (600s, declared as `idle_timeout_secs`) bounds the signalling WebSocket on the
+// peer's *liveness*: at half of it the server sends a Ping, every RFC 6455 endpoint answers with
+// a Pong by itself, and only a peer that sends no frame at all — not even that Pong — reaches the
+// bound. Three tests: a raw peer that never answers is sent the Ping and then Close 1001; a real
+// client that only answers Pings is kept; a message whose handling is parked for a human keeps
+// its connection (the handler runs inline, so neither the read nor the watchdog is polled).
+//
+// Removing the `watch_idle_with_probe` arm makes the first hang to its window and the second see
+// no Ping; removing the probe makes the second see its live client closed.
+
+/// The idle bound these tests drive, as `idle_timeout_secs`.
+const SHORT_IDLE: Duration = Duration::from_secs(2);
+
+async fn start_server_with(
+    state: &AppState,
+    event_handlers: Vec<serde_json::Value>,
+) -> (ServerId, u16) {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let server_id = ServerForm {
+        protocol: PROTOCOL.to_string(),
+        port: Some(0),
+        instruction: Some(String::new()),
+        startup_params: Some(serde_json::json!({"idle_timeout_secs": SHORT_IDLE.as_secs()})),
+        event_handlers: Some(event_handlers),
+        ..Default::default()
+    }
+    .create(state, tx)
+    .await
+    .expect("create server");
+    let port = wait_for_port(state, server_id).await;
+    (server_id, port)
+}
+
+/// Consume the rest of the 101 response head, so what follows on the socket is frames.
+async fn finish_upgrade_head(stream: &mut TcpStream) {
+    let mut window = [0u8; 3];
+    let mut byte = [0u8; 1];
+    loop {
+        tokio::time::timeout(Duration::from_secs(10), stream.read_exact(&mut byte))
+            .await
+            .expect("the 101 head never ended")
+            .expect("read the 101 head");
+        if window == *b"\r\n\r" && byte[0] == b'\n' {
+            return;
+        }
+        window = [window[1], window[2], byte[0]];
+    }
+}
+
+/// One masked text frame from a client (a zero mask key leaves the payload as written).
+fn masked_text_frame(text: &str) -> Vec<u8> {
+    let payload = text.as_bytes();
+    assert!(payload.len() < 126, "short frames only");
+    let mut frame = vec![0x81, 0x80 | payload.len() as u8, 0, 0, 0, 0];
+    frame.extend_from_slice(payload);
+    frame
+}
+
+#[tokio::test]
+async fn an_upgraded_peer_that_never_answers_the_keepalive_is_closed_with_1001() {
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        vec![serde_json::json!({"event_pattern": "*",
+                                "handler": {"type": "static", "actions": []}})],
+    )
+    .await;
+
+    let (status, mut peer) = attempt_handshake(port).await;
+    assert_eq!(status, 101, "the handshake was not upgraded");
+    finish_upgrade_head(&mut peer).await;
+
+    // This peer reads but never writes, so it never answers the keepalive Ping.
+    let started = std::time::Instant::now();
+    let mut frames = Vec::new();
+    let ended = tokio::time::timeout(Duration::from_secs(45), peer.read_to_end(&mut frames)).await;
+    let elapsed = started.elapsed();
+    assert!(
+        ended.is_ok(),
+        "an upgraded signalling peer that sent no frame at all was still connected after 45s — \
+         nothing bounds the signalling WebSocket after its upgrade"
+    );
+    assert!(
+        elapsed >= SHORT_IDLE / 2,
+        "closed after {}ms, which is not the declared {}s idle bound",
+        elapsed.as_millis(),
+        SHORT_IDLE.as_secs()
+    );
+    let ping = [&[0x89u8, 16][..], b"netget-keepalive"].concat();
+    assert!(
+        frames.windows(ping.len()).any(|w| w == ping.as_slice()),
+        "the server closed without first sending the keepalive Ping: {frames:02x?}"
+    );
+    assert!(
+        frames
+            .windows(4)
+            .any(|w| w[0] == 0x88 && w[2] == 0x03 && w[3] == 0xE9),
+        "the server did not close with 1001 (going away): {frames:02x?}"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_only_answers_pings_is_not_closed() {
+    use futures::StreamExt;
+
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        vec![serde_json::json!({"event_pattern": "*",
+                                "handler": {"type": "static", "actions": []}})],
+    )
+    .await;
+
+    // tokio-tungstenite answers every Ping with a Pong by itself, as a browser does. The client
+    // sends nothing of its own: a peer waiting on signalling, which must be kept.
+    let tcp = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}/"), tcp)
+        .await
+        .expect("websocket upgrade");
+
+    let deadline = tokio::time::Instant::now() + SHORT_IDLE * 5;
+    let mut pings = 0;
+    loop {
+        match tokio::time::timeout_at(deadline, ws.next()).await {
+            Err(_) => break,
+            Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(_)))) => pings += 1,
+            Ok(Some(Ok(other))) => panic!(
+                "a client that answered every Ping was sent {other:?} — the keepalive Pong is \
+                 not counted as activity"
+            ),
+            Ok(Some(Err(e))) => panic!("the connection failed under a live client: {e}"),
+            Ok(None) => panic!("the server closed a client that answered every Ping"),
+        }
+    }
+    assert!(
+        pings >= 2,
+        "only {pings} keepalive Ping(s) in five idle bounds — the server is not probing a silent \
+         signalling peer"
+    );
+}
+
+/// The opcodes of the unmasked server frames in `bytes`, in order.
+fn opcodes(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 <= bytes.len() {
+        out.push(bytes[i] & 0x0F);
+        let (len, header) = match bytes[i + 1] & 0x7F {
+            126 if i + 4 <= bytes.len() => {
+                (u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize, 4)
+            }
+            n if n < 126 => (n as usize, 2),
+            _ => break,
+        };
+        i += header + len;
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_signal_parked_for_a_human_keeps_its_connection() {
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        vec![serde_json::json!({"event_pattern": "*",
+                                "handler": {"type": "manual", "timeout_secs": 600}})],
+    )
+    .await;
+
+    let (status, mut peer) = attempt_handshake(port).await;
+    assert_eq!(status, 101, "the handshake was not upgraded");
+    finish_upgrade_head(&mut peer).await;
+    peer.write_all(&masked_text_frame(PARKED_SIGNAL))
+        .await
+        .expect("write the signal");
+
+    // Its handling is parked for a human; the peer says nothing more and never answers a Ping.
+    // Four times the idle bound, well inside the 600-second window the human has to answer in.
+    let mut received = Vec::new();
+    let mut buf = [0u8; 1024];
+    let deadline = tokio::time::Instant::now() + SHORT_IDLE * 4;
+    loop {
+        match tokio::time::timeout_at(deadline, peer.read(&mut buf)).await {
+            Err(_) => break,
+            Ok(Ok(0)) => panic!(
+                "the server closed a signalling connection whose {PARKED_SIGNAL} was parked for \
+                 a human; received {received:02x?}"
+            ),
+            Ok(Ok(n)) => received.extend_from_slice(&buf[..n]),
+            Ok(Err(e)) => panic!("read failed: {e}"),
+        }
+    }
+    let ops = opcodes(&received);
+    assert!(
+        !ops.iter().any(|op| *op == 0x9 || *op == 0x8),
+        "a connection whose signal is parked was sent a Ping or a Close ({ops:?}, \
+         {received:02x?}) — the watchdog is running while the handler decides"
+    );
+    assert!(
+        PARKED_EXPECTS_FRAMES == !ops.is_empty(),
+        "unexpected frames while parked: {ops:?} ({received:02x?})"
     );
 }

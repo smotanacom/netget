@@ -314,6 +314,30 @@ because the tag alone would suggest otherwise.
 (and that nothing is logged as a `decision=model_*` the model never took) and the
 `llm_error_notice_only` tag alongside the wire silence it accompanies.
 
+## Connection bounds
+
+| Bound | Default | Mechanism |
+|---|---|---|
+| WebSocket upgrade | 10s (`SIGNALING_HANDSHAKE_TIMEOUT`) | `timeout` around `accept_async_with_config` |
+| Upgraded, no frame from the peer | 600s (`idle_timeout_secs`, `IDLE_TIMEOUT`) | keepalive Ping at half, Close 1001 at the bound |
+| Connections | 1024 (`MAX_CONNECTIONS` = `SIGNALING_MAX_PEERS`) | `accept_bounded`; the peer over the cap reads `503` |
+
+**The signalling socket is bounded on the peer's liveness, not its conversation.**
+`IDLE_TIMEOUT` (600s, `idle_timeout_secs`) is `accept_bounded::watch_idle_with_probe` over a
+`ConnectionActivity` touched by every inbound frame: at half of it the server sends a Ping
+(`netget-keepalive`), every RFC 6455 endpoint — a browser tab, tungstenite, NetGet's own client —
+answers with a Pong by itself, and any frame resets the clock. That matters here because a relay's peers are silent by design — a
+registered peer can wait minutes for another peer's offer or candidate — so a bound on silence
+alone would evict exactly the peers the relay exists for. What reaches the bound is a
+peer that has stopped reading or vanished without a FIN; it is sent Close 1001 and logged
+`decision=idle_timeout`. The handlers that decide on a frame run inline, so the watchdog is not
+polled while a model — or a human, through a `manual` rule — decides. 600 rather than 300
+because NetGet's own WebRTC client does not read its signalling socket during its connected-event
+model turn, which a `manual` rule parks for up to 300 seconds.
+
+`tests/server/webrtc_signaling/connection_bounds_test.rs` drives the cap and all of this from the
+wire.
+
 ## State Management
 
 ### Peer Tracking

@@ -99,42 +99,6 @@ pub const MAX_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 /// Close 1001 ("going away", RFC 6455 §7.4.1) and ends the connection.
 pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// The payload of the keepalive Ping. A peer's Pong echoes it (§5.5.3); it is not checked,
-/// because any frame is proof of life, but it makes the Ping identifiable in a capture.
-const KEEPALIVE_PING: &[u8] = b"netget-keepalive";
-
-/// Resolve once `activity` has been idle for `idle`, having sent one keepalive Ping through
-/// `out_tx` at half of it.
-///
-/// The Ping is sent once per silent stretch, not per tick: any frame from the peer touches
-/// `activity`, which resets the stretch, and a busy connection (an answer in flight) is neither
-/// pinged nor closed.
-async fn watch_idle_with_keepalive(
-    activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
-    idle: std::time::Duration,
-    out_tx: mpsc::UnboundedSender<WsOut>,
-) {
-    let tick = (idle / 20).clamp(
-        std::time::Duration::from_millis(100),
-        std::time::Duration::from_secs(15),
-    );
-    let mut pinged = false;
-    loop {
-        tokio::time::sleep(tick).await;
-        match activity.idle_for() {
-            Some(elapsed) if elapsed >= idle => return,
-            Some(elapsed) if elapsed >= idle / 2 => {
-                if !pinged {
-                    let _ = out_tx.send(WsOut::Ping(KEEPALIVE_PING.to_vec()));
-                    pinged = true;
-                }
-            }
-            // Busy, or heard from recently: the next silent stretch gets its own Ping.
-            _ => pinged = false,
-        }
-    }
-}
-
 /// Concurrent connections this server admits before it starts refusing.
 ///
 /// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HANDSHAKE_TIMEOUT_SECS`]
@@ -1125,12 +1089,17 @@ impl WebSocketServer {
         let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
 
         loop {
+            let keepalive_tx = ctx.out_tx.clone();
             let message = tokio::select! {
                 message = stream.next() => message,
-                _ = watch_idle_with_keepalive(
+                _ = crate::server::accept_bounded::watch_idle_with_probe(
                     Arc::clone(&activity),
                     idle_timeout,
-                    ctx.out_tx.clone(),
+                    move || {
+                        let _ = keepalive_tx.send(WsOut::Ping(
+                            crate::server::accept_bounded::KEEPALIVE_PING_PAYLOAD.to_vec(),
+                        ));
+                    },
                 ) => {
                     Log::new(Some(&ctx.status_tx)).info(format!(
                         "WebSocket {} sent no frame for {}s, not even a Pong; closing \

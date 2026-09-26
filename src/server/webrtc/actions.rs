@@ -295,6 +295,17 @@ impl Protocol for WebRtcProtocol {
                 required: false,
                 example: json!(32),
             },
+            ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                description: "Seconds the signalling WebSocket may carry no frame at all before \
+                              the server closes it, ending the peer (default 600). The server \
+                              pings at half of it and every WebSocket client answers \
+                              automatically, so a live peer is never closed."
+                    .to_string(),
+                type_hint: "integer".to_string(),
+                required: false,
+                example: json!(600),
+            },
         ]
     }
 
@@ -462,6 +473,7 @@ impl Server for WebRtcProtocol {
 
             let mut ice_servers: Vec<String> = Vec::new();
             let mut max_peers = DEFAULT_MAX_PEERS;
+            let mut idle_timeout = crate::server::webrtc::IDLE_TIMEOUT;
 
             if let Some(params) = &ctx.startup_params {
                 if let Some(urls) = params.get_optional_array("ice_servers")? {
@@ -482,6 +494,9 @@ impl Server for WebRtcProtocol {
                     }
                     max_peers = limit.min(u16::MAX as u64) as usize;
                 }
+                if let Some(secs) = params.get_optional_u64("idle_timeout_secs")? {
+                    idle_timeout = std::time::Duration::from_secs(secs);
+                }
             }
 
             let listen_addr = ctx
@@ -496,6 +511,7 @@ impl Server for WebRtcProtocol {
                 ctx.server_id,
                 ice_servers,
                 max_peers,
+                idle_timeout,
             )
             .await
         })

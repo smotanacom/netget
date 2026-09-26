@@ -33,6 +33,22 @@ pub type PeerId = String;
 /// Longest a peer may take to complete the WebSocket upgrade.
 const SIGNALING_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long a signalling connection may go without a single frame from the peer.
+///
+/// A signalling relay's peers are silent most of the time by design —
+/// a registered peer waits, possibly for minutes, for another peer's offer or candidate — so a
+/// bound on silence alone would evict exactly the peers the relay exists for. The bound is on the peer's **liveness**, not its conversation: at half of it the server
+/// sends a Ping (`accept_bounded::watch_idle_with_probe`), every RFC 6455 endpoint answers a Ping
+/// with a Pong by itself — a browser tab, tungstenite, NetGet's own client — and any inbound
+/// frame resets the clock. What reaches the bound is a peer that has stopped reading or vanished
+/// without a FIN, and it is closed with 1001 ("going away") and `decision=idle_timeout`.
+///
+/// 600 seconds, the number `websocket` uses and for the same reason: NetGet's own WebRTC client
+/// (`src/client/webrtc/mod.rs`) does not read its signalling socket while its connected-event
+/// model turn runs, and a `manual` rule parks that turn for up to 300 seconds; twice that window
+/// keeps the operator's own peer. Declared as the `idle_timeout_secs` startup parameter.
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Largest WebSocket message accepted. Signaling carries SDP and ICE candidates;
 /// a large real offer is a few kilobytes.
 const SIGNALING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
@@ -282,6 +298,7 @@ impl WebRtcSignalingServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: ServerId,
+        idle_timeout: std::time::Duration,
     ) -> Result<SocketAddr> {
         let listener = TcpListener::bind(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -345,6 +362,7 @@ impl WebRtcSignalingServer {
                                     llm_client_clone,
                                     server_id,
                                     protocol_clone,
+                                    idle_timeout,
                                 )
                                 .await
                                 {
@@ -380,6 +398,7 @@ impl WebRtcSignalingServer {
         llm_client: OllamaClient,
         server_id: ServerId,
         protocol: Arc<WebRtcSignalingProtocol>,
+        idle_timeout: std::time::Duration,
     ) -> Result<()> {
         // Upgrade to WebSocket.
         //
@@ -435,8 +454,41 @@ impl WebRtcSignalingServer {
         let mut peer_id: Option<PeerId> = None;
         let mut connection_id: Option<ConnectionId> = None;
 
+        // Touched by every inbound frame, Pongs included. Registration and relay run inline
+        // below, so the read — and this clock's watchdog — is not polled while a handler decides.
+        let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+
         // Handle incoming messages
-        while let Some(msg_result) = ws_rx.next().await {
+        loop {
+            let keepalive_tx = out_tx.clone();
+            let msg_result = tokio::select! {
+                msg = ws_rx.next() => msg,
+                _ = crate::server::accept_bounded::watch_idle_with_probe(
+                    Arc::clone(&activity),
+                    idle_timeout,
+                    move || {
+                        let _ = keepalive_tx.send(Message::Ping(
+                            crate::server::accept_bounded::KEEPALIVE_PING_PAYLOAD.to_vec(),
+                        ));
+                    },
+                ) => {
+                    info!(
+                        "WebRTC signaling peer {} sent no frame for {}s, not even a Pong; \
+                         closing decision=idle_timeout",
+                        remote_addr,
+                        idle_timeout.as_secs()
+                    );
+                    let _ = out_tx.send(Message::Close(Some(
+                        tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away,
+                            reason: "idle timeout".into(),
+                        },
+                    )));
+                    break;
+                }
+            };
+            let Some(msg_result) = msg_result else { break };
+            activity.touch();
             match msg_result {
                 Ok(Message::Text(text)) => {
                     trace!("Received signaling message: {}", text);
