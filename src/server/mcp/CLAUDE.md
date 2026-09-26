@@ -122,8 +122,7 @@ this code — axum rejects it with an HTTP 400 and a plain-text body rather than
   All framing is axum's; there is no hand-rolled length prefix or line parser.
 - **Trace output is capped** at 4 KiB and truncated on a char boundary. The entire request body
   used to be serialized onto `status_tx` on every call — an unbounded channel with no
-  backpressure — so a client posting at axum's 2 MiB default limit could enqueue faster than the
-  TUI drains.
+  backpressure — so a client posting 2 MiB bodies could enqueue faster than the TUI drains.
 - **Connections no longer leak.** `initialize` registers a connection for visibility and marks
   it closed on every exit path. Each was previously left `Active` forever, so repeating
   `initialize` grew `AppState` without bound.
@@ -131,8 +130,16 @@ this code — axum rejects it with an HTTP 400 and a plain-text body rather than
   requested revision if it is one of `2024-11-05`, `2025-03-26`, `2025-06-18`, and otherwise
   offers `2024-11-05`. It used to answer `2024-11-05` unconditionally, telling a client on a
   newer revision that its request had been honored.
-- Body size is capped only by axum's 2 MiB `DefaultBodyLimit` — a framework default, not a
-  deliberate one. `serde_json`'s 128-level recursion limit is what stops deep nesting.
+- **Body size is capped at `MAX_REQUEST_BODY_BYTES` (2 MiB), set explicitly** on the router as
+  `DefaultBodyLimit::max(..)` and declared as `max_inbound_bytes`. It is the same number as
+  axum's own default, but a framework default is a number nobody chose. It is enforced while the
+  body is buffered — up front from a `Content-Length`, as it streams for a chunked body — so an
+  over-limit request never reaches the JSON parser or the model. The handler takes
+  `Result<Json<Value>, JsonRejection>` so the refusal is its own: HTTP 413 carrying a JSON-RPC
+  error (`-32600`, fixed message `request body too large`, `id: null`), logged
+  `decision=fail_closed_body_too_large`. Other rejections (wrong content type, bad JSON) stay
+  axum's. `serde_json`'s 128-level recursion limit is what stops deep nesting.
+  `tests/server/mcp/inbound_limit_test.rs` drives it from the wire.
 - Bind uses `?`; `axum::serve`'s handle is registered via `register_server_task()`, so
   `stop_server` releases the port.
 - LLM failures return a JSON-RPC error with the request `id` echoed, rather than leaving the

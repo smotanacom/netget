@@ -216,10 +216,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "a shared response helper, not a protocol: no impl Protocol, no registry entry",
     ),
     (
-        "mcp",
-        "its MAX_TRACE_BYTES is log truncation; the whole-request bound is underived",
-    ),
-    (
         "webrtc",
         "SCTP framing is owned by webrtc-rs; NetGet's own bound is underived",
     ),

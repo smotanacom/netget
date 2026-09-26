@@ -172,6 +172,15 @@ Tests use **action-based mode** to ensure LLM interprets MCP semantics.
 - Receive error response with code and message
 - Error structure matches JSON-RPC 2.0
 
+### 10. Inbound bound (`inbound_limit_test.rs`)
+
+In-process on `tests/helpers/inbound_limit.rs` (a mock model that answers with no actions and
+counts calls), raw HTTP/1.1: a `tools/list` body of exactly `MAX_REQUEST_BODY_BYTES` reaches
+the model; the same one byte longer is answered 413 with the fixed JSON-RPC error and zero
+model calls, both with a `Content-Length` and chunked; a fresh request is still served.
+Verified by removal: with `DefaultBodyLimit::disable()` in place of the explicit limit the
+over-limit body was answered 200 by the model.
+
 ## Known Issues
 
 ### Capability Structure Complexity

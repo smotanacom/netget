@@ -7,3 +7,6 @@ mod llm_failure_test;
 
 #[cfg(all(test, feature = "mcp"))]
 mod error_code_range_test;
+
+#[cfg(all(test, feature = "mcp"))]
+mod inbound_limit_test;
