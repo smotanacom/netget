@@ -136,7 +136,9 @@ after the answer it is normally silent while the data channel carries the traffi
 silence alone would tear down working peers. What reaches the bound is a
 peer that has stopped reading or vanished without a FIN; it is sent Close 1001 and logged
 `decision=idle_timeout`. The handlers that decide on a frame run inline, so the watchdog is not
-polled while a model — or a human, through a `manual` rule — decides. 600 rather than 300
+polled while a model — or a human, through a `manual` rule — decides, and each frame holds the
+connection busy until it has been handled, so the answer itself starts a fresh bound instead of
+returning to a clock that ran out during the park. 600 rather than 300
 because NetGet's own WebRTC client does not read its signalling socket during its connected-event
 model turn, which a `manual` rule parks for up to 300 seconds.
 

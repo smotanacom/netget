@@ -454,8 +454,7 @@ impl WebRtcSignalingServer {
         let mut peer_id: Option<PeerId> = None;
         let mut connection_id: Option<ConnectionId> = None;
 
-        // Touched by every inbound frame, Pongs included. Registration and relay run inline
-        // below, so the read — and this clock's watchdog — is not polled while a handler decides.
+        // Touched by every inbound frame, Pongs included, and busy while one is handled.
         let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
 
         // Handle incoming messages
@@ -488,7 +487,12 @@ impl WebRtcSignalingServer {
                 }
             };
             let Some(msg_result) = msg_result else { break };
-            activity.touch();
+            // Busy for the rest of this iteration. Registration and its connected event run
+            // inline, so the watchdog is not even polled while they are outstanding — but the
+            // guard's release is what gives the connection a fresh bound afterwards. Without it,
+            // an event parked for a human longer than the bound would come back to a clock that
+            // had long run out, and the peer would be closed the instant it was answered.
+            let _busy = activity.busy();
             match msg_result {
                 Ok(Message::Text(text)) => {
                     trace!("Received signaling message: {}", text);

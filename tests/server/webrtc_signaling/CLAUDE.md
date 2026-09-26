@@ -160,11 +160,13 @@ closing one frees one slot); a raw upgraded peer that never writes is sent the
 client that sends nothing but its automatic Pongs is kept for five bounds and pinged at least
 twice; a `register` whose `webrtc_signaling_peer_connected` event is parked for a human keeps
 its connection and receives exactly the `registered` frame — no Ping, no Close — for four
-bounds.
+bounds, and once the intercept is answered the connection gets a fresh bound rather than being
+closed at once.
 
 Verified by removal: disabling the watchdog arm fails the keepalive and live-client tests;
-removing the probe from `accept_bounded::watch_idle_with_probe` fails both again. The parked
-test is a regression pin (the connected event runs inline, so there is no guard to remove).
+removing the probe from `accept_bounded::watch_idle_with_probe` fails both again; replacing the
+per-frame `busy()` guard with a bare `touch()` fails the parked test on the Close sent the
+moment the parked event is answered.
 
 ## Event Types Tested
 

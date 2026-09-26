@@ -937,8 +937,7 @@ impl WebRtcServer {
 
         let mut peer_ctx: Option<PeerCtx> = None;
 
-        // Touched by every inbound frame, Pongs included. The offer decision runs inline below,
-        // so the read — and this clock's watchdog — is not polled while a handler decides.
+        // Touched by every inbound frame, Pongs included, and busy while one is handled.
         let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
 
         loop {
@@ -970,7 +969,12 @@ impl WebRtcServer {
                 }
             };
             let Some(frame) = frame else { break };
-            activity.touch();
+            // Busy for the rest of this iteration. The offer decision below runs inline, so the
+            // watchdog is not even polled while it is outstanding — but the guard's release is
+            // what gives the connection a fresh bound afterwards. Without it, a decision parked
+            // for a human longer than the bound would come back to a clock that had long run
+            // out, and the peer would be closed the instant its answer was sent.
+            let _busy = activity.busy();
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(e) => {

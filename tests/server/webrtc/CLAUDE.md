@@ -109,14 +109,18 @@ In-process and model-free (0 LLM calls). Four tests: the cap (256 upgrades, the 
 `netget-keepalive` Ping and then Close 1001 at `idle_timeout_secs` (2s here); a tokio-tungstenite
 client that sends nothing but its automatic Pongs is kept for five bounds and pinged at least
 twice; an offer whose decision is parked for a human by a `manual` rule keeps its signalling
-connection and is sent nothing — no Ping, no Close — for four bounds. The offer is a minimal
+connection and is sent nothing — no Ping, no Close — for four bounds, and once the intercept is
+answered (`reject_offer`) the connection gets a fresh bound rather than being closed at once.
+The offer is a minimal
 SDP (`v=0`, `o=`, `s=`, `t=`) that parses, which is what gets it past `parse_offer` to the
 decision.
 
 Verified by removal: disabling the watchdog arm fails the keepalive and live-client tests;
 removing the probe from `accept_bounded::watch_idle_with_probe` fails both again (Close 1001
-with no Ping first). The parked test has no guard to remove — the decision runs inline, so
-neither the read nor the watchdog is polled — and is a regression pin against that changing.
+with no Ping first). Replacing the per-frame `busy()` guard with a bare `touch()` fails the
+parked test: the decision runs inline, so the watchdog is not polled during the park, but
+without the guard's release the loop comes back to a clock that ran out during it and closes
+the connection the instant the answer is sent.
 
 ## What is not covered
 

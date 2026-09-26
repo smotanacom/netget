@@ -200,11 +200,13 @@ const PARKED_EXPECTS_FRAMES: bool = false;
 // peer's *liveness*: at half of it the server sends a Ping, every RFC 6455 endpoint answers with
 // a Pong by itself, and only a peer that sends no frame at all — not even that Pong — reaches the
 // bound. Three tests: a raw peer that never answers is sent the Ping and then Close 1001; a real
-// client that only answers Pings is kept; a message whose handling is parked for a human keeps
-// its connection (the handler runs inline, so neither the read nor the watchdog is polled).
+// client that only answers Pings is kept; a signal whose handling is parked for a human keeps its
+// connection, and gets a fresh bound once the human answers.
 //
 // Removing the `watch_idle_with_probe` arm makes the first hang to its window and the second see
-// no Ping; removing the probe makes the second see its live client closed.
+// no Ping; removing the probe makes the second see its live client closed; replacing the
+// per-frame `busy()` guard with a bare `touch()` makes the third see its connection closed the
+// moment the parked signal is answered.
 
 /// The idle bound these tests drive, as `idle_timeout_secs`.
 const SHORT_IDLE: Duration = Duration::from_secs(2);
@@ -399,5 +401,40 @@ async fn a_signal_parked_for_a_human_keeps_its_connection() {
     assert!(
         PARKED_EXPECTS_FRAMES == !ops.is_empty(),
         "unexpected frames while parked: {ops:?} ({received:02x?})"
+    );
+
+    // The human answers, four idle bounds after the signal arrived. The answer is activity: the
+    // connection must get a fresh bound from here, not be closed the moment the loop comes back
+    // to a clock that ran out during the park. That is what the `busy()` guard is for.
+    let intercept = state
+        .list_intercepts()
+        .await
+        .into_iter()
+        .find(|i| i.event_type == "webrtc_offer_received")
+        .expect("the signal is not parked as an intercept");
+    state
+        .resolve_intercept(
+            intercept.id,
+            vec![serde_json::json!({"type": "reject_offer", "reason": "not today"})],
+        )
+        .await
+        .expect("answer the parked signal");
+    let mut after = Vec::new();
+    let deadline = tokio::time::Instant::now() + SHORT_IDLE / 2;
+    loop {
+        match tokio::time::timeout_at(deadline, peer.read(&mut buf)).await {
+            Err(_) => break,
+            Ok(Ok(0)) => panic!(
+                "the connection was closed right after its parked signal was answered — the \
+                 answer did not count as activity; received {after:02x?}"
+            ),
+            Ok(Ok(n)) => after.extend_from_slice(&buf[..n]),
+            Ok(Err(e)) => panic!("read failed: {e}"),
+        }
+    }
+    assert!(
+        !opcodes(&after).contains(&0x8),
+        "the connection was sent a Close right after its parked signal was answered — the answer \
+         did not count as activity: {after:02x?}"
     );
 }
