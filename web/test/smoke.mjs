@@ -7,6 +7,11 @@
 // back on the connection. Exit code 0 means the whole path — dashboard, ServerForm, virtual
 // sockets, protocol server, LLM bridge, action executor — works in wasm.
 //
+// It then answers one more TCP request the way the page's "you are the model" composer
+// (site/js/composer.js) does before anyone edits a field: the request's offered `actions`,
+// the composer's default pick, every field prefilled from that action's example. That reply
+// must be accepted and the example's bytes must reach the peer.
+//
 //   ./web/build.sh && node web/test/smoke.mjs
 //
 // There is deliberately no HTTP leg here, and the reason is worth knowing before adding one:
@@ -20,6 +25,7 @@
 
 import { readFileSync } from 'node:fs';
 import init, { NetGet } from '../../site/demo/pkg/netget_web.js';
+import { offeredActions, defaultActionIndex, newEntry, buildReply, buildAction } from '../../site/js/composer.js';
 
 const wasm = readFileSync(new URL('../../site/demo/pkg/netget_web_bg.wasm', import.meta.url));
 await init({ module_or_path: wasm });
@@ -29,6 +35,9 @@ const enc = new TextEncoder();
 let screen = '';
 const requests = [];
 const received = [];
+// When set, requests are answered by the composer's default reply instead of the echo below.
+let answerLikeTheComposer = false;
+const composed = [];
 
 function fail(msg) {
     console.error('FAIL:', msg);
@@ -61,6 +70,13 @@ const netget = new NetGet({
     onLlm: async (json) => {
         const req = JSON.parse(json);
         requests.push(req);
+        if (answerLikeTheComposer) {
+            const actions = offeredActions(req);
+            const entry = actions.length ? newEntry(actions[defaultActionIndex(actions)]) : null;
+            const built = entry ? buildReply(req, actions, [entry]) : { ok: false };
+            composed.push({ req, actions, entry, built });
+            return JSON.stringify(built.ok ? built.reply : { error: 'the composer could not build a reply' });
+        }
         // The network-event path sends one flattened prompt whose user turn carries
         // "Context data:\n{...}" with the connection id and the received text.
         const user = req.messages.find((m) => m.role === 'user') || req.messages[req.messages.length - 1];
@@ -115,6 +131,25 @@ try {
 
     netget.close(conn);
 
+    // The composer: answer a fresh TCP request with its default, example-prefilled action.
+    answerLikeTheComposer = true;
+    const composerReceived = [];
+    const conn2 = netget.connect(PORT, (bytes) => composerReceived.push(dec.decode(bytes)), () => {});
+    if (!netget.send(conn2, enc.encode('compose me\n'))) fail('send() on the composer connection failed');
+    await waitFor(() => composed.length > 0, 'the composer-answered request', 20000);
+    const c = composed[0];
+    if (!c.actions.length) fail('the request offers no actions: ' + JSON.stringify(Object.keys(c.req)));
+    if (!c.actions.some((a) => a.example && typeof a.example === 'object' && Object.keys(a.example).length)) fail('no offered action carries an example');
+    if (!c.actions.every((a) => Array.isArray(a.parameters))) fail('an offered action has no parameter list');
+    if (c.entry.name !== 'send_tcp_data') fail('the composer would preselect ' + c.entry.name + ', not send_tcp_data; offered: ' + c.actions.map((a) => a.name).join(', '));
+    if (!c.built.ok) fail('the composer could not build a reply from the example: ' + JSON.stringify(c.built.errors));
+    const sent = buildAction(c.entry).value;
+    const example = c.actions.find((a) => a.name === 'send_tcp_data').example;
+    if (JSON.stringify(sent) !== JSON.stringify(example)) fail('the prefilled action differs from its example: ' + JSON.stringify(sent) + ' vs ' + JSON.stringify(example));
+    await waitFor(() => composerReceived.join('') === sent.data, 'the example bytes (' + JSON.stringify(sent.data) + ') on the wire', 20000);
+    answerLikeTheComposer = false;
+    netget.close(conn2);
+
     // UDP: a datagram server on the virtual network, a page-side socket, one round trip.
     const UDP_PORT = 5555;
     let udpStarted = null;
@@ -136,6 +171,7 @@ try {
     netget.udp_close(sock);
 
     console.log('ok: dashboard painted, tcp and udp servers started, virtual connections round-tripped through the model bridge');
+    console.log('    composer: ' + composed[0].actions.length + ' actions offered, default ' + composed[0].entry.name + ', example bytes ' + JSON.stringify(composerReceived.join('')) + ' reached the peer');
     console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);
     process.exit(0);
 } catch (e) {

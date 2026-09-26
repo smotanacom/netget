@@ -555,6 +555,9 @@ pub struct ChatRequest {
     pub tools: Vec<serde_json::Value>,
     /// Model name (e.g., "qwen3-coder:30b")
     pub model: String,
+    /// The actions the prompt offers. Only the bridge backend sends these anywhere (see
+    /// `crate::llm::bridge::BridgeRequest::actions`); the HTTP backends ignore them.
+    pub offered_actions: Vec<crate::llm::actions::ActionDefinition>,
 }
 
 /// Response from chat_with_tools - may contain text and/or tool calls
@@ -1575,10 +1578,26 @@ impl OllamaClient {
         prompt: &str,
         format: Option<serde_json::Value>,
     ) -> Result<GenerateResponse> {
+        self.generate_offering(model, prompt, format, &[]).await
+    }
+
+    /// [`Self::generate_with_format`] for a prompt that offers actions. `offered` is the
+    /// list the prompt describes; only the bridge backend passes it on (a person answering
+    /// by hand gets a form built from it), and the HTTP backends send exactly what
+    /// `generate_with_format` sends.
+    pub(crate) async fn generate_offering(
+        &self,
+        model: &str,
+        prompt: &str,
+        format: Option<serde_json::Value>,
+        offered: &[crate::llm::actions::ActionDefinition],
+    ) -> Result<GenerateResponse> {
         // Fail immediately if the backend is already known to be down, rather than paying
         // another full request timeout to rediscover it. See `crate::llm::circuit_breaker`.
         self.breaker_guard()?;
-        let result = self.generate_with_format_inner(model, prompt, format).await;
+        let result = self
+            .generate_with_format_inner(model, prompt, format, offered)
+            .await;
         self.record_backend_outcome(result)
     }
 
@@ -1587,6 +1606,7 @@ impl OllamaClient {
         model: &str,
         prompt: &str,
         format: Option<serde_json::Value>,
+        offered: &[crate::llm::actions::ActionDefinition],
     ) -> Result<GenerateResponse> {
         // Transport owns wire facts: DEBUG summary + TRACE payload, both file-only.
         // The conversation layer is the one that narrates the round-trip to the TUI.
@@ -1760,6 +1780,7 @@ impl OllamaClient {
                     model.to_string(),
                     vec![Message::user(prompt)],
                     Vec::new(),
+                    offered,
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
                 let usage = TokenUsage {
@@ -1931,6 +1952,7 @@ impl OllamaClient {
                     request.model.clone(),
                     request.messages.clone(),
                     request.tools.clone(),
+                    &request.offered_actions,
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
                 let tool_calls = reply

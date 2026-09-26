@@ -1535,13 +1535,19 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   error there, which is the check. `std::process::id()` is the same kind of trap:
   `clock::process_id()`.
 - **The LLM backend is `LlmBackend::Bridge`** (`src/llm/bridge.rs`): every request the client
-  would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model —
-  and the page answers it with WebLLM, a local Ollama, or the visitor typing. The
+  would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model,
+  and `actions`: every action the prompt offers, with parameters, schema and example — and
+  the page answers it with WebLLM, a local Ollama, or the visitor, who answers through
+  `site/js/composer.js`: pick an offered action, edit fields prefilled from its example,
+  send (Raw JSON stays one tab away). Network events carry no native `tools`, so `actions`
+  is the only structured list they have; the Ollama/OpenAI wire never carries it. The
   Ollama/OpenAI backends (`reqwest`, `ollama-rs`) are `#[cfg(not(target_arch = "wasm32"))]`;
   the circuit breaker deliberately ignores the bridge, since a slow person is not an outage.
-  `tests/llm_bridge_test.rs` pins the mapping natively; `web/test/smoke.mjs` drives the real
-  bundle under Node (dashboard paints, `start_server`, connect, model round-trip, bytes back)
-  and CI's `wasm-web` job runs both.
+  `tests/llm_bridge_test.rs` pins the mapping natively (including a real TCP server's event
+  offering its actions with examples); `web/test/smoke.mjs` drives the real bundle under Node
+  (dashboard paints, `start_server`, connect, model round-trip, bytes back, and the
+  composer's default reply accepted) and CI's `wasm-web` job runs both.
+  `web/test/page_composer.py` drives the page in headless Chromium and is run by hand.
 - **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any
   `Stream` of crossterm events); the web crate's backend emits ANSI into xterm.js and its
   input translates DOM `KeyboardEvent`s. The scheduled-task ticker (`src/cli/tasks.rs`) is

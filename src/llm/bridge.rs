@@ -12,6 +12,11 @@
 //! page shows all of it, so a visitor sees exactly what NetGet says to a model and what comes
 //! back. Nothing here is browser-specific; a native test can drain the same channel, which is
 //! how the mapping from request to `ChatResponse` is verified.
+//!
+//! It also carries what no wire request does: the actions the prompt offers, as structured
+//! data ([`BridgeRequest::actions`]). A network event's request has no native tool schemas —
+//! the action list is prose inside the prompt — and a person answering by hand needs the
+//! names, the parameters and a working example in a form a page can turn into a form.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::llm::actions::ActionDefinition;
 use crate::llm::ollama_client::Message;
 
 /// Which client entry point produced the request. The host may treat them alike (both are
@@ -46,6 +52,11 @@ pub struct BridgeRequest {
     pub messages: Vec<Message>,
     /// Tool schemas in OpenAI function-tool format; empty for `Generate`.
     pub tools: Vec<serde_json::Value>,
+    /// Every action the prompt offers for this request, in the shape [`offered_action`]
+    /// documents — the same list the model is shown, whether it is shown as prose (every
+    /// network event) or as native tools. Empty for a request that offers no actions.
+    /// Nothing on the native Ollama/OpenAI wire carries it.
+    pub actions: Vec<serde_json::Value>,
     /// Where the answer goes. Dropping it without answering fails the request.
     #[serde(skip)]
     pub reply: oneshot::Sender<Result<BridgeReply, String>>,
@@ -107,6 +118,7 @@ impl LlmBridge {
         model: String,
         messages: Vec<Message>,
         tools: Vec<serde_json::Value>,
+        offered: &[ActionDefinition],
     ) -> (u64, oneshot::Receiver<Result<BridgeReply, String>>) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (reply, rx) = oneshot::channel();
@@ -116,6 +128,7 @@ impl LlmBridge {
             model,
             messages,
             tools,
+            actions: offered.iter().map(offered_action).collect(),
             reply,
         };
         // A closed receiver means no host; the request's reply sender is dropped with it,
@@ -132,4 +145,69 @@ impl LlmBridge {
     pub fn models(&self) -> Vec<String> {
         self.models.lock().expect("bridge model list").clone()
     }
+}
+
+/// The names [`offered_action`] marks `generic`.
+static GENERIC_ACTIONS: std::sync::LazyLock<std::collections::HashSet<String>> =
+    std::sync::LazyLock::new(|| {
+        let mut names: std::collections::HashSet<String> =
+            crate::llm::actions::common::get_network_event_common_actions()
+                .into_iter()
+                .map(|a| a.name)
+                .collect();
+        names.insert(crate::llm::actions::common::provide_feedback_action().name);
+        names
+    });
+
+/// One offered action as the host sees it:
+///
+/// ```json
+/// {"name": "send_tcp_data", "description": "...", "tool": false, "generic": false,
+///  "parameters": [{"name": "encoding", "type": "\"utf8\" | \"hex\"", "description": "...",
+///                  "required": false, "choices": ["utf8", "hex"]}],
+///  "example": {"type": "send_tcp_data", "data": "hi"},
+///  "schema": {"type": "object", "properties": {...}, "required": [...]}}
+/// ```
+///
+/// - `type` is the declared type hint verbatim (`"string"`, `"number | string"`,
+///   `"array"`…); `choices` is present only for a closed value set (`Parameter::choices`).
+/// - `example` is the action's own example, which its executor accepts
+///   (`tests/executable_examples_test.rs`), so a host can prefill a form from it.
+/// - `tool` is true for a tool (`read_file`, `web_search`, …): the model is asked again with
+///   its result, and in the JSON envelope it goes under `"tools"` rather than `"actions"`.
+/// - `generic` is true for the bookkeeping actions every network event offers whatever the
+///   protocol (`set_memory`, `show_message`, `provide_feedback`, …), so a host can put the
+///   protocol's own answer first.
+/// - `schema` is the JSON Schema of the parameters, the one a native tool schema carries.
+pub fn offered_action(action: &ActionDefinition) -> serde_json::Value {
+    let parameters: Vec<serde_json::Value> = action
+        .parameters
+        .iter()
+        .map(|p| {
+            let mut v = serde_json::json!({
+                "name": p.name,
+                "type": p.type_hint,
+                "description": p.description,
+                "required": p.required,
+            });
+            if let Some(choices) = p.choices() {
+                v["choices"] = serde_json::json!(choices);
+            }
+            v
+        })
+        .collect();
+    let schema = action
+        .to_tool_schema()
+        .pointer("/function/parameters")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "name": action.name,
+        "description": action.description,
+        "tool": action.is_tool(),
+        "generic": GENERIC_ACTIONS.contains(action.name.as_str()),
+        "parameters": parameters,
+        "example": action.example,
+        "schema": schema,
+    })
 }
