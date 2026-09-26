@@ -36,6 +36,15 @@
 //! [`ci_feature_clients_are_installed`] derives the required list from the test sources so it
 //! cannot drift again.
 //!
+//! # The client side
+//!
+//! The same holds in the other direction. A NetGet *client* proves itself against a real
+//! third-party *server* (`tests/client/<p>/real_server_test.rs`, driving `mosquitto`,
+//! `redis-server`, `etcd`, `nginx` through `tests/helpers/real_server.rs`), and
+//! `tests/client/nats/e2e_test.rs` spawns `nats-server` by hand. Until the scan covered
+//! `tests/client/` too, the one Beta client's evidence ran in no CI job at all. Client entries
+//! are keyed `client/<p>::<stem>`, and the loop runs them from the `client` test target.
+//!
 //! # Why this is a test and not a CI step
 //!
 //! It reads source and YAML and needs no build, no features and no binaries, so it holds at the
@@ -79,14 +88,26 @@ const UBIQUITOUS: &[&str] = &[
     "/bin/sh", "sh", "ps", "curl", "python3", "python", "tshark", "protoc",
 ];
 
-/// Test files under `tests/server/` that drive a third-party binary, as
-/// `("<protocol>::<file stem>", [binaries])`.
+/// Test files that drive a third-party binary, keyed the way the CI loop names them:
 ///
-/// A file named `real_client_test.rs` counts even if this scan finds no `Command::new` in it:
-/// some drive their peer through a crate rather than a subprocess, and the name is then the
-/// only declaration there is.
+/// * `tests/server/<p>/<stem>.rs` as `"<p>::<stem>"` — a real **client** against NetGet's
+///   server, run from the `server` test target;
+/// * `tests/client/<p>/<stem>.rs` as `"client/<p>::<stem>"` — a real **server** against
+///   NetGet's client, run from the `client` test target. The client bar in `CLAUDE.md` is the
+///   mirror of the server one, and its evidence has the same problem the server side had: a
+///   hard-failing test nothing in CI runs proves nothing.
+///
+/// A file named `real_client_test.rs` (server side) or `real_server_test.rs` (client side)
+/// counts even if this scan finds no spawned binary in it: some drive their peer through a
+/// crate rather than a subprocess, and the name is then the only declaration there is.
 fn real_client_tests() -> BTreeMap<String, BTreeSet<String>> {
-    let dir = repo_root().join("tests").join("server");
+    let mut out = scan_side("server", "", "real_client_test");
+    out.extend(scan_side("client", "client/", "real_server_test"));
+    out
+}
+
+fn scan_side(side: &str, key_prefix: &str, named_stem: &str) -> BTreeMap<String, BTreeSet<String>> {
+    let dir = repo_root().join("tests").join(side);
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let entries =
         std::fs::read_dir(&dir).unwrap_or_else(|_| panic!("cannot read {}", dir.display()));
@@ -115,32 +136,36 @@ fn real_client_tests() -> BTreeMap<String, BTreeSet<String>> {
             }
             let src = std::fs::read_to_string(&path).unwrap_or_default();
             let bins = spawned_binaries(&src);
-            if bins.is_empty() && stem != "real_client_test" {
+            if bins.is_empty() && stem != named_stem {
                 continue;
             }
-            out.insert(format!("{protocol}::{stem}"), bins);
+            out.insert(format!("{key_prefix}{protocol}::{stem}"), bins);
         }
     }
     out
 }
 
-/// Every `Command::new("…")` argument in a source file, minus [`UBIQUITOUS`].
+/// Every `Command::new("…")` and `RealServer::builder("…")` argument in a source file, minus
+/// [`UBIQUITOUS`].
 ///
 /// A literal is the only form worth matching: a binary name held in a variable is not something
 /// a source-reading scan can resolve, and every real-client gate in this tree writes the literal
-/// because the error message has to name it anyway.
+/// because the error message has to name it anyway. `RealServer::builder` is
+/// `tests/helpers/real_server.rs`, which spawns the server itself — so for the client suites the
+/// builder's first argument is the only place the server binary is named at all.
 fn spawned_binaries(src: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    let needle = "Command::new(\"";
-    let mut rest = src;
-    while let Some(i) = rest.find(needle) {
-        rest = &rest[i + needle.len()..];
-        if let Some(end) = rest.find('"') {
-            let name = &rest[..end];
-            if !UBIQUITOUS.contains(&name) {
-                out.insert(name.to_string());
+    for needle in ["Command::new(\"", "RealServer::builder(\""] {
+        let mut rest = src;
+        while let Some(i) = rest.find(needle) {
+            rest = &rest[i + needle.len()..];
+            if let Some(end) = rest.find('"') {
+                let name = &rest[..end];
+                if !UBIQUITOUS.contains(&name) {
+                    out.insert(name.to_string());
+                }
+                rest = &rest[end..];
             }
-            rest = &rest[end..];
         }
     }
     out
@@ -297,13 +322,22 @@ fn ci_feature_clients_are_installed() {
 
     let mut missing = Vec::new();
     for (name, bins) in real_client_tests() {
-        let protocol = name.split("::").next().unwrap();
+        // A client suite's directory is named for its feature, as a server suite's is.
+        let protocol = name
+            .split("::")
+            .next()
+            .unwrap()
+            .trim_start_matches("client/");
         if !features.contains(protocol) {
             continue;
         }
         for bin in bins {
             if !job.contains(&bin) {
-                missing.push(format!("{bin}  (driven by server::{name})"));
+                let path = match name.strip_prefix("client/") {
+                    Some(rest) => format!("client::{rest}"),
+                    None => format!("server::{name}"),
+                };
+                missing.push(format!("{bin}  (driven by {path})"));
             }
         }
     }
