@@ -1892,9 +1892,14 @@ Read before assuming a subsystem is sound:
   this: grep `LLM error` in `src/server/*/mod.rs` and check whether the following ~18 lines
   write anything.
 
-  **20 protocols are deliberately silent and must stay that way** — `arp`, `bootp`, `datalink`,
-  `dhcp`, `igmp`, `ipsec`, `isis`, `mdns`, `openvpn`, `ospf`, `radius`, `rip`, `rtp`, `syslog`,
-  `udp`, `usb/mouse`, `usb/keyboard` and the BLE profiles. Each says so in its own CLAUDE.md.
+  **Some protocols are deliberately silent and must stay that way, and the list is not here.**
+  Each declares it in `metadata()` with `.deliberately_silent()` and its reason beside the call;
+  a protocol that answers declares `.answers_on_failure()`. `tests/failure_mode_declaration_test.rs`
+  holds the list and requires **every connectionless server** to declare one or the other — on
+  a datagram protocol a failure arm that writes nothing is silence by default, and fifteen servers
+  sat there undeclared while the prose list here named `radius` and five BLE profiles, all of
+  which answer (Access-Reject, ATT Unlikely Error). Derive it:
+  `grep -rln 'deliberately_silent()' src/server`.
   The rule is that **a fabricated reply is worse than silence when every reply the protocol
   defines is a positive assertion.** `openvpn` is the case to remember: its only pre-TLS server
   message is `P_CONTROL_HARD_RESET_SERVER_V2`, and sending it *is* admitting the peer — so

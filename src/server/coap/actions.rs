@@ -80,6 +80,8 @@ impl Protocol for CoapProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: 5.03 Service Unavailable, never an invented 2.05.
+            .answers_on_failure()
             // STABLE, set 16 September 2026 against the six conditions in the root CLAUDE.md,
             // each verified in that pass rather than inherited. Read `.e2e_testing` and
             // `.notes` below before quoting this: the rating is about the evidence for the

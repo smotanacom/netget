@@ -57,6 +57,8 @@ impl Protocol for TorrentDhtProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: a BEP 5 KRPC error carrying the fixed WireFailure category text.
+            .answers_on_failure()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("UDP KRPC protocol with bencode encoding")

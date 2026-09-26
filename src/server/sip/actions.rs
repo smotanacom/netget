@@ -64,6 +64,9 @@ impl Protocol for SipProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: 503 Service Unavailable; nothing reaches a 2xx unless the model
+            // names one.
+            .answers_on_failure()
             .state(DevelopmentState::Beta)
             // Not rsipstack, and not a compliant stack. `Cargo.toml` declares `sip = []` -
             // there is no SIP dependency at all. `mod.rs` hand-parses the request line and
