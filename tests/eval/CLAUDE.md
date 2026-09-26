@@ -125,6 +125,11 @@ Each of these cost a debugging pass and every one presented as a model failure.
   exit the only completion signal; `ipptool` uses it. The classifier now names
   this shape — asked, never answered, client gone before its own timeout — as
   `client_left_before_model_answered` instead of blaming the model.
+- **The same settle cut off `ldapsearch` and `ftp`**, both of which talk between
+  model calls (`ldap_bind: Success (0)` before the search; `-v` narrating each
+  FTP reply). Both use `until_exit()`. And **`curl telnet://` buffers its output
+  when stdout is a pipe**, so every telnet run sat for the full `--max-time`
+  (233s) whatever the model did; the probe passes `-N`.
 - **An exited client's last output was left in the pipe.** The loop notices an
   exit between two 250ms reads, so whatever the client wrote last — for
   `ipptool`, the whole response — could arrive after the read that timed out

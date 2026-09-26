@@ -100,7 +100,10 @@ fn http() -> Vec<EvalCase> {
             "http",
             "Redirect / permanently to https://example.com/.",
             curl("/"),
-            Expect::contains(&["HTTP/1.1 301", "example.com"]),
+            // 301 and 308 are both permanent redirects (RFC 9110 15.4.2 and 15.4.9); 308
+            // additionally keeps the method. The committed baseline scored every 308 as a
+            // miss, which measured this file's expectation rather than the model.
+            Expect::contains(&["example.com"]).matching(r"(?m)^HTTP/1\.1 30[18]\b"),
         ),
     ]
 }
@@ -645,9 +648,18 @@ fn ntp() -> Vec<EvalCase> {
 
 #[cfg(feature = "telnet")]
 fn telnet_probe(input: Option<&str>) -> Probe {
+    // `-N`: curl buffers a telnet session's output when stdout is a pipe, so without it
+    // nothing reached the probe until `--max-time` ended the session — every telnet run took
+    // 233s whatever the model did, and the idle settle never had a byte to settle on.
     let probe = Probe::client(
         "curl",
-        &["-sS", "--max-time", "230", "telnet://127.0.0.1:{PORT}"],
+        &[
+            "-sS",
+            "-N",
+            "--max-time",
+            "230",
+            "telnet://127.0.0.1:{PORT}",
+        ],
     );
     match input {
         Some(text) => probe.stdin(text),
@@ -726,7 +738,12 @@ fn tcp() -> Vec<EvalCase> {
 
 #[cfg(feature = "ftp")]
 fn ftp_probe(script: &str) -> Probe {
-    Probe::client("ftp", &["-n", "-v", "127.0.0.1", "{PORT}"]).stdin(script)
+    // Several model calls in a row (banner, USER, PASS, PWD) with `-v` narrating each one as it
+    // lands, so the client talks between calls; the idle settle cut it off after the banner
+    // whenever the next answer took more than two seconds. It exits on `quit`.
+    Probe::client("ftp", &["-n", "-v", "127.0.0.1", "{PORT}"])
+        .stdin(script)
+        .until_exit()
 }
 
 #[cfg(feature = "ftp")]
