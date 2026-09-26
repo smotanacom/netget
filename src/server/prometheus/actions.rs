@@ -84,7 +84,13 @@ impl Protocol for PrometheusProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta on evidence: tests/server/prometheus/real_client_test.rs drives the
+            // Prometheus project's own promtool (parse + lint, with a negative control) and a
+            // real prometheus scraping in both negotiated formats and answering PromQL, and
+            // both binaries hard-fail when absent. Not Stable: one project's tools are the only
+            // peers (promtool and prometheus share the same parser code), there is no fuzz
+            // target and no pcap-oracle test, and protobuf/native histograms are absent.
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1. GET /metrics raises prometheus_scrape; the model answers with \

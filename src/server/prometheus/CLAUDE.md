@@ -4,7 +4,7 @@ NetGet serves `GET /metrics` like any Prometheus exporter; the model decides wha
 are. A real Prometheus server, `promtool`, or anything else that reads the exposition format can
 scrape it.
 
-**State**: Experimental. **Privilege**: `None` (9100 is node_exporter's port and unprivileged).
+**State**: Beta. **Privilege**: `None` (9100 is node_exporter's port and unprivileged).
 **Feature**: `prometheus`. **Group**: AI & API. **Keywords**: `prometheus`, `exporter`,
 `node_exporter`, `/metrics`, `openmetrics`.
 
@@ -100,6 +100,14 @@ nothing non-legacy is ever emitted), federation's `match[]`, TLS, authentication
 
 ## Maturity
 
-Experimental. The evidence for Beta exists — `promtool check metrics` and a real `prometheus`
-scrape, both hard-failing when absent (`tests/server/prometheus/real_client_test.rs`) — and a
-promotion is a separate decision, recorded in `metadata()` when it is made.
+Beta. The bar is "works against real clients", and the evidence is
+`tests/server/prometheus/real_client_test.rs`: `promtool check metrics` (parse and lint, with a
+negative control proving it rejects) and a real `prometheus` scraping NetGet in both negotiated
+formats and answering PromQL with the served values. Both binaries **hard-fail** when absent; if
+that gate is ever softened to a skip, demote this in the same commit. Promoted after the suite
+passed three consecutive runs at `--test-threads=100`.
+
+Not Stable: `promtool` and `prometheus` are one project and share one parser, so this is one
+independent implementation rather than the two condition 1 asks for; there is no fuzz target
+(the inbound side is a request line, and the renderer's input is JSON) and no pcap-oracle test
+(Wireshark has no Prometheus dissector, only `http`).
