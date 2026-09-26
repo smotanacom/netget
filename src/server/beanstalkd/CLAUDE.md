@@ -1,6 +1,6 @@
 # Beanstalkd Protocol Implementation
 
-Beanstalkd work-queue server (upstream `doc/protocol.txt`, beanstalkd 1.13). The model is the
+Beanstalkd work-queue server (upstream protocol.txt from the beanstalkd repository, 1.13). The model is the
 queue: it decides which job ids a `put` gets, which job a `reserve` hands out (or that the
 worker waits), what `delete`/`release`/`bury`/`touch`/`kick`/`peek` find, and what the stats
 say. NetGet stores no jobs and writes every byte of framing.
