@@ -571,6 +571,12 @@ pub use modbus::actions::ModbusClientProtocol;
 pub mod coap;
 #[cfg(feature = "coap")]
 pub use coap::actions::CoapClientProtocol;
+
+// radius client
+#[cfg(feature = "radius")]
+pub mod radius;
+#[cfg(feature = "radius")]
+pub use radius::actions::RadiusClientProtocol;
 // ssdp client
 #[cfg(feature = "ssdp")]
 pub mod ssdp;

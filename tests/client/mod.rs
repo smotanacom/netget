@@ -128,6 +128,8 @@ pub mod pop3;
 pub mod postgresql;
 #[cfg(feature = "pypi")]
 pub mod pypi;
+#[cfg(feature = "radius")]
+pub mod radius;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "rip")]

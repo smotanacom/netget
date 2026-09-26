@@ -385,6 +385,9 @@ jobs:
       #   pymodbus          - the modbus client (a Python device; pip, in its own step below)
       #   coap-server       - the coap client (libcoap's example server; the same
       #                       libcoap2-bin package as coap-client, above)
+      #   freeradius        - the radius client (FreeRADIUS radiusd, run unprivileged from a
+      #                       minimal raddb in a temp dir). Ubuntu names the binary
+      #                       `freeradius`; the step below links it to `radiusd`
       #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
       #                       client is tokio-postgres). Ubuntu keeps the server binaries in
       #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
@@ -445,7 +448,8 @@ jobs:
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan zabbix-sender gearman-tools \
-            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached
+            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached \
+            freeradius
 
       # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
       # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
@@ -529,6 +533,16 @@ jobs:
           memstat --version
           memping --version
           memcp --version
+
+      # Ubuntu installs FreeRADIUS's server as /usr/sbin/freeradius; upstream, Homebrew and
+      # the test call it `radiusd`. Linked, like libmemcached's tools above, rather than
+      # taught to the test: a test that guesses between spellings can drive the wrong thing.
+      - name: Give FreeRADIUS's server the name upstream uses
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo ln -sf /usr/sbin/freeradius /usr/local/bin/radiusd
+          radiusd -v | head -1
 
       # OpenVPN 2.6 from jammy-backports - see the note above. `--peer-fingerprint`, the
       # option `tests/server/openvpn/e2e_test.rs` uses to trust the server's per-run
@@ -876,6 +890,7 @@ jobs:
             client/ldap::real_server_test \
             client/coap::real_server_test \
             client/memcached::real_server_test client/modbus::real_server_test \
+            client/radius::real_server_test \
             client/mqtt::keepalive_test client/mqtt::real_server_test \
             client/mysql::real_server_test client/nats::e2e_test \
             client/postgresql::real_server_test \
