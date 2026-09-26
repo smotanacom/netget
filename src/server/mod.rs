@@ -325,6 +325,12 @@ pub mod dict;
 pub use dict::actions::DictProtocol;
 #[cfg(feature = "dict")]
 pub use dict::DictServer;
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
+#[cfg(feature = "beanstalkd")]
+pub use beanstalkd::actions::BeanstalkdProtocol;
+#[cfg(feature = "beanstalkd")]
+pub use beanstalkd::BeanstalkdServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]
