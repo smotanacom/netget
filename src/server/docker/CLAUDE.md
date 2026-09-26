@@ -5,7 +5,7 @@ NetGet answers the read-only core of the Docker Engine API well enough for the r
 `network ls`, `volume ls`. The model decides which containers, images, networks and volumes
 exist; NetGet owns negotiation, routing and the shape of every document.
 
-**State**: Experimental. **Privilege**: `None` (2375 is unprivileged). **Feature**: `docker`
+**State**: Beta. **Privilege**: `None` (2375 is unprivileged). **Feature**: `docker`
 (needs only `urlencoding` for query decoding). **Group**: AI & API. **Keywords**: `docker`,
 `dockerd`, `docker engine`, `docker api`, `moby`.
 
@@ -100,3 +100,16 @@ read in `spawn()` and validated there.
 Everything that changes state (create/start/stop/exec/pull/build/rm), `/images/{id}/json`,
 logs, events, stats, attach, the swarm and plugin endpoints, TLS on 2376, and authentication —
 the unauthenticated TCP API on 2375 has none, and neither does this.
+
+## Maturity
+
+Beta. The bar is "works against real clients", and the evidence is
+`tests/server/docker/real_client_test.rs`: the real `docker` CLI — a Go client that decodes
+every document into the Engine's own types and renders it — prints exactly the handler's values
+for `version`, `ps -a`, `images`, `inspect`, `network ls`, `volume ls` and `info`, and
+`require_tool("docker")` **hard-fails** when the binary is absent. If that gate is ever softened
+to a skip, demote this in the same commit. Promoted after the suite passed three consecutive
+runs at `--test-threads=100`.
+
+Not Stable: one client (no SDK such as `bollard` or docker-py drives it yet), no fuzz target, no
+pcap-oracle test (Wireshark has no Docker dissector), and the API is a read-only subset.

@@ -114,7 +114,12 @@ impl Protocol for DockerProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta on evidence: tests/server/docker/real_client_test.rs drives the real docker
+            // CLI (a Go client decoding into the Engine's own types) through version, ps -a,
+            // images, inspect, network ls, volume ls and info, asserting it prints exactly the
+            // handler's values, and hard-fails when the binary is absent. Not Stable: one
+            // client, no fuzz target, no pcap-oracle test, and the API is a read-only subset.
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1, plain TCP (the unauthenticated tcp://…:2375 shape). /_ping \
