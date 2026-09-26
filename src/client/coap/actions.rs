@@ -493,7 +493,7 @@ impl Protocol for CoapClientProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "CoAP (RFC 7252) client over a connected UDP socket, encoding and decoding with \
@@ -510,8 +510,17 @@ impl Protocol for CoapClientProtocol {
                  Every answer arrives as coap_response, coap_notification or coap_error.",
             )
             .e2e_testing(
-                "tests/client/coap/real_server_test.rs against libcoap's coap-server, read \
-                 back with libcoap's coap-client.",
+                "tests/client/coap/real_server_test.rs, 7+ LLM calls, against libcoap's \
+                 coap-server (C), written and read back with libcoap's coap-client. coap-client \
+                 stores 3000 bytes; the model GETs them and is shown one coap_response \
+                 reassembled from three Block2 blocks, PUTs a sentence built from that body \
+                 (checked byte for byte), which coap-client reads back, then observes /time: \
+                 registration, notifications, cancellation on the same token. A second test \
+                 injects a PUT through the command channel that coap-client reads back. Not \
+                 #[ignore]d; a missing coap-server or coap-client fails the test. \
+                 transport_test.rs drives retransmission, the Block2 cap and order, the \
+                 oversize drop, deduplication, RST and the exchange cap against hand-written \
+                 servers.",
             )
             .notes(
                 "No DTLS (coaps), no CoAP over TCP/WebSocket, no Block1 (a request payload is \

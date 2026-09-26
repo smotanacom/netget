@@ -104,7 +104,16 @@ CoAP has no nesting, so there is no depth to bound.
 No DTLS (`coaps`), no CoAP over TCP or WebSocket, no Block1, no multicast, no reordering check on
 notification sequence numbers (they are reported, not compared).
 
-## Maturity
+## Maturity: Beta
 
-Evidence: `tests/client/coap/real_server_test.rs` — libcoap's `coap-server`, read back with
-libcoap's `coap-client`. See `tests/client/coap/CLAUDE.md`.
+All four conditions of the client bar hold, on `tests/client/coap/real_server_test.rs`:
+
+1. the peer is libcoap's `coap-server` (C), and libcoap's `coap-client` writes and reads back —
+   nothing this client is built on;
+2. a missing `coap-server` or `coap-client` fails the test, never skips it;
+3. a real session: a Block2 GET, a PUT, and an Observe registration, notifications and
+   cancellation, all answered by the server;
+4. the client acts on the model's answer, asserted from the server's side by `coap-client` —
+   and emptying the loop over `result.actions` fails it.
+
+Passed three consecutive runs at `--test-threads=100` before promotion, against libcoap 4.3.5.
