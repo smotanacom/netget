@@ -6,6 +6,7 @@ use http::{Request, Response, StatusCode};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -21,6 +22,96 @@ use crate::state::app_state::AppState;
 use super::actions::HTTP2_REQUEST_EVENT;
 use super::push::PendingPush;
 
+/// How long a peer that has connected and produced nothing may hold a slot.
+///
+/// HTTP/2 is client-speaks-first: the connection preface (and, over TLS, the ClientHello before
+/// it) is the first thing on the wire and the server says nothing before it, so a peer that has
+/// completed the TCP handshake and sent no byte has begun no connection at all. 30 seconds,
+/// the number every HTTP-shaped server here uses for this state, for `src/server/http/mod.rs`'s
+/// reasons. It is safe against NetGet's own HTTP/2 client because that client is **lazy**: it
+/// is a pooled `reqwest` client with `http2_prior_knowledge()` and opens no socket until it has
+/// a request to send, so nothing here is ever connected and waiting on a person. Declared as the
+/// `first_byte_timeout_secs` startup parameter, so an operator can change it.
+pub const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the TLS handshake and the HTTP/2 preface exchange may take once the peer has sent
+/// its first byte.
+///
+/// This phase involves no model and no person — rustls and `h2` answer it by themselves — so
+/// there is nothing legitimate a peer can be waiting on, and a peer that sends one byte and then
+/// stalls would otherwise hold the slot for as long as it likes, having passed the first-byte
+/// bound. Thirty seconds, which is far longer than a real handshake on any network and the same
+/// number `tls`'s handshake wait uses.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long an established connection may carry no request at all before it is closed.
+///
+/// 300 seconds, chosen to stay above the 90 seconds `reqwest` keeps an idle pooled connection —
+/// NetGet's own HTTP/2 client is a pooled `reqwest` client, and a bound below the pool's races
+/// it: the client picks a connection the server is about to close and loses the request. nginx's
+/// `http2_idle_timeout` (180s) sits below this; being more generous costs one slot per idle
+/// client, and [`MAX_CONNECTIONS`] bounds the slots.
+///
+/// **A request still being answered is not silence.** Each stream's task holds the connection's
+/// [`ConnectionActivity`] busy for the whole of its answer — a model round-trip, or an event a
+/// `manual` rule parked for a human (`src/state/intercepts.rs`, 300s by default) — and the
+/// watchdog never fires while anything is in flight. HTTP/2 PING frames are answered by `h2`
+/// itself and are not counted as activity: a PING carries no request, and a client that only
+/// pings is holding a slot for nothing. Declared as the `idle_timeout_secs` startup parameter.
+///
+/// When it fires the connection is closed with a GOAWAY (`graceful_shutdown`), which every
+/// HTTP/2 client treats as "open a new connection for the next request", rather than with a bare
+/// FIN that a client could mistake for a crashed server.
+pub const IDLE_BETWEEN_REQUESTS_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the GOAWAY sent at the idle bound is given to reach the peer before the socket is
+/// dropped anyway. The connection is idle by definition, so there is nothing to drain; this only
+/// stops a peer that has stopped reading from holding the close open.
+const GOAWAY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Concurrent connections this server admits.
+///
+/// 128, the same as HTTP/1.1 and for the same reason: every stream may buffer one request body
+/// of up to `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB), which is the largest per-connection
+/// cost in NetGet's HTTP family, and the cap is what turns that per-connection cost into a total
+/// one. Not configurable: a bound decided by configuration is a bound an attacker can ask you
+/// to raise.
+const MAX_CONNECTIONS: usize = 128;
+
+/// What a cleartext (h2c) peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// HTTP/1.1 `503 Service Unavailable` with a `Retry-After`, deliberately in the older protocol,
+/// for the reason `src/server/etcd/mod.rs` gives: the refused peer has not sent the HTTP/2
+/// preface, so nothing has been negotiated, and an HTTP/2 GOAWAY would have to follow a SETTINGS
+/// frame this server is declining to exchange. Every HTTP client can read a 503.
+///
+/// **Over TLS the refusal is a plain close instead** (see `spawn_with_push_support`): plaintext
+/// bytes written to a peer that is about to send a ClientHello are a malformed TLS record, not a
+/// refusal — the same reasoning that makes `doh` and `dot` close silently.
+pub const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
+/// The two read bounds a connection is served under, resolved from the startup parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct H2Bounds {
+    pub first_byte: Duration,
+    pub idle: Duration,
+}
+
+impl H2Bounds {
+    /// The declared startup parameters, falling back to the documented defaults.
+    pub fn from_secs(first_byte_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
+        Self {
+            first_byte: first_byte_secs
+                .map(Duration::from_secs)
+                .unwrap_or(FIRST_BYTE_READ_TIMEOUT),
+            idle: idle_secs
+                .map(Duration::from_secs)
+                .unwrap_or(IDLE_BETWEEN_REQUESTS_TIMEOUT),
+        }
+    }
+}
+
 /// HTTP/2 server with full server push support
 pub struct H2Server;
 
@@ -33,6 +124,7 @@ impl H2Server {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
         tls_config: Option<Arc<rustls::ServerConfig>>,
+        bounds: H2Bounds,
     ) -> anyhow::Result<SocketAddr> {
         // Same reuse semantics as the HTTP/1.1 listener, so a restart on the
         // same port does not fail with EADDRINUSE while the old socket lingers.
@@ -72,12 +164,29 @@ impl H2Server {
         // Create TLS acceptor if TLS is enabled
         let tls_acceptor = tls_config.map(|config| tokio_rustls::TlsAcceptor::from(config));
 
+        // Over TLS a plaintext 503 would be a malformed record, so the refusal is a plain close
+        // (see CONNECTION_CAP_REFUSAL).
+        let refusal: &'static [u8] = if tls_acceptor.is_some() {
+            b""
+        } else {
+            CONNECTION_CAP_REFUSAL
+        };
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+
         // Spawn server loop
         let task_registrar = app_state.clone();
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((tcp_stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    refusal,
+                    "HTTP/2",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((tcp_stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = tcp_stream.local_addr().unwrap_or(local_addr);
@@ -119,71 +228,128 @@ impl H2Server {
                         let tls_acceptor_clone = tls_acceptor.clone();
                         let filter_clone = filter.clone();
 
-                        // Spawn task to handle this connection
-                        tokio::spawn(async move {
-                            // Perform TLS handshake if TLS is enabled
-                            let result: Result<(), Box<dyn std::error::Error + Send + Sync>> =
-                                if let Some(acceptor) = tls_acceptor_clone {
-                                    match acceptor.accept(tcp_stream).await {
-                                        Ok(tls_stream) => {
-                                            debug!(
-                                                "{} TLS handshake complete with {}",
-                                                protocol_name, remote_addr
-                                            );
-                                            let _ = status_tx_clone.send(format!(
-                                                "[DEBUG] {} TLS handshake complete with {}",
-                                                protocol_name, remote_addr
-                                            ));
-                                            handle_h2_connection(
-                                                tls_stream,
-                                                connection_id,
-                                                server_id,
-                                                llm_client_clone,
-                                                app_state_clone.clone(),
-                                                status_tx_clone.clone(),
-                                                protocol_clone,
-                                                filter_clone,
-                                            )
-                                            .await
-                                        }
-                                        Err(e) => {
-                                            error!("{} TLS handshake failed: {}", protocol_name, e);
-                                            let _ = status_tx_clone.send(format!(
-                                                "[ERROR] {} TLS handshake failed: {}",
-                                                protocol_name, e
-                                            ));
-                                            Err(Box::new(e))
-                                        }
+                        // Tracked, not detached: stop_server must abort this connection too.
+                        // A detached one kept reading, answering and calling the model on a
+                        // server the operator had stopped.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // connections rather than accepts.
+                                let _permit = permit;
+
+                                // First-byte bound, before rustls or h2 sees the socket. `peek`
+                                // waits for data without consuming it, so the ClientHello or the
+                                // connection preface is still there for them afterwards.
+                                match tokio::time::timeout(
+                                    bounds.first_byte,
+                                    tcp_stream.peek(&mut [0u8; 1]),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(0)) | Ok(Err(_)) => {
+                                        app_state_clone
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        return;
                                     }
-                                } else {
-                                    // No TLS, use plain TCP (h2c)
-                                    handle_h2_connection(
-                                        tcp_stream,
-                                        connection_id,
-                                        server_id,
-                                        llm_client_clone,
-                                        app_state_clone.clone(),
-                                        status_tx_clone.clone(),
-                                        protocol_clone,
-                                        filter_clone,
-                                    )
-                                    .await
-                                };
+                                    Ok(Ok(_)) => {}
+                                    Err(_) => {
+                                        debug!(
+                                            "{} connection {} sent nothing for {}s; closing \
+                                         before the preface",
+                                            protocol_name,
+                                            connection_id,
+                                            bounds.first_byte.as_secs()
+                                        );
+                                        app_state_clone
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        return;
+                                    }
+                                }
 
-                            if let Err(e) = result {
-                                error!("{} connection error: {}", protocol_name, e);
-                            }
+                                // Perform TLS handshake if TLS is enabled
+                                let result: Result<(), Box<dyn std::error::Error + Send + Sync>> =
+                                    if let Some(acceptor) = tls_acceptor_clone {
+                                        match tokio::time::timeout(
+                                            HANDSHAKE_TIMEOUT,
+                                            acceptor.accept(tcp_stream),
+                                        )
+                                        .await
+                                        .unwrap_or_else(|_| {
+                                            Err(std::io::Error::new(
+                                                std::io::ErrorKind::TimedOut,
+                                                "TLS handshake did not complete in time",
+                                            ))
+                                        }) {
+                                            Ok(tls_stream) => {
+                                                debug!(
+                                                    "{} TLS handshake complete with {}",
+                                                    protocol_name, remote_addr
+                                                );
+                                                let _ = status_tx_clone.send(format!(
+                                                    "[DEBUG] {} TLS handshake complete with {}",
+                                                    protocol_name, remote_addr
+                                                ));
+                                                handle_h2_connection(
+                                                    tls_stream,
+                                                    connection_id,
+                                                    server_id,
+                                                    llm_client_clone,
+                                                    app_state_clone.clone(),
+                                                    status_tx_clone.clone(),
+                                                    protocol_clone,
+                                                    filter_clone,
+                                                    bounds.idle,
+                                                )
+                                                .await
+                                            }
+                                            Err(e) => {
+                                                error!(
+                                                    "{} TLS handshake failed: {}",
+                                                    protocol_name, e
+                                                );
+                                                let _ = status_tx_clone.send(format!(
+                                                    "[ERROR] {} TLS handshake failed: {}",
+                                                    protocol_name, e
+                                                ));
+                                                Err(Box::new(e))
+                                            }
+                                        }
+                                    } else {
+                                        // No TLS, use plain TCP (h2c)
+                                        handle_h2_connection(
+                                            tcp_stream,
+                                            connection_id,
+                                            server_id,
+                                            llm_client_clone,
+                                            app_state_clone.clone(),
+                                            status_tx_clone.clone(),
+                                            protocol_clone,
+                                            filter_clone,
+                                            bounds.idle,
+                                        )
+                                        .await
+                                    };
 
-                            // Mark connection as closed
-                            app_state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_tx_clone.send(format!(
-                                "✗ {} connection {connection_id} closed",
-                                protocol_name
-                            ));
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                if let Err(e) = result {
+                                    error!("{} connection error: {}", protocol_name, e);
+                                }
+
+                                // Mark connection as closed
+                                app_state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_tx_clone.send(format!(
+                                    "✗ {} connection {connection_id} closed",
+                                    protocol_name
+                                ));
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Failed to accept HTTP/2 connection: {}", e);
@@ -214,42 +380,85 @@ async fn handle_h2_connection<T>(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<Http2Protocol>,
     filter: Arc<RequestFilter>,
+    idle_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    // Create h2 connection
-    let mut h2_conn = server::handshake(tcp_stream).await?;
+    // The preface exchange is bounded separately from the first byte: a peer that sent one byte
+    // and stalled has passed the first-byte bound and would otherwise sit here forever.
+    let mut h2_conn =
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, server::handshake(tcp_stream)).await {
+            Ok(conn) => conn?,
+            Err(_) => {
+                debug!(
+                    "HTTP/2 connection {} did not complete the preface in {}s; closing",
+                    connection_id,
+                    HANDSHAKE_TIMEOUT.as_secs()
+                );
+                return Ok(());
+            }
+        };
     debug!("HTTP/2 handshake complete for connection {}", connection_id);
 
-    // Handle incoming requests
-    while let Some(result) = h2_conn.accept().await {
+    // Whether this connection is answering anything. Every stream's task holds it busy for the
+    // whole of its answer, so the idle watchdog below cannot close a connection whose request is
+    // waiting on the model or parked for a human, however long that takes.
+    let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+
+    // Handle incoming requests. `accept` must keep being polled while streams are answered —
+    // it is what drives the connection, including the frames those answers write — so the
+    // deadline is a watchdog racing it rather than a timeout around it.
+    loop {
+        let next = tokio::select! {
+            next = h2_conn.accept() => next,
+            _ = crate::server::accept_bounded::watch_idle(Arc::clone(&activity), idle_timeout) => {
+                debug!(
+                    "HTTP/2 connection {} carried no request for {}s; sending GOAWAY",
+                    connection_id,
+                    idle_timeout.as_secs()
+                );
+                h2_conn.graceful_shutdown();
+                let _ = tokio::time::timeout(GOAWAY_DRAIN_TIMEOUT, async {
+                    while let Some(_stream) = h2_conn.accept().await {}
+                })
+                .await;
+                return Ok(());
+            }
+        };
+        let Some(result) = next else { break };
         let (request, send_response) = result?;
+        activity.touch();
 
         let llm_clone = llm_client.clone();
         let app_state_clone = app_state.clone();
         let status_clone = status_tx.clone();
         let protocol_clone = protocol.clone();
         let filter_clone = filter.clone();
+        let busy = activity.busy();
 
-        // Spawn task for each request (stream)
-        tokio::spawn(async move {
-            if let Err(e) = handle_h2_request(
-                request,
-                send_response,
-                connection_id,
-                server_id,
-                llm_clone,
-                app_state_clone,
-                status_clone,
-                protocol_clone,
-                filter_clone,
-            )
-            .await
-            {
-                error!("Error handling HTTP/2 request: {}", e);
-            }
-        });
+        // One task per stream, tracked so stop_server aborts an answer in progress too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                let _busy = busy;
+                if let Err(e) = handle_h2_request(
+                    request,
+                    send_response,
+                    connection_id,
+                    server_id,
+                    llm_clone,
+                    app_state_clone,
+                    status_clone,
+                    protocol_clone,
+                    filter_clone,
+                )
+                .await
+                {
+                    error!("Error handling HTTP/2 request: {}", e);
+                }
+            })
+            .await;
     }
 
     Ok(())
