@@ -100,7 +100,7 @@ ticked. Numbers are from `scripts/beta_evidence_table.py` and the ratchets, befo
 | Fuzz targets | 17 | 25 |
 | Servers declaring a well-known port | 1 | every socket server with a registered port (ratcheted) |
 | Pre-auth whole-process crashes found and fixed | — | 2 (`redis` RESP nesting, `mongodb` BSON nesting at 2.3 KB) |
-| Real-model eval (llama3.1:8b) | 155/225 = 69% | pending — see `EVAL_RESULTS.md` |
+| Real-model eval (llama3.1:8b, seed 42, 5 runs), the 15 baseline protocols | 155/225 = 69% | **210/225 = 93%** |
 
 What landed, each verified by removing the guard and watching its test fail:
 
@@ -122,6 +122,16 @@ What landed, each verified by removing the guard and watching its test fail:
   memcached, libcoap, pymodbus, FreeRADIUS) — every one of which found a client defect.
 - **New servers, each Beta on a real client:** `dict`, `gemini`, `prometheus`, `docker`,
   `vault`, `beanstalkd`, `zabbix`, `gearman`, `bolt`.
+
+The eval figure combines the committed full run (`EVAL_RESULTS.md`, 241/350 across 25
+protocols) with a targeted `tcp`/`telnet` rerun after `tcp` and `tls` went back to raising their
+connect event only with `send_first`: the full run predates that change and shows `tcp` at
+6/15, the rerun 15/15. Raising the event on every connection was built, measured and kept for
+`telnet` only (every telnet banner case had been 0/5).
+
+The first measurement of the new servers is the next thing to act on: `gemini`, `bolt`,
+`beanstalkd` and `docker` scored 0/15, `zabbix` 3/10, `gearman` 7/10, and `dict`,
+`prometheus` and `vault` 10/15.
 
 Not done, and why:
 
