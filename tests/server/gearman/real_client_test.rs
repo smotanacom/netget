@@ -149,8 +149,29 @@ async fn gearman_priorities_background_failure_and_ping() {
     );
     common::wait_for_log(&mut rx, "background=true", 30).await;
 
-    let (code, out, err) = run("gearman", port, &["--ping"]).await;
-    assert_eq!(code, 0, "ECHO_REQ answered with ECHO_RES: {out}{err}");
+    // `gearman --ping` sends ECHO_REQ. Ping mode arrived after gearmand 1.1.19, which is what
+    // Ubuntu 22.04 (the registry-audit runner) ships, so ask the client itself before relying on
+    // it. Where it is absent the ECHO path is still asserted byte for byte by e2e_test.rs and
+    // connection_bounds_test.rs; only this third-party reading of it is unavailable, and the
+    // line below says so rather than passing silently.
+    let help = std::process::Command::new(require_tool("gearman"))
+        .arg("--help")
+        .output()
+        .expect("run gearman --help");
+    let help = format!(
+        "{}{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    if help.contains("Ping mode") {
+        let (code, out, err) = run("gearman", port, &["--ping"]).await;
+        assert_eq!(code, 0, "ECHO_REQ answered with ECHO_RES: {out}{err}");
+    } else {
+        eprintln!(
+            "NOTE: this gearman client has no ping mode (gearmand <= 1.1.19), so ECHO_REQ is not \
+             read back by a third-party client here; e2e_test.rs asserts the ECHO_RES bytes"
+        );
+    }
 }
 
 #[tokio::test]

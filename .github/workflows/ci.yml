@@ -471,13 +471,18 @@ jobs:
       # oracle FAILS rather than skips without tshark. jammy's tshark 3.6 has the `tls`
       # dissector that check needs; only the Test job's redis case needs >= 4.0 (`resp`).
       # The preseed answers the capture-permission prompt that would otherwise hang the job.
-      - name: install tshark (the pcap oracle in the Gemini evidence)
+      - name: install tshark 4.x (the pcap oracle in the Gemini and Zabbix evidence)
         continue-on-error: true
         run: |
+          # jammy's own tshark is 3.6, which has no `zabbix` dissector (zabbix's evidence runs
+          # the oracle too); the Wireshark stable PPA carries 4.x for jammy.
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
           echo "wireshark-common wireshark-common/install-setuid boolean false" \
             | sudo debconf-set-selections
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
           tshark --version | head -1
+          tshark -G protocols | awk -F'\t' '$3=="zabbix"{f=1} END{if(!f){print "no zabbix dissector in this tshark" > "/dev/stderr"; exit 1}}'
 
       # beanstalkd::real_client_test drives `greenstalk`, a Python beanstalkd client with its
       # own reply parser and YAML reader. PyPI only, like ignition; the import check names a
