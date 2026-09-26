@@ -103,7 +103,6 @@ fn message_too_big_close() -> Message {
 /// keeps the operator's own peer. Declared as the `idle_timeout_secs` startup parameter.
 pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-
 /// Largest number of data-channel events queued behind one in-flight LLM call.
 ///
 /// Each queued event costs its own model round-trip when it is drained, so a peer
