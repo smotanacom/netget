@@ -427,8 +427,10 @@ async fn protocol_docs_describe_the_mcp_surface() {
     client.cancel().await.expect("shutdown");
 }
 
-/// `send_first` must actually reach the protocol: a TCP server started with it
-/// speaks first, and the same server without it does not.
+/// `send_first` must actually reach the protocol. The connect event is raised on every
+/// connection, so a greeting handler greets either way; what `send_first` decides is whether
+/// the greeting is owed - a failed connect event closes a `send_first` server's connection
+/// and leaves any other open.
 #[tokio::test]
 async fn send_first_produces_a_greeting_banner() {
     let client = connect().await;
@@ -475,7 +477,9 @@ async fn send_first_produces_a_greeting_banner() {
         String::from_utf8_lossy(&buf[..n])
     );
 
-    // Control: without send_first the server waits for the client.
+    // Without send_first the connect event is still raised - on every connection - so the
+    // same handler still greets. It used to be raised only for send_first servers, which a
+    // server started from an instruction alone could not set (IMPROVEMENTS item 78).
     let started = call(
         &client,
         "start_server",
@@ -491,13 +495,55 @@ async fn send_first_produces_a_greeting_banner() {
         .await
         .expect("tcp connect");
     let mut buf = vec![0u8; 64];
-    let quiet =
-        tokio::time::timeout(std::time::Duration::from_millis(1500), sock.read(&mut buf)).await;
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), sock.read(&mut buf))
+        .await
+        .expect("the connect event must be raised without send_first")
+        .expect("socket read");
     assert!(
-        quiet.is_err(),
-        "server sent data without send_first: {:?}",
-        quiet.map(|r| r.map(|n| String::from_utf8_lossy(&buf[..n]).to_string()))
+        String::from_utf8_lossy(&buf[..n]).contains("220 banner"),
+        "unexpected greeting: {:?}",
+        String::from_utf8_lossy(&buf[..n])
     );
+
+    // What send_first still changes: the peer is OWED a greeting. A connect event that fails
+    // (a manual rule nobody answers within its 1s timeout fails closed, the same path as a
+    // backend failure) closes a send_first server's connection and leaves any other open.
+    let unanswered = serde_json::json!([{
+        "event_pattern": "tcp_connection_opened",
+        "handler": {"type": "manual", "timeout_secs": 1}
+    }]);
+    for send_first in [true, false] {
+        let started = call(
+            &client,
+            "start_server",
+            serde_json::json!({
+                "protocol": "tcp",
+                "port": 0,
+                "send_first": send_first,
+                "event_handlers": unanswered,
+            }),
+        )
+        .await;
+        let port = parse_number_after(&text_of(&started), "listening on 127.0.0.1:") as u16;
+        let mut sock = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("tcp connect");
+        let mut buf = vec![0u8; 64];
+        let read =
+            tokio::time::timeout(std::time::Duration::from_secs(5), sock.read(&mut buf)).await;
+        if send_first {
+            assert!(
+                matches!(read, Ok(Ok(0))),
+                "a send_first server whose greeting failed must close (EOF), got {read:?}"
+            );
+        } else {
+            assert!(
+                read.is_err(),
+                "without send_first a failed connect event must leave the connection open and \
+                 quiet, got {read:?}"
+            );
+        }
+    }
 
     client.cancel().await.expect("shutdown");
 }

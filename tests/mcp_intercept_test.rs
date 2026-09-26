@@ -81,6 +81,9 @@ async fn start_manual_tcp_server(client: &Client) -> (u64, u16) {
             "protocol": "tcp",
             "port": 0,
             "event_handlers": [
+                // The connect event every connection raises is answered with nothing, as a
+                // dashboard-created server does, so what parks is the peer's first message.
+                {"event_pattern": "tcp_connection_opened", "handler": {"type": "static", "actions": []}},
                 {"event_pattern": "*", "handler": {"type": "manual", "timeout_secs": 60}}
             ]
         }),

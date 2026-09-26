@@ -80,7 +80,17 @@ fn number_after(text: &str, marker: &str) -> u64 {
 }
 
 /// Start a TCP server with the given handlers; returns (server id, bound port).
+///
+/// `tcp_connection_opened` is raised for every connection and answered before the peer's data
+/// is looked at, so it gets a zero-action static rule ahead of `handlers` - as a
+/// dashboard-created server does - and no event in these tests needs a model.
 async fn start_tcp_server(client: &Client, handlers: serde_json::Value) -> (u64, u16) {
+    let mut routed = vec![serde_json::json!({
+        "event_pattern": "tcp_connection_opened",
+        "handler": {"type": "static", "actions": []}
+    })];
+    routed.extend(handlers.as_array().cloned().unwrap_or_default());
+    let handlers = serde_json::Value::Array(routed);
     let started = call(
         client,
         "start_server",
