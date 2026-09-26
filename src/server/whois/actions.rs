@@ -110,6 +110,7 @@ impl Protocol for WhoisProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(43))
+            .well_known_port(43)
             .implementation("Manual TCP connection handling")
             .llm_control("WHOIS query responses (domain, registrant, contact info)")
             .e2e_testing(

@@ -460,6 +460,7 @@ impl Protocol for ElasticsearchProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(9200)
             .implementation("hyper v1.5 HTTP server with manual ES API")
             .llm_control("Search, index, cluster operations")
             // Neither curl nor the `elasticsearch` crate has ever been pointed at this

@@ -136,6 +136,7 @@ impl Protocol for XmppProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(5222)
             .implementation(
                 "No XML parser: raw bytes are buffered and handed to the model as text, which \
                  decides where stanzas begin and end",

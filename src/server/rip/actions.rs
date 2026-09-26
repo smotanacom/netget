@@ -55,6 +55,7 @@ impl Protocol for RipProtocol {
             // installed in a real routing table.
             .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(520))
+            .well_known_udp_port(520)
             .implementation("Manual RIPv2 packet construction (RFC 2453)")
             .llm_control("Optional: which routes to advertise is a policy decision (LLM); with no policy configured the server stays silent with no LLM call")
             .e2e_testing("Manual RIP packet construction with route entries")

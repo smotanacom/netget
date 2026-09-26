@@ -431,6 +431,7 @@ impl Protocol for OllamaProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            .well_known_port(11434)
             .implementation("hyper with Ollama-compatible HTTP endpoints")
             .llm_control(
                 "Every endpoint is a model decision: /api/generate, /api/chat, /api/tags, \

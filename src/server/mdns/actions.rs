@@ -121,6 +121,7 @@ impl Protocol for MdnsProtocol {
             // Announces on 224.0.0.251:5353 - an unprivileged port, and joining
             // a multicast group needs no elevated privileges.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(5353)
             .implementation("mdns-sd ServiceDaemon (not hickory-proto); binds no listener of its own")
             .llm_control("Service registration at startup only - no query handling, no runtime updates")
             .e2e_testing("tests/server/mdns/test.rs, not #[ignore]d: an mdns-sd ServiceDaemon browses the group and each test asserts its own instance resolves, by name, with its TXT properties intact. Circular evidence, though - mdns-sd is also what this server registers through. An independent peer (dns-sd -L on macOS, avahi-browse -r on Linux) is what a Beta rating needs.")

@@ -598,6 +598,7 @@ impl Protocol for BgpProtocol {
             .state(DevelopmentState::Experimental)
             // BGP's assigned port is TCP 179, below 1024. Any other port needs no privilege.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(179))
+            .well_known_port(179)
             .implementation(
                 "RFC 4271 session over netgauze-bgp-pkt codec; four-octet AS (RFC 6793)",
             )

@@ -58,6 +58,7 @@ impl Protocol for Socks5Protocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(1080)
             .implementation("Manual SOCKS5 protocol (RFC 1928)")
             .llm_control("Auth allow/deny, connection allow/deny, MITM data forward/modify/close")
             // Not "curl --socks5", which this claimed and which no test does. The peer in

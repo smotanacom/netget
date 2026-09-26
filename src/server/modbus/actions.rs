@@ -134,6 +134,7 @@ impl Protocol for ModbusProtocol {
             // enforces it when the port actually requested is privileged, so running on a
             // high port as an unprivileged user still works.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(502))
+            .well_known_port(502)
             .implementation(
                 "Hand-rolled MBAP + PDU codec (src/server/modbus/codec.rs); function codes \
                  1/2/3/4/5/6/15/16 with spec-mandated exception responses",

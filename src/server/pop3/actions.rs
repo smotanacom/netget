@@ -556,6 +556,7 @@ impl Protocol for Pop3Protocol {
             .llm_control("Full control over POP3 responses (+OK, -ERR, STAT, LIST, RETR, etc.)")
             .e2e_testing("Manual TCP client with line-based protocol testing")
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(110))
+            .well_known_port(110)
             .max_inbound_bytes(crate::server::pop3::MAX_COMMAND_BYTES)
             .notes(
                 "No mailbox storage: the model answers STAT/LIST/RETR itself. Plain TCP only - \

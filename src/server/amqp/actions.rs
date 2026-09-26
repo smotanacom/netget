@@ -851,6 +851,7 @@ impl Protocol for AmqpProtocol {
             // covering publish/consume round-trip, refusal, and an unimplemented method closing the channel. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(5672)
             .implementation(
                 "Hand-written AMQP 0-9-1 frame and method codec (lapin is a client library and \
                  is not used by the broker)",

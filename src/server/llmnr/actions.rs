@@ -179,6 +179,7 @@ impl Protocol for LlmnrProtocol {
             .state(DevelopmentState::Experimental)
             // Port 5355 is unprivileged and joining a multicast group needs no elevation.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(5355)
             .implementation(
                 "hickory-proto for the DNS message format; UDP on 5355 plus an optional TCP \
                  listener on the same port. The LLMNR C and T header bits are read and written \

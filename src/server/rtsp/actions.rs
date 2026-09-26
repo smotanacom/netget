@@ -104,6 +104,7 @@ impl Protocol for RtspProtocol {
             // Answers on failure: 503 with Retry-After when overloaded, 500 otherwise.
             .answers_on_failure()
             .state(DevelopmentState::Beta)
+            .well_known_port(554)
             .implementation(
                 "Manual RFC 2326 control server over TCP; SETUP allocates a real RTP UDP socket and \
                  PLAY streams G.711 via the shared rtp media engine",

@@ -195,6 +195,21 @@ impl FormModel {
         model
     }
 
+    /// Say on the port field where its pre-filled value came from: the well-known port, or
+    /// why it is not the well-known port ("well-known port 53 needs root; …").
+    pub fn note_default_port(&mut self, default: &crate::protocol::default_port::DefaultPort) {
+        if let Some(port) = self
+            .fields
+            .iter_mut()
+            .find(|f| f.target == FieldTarget::Port)
+        {
+            port.help = format!(
+                "TCP/UDP port to bind. 0 asks the OS for a free one. Default: {}.",
+                default.describe()
+            );
+        }
+    }
+
     /// Build an edit-form pre-filled from a live instance.
     pub fn for_edit_server(row: &crate::tui::projection::ServerRow) -> Self {
         let mut fields = Vec::new();

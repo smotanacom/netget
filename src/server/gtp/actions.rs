@@ -334,6 +334,7 @@ impl Protocol for GtpProtocol {
             // 2123 and 2152 are both above 1023. Declaring PrivilegedPort here could never
             // fire and would read as protection that is dead code (the svn/3690 mistake).
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(2123)
             .implementation(
                 "Hand-rolled GTPv1-C/GTPv1-U (TS 29.060) and GTPv2-C (TS 29.274) codec in \
                  src/server/gtp/codec.rs: the E/S/PN all-or-nothing optional block, extension \

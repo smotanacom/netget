@@ -90,6 +90,7 @@ impl Protocol for QuicProtocol {
             // QUIC's default port is UDP 443; the preflight check only fires
             // when the requested port is actually < 1024.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(443))
+            .well_known_udp_port(443)
             .implementation("quinn v0.11 raw QUIC streams with TLS 1.3 (no HTTP/3 framing layer)")
             .llm_control(
                 "Full stream control - every byte sent and received on bidirectional streams. \

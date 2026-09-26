@@ -97,6 +97,7 @@ impl Protocol for GopherProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(70))
+            .well_known_port(70)
             .implementation(
                 "Hand-rolled RFC 1436 over a plain tokio TCP loop; no library. One selector \
                  line in, one menu or document out, then the server closes - which is what \

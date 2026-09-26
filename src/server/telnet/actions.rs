@@ -133,6 +133,7 @@ impl Protocol for TelnetProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(23))
+            .well_known_port(23)
             .implementation(
                 "Line-based text over TCP. IAC sequences are stripped from the stream but not \
                  answered; lines are capped at 8 KiB.",

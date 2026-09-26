@@ -254,6 +254,7 @@ impl Protocol for FtpProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(21))
+            .well_known_port(21)
             .implementation("Manual line-based parsing with tokio")
             .llm_control("All FTP replies on the control connection")
             .e2e_testing("raw TCP client (nc); real FTP clients cannot transfer files")

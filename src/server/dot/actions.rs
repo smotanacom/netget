@@ -104,6 +104,7 @@ impl Protocol for DotProtocol {
             .state(DevelopmentState::Beta)
             // RFC 7858 assigns DoT to TCP/853, which is a privileged port.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(853))
+            .well_known_port(853)
             .implementation("hickory-proto + tokio-rustls; DNS actions and action execution are delegated to the DNS protocol")
             .llm_control("Same as DNS (delegates to DNS protocol)")
             .e2e_testing(

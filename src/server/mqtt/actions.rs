@@ -515,6 +515,7 @@ impl Protocol for MqttProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            .well_known_port(1883)
             .implementation("Hand-written MQTT 3.1.1 control-packet codec (no broker crate)")
             .llm_control(
                 "CONNACK return code, SUBACK granted QoS, PUBACK/PUBREC for QoS>0 publishes, \

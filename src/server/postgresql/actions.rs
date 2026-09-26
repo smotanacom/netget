@@ -85,6 +85,7 @@ impl Protocol for PostgresqlProtocol {
             // Stable additionally wants spec compliance and scripting support reviewed, which
             // has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(5432)
             .implementation("pgwire v0.35 protocol library")
             .llm_control("Query responses (columns, rows, types)")
             .e2e_testing(

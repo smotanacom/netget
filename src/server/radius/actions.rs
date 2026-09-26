@@ -676,6 +676,7 @@ impl Protocol for RadiusProtocol {
             .state(DevelopmentState::Beta)
             // 1812/1813 are above 1023, so PrivilegedPort would be dead code here.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(1812)
             .implementation(
                 "Hand-rolled RFC 2865/2866 codec (src/server/radius/packet.rs) over a tokio \
                  UdpSocket. Implements the Response Authenticator MD5, the Accounting-Request \

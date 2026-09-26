@@ -98,6 +98,7 @@ impl Protocol for DictProtocol {
             .state(DevelopmentState::Beta)
             // 2628 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(2628)
             .implementation(
                 "Hand-written RFC 2229 line protocol over tokio TCP: 220 banner with msg-id, \
                  RFC 2229 parameter quoting, dot-stuffed text blocks and OPTION MIME rendered \

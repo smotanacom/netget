@@ -756,6 +756,7 @@ impl Protocol for VncProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(5900)
             // ClientCutText is the one client message a peer sizes; its u32 length is refused
             // against this before the buffer is allocated. Tested in
             // tests/server/vnc/inbound_limit_test.rs.

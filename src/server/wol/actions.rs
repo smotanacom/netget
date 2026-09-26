@@ -123,6 +123,7 @@ impl Protocol for WolProtocol {
             // Port 9 really is below 1024, so this preflight really fires. It is checked
             // against the requested port, so a test on a high port needs no privileges.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(9))
+            .well_known_udp_port(9)
             .implementation(
                 "Hand-written magic packet decoder (no dependency): scans the datagram for \
                  6x0xFF followed by the same MAC 16 times, at any offset, with an optional \

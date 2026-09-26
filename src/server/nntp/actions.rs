@@ -258,6 +258,7 @@ impl Protocol for NntpProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(119)
             .implementation("Manual line-based NNTP parsing (RFC 3977)")
             .llm_control("All NNTP commands (LIST, GROUP, ARTICLE, POST)")
             .e2e_testing("Raw TCP NNTP client")

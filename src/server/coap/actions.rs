@@ -100,6 +100,7 @@ impl Protocol for CoapProtocol {
             .state(DevelopmentState::Stable)
             // 5683 is above 1023; declaring PrivilegedPort here could never fire.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(5683)
             .implementation(
                 "Hand-rolled RFC 7252 codec (src/server/coap/codec.rs): 4-byte header, \
                  CON/NON/ACK/RST, tokens, option delta/length with both extension forms, \

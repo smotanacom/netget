@@ -30,7 +30,11 @@ in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.
   at the foot of a server's peers. Nothing is selected or drilled into: ↑/↓ walk every row,
   ←/→ walk a row's buttons (and fold / unfold a section), Enter acts, letters act on the card
   under the cursor. One `+ new server or client` row at the foot opens a picker listing
-  both kinds together.
+  both kinds together. A server entry names the port it will start on — its **well-known
+  port** ("starts on well-known port 6379"), or why not ("well-known port 53 needs root;
+  starting on an OS-assigned port", "… is in use; …") — resolved by `protocol::default_port`
+  when the picker opens and again on Enter, and the create form's `port` field is pre-filled
+  with that number and says where it came from.
 - **Right column is one stream.** Machine events derived from snapshot diffs (instances
   starting, peers connecting, every request with its answer, questions parked for you —
   Enter opens the thing a line names), the `[LEVEL]` log lines, and the conversation (what
@@ -797,6 +801,20 @@ port below 1024. Two failure modes to avoid:
 
 - **A `PrivilegedPort` above 1023 can never fire.** `svn` declared `PrivilegedPort(3690)`, which
   read as protection and was dead code. Declare `None` if the default port is unprivileged.
+
+**The port itself is `well_known_port`, not `PrivilegedPort`.** Every socket server declares
+`.well_known_port(n)` / `.well_known_udp_port(n)` / `.well_known_sctp_port(n)` in `metadata()` —
+IANA's number, or where IANA has none the default the protocol's own specification or reference
+implementation documents (Elasticsearch 9200, `hg serve` 8000), never 8080 standing in for HTTP.
+It is what a server starts on when the caller names no port (picker, create form, `ServerForm`,
+MCP `start_server`, `open_server`, `--server`), through one function,
+`protocol::default_port::default_port_for_server`: 1024 and above as is, below 1024 only when
+`can_bind_privileged_ports`, and a port already held on the bind address falls back to an
+OS-assigned one — each fallback said out loud. **An explicit port, `0` included, is never
+replaced.** `tests/well_known_port_declaration_test.rs` requires every server to declare one or
+sit in its `NO_WELL_KNOWN_PORT` list with the reason (link layer, devices, pipes, the generic
+`tcp`/`udp`, and application protocols carried on plain HTTP), and requires every
+`PrivilegedPort(n)` to equal the declared port and the transport to match `stack_name()`.
 - **A test can start an entirely different protocol and still pass.** `ospf`'s three e2e
   tests pass `"base_stack": "UDP"`, which `open_server` renames to `protocol` — so what
   starts is the **generic UDP server**, not `src/server/ospf/`. The mocked event is
@@ -853,8 +871,8 @@ some configurations need is expressed with `startup_dependencies(startup_params)
    the accept-loop `JoinHandle` via `AppState::register_server_task()` (required for
    `stop_server` to actually release the socket)
 2. `src/server/<protocol>/actions.rs` — implement `ProtocolActions`: `metadata()` (state +
-   privilege), `get_startup_parameters()`, async/sync actions, `get_event_types()`,
-   `execute_action()`
+   privilege + `well_known_port`), `get_startup_parameters()`, async/sync actions,
+   `get_event_types()`, `execute_action()`
 3. `src/server/<protocol>/CLAUDE.md` — implementation notes, library choice, limitations
 4. `src/server/mod.rs` — feature-gated `pub mod`
 5. `src/protocol/server_registry.rs` — feature-gated `register()`

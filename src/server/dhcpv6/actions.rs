@@ -585,7 +585,12 @@ impl Protocol for Dhcpv6Protocol {
         // DHCPv6 has no IPv4 form at all, so the default host is an IPv6 one. Loopback by
         // default like every other protocol here; pass host "::" to serve a real link, which
         // is also the only case where the multicast join below can succeed.
-        Some(crate::protocol::BindingDefaults::port_based("::1", 547))
+        //
+        // The port here is 0 because the default port is not this binding's to decide:
+        // `metadata()` declares the well-known 547, and `protocol::default_port` takes it when
+        // this process can bind a privileged port and falls back to an OS-assigned one when it
+        // cannot, instead of refusing to start.
+        Some(crate::protocol::BindingDefaults::port_based("::1", 0))
     }
 
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
@@ -653,6 +658,7 @@ impl Protocol for Dhcpv6Protocol {
             // which is the codec this server encodes with.
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(547))
+            .well_known_udp_port(547)
             .implementation("dhcproto v0.12 v6 module for encode/decode; DUIDs hand-encoded")
             .llm_control(
                 "Every reply: addresses, prefixes, lifetimes, DNS, search list, status code",

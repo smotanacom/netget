@@ -525,6 +525,7 @@ impl Protocol for OciRegistryProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(5000)
             .implementation(
                 "hyper HTTP/1.1 server implementing the OCI Distribution Spec v1.1 pull path: \
                  GET/HEAD /v2/, /v2/_catalog, /v2/{name}/tags/list, /v2/{name}/manifests/{ref} \

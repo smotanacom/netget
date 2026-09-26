@@ -164,6 +164,7 @@ impl Protocol for ProxyProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(8080)
             .implementation("Manual HTTP/1.1 with rcgen v0.14 + rustls")
             .llm_control("Request pass/block/modify, response pass/block/modify (MITM only), HTTPS allow/block")
             .e2e_testing("reqwest configured as a real proxy client against local target servers (tests/server/proxy/test.rs), plus mocked-LLM startup and MITM scenarios (tests/server/proxy/e2e_test.rs). No curl and no browser has been run against it.")

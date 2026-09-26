@@ -299,6 +299,7 @@ impl Protocol for LdapProtocol {
             // preflight check in server_startup.rs should fire rather than letting the bind
             // fail later with a bare EPERM.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(389))
+            .well_known_port(389)
             .implementation("Manual ASN.1 BER encoding/decoding, no LDAP crate")
             .llm_control("Bind decisions, search results, add/modify/delete outcomes")
             .e2e_testing(

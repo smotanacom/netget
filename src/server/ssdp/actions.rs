@@ -636,6 +636,7 @@ impl Protocol for SsdpProtocol {
             // 1900 is above 1023, so PrivilegedPort would be dead code — the
             // svn/PrivilegedPort(3690) mistake.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(1900)
             .implementation(
                 "Hand-rolled HTTPU codec (src/server/ssdp/message.rs) over a tokio \
                  UdpSocket. Parses M-SEARCH and NOTIFY, renders the UDA 1.1 §1.3.3 response \

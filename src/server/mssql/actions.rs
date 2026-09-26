@@ -82,6 +82,7 @@ impl Protocol for MssqlProtocol {
             // covering login and queries driven by a real TDS client. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(1433)
             .implementation("Manual TDS 7.4 implementation (pre-login, login, SQL batch, RPC)")
             .llm_control("Query responses (result sets, errors, completion)")
             .e2e_testing("tiberius client crate")

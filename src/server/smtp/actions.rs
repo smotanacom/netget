@@ -227,6 +227,7 @@ impl Protocol for SmtpProtocol {
             .llm_control("All SMTP commands + responses")
             .e2e_testing("Raw TCP client driving the SMTP command sequence")
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(25))
+            .well_known_port(25)
             .notes(
                 "Accepts mail but stores nothing - the model answers every command. No AUTH, no \
                  STARTTLS, no PIPELINING. Every DATA body line costs one model call unless an \

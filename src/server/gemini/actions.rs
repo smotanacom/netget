@@ -106,6 +106,7 @@ impl Protocol for GeminiProtocol {
             .state(DevelopmentState::Beta)
             // 1965 is unprivileged.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(1965)
             .implementation(
                 "tokio-rustls TLS 1.2/1.3 with an rcgen self-signed certificate (or \
                  cert_path/key_path); hand-written request validation, response header and \

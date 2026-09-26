@@ -317,6 +317,7 @@ impl Protocol for SparkProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(4040)
             .implementation("hyper v1 HTTP/1.1 server, manual Spark monitoring REST arrays")
             .llm_control("Applications, jobs, stages and executors invented by the LLM")
             .e2e_testing(

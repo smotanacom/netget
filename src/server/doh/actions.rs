@@ -123,6 +123,7 @@ impl Protocol for DohProtocol {
             .state(DevelopmentState::Beta)
             // DoH is normally served on TCP/443, which is a privileged port.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(443))
+            .well_known_port(443)
             .implementation("hickory-proto + hyper + tokio-rustls; DNS actions and action execution are delegated to the DNS protocol")
             .llm_control("Same as DNS (delegates to DNS protocol)")
             .e2e_testing(

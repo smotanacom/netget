@@ -131,13 +131,30 @@ async fn handle_picker_key(app: &mut DashboardApp, key: KeyEvent, state: &AppSta
             let section = entry.kind;
             let protocol = entry.name.clone();
             let remote = prefill_remote.clone();
-            let default_port = if entry.has_binding_defaults {
-                entry.default_port
+
+            // Resolved again rather than taken from the entry: the picker was built when it
+            // opened, and whether the well-known port is free is a question about now.
+            let default_port = if section == crate::tui::app::Section::Servers {
+                let caps = state.get_system_capabilities().await;
+                crate::protocol::server_registry::registry()
+                    .resolve(&protocol)
+                    .ok()
+                    .and_then(|p| {
+                        crate::protocol::default_port::default_port_for_server(
+                            p.as_ref(),
+                            None,
+                            &caps,
+                        )
+                    })
             } else {
                 None
             };
 
-            let mut model = FormModel::for_create(section, &protocol, default_port);
+            let mut model =
+                FormModel::for_create(section, &protocol, default_port.as_ref().map(|d| d.port));
+            if let Some(default) = &default_port {
+                model.note_default_port(default);
+            }
             if let Some(remote) = remote {
                 model.set_field_value(&FieldTarget::RemoteAddr, remote);
             }
@@ -158,7 +175,13 @@ async fn handle_picker_key(app: &mut DashboardApp, key: KeyEvent, state: &AppSta
                 return Outcome::Continue;
             }
 
-            app.push_system(format!("Starting {protocol} on defaults…"));
+            match &default_port {
+                Some(default) => app.push_system(format!(
+                    "Starting {protocol} on defaults ({})…",
+                    default.describe()
+                )),
+                None => app.push_system(format!("Starting {protocol} on defaults…")),
+            }
             let llm = app.llm_client.clone();
             let status_tx = app.status_tx.clone();
             let ui_tx = app.ui_tx.clone();

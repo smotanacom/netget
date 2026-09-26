@@ -133,7 +133,10 @@ fn default_all() -> Option<String> {
 pub struct StartServerParams {
     /// Protocol name. Use list_protocols tool to see all available protocols.
     pub protocol: String,
-    /// Port to listen on (0 for OS-assigned)
+    /// Port to listen on. Omit it for the protocol's well-known port (6379 for redis, 53 for
+    /// dns); when that needs root this process lacks, or is already in use, the server starts
+    /// on an OS-assigned port and the result says why. Pass 0 for an OS-assigned port. An
+    /// explicit port, 0 included, is always used as given.
     #[serde(default, deserialize_with = "deserialize_option_u16_flexible")]
     pub port: Option<u16>,
     /// Natural language instruction for the LLM that handles each request.

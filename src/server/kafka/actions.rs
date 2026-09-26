@@ -590,6 +590,7 @@ impl Protocol for KafkaProtocol {
             // against it. Not Stable: that is one client, Stable wants two, and consumer
             // groups do not work at all (see notes).
             .state(DevelopmentState::Beta)
+            .well_known_port(9092)
             .implementation(
                 "kafka-protocol v0.14 wire format. Implements ApiVersions v0-3 (answered by Rust), \
                  Metadata v0-8, Produce v0-8, Fetch v0-11, OffsetCommit v0-7",

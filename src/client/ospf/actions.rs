@@ -506,6 +506,9 @@ impl Protocol for OspfClientProtocol {
             // socket buffer and accumulates nothing across reads, so there is no peer-chosen
             // length to declare.
             max_inbound_bytes: None,
+            // A client listens on nothing, so it has no port of its own to declare.
+            well_known_port: None,
+            well_known_transport: PortTransport::Tcp,
         }
     }
     fn description(&self) -> &'static str {

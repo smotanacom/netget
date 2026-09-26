@@ -113,6 +113,7 @@ impl Protocol for RedisProtocol {
             // Stable additionally wants spec compliance and scripting support reviewed, which
             // has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(6379)
             .implementation("redis-protocol v6.0 (RESP2 parsing), manual RESP2 encoding")
             .llm_control("All Redis commands (GET, SET, INCR, etc.)")
             .e2e_testing(

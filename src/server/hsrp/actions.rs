@@ -167,6 +167,7 @@ impl Protocol for HsrpProtocol {
             // unlike the rest of the L2/routing tier this protocol really does run - and really
             // is exercised - in an unprivileged test.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(1985)
             .implementation(
                 "Hand-written codec for both wire formats (src/server/hsrp/codec.rs), no \
                  third-party HSRP crate exists. HSRPv1 is the flat 20-byte RFC 2281 packet; \

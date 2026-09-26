@@ -352,6 +352,7 @@ impl Protocol for EtcdProtocol {
             // the `mysql`/mysql_async shape -- one lenient client agreeing with one bug -- no
             // longer applies.
             .state(DevelopmentState::Beta)
+            .well_known_port(2379)
             .implementation(
                 "hyper HTTP/2 + prost, hand-routed gRPC; etcd protobuf schemas compiled by \
                  build.rs. tonic is a dependency but this server does not use it.",
