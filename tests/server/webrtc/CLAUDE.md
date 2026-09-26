@@ -55,6 +55,17 @@ offer whose SDP does not parse, and an offer with a whitespace-only `peer_id`. E
 produce an `error` frame; the socket must stay usable throughout; the server must not log a
 panic.
 
+### 5. `inbound_limit_test.rs` — the declared `max_inbound_bytes`
+
+In-process on `tests/helpers/inbound_limit.rs`, with its hand-written RFC 6455 client (`ws`):
+an `offer` of exactly `SIGNALLING_MAX_MESSAGE_BYTES` (a minimal SDP plus a padding field serde
+ignores) reaches the model; a frame header declaring one byte more, with no payload, is
+answered with a 1009 close and the connection ends, with zero model calls; a fresh
+connection's offer is still put to the model. Verified by removal twice: with the
+`WebSocketConfig` limits set to `None` the server waited for the payload (no close), and
+without the 1009 send the close carried no code. Data-channel messages are bounded inside
+webrtc-rs and are not driven here.
+
 ## Mock pattern
 
 Startup is matched with `.on_instruction_containing("webrtc")` rather than `.on_any()`, so

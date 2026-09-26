@@ -216,10 +216,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "a shared response helper, not a protocol: no impl Protocol, no registry entry",
     ),
     (
-        "webrtc",
-        "SCTP framing is owned by webrtc-rs; NetGet's own bound is underived",
-    ),
-    (
         "wireguard",
         "orchestrates defguard_wireguard_rs; NetGet reads no WireGuard bytes itself",
     ),

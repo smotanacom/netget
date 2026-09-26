@@ -172,6 +172,18 @@ Everything a peer can send is validated before use, and nothing on this path pan
 - SDP that does not unmarshal, or whose type is not `offer` → `error` frame
 - more peers than `max_peers` → `rejected` frame
 - binary or ping/pong frames → refused or ignored, never parsed as signalling
+- a signalling message over `SIGNALLING_MAX_MESSAGE_BYTES` (256 KiB) → WebSocket close with
+  code 1009 (Message Too Big) and the connection ends, logged
+  `decision=fail_closed_message_too_large`. tungstenite refuses on the length the **frame
+  header** declares, before the payload is read.
+
+That 256 KiB is the declared `max_inbound_bytes`, because it is the largest single message
+NetGet itself buffers from a peer. The data path is bounded lower, inside webrtc-rs:
+data-channel messages are read into a fixed 65 535-byte buffer (a larger one closes the
+channel), and webrtc-sctp drops DATA once its 1 MiB receive window is full. The stack name says
+UDP, so the generic `bound + 1` probe skips this server;
+`tests/server/webrtc/inbound_limit_test.rs` drives the signalling limit with a hand-written
+RFC 6455 client instead.
 
 `test_webrtc_malformed_signalling_is_rejected_without_panic` exercises these and asserts the
 server did not panic.
