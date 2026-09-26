@@ -27,10 +27,11 @@ use super::common::{self, dictionary_handler};
 use crate::server::helpers::{start_netget_server, E2EResult, NetGetConfig};
 use std::time::Duration;
 
-/// Locate `dict(1)`, or fail saying why a skip would be worse.
-fn require_dict() -> String {
+/// Locate a binary, or fail saying why a skip would be worse. Named `require_tool("…")` so
+/// `scripts/beta_evidence_table.py` can see which third-party client this file drives.
+fn require_tool(name: &str) -> String {
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let candidate = std::path::Path::new(prefix).join("dict");
+        let candidate = std::path::Path::new(prefix).join(name);
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
@@ -38,14 +39,14 @@ fn require_dict() -> String {
     if let Ok(path) = std::env::var("PATH") {
         if let Some(found) = path
             .split(':')
-            .map(|dir| std::path::Path::new(dir).join("dict"))
+            .map(|dir| std::path::Path::new(dir).join(name))
             .find(|candidate| candidate.exists())
         {
             return found.to_string_lossy().into_owned();
         }
     }
     panic!(
-        "`dict` not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin and $PATH). \
+        "`{name}` not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin and $PATH). \
          These tests drive the dictd project's own dict(1) client against NetGet's DICT \
          server, and that is the only independent check that our banner, status lines, \
          quoting and dot-stuffed text blocks are acceptable to something we did not write. \
@@ -57,7 +58,7 @@ fn require_dict() -> String {
 
 /// Run `dict -h 127.0.0.1 -p <port> <args>`; returns (exit code, stdout, stderr).
 async fn run_dict(port: u16, args: &[&str]) -> (i32, String, String) {
-    let dict = require_dict();
+    let dict = require_tool("dict");
     let mut command = tokio::process::Command::new(&dict);
     command
         .arg("-h")
@@ -236,7 +237,7 @@ async fn dict_reports_no_definitions_for_an_unknown_word() {
 /// word echoed back from the event, and dict prints it.
 #[tokio::test]
 async fn dict_prints_a_definition_the_model_wrote() -> E2EResult<()> {
-    let _ = require_dict();
+    let _ = require_tool("dict");
     let config = NetGetConfig::new("listen on port {AVAILABLE_PORT} via dict. Define any word.")
         .with_log_level("debug")
         .with_mock(|mock| {
