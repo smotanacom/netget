@@ -27,7 +27,7 @@ impl Protocol for TlsProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after TLS handshake (e.g., for greeting banners)".to_string(),
+                    description: "The peer is owed a greeting after the handshake: nothing it sends is read until tls_connection_opened has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. tls_connection_opened is raised for every connection either way.".to_string(),
                     required: false,
                     example: serde_json::json!(false),
                 },
@@ -435,7 +435,11 @@ pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
 pub static TLS_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "tls_connection_opened",
-        "TLS handshake complete, connection established (send initial greeting/banner if needed)",
+        "TLS handshake complete; the client has sent nothing yet. Raised for every \
+         connection. If the instruction asks to greet connecting clients or to speak first, \
+         send it now with send_tls_data. Otherwise answer with no actions at all \
+         ({\"actions\": []}) and wait for the client - do not invent a greeting nobody asked \
+         for.",
         json!({
             "type": "send_tls_data",
             "data": "220 Welcome to secure server\r\n"
@@ -446,6 +450,7 @@ pub static TLS_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         SEND_TLS_DATA_ACTION.clone(),
         CLOSE_THIS_CONNECTION_ACTION.clone(),
     ])
+    .raised_on_every_connection()
     .with_log_template(
         LogTemplate::new()
             .with_info("{client_ip} TLS connected")

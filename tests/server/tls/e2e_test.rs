@@ -274,6 +274,11 @@ async fn test_tls_http_like_server() -> E2EResult<()> {
                 // Mock 2: GET / request. Matched on "GET / HTTP" rather than
                 // "GET /" because rules are tried in order and a bare "GET /"
                 // substring also matches "GET /api" and "GET /unknown".
+                .on_event("tls_connection_opened")
+                // Raised for every connection; this server has nothing to say first.
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(3)
+                .and()
                 .on_event("tls_data_received")
                 .and_event_data_contains("data", "GET / HTTP")
                 .respond_with_actions(serde_json::json!([

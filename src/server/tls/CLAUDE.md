@@ -47,7 +47,7 @@ Standard TLS connection lifecycle:
 
 1. Accept TCP connection on specified port
 2. Perform TLS handshake using self-signed certificate
-3. Emit `tls_connection_opened` event to LLM
+3. Emit `tls_connection_opened` event to LLM — for **every** connection (see below)
 4. Read decrypted application data from TLS stream
 5. Emit `tls_data_received` event to LLM with data
 6. LLM responds with application protocol logic
@@ -97,7 +97,17 @@ If data arrives during LLM processing:
 
 #### `tls_connection_opened`
 
-Triggered when TLS handshake completes successfully.
+Triggered when the TLS handshake completes, for every connection. It used to be raised only for
+`send_first` servers, so a server started from an instruction alone could never greet (the
+same defect as `tcp_connection_opened`, IMPROVEMENTS item 78). The connection is registered
+`Processing` while it is answered, so application data that arrives meanwhile queues behind it;
+`handle_connection_opened` then moves it to `Idle` and processes the queue. With nothing to say
+the model answers with no actions (`decision=model_no_actions`); a backend failure there is
+logged `decision=connect_event_failed` and the session goes on. **`send_first`** means the peer is
+owed a greeting: nothing is read until the event is answered, a silent answer is WARN
+`decision=model_silent`, and a failure closes with close_notify. A peer that leaves before the
+answer abandons the call (`decision=peer_left_before_answer`). A dashboard-created server answers
+the event with a zero-action static rule (it is declared `.raised_on_every_connection()`).
 
 Event parameters: None (just notification)
 
@@ -231,7 +241,7 @@ the connection is not in the map. TLS lost that race almost every time — the h
 from the socket, so application data sent right behind the client's `Finished` is already
 buffered inside rustls and the reader's first `read()` returns it without ever waiting on the
 I/O driver. 15 of 16 clients that wrote at handshake completion had their request dropped with
-no response and no log line. The banner task is now spawned only when `send_first` is set;
+no response and no log line. The connect task no longer registers anything;
 `tests/connection_map_race_test.rs` pins it.
 
 ### Peer handle — `[ message this peer ]` / `[ disconnect this peer ]`
@@ -470,7 +480,8 @@ Implement simple database over TLS:
 
 ## Failure behaviour: close_notify, then EOF
 
-When `call_llm` returns `Err` — on the banner path or the data path — the connection is shut
+When `call_llm` returns `Err` — on the data path, or on the connect event of a `send_first`
+server — the connection is shut
 down rather than reset to Idle in silence. `shutdown()` on the TLS write half emits a real
 **close_notify alert record**, not just a FIN, so the peer's next read returns a clean end of
 stream immediately instead of blocking until its own timeout. The connection is then removed

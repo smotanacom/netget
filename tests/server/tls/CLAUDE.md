@@ -316,3 +316,11 @@ proves `first_byte_timeout_secs` and `idle_timeout_secs` are read rather than me
 a parameter that was ignored would leave the 300-second default in force and the test would time
 out. Each bound was verified by removing it and watching its test fail, and the default was
 verified by putting 60 back and watching the regression test fail.
+
+## The connect event is raised for every connection
+
+`tls_connection_opened` fires for every connection, `send_first` or not, so every mocked test
+here answers it: `test_tls_http_like_server` with a no-action rule expecting three calls (one per
+connection), `queue_limit_test` and `peer_inject_test` with a zero-action static rule ahead of
+their other routing — as a dashboard-created server does. Without it `peer_inject_test`'s `*`
+static answer would be the first bytes the peer reads, ahead of the injected ones.

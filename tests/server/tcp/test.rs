@@ -38,6 +38,11 @@ async fn test_ftp_greeting() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2: TCP data received event (send greeting when client sends CONNECT)
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .and_event_data_contains("data", "CONNECT")
             .respond_with_actions(serde_json::json!([
@@ -116,6 +121,11 @@ async fn test_ftp_user_command() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2: TCP data received event (send 331 response when USER command received)
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([
                 {
@@ -193,6 +203,11 @@ async fn test_ftp_pwd_command() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2: TCP data received event (send 257 response when PWD command received)
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([
                 {
@@ -258,6 +273,11 @@ async fn test_simple_echo() -> E2EResult<()> {
     let server = helpers::start_netget_server(NetGetConfig::new(prompt).with_mock(|mock| {
         mock
             // Mock 1: TCP data received event (echo with ACK prefix) - MUST BE FIRST (most specific)
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([
                 {
@@ -343,6 +363,11 @@ async fn test_custom_response() -> E2EResult<()> {
     let server = helpers::start_netget_server(NetGetConfig::new(prompt).with_mock(|mock| {
         mock
             // Mock 1: TCP data received event (send PONG when PING received) - MUST BE FIRST (most specific)
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([
                 {
@@ -436,6 +461,11 @@ async fn test_wait_for_more_keeps_the_fragment() -> E2EResult<()> {
             .and()
             // ONE rule that branches on the event. Two rules on the same event would be
             // first-match-wins and the second would never fire.
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions_from_event(|e| {
                 let data = e["data"].as_str().unwrap_or("");

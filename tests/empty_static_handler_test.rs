@@ -346,3 +346,96 @@ async fn the_dashboards_client_connect_rule_keeps_the_event_off_the_model() {
          the LLM and form.rs's rule is decoration."
     );
 }
+
+// ============================================================================
+// The server side of the dashboard's routing: connect events
+// ============================================================================
+
+/// Start a TCP server with the given routing, CONNECT without sending anything, and count the
+/// calls the model received. Only `tcp_connection_opened` can fire.
+async fn server_connect_llm_calls(routing: Option<serde_json::Value>, expect_call: bool) -> usize {
+    let mock = MockOllamaServer::start(
+        MockLlmBuilder::new()
+            .on_any()
+            .respond_with_actions(serde_json::json!([]))
+            .expect_at_least(0)
+            .build(),
+    )
+    .await
+    .expect("mock ollama");
+
+    let state = AppState::new_with_options(false, mock.base_url());
+    state
+        .set_llm_client(netget::llm::OllamaClient::new(mock.base_url()))
+        .await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let id = ServerForm {
+        protocol: "tcp".to_string(),
+        port: Some(0),
+        instruction: Some("Answer whatever arrives.".to_string()),
+        event_handlers: routing.map(|r| r.as_array().unwrap().clone()),
+        ..Default::default()
+    }
+    .create(&state, tx)
+    .await
+    .expect("create tcp server");
+    let port = wait_for_port(&state, id).await;
+
+    let _stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let budget = if expect_call {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(5)
+    };
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if expect_call && mock.call_count().await > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let count = mock.call_count().await;
+    let _ = state.remove_server(id).await;
+    count
+}
+
+/// `tcp_connection_opened` is raised for every connection, and a server created at the
+/// dashboard must still pay nothing for it.
+///
+/// The routing is the one `src/tui/modal/form.rs::default_event_handlers` really builds for a
+/// TCP server — called, not inlined — so if the protocol stops declaring its connect event with
+/// `raised_on_every_connection()`, or the dashboard stops reading the marker, the rule vanishes
+/// and this fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_dashboards_server_connect_rule_keeps_the_connect_event_off_the_model() {
+    // === Control: no routing. A bare connection must now reach the model. ===
+    let control = server_connect_llm_calls(None, true).await;
+    assert!(
+        control > 0,
+        "CONTROL FAILED: tcp_connection_opened must be raised for a connection that has sent \
+         nothing, and with no routing it must reach the model. While this is 0 the assertion \
+         below proves nothing."
+    );
+
+    let dashboard_default =
+        netget::tui::modal::form::default_event_handlers(netget::tui::app::Section::Servers, "tcp");
+    let rules = dashboard_default.as_array().expect("an array of rules");
+    assert_eq!(
+        rules.first().map(|r| r["event_pattern"].clone()),
+        Some(serde_json::json!("tcp_connection_opened")),
+        "the dashboard's server routing must answer the connect event ahead of the manual \
+         wildcard: {dashboard_default}"
+    );
+
+    // Without the manual wildcard, only the connect rule stands between the event and the
+    // model, so a zero here is the rule answering, not a park.
+    let connect_rule_only = serde_json::Value::Array(vec![rules[0].clone()]);
+    let with_rule = server_connect_llm_calls(Some(connect_rule_only), false).await;
+    assert_eq!(
+        with_rule, 0,
+        "the dashboard's zero-action tcp_connection_opened rule must answer the connect event \
+         itself; every connection to a dashboard-created server would otherwise cost a model \
+         call"
+    );
+}

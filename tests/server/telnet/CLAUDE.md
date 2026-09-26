@@ -187,13 +187,11 @@ changing it is deliberate.
 
 ### 1. Welcome Message Timing
 
-Tests that expect welcome messages on connection (`test_telnet_prompt`) may not reliably receive them because:
-
-- LLM might not send welcome without trigger message
-- Current implementation doesn't support "send on connect" without client data
-- Tests work around this by sending command first
-
-**Future Enhancement**: Add support for connection-opened events (like TCP's `send_first`).
+`telnet_connection_opened` is raised for every connection, so every mocked test here carries a
+rule answering it with no actions and expecting one call per connection (three in
+`test_telnet_concurrent_connections`). Without it the call reaches the mock unmatched, the mock
+answers 500, and three of those open the LLM circuit breaker — which is how the concurrent test
+first failed when the event started firing.
 
 ### 2. Prompt Validation Not Strict
 

@@ -36,6 +36,11 @@ async fn test_telnet_echo() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2: Echo received message
+            .on_event("telnet_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("telnet_message_received")
             .and_event_data_contains("message", "Hello")
             .respond_with_actions(serde_json::json!([
@@ -134,6 +139,11 @@ async fn test_telnet_prompt() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2: Respond to help command
+            .on_event("telnet_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("telnet_message_received")
             .and_event_data_contains("message", "help")
             .respond_with_actions(serde_json::json!([
@@ -225,6 +235,11 @@ async fn test_telnet_multiple_lines() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2: First line
+            .on_event("telnet_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("telnet_message_received")
             .and_event_data_contains("message", "First line")
             .respond_with_actions(serde_json::json!([
@@ -329,6 +344,11 @@ async fn test_telnet_concurrent_connections() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 2-4: Echo messages from 3 concurrent clients
+            .on_event("telnet_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(3)
+            .and()
             .on_event("telnet_message_received")
             .and_event_data_contains("message", "Client")
             .respond_with_actions(serde_json::json!([

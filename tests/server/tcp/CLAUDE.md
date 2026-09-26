@@ -94,8 +94,8 @@ complexity without significant benefit for these straightforward test cases.
 - **Prompt**: Respond to CONNECT with FTP 220 greeting
 - **Client**: Sends "CONNECT\r\n"
 - **Expected**: Response starts with "220"
-- **Purpose**: Tests LLM's ability to send banner without receiving data first (though test sends CONNECT to trigger
-  response)
+- **Purpose**: Tests the model answering a first line with an FTP-style greeting. The connect event
+  (`tcp_connection_opened`, raised for every connection) is mocked with no actions.
 
 ### 2. FTP USER Command (`test_ftp_user_command`)
 
@@ -137,13 +137,12 @@ complexity without significant benefit for these straightforward test cases.
 
 ## Known Issues
 
-### 1. FTP Greeting Test Workaround
+### 1. Every test mocks the connect event
 
-The FTP protocol typically sends a greeting immediately on connection. However, the test sends "CONNECT" to trigger the
-response. This is a test artifact - in a real FTP server, the `send_first` flag would be used to send the banner without
-waiting for client data.
-
-**Reason**: The test helper doesn't support `send_first` flag configuration, so we work around it by sending a command.
+`tcp_connection_opened` is raised for every connection, so each test here carries a rule answering
+it with no actions and expecting one call per connection. Greeting on connect is covered by
+`tests/examples/tcp_examples_test.rs::example_test_tcp_connection_opened`, which starts the server
+**without** `send_first` and asserts the banner arrives.
 
 ### 2. LLM Response Variability
 

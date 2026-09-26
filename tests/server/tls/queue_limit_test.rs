@@ -121,7 +121,12 @@ fn parked_tls_server(prompt: &'static str) -> NetGetConfig {
                 "port": 0,
                 "base_stack": "TLS",
                 "instruction": "Answer whatever arrives",
+                // The connect event every connection raises is answered with nothing, as the
+                // dashboard does, so the only thing that parks is the first record.
                 "event_handlers": [{
+                    "event_pattern": "tls_connection_opened",
+                    "handler": {"type": "static", "actions": []}
+                }, {
                     "event_pattern": "tls_data_received",
                     "handler": {"type": "manual", "timeout_secs": 300}
                 }]

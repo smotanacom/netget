@@ -133,13 +133,22 @@ fn create_defaults_route_the_connect_event_past_the_human() {
         serde_json::from_str(&raw).expect("default event_handlers is valid JSON")
     };
 
-    // Server: exactly the one manual wildcard, unchanged.
+    // Server: the connect event every connection raises (`tcp_connection_opened`) is answered
+    // with nothing ahead of time, then the manual wildcard. Without the first rule a person at
+    // the dashboard is asked "someone connected — say anything?" for every connection.
     let server_form = FormModel::for_create(Section::Servers, "TCP", None);
     let handlers = read_handlers(&server_form);
     let handlers = handlers.as_array().expect("array");
-    assert_eq!(handlers.len(), 1, "server default is a single rule");
-    assert_eq!(handlers[0]["event_pattern"], "*");
-    assert_eq!(handlers[0]["handler"]["type"], "manual");
+    assert_eq!(
+        handlers.len(),
+        2,
+        "server default is the connect rule, then the manual wildcard"
+    );
+    assert_eq!(handlers[0]["event_pattern"], "tcp_connection_opened");
+    assert_eq!(handlers[0]["handler"]["type"], "static");
+    assert_eq!(handlers[0]["handler"]["actions"], serde_json::json!([]));
+    assert_eq!(handlers[1]["event_pattern"], "*");
+    assert_eq!(handlers[1]["handler"]["type"], "manual");
 
     // Client: connect first (static, zero actions), then the manual wildcard.
     let client_form = FormModel::for_create(Section::Clients, "TCP", None);

@@ -47,6 +47,11 @@ mod tls_client_multi_turn {
                 .and()
                 // One rule, branching on the request: two rules on the same event id
                 // would be first-match-wins and the second would never fire.
+                .on_event("tls_connection_opened")
+                // Raised for every connection; this server has nothing to say first.
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(1)
+                .and()
                 .on_event("tls_data_received")
                 .respond_with_actions_from_event(|event| {
                     let data = event.get("data").and_then(|d| d.as_str()).unwrap_or("");

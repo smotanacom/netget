@@ -377,10 +377,13 @@ impl TlsServer {
                                 // the I/O driver. 15 of 16 clients that wrote at handshake
                                 // completion had their request dropped with no response and no log
                                 // line.
+                                // Registered `Processing`: `tls_connection_opened` is being
+                                // answered, and application data that arrives meanwhile queues
+                                // behind it instead of raising a concurrent model call.
                                 connections_clone.lock().await.insert(
                                     connection_id,
                                     ConnectionData {
-                                        state: ConnectionState::Idle,
+                                        state: ConnectionState::Processing,
                                         queued_data: Vec::new(),
                                         write_half: write_half_arc.clone(),
                                     },
@@ -416,21 +419,36 @@ impl TlsServer {
                                     status_tx_clone.clone(),
                                 );
 
-                                // Send the greeting banner, if this server was asked for one.
-                                if send_first {
+                                // `tls_connection_opened` is raised for EVERY connection, as
+                                // `tcp_connection_opened` is: it used to be raised only for
+                                // `send_first` servers, so a server started from an
+                                // instruction alone could never greet. `send_first` now means
+                                // the peer is owed a greeting and nothing is read until the
+                                // event is answered. See `handle_connection_opened`.
+                                let (opened_tx, opened_rx) = tokio::sync::oneshot::channel::<()>();
+                                // Dropped by the reader on every exit path, which tells the
+                                // connect task its peer is gone.
+                                let (reader_alive_tx, reader_alive_rx) =
+                                    tokio::sync::oneshot::channel::<()>();
+                                {
                                     let llm_client_for_conn = llm_client_clone.clone();
                                     let app_state_for_conn = app_state_clone.clone();
                                     let status_tx_for_conn = status_tx_clone.clone();
                                     let connections_for_conn = connections_clone.clone();
                                     let write_half_for_conn = write_half_arc.clone();
                                     let protocol_for_conn = protocol_clone.clone();
+                                    let opened_busy = activity.busy();
                                     // Tracked, not detached: stop_server must abort this task too.
                                     let task_owner = app_state_clone.clone();
                                     task_owner
                                         .spawn_server_task(server_id, async move {
-                                            Self::send_banner(
+                                            let _opened_busy = opened_busy;
+                                            Self::handle_connection_opened(
                                                 connection_id,
                                                 server_id,
+                                                send_first,
+                                                opened_tx,
+                                                reader_alive_rx,
                                                 llm_client_for_conn,
                                                 app_state_for_conn,
                                                 status_tx_for_conn,
@@ -458,9 +476,19 @@ impl TlsServer {
                                 let task_owner = app_state_clone.clone();
                                 task_owner
                                     .spawn_server_task(server_id, async move {
+                                        let _reader_alive = reader_alive_tx;
                                         let mut buffer = vec![0u8; 8192];
                                         let mut read_half = read_half;
                                         let mut seen_data = false;
+
+                                        // `send_first`: nothing is read until the connect event
+                                        // has been answered. Otherwise reads proceed and queue
+                                        // behind it (the connection starts `Processing`).
+                                        if send_first {
+                                            let _ = opened_rx.await;
+                                        } else {
+                                            drop(opened_rx);
+                                        }
 
                                         loop {
                                             let read_timeout = if seen_data {
@@ -718,13 +746,23 @@ impl TlsServer {
         Ok(local_addr)
     }
 
-    /// Send the greeting banner for a new connection (`send_first` servers only).
+    /// Answer `tls_connection_opened` for a new connection, then release whatever the peer
+    /// sent while it was being answered. The TLS twin of `tcp`'s function of the same name:
     ///
-    /// The connection is already registered by the accept path by the time this runs.
+    /// * `send_first`: the peer is owed a greeting. No bytes is WARN `decision=model_silent`,
+    ///   and a backend failure closes with close_notify (`decision=fail_closed_llm_error_*`).
+    /// * otherwise: no bytes is the ordinary answer (`decision=model_no_actions`), and a
+    ///   backend failure is logged `decision=connect_event_failed` and the session goes on.
+    ///
+    /// `opened` is signalled once the answer is on the wire; a `send_first` reader waits for
+    /// it. `reader_alive` resolves when the reader ends, which abandons the call.
     #[allow(clippy::too_many_arguments)]
-    async fn send_banner(
+    async fn handle_connection_opened(
         connection_id: ConnectionId,
         server_id: crate::state::ServerId,
+        send_first: bool,
+        opened: tokio::sync::oneshot::Sender<()>,
+        reader_alive: tokio::sync::oneshot::Receiver<()>,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -732,149 +770,156 @@ impl TlsServer {
         write_half: Arc<Mutex<tokio::io::WriteHalf<tokio_rustls::server::TlsStream<TcpStream>>>>,
         protocol: Arc<TlsProtocol>,
     ) {
-        {
-            // Create connection opened event
-            let event = Event::new(&TLS_CONNECTION_OPENED_EVENT, serde_json::json!({}));
+        let log = Log::new(Some(&status_tx));
+        let event = Event::new(&TLS_CONNECTION_OPENED_EVENT, serde_json::json!({}));
 
-            // Call LLM
-            match call_llm(
+        let answer = tokio::select! {
+            answer = call_llm(
                 &llm_client,
                 &app_state,
                 server_id,
                 Some(connection_id),
                 &event,
                 protocol.as_ref(),
-            )
-            .await
-            {
-                Ok(execution_result) => {
-                    debug!("LLM TLS banner response received");
+            ) => answer,
+            _ = reader_alive => {
+                log.debug(format!(
+                    "TLS connection {connection_id} closed before its connect event was \
+                     answered: decision=peer_left_before_answer"
+                ));
+                return;
+            }
+        };
 
-                    // Display messages
-                    for msg in execution_result.messages {
-                        let _ = status_tx.send(msg);
-                    }
+        match answer {
+            Ok(execution_result) => {
+                debug!("LLM TLS connect-event response received");
+                for msg in execution_result.messages {
+                    let _ = status_tx.send(msg);
+                }
 
-                    // Handle protocol results (send banner)
-                    let mut acted = false;
-                    for protocol_result in execution_result.protocol_results {
-                        match protocol_result {
-                            ActionResult::Output(output_data) => {
-                                acted = true;
-                                let mut write = write_half.lock().await;
-                                let log = Log::new(Some(&status_tx));
-                                if let Err(e) = write.write_all(&output_data).await {
-                                    log.error(format!("Failed to send banner: {}", e));
-                                } else {
-                                    // Sent-data summary + payload are FileOnly: the
-                                    // send_tls_data action template already reports the send
-                                    // to the TUI.
-                                    if output_data
-                                        .iter()
-                                        .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
-                                    {
-                                        let data_str = String::from_utf8_lossy(&output_data);
-                                        let preview = if data_str.len() > 100 {
-                                            format!("{}...", &data_str[..100])
-                                        } else {
-                                            data_str.to_string()
-                                        };
-                                        log.debug(format!(
-                                            "TLS sent {} bytes to {}: {}",
-                                            output_data.len(),
-                                            connection_id,
-                                            preview
-                                        ));
-                                        log.trace(format!("TLS sent (text): {:?}", data_str));
-                                    } else {
-                                        log.debug(format!(
-                                            "TLS sent {} bytes to {} (binary data)",
-                                            output_data.len(),
-                                            connection_id
-                                        ));
-                                        log.trace(format!(
-                                            "TLS sent (hex): {}",
-                                            hex::encode(&output_data)
-                                        ));
-                                    }
-                                    log.debug(format!("Sent banner to {connection_id}"));
-                                    app_state
-                                        .update_connection_stats(
-                                            server_id,
-                                            connection_id,
-                                            None,
-                                            Some(output_data.len() as u64),
-                                            None,
-                                            Some(1),
-                                        )
-                                        .await;
-                                }
-                            }
-                            ActionResult::CloseConnection => {
-                                acted = true;
-                                connections.lock().await.remove(&connection_id);
-                                if let Err(e) = write_half.lock().await.shutdown().await {
-                                    debug!("TLS shutdown on {} returned: {}", connection_id, e);
-                                }
-                                Log::new(Some(&status_tx)).info(format!(
-                                    "Closed TLS connection {connection_id} after banner"
+                let mut wrote = false;
+                for protocol_result in execution_result.protocol_results {
+                    match protocol_result {
+                        ActionResult::Output(output_data) => {
+                            let mut write = write_half.lock().await;
+                            if let Err(e) = write.write_all(&output_data).await {
+                                log.error(format!("Failed to send greeting: {}", e));
+                            } else {
+                                drop(write);
+                                log.debug(format!(
+                                    "TLS sent {} bytes to {}",
+                                    output_data.len(),
+                                    connection_id
                                 ));
+                                app_state
+                                    .update_connection_stats(
+                                        server_id,
+                                        connection_id,
+                                        None,
+                                        Some(output_data.len() as u64),
+                                        None,
+                                        Some(1),
+                                    )
+                                    .await;
+                                wrote = true;
                             }
-                            _ => {}
                         }
-                    }
-
-                    // The model answering with no banner is a real answer - "say nothing" -
-                    // and is left as silence, but it is not the same as the backend failing,
-                    // and a peer waiting for a greeting that never comes is worth a line.
-                    if !acted {
-                        Log::new(Some(&status_tx)).warn(format!(
-                            "TLS connection {connection_id} decision=model_no_action: model \
-                             produced no banner, nothing sent"
-                        ));
+                        ActionResult::CloseConnection => {
+                            connections.lock().await.remove(&connection_id);
+                            if let Err(e) = write_half.lock().await.shutdown().await {
+                                debug!("TLS shutdown on {} returned: {}", connection_id, e);
+                            }
+                            log.info(format!(
+                                "Closed TLS connection {connection_id} on connect: \
+                                 decision=model_close"
+                            ));
+                            let _ = opened.send(());
+                            return;
+                        }
+                        _ => {}
                     }
                 }
-                Err(e) => {
-                    // A `send_first` server owes the peer a greeting; without one the peer
-                    // waits for a banner that will never come. Close the TLS connection with
-                    // a close_notify alert so it reads EOF instead. (See the data path below
-                    // for why this is close_notify and not a fatal alert.)
-                    // The full error goes to the log and the status stream, which is where
-                    // an operator looks; the peer gets a close_notify alert and nothing else.
-                    let decision = llm_error_decision(&e);
-                    error!(
-                        "TLS connection {} decision={}: LLM call failed generating banner: {:#}",
-                        connection_id, decision, e
-                    );
-                    Log::new(Some(&status_tx)).warn(format!(
-                        "TLS connection {connection_id} decision={decision}: no banner \
-                         generated, closing with close_notify"
+
+                if wrote {
+                    log.debug(format!(
+                        "TLS connection {connection_id} greeted: decision=model_answer"
                     ));
-                    {
-                        let mut write = write_half.lock().await;
-                        if let Err(shutdown_err) = write.shutdown().await {
-                            debug!(
-                                "TLS shutdown on {} returned: {}",
-                                connection_id, shutdown_err
-                            );
-                        }
-                    }
-                    connections.lock().await.remove(&connection_id);
-                    // The reader task is still parked in `read()` and will only notice once
-                    // the peer closes its own side, so retire the peer handle here rather
-                    // than leaving the rail offering a connection this task has already
-                    // ended. Idempotent with the reader's own removal.
-                    app_state
-                        .remove_peer_handle(server_id, connection_id.as_u32())
-                        .await;
-                    app_state
-                        .close_connection_on_server(server_id, connection_id)
-                        .await;
-                    Log::new(Some(&status_tx)).info(format!(
-                        "Closed TLS connection {connection_id} after banner LLM error"
+                } else if send_first {
+                    log.warn(format!(
+                        "TLS connection {connection_id} decision=model_silent: send_first was \
+                         requested but the model produced no greeting"
+                    ));
+                } else {
+                    log.debug(format!(
+                        "TLS connection {connection_id} connect: decision=model_no_actions"
                     ));
                 }
             }
+            Err(e) if send_first => {
+                // A `send_first` server owes the peer a greeting; without one the peer waits
+                // for a banner that will never come. Close with a close_notify alert so it
+                // reads EOF instead. The full error goes to the log only.
+                let decision = llm_error_decision(&e);
+                error!(
+                    "TLS connection {} decision={}: LLM call failed generating greeting: {:#}",
+                    connection_id, decision, e
+                );
+                log.warn(format!(
+                    "TLS connection {connection_id} decision={decision}: no greeting \
+                     generated, closing with close_notify"
+                ));
+                {
+                    let mut write = write_half.lock().await;
+                    if let Err(shutdown_err) = write.shutdown().await {
+                        debug!(
+                            "TLS shutdown on {} returned: {}",
+                            connection_id, shutdown_err
+                        );
+                    }
+                }
+                connections.lock().await.remove(&connection_id);
+                app_state
+                    .remove_peer_handle(server_id, connection_id.as_u32())
+                    .await;
+                app_state
+                    .close_connection_on_server(server_id, connection_id)
+                    .await;
+                let _ = opened.send(());
+                return;
+            }
+            Err(e) => {
+                // Nobody asked this server to speak first, so the peer has been failed by
+                // nothing yet; its own data gets the data path's answer.
+                log.warn(format!(
+                    "TLS connect event for {connection_id} failed: \
+                     decision=connect_event_failed error={e}"
+                ));
+            }
+        }
+
+        let _ = opened.send(());
+
+        let queued = {
+            let mut conns = connections.lock().await;
+            let Some(conn) = conns.get_mut(&connection_id) else {
+                return;
+            };
+            conn.state = ConnectionState::Idle;
+            !conn.queued_data.is_empty()
+        };
+        if queued {
+            Self::handle_data_with_actions(
+                connection_id,
+                server_id,
+                Bytes::new(),
+                llm_client,
+                app_state,
+                status_tx,
+                connections,
+                protocol,
+            )
+            .await;
         }
     }
 

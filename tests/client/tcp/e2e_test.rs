@@ -33,6 +33,11 @@ mod tcp_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives data (tcp_data_received event)
+                    .on_event("tcp_connection_opened")
+                    // Raised for every connection; this server has nothing to say first.
+                    .respond_with_actions(serde_json::json!([]))
+                    .expect_calls(1)
+                    .and()
                     .on_event("tcp_data_received")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -147,6 +152,11 @@ mod tcp_client_tests {
                         .expect_calls(1)
                         .and()
                         // Mock: Server receives data
+                        .on_event("tcp_connection_opened")
+                        // Raised for every connection; this server has nothing to say first.
+                        .respond_with_actions(serde_json::json!([]))
+                        .expect_calls(1)
+                        .and()
                         .on_event("tcp_data_received")
                         .respond_with_actions(serde_json::json!([
                             {

@@ -194,6 +194,11 @@ async fn test_provide_feedback_reaches_the_llm_and_adjusts_the_server() -> E2ERe
             ]))
             .expect_calls(1)
             .and()
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([
                 {"type": "send_tcp_data", "data": "hello\n", "encoding": "utf8"},

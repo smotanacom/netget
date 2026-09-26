@@ -40,6 +40,11 @@ async fn run_exchange(extra_args: &[&str]) -> E2EResult<Vec<(String, serde_json:
                 }]))
                 .expect_calls(1)
                 .and()
+                .on_event("tcp_connection_opened")
+                // Raised for every connection; this server has nothing to say first.
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(1)
+                .and()
                 .on_event("tcp_data_received")
                 .respond_with_actions(serde_json::json!([{
                     "type": "send_tcp_data",

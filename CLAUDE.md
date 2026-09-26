@@ -703,7 +703,11 @@ async actions (user-triggered) and sync actions (network-event-triggered), in
    `<proto>_connected` id the client's registry entry declares), so establishing a connection is
    "answered with nothing" and does not park — several clients handle their connect event inline
    in `connect()`, so parking it would stall creation itself. Everything after the connect
-   handshake still falls through to `*` → manual. Servers keep the single `*` → manual rule.
+   handshake still falls through to `*` → manual. **Servers get the same treatment for the events
+   they raise on every connection** — `EventType::raised_on_every_connection()`, e.g.
+   `tcp_connection_opened`, `telnet_connection_opened` — one zero-action static rule each, then
+   `*` → manual. Those events fire for every connection whether or not `send_first` is set, so
+   without the rule a person would be asked about every connection before its first message.
 4. **LLM** — one model round-trip per event (the fallback when no rule matches)
 
 Scripts and static handlers are the right default for deterministic behavior (echo, canned

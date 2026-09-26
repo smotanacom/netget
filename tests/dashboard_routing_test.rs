@@ -61,13 +61,15 @@ async fn build_a_static_handler_and_hot_apply_it() {
     let snapshot = projection::build_snapshot(&state).await;
     let row = &snapshot.servers[0];
     let default_routing = row.routing.as_ref().expect("interactive default routing");
-    assert_eq!(default_routing.handlers.len(), 1);
+    // The connect event every connection raises is answered with nothing ahead of time;
+    // everything after it waits for the human.
+    assert_eq!(default_routing.handlers.len(), 2);
     assert!(
         matches!(
-            default_routing.handlers[0].handler,
+            default_routing.handlers[1].handler,
             netget::scripting::EventHandlerType::Manual { .. }
         ),
-        "the interactive default is a manual (human-answered) rule"
+        "the interactive default ends in a manual (human-answered) rule"
     );
 
     // Build a static handler through the editor's own model.

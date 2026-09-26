@@ -58,6 +58,15 @@ pub struct EventType {
     /// Log template for this event type
     /// Defines protocol-specific log formats at INFO/DEBUG/TRACE levels
     pub log_template: Option<LogTemplate>,
+
+    /// Raised for every new connection before the peer has sent anything, and answered with
+    /// nothing whenever the instruction does not ask the server to speak first. Set with
+    /// [`EventType::raised_on_every_connection`].
+    ///
+    /// Read by the dashboard (`src/tui/modal/form.rs`): an interactively created server routes
+    /// these to a zero-action static rule ahead of its `*` → manual wildcard, so a human is
+    /// not asked "someone connected — say anything?" for every connection.
+    pub on_every_connection: bool,
 }
 
 impl EventType {
@@ -93,7 +102,16 @@ impl EventType {
             response_example,
             alternative_examples: Vec::new(),
             log_template: None,
+            on_every_connection: false,
         }
+    }
+
+    /// Declare that this is a connect event: raised for every new connection before the peer
+    /// has sent anything, answered with no actions when there is nothing to say first. See
+    /// [`EventType::on_every_connection`].
+    pub fn raised_on_every_connection(mut self) -> Self {
+        self.on_every_connection = true;
+        self
     }
 
     /// Add an action to this event type

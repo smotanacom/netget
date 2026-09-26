@@ -67,7 +67,7 @@ impl Protocol for TelnetProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Set true to raise the telnet_connection_opened event as soon as a client connects, so you can send a login banner or prompt before the client types anything. Left false (the default) the server stays silent until the first line arrives".to_string(),
+                    description: "The peer is owed a greeting: a telnet_connection_opened answer with nothing in it is logged as a missing banner, and a backend failure prints a notice line. telnet_connection_opened is raised for every connection either way, and nothing the client types is read until it has been answered".to_string(),
                     required: false,
                     example: serde_json::json!(true),
                 },
@@ -394,13 +394,15 @@ fn close_connection_action() -> ActionDefinition {
 // Telnet Event Type Constants
 // ============================================================================
 
-/// Raised on connect, but only when the server was started with `send_first: true`.
+/// Raised for every connection, before the first line is read.
 pub static TELNET_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "telnet_connection_opened",
-        "A client opened a Telnet connection and nothing has been sent yet. Raised only when the \
-         server was started with send_first: true - use it to send a login banner or the first \
-         prompt. The client has typed nothing, so there is no message to react to.",
+        "A client opened a Telnet connection and nothing has been sent yet. Raised for every \
+         connection. If the instruction asks to greet connecting clients, show a banner or ask \
+         for a login, send it now. Otherwise answer with no actions at all \
+         ({\"actions\": []}) and wait for the client to type - do not invent a greeting \
+         nobody asked for. The client has typed nothing, so there is no message to react to.",
         json!({
             "type": "send_telnet_message",
             "message": "Welcome to NetGet\r\nlogin: "
@@ -413,6 +415,7 @@ pub static TELNET_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|
         send_telnet_prompt_action(),
         close_connection_action(),
     ])
+    .raised_on_every_connection()
     .with_log_template(
         LogTemplate::new()
             .with_info("Telnet connection opened from {client_ip}")

@@ -34,7 +34,7 @@ impl Protocol for TcpProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after connection (e.g., for FTP/SMTP greeting banners)".to_string(),
+                    description: "The peer is owed a greeting (e.g. an FTP/SMTP-style banner): nothing the peer sends is read until tcp_connection_opened has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. tcp_connection_opened is raised for every connection either way; without this flag the model may answer it with no actions and a failure there is only logged.".to_string(),
                     required: false,
                     example: serde_json::json!(false),
                 },
@@ -449,7 +449,11 @@ pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
 pub static TCP_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "tcp_connection_opened",
-        "New TCP connection established (send initial greeting/banner if needed)",
+        "A client has just connected and has not sent anything yet. Raised for every \
+         connection. If the instruction asks to greet connecting clients or to speak first \
+         (a banner, a prompt), send it now with send_tcp_data. Otherwise answer with no \
+         actions at all ({\"actions\": []}) and wait for the client to speak - do not \
+         invent a greeting nobody asked for.",
         serde_json::json!({
             "type": "send_tcp_data",
             "data": "220 Welcome to server\r\n"
@@ -460,6 +464,7 @@ pub static TCP_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         SEND_TCP_DATA_ACTION.clone(),
         CLOSE_THIS_CONNECTION_ACTION.clone(),
     ])
+    .raised_on_every_connection()
     .with_log_template(
         LogTemplate::new()
             .with_info("TCP connection from {client_ip}:{client_port}")

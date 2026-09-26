@@ -361,10 +361,17 @@ async fn injected_telnet_command_reaches_our_own_server() {
     .await;
 }
 
-/// The dashboard flow: BOTH instances carry the interactive default (`*` →
-/// manual), the human answers the client's parked `telnet_connected` with a
-/// `send_command`, and the server must (a) still list the connection as live
-/// and (b) park the resulting `telnet_message_received` for the human.
+/// The dashboard flow: the server carries the dashboard's own default routing
+/// (its per-connection `telnet_connection_opened` answered with nothing, then
+/// `*` → manual) and the client a plain `*` → manual, so the human answers the
+/// client's parked `telnet_connected` with a `send_command`, and the server must
+/// (a) still list the connection as live and (b) park the resulting
+/// `telnet_message_received` for the human.
+///
+/// The server's routing is the real `default_event_handlers`, not a copy: the
+/// connect event is raised for every connection, and a bare `*` → manual would
+/// park it — holding the line reader, which starts only once it is answered, so
+/// the command would never be read.
 #[cfg(feature = "telnet")]
 #[tokio::test]
 async fn manual_telnet_client_answer_reaches_manual_telnet_server() {
@@ -380,10 +387,14 @@ async fn manual_telnet_client_answer_reaches_manual_telnet_server() {
         })])
     };
 
+    let dashboard_server_routing = netget::tui::modal::form::default_event_handlers(
+        netget::tui::app::Section::Servers,
+        "telnet",
+    );
     let server_id = ServerForm {
         protocol: "telnet".to_string(),
         port: Some(0),
-        event_handlers: manual(),
+        event_handlers: dashboard_server_routing.as_array().cloned(),
         ..Default::default()
     }
     .create(&state, tx.clone())
