@@ -157,6 +157,7 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/server/icmp/e2e_test.rs", 1),
     ("tests/server/igmp/e2e_test.rs", 1),
     ("tests/server/isis/e2e_test.rs", 3),
+    ("tests/server/mqtt/connection_bounds_test.rs", 1), // PINGREQ once a second is the cadence under test
     ("tests/server/openvpn/e2e_test.rs", 1),
     ("tests/server/rip/e2e_test.rs", 3),
     ("tests/server/rtp/e2e_test.rs", 1),
