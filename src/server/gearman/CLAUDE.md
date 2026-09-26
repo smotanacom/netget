@@ -4,7 +4,7 @@ Gearman job server (gearmand 1.1's protocol). The model is the worker for every 
 a client submits a job, NetGet answers `JOB_CREATED` with its own handle, and the model's answer
 becomes the job's progress, partial output and outcome. NetGet writes every byte of framing.
 
-**State**: Experimental (see Maturity). **Privilege**: `None` — the well-known port is 4730.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 4730.
 **Stack**: `ETH>IP>TCP>Gearman`. **Feature**: `gearman` (no dependencies).
 
 ## Library choice
@@ -117,9 +117,18 @@ exchange recorded through a relay, and it is clean.
 
 ## Maturity
 
-Experimental. The evidence for Beta is in place — `tests/server/gearman/real_client_test.rs`
-drives the gearmand project's own `gearman` and `gearadmin` (libgearman, C++; not linked; the
-server uses no Gearman library) and asserts on what they printed and how they exited; the
-Wireshark dissector reads a recorded exchange clean; it is not `#[ignore]`d and fails, never
-skips, without the binaries; CI's `registry-audit` installs Ubuntu's `gearman-tools` and runs it;
-the `gearman_packet` fuzz target has run clean. Promotion is a separate step.
+Beta. Evidence: `tests/server/gearman/real_client_test.rs` drives the gearmand project's own
+`gearman` and `gearadmin` (libgearman, C++; not linked; the server uses no Gearman library) and
+asserts on what they printed and how they exited — a job's data, result and progress, the
+priority each flag chose, exit 1 on failure, a background job, `--ping`, the admin `status`,
+`workers` and `version` with a job in flight, a refused worker, and a result written by a mocked
+model; Wireshark's own `gearman` dissector reads a recorded exchange clean. It is not
+`#[ignore]`d and fails, never skips, without the binaries; CI's `registry-audit` installs
+Ubuntu's `gearman-tools` and runs it. The `gearman_packet` fuzz target has run clean. Promoted
+after the whole suite (28 tests) passed three consecutive runs at `--test-threads=100` and
+`scripts/beta_evidence_table.py --check` stayed green with `gearman` and `gearadmin` as the
+peers.
+
+What Beta does **not** cover, and what Stable would need: `gearman` and `gearadmin` are one
+implementation (libgearman) — a second independent client, such as the Python `gearman` package
+or the Go `mikespook/gearman-go`, is condition 1; workers are refused rather than served.
