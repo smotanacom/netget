@@ -228,6 +228,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
         // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
         "dict" => PLAIN_TCP,
+        // Neo4j's Bolt (TCP 7687) has no dissector in this Wireshark build (4.6.8): `tshark -G
+        // protocols` lists nothing matching bolt, neo4j or packstream. Plain TCP; the chunked
+        // PackStream is binary, so "Follow TCP Stream" in hex is what a capture offers.
+        "bolt" => PLAIN_TCP,
         // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
