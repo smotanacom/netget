@@ -486,12 +486,40 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     mirror would turn these into evidence; the public endpoint never will.
 
   **What is installed on this machine**, so the remaining cost is a number rather than a guess:
-  `nats-server` (already in use), `redis-server` (valkey), `postgres`, `mysqld`, `nginx`, `sshd`,
-  `httpd`, `unbound`, `smbd`, `tor`, `openvpn`, `slapd` (under openldap's `libexec`) and
-  libmemcached's tools. Missing, for the list above: `mosquitto`, `vsftpd`, `memcached`, `etcd`,
-  `mongod`, and a MinIO or LocalStack for the AWS clients. **Nothing was installed** — hard-failing
-  a gate makes that binary a requirement everywhere the suite runs, which is a decision for
-  whoever owns the CI image, not one to take unilaterally.
+  `nats-server` (already in use), `redis-server` (valkey), `mosquitto`, `etcd`, `postgres`,
+  `mysqld`, `nginx`, `sshd`, `httpd`, `unbound`, `smbd`, `tor`, `openvpn`, `slapd` (under
+  openldap's `libexec`) and libmemcached's tools. Missing, for the list above: `vsftpd`,
+  `memcached`, `mongod`, and a MinIO or LocalStack for the AWS clients.
+
+  **Applied again 26 September 2026: `mqtt`, `redis`, `etcd` and `http` are Beta — five Beta
+  clients, 93 Experimental.** The difference from the first pass is that the peers were stood up
+  rather than found: `tests/helpers/real_server.rs` (`RealServer`) spawns a third-party server on
+  a loopback port in a temp dir of its own, waits for its own "listening" log line, kills its
+  process group on drop and **fails naming the brew formula and the Ubuntu package** when the
+  binary is absent. Each client then has `tests/client/<p>/real_server_test.rs`: Mosquitto with
+  `mosquitto_sub`/`mosquitto_pub`, a real `redis-server` read back with `redis-cli`, the official
+  Go `etcd` read back with `etcdctl`, and nginx asserted through its own access log. Every one
+  asserts condition 4 from the server's side of the wire, and every one was checked by mutation
+  — emptying the loop over the model's actions fails it. CI now installs those servers
+  (`registry-audit`, plus `redis-server` and `nginx` in the blocking `test` job, because `redis`
+  and `http` are in `CI_FEATURES` and their real-server tests run there), and
+  `tests/real_client_evidence_is_run_test.rs` scans `tests/client/` as well as `tests/server/`,
+  so a client suite that drives a real server and runs in no CI job fails the build. Before that
+  extension the one Beta client's own evidence, `nats`, ran in no CI job at all.
+
+  Two findings from it are worth carrying to the next client:
+
+  - **A real server finds framing bugs a same-project one agrees with.** The redis client read
+    replies **line by line**, so `GET k` → `$5\r\nhello\r\n` reached the model as two events,
+    `"$5"` and `"hello"`, and it split commands on whitespace, so `SET k "a b"` stored `"a`.
+    NetGet's own Redis server never exposed either: the tests against it asserted only that the
+    model was called. `src/client/redis/resp.rs` now reads one whole RESP2/RESP3 reply per event
+    (depth, declared size and element count bounded — without the depth bound a 40 KB reply
+    aborts the process on a stack overflow) and splits the way `redis-cli` does.
+  - **Match each mocked reply on its parsed content, and put the most specific rule first.** A
+    rule matched on `reply_type` and `value` is what turns "the reply was split" into a failure
+    rather than an extra LLM call; and nginx's echo quoting the previous response back made a
+    looser rule answer both responses until the follow-up depth cap stopped the loop.
 
   **Do not read the four groups above as the list — generate them:**
 
@@ -508,7 +536,10 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   the hand audit and sharpened it: 62 self-served rather than "~60", **zero** protocols in the
   "real peer, evidence runs" group, and `mqtt` alone in "real peer, unreachable". What no scan
   can check is condition 4 — that the client acts on the model's answer — and the script says so
-  instead of implying it passed.
+  instead of implying it passed. It reads a server spawned through `RealServer::builder("<bin>")`
+  as a binary peer, since the helper, not the test file, is what spawns it. Re-derived
+  26 September 2026 after the promotions above: Beta 5, Experimental 93 — 59 self-served, 9
+  wrong peer, 25 with no peer, and none left in either "real peer" group.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (107 of the 158 `src/server/*/actions.rs` the script below walks, re-derived
   16 September 2026). Note the script
