@@ -115,6 +115,10 @@ impl Protocol for WolProtocol {
             // idle sweep is what removes them. Without this flag they accumulate until the
             // server stops.
             .connectionless()
+            // Deliberately silent: Wake-on-LAN has no reply of any kind. A magic packet is a one-way
+            // broadcast, so there is nothing to answer with, and the model is only deciding what the
+            // server does about it.
+            .deliberately_silent()
             .state(DevelopmentState::Experimental)
             // Port 9 really is below 1024, so this preflight really fires. It is checked
             // against the requested port, so a test on a high port needs no privileges.

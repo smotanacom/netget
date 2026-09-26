@@ -71,6 +71,10 @@ constructs a frame, read it very carefully.
 
 ### The fail-closed answer is a frame, not silence
 
+`FailureMode` is `Answers`, declared with `.answers_on_failure()` in `metadata()`. The one
+silent case is EAPOL-Logoff (`silence_is_safe`): 802.1X defines no reply to it, and the port was
+de-authorized before the model was asked, so there is nothing left to deny.
+
 A supplicant that gets nothing retries and eventually times out, which on a real switch port
 is indistinguishable from a broken cable. So every denial is written, with one exception:
 **EAPOL-Logoff**, where the session is destroyed *before* the model is consulted. Ending

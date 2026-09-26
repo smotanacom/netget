@@ -541,6 +541,10 @@ impl Protocol for EapolProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // Answers on failure: an authentication exchange the model could not decide gets
+            // EAP-Failure, which leaves the port unauthorized. EAPOL-Logoff stays silent because
+            // 802.1X defines no reply to it and the port is already de-authorized.
+            .answers_on_failure()
             // libpcap capture/injection, never a SOCK_RAW. RawSockets would refuse to start
             // on a host with /dev/bpf* access but no root — the "don't claim more than you
             // need" rule that ospf got wrong by declaring Root when it wanted CAP_NET_RAW.

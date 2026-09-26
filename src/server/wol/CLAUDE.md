@@ -133,6 +133,10 @@ datagram, so paying for an LLM call on one would be pure cost.
 
 ## Failure behaviour: the log is the only place the silences differ
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 Because there is no reply, **four different outcomes are byte-identical on the wire — all four
 are silence**:
 

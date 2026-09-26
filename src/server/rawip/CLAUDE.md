@@ -150,6 +150,10 @@ slicing — that panicked this codebase on multi-byte UTF-8.
 
 ## LLM failure → silence, and it is not a compromise
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 When the LLM call fails, **nothing goes on the wire**.
 
 This is not "we couldn't think of a good error to send". A generic IP protocol has **no error

@@ -128,6 +128,10 @@ you decide what is interesting; the budget is a ceiling, not a scheduler.
 
 ## Failure is silence, and the log carries the distinction
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 There is no error packet, and there is no `WireFailure` anywhere in this protocol. An LLM
 failure, a refused `send_packet`, an exhausted budget, a full egress queue — every one of them
 drops the packet and writes nothing.

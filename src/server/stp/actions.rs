@@ -618,6 +618,10 @@ impl Protocol for StpProtocol {
             // rule that ospf got wrong by declaring Root when it wanted CAP_NET_RAW.
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .connectionless()
+            // Deliberately silent: STP has no error BPDU. A BPDU asserts a bridge's priority and
+            // its view of the root, and neighbours act on it by re-electing the root or blocking
+            // ports, so a fabricated one reshapes the topology.
+            .deliberately_silent()
             .implementation(
                 "Hand-written IEEE 802.1D-2004 / 802.1w BPDU codec (src/server/stp/codec.rs), \
                  pure and I/O-free, under two transports: real 802.3 LLC frames via libpcap, \

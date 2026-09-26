@@ -95,6 +95,12 @@ user plane, and a GTPv2 datagram arriving on the GTP-U socket is dropped with a 
 
 ## Fail closed
 
+`FailureMode` is `Answers`, declared with `.answers_on_failure()` in `metadata()`: a
+session-management request is answered with a **refusing** cause. Echo Requests and G-PDUs are
+the declared exceptions and stay silent — an Echo Response asserts this node is healthy, and the
+only user-plane reply (Error Indication) asserts a tunnel does not exist, which tears the peer's
+session down.
+
 A subscriber session is network access, so the OAuth2 post-mortem in the root `CLAUDE.md`
 applies at full force. `GtpServer::decide` is where it lives.
 

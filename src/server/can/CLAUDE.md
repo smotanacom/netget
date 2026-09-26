@@ -210,6 +210,10 @@ All sixteen codes are pinned against literals in both directions.
 
 ## LLM failure → silence. There is no alternative here.
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 CAN is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and it is the
 clearest case in the tree because the alternative is actively destructive.
 

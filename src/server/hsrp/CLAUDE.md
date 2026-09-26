@@ -199,6 +199,10 @@ oversight.
 
 ## Fail-closed: an LLM failure produces silence
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 HSRP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and its case is
 one of the strongest in it:
 

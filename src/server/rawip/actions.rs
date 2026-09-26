@@ -285,6 +285,10 @@ impl Protocol for RawIpProtocol {
             // Per-remote bookkeeping entries with no lifecycle, exactly like the UDP and raw
             // servers: nothing ever closes them, so the idle sweep must reap them.
             .connectionless()
+            // Deliberately silent: this server carries an arbitrary IP protocol it does not
+            // understand, so there is no error frame to send - any bytes would be a guess at a
+            // protocol NetGet does not implement, and a guess a peer parses is worse than silence.
+            .deliberately_silent()
             .implementation(
                 "Generic SOCK_RAW listener on one operator-chosen IP protocol number \
                  (startup parameter `protocol_number`, IPv4 or IPv6). Hand-written IPv4 (RFC \

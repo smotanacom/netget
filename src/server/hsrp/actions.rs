@@ -158,6 +158,10 @@ impl Protocol for HsrpProtocol {
             // Every datagram becomes a connection entry that nothing ever closes; the 10-second
             // idle sweep reaps them only for protocols that declare this.
             .connectionless()
+            // Deliberately silent: HSRP has no error message. A hello asserts a router's state and
+            // priority for the virtual gateway, and a fabricated one can win the election and pull
+            // the segment's default route onto this host.
+            .deliberately_silent()
             .state(DevelopmentState::Experimental)
             // Port 1985 is above 1023 and joining a multicast group needs no elevation, so
             // unlike the rest of the L2/routing tier this protocol really does run - and really
