@@ -140,9 +140,12 @@ fn names_in(value: &serde_json::Value, out: &mut Vec<String>) {
 /// own instruction contains is not evidence of copying, so anything appearing in
 /// the instruction is excluded.
 fn copied_example_values(protocol: &str, instruction: &str, log: &[String]) -> Vec<String> {
-    let server = match netget::protocol::server_registry::registry().get(protocol) {
-        Some(s) => s,
-        None => return Vec::new(),
+    // `resolve`, not `get`: the registry is keyed by `protocol_name()` ("SMTP",
+    // "Gopher") and a case names its protocol the way `--server` takes it
+    // ("smtp"), so an exact-key `get` finds nothing and this check never runs.
+    let server = match netget::protocol::server_registry::registry().resolve(protocol) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
     };
     let examples: std::collections::BTreeMap<String, serde_json::Value> = server
         .get_sync_actions()
@@ -158,24 +161,30 @@ fn copied_example_values(protocol: &str, instruction: &str, log: &[String]) -> V
 
     for line in log.iter().filter(|l| l.contains(EXECUTING_ACTION)) {
         let stripped = strip_ansi(line);
-        let action = match first_json_value(&stripped) {
-            Some(v) => v,
-            None => continue,
+        // The executor logs each action with `{:?}`, which for a `serde_json::Value`
+        // is its Debug form — `Object {"type": String("send_x"), "k": String("v")}` —
+        // and not JSON. Read the name out of that form and search the line itself:
+        // a string leaf appears verbatim in both forms. A JSON line still works.
+        let (name, rendered) = match debug_action_type(&stripped) {
+            Some(n) => (n, stripped.to_lowercase()),
+            None => match first_json_value(&stripped) {
+                Some(v) => match v.get("type").and_then(|t| t.as_str()) {
+                    Some(n) => (n.to_string(), v.to_string().to_lowercase()),
+                    None => continue,
+                },
+                None => continue,
+            },
         };
-        let name = match action.get("type").and_then(|t| t.as_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        let example = match examples.get(name) {
+        let example = match examples.get(&name) {
             Some(e) => e,
             None => continue,
         };
 
-        let rendered = action.to_string().to_lowercase();
         for value in string_leaves(example) {
             // Short values are coincidence, not copying: "GET", "127.0.0.1" and
-            // "text/html" are simply the right answer.
-            if value.chars().count() < 10 {
+            // "text/html" are simply the right answer. The example's own `type`
+            // is the action's name, which every use of the action contains.
+            if value.chars().count() < 10 || value == name {
                 continue;
             }
             let value_lc = value.to_lowercase();
@@ -186,6 +195,23 @@ fn copied_example_values(protocol: &str, instruction: &str, log: &[String]) -> V
     }
     hits.dedup();
     hits
+}
+
+/// The action name in an executor line's Debug-formatted action,
+/// `… Executing action 0: Object {"type": String("send_x"), …}`. Only the
+/// top-level `"type"` counts, which is the key right after the first
+/// `Object {` when the model put it first, as it almost always does.
+fn debug_action_type(line: &str) -> Option<String> {
+    const MARKER: &str = "\"type\": String(\"";
+    let object = line.find("Object {")? + "Object {".len();
+    let rest = &line[object..];
+    let start = if rest.starts_with(MARKER) {
+        object + MARKER.len()
+    } else {
+        line.find(MARKER)? + MARKER.len()
+    };
+    let len = line[start..].find('"')?;
+    Some(line[start..start + len].to_string())
 }
 
 /// Every string leaf in a JSON value.
@@ -623,4 +649,33 @@ pub fn classify(
         format!("valid actions executed, but {}", check_error),
         evidence,
     )
+}
+
+/// `copied_example_content` from the line the executor actually writes, for a
+/// case that names its protocol the way `--server` takes it. Both halves of that
+/// were broken at once — a case-sensitive registry lookup and a JSON parse of a
+/// Debug-formatted line — so the diagnosis never fired on any run.
+#[cfg(feature = "smtp")]
+#[test]
+fn copied_example_is_found_in_the_executor_debug_line() {
+    let line = r#"2026-09-26T21:18:45.444061Z DEBUG Executing action 0: Object {"type": String("send_smtp_greeting"), "hostname": String("mail.example.com"), "message": String("ESMTP Service Ready")}"#.to_string();
+    let hits = copied_example_values(
+        "smtp",
+        "Greet every connection with the banner NetGet Eval Mail.",
+        std::slice::from_ref(&line),
+    );
+    assert!(
+        hits.iter().any(|h| h.contains("ESMTP Service Ready")),
+        "the example's greeting text was not recognised as copied: {hits:?}"
+    );
+    // A value the operator asked for is not copying.
+    let hits = copied_example_values(
+        "smtp",
+        "Greet with the banner ESMTP Service Ready from mail.example.com.",
+        &[line],
+    );
+    assert!(
+        hits.is_empty(),
+        "instruction values counted as copied: {hits:?}"
+    );
 }
