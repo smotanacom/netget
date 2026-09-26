@@ -170,10 +170,11 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     section as a list of assertions to test, not as description.
 
   **Nine protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
-  before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql`, `mongodb` and
-  `websocket` have neither a pcap-oracle test nor a fuzz target; `mqtt` and `kafka` have the
-  oracle and no fuzz target. (`redis` was in that last group until `fuzz_targets/resp_frame.rs`
-  landed in September 2026.) A fuzz target with a depth-bomb corpus is the cheaper of the two to
+  before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql` and `websocket` have
+  neither a pcap-oracle test nor a fuzz target; `mongodb` has a fuzz target
+  (`fuzz_targets/bson_document.rs`) and no oracle; `mqtt` and `kafka` have the oracle and no
+  fuzz target. (`redis` was in that last group until `fuzz_targets/resp_frame.rs` landed in
+  September 2026.) A fuzz target with a depth-bomb corpus is the cheaper of the two to
   add. Derive this rather than trusting it — and note that fuzz targets are named after the
   *decoder*, not the protocol, so read each target's `use` lines rather than grepping its name:
 
@@ -1766,6 +1767,13 @@ Read before assuming a subsystem is sound:
   one unauthenticated connection. **A byte cap is not a depth cap.** `src/utils/resp.rs` walks
   the frame iteratively first (depth 32, declared `*N`/`$N` bounded) and follows the decoder's
   grammar exactly, which `fuzz/fuzz_targets/resp_frame.rs` checks differentially.
+
+  **`mongodb` was the eighth, found the same day by asking the same question of its decoder.**
+  `bson` 3.0 converts a raw document recursively with no limit, seven bytes a level, and a
+  **debug** build dies at 284 levels — 2 KB. `src/utils/bson_depth.rs` scans first (depth 64,
+  below MongoDB's own 100 because of that per-level stack cost) and answers MongoDB's own
+  `Overflow` error. **Check the crate, not its reputation**: an official, widely used decoder
+  had the same hole as the hand-written ones.
 
 - **Bound the *declared* size, not the remainder.** NATS's `HPUB` limit was applied to
   `total − header`, leaving `header` unbounded — and `header == total` passes every check with

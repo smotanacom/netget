@@ -109,6 +109,13 @@ a claim about the data that nothing here is in a position to make.
 The connection stays open in all four cases; only `close_this_connection` and a
 malformed wire message end it.
 
+A fifth refusal happens before the model is involved at all: a command document
+nested deeper than 64 levels is answered `{ok: 0, code: 15, errmsg: "BSONObj
+exceeded maximum nested object depth"}` — MongoDB's own `Overflow` code and
+wording, a constant — logged `decision=fail_closed_bson_too_deep`, and the
+connection stays open, because the message was read whole. See [BSON
+nesting](#bson-nesting).
+
 ### Handshake
 
 `hello` and `isMaster` are answered **in Rust**, by `hello_response()`, and never
@@ -158,6 +165,35 @@ stalled peer without truncating a legitimate one; the connection ends with
 `reason: incomplete_message_body`.
 
 The *header* read is bounded separately — see [Connection bounds](#connection-bounds).
+
+### BSON nesting
+
+`bson` 3.0 decodes with no depth limit: `Document::from_reader` converts through
+`TryFrom<&RawDocument> for Document` → `TryFrom<RawBsonRef> for Bson` →
+`TryFrom<RawBson> for Bson`, which calls back into the first for every embedded
+document, array and code-with-scope scope. An embedded document costs the peer
+seven bytes a level, and measured against 3.0.0 a **debug** build overflows a
+2 MiB stack at **284 levels** (2 277 bytes), a release build at 1 220. The first
+`OP_MSG` of an unauthenticated connection went straight to it, so ten kilobytes
+killed the whole process — a `SIGSEGV` on the guard page, not a panic.
+
+`parse_op_msg` now runs `crate::utils::bson_depth::scan_bson_document` on the
+kind-0 section first: an iterative walk, the end offset of each open document in
+a fixed 64-slot array, every element sized exactly as `bson`'s own
+`RawIter::get_next_kvp` sizes it, every length checked against the document that
+contains it. `Complete` is decoded (and only the bytes the scan measured, so
+`bson`'s `reader_to_vec` never reserves `Vec::with_capacity` on a declared length
+the message does not back — it would otherwise reserve 2 GiB for a 26-byte
+message); `TooDeep` gets the reply above; `Malformed` closes the connection with
+`reason: malformed_op_msg`, as an undecodable document always has.
+
+`MAX_BSON_DEPTH` is **64**, not MongoDB's 100-level limit for stored documents.
+A command wraps a document in two more levels, and at ~7.4 KB of stack per level
+in a debug build 102 levels spends ~750 KB of a 2 MiB worker on the decode alone,
+before this server walks the same document recursively three more times
+(relaxed extended JSON for the event, `Debug` in a `trace!`, `Drop`). The cost is
+that a document nested 63 to 100 deep, which real MongoDB would store, is
+refused; no driver-generated command comes near it.
 
 ## Connection bounds
 
@@ -287,6 +323,14 @@ Five cases: find, insert, update, delete, error. All pass.
 
 `peer_inject_test.rs` needs only `mongodb-server` — it speaks raw OP_MSG rather
 than driving the client crate, so it is gated on the server feature alone.
+
+`bson_depth_test.rs`, also raw OP_MSG and server-only: a 10 000-level command
+gets the `Overflow` reply and both the same connection and a fresh one still
+answer `hello`; a command exactly 64 documents deep is answered and 65 is
+refused; a document declaring `i32::MAX` bytes closes the connection. Without
+the scan the test binary aborts with `stack overflow`.
+`fuzz/fuzz_targets/bson_document.rs` drives the scan and `bson` as a pair, with
+a depth-bomb seed.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features mongodb-server,mongodb \

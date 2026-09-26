@@ -18,7 +18,30 @@
 
 - `tests/server/mongodb/e2e_test.rs` - Main E2E tests with mocks
 - `tests/server/mongodb/connection_bounds_test.rs` - the read deadlines, from a raw socket
+- `tests/server/mongodb/bson_depth_test.rs` - a BSON nesting bomb is refused before `bson` decodes it
 - `tests/server/mongodb/CLAUDE.md` - This file (test strategy)
+
+### `bson_depth_test.rs` — the decoder never sees a document it would die on
+
+`bson` 3.0 recurses once per embedded document with no limit, seven bytes a level, and a debug
+build overflows a 2 MiB stack at 284 levels — which aborted the **whole process** from the first
+`OP_MSG` of an unauthenticated connection. `src/utils/bson_depth.rs` walks the document
+iteratively first. Zero LLM calls: raw OP_MSG over a socket, `hello` answered in Rust, a `*`
+static handler answering any command that gets through with an empty `find_response`, and
+`instruction: Some(String::new())`. Gated on `mongodb-server` alone; it decodes replies with
+`bson`, which that feature already brings.
+
+| Test | Claim |
+|---|---|
+| `a_nesting_bomb_is_refused_and_the_server_survives` | a 10 000-level `find` filter (~80 KB) gets `{ok: 0, code: 15, errmsg: "BSONObj exceeded maximum nested object depth"}` answering its own `requestID`; the **same** connection then answers `hello`, and so does a fresh one |
+| `a_document_at_the_depth_limit_is_answered_and_one_deeper_is_not` | a command exactly `MAX_BSON_DEPTH` (64) documents deep reaches the handler (`ok: 1` with a cursor); 65 gets the refusal |
+| `a_document_declaring_more_than_the_message_holds_is_refused` | a document declaring `i32::MAX` bytes closes the connection and the server still answers a fresh one. This one pins behaviour rather than proving the scan — `bson` rejects it too, just after reserving 2 GiB |
+
+**Without the scan the first test does not fail — the test binary aborts** with
+`has overflowed its stack / fatal runtime error: stack overflow` (SIGABRT), and the second fails
+because 65 levels are answered. That is how the defect was confirmed and how the guard was
+verified by removal. `fuzz/fuzz_targets/bson_document.rs` fuzzes the same pair with a
+16 384-level `depth_bomb` seed.
 
 ### `connection_bounds_test.rs` — deadlines, not answers
 
