@@ -1,8 +1,9 @@
 # Fuzzing NetGet's pre-authentication decoders
 
-Every one of NetGet's seven known stack overflows — AMQP field tables, NATS blank lines,
-STOMP framing, SNMP BER, xmlrpc, bencode, RESP arrays — was found by a human reasoning
-about one decoder at a time. This directory is the machine that finds the next one.
+Every one of NetGet's eight known stack overflows — AMQP field tables, NATS blank lines,
+STOMP framing, SNMP BER, xmlrpc, bencode, RESP arrays, BSON documents — was found by a
+human reasoning about one decoder at a time. This directory is the machine that finds the
+next one.
 
 **Why a fuzzer and not a test.** A Rust stack overflow is a `SIGSEGV` against the guard
 page, not a panic. `catch_unwind` cannot see it, `tokio::spawn` cannot contain it, and
@@ -113,7 +114,7 @@ upstream *and* add a structural screen on our side of the socket, which is what
 
 ## The targets
 
-Eighteen, chosen by exposure. "Guard pair" marks the ones that drive a NetGet guard and
+Nineteen, chosen by exposure. "Guard pair" marks the ones that drive a NetGet guard and
 then hand whatever it accepted to the decoder it guards — those assert the contract that
 matters (*anything the guard accepts, the decoder survives*) rather than merely that the
 guard does not panic, which is the easy half.
@@ -138,6 +139,7 @@ guard does not panic, which is the easy half.
 | `nfc_apdu` | `nfc::apdu` ISO 7816-4 length encodings | first APDU on the socket |
 | `nfs_record_guard` | `nfs::guard::RecordScreen` over a *sequence* of markers | RPC record layer, pre-auth |
 | `resp_frame` | `utils::resp` + `redis_protocol::resp2::decode` — **guard pair**, and differential: the guard's `Incomplete`/`Malformed` must match the decoder's | first bytes of a Redis connection |
+| `bson_document` | `utils::bson_depth` + `bson::Document::from_reader` — **guard pair**, and differential: on inputs too short to be deep, the guard never refuses what `bson` accepts | first `OP_MSG` of a MongoDB connection |
 
 Every target is deterministic: no I/O, no sockets, no clock, no LLM. Several assert
 determinism explicitly by decoding twice and comparing, because a decoder that disagrees
@@ -152,7 +154,7 @@ committed precisely so 63 binary blobs have a provenance. Edit the script, not t
 python3 fuzz/seed_corpus.py .      # from the repository root
 ```
 
-Four of those seeds are **depth bombs**, and they are the reason this harness can find
+Five of those seeds are **depth bombs**, and they are the reason this harness can find
 anything. Coverage-guided fuzzing gives **no gradient toward nesting depth**: a value
 nested 10,000 deep runs exactly the same basic blocks as one nested 3 deep, so libFuzzer
 scores it as uninteresting and discards it. It will not grow one by itself.
@@ -165,7 +167,7 @@ That is measured, not assumed. With `utils::bencode`'s guard removed:
 | seeds only, `-max_len=16384` | **no crash** in 300s / 4.7M execs |
 | with a 32 KiB depth bomb | **SIGSEGV in 2.8s** |
 
-All seven of this repository's known stack overflows are in that class, so a corpus with no
+All eight of this repository's known stack overflows are in that class, so a corpus with no
 depth in it cannot find the next one. With the guards in place the bombs are refused in
 microseconds; they cost the running fuzzer nothing and exist for the day a guard regresses.
 
@@ -193,6 +195,8 @@ the same target run 60s clean at ~196,000 execs with the depth bomb still in its
 `resp_frame` was checked the same way on 26 September 2026, by calling `decode` ahead of the
 guard: the seed corpus alone killed it with `SIGSEGV` while loading `depth_bomb`. Restored,
 it ran 60s clean at ~205,000 runs with the differential assertions holding throughout.
+`bson_document` the same day, the same way: `bson::Document::from_reader` called ahead of the
+guard died with `SIGSEGV` on the seed corpus; restored, 60s clean at ~153,000 runs.
 
 This is the same discipline the AMQP field-table bound and the xmlrpc depth bound were
 verified with, and it is the only evidence that distinguishes "the fuzzer found nothing"
