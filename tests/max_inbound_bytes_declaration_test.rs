@@ -220,10 +220,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "SCTP framing is owned by webrtc-rs; NetGet's own bound is underived",
     ),
     (
-        "webrtc_signaling",
-        "bounded by tokio-tungstenite's frame limit; not surfaced as a const",
-    ),
-    (
         "wireguard",
         "orchestrates defguard_wireguard_rs; NetGet reads no WireGuard bytes itself",
     ),

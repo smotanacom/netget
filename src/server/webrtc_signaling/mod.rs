@@ -33,9 +33,23 @@ pub type PeerId = String;
 /// Longest a peer may take to complete the WebSocket upgrade.
 const SIGNALING_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Largest WebSocket message accepted. Signaling carries SDP and ICE candidates;
-/// a large real offer is a few kilobytes.
-const SIGNALING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+/// Largest WebSocket message accepted, and this server's declared `max_inbound_bytes`.
+/// Signaling carries SDP and ICE candidates; a large real offer is a few kilobytes.
+///
+/// tungstenite enforces it on the length a frame header declares, before the payload is read,
+/// and on the reassembled message; the upgrade request itself is capped by tungstenite's
+/// handshake reader at 64 KiB. Over the limit the peer gets a WebSocket close with code 1009
+/// (Message Too Big) and the connection ends.
+pub const SIGNALING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+
+/// The close frame for a message over [`SIGNALING_MAX_MESSAGE_BYTES`]: RFC 6455's 1009, with a
+/// fixed reason.
+fn message_too_big_close() -> Message {
+    Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size,
+        reason: "message too big".into(),
+    }))
+}
 
 /// Largest number of peers that may be registered at once.
 ///
@@ -798,6 +812,15 @@ impl WebRtcSignalingServer {
                 }
                 Ok(_) => {
                     // Ignore binary, ping, pong messages
+                }
+                Err(tokio_tungstenite::tungstenite::Error::Capacity(e)) => {
+                    warn!(
+                        "Signaling message from {} over {} bytes \
+                         decision=fail_closed_message_too_large: {}",
+                        remote_addr, SIGNALING_MAX_MESSAGE_BYTES, e
+                    );
+                    let _ = out_tx.send(message_too_big_close());
+                    break;
                 }
                 Err(e) => {
                     warn!("WebSocket error: {}", e);

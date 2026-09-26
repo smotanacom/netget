@@ -176,3 +176,106 @@ fn truncate_str(s: &str, max: usize) -> &str {
     }
     &s[..cut]
 }
+
+/// A hand-written RFC 6455 client, for the WebSocket servers' bound tests.
+///
+/// Hand-written rather than tokio-tungstenite because the refusal is decided on a frame
+/// **header**: to show that the server refuses on the length a header declares, the test must
+/// be able to send that header and nothing after it, which no WebSocket library will do. It
+/// also means the server's close frame is read off a socket with nothing unread on the server
+/// side, so the close cannot be turned into a reset.
+pub mod ws {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    /// Perform the HTTP upgrade and consume the 101 response.
+    pub async fn upgrade(stream: &mut TcpStream) {
+        stream
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                  Sec-WebSocket-Version: 13\r\n\r\n",
+            )
+            .await
+            .expect("write upgrade");
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut byte))
+                .await
+                .expect("upgrade response timed out")
+                .expect("read upgrade response");
+            assert!(n == 1, "connection closed during the upgrade");
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8_lossy(&head);
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "expected 101 Switching Protocols, got {head:?}"
+        );
+    }
+
+    /// A masked client frame header (FIN set) declaring `len` payload bytes, mask key zero so
+    /// the payload goes on the wire as-is.
+    pub fn header(opcode: u8, len: u64) -> Vec<u8> {
+        let mut h = vec![0x80 | opcode];
+        if len < 126 {
+            h.push(0x80 | len as u8);
+        } else if len <= u16::MAX as u64 {
+            h.push(0x80 | 126);
+            h.extend_from_slice(&(len as u16).to_be_bytes());
+        } else {
+            h.push(0x80 | 127);
+            h.extend_from_slice(&len.to_be_bytes());
+        }
+        h.extend_from_slice(&[0, 0, 0, 0]);
+        h
+    }
+
+    /// A complete masked text frame.
+    pub fn text(payload: &[u8]) -> Vec<u8> {
+        let mut f = header(0x1, payload.len() as u64);
+        f.extend_from_slice(payload);
+        f
+    }
+
+    /// Read one server frame: `Some((opcode, payload))`, or `None` on EOF, error or timeout.
+    pub async fn read_frame(stream: &mut TcpStream, secs: u64) -> Option<(u8, Vec<u8>)> {
+        let fut = async {
+            let mut h = [0u8; 2];
+            stream.read_exact(&mut h).await.ok()?;
+            let opcode = h[0] & 0x0f;
+            let mut len = (h[1] & 0x7f) as u64;
+            if len == 126 {
+                let mut b = [0u8; 2];
+                stream.read_exact(&mut b).await.ok()?;
+                len = u16::from_be_bytes(b) as u64;
+            } else if len == 127 {
+                let mut b = [0u8; 8];
+                stream.read_exact(&mut b).await.ok()?;
+                len = u64::from_be_bytes(b);
+            }
+            let mut payload = vec![0u8; len as usize];
+            stream.read_exact(&mut payload).await.ok()?;
+            Some((opcode, payload))
+        };
+        tokio::time::timeout(Duration::from_secs(secs), fut)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// After a close frame, whether the server also ends the TCP connection.
+    pub async fn closed_within(stream: &mut TcpStream, secs: u64) -> bool {
+        let mut buf = [0u8; 1024];
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+        loop {
+            match tokio::time::timeout_at(deadline, stream.read(&mut buf)).await {
+                Ok(Ok(0)) | Ok(Err(_)) => return true,
+                Ok(Ok(_)) => continue,
+                Err(_) => return false,
+            }
+        }
+    }
+}
