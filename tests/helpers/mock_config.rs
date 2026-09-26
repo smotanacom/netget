@@ -192,6 +192,13 @@ pub struct MockRule {
 
     /// Actual number of invocations (tracked at runtime)
     pub actual_calls: Arc<AtomicUsize>,
+
+    /// How long the mock takes to answer when this rule matches.
+    ///
+    /// A mock answers in microseconds and a real model in seconds, and a client or harness
+    /// that gives up in between passes every mocked test. `tests/eval/probe_check.rs` uses
+    /// this to stand in for a model call.
+    pub delay: Option<std::time::Duration>,
 }
 
 impl MockRule {
@@ -209,6 +216,7 @@ impl MockRule {
             min_calls: None,
             max_calls: None,
             actual_calls: Arc::new(AtomicUsize::new(0)),
+            delay: None,
         }
     }
 
@@ -257,6 +265,7 @@ impl MockRule {
             expected_calls: self.expected_calls,
             min_calls: self.min_calls,
             max_calls: self.max_calls,
+            delay_ms: self.delay.map(|d| d.as_millis() as u64),
         }
     }
 
@@ -270,6 +279,7 @@ impl MockRule {
             min_calls: s.min_calls,
             max_calls: s.max_calls,
             actual_calls: Arc::new(AtomicUsize::new(0)),
+            delay: s.delay_ms.map(std::time::Duration::from_millis),
         }
     }
 
@@ -285,6 +295,7 @@ impl MockRule {
             min_calls: self.min_calls,
             max_calls: self.max_calls,
             actual_calls: Arc::clone(&self.actual_calls),
+            delay: self.delay,
         }
     }
 }
@@ -297,6 +308,8 @@ pub struct SerializedMockRule {
     pub expected_calls: Option<usize>,
     pub min_calls: Option<usize>,
     pub max_calls: Option<usize>,
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
 }
 
 /// Serializable matcher (combines all matching criteria)

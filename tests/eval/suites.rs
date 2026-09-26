@@ -325,16 +325,21 @@ fn dict() -> Vec<EvalCase> {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "gemini")]
-const IGNITION_PROBE: &str = "import os, sys, tempfile, ignition\n\
-ignition.set_default_hosts_file(os.path.join(tempfile.mkdtemp(), 'known_hosts'))\n\
-r = ignition.request(sys.argv[1], timeout=230)\n\
-print(r.status, r.meta)\n\
-print(r.raw_body.decode('utf-8', 'replace') if r.status.startswith('2') else '')\n";
+const IGNITION_PROBE: &str = r#"import os, sys, tempfile, ignition
+ignition.set_default_hosts_file(os.path.join(tempfile.mkdtemp(), 'known_hosts'))
+r = ignition.request(sys.argv[1], timeout=230)
+print(r.status, r.meta)
+print(r.raw_body.decode('utf-8', 'replace') if r.status.startswith('2') else '')
+"#;
 
 #[cfg(feature = "gemini")]
 fn gemini_probe(path: &str) -> Probe {
     let url = format!("gemini://127.0.0.1:{{PORT}}{}", path);
-    Probe::client("python3", &["-c", IGNITION_PROBE, url.as_str()])
+    // Python writes ignition's CryptographyDeprecationWarning to stderr while
+    // the TLS handshake completes — before the request is answered — so the
+    // idle settle killed the client two seconds into every model call. It
+    // gives up at its own `timeout=230`; its exit is the only completion signal.
+    Probe::client("python3", &["-c", IGNITION_PROBE, url.as_str()]).until_exit()
 }
 
 #[cfg(feature = "gemini")]
@@ -376,19 +381,25 @@ fn gemini() -> Vec<EvalCase> {
 // itself. It prints what it got back, or the name of the exception it raised.
 // ---------------------------------------------------------------------------
 
+// A raw string, never `"…\n\` continuations: a continuation drops the next
+// line's leading whitespace, which for Python is the block structure, so the
+// probe dies with an IndentationError before it connects and the run reads as
+// an event that never reached the model. `probe_check.rs` runs this probe
+// against a mocked model.
 #[cfg(feature = "beanstalkd")]
-const GREENSTALK_PROBE: &str = "import sys, greenstalk\n\
-c = greenstalk.Client(('127.0.0.1', int(sys.argv[1])), watch=sys.argv[3])\n\
-try:\n\
-    if sys.argv[2] == 'put':\n\
-        print('INSERTED', c.put('resize image 7'))\n\
-    elif sys.argv[2] == 'reserve':\n\
-        j = c.reserve(timeout=200)\n\
-        print('RESERVED', j.id, j.body)\n\
-    else:\n\
-        print(c.stats())\n\
-except greenstalk.Error as e:\n\
-    print(type(e).__name__)\n";
+const GREENSTALK_PROBE: &str = r#"import sys, greenstalk
+c = greenstalk.Client(('127.0.0.1', int(sys.argv[1])), watch=sys.argv[3])
+try:
+    if sys.argv[2] == 'put':
+        print('INSERTED', c.put('resize image 7'))
+    elif sys.argv[2] == 'reserve':
+        j = c.reserve(timeout=200)
+        print('RESERVED', j.id, j.body)
+    else:
+        print(c.stats())
+except greenstalk.Error as e:
+    print(type(e).__name__)
+"#;
 
 #[cfg(feature = "beanstalkd")]
 fn beanstalkd_probe(mode: &str, tube: &str) -> Probe {
@@ -1227,6 +1238,10 @@ fn bolt_shell(query: &str) -> Probe {
         ],
     )
     .env("HOME", "/tmp/netget-eval-cypher-shell-home")
+    // The JVM prints a ThreadPriorityPolicy warning to stderr at startup, before
+    // cypher-shell has connected, so the idle settle killed it two seconds into
+    // the login's model call. It exits once the query is answered or refused.
+    .until_exit()
 }
 
 #[cfg(feature = "bolt")]

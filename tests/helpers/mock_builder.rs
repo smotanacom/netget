@@ -302,6 +302,7 @@ pub struct MockResponseBuilder {
     expected_calls: Option<usize>,
     min_calls: Option<usize>,
     max_calls: Option<usize>,
+    delay: Option<std::time::Duration>,
 }
 
 impl MockResponseBuilder {
@@ -312,7 +313,17 @@ impl MockResponseBuilder {
             expected_calls: None,
             min_calls: None,
             max_calls: None,
+            delay: None,
         }
+    }
+
+    /// Answer only after `delay`, the way a real model takes seconds to.
+    ///
+    /// For checking that a client, or the harness driving it, waits for a model call instead
+    /// of giving up in the microseconds a mock usually takes.
+    pub fn after_delay(mut self, delay: std::time::Duration) -> Self {
+        self.delay = Some(delay);
+        self
     }
 
     /// Set expected number of invocations (fails if not met)
@@ -354,6 +365,7 @@ impl MockResponseBuilder {
         rule.expected_calls = self.expected_calls;
         rule.min_calls = self.min_calls;
         rule.max_calls = self.max_calls;
+        rule.delay = self.delay;
 
         // Add to parent
         let mut parent = self.rule_builder.parent;

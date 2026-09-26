@@ -180,6 +180,8 @@ pub struct NetGetConfig {
     pub mock_config: Option<MockLlmConfig>,
     /// Force use of real Ollama (overrides env var/flag)
     pub force_ollama: bool,
+    /// Force the mock even under `NETGET_USE_OLLAMA` (see [`NetGetConfig::with_forced_mock`])
+    pub force_mock: bool,
     /// How long to wait for netget to start its servers/clients (default 120s).
     /// Raise this for real-Ollama tests: a setup conversation can take several
     /// model iterations at a minute or more each.
@@ -220,6 +222,7 @@ impl NetGetConfig {
             llm_max_concurrent: Some(1000), // High concurrency for E2E tests (effectively unlimited)
             mock_config: None,
             force_ollama: false,
+            force_mock: false,
             startup_timeout: Duration::from_secs(120),
             extra_args: Vec::new(),
         }
@@ -238,6 +241,7 @@ impl NetGetConfig {
             llm_max_concurrent: Some(1000), // High concurrency for E2E tests (effectively unlimited)
             mock_config: None,
             force_ollama: false,
+            force_mock: false,
             startup_timeout: Duration::from_secs(120),
             extra_args: Vec::new(),
         }
@@ -263,6 +267,7 @@ impl NetGetConfig {
             llm_max_concurrent: None,
             mock_config: None,
             force_ollama: false,
+            force_mock: false,
             startup_timeout: Duration::from_secs(120),
             extra_args: Vec::new(),
         }
@@ -373,6 +378,17 @@ impl NetGetConfig {
         self.force_ollama = true;
         self
     }
+
+    /// Always use the configured mock, even when `NETGET_USE_OLLAMA` is set.
+    ///
+    /// For a test whose assertions are *about* a mocked model's answers — the eval's own
+    /// probe checks run in the same binary `run-eval.sh` runs with `NETGET_USE_OLLAMA=1`, and
+    /// against a real model they would assert on answers nobody wrote.
+    #[allow(dead_code)]
+    pub fn with_forced_mock(mut self) -> Self {
+        self.force_mock = true;
+        self
+    }
 }
 
 /// Start a NetGet instance with the given configuration
@@ -387,6 +403,8 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
     // Determine mode: force_ollama > env var/flag > default (mock mode)
     let use_ollama = if config.force_ollama {
         true
+    } else if config.force_mock {
+        false
     } else {
         should_use_ollama()
     };
