@@ -7,6 +7,13 @@ what to say on the wire, either by reasoning per-request or via deterministic ha
 Three ways to run it: interactive TUI (default), headless (`--mcp` / `--mcp-http`, see
 `src/mcp_stdio/CLAUDE.md`), and non-interactive one-shot (`src/cli/non_interactive.rs`).
 
+A non-interactive run (a prompt, `--load`, `--server`, `--client`) serves **every** server it
+started until all have stopped or Ctrl+C, keeps a clients-only run alive while any client is
+connected, and exits **non-zero** if anything it was asked to start failed. `--run-for <SECS>`
+and `--exit-after-events <N>` end it with status 0; the event count is the access log's
+monotonic total (`AppState::access_log_total`), so it counts every handled event on every
+instance whoever answered it. `tests/non_interactive_run_limits_test.rs` drives the binary.
+
 **The interactive TUI is the full-screen ratatui dashboard (`src/tui/`)**, the only
 interactive UI — the rolling-terminal TUI that used to sit behind `--legacy-tui` was removed
 in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.rs`.

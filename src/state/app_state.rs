@@ -3041,6 +3041,14 @@ impl AppState {
         id
     }
 
+    /// How many access-log entries have ever been recorded — one per network event a server
+    /// or client handled (whatever answered it: handler, model or operator), plus one per
+    /// injected action. Unlike the ring buffer this never shrinks, so it is a monotonic count
+    /// of handled events for the life of the process (`--exit-after-events` reads it).
+    pub async fn access_log_total(&self) -> u64 {
+        self.inner.read().await.next_access_log_id.saturating_sub(1)
+    }
+
     /// Return the most recent access-log entries, newest first (up to `limit`).
     /// Pass `None` for the full retained buffer.
     pub async fn list_access_logs(&self, limit: Option<usize>) -> Vec<AccessLogEntry> {
