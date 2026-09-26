@@ -14,6 +14,8 @@ pub mod bluetooth;
 pub mod bootp;
 #[cfg(feature = "cassandra")]
 pub mod cassandra;
+#[cfg(feature = "coap")]
+pub mod coap;
 #[cfg(feature = "couchdb")]
 pub mod couchdb;
 #[cfg(feature = "datalink")]

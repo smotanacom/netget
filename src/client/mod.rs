@@ -565,6 +565,12 @@ pub use memcached::actions::MemcachedClientProtocol;
 pub mod modbus;
 #[cfg(feature = "modbus")]
 pub use modbus::actions::ModbusClientProtocol;
+
+// coap client
+#[cfg(feature = "coap")]
+pub mod coap;
+#[cfg(feature = "coap")]
+pub use coap::actions::CoapClientProtocol;
 // ssdp client
 #[cfg(feature = "ssdp")]
 pub mod ssdp;

@@ -383,6 +383,8 @@ jobs:
       #   memcached         - the memcached client (NetGet frames the text protocol itself;
       #                       read back with libmemcached's memcat/memcp, above)
       #   pymodbus          - the modbus client (a Python device; pip, in its own step below)
+      #   coap-server       - the coap client (libcoap's example server; the same
+      #                       libcoap2-bin package as coap-client, above)
       #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
       #                       client is tokio-postgres). Ubuntu keeps the server binaries in
       #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
@@ -872,6 +874,7 @@ jobs:
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
             client/ldap::real_server_test \
+            client/coap::real_server_test \
             client/memcached::real_server_test client/modbus::real_server_test \
             client/mqtt::keepalive_test client/mqtt::real_server_test \
             client/mysql::real_server_test client/nats::e2e_test \
