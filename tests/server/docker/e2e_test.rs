@@ -54,11 +54,19 @@ async fn test_docker_cli_against_a_mocked_model() -> E2EResult<()> {
                             // `docker inspect` of an unknown name asks /info whether this is a
                             // swarm manager before giving up on the swarm object types.
                             (Some("info"), _) => json!([{"type": "send_docker_info"}]),
-                            (Some("container"), Some(other)) => json!([{
+                            // Answered only when the event itself names the 404: the
+                            // `answer_with` a model reads for this request.
+                            (Some("container"), Some(other))
+                                if event["answer_with"].as_str().is_some_and(|hint| {
+                                    hint.contains(&format!("No such container: {other}"))
+                                }) =>
+                            {
+                                json!([{
                                 "type": "send_docker_error",
                                 "status": 404,
                                 "message": format!("No such container: {other}")
-                            }]),
+                                }])
+                            }
                             _ => json!([{"type": "send_docker_error", "status": 500,
                                      "message": "unexpected request in test"}]),
                         }
