@@ -34,6 +34,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(gopher());
     #[cfg(feature = "dict")]
     cases.extend(dict());
+    #[cfg(feature = "gemini")]
+    cases.extend(gemini());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -295,6 +297,58 @@ fn dict() -> Vec<EvalCase> {
              else there is no definition.",
             dict_probe(&["zebra"]),
             Expect::contains(&["No definitions found"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Gemini — the Python client library ignition (`pip install ignition-gemini`),
+// which does TLS, trust-on-first-use pinning and response parsing itself. It
+// prints the status and meta it parsed, then the body of a 2x.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gemini")]
+const IGNITION_PROBE: &str = "import os, sys, tempfile, ignition\n\
+ignition.set_default_hosts_file(os.path.join(tempfile.mkdtemp(), 'known_hosts'))\n\
+r = ignition.request(sys.argv[1], timeout=230)\n\
+print(r.status, r.meta)\n\
+print(r.raw_body.decode('utf-8', 'replace') if r.status.startswith('2') else '')\n";
+
+#[cfg(feature = "gemini")]
+fn gemini_probe(path: &str) -> Probe {
+    let url = format!("gemini://127.0.0.1:{{PORT}}{}", path);
+    Probe::client("python3", &["-c", IGNITION_PROBE, url.as_str()])
+}
+
+#[cfg(feature = "gemini")]
+fn gemini() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "gemini/home-page",
+            "gemini",
+            "Serve a home page titled Welcome to the NetGet capsule, with a link \
+             to /about.",
+            gemini_probe("/"),
+            Expect::contains(&[
+                "20 text/gemini",
+                "Welcome to the NetGet capsule",
+                "=> /about",
+            ]),
+        ),
+        EvalCase::new(
+            "gemini/ask-for-input",
+            "gemini",
+            "The page /guestbook asks the visitor for their name before showing \
+             anything.",
+            gemini_probe("/guestbook"),
+            Expect::default().matching(r"(?m)^1[01] "),
+        ),
+        EvalCase::new(
+            "gemini/not-found",
+            "gemini",
+            "Only the home page exists. Every other page does not exist.",
+            gemini_probe("/nowhere"),
+            Expect::default().matching(r"(?m)^51 "),
         ),
     ]
 }

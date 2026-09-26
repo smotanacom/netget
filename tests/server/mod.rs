@@ -86,6 +86,8 @@ pub mod ftp;
 pub mod git;
 #[cfg(feature = "dict")]
 pub mod dict;
+#[cfg(feature = "gemini")]
+pub mod gemini;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "grpc")]
