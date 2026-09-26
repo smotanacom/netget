@@ -367,7 +367,11 @@ async fn cypher_shell_prints_the_rows_a_model_wrote() -> E2EResult<()> {
                     .on_event("bolt_authenticate")
                     .and_event_data_contains("principal", "neo4j")
                     .respond_with_actions(serde_json::json!([{"type": "accept_bolt_login"}]))
-                    .expect_calls(1)
+                    // One or two: the Java driver's pool sometimes opens a second connection
+                    // while the first is still running cypher-shell's connect queries, and each
+                    // connection logs in (observed in 2 of 3 runs at --test-threads=100).
+                    .expect_at_least(1)
+                    .expect_at_most(2)
                     .and()
                     .on_event("bolt_query")
                     .respond_with_actions_from_event(|event| {
