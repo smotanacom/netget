@@ -6,557 +6,529 @@ Every other test in this repository drives a **mock** model whose answers the te
 
 ## How to read it
 
-- **Model**: `llama3.1:8b` · **runs per instruction**: 5
-- **The score is a rate, not a boolean.** NetGet passes exactly one option to its Ollama backend (`num_predict`); there is no temperature, seed or top-p, and no flag that sets one. The same instruction therefore produces different actions run to run. Each instruction is run N times against a **fresh netget process and a fresh server**, and the published number is passes/runs. A 2/3 is reported as 2/3.
+- **Model**: `llama3.1:8b` · **runs per instruction**: 5 · **seed**: `42` · **temperature**: the model's default
+- **The score is a rate, and whether the runs agreed is measured, not assumed.** Every run passes `--llm-seed` (and `--llm-temperature` when one is set), so the sampler draws the same tokens for the same prompt. But each run's prompt carries its own client port, connection id and — for DNS/LDAP-style protocols — a random query or message id, and one differing token changes every token drawn after it. Each instruction therefore still runs N times against a **fresh netget process and a fresh server**, the published number is passes/runs, and the `Runs agree` column says whether those runs reached the same verdict and executed the same actions.
 - **Every case is driven by a real third-party client binary** — `dig`, `curl`, `redis-cli`, `psql`, `ldapsearch`, `ipptool`, `whois`, `ftp`, `mysql`. The `evidence` column says whether the client understands the protocol (`protocol-client`) or is only a byte pipe (`generic-transport`); a pass carried by `nc` is weaker evidence and is labelled so.
 - **A low score is a finding, not a test failure.** When the model cannot drive a protocol the defect is usually in the action descriptions. The ranked failure modes below carry the model's actual output.
 
 ## Score
 
-**155 of 225 runs passed (69%) across 45 instructions on 15 protocol(s).**
+**241 of 350 runs passed (69%) across 70 instructions on 24 protocol(s).**
 
 | Protocol | Client | Evidence | Instructions | Runs | Passed | Rate | Would pass with a lenient parse | Dominant failure |
 |---|---|---|---:|---:|---:|---:|---:|---|
+| `beanstalkd` | `python3` | protocol-client | 3 | 15 | 0 | 0% | 0% | `event_never_reached_model` |
+| `bolt` | `cypher-shell` | protocol-client | 3 | 15 | 0 | 0% | 0% | `client_left_before_model_answered` |
+| `dict` | `dict` | protocol-client | 3 | 15 | 10 | 67% | 67% | `wrong_content` |
 | `dns` | `dig` | protocol-client | 4 | 20 | 19 | 95% | 95% | `wrong_content` |
-| `finger` | `nc` | generic-transport | 3 | 15 | 14 | 93% | 93% | `wrong_content` |
-| `ftp` | `ftp` | protocol-client | 3 | 15 | 8 | 53% | 53% | `wrong_content` |
-| `gopher` | `curl` | protocol-client | 3 | 15 | 14 | 93% | 93% | `wrong_content` |
-| `http` | `curl` | protocol-client | 4 | 20 | 17 | 85% | 85% | `wrong_content` |
-| `ipp` | `ipptool` | protocol-client | 2 | 10 | 0 | 0% | 0% | `model_answered_with_no_actions` |
-| `ldap` | `ldapsearch` | protocol-client | 3 | 15 | 1 | 7% | 13% | `wrong_content` |
-| `mysql` | `mysql` | protocol-client | 3 | 15 | 11 | 73% | 73% | `no_wire_response` |
+| `docker` | `docker` | protocol-client | 3 | 15 | 0 | 0% | 0% | `executor_rejected_action`, `wrong_content` |
+| `finger` | `nc` | generic-transport | 3 | 15 | 15 | 100% | 100% | — |
+| `ftp` | `ftp` | protocol-client | 3 | 15 | 8 | 53% | 53% | `no_wire_response`, `wrong_content` |
+| `gearman` | `gearman` | protocol-client | 2 | 10 | 7 | 70% | 80% | `valid_actions_rejected_as_unparseable`, `wrong_content` |
+| `gemini` | `python3` | protocol-client | 3 | 15 | 0 | 0% | 0% | `client_left_before_model_answered` |
+| `gopher` | `curl` | protocol-client | 3 | 15 | 10 | 67% | 67% | `wrong_content` |
+| `http` | `curl` | protocol-client | 4 | 20 | 20 | 100% | 100% | — |
+| `ipp` | `ipptool` | protocol-client | 2 | 10 | 10 | 100% | 100% | — |
+| `ldap` | `ldapsearch` | protocol-client | 3 | 15 | 15 | 100% | 100% | — |
+| `mysql` | `mysql` | protocol-client | 3 | 15 | 15 | 100% | 100% | — |
 | `ntp` | — | — | 1 | — | — | — | — | not attempted: no installed NTP client accepts a destination port: sntp's -r only selects the source port and ntpdate has no port option, so an unprivileged loopback port is unreachable. Binding 123 needs root. |
-| `postgresql` | `psql` | protocol-client | 3 | 15 | 8 | 53% | 53% | `wrong_content` |
-| `redis` | `redis-cli` | protocol-client | 4 | 20 | 19 | 95% | 95% | `no_wire_response` |
-| `syslog` | `nc` | generic-transport | 2 | 10 | 6 | 60% | 60% | `no_wire_response` |
-| `tcp` | `nc` | generic-transport | 3 | 15 | 15 | 100% | 100% | — |
-| `telnet` | `curl` | protocol-client | 3 | 15 | 4 | 27% | 27% | `event_never_reached_model`, `wrong_content` |
-| `udp` | `nc` | generic-transport | 2 | 10 | 7 | 70% | 70% | `wrong_content` |
-| `whois` | `nc` | generic-transport | 3 | 15 | 12 | 80% | 80% | `wrong_content` |
+| `postgresql` | `psql` | protocol-client | 3 | 15 | 15 | 100% | 100% | — |
+| `prometheus` | `sh` | protocol-client | 3 | 15 | 10 | 67% | 67% | `executor_rejected_action` |
+| `redis` | `redis-cli` | protocol-client | 4 | 20 | 20 | 100% | 100% | — |
+| `syslog` | `nc` | generic-transport | 2 | 10 | 10 | 100% | 100% | — |
+| `tcp` | `nc` | generic-transport | 3 | 15 | 6 | 40% | 40% | `wrong_content` |
+| `telnet` | `curl` | protocol-client | 3 | 15 | 14 | 93% | 93% | `wrong_content` |
+| `udp` | `nc` | generic-transport | 2 | 10 | 10 | 100% | 100% | — |
+| `vault` | `vault` | protocol-client | 3 | 15 | 10 | 67% | 67% | `wrong_content` |
+| `whois` | `nc` | generic-transport | 3 | 15 | 14 | 93% | 93% | `model_answered_with_no_actions` |
+| `zabbix` | `zabbix_sender` | protocol-client | 2 | 10 | 3 | 30% | 30% | `wrong_content` |
 
-**Read the last two columns together.** In 1 of the 70 failed runs the model named the right action with the right parameters and netget threw the reply away, because `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a *leading* ``` fence and nothing trailing, then requires `serde_json::from_str` to consume the whole string. Small models routinely append an explanation after the JSON. Taking the first value — `Deserializer::from_str(..).into_iter().next()` — would move this suite from 69% to 69% without touching a single action description.
+**Read the last two columns together.** In 1 of the 109 failed runs the model named the right action with the right parameters and netget threw the reply away, because `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a *leading* ``` fence and nothing trailing, then requires `serde_json::from_str` to consume the whole string. Small models routinely append an explanation after the JSON. Taking the first value — `Deserializer::from_str(..).into_iter().next()` — would move this suite from 69% to 69% without touching a single action description.
+
+## Reproducibility
+
+**62 of 70 repeated instructions reached the same verdict on every run; 34 of 70 executed byte-identical actions on every run.** The second number is the strict one: an answer that must echo a random query id cannot be byte-identical across runs even when the model's choice was, so it undercounts agreement for DNS-, LDAP- and FTP-style protocols by design.
 
 ## Per-instruction detail
 
-| Case | Instruction | Passed | Failure mode |
-|---|---|---:|---|
-| `http/hello-page` | Serve a page that says hello. | 5/5 | — |
-| `http/admin-404` | Return 404 Not Found for anything under /admin. Serve every other path with a short ordinary page. | 5/5 | — |
-| `http/json-status` | Answer /status with the JSON body {"status":"ok"} and say it is JSON. | 5/5 | — |
-| `http/permanent-redirect` | Redirect / permanently to https://example.com/. | 2/5 | `wrong_content` |
-| `dns/a-record` | Answer example.com with 1.2.3.4. | 5/5 | — |
-| `dns/wildcard-a` | Whatever name is asked for, answer 10.0.0.1. | 5/5 | — |
-| `dns/txt-record` | Answer text queries for hello.test with the text netget-eval-ok. | 4/5 | `wrong_content` |
-| `dns/nxdomain` | Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1. | 5/5 | — |
-| `whois/registrar-line` | Answer every query with a whois record whose registrar is NETGET-EVAL-REGISTRAR. | 5/5 | — |
-| `whois/registrant-and-status` | For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited. | 2/5 | `wrong_content` |
-| `whois/no-match` | Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record. | 5/5 | — |
-| `gopher/welcome-menu` | Serve a menu whose first item is labelled Welcome to NetGet. | 4/5 | `wrong_content` |
-| `gopher/text-selector` | When the selector /about is asked for, return the text NetGet eval gopher server. | 5/5 | — |
-| `gopher/unknown-selector` | Serve a menu at the root. For any other selector, say it was not found. | 5/5 | — |
-| `finger/user-record` | When someone asks about the user alice, report her real name as Alice Liddell and that she is logged in. | 5/5 | — |
-| `finger/unknown-user` | Only the user alice exists. Say so for anyone else. | 4/5 | `wrong_content` |
-| `finger/user-list` | When no user is named, list the two users alice and bob. | 5/5 | — |
-| `redis/get-string` | Answer a read of the key greeting with the text hello-netget. | 4/5 | `no_wire_response` |
-| `redis/ping` | Answer a ping with PONG. | 5/5 | — |
-| `redis/key-list` | When asked to list all keys, report exactly three: alpha, beta and gamma. | 5/5 | — |
-| `redis/counter` | When the key counter is incremented, report the new value as 42. | 5/5 | — |
-| `postgresql/select-literal` | Let anyone log in without a password, and answer the query SELECT 1 with one row holding the number 1. | 5/5 | — |
-| `postgresql/current-user` | Let anyone log in without a password. Report the current user as netget_eval. | 1/5 | `wrong_content` |
-| `postgresql/users-table` | Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol. | 2/5 | `wrong_content` |
-| `mysql/select-literal` | Let anyone log in without a password, and answer SELECT 1 with one row holding the number 1. | 5/5 | — |
-| `mysql/server-version` | Let anyone log in without a password. Report the server version as 8.0.36-netget-eval. | 1/5 | `no_wire_response` |
-| `mysql/users-table` | Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol. | 5/5 | — |
-| `ldap/single-person` | Accept anonymous connections. A search under dc=example,dc=com finds one person, Alice Liddell, whose mail address is alice@example.com. | 0/5 | `wrong_content` |
-| `ldap/two-people` | Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob. | 0/5 | `wrong_content` |
-| `ldap/empty-result` | Accept anonymous connections. There is nothing at all under dc=other,dc=com — searches there succeed and find no one. | 1/5 | `wrong_content` |
-| `ipp/printer-name` | There is one printer called NetGet-Eval-Printer. It is idle and accepting jobs. | 0/5 | `model_answered_with_no_actions` |
-| `ipp/printer-stopped` | The printer is called Eval-Stopped-Printer, it is stopped, and it is not accepting jobs. | 0/5 | `model_answered_with_no_actions` |
-| `syslog/store-message` | Keep every message that arrives. | 5/5 | — |
-| `syslog/drop-healthchecks` | Throw away any message whose text mentions healthcheck. Keep everything else. | 1/5 | `no_wire_response` |
-| `ntp/current-time` | Answer time requests with the correct current time, stratum 2. | — (no-client) | — |
-| `telnet/banner` | Greet everyone who connects with the banner NETGET EVAL TELNET. | 0/5 | `event_never_reached_model` |
-| `telnet/login-prompt` | Ask for a login name as soon as somebody connects. | 0/5 | `event_never_reached_model` |
-| `telnet/answer-command` | If somebody types the word time, answer with the line It is always noon here. | 4/5 | `wrong_content` |
-| `tcp/fixed-reply` | Reply to anything a client sends with the single line PONG-EVAL. | 5/5 | — |
-| `tcp/echo` | Echo back exactly what the client sent. | 5/5 | — |
-| `tcp/uppercase` | Send back the client's text in upper case. | 5/5 | — |
-| `ftp/banner` | Greet every connection with the banner NetGet Eval FTP, and let anyone log in anonymously. | 5/5 | — |
-| `ftp/anonymous-login` | Let anyone log in anonymously and tell them the login succeeded. | 3/5 | `wrong_content` |
-| `ftp/working-directory` | Let anyone log in anonymously. The current directory is /eval. | 0/5 | `wrong_content` |
-| `udp/fixed-reply` | Answer every datagram with the text UDP-EVAL-OK. | 4/5 | `wrong_content` |
-| `udp/echo` | Send every datagram straight back to whoever sent it, unchanged. | 3/5 | `wrong_content` |
+| Case | Instruction | Passed | Runs agree | Failure mode |
+|---|---|---:|---|---|
+| `http/hello-page` | Serve a page that says hello. | 5/5 | verdict | — |
+| `http/admin-404` | Return 404 Not Found for anything under /admin. Serve every other path with a short ordinary page. | 5/5 | verdict + actions | — |
+| `http/json-status` | Answer /status with the JSON body {"status":"ok"} and say it is JSON. | 5/5 | verdict + actions | — |
+| `http/permanent-redirect` | Redirect / permanently to https://example.com/. | 5/5 | verdict | — |
+| `dns/a-record` | Answer example.com with 1.2.3.4. | 4/5 | no | `wrong_content` |
+| `dns/wildcard-a` | Whatever name is asked for, answer 10.0.0.1. | 5/5 | verdict | — |
+| `dns/txt-record` | Answer text queries for hello.test with the text netget-eval-ok. | 5/5 | verdict | — |
+| `dns/nxdomain` | Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1. | 5/5 | verdict | — |
+| `whois/registrar-line` | Answer every query with a whois record whose registrar is NETGET-EVAL-REGISTRAR. | 4/5 | no | `model_answered_with_no_actions` |
+| `whois/registrant-and-status` | For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited. | 5/5 | verdict + actions | — |
+| `whois/no-match` | Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record. | 5/5 | verdict | — |
+| `gopher/welcome-menu` | Serve a menu whose first item is labelled Welcome to NetGet. | 0/5 | verdict | `wrong_content` |
+| `gopher/text-selector` | When the selector /about is asked for, return the text NetGet eval gopher server. | 5/5 | verdict + actions | — |
+| `gopher/unknown-selector` | Serve a menu at the root. For any other selector, say it was not found. | 5/5 | verdict | — |
+| `dict/define-invented-word` | You are a dictionary of invented words with one database called fantasy. Define glimmerwyrm as a small dragon that hoards moonlight. | 5/5 | verdict + actions | — |
+| `dict/list-databases` | Offer two databases: fantasy, described as Fantasy Lexicon, and tech, described as Technical Terms. | 5/5 | verdict + actions | — |
+| `dict/unknown-word` | You only know words that begin with the letter q. For anything else there is no definition. | 0/5 | verdict | `wrong_content` |
+| `gemini/home-page` | Serve a home page titled Welcome to the NetGet capsule, with a link to /about. | 0/5 | verdict + actions | `client_left_before_model_answered` |
+| `gemini/ask-for-input` | The page /guestbook asks the visitor for their name before showing anything. | 0/5 | verdict + actions | `client_left_before_model_answered` |
+| `gemini/not-found` | Only the home page exists. Every other page does not exist. | 0/5 | verdict + actions | `client_left_before_model_answered` |
+| `beanstalkd/accept-a-job` | You are a work queue. Accept every job that is submitted and number the jobs starting from 100. | 0/5 | verdict + actions | `event_never_reached_model` |
+| `beanstalkd/hand-out-a-job` | You are a work queue. The images tube holds one waiting job, number 7, whose text is: resize photo.jpg to 640 wide. | 0/5 | verdict + actions | `event_never_reached_model` |
+| `beanstalkd/queue-statistics` | You are a work queue with 5 ready jobs and 2 buried jobs, running version 1.13. | 0/5 | verdict + actions | `event_never_reached_model` |
+| `zabbix/accept-known-host` | You are a Zabbix server monitoring the hosts web1 and db1. Accept every value reported for them. | 3/5 | no | `wrong_content` |
+| `zabbix/reject-unknown-host` | You are a Zabbix server monitoring only the host web1. Values reported for any other host cannot be stored. | 0/5 | verdict | `wrong_content` |
+| `gearman/reverse-text` | You are a Gearman worker. The function reverse returns its input spelled backwards. | 4/5 | no | `valid_actions_rejected_as_unparseable` |
+| `gearman/unknown-function-fails` | You are a Gearman worker that only knows the function reverse. Any other function must fail. | 3/5 | no | `wrong_content` |
+| `finger/user-record` | When someone asks about the user alice, report her real name as Alice Liddell and that she is logged in. | 5/5 | verdict + actions | — |
+| `finger/unknown-user` | Only the user alice exists. Say so for anyone else. | 5/5 | verdict + actions | — |
+| `finger/user-list` | When no user is named, list the two users alice and bob. | 5/5 | verdict | — |
+| `redis/get-string` | Answer a read of the key greeting with the text hello-netget. | 5/5 | verdict | — |
+| `redis/ping` | Answer a ping with PONG. | 5/5 | verdict + actions | — |
+| `redis/key-list` | When asked to list all keys, report exactly three: alpha, beta and gamma. | 5/5 | verdict + actions | — |
+| `redis/counter` | When the key counter is incremented, report the new value as 42. | 5/5 | verdict + actions | — |
+| `postgresql/select-literal` | Let anyone log in without a password, and answer the query SELECT 1 with one row holding the number 1. | 5/5 | verdict | — |
+| `postgresql/current-user` | Let anyone log in without a password. Report the current user as netget_eval. | 5/5 | verdict + actions | — |
+| `postgresql/users-table` | Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol. | 5/5 | verdict | — |
+| `mysql/select-literal` | Let anyone log in without a password, and answer SELECT 1 with one row holding the number 1. | 5/5 | verdict | — |
+| `mysql/server-version` | Let anyone log in without a password. Report the server version as 8.0.36-netget-eval. | 5/5 | verdict + actions | — |
+| `mysql/users-table` | Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol. | 5/5 | verdict | — |
+| `ldap/single-person` | Accept anonymous connections. A search under dc=example,dc=com finds one person, Alice Liddell, whose mail address is alice@example.com. | 5/5 | verdict | — |
+| `ldap/two-people` | Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob. | 5/5 | verdict | — |
+| `ldap/empty-result` | Accept anonymous connections. There is nothing at all under dc=other,dc=com — searches there succeed and find no one. | 5/5 | verdict + actions | — |
+| `ipp/printer-name` | There is one printer called NetGet-Eval-Printer. It is idle and accepting jobs. | 5/5 | verdict | — |
+| `ipp/printer-stopped` | The printer is called Eval-Stopped-Printer, it is stopped, and it is not accepting jobs. | 5/5 | verdict + actions | — |
+| `syslog/store-message` | Keep every message that arrives. | 5/5 | verdict | — |
+| `syslog/drop-healthchecks` | Throw away any message whose text mentions healthcheck. Keep everything else. | 5/5 | verdict | — |
+| `ntp/current-time` | Answer time requests with the correct current time, stratum 2. | — (no-client) | — | — |
+| `telnet/banner` | Greet everyone who connects with the banner NETGET EVAL TELNET. | 5/5 | verdict | — |
+| `telnet/login-prompt` | Ask for a login name as soon as somebody connects. | 4/5 | no | `wrong_content` |
+| `telnet/answer-command` | If somebody types the word time, answer with the line It is always noon here. | 5/5 | verdict + actions | — |
+| `tcp/fixed-reply` | Reply to anything a client sends with the single line PONG-EVAL. | 5/5 | verdict + actions | — |
+| `tcp/echo` | Echo back exactly what the client sent. | 1/5 | no | `wrong_content` |
+| `tcp/uppercase` | Send back the client's text in upper case. | 0/5 | verdict + actions | `wrong_content` |
+| `ftp/banner` | Greet every connection with the banner NetGet Eval FTP, and let anyone log in anonymously. | 3/5 | no | `wrong_content` |
+| `ftp/anonymous-login` | Let anyone log in anonymously and tell them the login succeeded. | 5/5 | verdict | — |
+| `ftp/working-directory` | Let anyone log in anonymously. The current directory is /eval. | 0/5 | verdict | `no_wire_response` |
+| `udp/fixed-reply` | Answer every datagram with the text UDP-EVAL-OK. | 5/5 | verdict + actions | — |
+| `udp/echo` | Send every datagram straight back to whoever sent it, unchanged. | 5/5 | verdict + actions | — |
+| `prometheus/queue-depth-gauge` | Expose a gauge named netget_eval_queue_depth whose value is 17. | 5/5 | verdict + actions | — |
+| `prometheus/requests-by-status` | Count HTTP requests by status code: 1500 requests answered 200 and 12 answered 404 so far. | 5/5 | verdict | — |
+| `prometheus/latency-histogram` | Report request latency in seconds as a histogram with buckets at 0.1, 0.5 and 1 second; 40 requests so far, 30 of them under 0.1s. | 0/5 | verdict + actions | `executor_rejected_action` |
+| `docker/ps-running-container` | Act as a Docker host running one container named eval-web from the image nginx:1.27, publishing host port 8080 to container port 80. | 0/5 | verdict | `executor_rejected_action` |
+| `docker/ps-all-includes-stopped` | Act as a Docker host with a running container eval-api (image api:2) and a stopped container eval-migrate (image api:2) that exited with code 0. | 0/5 | verdict | `executor_rejected_action` |
+| `docker/inspect-missing` | Act as a Docker host with no containers at all. | 0/5 | verdict | `wrong_content` |
+| `vault/read-a-field` | Act as a Vault server. The secret at app/db in the secret mount holds the username payments and the password NETGET-EVAL-PW. | 5/5 | verdict + actions | — |
+| `vault/list-keys` | Act as a Vault server whose secret mount has three secrets under app: db, stripe and smtp. | 5/5 | verdict + actions | — |
+| `vault/missing-secret` | Act as a Vault server with an empty secret mount. | 0/5 | verdict + actions | `wrong_content` |
+| `bolt/people-by-name` | Act as a Neo4j graph database that accepts any login. The graph has three Person nodes, named Ada, Grace and Linus. | 0/5 | verdict + actions | `client_left_before_model_answered` |
+| `bolt/count` | Act as a Neo4j graph database that accepts any login. It holds exactly 42 Movie nodes and nothing else. | 0/5 | verdict + actions | `client_left_before_model_answered` |
+| `bolt/syntax-error` | Act as a Neo4j graph database that accepts any login. Reject any query that is not valid Cypher with Neo4j's syntax error. | 0/5 | verdict + actions | `client_left_before_model_answered` |
 
 ## Failure modes, ranked
 
-### `wrong_content` — 39 failed run(s)
+### `wrong_content` — 42 failed run(s)
 
 The model produced a valid, executable action whose content does not satisfy the instruction. This is the honest 'the model did not understand the task' bucket.
 
-Seen in: `http/permanent-redirect`, `dns/txt-record`, `whois/registrant-and-status`, `gopher/welcome-menu`, `finger/unknown-user`, `postgresql/current-user`, `postgresql/users-table`, `ldap/single-person`, `ldap/two-people`, `ldap/empty-result`, `telnet/answer-command`, `ftp/anonymous-login`, `ftp/working-directory`, `udp/fixed-reply`, `udp/echo`
+Seen in: `dns/a-record`, `gopher/welcome-menu`, `dict/unknown-word`, `zabbix/accept-known-host`, `zabbix/reject-unknown-host`, `gearman/unknown-function-fails`, `telnet/login-prompt`, `tcp/echo`, `tcp/uppercase`, `ftp/banner`, `docker/inspect-missing`, `vault/missing-secret`
 
-### `model_answered_with_no_actions` — 11 failed run(s)
+### `client_left_before_model_answered` — 30 failed run(s)
 
-The model was asked and returned no actions at all. The peer gets the protocol default; from the wire this is indistinguishable from an outage.
+The model was asked and the client hung up before it answered, so the call was abandoned with the connection. A probe problem — a client whose own timeout is shorter than a model call, or a harness that cut it off — not a prompt problem.
 
-Seen in: `ipp/printer-name`, `ipp/printer-stopped`, `syslog/drop-healthchecks`
+Seen in: `gemini/home-page`, `gemini/ask-for-input`, `gemini/not-found`, `bolt/people-by-name`, `bolt/count`, `bolt/syntax-error`
 
-### `event_never_reached_model` — 10 failed run(s)
+### `event_never_reached_model` — 15 failed run(s)
 
 No model call happened. The request did not reach the LLM path — a harness or protocol wiring problem, not a prompt problem.
 
-Seen in: `telnet/banner`, `telnet/login-prompt`
+Seen in: `beanstalkd/accept-a-job`, `beanstalkd/hand-out-a-job`, `beanstalkd/queue-statistics`
 
-### `no_wire_response` — 8 failed run(s)
+### `executor_rejected_action` — 15 failed run(s)
+
+The protocol's own executor refused the action the model built. The description and the executor disagree about what the action accepts.
+
+Seen in: `prometheus/latency-histogram`, `docker/ps-running-container`, `docker/ps-all-includes-stopped`
+
+### `no_wire_response` — 5 failed run(s)
 
 The model acted but the client got nothing back within the timeout.
 
-Seen in: `redis/get-string`, `mysql/server-version`, `syslog/drop-healthchecks`
+Seen in: `ftp/working-directory`
 
-### `copied_example_placeholder` — 1 failed run(s)
+### `model_answered_with_no_actions` — 1 failed run(s)
 
-The model emitted a template placeholder (`{{…}}`) literally. Placeholders are real for static handlers and meaningless in a model's reply, so an action `example` containing one teaches the model to send something its own executor rejects.
+The model was asked and returned no actions at all. The peer gets the protocol default; from the wire this is indistinguishable from an outage.
 
-Seen in: `http/permanent-redirect`
+Seen in: `whois/registrar-line`
 
 ### `valid_actions_rejected_as_unparseable` — 1 failed run(s)
 
 The model named the right action with the right parameters and the reply was thrown away anyway, because prose or a stray code fence sits around the JSON. **Not a description defect and not a model defect** — `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a leading ``` fence and nothing trailing, then hands the remainder to `serde_json::from_str`, which rejects any trailing byte. Small models append an explanation after the JSON constantly, so this one behaviour costs more eval passes than every description problem combined.
 
-Seen in: `ldap/two-people`
+Seen in: `gearman/reverse-text`
 
 ## The model's actual output, per failing case
 
 Each block is the verbatim netget log line carrying the action the model built. This is the diagnostic input for a prompt-quality fix.
 
-<details><summary><code>http/permanent-redirect</code> — 2/5 passed</summary>
+<details><summary><code>dns/a-record</code> — 4/5 passed</summary>
 
-**Instruction:** Redirect / permanently to https://example.com/.
+**Instruction:** Answer example.com with 1.2.3.4.
 
-**Client:** `curl -sS -i --max-time 230 http://127.0.0.1:{PORT}/`
+**Client:** `dig @127.0.0.1 -p {PORT} +time=230 +tries=1 example.com A`
 
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "HTTP/1.1 301"
-
-```
-2026-09-23T10:05:16.926440Z DEBUG Executing action 0: Object {"type": String("send_http_response"), "status": Number(308), "headers": Object {"Location": String("https://example.com")}, "body": String("")}
-```
-
-Run 3 — `copied_example_placeholder`: the model emitted a `{{…}}` template placeholder verbatim — check this action's `example` for one
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "1.2.3.4"
 
 ```
-2026-09-23T10:05:24.793075Z DEBUG Executing action 0: Object {"type": String("send_http_response"), "status": Number(308), "headers": Object {"Location": String("https://example.com/"), "Content-Type": String("text/html")}}
-```
-
-Run 5 — `wrong_content`: valid actions executed, but client output does not contain "HTTP/1.1 301"
-
-```
-2026-09-23T10:05:40.180270Z DEBUG Executing action 0: Object {"type": String("send_http_response"), "status": Number(308), "headers": Object {"Location": String("https://example.com/")}, "body": String("")}
+2026-09-26T12:45:50.500429Z DEBUG Executing action 0: Object {"type": String("send_dns_a_response"), "query_id": Number(56702), "domain": String("example.com"), "ip": String("192.0.2.1"), "ttl": Number(300)}
+2026-09-26T12:45:50.500748Z DEBUG Executing action 1: Object {"type": String("send_dns_a_response"), "query_id": Number(56702), "domain": String("example.com"), "ip": String("192.0.2.1"), "ttl": Number(300)}
+2026-09-26T12:45:50.500938Z DEBUG Executing action 2: Object {"type": String("send_dns_a_response"), "query_id": Number(56702), "domain": String("example.com"), "ip": String("192.0.2.1"), "ttl": Number(300)}
+2026-09-26T12:45:50.501120Z DEBUG Executing action 3: Object {"type": String("send_dns_a_response"), "query_id": Number(56702), "domain": String("example.com"), "ip": String("192.0.2.1"), "ttl": Number(300)}
+2026-09-26T12:45:50.501496Z DEBUG Executing action 4: Object {"type": String("send_dns_a_response"), "query_id": Number(56702), "domain": String("example.com"), "ip": String("1.2.3.4"), "ttl": Number(300)}
 ```
 
 </details>
 
-<details><summary><code>dns/txt-record</code> — 4/5 passed</summary>
-
-**Instruction:** Answer text queries for hello.test with the text netget-eval-ok.
-
-**Client:** `dig @127.0.0.1 -p {PORT} +time=230 +tries=1 hello.test TXT`
-
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-ok"
-
-```
-2026-09-23T10:07:54.686136Z DEBUG Executing action 0: Object {"type": String("send_dns_a_response"), "query_id": Number(7079), "domain": String("hello.test."), "ip": String("192.0.2.1"), "ttl": Number(300)}
-2026-09-23T10:07:54.686535Z DEBUG Executing action 1: Object {"type": String("send_dns_a_response"), "query_id": Number(7079), "domain": String("hello.test."), "ip": String("192.0.2.1"), "ttl": Number(300)}
-```
-
-</details>
-
-<details><summary><code>whois/registrant-and-status</code> — 2/5 passed</summary>
-
-**Instruction:** For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.
-
-**Client:** `nc -w 235 127.0.0.1 {PORT}`
-
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "clientTransferProhibited"
-
-```
-2026-09-23T10:14:53.739344Z DEBUG Executing action 0: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "registrant": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-```
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "clientTransferProhibited"
-
-```
-2026-09-23T10:15:16.778751Z DEBUG Executing action 0: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "registrant": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-2026-09-23T10:15:16.778978Z DEBUG Executing action 1: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "registrant": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-```
-
-Run 5 — `wrong_content`: valid actions executed, but client output does not contain "clientTransferProhibited"
-
-```
-2026-09-23T10:16:48.099524Z DEBUG Executing action 0: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-2026-09-23T10:16:48.099733Z DEBUG Executing action 1: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-2026-09-23T10:16:48.099862Z DEBUG Executing action 2: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-2026-09-23T10:16:48.099985Z DEBUG Executing action 3: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-2026-09-23T10:16:48.100097Z DEBUG Executing action 4: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
-```
-
-</details>
-
-<details><summary><code>gopher/welcome-menu</code> — 4/5 passed</summary>
+<details><summary><code>gopher/welcome-menu</code> — 0/5 passed</summary>
 
 **Instruction:** Serve a menu whose first item is labelled Welcome to NetGet.
 
 **Client:** `curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/`
 
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "Welcome to NetGet"
+
+```
+2026-09-26T13:04:10.003761Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:04:10.005033Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:04:10.005397Z DEBUG Executing action 2: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:04:10.005724Z DEBUG Executing action 3: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:04:10.006387Z DEBUG Executing action 4: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+```
+
 Run 2 — `wrong_content`: valid actions executed, but client output does not contain "Welcome to NetGet"
 
 ```
-2026-09-23T10:18:06.017581Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
-2026-09-23T10:18:06.017934Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:04:34.040165Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:04:34.040497Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "Welcome to NetGet"
+
+```
+2026-09-26T13:06:15.781255Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:06:15.782299Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:06:15.782797Z DEBUG Executing action 2: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:06:15.783528Z DEBUG Executing action 3: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:06:15.784135Z DEBUG Executing action 4: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "Welcome to NetGet"
+
+```
+2026-09-26T13:07:19.875347Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:07:19.875819Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:07:19.876153Z DEBUG Executing action 2: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:07:19.876475Z DEBUG Executing action 3: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:07:19.876789Z DEBUG Executing action 4: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "Welcome to NetGet"
+
+```
+2026-09-26T13:08:22.063046Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:08:22.063559Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:08:22.063903Z DEBUG Executing action 2: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:08:22.064226Z DEBUG Executing action 3: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-26T13:08:22.064544Z DEBUG Executing action 4: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
 ```
 
 </details>
 
-<details><summary><code>finger/unknown-user</code> — 4/5 passed</summary>
+<details><summary><code>dict/unknown-word</code> — 0/5 passed</summary>
 
-**Instruction:** Only the user alice exists. Say so for anyone else.
+**Instruction:** You only know words that begin with the letter q. For anything else there is no definition.
+
+**Client:** `dict -h 127.0.0.1 -p {PORT} zebra`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "No definitions found"
+
+```
+2026-09-26T13:12:17.908168Z DEBUG Executing action 0: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:12:17.908440Z DEBUG Executing action 1: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:12:17.908596Z DEBUG Executing action 2: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:12:17.908753Z DEBUG Executing action 3: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "No definitions found"
+
+```
+2026-09-26T13:12:40.293530Z DEBUG Executing action 0: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:12:40.293880Z DEBUG Executing action 1: Object {"type": String("show_message"), "message": String("Querying database for definitions...")}
+2026-09-26T13:12:40.294264Z DEBUG Executing action 2: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:12:40.294478Z DEBUG Executing action 3: Object {"type": String("close_connection")}
+2026-09-26T13:12:40.294609Z DEBUG Executing action 4: Object {"type": String("send_dict_error"), "code": Number(552), "message": String("No match found for the word 'quokka' in database '*'")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "No definitions found"
+
+```
+2026-09-26T13:13:16.785017Z DEBUG Executing action 0: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:13:16.785369Z DEBUG Executing action 1: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:13:16.785571Z DEBUG Executing action 2: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:13:16.785758Z DEBUG Executing action 3: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "No definitions found"
+
+```
+2026-09-26T13:14:01.073481Z DEBUG Executing action 0: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:01.073821Z DEBUG Executing action 1: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:01.074013Z DEBUG Executing action 2: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:01.074192Z DEBUG Executing action 3: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:01.074367Z DEBUG Executing action 4: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "No definitions found"
+
+```
+2026-09-26T13:14:43.372935Z DEBUG Executing action 0: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:43.373318Z DEBUG Executing action 1: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:43.373547Z DEBUG Executing action 2: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:43.373765Z DEBUG Executing action 3: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+2026-09-26T13:14:43.373975Z DEBUG Executing action 4: Object {"type": String("send_dict_definitions"), "word": String("quokka"), "definitions": Array [Object {"database": String("wn"), "database_description": String("WordNet (r) 3.0"), "text": String("quokka\n    n 1: a small wallaby of western Australia")}]}
+```
+
+</details>
+
+<details><summary><code>zabbix/accept-known-host</code> — 3/5 passed</summary>
+
+**Instruction:** You are a Zabbix server monitoring the hosts web1 and db1. Accept every value reported for them.
+
+**Client:** `zabbix_sender -z 127.0.0.1 -p {PORT} -s web1 -k system.cpu.load -o 0.42`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "processed: 1; failed: 0"
+
+```
+2026-09-26T13:17:09.893627Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(2), "failed": Number(0)}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "processed: 1; failed: 0"
+
+```
+2026-09-26T13:17:23.473215Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(2), "failed": Number(0)}
+```
+
+</details>
+
+<details><summary><code>zabbix/reject-unknown-host</code> — 0/5 passed</summary>
+
+**Instruction:** You are a Zabbix server monitoring only the host web1. Values reported for any other host cannot be stored.
+
+**Client:** `zabbix_sender -z 127.0.0.1 -p {PORT} -s mystery-box -k system.cpu.load -o 0.42`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "processed: 0; failed: 1"
+
+```
+2026-09-26T13:18:15.405517Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(1), "failed": Number(0)}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "processed: 0; failed: 1"
+
+```
+2026-09-26T13:18:25.446406Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(1), "failed": Number(0)}
+2026-09-26T13:18:25.446675Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("host: web1\nkey: system.cpu.load\nvalue: 0.42\n")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "processed: 0; failed: 1"
+
+```
+2026-09-26T13:18:35.469087Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(1), "failed": Number(0)}
+2026-09-26T13:18:35.469326Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("host: web1\nkey: system.cpu.load\nvalue: 0.42\n")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "processed: 0; failed: 1"
+
+```
+2026-09-26T13:18:45.004019Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(1), "failed": Number(0)}
+2026-09-26T13:18:45.004299Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("host: web1\nkey: system.cpu.load\nvalue: 0.42\n")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "processed: 0; failed: 1"
+
+```
+2026-09-26T13:18:57.637948Z DEBUG Executing action 0: Object {"type": String("send_zabbix_result"), "processed": Number(1), "failed": Number(0)}
+```
+
+</details>
+
+<details><summary><code>gearman/reverse-text</code> — 4/5 passed</summary>
+
+**Instruction:** You are a Gearman worker. The function reverse returns its input spelled backwards.
+
+**Client:** `gearman -h 127.0.0.1 -p {PORT} -t 230000 -f reverse stressed`
+
+Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `generate_random`, `send_gearman_status`, `complete_gearman_job`, `generate_random`, `read_file` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+
+```
+❌ Actual response:
+{"tools": [{"type": "generate_random", "data_type": "string", "length": 10}],"actions": [{"type": "send_gearman_data", "data": "generated random string: " + tools[0].result},{"type": "send_gearman_status", "numerator": 5, "denominator": 10},{"type": "complete_gearman_job", "result": "dlrow olleh"}]}```This response includes a tool to generate a random string, and three actions to send data, report progress, and complete the job. The `tools` array is used to generate a random string, and the `actions` array is used to send data and report progress. The final action completes the job with a result.This response follows the required format and includes both `tools` and `actions` arrays, as well as a reasoning tag to explain the decision-making process.Note that the `complete_gearman_job` action will be executed last, as the client is waiting for the result of the job. The `send_gearman_data` and `send_gearman_status` actions are executed before the final result is sent to the client.This response also includes the `tools[0].result` in the `send_gearman_data` action, which is the result of the `generate_random` tool. This is the random string generated by the tool.Th… (truncated)
+2026-09-26T13:19:48.678653Z  WARN Malformed response (raw): I will execute the following actions in response to the event:
+
+```
+{
+  "tools": [
+    {"type": "generate_random", "data_type": "string", "length": 10}
+  ],
+  "actions": [
+    {"type": "send_gearman_data", "data": "generated random string: " + tools[0].result},
+❌ Actual response:
+{"tools": [{"type": "generate_random", "data_type": "string", "length": 10}],...
+2026-09-26T13:19:48.678702Z  INFO → Sending correction and retrying (attempt 2)...
+2026-09-26T13:19:48.678716Z  INFO LLM request (attempt 2/2)
+2026-09-26T13:19:48.678720Z DEBUG Conversation state: 4 messages, 2 new since last call
+2026-09-26T13:19:48.678755Z DEBUG Acquiring rate limiter permit for Network request
+2026-09-26T13:19:48.678768Z DEBUG Rate limiter permit acquired for Network request
+2026-09-26T13:19:48.678786Z DEBUG LLM request: model=llama3.1:8b, prompt_len=22686 chars, format=text
+2026-09-26T13:20:00.928621Z DEBUG LLM response: response_len=857 chars, tokens=5495i/219o/5714t
+2026-09-26T13:19:48.678533Z DEBUG Response (normalized): I will execute the following actions in response to the event:```{"tools": [{"type": "generate_random", "data_type": "string", "length": 10}],"actions": [{"type": "send_gearman_data", "data": "generat...
+{"tools": [{"type": "generate_random", "data_type": "string", "length": 10}],"actions": [{"type": "send_gearman_data", "data": "generated random string: " + tools[0].result},{"type": "send_gearman_status", "numerator": 5, "denominator": 10},{"type": "complete_gearman_job", "result": "dlrow olleh"}]}```This response includes a tool to generate a random string, and three actions to send data, report progress, and complete the job. The `tools` array is used to generate a random string, and the `actions` array is used to send data and report progress. The final action completes the job with a result.This response follows the required format and includes both `tools` and `actions` arrays, as well as a reasoning tag to explain the decision-making process.Note that the `complete_gearman_job` action will be executed last, as the client is waiting for the result of the job. The `send_gearman_data` and `send_gearman_status` actions are executed before the final result is sent to the client.This response also includes the `tools[0].result` in the `send_gearman_data` action, which is the result of the `generate_random` tool. This is the random string generated by the tool.The reasoning tag exp… (truncated)
+    {"type": "generate_random", "data_type": "string", "length": 10}
+  "actions": [
+    {"type": "send_gearman_data", "data": "generated random string: " + tools[0].result},
+    {"type": "send_gearman_status", "numerator": 5, "denominator": 10},
+    {"type": "complete_gearman_job", "result": "dlrow olleh"}
+{"tools": [{"type": "generate_random", "data_type": "string", "length": 10}],...
+2026-09-26T13:20:00.928733Z DEBUG Response (normalized): ```json{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type": "send_gearman_data", "data": "generated random string: " + tools[0].result},{"type": "send_gearman_status", "numera...
+```
+
+</details>
+
+<details><summary><code>gearman/unknown-function-fails</code> — 3/5 passed</summary>
+
+**Instruction:** You are a Gearman worker that only knows the function reverse. Any other function must fail.
+
+**Client:** `gearman -h 127.0.0.1 -p {PORT} -t 230000 -f translate hello`
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "Job failed"
+
+```
+2026-09-26T13:21:21.469170Z DEBUG Executing action 0: Object {"type": String("complete_gearman_job"), "result": String("olleh")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "Job failed"
+
+```
+2026-09-26T13:21:33.407637Z DEBUG Executing action 0: Object {"type": String("complete_gearman_job"), "result": String("etranslat"), "job_handle": String("H:netget:1")}
+```
+
+</details>
+
+<details><summary><code>telnet/login-prompt</code> — 4/5 passed</summary>
+
+**Instruction:** Ask for a login name as soon as somebody connects.
+
+**Client:** `curl -sS -N --max-time 230 telnet://127.0.0.1:{PORT}`
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not match /(?i)login|username|user name/
+
+```
+2026-09-26T14:01:42.985893Z DEBUG Executing action 0: Object {"type": String("append_memory"), "value": String("Ask for login name: ")}
+```
+
+</details>
+
+<details><summary><code>tcp/echo</code> — 1/5 passed</summary>
+
+**Instruction:** Echo back exactly what the client sent.
 
 **Client:** `nc -w 235 127.0.0.1 {PORT}`
 
-Run 1 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such user|not found|does not exist|no one|unknown/
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-ping"
 
 ```
-2026-09-23T10:20:51.327964Z DEBUG Executing action 0: Object {"type": String("send_finger_error"), "message": String("Only the user alice exists.")}
+2026-09-26T14:08:56.610181Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("Hello, client! What's your request?"), "encoding": String("utf8")}
 ```
 
-</details>
-
-<details><summary><code>redis/get-string</code> — 4/5 passed</summary>
-
-**Instruction:** Answer a read of the key greeting with the text hello-netget.
-
-**Client:** `redis-cli -h 127.0.0.1 -p {PORT} -t 230 GET greeting`
-
-Run 3 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-ping"
 
 ```
-2026-09-23T10:22:55.529338Z DEBUG Executing action 0: Object {"type": String("redis_bulk_string"), "value": String("hello-netget")}
+2026-09-26T14:09:07.694680Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("Hello, client! What's your request?"), "encoding": String("utf8")}
 ```
 
-</details>
-
-<details><summary><code>postgresql/current-user</code> — 1/5 passed</summary>
-
-**Instruction:** Let anyone log in without a password. Report the current user as netget_eval.
-
-**Client:** `psql -h 127.0.0.1 -p {PORT} -U evaluser -d evaldb -w -t -A -c SELECT current_user`
-
-Run 1 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-ping"
 
 ```
-2026-09-23T10:27:08.017470Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
-2026-09-23T10:27:08.017665Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("netget_eval\n")}
-2026-09-23T10:27:08.017708Z DEBUG Executing action 2: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
-2026-09-23T10:27:08.017833Z DEBUG Executing action 3: Object {"type": String("set_memory"), "value": String("netget_eval\n")}
+2026-09-26T14:09:18.753782Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("Hello, client! What's your request?"), "encoding": String("utf8")}
 ```
 
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-ping"
 
 ```
-2026-09-23T10:27:12.737758Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
-2026-09-23T10:27:12.737949Z DEBUG Executing action 1: Object {"type": String("show_message"), "message": String("User logged in: netget_eval")}
-```
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
-
-```
-2026-09-23T10:27:18.046020Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
-2026-09-23T10:27:18.046205Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("current_user: netget_eval")}
-```
-
-Run 4 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
-
-```
-2026-09-23T10:27:26.489024Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("SELECT current_user")}
+2026-09-26T14:09:29.798660Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("Hello, client! What's your request?"), "encoding": String("utf8")}
 ```
 
 </details>
 
-<details><summary><code>postgresql/users-table</code> — 2/5 passed</summary>
+<details><summary><code>tcp/uppercase</code> — 0/5 passed</summary>
 
-**Instruction:** Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol.
+**Instruction:** Send back the client's text in upper case.
 
-**Client:** `psql -h 127.0.0.1 -p {PORT} -U evaluser -d evaldb -w -t -A -c SELECT name FROM users`
+**Client:** `nc -w 235 127.0.0.1 {PORT}`
 
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "alice"
-
-```
-2026-09-23T10:27:56.155845Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
-```
-
-Run 4 — `wrong_content`: valid actions executed, but client output does not contain "alice"
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "HELLO EVAL"
 
 ```
-2026-09-23T10:28:16.242057Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 3")}
-2026-09-23T10:28:16.242241Z DEBUG Executing action 1: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 3")}
+2026-09-26T14:09:59.843929Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("CLIENT TEXT IN UPPER CASE"), "encoding": String("utf8")}
 ```
 
-Run 5 — `wrong_content`: valid actions executed, but client output does not contain "carol"
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "HELLO EVAL"
 
 ```
-2026-09-23T10:28:33.831820Z DEBUG Executing action 0: Object {"type": String("postgresql_query_response"), "columns": Array [Object {"name": String("id"), "type": String("int4")}, Object {"name": String("name"), "type": String("text")}], "rows": Array [Array [Number(1), String("Alice")], Array [Number(2), String("Bob")]]}
-2026-09-23T10:28:33.832117Z DEBUG Executing action 1: Object {"type": String("postgresql_query_response"), "columns": Array [Object {"name": String("id"), "type": String("int4")}, Object {"name": String("name"), "type": String("text")}], "rows": Array [Array [Number(1), String("Alice")], Array [Number(2), String("Bob")], Array [Number(3), String("Carol")]]}
-2026-09-23T10:28:33.832318Z DEBUG Executing action 2: Object {"type": String("set_memory"), "value": String("users: alice, bob, carol\n")}
+2026-09-26T14:10:10.515499Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("CLIENT TEXT IN UPPER CASE"), "encoding": String("utf8")}
 ```
 
-</details>
-
-<details><summary><code>mysql/server-version</code> — 1/5 passed</summary>
-
-**Instruction:** Let anyone log in without a password. Report the server version as 8.0.36-netget-eval.
-
-**Client:** `/opt/homebrew/opt/mysql@8.0/bin/mysql -h 127.0.0.1 -P {PORT} -u evaluser --protocol=TCP --connect-timeout=230 -N -B -e SELECT VERSION()`
-
-Run 1 — `no_wire_response`: the model executed 10 action(s) but the client saw nothing back (client exited silently)
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "HELLO EVAL"
 
 ```
-2026-09-23T10:32:01.915234Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
-2026-09-23T10:32:01.915511Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
-2026-09-23T10:32:01.915553Z DEBUG Executing action 2: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
-2026-09-23T10:32:01.915740Z DEBUG Executing action 3: Object {"type": String("append_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
-2026-09-23T10:32:01.915768Z DEBUG Executing action 4: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
-2026-09-23T10:32:01.915962Z DEBUG Executing action 5: Object {"type": String("append_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
-2026-09-23T10:32:01.915988Z DEBUG Executing action 6: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
-2026-09-23T10:32:01.916154Z DEBUG Executing action 7: Object {"type": String("set_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
-2026-09-23T10:32:06.519464Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}], "rows": Array [Object {"version": String("8.0.36-netget-eval")}]}
-2026-09-23T10:32:06.519704Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("version: 8.0.36-netget-eval")}
+2026-09-26T14:10:21.190990Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("CLIENT TEXT IN UPPER CASE"), "encoding": String("utf8")}
 ```
 
-Run 3 — `no_wire_response`: the model executed 11 action(s) but the client saw nothing back (client exited silently)
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "HELLO EVAL"
 
 ```
-2026-09-23T10:32:19.201999Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [String("8.0.36-netget-eval")]]}
-2026-09-23T10:32:43.517215Z DEBUG Executing action 0: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
-2026-09-23T10:32:43.517409Z DEBUG Executing action 1: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
-2026-09-23T10:32:43.517443Z DEBUG Executing action 2: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
-2026-09-23T10:32:43.517577Z DEBUG Executing action 3: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
-2026-09-23T10:32:43.517593Z DEBUG Executing action 4: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
-2026-09-23T10:32:43.517722Z DEBUG Executing action 5: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
-2026-09-23T10:32:43.517737Z DEBUG Executing action 6: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
-2026-09-23T10:32:43.517864Z DEBUG Executing action 7: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
-2026-09-23T10:32:43.517879Z DEBUG Executing action 8: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
-2026-09-23T10:32:43.518002Z DEBUG Executing action 9: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
+2026-09-26T14:10:31.775291Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("CLIENT TEXT IN UPPER CASE"), "encoding": String("utf8")}
 ```
 
-Run 4 — `no_wire_response`: the model executed 2 action(s) but the client saw nothing back (client exited silently)
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "HELLO EVAL"
 
 ```
-2026-09-23T10:32:51.155124Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("server_version"), "type": String("VARCHAR")}], "rows": Array [Array [String("8.0.36-netget-eval")]]}
-2026-09-23T10:32:53.481211Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}], "rows": Array [Object {"version": String("8.0.36-netget-eval")}]}
-```
-
-Run 5 — `no_wire_response`: the model executed 3 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-23T10:33:01.005784Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [String("8.0.36-netget-eval")]]}
-2026-09-23T10:33:04.570856Z DEBUG Executing action 0: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Null}
-2026-09-23T10:33:04.571047Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("server_version: 8.0.36-netget-eval\nlogin_required: false")}
+2026-09-26T14:10:42.424795Z DEBUG Executing action 0: Object {"type": String("send_tcp_data"), "data": String("CLIENT TEXT IN UPPER CASE"), "encoding": String("utf8")}
 ```
 
 </details>
 
-<details><summary><code>ldap/single-person</code> — 0/5 passed</summary>
+<details><summary><code>ftp/banner</code> — 3/5 passed</summary>
 
-**Instruction:** Accept anonymous connections. A search under dc=example,dc=com finds one person, Alice Liddell, whose mail address is alice@example.com.
-
-**Client:** `ldapsearch -x -H ldap://127.0.0.1:{PORT} -b dc=example,dc=com -s sub -o nettimeout=230 -l 230 (objectClass=*)`
-
-Run 1 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
-
-```
-2026-09-23T10:34:44.000399Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
-
-```
-2026-09-23T10:34:51.770570Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
-
-```
-2026-09-23T10:35:05.484801Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 4 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
-
-```
-2026-09-23T10:35:12.527483Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Invalid DN or password")}
-```
-
-Run 5 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
-
-```
-2026-09-23T10:35:25.662937Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Anonymous bind not supported")}
-2026-09-23T10:35:25.663186Z DEBUG Executing action 1: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-</details>
-
-<details><summary><code>ldap/two-people</code> — 0/5 passed</summary>
-
-**Instruction:** Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob.
-
-**Client:** `ldapsearch -x -H ldap://127.0.0.1:{PORT} -b ou=people,dc=example,dc=com -s sub -o nettimeout=230 -l 230 (objectClass=*)`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `read_file` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"actions": [...]}```**When to include reasoning:**- **User input commands**: Strongly encouraged, especially for ambiguous requests, port conflicts, update vs create decisions, multi-step operations- **Network events**: Optional, use when helpful for complex logic, authentication decisions, error handling- Explain: what you understand, what you checked, why you chose this action**Reasoning rules:**1. **Tag is optional** - You can omit it for simple, straightforward cases2. **Keep it brief** - 1-3 sentences explaining key points3. **Tag can be anywhere** - Before or after JSON (will be extracted and logged)4. **Valid JSON still required** - After removing reasoning tag, valid JSON must remain## Examples✓ **Valid (tools only):**```json{"tools": [{"type": "read_file", "path": "config.json", "mode": "full"}]}```✓ **Valid (actions only):**```json{"actions": [{"type": "show_message", "message": "Hello"}]}```✓ **Valid (both tools and actions):**```json{"tools": [{"type": "read_file", "path": "config.json"},{"type": "generate_random", "data_type": "uuid"}],"actions": [{"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LI… (truncated)
-2026-09-23T10:36:52.077300Z  WARN Malformed response (raw): **Event-Specific Instructions**
-Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob.
-
-**Network Event Instructions**
-
-You are handling a network event for an active server. Your job is to:
-
-1. **Understand the event**: Parse the incoming data/request
-2. **Follow server instructions**: Use the instruction field as your guide
-❌ Actual response:
-{"actions": [...]}```**When to include reasoning:**- **User input commands**:...
-2026-09-23T10:36:52.077837Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-23T10:36:52.077853Z  INFO LLM request (attempt 2/2)
-2026-09-23T10:36:52.077861Z DEBUG Conversation state: 7 messages, 2 new since last call
-2026-09-23T10:36:52.077907Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-23T10:36:52.077920Z DEBUG Rate limiter permit acquired for Network request
-2026-09-23T10:36:52.077939Z DEBUG LLM request: model=llama3.1:8b, prompt_len=25596 chars, format=text
-2026-09-23T10:37:01.157059Z DEBUG LLM response: response_len=578 chars, tokens=6223i/151o/6374t
-2026-09-23T10:35:37.522614Z DEBUG Response (normalized): ## Response```json{"tools": [{"type": "read_file", "path": "schema.json", "mode": "grep", "pattern": "(ou=people,dc=example,dc=com)", "context_before": 5, "context_after": 5}],"actions": [{"type": "ld...
-{"actions": [...]}```**When to include reasoning:**- **User input commands**: Strongly encouraged, especially for ambiguous requests, port conflicts, update vs create decisions, multi-step operations- **Network events**: Optional, use when helpful for complex logic, authentication decisions, error handling- Explain: what you understand, what you checked, why you chose this action**Reasoning rules:**1. **Tag is optional** - You can omit it for simple, straightforward cases2. **Keep it brief** - 1-3 sentences explaining key points3. **Tag can be anywhere** - Before or after JSON (will be extracted and logged)4. **Valid JSON still required** - After removing reasoning tag, valid JSON must remain## Examples✓ **Valid (tools only):**```json{"tools": [{"type": "read_file", "path": "config.json", "mode": "full"}]}```✓ **Valid (actions only):**```json{"actions": [{"type": "show_message", "message": "Hello"}]}```✓ **Valid (both tools and actions):**```json{"tools": [{"type": "read_file", "path": "config.json"},{"type": "generate_random", "data_type": "uuid"}],"actions": [{"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"},{"type": "show… (truncated)
-{"actions": [...]}```**When to include reasoning:**- **User input commands**:...
-2026-09-23T10:37:01.157162Z DEBUG Response (normalized): **Correct Response**```json{"tools": [{"type": "read_file", "path": "schema.json", "mode": "grep", "pattern": "(ou=people,dc=example,dc=com)", "context_before": 5, "context_after": 5}],"actions": [{"t...
-2026-09-23T10:37:01.160078Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-2026-09-23T10:37:01.160303Z DEBUG Executing action 1: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "alice"
-
-```
-2026-09-23T10:37:11.598555Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Invalid user: anonymous bind not supported")}
-```
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "alice"
-
-```
-2026-09-23T10:37:22.440491Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 4 — `wrong_content`: valid actions executed, but client output does not contain "alice"
-
-```
-2026-09-23T10:37:36.904252Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-2026-09-23T10:37:36.904528Z DEBUG Executing action 1: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Invalid bind credentials")}
-```
-
-Run 5 — `wrong_content`: valid actions executed, but client output does not contain "alice"
-
-```
-2026-09-23T10:37:43.127583Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-</details>
-
-<details><summary><code>ldap/empty-result</code> — 1/5 passed</summary>
-
-**Instruction:** Accept anonymous connections. There is nothing at all under dc=other,dc=com — searches there succeed and find no one.
-
-**Client:** `ldapsearch -x -H ldap://127.0.0.1:{PORT} -b dc=other,dc=com -s sub -o nettimeout=230 -l 230 (objectClass=*)`
-
-Run 1 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
-
-```
-2026-09-23T10:37:55.735796Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
-
-```
-2026-09-23T10:38:12.194585Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 4 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
-
-```
-2026-09-23T10:38:20.195958Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-Run 5 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
-
-```
-2026-09-23T10:38:26.787958Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
-```
-
-</details>
-
-<details><summary><code>syslog/drop-healthchecks</code> — 1/5 passed</summary>
-
-**Instruction:** Throw away any message whose text mentions healthcheck. Keep everything else.
-
-**Client:** `nc -u -w 1 127.0.0.1 {PORT}`
-
-Run 2 — `no_wire_response`: the model executed 2 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-23T10:48:34.037801Z DEBUG Executing action 0: Object {"type": String("store_syslog_message"), "message": String("<14>Oct 11 22:14:15 evalhost netget-eval: healthcheck ok\n")}
-2026-09-23T10:48:34.037937Z DEBUG Executing action 1: Object {"type": String("store_syslog_message"), "message": String("<34>Oct 11 22:14:15 mymachine su: 'su root' failed for user on /dev/pts/8")}
-```
-
-Run 3 — `no_wire_response`: the model executed 2 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-23T10:52:42.382892Z DEBUG Executing action 0: Object {"type": String("store_syslog_message"), "message": String("healthcheck ok")}
-2026-09-23T10:52:42.383043Z DEBUG Executing action 1: Object {"type": String("store_syslog_message"), "message": String("healthcheck ok")}
-```
-
-Run 5 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-23T10:56:56.529842Z DEBUG Executing action 0: Object {"type": String("store_syslog_message"), "message": String("<14>Oct 11 22:14:15 evalhost netget-eval: healthcheck ok\n")}
-```
-
-</details>
-
-<details><summary><code>telnet/answer-command</code> — 4/5 passed</summary>
-
-**Instruction:** If somebody types the word time, answer with the line It is always noon here.
-
-**Client:** `curl -sS --max-time 230 telnet://127.0.0.1:{PORT}`
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "It is always noon here"
-
-```
-2026-09-23T11:47:33.792541Z DEBUG Executing action 0: Object {"type": String("append_memory"), "value": String("It is always noon here")}
-```
-
-</details>
-
-<details><summary><code>ftp/anonymous-login</code> — 3/5 passed</summary>
-
-**Instruction:** Let anyone log in anonymously and tell them the login succeeded.
+**Instruction:** Greet every connection with the banner NetGet Eval FTP, and let anyone log in anonymously.
 
 **Client:** `ftp -n -v 127.0.0.1 {PORT}`
 
-Run 3 — `wrong_content`: valid actions executed, but client output does not match /(?i)230|logged in|login successful/
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "NetGet Eval FTP"
 
 ```
-2026-09-23T12:05:07.575920Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:11:24.808230Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:11:24.808406Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("banner: NetGet Eval FTP")}
+2026-09-26T14:11:29.722482Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(221), "message": String("Service closing control connection")}
 ```
 
-Run 5 — `wrong_content`: valid actions executed, but client output does not match /(?i)230|logged in|login successful/
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "NetGet Eval FTP"
 
 ```
-2026-09-23T12:05:33.205664Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("User name okay, need password.")}
+2026-09-26T14:11:37.183719Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:11:37.183894Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("banner: NetGet Eval FTP")}
+2026-09-26T14:11:42.078841Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(221), "message": String("Service closing control connection")}
 ```
 
 </details>
@@ -567,79 +539,296 @@ Run 5 — `wrong_content`: valid actions executed, but client output does not ma
 
 **Client:** `ftp -n -v 127.0.0.1 {PORT}`
 
-Run 1 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+Run 1 — `no_wire_response`: the model executed 11 action(s) but the client saw nothing back (client timed out)
 
 ```
-2026-09-23T12:05:49.488959Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(230), "message": String("Logged in anonymously")}
-2026-09-23T12:05:49.489186Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("cwd: /eval\n")}
+2026-09-26T14:14:24.290895Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:14:25.590039Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("need password")}
+2026-09-26T14:14:25.590210Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:14:29.756745Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:14:29.756783Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(230), "message": String("Logged in anonymously")}
+2026-09-26T14:14:59.658708Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:14:59.658899Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:14:59.659029Z DEBUG Executing action 2: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:14:59.659160Z DEBUG Executing action 3: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:14:59.659288Z DEBUG Executing action 4: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:15:01.204453Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n current directory: /eval")}
 ```
 
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+Run 2 — `no_wire_response`: the model executed 11 action(s) but the client saw nothing back (client timed out)
 
 ```
-2026-09-23T12:06:29.558658Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
-2026-09-23T12:06:29.558889Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:18:20.965071Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:18:22.251077Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("need password")}
+2026-09-26T14:18:22.251233Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:18:26.295817Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:18:26.295857Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(230), "message": String("Logged in anonymously")}
+2026-09-26T14:19:00.472096Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:19:00.472240Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:19:00.472333Z DEBUG Executing action 2: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:19:00.472421Z DEBUG Executing action 3: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:19:00.472507Z DEBUG Executing action 4: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:19:02.099599Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n current directory: /eval")}
 ```
 
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+Run 3 — `no_wire_response`: the model executed 4 action(s) but the client saw nothing back (client timed out)
 
 ```
-2026-09-23T12:06:39.824148Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:22:24.111255Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:22:25.396662Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("need password")}
+2026-09-26T14:22:25.396802Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:22:29.174867Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n current directory: /eval")}
 ```
 
-Run 4 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+Run 4 — `no_wire_response`: the model executed 8 action(s) but the client saw nothing back (client timed out)
 
 ```
-2026-09-23T12:06:59.276622Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
-2026-09-23T12:06:59.276908Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("User name okay, need password")}
-2026-09-23T12:06:59.277083Z DEBUG Executing action 2: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("User name okay, need password")}
+2026-09-26T14:26:26.873768Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:26:28.155575Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("need password")}
+2026-09-26T14:26:28.155732Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:26:32.210757Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:26:32.210797Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(230), "message": String("Logged in anonymously")}
+2026-09-26T14:26:36.984646Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:26:36.984834Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:26:38.518776Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n current directory: /eval")}
 ```
 
-Run 5 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+Run 5 — `no_wire_response`: the model executed 11 action(s) but the client saw nothing back (client timed out)
 
 ```
-2026-09-23T12:07:07.983117Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:30:29.860963Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-26T14:30:31.136674Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("need password")}
+2026-09-26T14:30:31.136818Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:30:35.188171Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n")}
+2026-09-26T14:30:35.188210Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(230), "message": String("Logged in anonymously")}
+2026-09-26T14:30:51.550435Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:30:51.550591Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:30:51.550693Z DEBUG Executing action 2: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:30:51.550791Z DEBUG Executing action 3: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:30:51.550885Z DEBUG Executing action 4: Object {"type": String("send_ftp_response"), "code": Number(200), "message": String("Anonymous login allowed")}
+2026-09-26T14:30:53.103459Z DEBUG Executing action 0: Object {"type": String("set_memory"), "value": String("anonymous login allowed\n current directory: /eval")}
 ```
 
 </details>
 
-<details><summary><code>udp/fixed-reply</code> — 4/5 passed</summary>
+<details><summary><code>prometheus/latency-histogram</code> — 0/5 passed</summary>
 
-**Instruction:** Answer every datagram with the text UDP-EVAL-OK.
+**Instruction:** Report request latency in seconds as a histogram with buckets at 0.1, 0.5 and 1 second; 40 requests so far, 30 of them under 0.1s.
 
-**Client:** `nc -u -w 235 127.0.0.1 {PORT}`
+**Client:** `sh -c curl -sS --max-time 230 http://127.0.0.1:{PORT}/metrics | tee /dev/stderr | promtool check metrics && echo PROMTOOL-OK`
 
-Run 2 — `wrong_content`: valid actions executed, but client output does not contain "UDP-EVAL-OK"
+Run 1 — `executor_rejected_action`: the protocol executor refused the action the model built
 
 ```
-2026-09-23T12:07:48.484451Z DEBUG Executing action 0: Object {"type": String("send_udp_response"), "data": String("Response data"), "encoding": String("text")}
+2026-09-26T14:45:17.012966Z ERROR Action 0 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:45:17.013114Z ERROR Action 1 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:45:17.013242Z ERROR Action 2 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:45:17.013368Z ERROR Action 3 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:45:17.013491Z ERROR Action 4 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+```
+
+Run 2 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:47:18.485043Z ERROR Action 0 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:47:18.485181Z ERROR Action 1 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:47:18.485311Z ERROR Action 2 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:47:18.485441Z ERROR Action 3 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:47:18.485565Z ERROR Action 4 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+```
+
+Run 3 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:49:59.680197Z ERROR Action 0 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:49:59.680402Z ERROR Action 1 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:49:59.680562Z ERROR Action 2 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:49:59.680693Z ERROR Action 3 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:49:59.680815Z ERROR Action 4 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+```
+
+Run 4 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:51:46.960047Z ERROR Action 0 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:51:46.960191Z ERROR Action 1 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:51:46.960314Z ERROR Action 2 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:51:46.960437Z ERROR Action 3 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:51:46.960562Z ERROR Action 4 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+```
+
+Run 5 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:53:22.129678Z ERROR Action 0 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:53:22.129820Z ERROR Action 1 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:53:22.129947Z ERROR Action 2 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:53:22.130074Z ERROR Action 3 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
+2026-09-26T14:53:22.130200Z ERROR Action 4 'send_metrics' failed on protocol Prometheus: send_metrics refused: histogram 'http_request_duration_seconds' bucket le=0.5 holds 10 but a smaller bucket holds 30; buckets are cumulative, so each must be at least the one before — the peer receives the protocol default instead (action: {"type":"send_metrics","metrics":[{"name":"http_request_duration_seconds","type":"histogram","help":"Request latency.","samples":[{"suffix":"_bucket","labels":{"le":"0.1"},"value":30},{"suffix":"_bucket","labels":{"le":"0.5"},"value":10},{"suffix":"_bucket","labels":{"le":"+Inf"},"value":0},{"suffix":"_sum","value":0.3},{"suffix":"_count","value":40}]}]})
 ```
 
 </details>
 
-<details><summary><code>udp/echo</code> — 3/5 passed</summary>
+<details><summary><code>docker/ps-running-container</code> — 0/5 passed</summary>
 
-**Instruction:** Send every datagram straight back to whoever sent it, unchanged.
+**Instruction:** Act as a Docker host running one container named eval-web from the image nginx:1.27, publishing host port 8080 to container port 80.
 
-**Client:** `nc -u -w 235 127.0.0.1 {PORT}`
+**Client:** `docker -H tcp://127.0.0.1:{PORT} ps`
 
-Run 1 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-datagram"
-
-```
-2026-09-23T12:08:27.208300Z DEBUG Executing action 0: Object {"type": String("send_udp_response"), "data": String("datagram unchanged"), "encoding": String("text")}
-```
-
-Run 3 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-datagram"
+Run 1 — `executor_rejected_action`: the protocol executor refused the action the model built
 
 ```
-2026-09-23T12:08:46.165221Z DEBUG Executing action 0: Object {"type": String("send_udp_response"), "data": String("data"), "encoding": String("text")}
+2026-09-26T14:54:03.913415Z ERROR Action 0 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-web': id "eval-web" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-web","names":["eval-web"],"image":"nginx:1.27","command":"nginx -g 'daemon off;'","state":"running","status":"Up 2 hours","created":"2026-09-01T10:00:00Z","ports":[{"private_port":80,"public_port":8080,"type":"tcp"}]}]})
+2026-09-26T14:54:03.913521Z ERROR Action 1 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-web': id "eval-web" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-web","names":["eval-web"],"image":"nginx:1.27","command":"nginx -g 'daemon off;'","state":"running","status":"Up 2 hours","created":"2026-09-01T10:00:00Z","ports":[{"private_port":80,"public_port":8080,"type":"tcp"}]}]})
+```
+
+Run 2 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:54:24.878769Z ERROR Action 0 'unknown' failed on protocol Docker: Missing 'type' field in action — the peer receives the protocol default instead (action: "eval-web")
+```
+
+Run 3 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:54:45.584503Z ERROR Action 0 'unknown' failed on protocol Docker: Missing 'type' field in action — the peer receives the protocol default instead (action: "eval-web")
+```
+
+Run 4 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:55:05.328233Z ERROR Action 0 'unknown' failed on protocol Docker: Missing 'type' field in action — the peer receives the protocol default instead (action: "eval-web")
+```
+
+Run 5 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:55:24.774657Z ERROR Action 0 'unknown' failed on protocol Docker: Missing 'type' field in action — the peer receives the protocol default instead (action: "eval-web")
+```
+
+</details>
+
+<details><summary><code>docker/ps-all-includes-stopped</code> — 0/5 passed</summary>
+
+**Instruction:** Act as a Docker host with a running container eval-api (image api:2) and a stopped container eval-migrate (image api:2) that exited with code 0.
+
+**Client:** `docker -H tcp://127.0.0.1:{PORT} ps -a`
+
+Run 1 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:56:41.830063Z ERROR Action 0 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-api': id "eval-api" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-api","names":["eval-api"],"image":"api:2","command":"python app.py","state":"running","status":"Up 5 minutes","created":"2023-09-01T10:00:00Z","ports":[{"private_port":8080,"public_port":8080,"type":"tcp"}],"labels":{}},{"id":"eval-migrate","names":["eval-migrate"],"image":"api:2","command":"python migrate.py","state":"exited","exit_code":0,"created":"2023-09-01T10:00:00Z","labels":{}}]})
+2026-09-26T14:56:41.830179Z ERROR Action 1 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-api': id "eval-api" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-api","names":["eval-api"],"image":"api:2","command":"python app.py","state":"running","status":"Up 5 minutes","created":"2023-09-01T10:00:00Z","ports":[{"private_port":8080,"public_port":8080,"type":"tcp"}],"labels":{}},{"id":"eval-migrate","names":["eval-migrate"],"image":"api:2","command":"python migrate.py","state":"exited","exit_code":0,"created":"2023-09-01T10:00:00Z","labels":{}}]})
+```
+
+Run 2 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:57:43.864840Z ERROR Action 3 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-migrate' state "stopped" is not one of created, running, paused, restarting, removing, exited, dead — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"3f4e1a2b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f","names":["eval-migrate"],"image":"api:2","command":"python3 migrate.py","state":"stopped","status":"Exited 10 minutes ago","created":"2026-09-01T09:50:00Z","ports":[{"private_port":80,"public_port":8080,"type":"tcp"}],"labels":{"app":"eval-migrate"}}]})
+```
+
+Run 3 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T14:59:16.926297Z ERROR Action 2 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-api': id "eval-api" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-api","names":["eval-api"],"image":"api:2","command":"python3 main.py","state":"running","status":"Up 2 hours","created":"2026-09-01T10:00:00Z","ports":[{"private_port":80,"public_port":8080,"type":"tcp"}],"labels":{},"env":[],"ip":"172.17.0.2"}]})
+```
+
+Run 4 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T15:00:01.587645Z ERROR Action 0 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-api': id "eval-api" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-api","names":["eval-api"],"image":"api:2","command":"python app.py","state":"running","status":"Up 5 minutes","created":"2023-09-01T10:00:00Z","ports":[{"private_port":8080,"public_port":8080,"type":"tcp"}],"labels":{}},{"id":"eval-migrate","names":["eval-migrate"],"image":"api:2","command":"python migrate.py","state":"exited","exit_code":0,"created":"2023-09-01T10:00:00Z","labels":{}}]})
+2026-09-26T15:00:01.587766Z ERROR Action 1 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-api': id "eval-api" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-api","names":["eval-api"],"image":"api:2","command":"python app.py","state":"running","status":"Up 5 minutes","created":"2023-09-01T10:00:00Z","ports":[{"private_port":8080,"public_port":8080,"type":"tcp"}],"labels":{}},{"id":"eval-migrate","names":["eval-migrate"],"image":"api:2","command":"python migrate.py","state":"exited","exit_code":0,"created":"2023-09-01T10:00:00Z","labels":{}}]})
+```
+
+Run 5 — `executor_rejected_action`: the protocol executor refused the action the model built
+
+```
+2026-09-26T15:00:43.585705Z ERROR Action 2 'send_docker_containers' failed on protocol Docker: send_docker_containers refused: container 'eval-api': id "eval-api" must be letters and digits — the peer receives the protocol default instead (action: {"type":"send_docker_containers","containers":[{"id":"eval-api","names":["eval-api"],"image":"api:2","command":"python3 main.py","state":"running","status":"Up 2 hours","created":"2026-09-01T10:00:00Z","ports":[{"private_port":80,"public_port":8080,"type":"tcp"}],"labels":{},"env":[],"ip":"172.17.0.2"}]})
+```
+
+</details>
+
+<details><summary><code>docker/inspect-missing</code> — 0/5 passed</summary>
+
+**Instruction:** Act as a Docker host with no containers at all.
+
+**Client:** `docker -H tcp://127.0.0.1:{PORT} inspect eval-ghost`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such (object|container)/
+
+```
+2026-09-26T15:01:05.454243Z DEBUG Executing action 0: Object {"type": String("send_docker_version"), "version": String("27.5.1"), "arch": String("amd64")}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such (object|container)/
+
+```
+2026-09-26T15:01:16.907695Z DEBUG Executing action 0: Object {"type": String("send_docker_version"), "version": String("27.5.1"), "arch": String("amd64")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such (object|container)/
+
+```
+2026-09-26T15:01:32.805745Z DEBUG Executing action 0: Object {"type": String("send_docker_info")}
+2026-09-26T15:01:32.807376Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("containers: 0\nimages: 0\nnetworks: 0\nvolumes: 0")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such (object|container)/
+
+```
+2026-09-26T15:01:49.069487Z DEBUG Executing action 0: Object {"type": String("send_docker_info")}
+2026-09-26T15:01:49.071693Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("containers: 0\nimages: 0\nnetworks: 0\nvolumes: 0")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such (object|container)/
+
+```
+2026-09-26T15:02:13.988052Z DEBUG Executing action 0: Object {"type": String("send_docker_version"), "version": String("27.5.1"), "arch": String("amd64")}
+```
+
+</details>
+
+<details><summary><code>vault/missing-secret</code> — 0/5 passed</summary>
+
+**Instruction:** Act as a Vault server with an empty secret mount.
+
+**Client:** `vault kv get secret/app/nothing`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not match /(?i)no value found/
+
+```
+2026-09-26T15:05:16.154512Z DEBUG Executing action 0: Object {"type": String("send_vault_secret"), "data": Object {}, "version": Number(1), "created_time": String("2023-03-01T10:00:00Z")}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not match /(?i)no value found/
+
+```
+2026-09-26T15:05:29.278932Z DEBUG Executing action 0: Object {"type": String("send_vault_secret"), "data": Object {}, "version": Number(1), "created_time": String("2023-03-01T10:00:00Z")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not match /(?i)no value found/
+
+```
+2026-09-26T15:05:40.598678Z DEBUG Executing action 0: Object {"type": String("send_vault_secret"), "data": Object {}, "version": Number(1), "created_time": String("2023-03-01T10:00:00Z")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not match /(?i)no value found/
+
+```
+2026-09-26T15:05:50.870945Z DEBUG Executing action 0: Object {"type": String("send_vault_secret"), "data": Object {}, "version": Number(1), "created_time": String("2023-03-01T10:00:00Z")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not match /(?i)no value found/
+
+```
+2026-09-26T15:06:00.742368Z DEBUG Executing action 0: Object {"type": String("send_vault_secret"), "data": Object {}, "version": Number(1), "created_time": String("2023-03-01T10:00:00Z")}
 ```
 
 </details>
 
 ## Known limits of this measurement
 
-- **Runs are not reproducible.** Fixing that needs a `--llm-temperature` / `--llm-seed` flag threaded into `OllamaClient`'s `options` object; the harness will pin them the day they exist and this file will report a boolean instead.
+- **A pinned seed is not a pinned run.** The seed fixes the sampler, not the prompt; see the Reproducibility section for how often the runs agreed.
 - **A pass means the client observed the right thing**, not that the frame is spec-clean. The pcap oracle (Tier 1) is the check for that, and the two are complementary.
 - **`generic-transport` rows are weak evidence.** The check is a substring in a byte stream; only the protocol clients validate framing.
 - **One model.** A different model scores differently. The model is recorded in every artefact for that reason; comparing two protocols is only valid within one run.
