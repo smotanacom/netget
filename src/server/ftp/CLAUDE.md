@@ -124,11 +124,26 @@ handler matches does the model get invoked, once per command line.
 
 | Event         | When                                            | Parameters |
 |---------------|-------------------------------------------------|------------|
-| `ftp_command` | connection accepted, and once per command line  | `command`  |
+| `ftp_command` | connection accepted, and once per command line  | `command`, `answer_with` |
 
 `command` is the raw line with the trailing CRLF stripped — not upper-cased, not split into
 verb and argument. The single sentinel value `CONNECTION_ESTABLISHED` means "TCP connection
 accepted, send your 220 greeting"; it is never sent by a client.
+
+`answer_with` is the reply RFC 959 expects for the verb (`actions::answer_with_for_command`:
+one 220 greeting, 331 **or** 230 for `USER`, 230/530 for `PASS`, a `257 "<dir>"` for `PWD`, …),
+absent for a verb it does not classify.
+
+### One completion reply per command
+
+RFC 959 gives each command exactly one completion reply (2xx–5xx), optionally preceded by 1xx
+replies. The real-model eval saw llama3.1:8b greet a connection with five `220`s and answer
+`USER` with `331` and two `230`s; the client read each surplus reply as the answer to its *next*
+command, so `USER anonymous` got `220 FTP Server Ready` and no login happened. `OneReply`
+(`mod.rs`) writes up to the first completion reply of each answer and drops the rest with WARN
+`decision=duplicate_response_dropped`; `tests/server/ftp/one_reply_test.rs` pins it (verified by
+removing the check: the client then reads the second greeting as its USER reply). A non-numeric
+write is not a reply and is let through.
 
 ### Actions
 

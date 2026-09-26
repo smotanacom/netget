@@ -415,9 +415,10 @@ fn send_ftp_response_action() -> ActionDefinition {
                 name: "code".to_string(),
                 type_hint: "number".to_string(),
                 description: "Three-digit RFC 959 reply code, 100-599. 220 ready, 221 goodbye, \
-                    230 logged in, 250 command ok, 257 pathname created, 331 need password, \
-                    500 syntax error, 530 not logged in, 550 file unavailable. Any value outside \
-                    100-599 is rejected"
+                    230 logged in, 250 command ok, 257 the current directory (the answer to PWD, \
+                    with the path in double quotes: code 257, message \"\\\"/pub\\\" is the \
+                    current directory\"), 331 need password, 500 syntax error, 530 not logged \
+                    in, 550 file unavailable. Any value outside 100-599 is rejected"
                     .to_string(),
                 required: true,
             },
@@ -594,8 +595,9 @@ pub static CLOSE_CONNECTION_ACTION: LazyLock<ActionDefinition> =
 // ============================================================================
 
 /// FTP command event - triggered on connect and for every command line thereafter
-pub static FTP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
+pub static FTP_COMMAND_EVENT: LazyLock<EventType> =
+    LazyLock::new(|| {
+        EventType::new(
         "ftp_command",
         "A client connected, or sent a command line on the FTP control connection. This is the \
          only FTP event: the connect case is signalled by the literal command \
@@ -613,6 +615,14 @@ pub static FTP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             connection has just been accepted and the server is waiting for your 220 greeting"
             .to_string(),
         required: true,
+    },
+    Parameter {
+        name: "answer_with".to_string(),
+        type_hint: "string".to_string(),
+        description: "The reply RFC 959 expects for this command, derived by the server from \
+            its verb. Absent for a verb the server does not classify."
+            .to_string(),
+        required: false,
     }])
     .with_actions(vec![
         SEND_FTP_RESPONSE_ACTION.clone(),
@@ -628,7 +638,42 @@ pub static FTP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             .with_debug("FTP command from {client_ip}:{client_port}: {command}")
             .with_trace("FTP: {json_pretty(.)}"),
     )
-});
+    });
+
+/// The `answer_with` event field: the reply RFC 959 expects for `command`, by its verb.
+///
+/// The real-model eval saw llama3.1:8b answer `USER` with `331` *and* `230` in one reply (the
+/// first is what the client gets), answer `PASS` with another `331`, and answer `PWD` with
+/// `200 Connected`. The server knows the verb exactly, so it says which reply completes it.
+/// Exactly one completion reply per command is also enforced on the wire (`OneReply` in
+/// `mod.rs`).
+pub fn answer_with_for_command(command: &str) -> Option<&'static str> {
+    let verb = command
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    Some(match verb.as_str() {
+        "CONNECTION_ESTABLISHED" => "one 220 greeting",
+        "USER" => {
+            "one reply: 331 to ask for a password, or 230 if this user is logged in with no \
+             password - not both"
+        }
+        "PASS" => "one reply: 230 if the login succeeds, 530 if it does not",
+        "PWD" | "XPWD" => {
+            "one 257 reply whose message starts with the directory in double quotes, e.g. \
+             \"/pub\" is the current directory"
+        }
+        "CWD" | "XCWD" | "CDUP" => {
+            "one reply: 250 if the directory changed, 550 if it does not exist"
+        }
+        "SYST" => "one 215 reply naming the system type, e.g. UNIX Type: L8",
+        "TYPE" | "MODE" | "STRU" | "NOOP" => "one 200 reply",
+        "QUIT" => "one 221 reply, then the server closes",
+        "FEAT" => "a multi-line 211 reply listing features, or 502 if there are none",
+        _ => return None,
+    })
+}
 
 /// Get FTP event types
 pub fn get_ftp_event_types() -> Vec<EventType> {

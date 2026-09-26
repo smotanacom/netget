@@ -355,6 +355,48 @@ fn reply_code_of(data: &[u8]) -> Option<u16> {
     }
 }
 
+/// Tracks the one-reply-per-command rule across an answer's `Output`s.
+///
+/// RFC 959 gives each command exactly one completion reply (2xx-5xx), optionally preceded by
+/// preliminary 1xx replies. The real-model eval saw llama3.1:8b answer a connection with five
+/// `220`s: the client took the first as the greeting and the next four as the answers to the
+/// commands it sent afterwards, so `USER anonymous` read `220 FTP Server Ready` and no login
+/// ever happened (`ftp/anonymous-login` 0/5). Everything after the first completion reply is
+/// dropped and counted, and the caller logs `decision=duplicate_response_dropped`.
+#[cfg(feature = "ftp")]
+#[derive(Default)]
+struct OneReply {
+    completed: bool,
+    dropped: usize,
+}
+
+#[cfg(feature = "ftp")]
+impl OneReply {
+    /// Whether `data` may go on the wire.
+    fn admit(&mut self, data: &[u8]) -> bool {
+        if self.completed {
+            self.dropped += 1;
+            return false;
+        }
+        // A non-numeric write (the model's free text) is not a reply code; let it through and
+        // leave the rule to the numbered replies around it.
+        if reply_code_of(data).is_some_and(|code| code >= 200) {
+            self.completed = true;
+        }
+        true
+    }
+
+    fn log_drops(&self, log: &Log, connection_id: impl std::fmt::Display, what: &str) {
+        if self.dropped > 0 {
+            log.warn(format!(
+                "FTP {what} on connection {connection_id} decision=duplicate_response_dropped: \
+                 {} further reply(ies) after the completion reply were not sent",
+                self.dropped
+            ));
+        }
+    }
+}
+
 /// How a single `ftp_command` event ended, as a stable `decision=` token plus the detail the
 /// log line carries.
 ///
@@ -549,7 +591,8 @@ impl FtpSession {
         let greeting_event = Event::new(
             &FTP_COMMAND_EVENT,
             serde_json::json!({
-                "command": "CONNECTION_ESTABLISHED"
+                "command": "CONNECTION_ESTABLISHED",
+                "answer_with": actions::answer_with_for_command("CONNECTION_ESTABLISHED"),
             }),
         );
 
@@ -591,12 +634,17 @@ impl FtpSession {
                     )),
                 }
 
+                let mut one_reply = OneReply::default();
                 for protocol_result in execution_result.protocol_results {
                     if let ActionResult::Output(data) = protocol_result {
+                        if !one_reply.admit(&data) {
+                            continue;
+                        }
                         Self::write_out(write_half, &data, app_state, server_id, connection_id)
                             .await?;
                     }
                 }
+                one_reply.log_drops(&log, connection_id, "greeting");
             }
             Err(e) => {
                 // Logging it was an improvement on silence for *us*; the client still sat
@@ -723,12 +771,13 @@ impl FtpSession {
             log.debug(format!("FTP received: {}", command));
 
             // Create FTP command event
-            let event = Event::new(
-                &FTP_COMMAND_EVENT,
-                serde_json::json!({
-                    "command": command
-                }),
-            );
+            let event = Event::new(&FTP_COMMAND_EVENT, {
+                let mut data = serde_json::json!({ "command": command });
+                if let Some(hint) = actions::answer_with_for_command(&command) {
+                    data["answer_with"] = serde_json::json!(hint);
+                }
+                data
+            });
 
             // Get handler/LLM response
             match call_llm(
@@ -767,9 +816,13 @@ impl FtpSession {
                         )),
                     }
 
+                    let mut one_reply = OneReply::default();
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(data) => {
+                                if !one_reply.admit(&data) {
+                                    continue;
+                                }
                                 Self::write_out(
                                     write_half,
                                     &data,
@@ -783,11 +836,13 @@ impl FtpSession {
                                 log.debug(format!("FTP sent: {}", response.trim()));
                             }
                             ActionResult::CloseConnection => {
+                                one_reply.log_drops(&log, connection_id, "reply");
                                 return Ok(());
                             }
                             _ => {}
                         }
                     }
+                    one_reply.log_drops(&log, connection_id, "reply");
                 }
                 Err(e) => {
                     // Do not leave the client hanging with no diagnostic: RFC 959 421 tells it

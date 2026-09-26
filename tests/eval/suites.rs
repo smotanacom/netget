@@ -1000,6 +1000,11 @@ fn ftp_probe(script: &str) -> Probe {
     // Several model calls in a row (banner, USER, PASS, PWD) with `-v` narrating each one as it
     // lands, so the client talks between calls; the idle settle cut it off after the banner
     // whenever the next answer took more than two seconds. It exits on `quit`.
+    //
+    // The script is `\n`-terminated. The ftp client reads its stdin by line and keeps a
+    // trailing `\r` as part of the command, so `pwd\r` and `quit\r` were `?Invalid command`
+    // and never reached the server - `ftp/working-directory` could not pass whatever the
+    // model did.
     Probe::client("ftp", &["-n", "-v", "127.0.0.1", "{PORT}"])
         .stdin(script)
         .until_exit()
@@ -1013,21 +1018,21 @@ fn ftp() -> Vec<EvalCase> {
             "ftp",
             "Greet every connection with the banner NetGet Eval FTP, and let anyone log \
              in anonymously.",
-            ftp_probe("quit\r\n"),
+            ftp_probe("quit\n"),
             Expect::contains(&["NetGet Eval FTP"]),
         ),
         EvalCase::new(
             "ftp/anonymous-login",
             "ftp",
             "Let anyone log in anonymously and tell them the login succeeded.",
-            ftp_probe("user anonymous eval@example.com\r\nquit\r\n"),
+            ftp_probe("user anonymous eval@example.com\nquit\n"),
             Expect::default().matching(r"(?i)230|logged in|login successful"),
         ),
         EvalCase::new(
             "ftp/working-directory",
             "ftp",
             "Let anyone log in anonymously. The current directory is /eval.",
-            ftp_probe("user anonymous eval@example.com\r\npwd\r\nquit\r\n"),
+            ftp_probe("user anonymous eval@example.com\npwd\nquit\n"),
             Expect::contains(&["/eval"]),
         ),
     ]
