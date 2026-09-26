@@ -227,6 +227,11 @@ impl Protocol for NetbiosNsProtocol {
             // UDP: its "connections" are per-remote-address bookkeeping that nothing ever
             // closes, so the 10-second idle sweep is what reaps them.
             .connectionless()
+            // Answers on failure, narrowly: a request addressed to this server as its NBNS (RD set,
+            // B clear) gets a NEGATIVE response with RCODE SRV_ERR, the name server's own "I cannot
+            // process this", which asserts nothing about the name. Broadcast queries, node-directed
+            // queries and node status stay silent - every other reply would assert a name.
+            .answers_on_failure()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(137))
             .implementation(

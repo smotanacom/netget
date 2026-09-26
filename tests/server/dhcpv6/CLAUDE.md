@@ -49,13 +49,18 @@ present.
 |---|---|---|
 | `test_dhcpv6_solicit_advertise_request_reply` | 4 | SOLICIT→ADVERTISE (type 2), IA_NA under the client's IAID with T1/T2 and the IA Address lifetimes, IA_PD with the delegated prefix and its length, option 23, option 24, option 7 (Preference), **no** option 14. REQUEST→REPLY (type 7) confirming the same address, and that the ADVERTISE and REPLY carry the **same** Server Identifier. RELEASE→REPLY with a Success status code (option 13) and no fabricated IA_NA |
 | `test_dhcpv6_rapid_commit_and_information_request` | 3 | A SOLICIT with option 14 is answered with a REPLY, not an ADVERTISE, and that REPLY carries option 14 with zero-length data. An INFORMATION-REQUEST **with no Client Identifier** (RFC 8415 §18.2.6 makes it optional) is answered with configuration only: no Client Id invented, no IA_NA, both resolvers in order, both search domains |
-| `test_dhcpv6_llm_failure_sends_nothing` | 2+ | An LLM failure produces **no datagram at all**, and the `decision=fail_closed_` token appears in the log. A CONFIRM produces no datagram and is logged as dropped |
+| `test_dhcpv6_llm_failure_sends_nothing` | 2+ | An LLM failure on a **SOLICIT** produces **no datagram at all**, and the `decision=fail_closed_` token appears in the log. A CONFIRM produces no datagram and is logged as dropped |
+| `test_dhcpv6_llm_failure_on_a_request_answers_unspecfail` | 1 + 1 unmocked | An LLM failure on a **REQUEST** is answered with a REPLY (type 7) carrying the transaction id, the Client Identifier, the **Server Identifier the client addressed** (a DUID NetGet never uses, so it can only have been echoed), a top-level Status Code **1 UnspecFail** with the fixed `WireFailure` text, and no IA_NA; the log says `decision=fail_closed_llm_error` |
 
-## The silence test is the important one
+## The two failure tests are the important ones
 
-DHCPv6 is in the deliberately-silent class: a reply writes an address, lifetimes and resolvers
-into the client's stack, and the protocol has no way to say "the backend is down" — a Status Code
-is a positive statement about a *lease*. So the failure path has to be asserted as an absence.
+A reply writes an address, lifetimes and resolvers into the client's stack, so a failure must
+never produce a positive one, and `NoAddrsAvail`/`NoBinding` are statements about a *lease*.
+UnspecFail is not — RFC 8415 §18.2.10 makes it the server's "unable to process" — so a message
+answered by a REPLY gets one, and a SOLICIT (answered by an ADVERTISE, which has no such form)
+gets nothing. The SOLICIT half therefore has to be asserted as an absence. The REQUEST half was
+verified by removing the `server_failure_reply` call from `mod.rs`: the test then times out
+waiting for a reply.
 
 The trap with an absence is that it is also what you get when the datagram never reached the
 server. So the mock rule that provokes the failure carries `expect_at_least(1)`: the model

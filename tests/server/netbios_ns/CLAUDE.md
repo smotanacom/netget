@@ -107,6 +107,15 @@ server from a broken one. `model_chosen_silence_is_distinguishable_from_an_outag
 inverse pair (`decision=model_silent` present, no `decision=fail_closed`), so neither label can
 quietly start covering both cases.
 
+`an_llm_failure_on_a_query_to_the_name_server_is_answered_srv_err` is the same outage with one
+bit changed: the Samba query with **RD set**, which RFC 1002 §4.2.1.1 reserves for a request
+to the NBNS. That query is answered with a NEGATIVE NAME QUERY RESPONSE carrying RCODE
+**SRV_ERR** — the name server's own "I cannot process this", which asserts nothing about the
+name — echoing the transaction id and question name, with the NULL RR, and the log still says
+`decision=fail_closed_llm_error`. The RD-clear query in the silence test above stays silent, so
+the pair pins the boundary from both sides. Verified by removing the `server_failure_reply` call:
+the new test then times out waiting for a reply.
+
 `expect_silence` proving a negative is inherently a timeout, so it is the one place in this
 suite that waits on the clock rather than on a condition. Eight seconds is well past the
 LLM-failure path's retry loop as configured by the harness; if it ever becomes flaky the fix is

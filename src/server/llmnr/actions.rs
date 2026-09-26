@@ -171,6 +171,10 @@ impl Protocol for LlmnrProtocol {
             // this flag those entries would leak until the server stops; with it the 10-second
             // idle sweep reaps them. See the sweep note in the root CLAUDE.md.
             .connectionless()
+            // Deliberately silent: an LLMNR answer is a name binding written into the querier's
+            // cache, and RFC 4795 forbids the only error frame (a non-zero RCODE) on a multicast
+            // query. A querier that hears nothing asks the next responder.
+            .deliberately_silent()
             // Experimental, and it cannot honestly be more than that. See `notes`.
             .state(DevelopmentState::Experimental)
             // Port 5355 is unprivileged and joining a multicast group needs no elevation.

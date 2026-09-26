@@ -939,3 +939,120 @@ async fn test_dhcpv6_llm_failure_sends_nothing() -> E2EResult<()> {
     server.stop().await?;
     Ok(())
 }
+
+/// A REQUEST the model cannot answer gets the protocol's own "the server failed".
+///
+/// RFC 8415 answers a REQUEST with a REPLY, and §18.2.10 defines a REPLY whose Status Code is
+/// **UnspecFail** as the server being "unable to process the client's message" — the client
+/// may retry, rate-limited. It is the one status that asserts nothing about the lease
+/// (NoAddrsAvail and NoBinding would both be false statements about the client's
+/// configuration), so it is what a fail-closed REQUEST receives instead of silence. The reply
+/// must echo the transaction id and Client Identifier, name the server the client addressed
+/// (its own option 2, here a DUID NetGet never uses), carry no IA_NA, and put only the fixed
+/// category text in the status message — never the error.
+///
+/// 1 startup call + the failing REQUEST (unmocked, answered HTTP 500).
+#[tokio::test]
+async fn test_dhcpv6_llm_failure_on_a_request_answers_unspecfail() -> E2EResult<()> {
+    let prompt =
+        "listen on port {AVAILABLE_PORT} via dhcpv6. Assign addresses from 2001:db8:4::/64";
+
+    let config = helpers::NetGetConfig::new(prompt)
+        .with_log_level("debug")
+        .with_mock(|mock| {
+            mock.on_instruction_containing("listen on port")
+                .and_instruction_containing("dhcpv6")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "DHCPv6",
+                        "instruction": "DHCPv6 server"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+            // Deliberately NO rule for dhcpv6_request: the mock answers 500, which is what
+            // drives the server down its LLM-failure path.
+        });
+
+    let server = helpers::start_netget_server(config).await?;
+    let server_addr: std::net::SocketAddr = format!("[::1]:{}", server.port).parse()?;
+    let socket = client_socket().await?;
+
+    // A server DUID the client learned from some ADVERTISE — deliberately not NetGet's
+    // placeholder, so echoing it proves the reply names the server the client asked.
+    let addressed_server: [u8; 10] = [0x00, 0x03, 0x00, 0x01, 0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
+    let xid = [0x5e, 0x4f, 0x01];
+    let request = build_message(
+        MSG_REQUEST,
+        xid,
+        &[
+            option(OPT_CLIENT_ID, &CLIENT_DUID),
+            option(OPT_SERVER_ID, &addressed_server),
+            option(OPT_ELAPSED_TIME, &0u16.to_be_bytes()),
+            identity_association(
+                OPT_IA_NA,
+                CLIENT_IAID,
+                0,
+                0,
+                &ia_addr_option("2001:db8:4::20".parse()?, 3600, 7200),
+            ),
+        ],
+    );
+
+    let reply = exchange(
+        &socket,
+        server_addr,
+        &request,
+        "a REQUEST the model could not answer (the server went silent on LLM failure if this \
+         times out)",
+    )
+    .await;
+
+    assert_eq!(
+        reply.msg_type, MSG_REPLY,
+        "a REQUEST is answered by a REPLY"
+    );
+    assert_eq!(reply.xid, xid, "the transaction id must be echoed");
+    assert_eq!(
+        reply.first(OPT_CLIENT_ID),
+        Some(CLIENT_DUID.as_slice()),
+        "the client's own DUID must be echoed"
+    );
+    assert_eq!(
+        reply.first(OPT_SERVER_ID),
+        Some(addressed_server.as_slice()),
+        "the reply must name the server the client addressed, not NetGet's placeholder"
+    );
+    let (code, message) = reply
+        .status_code()
+        .expect("a fail-closed REPLY must carry a top-level Status Code");
+    assert_eq!(
+        code, 1,
+        "the status must be UnspecFail (1) — NoAddrsAvail (2) or NoBinding (3) would be false \
+         statements about the lease; got {code} {message:?}"
+    );
+    assert_eq!(
+        message, "request could not be processed",
+        "the status message must be the fixed WireFailure category text, never the error"
+    );
+    assert!(
+        !reply.has(OPT_IA_NA),
+        "a failure reply must hand out nothing — no IA_NA"
+    );
+
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    assert!(
+        server
+            .output_contains("decision=fail_closed_llm_error")
+            .await,
+        "the UnspecFail reply is still the fail-closed outcome and must be tagged as one"
+    );
+
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}

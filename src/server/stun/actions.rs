@@ -53,6 +53,12 @@ impl crate::llm::actions::protocol_trait::Protocol for StunProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure, with the real Binding Success Response. A STUN Binding response
+            // asserts one thing - the reflexive transport address - and the server observed that
+            // itself from the datagram; the model never supplies it on this path. So the static
+            // answer is true whether or not the model was reachable, and it is logged
+            // decision=static_fallback_llm_error, deliberately not fail_closed_*.
+            .answers_on_failure()
             .state(DevelopmentState::Beta)
             .implementation("Manual STUN protocol (RFC 8489)")
             .llm_control("Optional: Binding responses are static by default (mechanical), LLM only on opt-in")

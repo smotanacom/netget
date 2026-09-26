@@ -410,8 +410,9 @@ arrive. On an untrusted network put a rate limiter in front of it.
 
 ## Failure behaviour
 
-STUN is **not** on the root `CLAUDE.md` deliberately-silent list, and it should not be added
-to it: when `call_llm` returns `Err` the request is answered with the ordinary **Binding
+STUN **answers** on failure, and says so in `metadata()` with `.answers_on_failure()` —
+`tests/failure_mode_declaration_test.rs` requires every connectionless server to declare its
+failure mode explicitly, and STUN must not be declared silent: when `call_llm` returns `Err` the request is answered with the ordinary **Binding
 Success Response** — the client's real reflected address, its transaction ID echoed — by
 `send_static_binding_response` in `mod.rs`. The backend error and its overload category go to
 the log and the status stream only; nothing derived from an error ever reaches the wire, and a
