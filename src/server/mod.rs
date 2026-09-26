@@ -337,6 +337,12 @@ pub mod zabbix;
 pub use zabbix::actions::ZabbixProtocol;
 #[cfg(feature = "zabbix")]
 pub use zabbix::ZabbixServer;
+#[cfg(feature = "gearman")]
+pub mod gearman;
+#[cfg(feature = "gearman")]
+pub use gearman::actions::GearmanProtocol;
+#[cfg(feature = "gearman")]
+pub use gearman::GearmanServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]

@@ -234,6 +234,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         // Zabbix trapper (TCP 10051). `zabbix` is Wireshark's own dissector for the ZBXD
         // framing (`tshark -G protocols` lists it; checked with `-d tcp.port==10051,zabbix`).
         "zabbix" => tcp("zabbix"),
+        // Gearman (TCP 4730). `gearman` is Wireshark's own dissector for the binary packet
+        // protocol (`tshark -G protocols` lists it; checked with `-d tcp.port==4730,gearman`).
+        "gearman" => tcp("gearman"),
         // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
