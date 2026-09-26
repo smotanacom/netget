@@ -130,7 +130,7 @@ guard does not panic, which is the easy half.
 | `dns_message` | `hickory_proto::op::Message` (NetGet has no DNS parser) | one UDP datagram; `dns`/`dot`/`doh` |
 | `lldp_frame` | `lldp::codec` 802.1AB TLV walker | link-local broadcast, no handshake |
 | `cdp_frame` | `cdp::codec` TLV walker + checksum | link-local broadcast, no handshake |
-| `modbus_adu` | `modbus::codec` MBAP framing + PDU requests | first bytes of a TCP connection |
+| `modbus_adu` | `modbus::codec` MBAP framing + PDU requests, and the encoders answering them (framing round-trip; every accepted read answerable) | first bytes of a TCP connection |
 | `coap_message` | `coap::codec` option walker, encode round-trip | one UDP datagram |
 | `hsrp_message` | `hsrp::codec` v1/v2 dispatch and TLV walk | one UDP datagram |
 | `m3ua_message` | `m3ua::codec` header + parameter TLV walk | first bytes of a TCP connection |

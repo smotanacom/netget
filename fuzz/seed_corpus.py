@@ -214,6 +214,29 @@ write("modbus_adu", "write_single", mbap(3, 1, bytes([6]) + struct.pack(">HH", 1
 write("modbus_adu", "two_adus",
       mbap(4, 1, bytes([3]) + struct.pack(">HH", 0, 1)) +
       mbap(5, 1, bytes([3]) + struct.pack(">HH", 1, 1)))
+# Modbus has no nesting — an ADU is a flat header and a flat PDU, and no decoder here calls
+# itself — so there is no depth bomb to plant. What a peer controls instead is every length
+# it declares, and these seeds sit on each one. `max_adu` is exactly MAX_ADU_LEN (MBAP length
+# 254); `over_max_adu` is the same frame one octet longer (length 255, refused);
+# `declared_longer_than_sent` announces 254 and carries 5 (must ask for more, never read past
+# the end); `zero_length` and `not_modbus` are the two framing refusals.
+write("modbus_adu", "max_adu", mbap(6, 1, bytes([0x41]) + b"\xaa" * 252))
+write("modbus_adu", "over_max_adu", mbap(7, 1, bytes([0x41]) + b"\xaa" * 253))
+write("modbus_adu", "declared_longer_than_sent",
+      struct.pack(">HHHB", 8, 0, 254, 1) + bytes([3]) + struct.pack(">HH", 0, 1))
+write("modbus_adu", "zero_length", struct.pack(">HHHB", 9, 0, 0, 1))
+write("modbus_adu", "not_modbus", struct.pack(">HHHB", 10, 7, 6, 1) + bytes([3, 0, 0, 0, 1]))
+# The PDU-level lengths: each quantity limit at its maximum, and a write whose byte count
+# disagrees with its quantity.
+write("modbus_adu", "read_coils_max", mbap(11, 1, bytes([1]) + struct.pack(">HH", 0, 2000)))
+write("modbus_adu", "read_registers_max",
+      mbap(12, 1, bytes([3]) + struct.pack(">HH", 0xFFFF - 124, 125)))
+write("modbus_adu", "write_coils_max",
+      mbap(13, 1, bytes([0x0F]) + struct.pack(">HHB", 0, 1968, 246) + b"\x55" * 246))
+write("modbus_adu", "write_registers_max",
+      mbap(14, 1, bytes([0x10]) + struct.pack(">HHB", 0, 123, 246) + b"\x00\x01" * 123))
+write("modbus_adu", "byte_count_mismatch",
+      mbap(15, 1, bytes([0x10]) + struct.pack(">HHB", 0, 2, 3) + b"\x00\x0a\x01"))
 
 # --- CoAP: confirmable GET /.well-known/core ----------------------------
 def coap_opt(delta, value):

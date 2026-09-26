@@ -108,15 +108,15 @@ netget --mcp   # then call list_protocols / get_protocol_docs
 
 Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/protocol/metadata.rs`):
 
-- **Stable** — **two as of 16 September 2026: `coap` and `dns`.** Before that there were none,
-  and three protocols had held the rating and lost it, each for the same reason: nobody had
-  said what it required, so "Stable" meant whoever set it felt good about the code. The bar
-  below is what replaced that, and `coap` and `dns` are the first to be measured against it
-  rather than against a feeling. Each carries its own justification in `metadata()` — read
-  `e2e_testing` and `notes` there, and the "Maturity: the six conditions" section at the foot
-  of each `src/server/<p>/CLAUDE.md`, before quoting either rating: both say in as many words
-  that the rating covers the evidence for the surface the server *implements*, which in both
-  cases is a subset of the RFC.
+- **Stable** — **three as of 26 September 2026: `coap`, `dns` and `modbus`.** Before
+  16 September 2026 there were none, and three protocols had held the rating and lost it, each
+  for the same reason: nobody had said what it required, so "Stable" meant whoever set it felt
+  good about the code. The bar below is what replaced that, and these three are the ones
+  measured against it rather than against a feeling. Each carries its own justification in
+  `metadata()` — read `e2e_testing` and `notes` there, and the "Maturity: the six conditions"
+  section at the foot of each `src/server/<p>/CLAUDE.md`, before quoting any of the ratings:
+  each says in as many words that the rating covers the evidence for the surface the server
+  *implements*, which in every case is a subset of the specification.
 
   **One condition was false for `coap` when that pass began, and how it broke generalises.**
   `fuzz/fuzz_targets/coap_message.rs` had not compiled since `0996d00f` made
@@ -159,11 +159,10 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   clients in its own `e2e_testing`, each has a `tests/server/<p>/` file using `pcap_oracle`, each
   has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What was left
   for them was condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
-  re-verified against source). **`coap` and `dns` went the rest of the way and are Stable;
-  `modbus` is the remaining candidate.**
+  re-verified against source). **All three went the rest of the way and are Stable** — `coap`
+  and `dns` on 16 September, `modbus` on 26 September 2026.
 
-  Two things that pass turned up which are worth carrying to `modbus` and to whatever comes
-  after it:
+  Things those passes turned up which are worth carrying to whatever comes next:
 
   - **Condition 4 is where the declared number turns out to be the wrong number.** `coap`
     declared `.max_inbound_bytes(MAX_PAYLOAD_LEN)`, which bounds what the server *writes*;
@@ -175,6 +174,16 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     "returned nothing usable"; `call_llm` returns `Ok` in exactly that case, so the one clause
     the sentence existed for was the one that wrote nothing at all. Read the doc's failure
     section as a list of assertions to test, not as description.
+  - **Condition 1 can be true of a sample rather than the surface.** `modbus` had two clients
+    for weeks, but neither issued FC 2, 5 or 15 and one never issued FC 16, while `metadata()`
+    named FC 2 as decoded. Count the verbs each client drives against the verbs the server
+    implements. The same pass found condition 2 satisfied by exception frames alone — the
+    success paths were read by a client library that never showed the test the bytes.
+  - **Condition 4 finds defects, not just missing tests.** Testing that a closed connection
+    returns its cap slot found that a Modbus connection closed for a framing error kept its
+    slot as long as the peer held its end open: `close` shut the write half from another task
+    and the reader never learned. A bound the test removal cannot move — `MAX_BUFFERED` was
+    checked at a second site that could never fire — is a comment, and was removed.
 
   **Nine protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
   before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql` and `websocket` have
