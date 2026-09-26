@@ -196,7 +196,9 @@ async fn every_fail_closed_clause_answers_0x04_and_logs_which_one_it_was() -> E2
 
     // Per request, not just somewhere in the log: each outcome must be attributed to the
     // request that produced it.
-    let out = server.get_output().await.join("\n");
+    // Wait for each exact line rather than snapshotting: a decision token an earlier request
+    // already logged satisfies the per-token wait above, and a request's reply reaches the socket
+    // before its own log line is written, so under load a snapshot taken here can miss the last one.
     for (at, decision) in [
         ("read_holding_registers unit=1 @0 x2", "model_answer"),
         (
@@ -223,8 +225,11 @@ async fn every_fail_closed_clause_answers_0x04_and_logs_which_one_it_was() -> E2
         ),
     ] {
         let line = format!("{at} decision={decision}");
-        assert!(out.contains(&line), "expected the log line `{line}`");
+        server.wait_for_log(&line, 30).await.map_err(|e| {
+            format!("expected the log line `{line}`: each outcome must be attributed to the request that produced it: {e}")
+        })?;
     }
+    let out = server.get_output().await.join("\n");
     // The out-of-range value specifically: refused by the executor, never narrowed to 0.
     assert!(
         out.contains("exceeds 65535"),
