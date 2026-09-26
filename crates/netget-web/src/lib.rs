@@ -257,7 +257,9 @@ impl NetGet {
     // ----- model --------------------------------------------------------------------------
 
     /// Install the page's model. `handler(request: string)` receives one JSON request —
-    /// `{id, kind, model, messages:[{role,content}], tools:[...]}` — and resolves to a JSON
+    /// `{id, kind, model, messages:[{role,content}], tools:[...], actions:[...]}` (`actions`:
+    /// every action the prompt offers, with parameters and example — see
+    /// `netget::llm::bridge::offered_action`) — and resolves to a JSON
     /// reply, as a string or an object: `{content?, tool_calls?: [{name, arguments}],
     /// prompt_tokens?, completion_tokens?}` or `{error: "..."}`.
     pub fn set_llm_handler(&self, handler: Function) {

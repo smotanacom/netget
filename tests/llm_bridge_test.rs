@@ -67,6 +67,14 @@ async fn a_generate_request_carries_the_whole_prompt_and_its_text_answer_is_pars
             "system prompt missing"
         );
         assert!(prompt.contains("hello from the peer"), "user turn missing");
+        // The actions the prompt describes also travel as data, example included, so a
+        // person answering by hand gets a form rather than prose to transcribe.
+        assert_eq!(req.actions.len(), 1, "{:?}", req.actions);
+        assert_eq!(req.actions[0]["name"], "send_tcp_data");
+        assert_eq!(req.actions[0]["example"]["data"], "hi");
+        assert_eq!(req.actions[0]["parameters"][0]["name"], "data");
+        assert_eq!(req.actions[0]["parameters"][0]["required"], true);
+        assert_eq!(req.actions[0]["schema"]["required"][0], "data");
         req.reply
             .send(Ok(BridgeReply {
                 content: Some(
@@ -105,6 +113,7 @@ async fn a_chat_request_with_native_tools_maps_the_hosts_tool_calls_to_actions()
             "the tool schema travels with a chat request"
         );
         assert_eq!(req.tools[0]["function"]["name"], "send_tcp_data");
+        assert_eq!(req.actions[0]["name"], "send_tcp_data");
         assert_eq!(req.messages[0].role, "system");
         req.reply
             .send(Ok(BridgeReply {
@@ -181,4 +190,156 @@ async fn an_error_from_the_host_is_the_models_error_not_a_transport_fault() {
     // the next request is still attempted.
     assert_eq!(breaker.status().consecutive_failures, 0);
     drop(host);
+}
+
+#[tokio::test]
+async fn an_empty_action_list_is_an_answer_not_a_failure() {
+    // The page's "answer with nothing" sends exactly this. It must be taken as the model's
+    // answer on the first request — not rejected and retried, not failed.
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+
+    let host = tokio::spawn(async move {
+        let mut seen = 0;
+        while let Some(req) = rx.recv().await {
+            seen += 1;
+            let _ = req.reply.send(Ok(BridgeReply {
+                content: Some(r#"{"actions":[]}"#.to_string()),
+                ..Default::default()
+            }));
+        }
+        seen
+    });
+
+    let actions = conversation(client)
+        .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
+        .await
+        .expect("an empty action list is a valid answer");
+    assert!(actions.is_empty(), "{actions:?}");
+    // The conversation (and with it the client and the bridge sender) is gone, so the host
+    // loop has ended and its count is final.
+    assert_eq!(host.await.unwrap(), 1, "answered once, never retried");
+}
+
+/// The path that matters for the demo page: a real TCP server, a real peer, and the request
+/// the page receives for the network event. It has no native tool schemas — the network-event
+/// path deliberately sends none — so `actions` is the only structured description of what the
+/// visitor may answer with.
+#[cfg(feature = "tcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_network_event_request_offers_the_events_actions_with_their_examples() {
+    use netget::cli::management::ServerForm;
+    use netget::state::app_state::AppState;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (bridge, mut rx) = LlmBridge::new();
+    bridge.set_models(vec!["page-model".to_string()]);
+    let state = AppState::new_with_options(false, "browser://model".to_string());
+    state.set_ollama_model(Some("page-model".to_string())).await;
+    state
+        .set_llm_client(OllamaClient::new_bridge(bridge, Duration::from_secs(30)))
+        .await;
+    let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let id = ServerForm {
+        protocol: "tcp".to_string(),
+        port: Some(0),
+        instruction: Some("Answer whatever arrives.".to_string()),
+        ..Default::default()
+    }
+    .create(&state, status_tx)
+    .await
+    .expect("create tcp server");
+
+    let mut port = None;
+    for _ in 0..200 {
+        if let Some(addr) = state.get_server(id).await.and_then(|s| s.local_addr) {
+            port = Some(addr.port());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let port = port.expect("the tcp server binds a port");
+
+    let mut peer = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    peer.write_all(b"hello\n").await.expect("write");
+
+    let req = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        .await
+        .expect("the event reaches the bridge")
+        .expect("the bridge delivers the request");
+    assert_eq!(req.kind, BridgeRequestKind::Generate);
+    assert!(req.tools.is_empty(), "network events carry no native tools");
+
+    let names: Vec<&str> = req
+        .actions
+        .iter()
+        .filter_map(|a| a["name"].as_str())
+        .collect();
+    for expected in ["send_tcp_data", "wait_for_more", "close_this_connection"] {
+        assert!(
+            names.contains(&expected),
+            "the event's own action {expected} is offered: {names:?}"
+        );
+    }
+    // Exactly the list the prompt describes: every offered name appears in the prompt.
+    let prompt: String = req.messages.iter().map(|m| m.content.as_str()).collect();
+    for name in &names {
+        assert!(
+            prompt.contains(name),
+            "{name} is offered but not in the prompt"
+        );
+    }
+    for action in &req.actions {
+        assert!(
+            action["example"].is_object(),
+            "every offered action carries an example: {action}"
+        );
+        assert_eq!(action["example"]["type"], action["name"], "{action}");
+    }
+    let send = req
+        .actions
+        .iter()
+        .find(|a| a["name"] == "send_tcp_data")
+        .unwrap();
+    assert_eq!(send["generic"], false);
+    assert_eq!(send["tool"], false);
+    let encoding = send["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "encoding")
+        .expect("send_tcp_data declares encoding");
+    assert_eq!(encoding["choices"], json!(["utf8", "hex"]));
+    let set_memory = req.actions.iter().find(|a| a["name"] == "set_memory");
+    assert_eq!(set_memory.map(|a| a["generic"].clone()), Some(json!(true)));
+
+    // Answer with the action's own example, as the page's composer does before any edit,
+    // and the example's bytes reach the peer.
+    let example = send["example"].clone();
+    let expected = example["data"].as_str().unwrap().to_string();
+    req.reply
+        .send(Ok(BridgeReply {
+            content: Some(json!({ "actions": [example] }).to_string()),
+            ..Default::default()
+        }))
+        .expect("the server is waiting");
+
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !String::from_utf8_lossy(&got).contains(&expected) {
+        let n = tokio::time::timeout_at(deadline, peer.read(&mut buf))
+            .await
+            .expect("the example's bytes arrive")
+            .expect("read");
+        assert!(
+            n > 0,
+            "closed before the answer: {:?}",
+            String::from_utf8_lossy(&got)
+        );
+        got.extend_from_slice(&buf[..n]);
+    }
+    let _ = state.remove_server(id).await;
 }

@@ -162,6 +162,10 @@ pub struct ConversationHandler {
     /// Whether to use native tool calling (chat_with_tools) vs prompt-based (generate_with_format)
     use_native_tools: bool,
 
+    /// The actions the current `generate_with_tools_and_retry` call offers. Handed to the
+    /// client with every request so a bridge host can show them as structured data.
+    offered_actions: Vec<ActionDefinition>,
+
     /// Cap on `messages.len()` — see [`DEFAULT_MAX_HISTORY_MESSAGES`]
     max_history_messages: usize,
 
@@ -215,6 +219,7 @@ impl ConversationHandler {
             request_source,
             tool_schemas: Vec::new(),
             use_native_tools: false,
+            offered_actions: Vec::new(),
             max_history_messages: DEFAULT_MAX_HISTORY_MESSAGES,
             max_history_chars: DEFAULT_MAX_HISTORY_CHARS,
             trim_generation: 0,
@@ -691,6 +696,7 @@ impl ConversationHandler {
             available_actions.iter().map(|a| a.name.clone()).collect();
         let mut valid_action_names_list: Vec<String> =
             available_actions.iter().map(|a| a.name.clone()).collect();
+        self.offered_actions = available_actions.clone();
 
         for iteration in 1..=self.max_tool_iterations {
             debug!(
@@ -1579,6 +1585,7 @@ impl ConversationHandler {
                     messages: self.messages.clone(),
                     tools: self.tool_schemas.clone(),
                     model: self.model.clone(),
+                    offered_actions: self.offered_actions.clone(),
                 };
 
                 let chat_response = self
@@ -1639,7 +1646,7 @@ impl ConversationHandler {
                 // as some models (e.g., gpt-oss) don't support Ollama's JSON format mode
                 let generate_response = self
                     .client
-                    .generate_with_format(&self.model, &full_prompt, None)
+                    .generate_offering(&self.model, &full_prompt, None, &self.offered_actions)
                     .await
                     .context("Generate API call failed")?;
 
