@@ -68,6 +68,8 @@ pub mod dhcpv6;
 pub mod dict;
 #[cfg(feature = "dns")]
 pub mod dns;
+#[cfg(feature = "docker")]
+pub mod docker;
 #[cfg(feature = "doh")]
 pub mod doh;
 #[cfg(feature = "dot")]
@@ -190,6 +192,8 @@ pub mod ospf;
 pub mod pop3;
 #[cfg(feature = "postgresql")]
 pub mod postgresql;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 #[cfg(all(feature = "pty", unix))]
@@ -300,6 +304,8 @@ pub mod usb_msc;
 pub mod usb_serial;
 #[cfg(feature = "usb-smartcard")]
 pub mod usb_smartcard;
+#[cfg(feature = "vault")]
+pub mod vault;
 #[cfg(feature = "vnc")]
 pub mod vnc;
 #[cfg(feature = "vrrp")]

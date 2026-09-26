@@ -60,6 +60,12 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(ftp());
     #[cfg(feature = "udp")]
     cases.extend(udp());
+    #[cfg(feature = "prometheus")]
+    cases.extend(prometheus());
+    #[cfg(feature = "docker")]
+    cases.extend(docker());
+    #[cfg(feature = "vault")]
+    cases.extend(vault());
     cases
 }
 
@@ -871,6 +877,142 @@ fn udp() -> Vec<EvalCase> {
             "Send every datagram straight back to whoever sent it, unchanged.",
             nc_udp("netget-eval-datagram\n"),
             Expect::contains(&["netget-eval-datagram"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus — curl fetches /metrics and pipes it to promtool, the Prometheus
+// project's own parser and linter. `PROMTOOL-OK` is printed only when promtool
+// exits 0, so a case passes only if the model's metrics rendered into an
+// exposition a real scraper accepts. `tee /dev/stderr` keeps the body in the
+// probe output for the content checks.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "prometheus")]
+fn promtool_scrape() -> Probe {
+    Probe::client(
+        "sh",
+        &[
+            "-c",
+            "curl -sS --max-time 230 http://127.0.0.1:{PORT}/metrics | tee /dev/stderr \
+             | promtool check metrics && echo PROMTOOL-OK",
+        ],
+    )
+}
+
+#[cfg(feature = "prometheus")]
+fn prometheus() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "prometheus/queue-depth-gauge",
+            "prometheus",
+            "Expose a gauge named netget_eval_queue_depth whose value is 17.",
+            promtool_scrape(),
+            Expect::contains(&["netget_eval_queue_depth 17", "PROMTOOL-OK"]),
+        ),
+        EvalCase::new(
+            "prometheus/requests-by-status",
+            "prometheus",
+            "Count HTTP requests by status code: 1500 requests answered 200 and 12 answered \
+             404 so far.",
+            promtool_scrape(),
+            Expect::contains(&["PROMTOOL-OK"]).matching(r#"(?i)="?200"?[,}][^\n]* 1500"#),
+        ),
+        EvalCase::new(
+            "prometheus/latency-histogram",
+            "prometheus",
+            "Report request latency in seconds as a histogram with buckets at 0.1, 0.5 and 1 \
+             second; 40 requests so far, 30 of them under 0.1s.",
+            promtool_scrape(),
+            Expect::contains(&["_bucket", "le=\"+Inf\"", "PROMTOOL-OK"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Docker — the real docker CLI pointed at NetGet with -H. DOCKER_HOST and
+// DOCKER_CONTEXT are overridden and DOCKER_CONFIG is a throwaway path, so the
+// machine's own daemon is never consulted.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "docker")]
+fn docker_cli(args: &[&str]) -> Probe {
+    let mut all = vec!["-H", "tcp://127.0.0.1:{PORT}"];
+    all.extend_from_slice(args);
+    Probe::client("docker", &all)
+        .env("DOCKER_HOST", "")
+        .env("DOCKER_CONTEXT", "default")
+        .env("DOCKER_CONFIG", "/tmp/netget-eval-docker-config")
+}
+
+#[cfg(feature = "docker")]
+fn docker() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "docker/ps-running-container",
+            "docker",
+            "Act as a Docker host running one container named eval-web from the image \
+             nginx:1.27, publishing host port 8080 to container port 80.",
+            docker_cli(&["ps"]),
+            Expect::contains(&["eval-web", "nginx:1.27", "8080->80/tcp"]),
+        ),
+        EvalCase::new(
+            "docker/ps-all-includes-stopped",
+            "docker",
+            "Act as a Docker host with a running container eval-api (image api:2) and a \
+             stopped container eval-migrate (image api:2) that exited with code 0.",
+            docker_cli(&["ps", "-a"]),
+            Expect::contains(&["eval-api", "eval-migrate", "Exited (0)"]),
+        ),
+        EvalCase::new(
+            "docker/inspect-missing",
+            "docker",
+            "Act as a Docker host with no containers at all.",
+            docker_cli(&["inspect", "eval-ghost"]),
+            Expect::default().matching(r"(?i)no such (object|container)"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Vault — HashiCorp's vault CLI with VAULT_ADDR at NetGet. HOME is a throwaway
+// path so no token helper from the operator's own config is read.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "vault")]
+fn vault_cli(args: &[&str]) -> Probe {
+    Probe::client("vault", args)
+        .env("VAULT_ADDR", "http://127.0.0.1:{PORT}")
+        .env("VAULT_TOKEN", "hvs.netget-eval")
+        .env("HOME", "/tmp/netget-eval-vault-home")
+}
+
+#[cfg(feature = "vault")]
+fn vault() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "vault/read-a-field",
+            "vault",
+            "Act as a Vault server. The secret at app/db in the secret mount holds the username \
+             payments and the password NETGET-EVAL-PW.",
+            vault_cli(&["kv", "get", "-field=password", "secret/app/db"]),
+            Expect::contains(&["NETGET-EVAL-PW"]),
+        ),
+        EvalCase::new(
+            "vault/list-keys",
+            "vault",
+            "Act as a Vault server whose secret mount has three secrets under app: db, stripe \
+             and smtp.",
+            vault_cli(&["kv", "list", "secret/app"]),
+            Expect::contains(&["db", "stripe", "smtp"]),
+        ),
+        EvalCase::new(
+            "vault/missing-secret",
+            "vault",
+            "Act as a Vault server with an empty secret mount.",
+            vault_cli(&["kv", "get", "secret/app/nothing"]),
+            Expect::default().matching(r"(?i)no value found"),
         ),
     ]
 }

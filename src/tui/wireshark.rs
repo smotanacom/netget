@@ -243,7 +243,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
