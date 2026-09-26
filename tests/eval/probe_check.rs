@@ -369,3 +369,540 @@ async fn bolt_syntax_error_waits_for_the_model() -> E2EResult<()> {
     })
     .await
 }
+
+// ---------------------------------------------------------------------------
+// smtp — smtplib
+// ---------------------------------------------------------------------------
+
+/// A mail server that greets as NetGet Eval Mail, takes every sender, and takes a
+/// recipient only at example.com: one rule on `smtp_command`, branching on the
+/// command, because the greeting and every command are the same event.
+#[cfg(feature = "smtp")]
+fn answer_smtp(mock: MockLlmBuilder, calls: usize) -> MockLlmBuilder {
+    mock.on_event("smtp_command")
+        .respond_with_actions_from_event(|event| {
+            let command = event["command"].as_str().unwrap_or_default().to_string();
+            let upper = command.to_ascii_uppercase();
+            if upper == "CONNECTION_ESTABLISHED" {
+                serde_json::json!([{
+                    "type": "send_smtp_greeting",
+                    "hostname": "mail.example.com",
+                    "message": "NetGet Eval Mail"
+                }])
+            } else if upper.starts_with("EHLO") {
+                serde_json::json!([{
+                    "type": "send_smtp_ehlo", "hostname": "mail.example.com", "extensions": []
+                }])
+            } else if upper.starts_with("MAIL") {
+                serde_json::json!([{"type": "send_smtp_ok", "message": "Sender OK"}])
+            } else if upper.starts_with("RCPT") && command.contains("@example.com") {
+                serde_json::json!([{"type": "send_smtp_ok", "message": "Recipient OK"}])
+            } else {
+                serde_json::json!([{
+                    "type": "send_smtp_error", "code": 550, "message": "Relaying denied"
+                }])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(calls)
+        .and()
+}
+
+#[cfg(feature = "smtp")]
+#[tokio::test]
+async fn smtp_named_banner_waits_for_the_model() -> E2EResult<()> {
+    check_case("smtp/named-banner", |mock| answer_smtp(mock, 1)).await
+}
+
+#[cfg(feature = "smtp")]
+#[tokio::test]
+async fn smtp_accept_local_domain_waits_for_the_model() -> E2EResult<()> {
+    // Greeting, EHLO, MAIL, RCPT.
+    check_case("smtp/accept-local-domain", |mock| answer_smtp(mock, 4)).await
+}
+
+#[cfg(feature = "smtp")]
+#[tokio::test]
+async fn smtp_refuse_other_domain_waits_for_the_model() -> E2EResult<()> {
+    check_case("smtp/refuse-other-domain", |mock| answer_smtp(mock, 4)).await
+}
+
+// ---------------------------------------------------------------------------
+// pop3 — poplib
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "pop3")]
+fn answer_pop3(mock: MockLlmBuilder) -> MockLlmBuilder {
+    // Greeting, USER, PASS, then STAT or RETR.
+    mock.on_event("pop3_command")
+        .respond_with_actions_from_event(|event| {
+            let command = event["command"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            if command == "CONNECTION_ESTABLISHED" {
+                serde_json::json!([{"type": "send_pop3_greeting", "message": "POP3 ready"}])
+            } else if command.starts_with("STAT") {
+                serde_json::json!([{"type": "send_pop3_stat", "message_count": 7, "total_size": 7000}])
+            } else if command.starts_with("RETR") {
+                serde_json::json!([{
+                    "type": "send_pop3_retr",
+                    "content": "From: alice@example.com\nTo: eval@example.com\n\
+                                Subject: Quarterly figures are in\n\nSee attached."
+                }])
+            } else {
+                serde_json::json!([{"type": "send_pop3_ok", "message": "OK"}])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(4)
+        .and()
+}
+
+#[cfg(feature = "pop3")]
+#[tokio::test]
+async fn pop3_message_count_waits_for_the_model() -> E2EResult<()> {
+    check_case("pop3/message-count", answer_pop3).await
+}
+
+#[cfg(feature = "pop3")]
+#[tokio::test]
+async fn pop3_message_subject_waits_for_the_model() -> E2EResult<()> {
+    check_case("pop3/message-subject", answer_pop3).await
+}
+
+// ---------------------------------------------------------------------------
+// imap — imaplib
+// ---------------------------------------------------------------------------
+
+/// Greeting, LOGIN, and one rule for `imap_command` branching on the command:
+/// imaplib issues CAPABILITY on its own before LOGIN, then the command under test.
+#[cfg(feature = "imap")]
+fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("imap_connection")
+        .respond_with_actions(serde_json::json!([{
+            "type": "send_imap_greeting",
+            "hostname": "mail.example.com",
+            "capabilities": ["IMAP4rev1"]
+        }]))
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+        .on_event("imap_auth")
+        .respond_with_actions_from_event(|event| {
+            let tag = event["tag"].as_str().unwrap_or("A001").to_string();
+            serde_json::json!([{
+                "type": "send_imap_response", "tag": tag, "status": "OK",
+                "message": "LOGIN completed"
+            }])
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+        .on_event("imap_command")
+        .respond_with_actions_from_event(|event| {
+            let tag = event["tag"].as_str().unwrap_or("A001").to_string();
+            let command = event["command"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            match command.as_str() {
+                "CAPABILITY" => serde_json::json!([
+                    {"type": "send_imap_capability", "capabilities": ["IMAP4rev1"]},
+                    {"type": "send_imap_response", "tag": tag, "status": "OK",
+                     "message": "CAPABILITY completed"}
+                ]),
+                "LIST" => serde_json::json!([
+                    {"type": "send_imap_list", "mailboxes": [
+                        {"name": "INBOX", "delimiter": "/", "flags": []},
+                        {"name": "Archive", "delimiter": "/", "flags": []},
+                        {"name": "Receipts", "delimiter": "/", "flags": []}
+                    ]},
+                    {"type": "send_imap_response", "tag": tag, "status": "OK",
+                     "message": "LIST completed"}
+                ]),
+                "SELECT" => serde_json::json!([
+                    {"type": "send_imap_select", "exists": 12, "recent": 0,
+                     "uidvalidity": 1, "uidnext": 13, "flags": ["\\Seen"]},
+                    {"type": "send_imap_response", "tag": tag, "status": "OK",
+                     "code": "READ-WRITE", "message": "SELECT completed"}
+                ]),
+                _ => serde_json::json!([
+                    {"type": "send_imap_response", "tag": tag, "status": "BAD",
+                     "message": format!("unexpected command {command}")}
+                ]),
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(2)
+        .and()
+}
+
+#[cfg(feature = "imap")]
+#[tokio::test]
+async fn imap_list_folders_waits_for_the_model() -> E2EResult<()> {
+    check_case("imap/list-folders", answer_imap).await
+}
+
+#[cfg(feature = "imap")]
+#[tokio::test]
+async fn imap_inbox_count_waits_for_the_model() -> E2EResult<()> {
+    check_case("imap/inbox-count", answer_imap).await
+}
+
+// ---------------------------------------------------------------------------
+// nntp — nntplib
+// ---------------------------------------------------------------------------
+
+/// Greeting, CAPABILITIES (nntplib asks on connect), then the command under test.
+#[cfg(feature = "nntp")]
+fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("nntp_command_received")
+        .respond_with_actions_from_event(|event| {
+            let command = event["command"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            if command == "GREETING" {
+                serde_json::json!([{
+                    "type": "send_nntp_response", "code": 201, "text": "NetGet news ready"
+                }])
+            } else if command == "CAPABILITIES" {
+                serde_json::json!([{
+                    "type": "send_nntp_message",
+                    "message": "101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\n.\r\n"
+                }])
+            } else if command == "GROUP COMP.LANG.EVAL" {
+                serde_json::json!([{
+                    "type": "send_nntp_group",
+                    "name": "comp.lang.eval", "count": 42, "low": 1, "high": 42
+                }])
+            } else if command.starts_with("GROUP") {
+                serde_json::json!([{
+                    "type": "send_nntp_response", "code": 411, "text": "No such newsgroup"
+                }])
+            } else if command.starts_with("LIST") {
+                serde_json::json!([{
+                    "type": "send_nntp_list",
+                    "groups": [
+                        {"name": "comp.lang.eval", "high": 42, "low": 1, "status": "y"},
+                        {"name": "alt.netget.test", "high": 7, "low": 1, "status": "y"}
+                    ]
+                }])
+            } else {
+                serde_json::json!([{
+                    "type": "send_nntp_response", "code": 500, "text": "Command not recognized"
+                }])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(3)
+        .and()
+}
+
+#[cfg(feature = "nntp")]
+#[tokio::test]
+async fn nntp_group_article_count_waits_for_the_model() -> E2EResult<()> {
+    check_case("nntp/group-article-count", answer_nntp).await
+}
+
+#[cfg(feature = "nntp")]
+#[tokio::test]
+async fn nntp_list_groups_waits_for_the_model() -> E2EResult<()> {
+    check_case("nntp/list-groups", answer_nntp).await
+}
+
+#[cfg(feature = "nntp")]
+#[tokio::test]
+async fn nntp_unknown_group_waits_for_the_model() -> E2EResult<()> {
+    check_case("nntp/unknown-group", answer_nntp).await
+}
+
+// ---------------------------------------------------------------------------
+// memcached — pymemcache
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "memcached")]
+fn answer_memcached_get(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("memcached_get")
+        .respond_with_actions_from_event(|event| {
+            let key = event["keys"][0].as_str().unwrap_or_default().to_string();
+            if key == "motd" {
+                serde_json::json!([{
+                    "type": "send_memcached_values",
+                    "values": [{"key": key, "value": "netget-eval-cache-hit", "flags": 0}]
+                }])
+            } else {
+                serde_json::json!([{"type": "send_memcached_values", "values": []}])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "memcached")]
+#[tokio::test]
+async fn memcached_get_value_waits_for_the_model() -> E2EResult<()> {
+    check_case("memcached/get-value", answer_memcached_get).await
+}
+
+#[cfg(feature = "memcached")]
+#[tokio::test]
+async fn memcached_missing_key_waits_for_the_model() -> E2EResult<()> {
+    check_case("memcached/missing-key", answer_memcached_get).await
+}
+
+#[cfg(feature = "memcached")]
+#[tokio::test]
+async fn memcached_stats_version_waits_for_the_model() -> E2EResult<()> {
+    check_case("memcached/stats-version", |mock| {
+        mock.on_event("memcached_stats")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_memcached_stats",
+                "stats": {"pid": "4242", "uptime": "600", "version": "1.6.21", "curr_items": "12"}
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// mqtt — mosquitto_sub
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "mqtt")]
+#[tokio::test]
+async fn mqtt_retained_message_waits_for_the_model() -> E2EResult<()> {
+    check_case("mqtt/retained-message", |mock| {
+        mock.on_event("mqtt_connect")
+            .respond_with_actions(serde_json::json!([{"type": "mqtt_connack", "return_code": 0}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+            // The SUBACK, then the retained message on the same connection.
+            .on_event("mqtt_subscribe")
+            .respond_with_actions_from_event(|event| {
+                serde_json::json!([
+                    {"type": "mqtt_suback",
+                     "packet_id": event["packet_id"].as_u64().unwrap_or(0),
+                     "granted_qos": [0]},
+                    {"type": "mqtt_publish", "topic": "sensors/greenhouse/temp",
+                     "payload": "19.5", "qos": 0, "retain": true}
+                ])
+            })
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "mqtt")]
+#[tokio::test]
+async fn mqtt_refuse_client_id_waits_for_the_model() -> E2EResult<()> {
+    check_case("mqtt/refuse-client-id", |mock| {
+        mock.on_event("mqtt_connect")
+            .and_event_data_contains("client_id", "guest")
+            .respond_with_actions(serde_json::json!([{"type": "mqtt_connack", "return_code": 2}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// coap — coap-client
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "coap")]
+fn answer_coap(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("coap_request")
+        .respond_with_actions_from_event(|event| {
+            if event["path"].as_str() == Some("/temperature") {
+                serde_json::json!([{
+                    "type": "send_coap_response", "code": "2.05",
+                    "payload": "19.5 C", "content_format": "text/plain"
+                }])
+            } else {
+                serde_json::json!([{"type": "send_coap_response", "code": "4.04"}])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "coap")]
+#[tokio::test]
+async fn coap_text_resource_waits_for_the_model() -> E2EResult<()> {
+    check_case("coap/text-resource", answer_coap).await
+}
+
+#[cfg(feature = "coap")]
+#[tokio::test]
+async fn coap_not_found_waits_for_the_model() -> E2EResult<()> {
+    check_case("coap/not-found", answer_coap).await
+}
+
+// ---------------------------------------------------------------------------
+// modbus — pymodbus
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "modbus")]
+fn answer_modbus(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("modbus_read_registers")
+        .respond_with_actions_from_event(|event| {
+            if event["start_address"].as_u64() == Some(0) {
+                serde_json::json!([{"type": "send_modbus_registers", "values": [1200, 350, 42]}])
+            } else {
+                serde_json::json!([{"type": "send_modbus_exception", "exception_code": 2}])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn modbus_holding_registers_waits_for_the_model() -> E2EResult<()> {
+    check_case("modbus/holding-registers", answer_modbus).await
+}
+
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn modbus_illegal_address_waits_for_the_model() -> E2EResult<()> {
+    check_case("modbus/illegal-address", answer_modbus).await
+}
+
+// ---------------------------------------------------------------------------
+// snmp — snmpget
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "snmp")]
+fn answer_snmp(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("snmp_request")
+        .respond_with_actions_from_event(|event| {
+            let variables: Vec<serde_json::Value> = event["oids"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|oid| {
+                    let oid = oid.as_str().unwrap_or_default().to_string();
+                    let value = if oid.ends_with("1.1.5.0") {
+                        "eval-core-01"
+                    } else {
+                        "NetGet Eval Switch 1.0"
+                    };
+                    serde_json::json!({"oid": oid, "type": "string", "value": value})
+                })
+                .collect();
+            serde_json::json!([{"type": "send_snmp_response", "variables": variables}])
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "snmp")]
+#[tokio::test]
+async fn snmp_sysdescr_waits_for_the_model() -> E2EResult<()> {
+    check_case("snmp/sysdescr", answer_snmp).await
+}
+
+#[cfg(feature = "snmp")]
+#[tokio::test]
+async fn snmp_sysdescr_and_sysname_waits_for_the_model() -> E2EResult<()> {
+    check_case("snmp/sysdescr-and-sysname", answer_snmp).await
+}
+
+// ---------------------------------------------------------------------------
+// sip — sipsak
+// ---------------------------------------------------------------------------
+
+/// sipsak's first resend comes at T1 = 10s, after the mocked 5s answer, so the
+/// model is asked once; the second allowance covers a resend under load.
+#[cfg(feature = "sip")]
+fn answer_sip(mock: MockLlmBuilder, status: u16, reason: &str) -> MockLlmBuilder {
+    mock.on_event("sip_options")
+        .respond_with_actions(serde_json::json!([{
+            "type": "sip_options",
+            "status_code": status,
+            "reason_phrase": reason,
+            "allow_methods": ["INVITE", "ACK", "BYE", "CANCEL", "OPTIONS"]
+        }]))
+        .after_delay(MODEL_LATENCY)
+        .expect_at_least(1)
+        .expect_at_most(2)
+        .and()
+}
+
+#[cfg(feature = "sip")]
+#[tokio::test]
+async fn sip_available_waits_for_the_model() -> E2EResult<()> {
+    check_case("sip/available", |mock| answer_sip(mock, 200, "OK")).await
+}
+
+#[cfg(feature = "sip")]
+#[tokio::test]
+async fn sip_busy_waits_for_the_model() -> E2EResult<()> {
+    check_case("sip/busy", |mock| answer_sip(mock, 486, "Busy Here")).await
+}
+
+// ---------------------------------------------------------------------------
+// websocket — websocat
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "websocket")]
+fn accept_websocket(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("websocket_handshake")
+        .respond_with_actions(serde_json::json!([{"type": "accept_websocket"}]))
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "websocket")]
+#[tokio::test]
+async fn websocket_echo_waits_for_the_model() -> E2EResult<()> {
+    check_case("websocket/echo", |mock| {
+        accept_websocket(mock)
+            .on_event("websocket_connection_opened")
+            .respond_with_actions(serde_json::json!([]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+            .on_event("websocket_text_message")
+            .respond_with_actions_from_event(|event| {
+                serde_json::json!([{
+                    "type": "send_websocket_text",
+                    "text": event["text"].as_str().unwrap_or_default()
+                }])
+            })
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "websocket")]
+#[tokio::test]
+async fn websocket_greeting_waits_for_the_model() -> E2EResult<()> {
+    check_case("websocket/greeting", |mock| {
+        accept_websocket(mock)
+            .on_event("websocket_connection_opened")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_websocket_text", "text": "Welcome to NetGet Eval"
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}

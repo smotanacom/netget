@@ -74,6 +74,28 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(vault());
     #[cfg(feature = "bolt")]
     cases.extend(bolt());
+    #[cfg(feature = "smtp")]
+    cases.extend(smtp());
+    #[cfg(feature = "pop3")]
+    cases.extend(pop3());
+    #[cfg(feature = "imap")]
+    cases.extend(imap());
+    #[cfg(feature = "nntp")]
+    cases.extend(nntp());
+    #[cfg(feature = "memcached")]
+    cases.extend(memcached());
+    #[cfg(feature = "mqtt")]
+    cases.extend(mqtt());
+    #[cfg(feature = "coap")]
+    cases.extend(coap());
+    #[cfg(feature = "modbus")]
+    cases.extend(modbus());
+    #[cfg(feature = "snmp")]
+    cases.extend(snmp());
+    #[cfg(feature = "sip")]
+    cases.extend(sip());
+    #[cfg(feature = "websocket")]
+    cases.extend(websocket());
     cases
 }
 
@@ -1270,6 +1292,576 @@ fn bolt() -> Vec<EvalCase> {
              not valid Cypher with Neo4j's syntax error.",
             bolt_shell("SELECT name FROM people"),
             Expect::default().matching(r"(?i)(invalid|syntax|unexpected|expected)"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// The mail and news clients below are Python's standard library — `smtplib`,
+// `poplib`, `imaplib`, `nntplib` — each a separate implementation of its
+// protocol that parses the replies itself: a reply code, a `+OK`, a tagged
+// completion, a multi-line block with its terminating dot. They print what they
+// parsed, or the name of the exception they raised.
+//
+// Each is a session of several model calls (the greeting is one, and every
+// command after it another), and the client narrates between them, so each
+// probe runs `until_exit()`. The sessions stop at the command the case is
+// about: every extra command is another model call inside the probe's 240s.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "smtp")]
+const SMTPLIB_PROBE: &str = r#"import sys, smtplib
+port, mode = int(sys.argv[1]), sys.argv[2]
+def text(msg):
+    return msg.decode('utf-8', 'replace').replace('\n', ' | ')
+try:
+    s = smtplib.SMTP(local_hostname='eval-client.example', timeout=230)
+    code, msg = s.connect('127.0.0.1', port)
+    print('GREETING', code, text(msg))
+    if mode == 'rcpt':
+        code, msg = s.ehlo()
+        print('EHLO', code, text(msg))
+        code, msg = s.mail('postmaster@example.com')
+        print('MAIL', code, text(msg))
+        code, msg = s.rcpt(sys.argv[3])
+        print('RCPT', code, text(msg))
+    s.close()
+except Exception as e:
+    print(type(e).__name__, e)
+"#;
+
+#[cfg(feature = "smtp")]
+fn smtp_probe(mode: &str, recipient: &str) -> Probe {
+    Probe::client("python3", &["-c", SMTPLIB_PROBE, "{PORT}", mode, recipient]).until_exit()
+}
+
+#[cfg(feature = "smtp")]
+fn smtp() -> Vec<EvalCase> {
+    const DOMAIN_POLICY: &str = "Accept mail addressed to anyone at example.com. Refuse mail \
+                                 for any other domain.";
+    vec![
+        EvalCase::new(
+            "smtp/named-banner",
+            "smtp",
+            "Greet every connection with the banner NetGet Eval Mail.",
+            smtp_probe("greet", "-"),
+            Expect::contains(&["GREETING 220", "NetGet Eval Mail"]),
+        ),
+        EvalCase::new(
+            "smtp/accept-local-domain",
+            "smtp",
+            DOMAIN_POLICY,
+            smtp_probe("rcpt", "alice@example.com"),
+            Expect::default().matching(r"(?s)\nMAIL 250\b.*\nRCPT 25[01]\b"),
+        ),
+        EvalCase::new(
+            "smtp/refuse-other-domain",
+            "smtp",
+            DOMAIN_POLICY,
+            smtp_probe("rcpt", "bob@elsewhere.test"),
+            // The refusal has to land on the recipient: a sender refused at MAIL would
+            // make RCPT a 503 bad-sequence, which is a 5xx for the wrong reason.
+            Expect::default().matching(r"(?s)\nMAIL 250\b.*\nRCPT 5\d\d\b"),
+        ),
+    ]
+}
+
+#[cfg(feature = "pop3")]
+const POPLIB_PROBE: &str = r#"import sys, poplib
+port, mode = int(sys.argv[1]), sys.argv[2]
+def text(b):
+    return b.decode('utf-8', 'replace')
+try:
+    p = poplib.POP3('127.0.0.1', port, timeout=230)
+    print('GREETING', text(p.getwelcome()))
+    print('USER', text(p.user('eval')))
+    print('PASS', text(p.pass_('eval-password')))
+    if mode == 'stat':
+        count, size = p.stat()
+        print('STAT', count, size)
+    else:
+        resp, lines, octets = p.retr(1)
+        print('RETR', text(resp))
+        for line in lines:
+            print(text(line))
+except Exception as e:
+    print(type(e).__name__, e)
+"#;
+
+#[cfg(feature = "pop3")]
+fn pop3_probe(mode: &str) -> Probe {
+    Probe::client("python3", &["-c", POPLIB_PROBE, "{PORT}", mode]).until_exit()
+}
+
+#[cfg(feature = "pop3")]
+fn pop3() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "pop3/message-count",
+            "pop3",
+            "Accept any login. The mailbox holds 7 messages.",
+            pop3_probe("stat"),
+            Expect::default().matching(r"(?m)^STAT 7 \d+"),
+        ),
+        EvalCase::new(
+            "pop3/message-subject",
+            "pop3",
+            "Accept any login. The mailbox holds one message, from alice@example.com, with \
+             the subject Quarterly figures are in.",
+            pop3_probe("retr"),
+            Expect::contains(&["RETR +OK", "Subject: Quarterly figures are in"]),
+        ),
+    ]
+}
+
+#[cfg(feature = "imap")]
+const IMAPLIB_PROBE: &str = r#"import sys, imaplib
+port, mode = int(sys.argv[1]), sys.argv[2]
+def text(b):
+    return b.decode('utf-8', 'replace') if isinstance(b, bytes) else str(b)
+try:
+    m = imaplib.IMAP4('127.0.0.1', port, timeout=230)
+    print('GREETING', text(m.welcome))
+    typ, data = m.login('eval', 'eval-password')
+    print('LOGIN', typ)
+    if mode == 'list':
+        typ, data = m.list()
+        print('LIST', typ)
+        for line in data:
+            print(text(line))
+    else:
+        typ, data = m.select('INBOX')
+        print('SELECT', typ, [text(d) for d in data])
+except Exception as e:
+    print(type(e).__name__, e)
+"#;
+
+#[cfg(feature = "imap")]
+fn imap_probe(mode: &str) -> Probe {
+    Probe::client("python3", &["-c", IMAPLIB_PROBE, "{PORT}", mode]).until_exit()
+}
+
+#[cfg(feature = "imap")]
+fn imap() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "imap/list-folders",
+            "imap",
+            "Accept any login. The account has three folders: INBOX, Archive and Receipts.",
+            imap_probe("list"),
+            Expect::contains(&["LIST OK", "INBOX", "Archive", "Receipts"]),
+        ),
+        EvalCase::new(
+            "imap/inbox-count",
+            "imap",
+            "Accept any login. The INBOX holds 12 messages.",
+            imap_probe("select"),
+            // imaplib's select() returns the untagged EXISTS count, not the completion,
+            // so ['12'] is the count it parsed out of `* 12 EXISTS`.
+            Expect::contains(&["SELECT OK ['12']"]),
+        ),
+    ]
+}
+
+#[cfg(feature = "nntp")]
+const NNTPLIB_PROBE: &str = r#"import sys, nntplib
+port, mode, arg = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+try:
+    n = nntplib.NNTP('127.0.0.1', port, readermode=False, usenetrc=False, timeout=230)
+    print('GREETING', n.getwelcome())
+    if mode == 'group':
+        resp, count, first, last, name = n.group(arg)
+        print('GROUP', resp)
+        print('COUNT', count, 'FIRST', first, 'LAST', last, 'NAME', name)
+    else:
+        resp, groups = n.list()
+        print('LIST', resp)
+        for g in groups:
+            print('ACTIVE', g.group, g.last, g.first, g.flag)
+except Exception as e:
+    print(type(e).__name__, e)
+"#;
+
+#[cfg(feature = "nntp")]
+fn nntp_probe(mode: &str, arg: &str) -> Probe {
+    // nntplib reads the greeting and then issues CAPABILITIES before the command
+    // under test, so every case is at least three model calls.
+    Probe::client("python3", &["-c", NNTPLIB_PROBE, "{PORT}", mode, arg]).until_exit()
+}
+
+#[cfg(feature = "nntp")]
+fn nntp() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "nntp/group-article-count",
+            "nntp",
+            "You are a news server carrying the group comp.lang.eval, which holds 42 articles \
+             numbered 1 to 42.",
+            nntp_probe("group", "comp.lang.eval"),
+            Expect::contains(&["COUNT 42 FIRST 1 LAST 42"]),
+        ),
+        EvalCase::new(
+            "nntp/list-groups",
+            "nntp",
+            "You are a news server carrying exactly two groups: comp.lang.eval and \
+             alt.netget.test.",
+            nntp_probe("list", "-"),
+            Expect::contains(&["ACTIVE comp.lang.eval", "ACTIVE alt.netget.test"]),
+        ),
+        EvalCase::new(
+            "nntp/unknown-group",
+            "nntp",
+            "You are a news server carrying only the group comp.lang.eval. No other group \
+             exists.",
+            nntp_probe("group", "alt.nothing.here"),
+            // 411 is "no such newsgroup"; nntplib raises NNTPTemporaryError carrying it.
+            Expect::default().matching(r"NNTPTemporaryError 411\b"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Memcached — pymemcache (`pip install pymemcache`), not libmemcached's memcat,
+// and the reason is measured: every libmemcached tool (`memcat`, `memstat`,
+// `memping`) gives up after its built-in 5-second poll timeout, and none of
+// them has an option to raise it. Against a listener that answered after 8s,
+// `memcat` printed `Error on motd(NOT FOUND)` at 5.01s. A model answer takes
+// 5-90s, so memcat would score the harness. pymemcache is an independent
+// Python client that parses the `VALUE`/`STAT` framing itself and takes a
+// timeout.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "memcached")]
+const PYMEMCACHE_PROBE: &str = r#"import sys
+from pymemcache.client.base import Client
+c = Client(('127.0.0.1', int(sys.argv[1])), connect_timeout=30, timeout=230)
+try:
+    if sys.argv[2] == 'get':
+        v = c.get(sys.argv[3])
+        print('MISS' if v is None else 'VALUE ' + v.decode('utf-8', 'replace'))
+    else:
+        for k, v in sorted(c.stats().items()):
+            k = k.decode('utf-8', 'replace') if isinstance(k, bytes) else k
+            v = v.decode('utf-8', 'replace') if isinstance(v, bytes) else v
+            print('STAT', k, v)
+except Exception as e:
+    print(type(e).__name__, e)
+"#;
+
+#[cfg(feature = "memcached")]
+fn memcached_probe(mode: &str, key: &str) -> Probe {
+    Probe::client("python3", &["-c", PYMEMCACHE_PROBE, "{PORT}", mode, key])
+}
+
+#[cfg(feature = "memcached")]
+fn memcached() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "memcached/get-value",
+            "memcached",
+            "You are a cache. The key motd holds the value netget-eval-cache-hit.",
+            memcached_probe("get", "motd"),
+            Expect::contains(&["VALUE netget-eval-cache-hit"]),
+        )
+        .note("libmemcached's tools time out after 5s; driven with pymemcache."),
+        EvalCase::new(
+            "memcached/missing-key",
+            "memcached",
+            "You are a cache that holds only the key motd. Every other key is missing.",
+            memcached_probe("get", "nothing-here"),
+            Expect::contains(&["MISS"]).not_containing(&["VALUE"]),
+        ),
+        EvalCase::new(
+            "memcached/stats-version",
+            "memcached",
+            "You are a cache server running version 1.6.21 with 12 items stored.",
+            memcached_probe("stats", "-"),
+            Expect::contains(&["STAT version 1.6.21"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// MQTT — Eclipse Mosquitto's mosquitto_sub, a C client on libmosquitto. `-k 300`
+// because libmosquitto reconnects when a CONNACK has not arrived within its
+// keepalive (measured: a fresh CONNECT 61s after the first against a silent
+// listener at the default 60), which would put a second CONNECT in front of the
+// model mid-case. `-W 230` bounds the whole session.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "mqtt")]
+fn mosquitto_sub(client_id: &str, topic: &str) -> Probe {
+    Probe::client(
+        "mosquitto_sub",
+        &[
+            "-V",
+            "mqttv311",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-k",
+            "300",
+            "-i",
+            client_id,
+            "-t",
+            topic,
+            "-C",
+            "1",
+            "-W",
+            "230",
+            "-v",
+        ],
+    )
+}
+
+#[cfg(feature = "mqtt")]
+fn mqtt() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "mqtt/retained-message",
+            "mqtt",
+            "You are an MQTT broker that accepts every client. The topic \
+             sensors/greenhouse/temp holds the retained reading 19.5.",
+            mosquitto_sub("eval-subscriber", "sensors/greenhouse/temp"),
+            // `-v` prints "<topic> <payload>" for a PUBLISH libmosquitto decoded.
+            Expect::contains(&["sensors/greenhouse/temp 19.5"]),
+        ),
+        EvalCase::new(
+            "mqtt/refuse-client-id",
+            "mqtt",
+            "You are an MQTT broker. Refuse any client whose client id starts with guest; \
+             accept everyone else.",
+            mosquitto_sub("guest-7", "eval/#"),
+            // libmosquitto's wording for a CONNACK with a non-zero return code.
+            Expect::contains(&["Connection Refused"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// CoAP — libcoap's coap-client. `-N` sends the request Non-confirmable: a
+// Confirmable one is retransmitted after ~2s, ~6s, ~14s and ~30s, and this
+// server has no deduplication cache, so every retransmission would be another
+// model call while the first is still being answered. A Non-confirmable
+// request is sent once and `-B 230` is how long libcoap waits for the answer
+// (measured: still waiting after 3 minutes against a silent listener).
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "coap")]
+fn coap_probe(path: &str) -> Probe {
+    let uri = format!("coap://127.0.0.1:{{PORT}}{}", path);
+    Probe::client(
+        "coap-client",
+        &["-N", "-B", "230", "-m", "get", uri.as_str()],
+    )
+}
+
+#[cfg(feature = "coap")]
+fn coap() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "coap/text-resource",
+            "coap",
+            "You are a greenhouse sensor. The resource /temperature returns the text 19.5 C.",
+            coap_probe("/temperature"),
+            Expect::contains(&["19.5 C"]),
+        ),
+        EvalCase::new(
+            "coap/not-found",
+            "coap",
+            "You are a greenhouse sensor whose only resource is /temperature. Every other \
+             path does not exist.",
+            coap_probe("/humidity"),
+            Expect::contains(&["4.04"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Modbus — pymodbus (installed), not libmodbus's mbpoll, and the reason is the
+// same as memcached's: mbpoll's response timeout is capped at 10 seconds
+// (`-o # Time-out in seconds (0.01 - 10.00)`), shorter than most model answers.
+// pymodbus is an independent Python implementation that decodes the MBAP
+// header, the function code and the exception PDU itself; `timeout=230,
+// retries=0` makes it wait once and never resend.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "modbus")]
+const PYMODBUS_PROBE: &str = r#"import sys
+from pymodbus.client import ModbusTcpClient
+c = ModbusTcpClient('127.0.0.1', port=int(sys.argv[1]), timeout=230, retries=0)
+if not c.connect():
+    print('CONNECT FAILED')
+    sys.exit(1)
+try:
+    rr = c.read_holding_registers(int(sys.argv[2]), count=int(sys.argv[3]), device_id=1)
+    if rr.isError():
+        print('EXCEPTION', getattr(rr, 'exception_code', rr))
+    else:
+        print('REGISTERS', rr.registers)
+except Exception as e:
+    print(type(e).__name__, e)
+finally:
+    c.close()
+"#;
+
+#[cfg(feature = "modbus")]
+fn modbus_probe(address: &str, count: &str) -> Probe {
+    Probe::client("python3", &["-c", PYMODBUS_PROBE, "{PORT}", address, count])
+}
+
+#[cfg(feature = "modbus")]
+fn modbus() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "modbus/holding-registers",
+            "modbus",
+            "You are a PLC. Holding registers 0, 1 and 2 hold 1200, 350 and 42.",
+            modbus_probe("0", "3"),
+            Expect::contains(&["REGISTERS [1200, 350, 42]"]),
+        )
+        .note("mbpoll's timeout is capped at 10s; driven with pymodbus."),
+        EvalCase::new(
+            "modbus/illegal-address",
+            "modbus",
+            "You are a PLC with ten holding registers at addresses 0 to 9, all zero. There is \
+             nothing at any other address.",
+            modbus_probe("500", "2"),
+            // Exception code 2, ILLEGAL DATA ADDRESS, as pymodbus decoded it.
+            Expect::contains(&["EXCEPTION 2"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// SNMP — Net-SNMP's snmpget, v2c. `-On` prints OIDs numerically so the output
+// does not depend on installed MIBs; `-t 230 -r 0` waits once and never resends.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "snmp")]
+fn snmpget(oids: &[&str]) -> Probe {
+    let mut args = vec![
+        "-On",
+        "-v",
+        "2c",
+        "-c",
+        "public",
+        "-t",
+        "230",
+        "-r",
+        "0",
+        "127.0.0.1:{PORT}",
+    ];
+    args.extend_from_slice(oids);
+    Probe::client("snmpget", &args)
+}
+
+#[cfg(feature = "snmp")]
+const SYS_DESCR: &str = "1.3.6.1.2.1.1.1.0";
+#[cfg(feature = "snmp")]
+const SYS_NAME: &str = "1.3.6.1.2.1.1.5.0";
+
+#[cfg(feature = "snmp")]
+fn snmp() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "snmp/sysdescr",
+            "snmp",
+            "You are a network switch. Its system description is NetGet Eval Switch 1.0.",
+            snmpget(&[SYS_DESCR]),
+            Expect::contains(&["STRING: NetGet Eval Switch 1.0"]),
+        ),
+        EvalCase::new(
+            "snmp/sysdescr-and-sysname",
+            "snmp",
+            "You are a network switch named eval-core-01, whose system description is \
+             NetGet Eval Switch 1.0.",
+            snmpget(&[SYS_DESCR, SYS_NAME]),
+            Expect::contains(&["NetGet Eval Switch 1.0", "eval-core-01"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// SIP — sipsak, which sends OPTIONS in its default (shoot) mode and exits 0 only
+// on a 2xx whose Via, Call-ID and CSeq match its request. `--timer-t1=10000`
+// because sipsak retransmits a non-INVITE request on T1 doubling (measured at
+// T1=5000: resends at 5s, 15s, 35s and 75s) and this server answers each copy
+// with its own model call; at 10s a typical answer sees one resend at most.
+// `-vv` prints the request before it is answered, so this is `until_exit()`.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "sip")]
+fn sipsak_probe() -> Probe {
+    Probe::client(
+        "sipsak",
+        &["--timer-t1=10000", "-vv", "-s", "sip:eval@127.0.0.1:{PORT}"],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "sip")]
+fn sip() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "sip/available",
+            "sip",
+            "You are a SIP phone that is online. Tell anyone who checks whether you are \
+             reachable that you are available.",
+            sipsak_probe(),
+            Expect::default().matching(r"SIP/2\.0 200\b"),
+        ),
+        EvalCase::new(
+            "sip/busy",
+            "sip",
+            "You are a SIP phone in do-not-disturb mode. Tell anyone who checks on you that \
+             you are busy.",
+            sipsak_probe(),
+            // RFC 3261 §11.2: the answer to OPTIONS is the one an INVITE would get, so
+            // busy is 486 Busy Here (or 600 Busy Everywhere).
+            Expect::default().matching(r"SIP/2\.0 (486|600)\b"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket — websocat, which does its own RFC 6455 handshake and framing and
+// prints each text message it receives on a line. Its stdin is held open: at
+// EOF websocat closes the connection, which would hang up before the model had
+// answered. Every connection costs two model calls (handshake, then open)
+// before the first message is handled.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "websocket")]
+fn websocat_probe(send: Option<&str>) -> Probe {
+    let probe = Probe {
+        hold_stdin: true,
+        ..Probe::client("websocat", &["ws://127.0.0.1:{PORT}/"])
+    };
+    match send {
+        Some(text) => probe.stdin(text),
+        None => probe,
+    }
+}
+
+#[cfg(feature = "websocket")]
+fn websocket() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "websocket/echo",
+            "websocket",
+            "Echo every message a client sends straight back to it, unchanged.",
+            websocat_probe(Some("netget-eval-ws-ping\n")),
+            Expect::contains(&["netget-eval-ws-ping"]),
+        ),
+        EvalCase::new(
+            "websocket/greeting",
+            "websocket",
+            "Greet every client with the message Welcome to NetGet Eval as soon as it \
+             connects.",
+            websocat_probe(None),
+            Expect::contains(&["Welcome to NetGet Eval"]),
         ),
     ]
 }
