@@ -163,10 +163,29 @@ impl Protocol for RedisClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
-            .implementation("Direct TCP with simplified RESP parsing")
+            .state(DevelopmentState::Beta)
+            .implementation(
+                "Hand-written RESP on tokio (src/client/redis/resp.rs): commands split the way \
+                 redis-cli splits them and sent as RESP arrays; one complete RESP2/RESP3 reply \
+                 per event, bounded in depth, declared size and element count",
+            )
             .llm_control("Full control over Redis commands")
-            .e2e_testing("Docker Redis container")
+            .e2e_testing(
+                "tests/client/redis/real_server_test.rs, 9 LLM calls, against a real \
+                 redis-server (Valkey locally, Redis on Ubuntu) read back with redis-cli. The \
+                 model SETs a quoted value containing a space, GETs it, and RPUSHes a line built \
+                 from the reply it was shown; a hash written by redis-cli reaches the model as \
+                 one four-element array event. Every reply is matched on its parsed reply_type \
+                 and value, so a reply split across events fails. Not #[ignore]d, and a missing \
+                 redis-server or redis-cli fails the test rather than skipping it. \
+                 resp_reader_test.rs pins the framing and each bound byte by byte.",
+            )
+            .notes(
+                "No AUTH or SELECT startup parameters: both are reachable only as explicit \
+                 commands. Pub/Sub pushes and RESP3 (HELLO 3) are parsed but not exercised \
+                 against a real server. Non-UTF-8 bulk strings reach the model through a lossy \
+                 conversion. No connect timeout.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

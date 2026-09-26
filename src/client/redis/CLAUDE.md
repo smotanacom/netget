@@ -193,3 +193,19 @@ See `tests/client/redis/CLAUDE.md` for E2E testing approach.
 - **Authentication** - Built-in AUTH handling
 - **Cluster Support** - Redis Cluster client
 - **Connection Pooling** - Multiple connections
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/redis/real_server_test.rs` (see `tests/client/redis/CLAUDE.md`):
+
+1. **Real third-party server** — a real `redis-server` (Valkey locally, Redis on Ubuntu), read back with `redis-cli`; NetGet's side is no Redis client library at all (`resp.rs` is ours), so no code is shared.
+2. **Fails rather than skips** — a missing `redis-server` or `redis-cli` is a test failure naming the brew formula and the
+   Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d. CI's
+   `registry-audit` installs the peer and runs the suite in its evidence loop.
+3. **A real session** — the protocol's own exchange, with the server's answers parsed and handed
+   to the model, not a connect.
+4. **Acts on the model's answer, asserted on the wire** — `redis-cli` reads back values the model wrote, one of them built from a reply it was shown. Verified by mutation: dropping
+   the actions the model returned makes the test fail.
+
+Not covered by that evidence: AUTH/SELECT as parameters, Pub/Sub and RESP3 against a real server.
