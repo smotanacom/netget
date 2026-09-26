@@ -206,6 +206,30 @@ LLM maintains filesystem via instructions:
 - Minimal header fields populated
 - Timestamps often zero
 - File attributes simplified
+- **Several response builders lay the 64-byte header out wrongly.** The SESSION_SETUP,
+  TREE_CONNECT, CREATE, CLOSE, READ, WRITE, QUERY_INFO and QUERY_DIRECTORY success builders
+  put the echoed MessageId at offset 20 (NextCommand's slot) instead of 24. `build_error_response` is the reference layout, with
+  the offsets written beside each field; `build_negotiate_response` follows it. A real client
+  correlating replies by MessageId would reject the others.
+
+### Inbound size bound
+
+There is no transport length prefix (see Transport above), so every read is a fixed-size
+header or body except one: a WRITE's `Length`, a peer-chosen u32 that sizes the buffer the
+data is read into. `MAX_WRITE_SIZE` (1 MiB) bounds it and is the declared
+`max_inbound_bytes`. It is also what NEGOTIATE advertises as `MaxWriteSize`, from the same
+constant, so a client never sends a write the server will refuse.
+
+A WRITE longer than that is refused **before** the buffer is allocated with
+`STATUS_INVALID_PARAMETER` — MS-SMB2 3.3.5.13's answer for a WRITE over the negotiated
+`MaxWriteSize` — logged `decision=fail_closed_write_too_large`, and the connection then closes
+(`SmbConnectionState::close_after_reply`): the payload behind the header is unread and cannot
+be skipped, and reading on would parse attacker-chosen bytes as the next SMB2 header.
+`tests/server/smb/inbound_limit_test.rs` drives it from the wire.
+
+A WRITE that arrives before a session is refused `STATUS_USER_SESSION_DELETED` without its
+body being read at all, so it allocates nothing, but its data is then read as the next header
+and the connection desyncs and closes on the signature check.
 
 ### LLM Performance
 

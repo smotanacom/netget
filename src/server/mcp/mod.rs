@@ -16,7 +16,7 @@ pub mod jsonrpc;
 
 use anyhow::Result;
 use axum::{
-    extract::{Json, State as AxumState},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Json, State as AxumState},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
@@ -70,6 +70,22 @@ pub struct McpServerState {
     /// Local address the server is bound to
     pub local_addr: SocketAddr,
 }
+
+/// The largest JSON-RPC request body this server buffers, and its declared
+/// `max_inbound_bytes`.
+///
+/// Set explicitly on the router as `DefaultBodyLimit`, rather than inherited: axum's own
+/// default happens to be the same 2 MiB, but a framework default is a number nobody chose and
+/// nothing would notice changing. Enforced while the body is buffered — up front from a
+/// `Content-Length`, as it streams for a chunked body — so an over-limit request never reaches
+/// the JSON parser, the event or the model. The refusal is a 413 carrying a JSON-RPC error with
+/// a fixed message ([`BODY_TOO_LARGE_MESSAGE`]).
+pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Message of the JSON-RPC error in the 413 for an over-limit body. Fixed: the peer's length
+/// goes to the log.
+#[cfg(feature = "mcp")]
+const BODY_TOO_LARGE_MESSAGE: &str = "request body too large";
 
 /// Largest slice of a request echoed onto the status channel.
 ///
@@ -288,6 +304,7 @@ impl McpServer {
         // Build Axum router
         let app = Router::new()
             .route("/", post(handle_jsonrpc))
+            .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
             .with_state(server_state);
 
         // `axum::serve` owns its accept loop and takes a concrete `TcpListener`, so there is no
@@ -331,8 +348,32 @@ impl McpServer {
 #[cfg(feature = "mcp")]
 async fn handle_jsonrpc(
     AxumState(state): AxumState<McpServerState>,
-    Json(payload): Json<Value>,
+    payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    let payload = match payload {
+        Ok(Json(payload)) => payload,
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            warn!(
+                "MCP request body over {} bytes decision=fail_closed_body_too_large",
+                MAX_REQUEST_BODY_BYTES
+            );
+            Log::new(Some(&state.status_tx)).warn(format!(
+                "MCP refused a request body over {} bytes (decision=fail_closed_body_too_large)",
+                MAX_REQUEST_BODY_BYTES
+            ));
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {
+                    "code": ErrorCode::InvalidRequest.as_i32(),
+                    "message": BODY_TOO_LARGE_MESSAGE,
+                },
+            });
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+        }
+        // Wrong content type, unparseable JSON: axum's own rejection, as before.
+        Err(rejection) => return rejection.into_response(),
+    };
     trace!(
         "MCP received JSON-RPC request: {}",
         serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())

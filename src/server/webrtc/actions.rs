@@ -340,6 +340,9 @@ impl Protocol for WebRtcProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            // The signalling WebSocket's message limit; data-channel messages are capped lower
+            // inside webrtc-rs. Tested in tests/server/webrtc/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::webrtc::SIGNALLING_MAX_MESSAGE_BYTES)
             .implementation(
                 "webrtc-rs 0.11 peer connections with built-in WebSocket signalling \
                  (tokio-tungstenite): the server binds its port, answers SDP offers and runs \

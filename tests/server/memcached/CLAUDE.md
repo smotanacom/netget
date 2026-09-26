@@ -79,6 +79,18 @@ pass, and Memcached's `Beta` rating would then rest on nothing. Install with
 `brew install libmemcached` or `apt-get install -y libmemcached-tools`. These use `expect_at_least` rather than `expect_calls` because libmemcached opens
 connections and issues probe commands at its own discretion.
 
+## Layer 4 — the declared inbound bound (`inbound_limit_test.rs`)
+
+`max_inbound_bytes` is `protocol::MAX_VALUE_LEN`. One in-process server, a mock model that
+answers everything with no actions and counts calls (`tests/helpers/inbound_limit.rs`), and
+three assertions: a `set` declaring exactly `MAX_VALUE_LEN` with its data block reaches the
+model; one declaring `MAX_VALUE_LEN + 1` is answered `SERVER_ERROR object too large for
+cache\r\n`, closed, and costs zero model calls; a fresh connection's `get` still reaches the
+model. Verified by removing the `bytes > MAX_VALUE_LEN` check in `parse_storage`: the over-cap
+`set` then reaches the model and the reply assertion fails.
+
+LLM calls: 2 (mocked, uncounted by `expect_*`).
+
 ## Not tested, because not implemented
 
 The binary protocol (deprecated upstream in 1.6, 2020), the meta commands (`mg`/`ms`/`md`),

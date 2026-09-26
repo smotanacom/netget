@@ -61,6 +61,21 @@ only the first existed and the comments claimed it did the other two's job:
   that with nothing extractable, the peer is never going to complete a frame and
   the connection is closed.
 
+Over `max_payload` the peer reads `-ERR 'Maximum Payload Violation'` and the
+connection closes, logged `decision=fail_closed_payload_too_large`; the buffer
+backstop logs `decision=fail_closed_buffer_too_large`, and every other malformed
+frame `decision=fail_closed_protocol_error`.
+
+**`max_payload` is an operator knob with a ceiling, and the ceiling is the declared
+bound.** `metadata()` declares `.max_inbound_bytes(MAX_PAYLOAD_CEILING)` — 64 MiB,
+nats-server's own default `max_pending`, which it will not let `max_payload` exceed.
+The knob used to be a bare `u64`, so the per-message bound was whatever number the
+operator or the model typed; a `max_payload` above the ceiling now refuses to start,
+naming both numbers, rather than being clamped. A default-started server enforces
+1 MiB (`DEFAULT_MAX_PAYLOAD`), which is what `INFO` advertises. Because 64 MiB is past
+the generic `bound + 1` probe's 8 MiB cap, that probe skips NATS;
+`tests/server/nats/inbound_limit_test.rs` covers both numbers instead.
+
 Blank lines between frames are skipped iteratively, and the reader drains the run
 before parsing. Both matter. The skip used to recurse into `parse_frame` once per
 blank line, so 8 KB of newlines — a single `read` — recursed about 8000 levels and

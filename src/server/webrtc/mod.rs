@@ -66,9 +66,25 @@ use tokio_tungstenite::{
 /// Longest a peer may take to complete the signalling WebSocket upgrade.
 const SIGNALLING_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Largest signalling frame accepted. One SDP offer or answer; a large real one
-/// is a few kilobytes.
-const SIGNALLING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+/// Largest signalling message accepted, and this server's declared `max_inbound_bytes`.
+/// One SDP offer or answer; a large real one is a few kilobytes.
+///
+/// tungstenite enforces it on the length a frame header declares, before the payload is read,
+/// and on the reassembled message. It is the largest thing NetGet itself buffers from a peer:
+/// data-channel messages are read by webrtc-rs into a fixed 65 535-byte buffer (a larger one
+/// closes the channel inside the crate) and SCTP reassembly is capped by webrtc-sctp's 1 MiB
+/// receive window, which drops DATA once full. Over the limit the peer gets a WebSocket close
+/// with code 1009 (Message Too Big) and the connection ends.
+pub const SIGNALLING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+
+/// The close frame for a signalling message over [`SIGNALLING_MAX_MESSAGE_BYTES`]: RFC 6455's
+/// 1009, with a fixed reason.
+fn message_too_big_close() -> Message {
+    Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size,
+        reason: "message too big".into(),
+    }))
+}
 
 /// Largest number of data-channel events queued behind one in-flight LLM call.
 ///
@@ -919,6 +935,15 @@ impl WebRtcServer {
         while let Some(frame) = ws_rx.next().await {
             let frame = match frame {
                 Ok(frame) => frame,
+                Err(tokio_tungstenite::tungstenite::Error::Capacity(e)) => {
+                    warn!(
+                        "WebRTC signalling message from {} over {} bytes \
+                         decision=fail_closed_message_too_large: {}",
+                        remote_addr, SIGNALLING_MAX_MESSAGE_BYTES, e
+                    );
+                    let _ = out_tx.send(message_too_big_close());
+                    break;
+                }
                 Err(e) => {
                     debug!("WebRTC signalling read error from {}: {}", remote_addr, e);
                     break;

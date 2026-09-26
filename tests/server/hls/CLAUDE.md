@@ -56,3 +56,13 @@ the mocked tests, because the answer only comes after the LLM client exhausts it
   `Content-Length: 0`; a player would accept that as a valid empty segment and play nothing.
 
 Neither uses the mock server, so neither calls `verify_mocks()`.
+
+## `inbound_limit_test.rs` — the declared `max_inbound_bytes`
+
+In-process on `tests/helpers/inbound_limit.rs` (a mock model answering everything with no
+actions and counting calls). A GET whose head is exactly `MAX_REQUEST_HEAD_BYTES` reaches the
+model; one byte more is answered `431` and closed with zero model calls; a `POST` declaring a
+body is answered `413` with zero model calls; a fresh GET is still served. Verified by removal:
+with the head bound lifted the over-bound head reached the model (500 from the empty answer,
+not 431), and with `declares_body` disabled the POST reached the model — which also fails the
+generic `max_inbound_bytes_bound_plus_one_test`, whose HTTP-body probe is exactly that POST.

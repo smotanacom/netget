@@ -829,8 +829,8 @@ async fn run_reader(
                     // ever need. The peer is not going to complete one.
                     if buf.len() as u64 > max_payload.saturating_add(MAX_BUFFERED_SLACK as u64) {
                         log.warn(format!(
-                            "NATS buffered {} bytes from {} with no complete frame - \
-                             closing connection",
+                            "NATS buffered {} bytes from {} with no complete frame \
+                             decision=fail_closed_buffer_too_large - closing connection",
                             buf.len(),
                             peer_addr
                         ));
@@ -909,9 +909,17 @@ async fn run_reader(
                     // A malformed frame is unrecoverable: the byte stream is no longer
                     // aligned to a frame boundary. A real server answers -ERR and hangs up,
                     // and so does this one. Nothing here is derived from an internal error.
+                    // A payload over `max_payload` is refused on the size the PUB *declared*,
+                    // before any of it is buffered; that refusal is the inbound bound and is
+                    // tagged apart from a malformed frame.
+                    let decision = if e == FrameError::MaximumPayloadViolation {
+                        "fail_closed_payload_too_large"
+                    } else {
+                        "fail_closed_protocol_error"
+                    };
                     log.warn(format!(
-                        "NATS protocol error from {}: {} - closing connection",
-                        peer_addr, e
+                        "NATS protocol error from {}: {} decision={} - closing connection",
+                        peer_addr, e, decision
                     ));
                     let _ = write_counted(
                         &write_half,

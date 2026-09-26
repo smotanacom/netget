@@ -78,6 +78,10 @@ impl Protocol for SmbProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // A WRITE's Length is the only peer-chosen size this server buffers; it is refused
+            // against the negotiated MaxWriteSize before allocation. Tested in
+            // tests/server/smb/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::smb::MAX_WRITE_SIZE as usize)
             .implementation("Manual SMB2 protocol (0x0210 dialect)")
             .llm_control(
                 "Authentication (allow/deny), directory listings, file metadata, file content on \

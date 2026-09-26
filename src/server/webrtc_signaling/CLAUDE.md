@@ -380,16 +380,20 @@ NetGet Client A      Signaling Server      NetGet Client B
 
 ### WebSocket Upgrade
 
-```rust
-// Accept TCP connection
-let stream = listener.accept().await?;
+`accept_async_with_config` under a 10s `SIGNALING_HANDSHAKE_TIMEOUT`, with
+`max_message_size` and `max_frame_size` both set to `SIGNALING_MAX_MESSAGE_BYTES` (256 KiB;
+tungstenite's defaults are 64 MiB and 16 MiB). The upgrade request itself is capped at 64 KiB by
+tungstenite's handshake reader. The stream is split and one writer task owns the sink.
 
-// Upgrade to WebSocket
-let ws_stream = accept_async(stream).await?;
+### Inbound size bound
 
-// Split into sender/receiver
-let (ws_tx, ws_rx) = ws_stream.split();
-```
+`SIGNALING_MAX_MESSAGE_BYTES` is the declared `max_inbound_bytes`. tungstenite refuses on the
+length a **frame header** declares, before reading the payload, and on the reassembled message.
+The refusal is a WebSocket close with code 1009 (Message Too Big, fixed reason `message too
+big`), queued through the writer task, after which the connection ends; it is logged
+`decision=fail_closed_message_too_large` and never reaches the model.
+`tests/server/webrtc_signaling/inbound_limit_test.rs` drives it with a hand-written RFC 6455
+client, because the property is about a header whose payload never arrives.
 
 ### Peer Registration
 

@@ -93,6 +93,15 @@ not an action, so the repair loop exhausts and `call_llm` returns `Err`. The ass
 pair: the client still gets a full frame (silence would hang it), and the log carries
 `decision=fail_closed_llm_error` with no `decision=model_*` on that event.
 
+### `inbound_limit_test.rs` — the declared `max_inbound_bytes`
+
+`MAX_CUT_TEXT_LEN` driven from the wire after a real RFB 3.8 handshake, on the in-process
+harness in `tests/helpers/inbound_limit.rs` (a mock model that counts calls): a
+`ClientCutText` of exactly `MAX_CUT_TEXT_LEN` bytes reaches the model; a header declaring
+`MAX_CUT_TEXT_LEN + 1` gets the connection closed with zero model calls; a fresh connection's
+`ClientCutText` is still answered. Verified by removing the `length > MAX_CUT_TEXT_LEN` check:
+the connection then stays open waiting for the payload and the test fails.
+
 ## Expected runtime
 
 ~1.5 s for the whole suite against the mock harness.

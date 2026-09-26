@@ -247,6 +247,9 @@ impl Protocol for WebRtcSignalingProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // tungstenite's max_message_size/max_frame_size, set from this constant. Tested in
+            // tests/server/webrtc_signaling/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::webrtc_signaling::SIGNALING_MAX_MESSAGE_BYTES)
             .implementation(
                 "tokio-tungstenite WebSocket relay: peers register a peer ID, then \
                  offer/answer/ice_candidate/relay messages are forwarded by their `to` field",

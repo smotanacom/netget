@@ -27,6 +27,16 @@ use std::sync::LazyLock;
 /// what they may send, so it is a real bound rather than documentation.
 pub const DEFAULT_MAX_PAYLOAD: u64 = 1_048_576;
 
+/// The largest `max_payload` this server will start with, and so the largest single message it
+/// can ever be made to buffer: this server's declared `max_inbound_bytes`.
+///
+/// `max_payload` is an operator knob, and until this existed it was a `u64` with no ceiling, so
+/// the per-message bound was whatever number the operator — or the model starting the server —
+/// typed. 64 MiB is nats-server's own default `max_pending`, which it will not let `max_payload`
+/// exceed. A larger request is refused at startup with an error naming both numbers rather than
+/// clamped, so nobody runs a server believing it accepts more than it does.
+pub const MAX_PAYLOAD_CEILING: u64 = 64 * 1024 * 1024;
+
 /// `proto` field advertised in `INFO`. 1 means the client may send `HPUB` and expect
 /// `HMSG`, which this server supports in both directions.
 pub const NATS_PROTO_VERSION: u8 = 1;
@@ -70,10 +80,11 @@ impl Protocol for NatsProtocol {
             ParameterDefinition {
                 name: "max_payload".to_string(),
                 type_hint: "number".to_string(),
-                description: "Largest PUB/HPUB payload accepted, in bytes (default 1048576). \
-                              Advertised in INFO so clients refuse to send more, and enforced: \
-                              a larger payload is answered with -ERR 'Maximum Payload \
-                              Violation' and the connection is closed."
+                description: "Largest PUB/HPUB payload accepted, in bytes (default 1048576, at \
+                              most 67108864). Advertised in INFO so clients refuse to send \
+                              more, and enforced on the size a PUB declares: a larger payload \
+                              is answered with -ERR 'Maximum Payload Violation' and the \
+                              connection is closed. A value above 67108864 refuses to start."
                     .to_string(),
                 required: false,
                 example: json!(1_048_576),
@@ -125,6 +136,10 @@ impl Protocol for NatsProtocol {
             // Default port 4222 is unprivileged. Declaring PrivilegedPort(4222) would be
             // dead code - the preflight only fires below 1024.
             .privilege_requirement(PrivilegeRequirement::None)
+            // The per-instance bound is `max_payload` (1 MiB by default), checked against the
+            // size a PUB/HPUB declares before its payload is buffered; this is the ceiling no
+            // configuration can exceed. Tested in tests/server/nats/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::nats::actions::MAX_PAYLOAD_CEILING as usize)
             .implementation(
                 "Hand-written NATS client-protocol codec on tokio (no NATS library). Per \
                  connection: a reader task frames CONTROL lines and byte-counted payloads and \
@@ -256,6 +271,16 @@ impl Server for NatsProtocol {
                 None => (None, None),
             };
 
+            let max_payload = max_payload.unwrap_or(DEFAULT_MAX_PAYLOAD);
+            if max_payload > MAX_PAYLOAD_CEILING {
+                anyhow::bail!(
+                    "max_payload {} is above this server's ceiling of {} bytes \
+                     (nats-server's own default max_pending); refusing to start",
+                    max_payload,
+                    MAX_PAYLOAD_CEILING
+                );
+            }
+
             NatsServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
@@ -263,7 +288,7 @@ impl Server for NatsProtocol {
                 ctx.status_tx,
                 ctx.server_id,
                 server_name.unwrap_or_else(|| "netget-nats".to_string()),
-                max_payload.unwrap_or(DEFAULT_MAX_PAYLOAD),
+                max_payload,
             )
             .await
         })

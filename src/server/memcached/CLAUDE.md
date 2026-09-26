@@ -122,10 +122,17 @@ whether the command is **self-delimiting**, and getting that wrong was a real de
   in a value it could put on the command path. `parse_storage` now parses `<bytes>` first and
   every rejection below it consumes the whole frame — which is what upstream's `conn_swallow`
   state does.
-- Where `<bytes>` is missing, unparseable, or larger than `MAX_VALUE_LEN`, there is no
-  boundary to skip to. That is `Parsed::Fatal`: reply and **close**. Guessing a boundary is
-  the bug above; buffering an over-cap block purely to discard it is the allocation the cap
-  exists to prevent. Logged `decision=connection_closed_unframable`.
+- Where `<bytes>` is missing or unparseable, there is no boundary to skip to. That is
+  `Parsed::Fatal`: `CLIENT_ERROR <reason>` and **close**. Guessing a boundary is the bug
+  above. Logged `decision=connection_closed_unframable`.
+- Where `<bytes>` is larger than `MAX_VALUE_LEN` it is the same `Parsed::Fatal` with
+  `too_large: true`, answered with upstream's own fixed text,
+  **`SERVER_ERROR object too large for cache`** (libmemcached maps it to `E2BIG`), and then
+  closed. Buffering an over-cap block purely to discard it is the allocation the cap exists to
+  prevent, so upstream's swallow is not copied: instead the rest of the block is read into
+  the reused read chunk and discarded for at most `LINGER_AFTER_REFUSAL` (2s) before the
+  socket drops, because closing with it unread makes the kernel reset the connection and can
+  destroy the refusal before the client reads it. Logged `decision=fail_closed_value_too_large`.
 
 `decision=` tags carry what the wire cannot. The text protocol defines exactly one
 server-failure reply, so a refusal, an outage and a model that answered with nothing usable
@@ -173,6 +180,23 @@ would be dead code — the `svn`/`PrivilegedPort(3690)` mistake.
 - One LLM call per command. A client that pipelines a hundred `get`s costs a hundred calls;
   use a script handler for anything throughput-shaped.
 - UDP memcached (the legacy `-U` mode) is not implemented.
+
+## Inbound size bound
+
+`max_inbound_bytes` is declared as `protocol::MAX_VALUE_LEN` (1 MiB, upstream's default item
+size). It is the only length in the text protocol a peer chooses — every other unit is one
+CRLF-terminated line under `MAX_COMMAND_LINE` (8 KiB), and a longer line is `CLIENT_ERROR`'d
+and dropped as it arrives. The check is on the `<bytes>` the storage command **declares**,
+before any of the data block is buffered, so `set k 0 0 4000000000` costs its header line.
+
+`MAX_BUFFERED` (`MAX_VALUE_LEN + MAX_COMMAND_LINE + 16`) is the backstop on the read buffer
+itself, for a peer that never completes a frame; it answers `SERVER_ERROR command too large`,
+closes, and logs `decision=fail_closed_buffer_too_large`. With both checks in front of it,
+nothing reaches it today.
+
+`tests/server/memcached/inbound_limit_test.rs` drives the bound from the wire: a `set` of
+exactly `MAX_VALUE_LEN` reaches the model, `MAX_VALUE_LEN + 1` is refused with no model call
+and then closed, and a fresh connection is served afterwards.
 
 ## Connection bounds
 

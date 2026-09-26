@@ -152,6 +152,17 @@ the wire silence asserted immediately above it, because either half alone proves
 line with no silence is an unchecked claim, and silence with no log line is indistinguishable
 from the event never having fired.
 
+### Inbound bound (`inbound_limit_test.rs`)
+
+In-process on `tests/helpers/inbound_limit.rs`, with its hand-written RFC 6455 client (`ws`) —
+not tokio-tungstenite, because the property is that a frame **header** declaring too much is
+refused before its payload arrives, and no library sends a header alone. A `register` of
+exactly `SIGNALING_MAX_MESSAGE_BYTES` (padded with a field serde ignores) is answered
+`registered` and reaches the model; a header declaring one byte more gets a 1009 close, the
+connection ends, and the model is not called; a fresh `register` is still served. Verified by
+removal twice: with the `WebSocketConfig` limits set to `None` no close arrived, and without
+the 1009 send the close carried no code.
+
 ## Event Types Tested
 
 1. **webrtc_signaling_peer_connected** - Triggered when peer registers via WebSocket

@@ -79,6 +79,28 @@ const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// Longest request path carried into the log, the status stream and the model's prompt.
 const MAX_PATH_LEN: usize = 512;
 
+/// The largest request head — request line, headers and the blank line ending them — this
+/// server buffers, and its declared `max_inbound_bytes`.
+///
+/// The head is the only thing an HLS peer sends that is read: HLS clients send bodiless GETs,
+/// and a request that declares a body is refused with 413 before any of it is read (see
+/// [`declares_body`]). The read loop never asks for more than one byte past this, so a head
+/// that has not ended within it is refused with 431 and the buffer never grows further.
+pub const MAX_REQUEST_HEAD_BYTES: usize = 64 * 1024;
+
+/// How long the unread remainder of a refused request is read and discarded before the socket
+/// drops. Closing with bytes unread makes the kernel reset the connection, which can destroy
+/// the refusal before the client reads it; the bytes go into the reused read chunk, so this is
+/// bounded in time and allocates nothing.
+const LINGER_AFTER_REFUSAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Body of the 431 for a request head over [`MAX_REQUEST_HEAD_BYTES`].
+const HEAD_TOO_LARGE_BODY: &[u8] = b"netget: request head too large\n";
+
+/// Body of the 413 for a request that declares a body. Fixed text: the declared length stays
+/// in the log.
+const BODY_NOT_ACCEPTED_BODY: &[u8] = b"netget: this server accepts no request body\n";
+
 /// Concurrent connections this server admits before it starts refusing.
 ///
 /// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HEADER_READ_TIMEOUT`] bounds
@@ -250,24 +272,86 @@ impl HlsServer {
         // one byte — or nothing at all — parks this task and its socket for as long as it cares
         // to keep the connection open, which is the whole of slowloris. 64 KiB caps how much a
         // peer can make us buffer; the deadline caps how long it can make us wait.
+        //
+        // Each read asks for at most one byte past `MAX_REQUEST_HEAD_BYTES`, so the buffer can
+        // never exceed the bound by more than that byte, and a head that ends inside the bound
+        // is told apart exactly from one that does not.
         let deadline = tokio::time::Instant::now() + HEADER_READ_TIMEOUT;
         let (method, path) = loop {
-            let n = match tokio::time::timeout_at(deadline, read_half.read(&mut chunk)).await {
-                Ok(r) => r?,
-                Err(_) => anyhow::bail!(
-                    "HLS request headers not complete within {}s",
-                    HEADER_READ_TIMEOUT.as_secs()
-                ),
-            };
+            let want = (MAX_REQUEST_HEAD_BYTES + 1 - buffer.len()).min(chunk.len());
+            let n =
+                match tokio::time::timeout_at(deadline, read_half.read(&mut chunk[..want])).await {
+                    Ok(r) => r?,
+                    Err(_) => anyhow::bail!(
+                        "HLS request headers not complete within {}s",
+                        HEADER_READ_TIMEOUT.as_secs()
+                    ),
+                };
             if n == 0 {
                 return Ok(());
             }
             buffer.extend_from_slice(&chunk[..n]);
-            if let Some(req) = parse_request_line(&buffer) {
-                break req;
-            }
-            if buffer.len() > 65536 {
-                anyhow::bail!("HLS request headers too large");
+            match head_len(&buffer) {
+                Some(len) if len <= MAX_REQUEST_HEAD_BYTES => {
+                    let head = &buffer[..len];
+                    if let Some(declared) = declares_body(head) {
+                        warn!(
+                            "HLS {} declared a request body ({}) decision=fail_closed_body_not_accepted; \
+                             answering 413 without reading it",
+                            remote_addr, declared
+                        );
+                        refuse(
+                            &mut read_half,
+                            &mut write_half,
+                            &mut chunk,
+                            413,
+                            BODY_NOT_ACCEPTED_BODY,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    if let Some(req) = parse_request_line(head) {
+                        break req;
+                    }
+                    // A complete head whose request line is unusable: nothing to route.
+                    warn!(
+                        "HLS {} sent an unparseable request line; closing",
+                        remote_addr
+                    );
+                    refuse(&mut read_half, &mut write_half, &mut chunk, 400, b"").await;
+                    return Ok(());
+                }
+                Some(_) => {
+                    warn!(
+                        "HLS {} request head over {} bytes decision=fail_closed_head_too_large",
+                        remote_addr, MAX_REQUEST_HEAD_BYTES
+                    );
+                    refuse(
+                        &mut read_half,
+                        &mut write_half,
+                        &mut chunk,
+                        431,
+                        HEAD_TOO_LARGE_BODY,
+                    )
+                    .await;
+                    return Ok(());
+                }
+                None if buffer.len() > MAX_REQUEST_HEAD_BYTES => {
+                    warn!(
+                        "HLS {} request head over {} bytes decision=fail_closed_head_too_large",
+                        remote_addr, MAX_REQUEST_HEAD_BYTES
+                    );
+                    refuse(
+                        &mut read_half,
+                        &mut write_half,
+                        &mut chunk,
+                        431,
+                        HEAD_TOO_LARGE_BODY,
+                    )
+                    .await;
+                    return Ok(());
+                }
+                None => {}
             }
         };
         // The path is peer-supplied and can be the better part of 64 KiB. It reaches the log,
@@ -594,8 +678,10 @@ fn reason_phrase(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         410 => "Gone",
+        413 => "Content Too Large",
         416 => "Range Not Satisfiable",
         429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -606,6 +692,69 @@ fn reason_phrase(status: u16) -> &'static str {
         400..=499 => "Client Error",
         500..=599 => "Server Error",
         _ => "Unknown",
+    }
+}
+
+/// Length of the request head — through the `\r\n\r\n` that ends it — once it has arrived.
+fn head_len(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+}
+
+/// The `Content-Length` / `Transfer-Encoding` header a request uses to declare a body, if any.
+///
+/// An HLS client sends bodiless GETs. A request that declares a body is refused rather than
+/// answered: its body would be left unread on the socket, and the model would be asked about a
+/// request whose content it never saw. `Content-Length: 0` declares no body and is accepted.
+fn declares_body(head: &[u8]) -> Option<String> {
+    let head = String::from_utf8_lossy(head);
+    for line in head.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Some(format!(
+                "Transfer-Encoding: {}",
+                crate::utils::truncate_for_log(value, 64)
+            ));
+        }
+        if name.eq_ignore_ascii_case("content-length") && value != "0" {
+            return Some(format!(
+                "Content-Length: {}",
+                crate::utils::truncate_for_log(value, 32)
+            ));
+        }
+    }
+    None
+}
+
+/// Answer a request that will not reach the model, then close.
+///
+/// The response goes out first; whatever the peer is still sending is then read into the reused
+/// chunk and discarded for at most [`LINGER_AFTER_REFUSAL`], so the close does not become a
+/// reset that destroys the response before the peer reads it.
+async fn refuse<R, W>(
+    read_half: &mut R,
+    write_half: &mut W,
+    chunk: &mut [u8],
+    status: u16,
+    body: &[u8],
+) where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let response = build_http_response(status, "text/plain; charset=utf-8", body, false);
+    if write_half.write_all(&response).await.is_err() {
+        return;
+    }
+    let _ = write_half.flush().await;
+    let _ = write_half.shutdown().await;
+    let deadline = tokio::time::Instant::now() + LINGER_AFTER_REFUSAL;
+    while let Ok(Ok(n)) = tokio::time::timeout_at(deadline, read_half.read(chunk)).await {
+        if n == 0 {
+            break;
+        }
     }
 }
 

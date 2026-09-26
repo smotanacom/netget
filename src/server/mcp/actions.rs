@@ -55,6 +55,9 @@ impl Protocol for McpProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // The router's explicit DefaultBodyLimit; an over-limit body is a 413 before the
+            // JSON parser. Tested in tests/server/mcp/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::mcp::MAX_REQUEST_BODY_BYTES)
             .implementation("axum HTTP POST at /, hand-written JSON-RPC 2.0")
             .llm_control(
                 "initialize, resources/list, resources/read, tools/list, tools/call, \

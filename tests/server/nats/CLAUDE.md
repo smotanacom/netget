@@ -14,6 +14,22 @@
 | `test_nats_parser_rejects_bad_frames` | 0 | the four `FrameError`s |
 | `test_nats_subject_matching` | 0 | `*` and `>` wildcards |
 
+## The inbound bound (`inbound_limit_test.rs`)
+
+Two in-process tests on `tests/helpers/inbound_limit.rs` (a mock model that answers
+everything with no actions and counts calls):
+
+- `a_pub_over_max_payload_is_refused_before_the_model_and_the_server_keeps_serving` —
+  at the default `max_payload` (1 MiB) a `PUB` of exactly 1 MiB reaches the model; a
+  control line declaring 1 MiB + 1 is answered `-ERR 'Maximum Payload Violation'`,
+  closed, and costs zero model calls; a fresh connection's `PUB` is served.
+- `max_payload_cannot_exceed_the_declared_ceiling` — `max_payload =
+  MAX_PAYLOAD_CEILING + 1` refuses to start; at exactly the ceiling `INFO` advertises
+  it and a `PUB` declaring ceiling + 1 is refused on its control line.
+
+Both verified by removal: without the `total_len > max_payload` check the over-bound
+`PUB` got no `-ERR`, and without the startup ceiling the server started.
+
 ## The maturity evidence
 
 **`test_nats_delivers_model_authored_message_to_async_nats` is what the `Beta`
@@ -110,6 +126,5 @@ happened here.
 ## Not covered
 
 Multiple concurrent connections, queue-group behaviour, `UNSUB` with a max,
-`send_ping`, `send_nats_info` mid-connection, payloads at the `max_payload`
-boundary, and anything requiring a second client — none of which the server
+`send_ping`, `send_nats_info` mid-connection, and anything requiring a second client — none of which the server
 implements beyond what is described in `src/server/nats/CLAUDE.md`.

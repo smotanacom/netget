@@ -264,6 +264,21 @@ SMB2 operations currently require LLM call per request. Action-based responses u
 - Output contains "SMB connection", "connection from", or "bytes"
 - Connection lifecycle visible in logs
 
+## The declared inbound bound (`inbound_limit_test.rs`)
+
+In-process, on `tests/helpers/inbound_limit.rs`: a mock model that approves the
+SESSION_SETUP and answers everything else with no actions, counting calls. After a NEGOTIATE
+(whose `MaxWriteSize` must equal `MAX_WRITE_SIZE`) and an approved SESSION_SETUP:
+
+- a WRITE of exactly `MAX_WRITE_SIZE` bytes reaches the model and is not refused as too large;
+- a WRITE header declaring `MAX_WRITE_SIZE + 1` is answered `STATUS_INVALID_PARAMETER`, the
+  connection closes, and the model is called zero times;
+- a fresh connection's SESSION_SETUP still reaches the model.
+
+Verified by removal twice: without the `length > MAX_WRITE_SIZE` check the over-size WRITE
+is never answered (the server waits for its payload); without `close_after_reply` the
+connection stays open after the refusal.
+
 ## Known Issues
 
 ### Manual SMB2 Implementation

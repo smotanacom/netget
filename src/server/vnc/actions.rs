@@ -756,6 +756,10 @@ impl Protocol for VncProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // ClientCutText is the one client message a peer sizes; its u32 length is refused
+            // against this before the buffer is allocated. Tested in
+            // tests/server/vnc/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::vnc::MAX_CUT_TEXT_LEN as usize)
             .implementation(
                 "Hand-written RFB 3.8 over TCP (no crate), Raw encoding, tiny-skia display canvas",
             )
