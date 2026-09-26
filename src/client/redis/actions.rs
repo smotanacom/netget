@@ -39,12 +39,32 @@ pub static REDIS_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock:
             "command": "SET result OK"
         }),
     )
-    .with_parameters(vec![Parameter {
-        name: "response".to_string(),
-        type_hint: "string".to_string(),
-        description: "The response line from Redis".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "response".to_string(),
+            type_hint: "string".to_string(),
+            description: "One complete reply rendered as redis-cli prints it: OK, (integer) 3, \
+                          \"value\", (nil), (error) ERR ...; arrays and maps as JSON"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "reply_type".to_string(),
+            type_hint: "string".to_string(),
+            description: "simple_string, error, integer, bulk_string, null, array, map, set, \
+                          push, boolean, double, big_number or verbatim_string"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "value".to_string(),
+            type_hint: "any".to_string(),
+            description: "The reply as JSON: a string, an integer, null, an array, an object \
+                          for a map, or {\"error\": \"...\"} for an error"
+                .to_string(),
+            required: true,
+        },
+    ])
 });
 
 /// Redis client protocol action handler
@@ -66,7 +86,10 @@ impl Protocol for RedisClientProtocol {
                 parameters: vec![Parameter {
                     name: "command".to_string(),
                     type_hint: "string".to_string(),
-                    description: "Redis command (e.g., GET key, SET key value)".to_string(),
+                    description: "Redis command as typed at redis-cli (e.g. GET key, \
+                                  SET greeting \"hello world\"). Quote an argument that contains \
+                                  spaces with double or single quotes."
+                        .to_string(),
                     required: true,
                 }],
                 example: json!({
@@ -246,6 +269,9 @@ impl Client for RedisClientProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing 'command' field")?
                     .to_string();
+                // Refused here, before anything reaches the wire: an unbalanced quote has no
+                // honest reading, and guessing one would send a command the model did not write.
+                crate::client::redis::resp::split_command(&command)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "redis_command".to_string(),

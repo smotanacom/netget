@@ -1,5 +1,6 @@
 //! Redis client implementation
 pub mod actions;
+pub mod resp;
 
 pub use actions::RedisClientProtocol;
 
@@ -7,7 +8,7 @@ use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace};
@@ -70,7 +71,7 @@ impl RedisClient {
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
 
-        // `read_line` is not cancellation-safe, so the commands are drained by their own task
+        // `read_reply` is not cancellation-safe, so the commands are drained by their own task
         // rather than a `select!` arm in the read loop. Both tasks share the write half.
         let cmd_state = app_state.clone();
         let cmd_tx = status_tx.clone();
@@ -171,11 +172,10 @@ impl RedisClient {
         let task_registrar = app_state.clone();
         let handle = tokio::spawn(async move {
             loop {
-                // Read Redis RESP response
-                // Simplified: just read line-by-line
-                let mut line = String::new();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => {
+                // One complete RESP reply per event — a bulk string or an array is never
+                // split across events. See `resp.rs` for the framing and its bounds.
+                match resp::read_reply(&mut reader).await {
+                    Ok(None) => {
                         info!(
                             "Redis client {} {}",
                             client_id,
@@ -189,8 +189,13 @@ impl RedisClient {
                         let _ = status_tx.send("__UPDATE_UI__".to_string());
                         break;
                     }
-                    Ok(_) => {
-                        trace!("Redis client {} received: {}", client_id, line.trim());
+                    Ok(Some(reply)) => {
+                        trace!(
+                            "Redis client {} received {}: {}",
+                            client_id,
+                            reply.reply_type,
+                            crate::utils::truncate::truncate_for_log(&reply.response, 200)
+                        );
 
                         // Call LLM with response
                         if let Some(instruction) =
@@ -198,9 +203,7 @@ impl RedisClient {
                         {
                             let event = Event::new(
                                 &REDIS_CLIENT_RESPONSE_RECEIVED_EVENT,
-                                serde_json::json!({
-                                    "response": line.trim(),
-                                }),
+                                reply.event_data(),
                             );
 
                             let memory = app_state
@@ -314,6 +317,8 @@ impl RedisClient {
                         }
                     }
                     Err(e) => {
+                        // A socket error, or a reply that is not RESP or breaks a bound in
+                        // `resp.rs`. Either way this connection's framing is gone.
                         error!("Redis client {} read error: {}", client_id, e);
                         app_state
                             .update_client_status(client_id, ClientStatus::Error(e.to_string()))
@@ -431,7 +436,7 @@ impl RedisClient {
                     .get("command")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing command in action data"))?;
-                let cmd_bytes = encode_redis_command(command);
+                let cmd_bytes = resp::encode_command(&resp::split_command(command)?);
 
                 let mut writer = write_half.lock().await;
                 writer.write_all(&cmd_bytes).await?;
@@ -457,25 +462,4 @@ enum Applied {
     Sent(usize),
     /// The session should end.
     Disconnect,
-}
-
-/// Encode a Redis command as a RESP array
-///
-/// Example: "PING" -> "*1\r\n$4\r\nPING\r\n"
-/// Example: "SET key value" -> "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
-fn encode_redis_command(command: &str) -> Vec<u8> {
-    // Split command into parts
-    let parts: Vec<&str> = command.split_whitespace().collect();
-
-    // Start with array length
-    let mut result = format!("*{}\r\n", parts.len()).into_bytes();
-
-    // Encode each part as a bulk string
-    for part in parts {
-        result.extend_from_slice(&format!("${}\r\n", part.len()).into_bytes());
-        result.extend_from_slice(part.as_bytes());
-        result.extend_from_slice(b"\r\n");
-    }
-
-    result
 }
