@@ -365,6 +365,10 @@ impl ClientRegistry {
         ));
         #[cfg(feature = "nats")]
         self.register(Arc::new(crate::client::nats::NatsClientProtocol::new()));
+        #[cfg(feature = "memcached")]
+        self.register(Arc::new(
+            crate::client::memcached::MemcachedClientProtocol::new(),
+        ));
         #[cfg(feature = "ssdp")]
         self.register(Arc::new(crate::client::ssdp::SsdpClientProtocol::new()));
         #[cfg(feature = "gopher")]
@@ -725,6 +729,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("STOMP", "stomp"),
     ("NetBIOS-NS", "netbios-ns"),
     ("NATS", "nats"),
+    ("Memcached", "memcached"),
     ("SSDP", "ssdp"),
     ("Gopher", "gopher"),
     ("Finger", "finger"),

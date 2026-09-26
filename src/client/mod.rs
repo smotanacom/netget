@@ -553,6 +553,12 @@ pub use netbios_ns::actions::NetbiosNsClientProtocol;
 pub mod nats;
 #[cfg(feature = "nats")]
 pub use nats::actions::NatsClientProtocol;
+
+// memcached client
+#[cfg(feature = "memcached")]
+pub mod memcached;
+#[cfg(feature = "memcached")]
+pub use memcached::actions::MemcachedClientProtocol;
 // ssdp client
 #[cfg(feature = "ssdp")]
 pub mod ssdp;

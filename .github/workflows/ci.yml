@@ -350,7 +350,7 @@ jobs:
       #   freeradius-utils  - radius (radclient)
       #   libcoap2-bin      - coap (coap-client, libcoap's own C client)
       #   libmemcached-tools- memcached, but under DIFFERENT NAMES - see the symlink step
-      #                       below, which is what makes memcat/memstat/memping exist
+      #                       below, which is what makes memcat/memstat/memping/memcp exist
       #   knot-dnsutils     - dns, doh, dot (kdig; Knot, deliberately NOT ISC dig
       #                       and NOT the hickory codec the servers encode with)
       #   mbpoll            - modbus (libmodbus's CLI master)
@@ -377,6 +377,8 @@ jobs:
       #   mosquitto         - the mqtt client (Eclipse Mosquitto, C; NetGet's client is rumqttc)
       #   nginx             - the http client (NetGet's client is reqwest/hyper)
       #   redis-server      - the redis client (NetGet frames RESP itself)
+      #   memcached         - the memcached client (NetGet frames the text protocol itself;
+      #                       read back with libmemcached's memcat/memcp, above)
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -419,7 +421,7 @@ jobs:
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan \
-            mosquitto nginx redis-server
+            mosquitto nginx redis-server memcached
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -432,9 +434,9 @@ jobs:
           python3 -c "import ignition; print('ignition', ignition.__version__)"
 
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
-      # `memccat`, `memcstat`, `memcping` - while libmemcached's own build and Homebrew's
-      # bottle install them as `memcat`, `memstat`, `memping`, which is what the test
-      # invokes and what upstream's manpages call them. `libmemcached-tools` really was
+      # `memccat`, `memcstat`, `memcping`, `memccp` - while libmemcached's own build and Homebrew's
+      # bottle install them as `memcat`, `memstat`, `memping`, `memcp`, which is what the tests
+      # invoke and what upstream's manpages call them. `libmemcached-tools` really was
       # installed on every run since this list was written; it simply never contained a
       # file called `memstat`, so the test reported the binary missing and memcached's
       # Beta rating went unchecked.
@@ -446,7 +448,7 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          for pair in memcat:memccat memstat:memcstat memping:memcping ; do
+          for pair in memcat:memccat memstat:memcstat memping:memcping memcp:memccp ; do
             sudo ln -sf "/usr/bin/${pair##*:}" "/usr/local/bin/${pair%%:*}"
           done
           # Not decoration: these run the binaries, so a rename or a dropped tool in a
@@ -455,6 +457,7 @@ jobs:
           memcat --version
           memstat --version
           memping --version
+          memcp --version
 
       # OpenVPN 2.6 from jammy-backports - see the note above. `--peer-fingerprint`, the
       # option `tests/server/openvpn/e2e_test.rs` uses to trust the server's per-run
@@ -799,7 +802,7 @@ jobs:
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
             client/mqtt::keepalive_test client/mqtt::real_server_test client/nats::e2e_test \
-            client/redis::real_server_test ; do
+            client/redis::real_server_test client/memcached::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
             # from the `client` test target; everything else is a real client against a
