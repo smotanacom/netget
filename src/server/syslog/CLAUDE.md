@@ -159,7 +159,11 @@ The LLM responds to syslog events with actions:
 
 - `store_syslog_message` - Store message for later analysis (sync)
 - `forward_syslog` - Forward message to another syslog server (async)
-- `ignore_syslog_message` - Drop message (sync)
+- `ignore_syslog_message` - Drop message (sync). Takes an optional `reason`, written to the
+  log line only, and is the event's **primary** example. Both exist because the real-model eval
+  (`syslog/drop-healthchecks`) found llama3.1:8b storing a message it was told to drop in every
+  run — once writing "I've ignored the message" beside the `store_syslog_message` carrying it.
+  A parameterless drop listed second lost to a keep with a `message` field listed first.
 - Common actions: `show_message`, `update_instruction`, etc.
 
 ### Example LLM Responses

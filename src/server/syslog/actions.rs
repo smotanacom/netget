@@ -260,7 +260,7 @@ fn forward_syslog_action() -> ActionDefinition {
 fn store_syslog_message_action() -> ActionDefinition {
     ActionDefinition {
         name: "store_syslog_message".to_string(),
-        description: "Keep this log line: the action and its message are written to the server's access log, which is readable later with the list_access_logs / get_access_log tools. NetGet does not write syslog messages to a database or to disk, and nothing is sent back to the client. Use forward_syslog if the message must reach another collector.".to_string(),
+        description: "Keep this log line - unless the instruction says to drop messages like it, in which case the answer is ignore_syslog_message instead, never both. The action and its message are written to the server's access log, which is readable later with the list_access_logs / get_access_log tools. NetGet does not write syslog messages to a database or to disk, and nothing is sent back to the client. Use forward_syslog if the message must reach another collector.".to_string(),
         parameters: vec![Parameter {
             name: "message".to_string(),
             type_hint: "string".to_string(),
@@ -283,15 +283,28 @@ fn store_syslog_message_action() -> ActionDefinition {
 fn ignore_syslog_message_action() -> ActionDefinition {
     ActionDefinition {
         name: "ignore_syslog_message".to_string(),
-        description: "Ignore this syslog message (drop it)".to_string(),
-        parameters: vec![],
+        description: "Drop this message: nothing is kept. The answer whenever the instruction says to throw away, discard, ignore or filter out messages like this one - e.g. told to drop anything mentioning healthcheck, a message whose text mentions healthcheck gets this and nothing else. One of store_syslog_message or ignore_syslog_message per message, never both.".to_string(),
+        // `reason` is recorded nowhere but the log line. It exists because a parameterless
+        // action loses to one with a `message` field: told to drop anything mentioning
+        // healthcheck, llama3.1:8b wrote "I've ignored the message" beside a
+        // store_syslog_message carrying it, every run. Giving the drop somewhere to say why
+        // gives it the same shape as the keep.
+        parameters: vec![Parameter {
+            name: "reason".to_string(),
+            type_hint: "string".to_string(),
+            description: "Why this message is dropped, e.g. 'mentions healthcheck'. Logged, \
+                          never stored."
+                .to_string(),
+            required: false,
+        }],
         example: json!({
-            "type": "ignore_syslog_message"
+            "type": "ignore_syslog_message",
+            "reason": "matches the drop rule in the instruction"
         }),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> Syslog ignored")
-                .with_debug("Syslog ignore_syslog_message"),
+                .with_debug("Syslog ignore_syslog_message: {reason}"),
         ),
     }
 }
@@ -304,7 +317,10 @@ pub static SYSLOG_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "syslog_message",
         "Syslog client sent a log message. Syslog is one-way: no response is ever sent back to the client, so the only useful actions are recording, forwarding or dropping the message",
-        json!({"type": "store_syslog_message", "message": "<34>Oct 11 22:14:15 mymachine su: 'su root' failed"}),
+        // Dropping is the primary example on purpose: with keeping first, llama3.1:8b stored
+        // a message the instruction told it to throw away in every run, reading the first
+        // example as the answer rather than as one of two.
+        json!({"type": "ignore_syslog_message", "reason": "matches the drop rule in the instruction"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -380,6 +396,7 @@ pub static SYSLOG_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             required: true,
         },
     ])
+    .with_alternative_example(json!({"type": "store_syslog_message", "message": "<34>Oct 11 22:14:15 mymachine su: 'su root' failed"}))
     .with_actions(vec![
         store_syslog_message_action(),
         ignore_syslog_message_action(),
