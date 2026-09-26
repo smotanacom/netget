@@ -179,9 +179,12 @@ pub trait Protocol: Send + Sync {
     /// honest.
     ///
     /// Note the two consumers differ in force. `privilege_requirement` is a hard gate in
-    /// `server_startup.rs` — fail it and the server refuses to start. Dependencies are
+    /// `server_startup.rs` — fail it and the server refuses to start. Dependencies are mostly
     /// **informational**: they tell a user, and the model, why a protocol will not work here,
-    /// with an installation hint. Nothing is blocked by this method.
+    /// with an installation hint. The one exception is narrow on purpose: startup refuses a
+    /// system library or tool the probe *established* is absent
+    /// (`protocol::dependencies::startup_blocker`, fed by [`Self::startup_dependencies`]); a
+    /// probe that could not answer never refuses.
     ///
     /// `DeviceAccess` maps to nothing deliberately. There is no `ProtocolDependency` variant for
     /// a Bluetooth adapter, USB device or NFC reader, and no probe that would answer honestly;
@@ -192,6 +195,19 @@ pub trait Protocol: Send + Sync {
     /// replacing it, so the privilege-derived entries are not silently dropped.
     fn get_dependencies(&self) -> Vec<ProtocolDependency> {
         default_dependencies_from_privilege(self)
+    }
+
+    /// The runtime dependencies a start with these `startup_params` actually needs.
+    ///
+    /// This is what the startup gate checks (`protocol::dependencies::startup_blocker`), so a
+    /// protocol whose dependency applies to only some configurations can say so and not be
+    /// refused a start that would work — gRPC needs `protoc` to compile `.proto` text, and not
+    /// at all for a pre-compiled descriptor set. Defaults to [`Self::get_dependencies`].
+    fn startup_dependencies(
+        &self,
+        _startup_params: Option<&serde_json::Value>,
+    ) -> Vec<ProtocolDependency> {
+        self.get_dependencies()
     }
 }
 

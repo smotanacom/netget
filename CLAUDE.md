@@ -796,6 +796,14 @@ the client running the identical `Command::new("protoc")` did not) and **wiregua
 So before declaring a dependency, ask whether it can actually be *missing at runtime on a
 process that started*. If not, the declaration is decoration.
 
+**Startup enforces them, narrowly.** Every `start_*` path (server and client, `_from_action` and
+`_by_id`) calls `dependencies::startup_blocker`, which refuses only a `SystemLibrary`/`ToolInPath`
+the probe **established** is absent (`DependencyStatus::Missing`), before anything is
+registered, naming it with its install hint. A probe that cannot answer (`Unknown` — no `PATH`
+to search, no loader query on the platform) is logged and let through. A dependency that only
+some configurations need is expressed with `startup_dependencies(startup_params)`: gRPC drops
+`protoc` for a pre-compiled descriptor set.
+
 ## Adding a server protocol
 
 1. `src/server/<protocol>/mod.rs` — server loop, dual logging, connection tracking, register

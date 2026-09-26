@@ -285,6 +285,26 @@ impl Protocol for GrpcClientProtocol {
         deps.push(crate::protocol::dependencies::ProtocolDependency::ToolInPath("protoc"));
         deps
     }
+
+    /// A base64 `FileDescriptorSet` is decoded directly (`mod.rs::load_schema`) and needs no
+    /// `protoc`; every other schema form is compiled by it.
+    fn startup_dependencies(
+        &self,
+        startup_params: Option<&serde_json::Value>,
+    ) -> Vec<crate::protocol::dependencies::ProtocolDependency> {
+        let precompiled = startup_params
+            .and_then(|p| p.get("proto_schema"))
+            .and_then(|s| s.as_str())
+            .map(is_base64_descriptor_set)
+            .unwrap_or(false);
+        let mut deps = self.get_dependencies();
+        if precompiled {
+            deps.retain(|d| {
+                *d != crate::protocol::dependencies::ProtocolDependency::ToolInPath("protoc")
+            });
+        }
+        deps
+    }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
@@ -439,4 +459,15 @@ impl Client for GrpcClientProtocol {
             )),
         }
     }
+}
+
+/// Whether `schema` is a base64-encoded `FileDescriptorSet`, the one form the client loads
+/// without `protoc`.
+fn is_base64_descriptor_set(schema: &str) -> bool {
+    use base64::Engine as _;
+    use prost::Message as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(schema)
+        .map(|bytes| prost_types::FileDescriptorSet::decode(bytes.as_slice()).is_ok())
+        .unwrap_or(false)
 }

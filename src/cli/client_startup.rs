@@ -114,6 +114,28 @@ pub async fn start_client_by_id(
         }
     }
 
+    // Runtime dependencies a start with these params needs (a binary on PATH, a system
+    // library). Only a dependency the probe established is absent refuses — see
+    // `dependencies::startup_blocker`, shared with server startup.
+    let system_caps = state.get_system_capabilities().await;
+    if let Some(dep) = crate::protocol::dependencies::startup_blocker(
+        &protocol.startup_dependencies(client.startup_params.as_ref()),
+        &system_caps,
+    ) {
+        let msg = format!(
+            "Cannot start {} client: {}. {}",
+            protocol_name,
+            dep.description(),
+            dep.installation_hint()
+        );
+        state
+            .update_client_status(client_id, ClientStatus::Error(msg.clone()))
+            .await;
+        let _ = status_tx.send(format!("[ERROR] {}", msg));
+        let _ = status_tx.send("__UPDATE_UI__".to_string());
+        return Err(ActionExecutionError::Fatal(anyhow::anyhow!(msg)));
+    }
+
     // Build type-safe startup params if provided
     //
     // The JSON comes from the LLM or an MCP client, so a bad key must become a
@@ -225,6 +247,23 @@ pub async fn start_client_from_action(
                 crate::cli::server_startup::min_stability_refusal("client", &protocol, actual, min)
             ));
         }
+    }
+
+    // === Runtime dependencies, BEFORE registering the client ===
+    //
+    // Same gate and same reasoning as `start_server_from_action`: refuse only a dependency the
+    // probe established is absent, name it with its install hint, and leave nothing stranded.
+    let system_caps = state.get_system_capabilities().await;
+    if let Some(dep) = crate::protocol::dependencies::startup_blocker(
+        &protocol_impl.startup_dependencies(startup_params.as_ref()),
+        &system_caps,
+    ) {
+        return Err(anyhow::anyhow!(
+            "Cannot start {} client: {}. {}",
+            protocol,
+            dep.description(),
+            dep.installation_hint()
+        ));
     }
 
     // === Validate startup params BEFORE registering the client ===

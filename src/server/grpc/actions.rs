@@ -98,11 +98,12 @@ impl Protocol for GrpcProtocol {
 
     /// `protoc` must be on PATH at **runtime**, not merely at build time.
     ///
-    /// `proto_schema` is a required startup parameter and every path that turns it into a
-    /// descriptor set shells out to `protoc` — `compile_proto_file` for a path on disk and
-    /// `compile_proto_text` for inline proto3 source (`mod.rs`, both via `Command::new`). So a
-    /// host without `protoc` cannot start a gRPC server at all, whatever the schema looks like.
-    /// gRPC is the only protocol that shells out to anything.
+    /// `proto_schema` is a required startup parameter, and the two forms a caller is told to
+    /// use — a `.proto` path on disk and inline proto3 text — are compiled by shelling out to
+    /// `protoc` (`mod.rs`, via `Command::new`). A pre-compiled descriptor set (base64, or a
+    /// `.pb` file) is decoded directly and needs no `protoc`; [`Self::startup_dependencies`]
+    /// drops the dependency for exactly those, so the startup gate refuses only a start that
+    /// would really fail.
     ///
     /// Declaring it here means `server_startup` refuses with the installation hint before
     /// registering the server, and the TUI and the model's protocol list exclude gRPC on a host
@@ -115,6 +116,24 @@ impl Protocol for GrpcProtocol {
         let mut deps =
             crate::llm::actions::protocol_trait::default_dependencies_from_privilege(self);
         deps.push(crate::protocol::dependencies::ProtocolDependency::ToolInPath("protoc"));
+        deps
+    }
+
+    fn startup_dependencies(
+        &self,
+        startup_params: Option<&serde_json::Value>,
+    ) -> Vec<crate::protocol::dependencies::ProtocolDependency> {
+        let precompiled = startup_params
+            .and_then(|p| p.get("proto_schema"))
+            .and_then(|s| s.as_str())
+            .map(|schema| schema.trim().ends_with(".pb") || is_base64_descriptor_set(schema.trim()))
+            .unwrap_or(false);
+        let mut deps = self.get_dependencies();
+        if precompiled {
+            deps.retain(|d| {
+                *d != crate::protocol::dependencies::ProtocolDependency::ToolInPath("protoc")
+            });
+        }
         deps
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
@@ -399,4 +418,15 @@ pub static GRPC_UNARY_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 /// Get gRPC event types
 pub fn get_grpc_event_types() -> Vec<EventType> {
     vec![GRPC_UNARY_REQUEST_EVENT.clone()]
+}
+
+/// Whether `schema` is a base64-encoded `FileDescriptorSet` — the form `mod.rs` decodes
+/// directly, without `protoc`.
+fn is_base64_descriptor_set(schema: &str) -> bool {
+    use base64::Engine as _;
+    use prost::Message as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(schema)
+        .map(|bytes| prost_types::FileDescriptorSet::decode(bytes.as_slice()).is_ok())
+        .unwrap_or(false)
 }
