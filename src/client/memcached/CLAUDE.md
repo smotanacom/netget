@@ -92,7 +92,16 @@ No SASL, no meta commands (`mg`/`ms`/`md`), no `verbosity`/`cache_memlimit`, no 
 timeout (memcached always answers; a server that does not leaves the client waiting), one server
 per client (no consistent hashing across a pool).
 
-## Maturity
+## Maturity: Beta
 
-Evidence: `tests/client/memcached/real_server_test.rs` — the real C memcached, prepared and read
-back with libmemcached's `memcp`/`memcat`. See the test's CLAUDE.md for what it proves.
+All four conditions of the client bar hold, on `tests/client/memcached/real_server_test.rs`:
+
+1. the peer is the real C memcached, prepared and read back with libmemcached's `memcp`/`memcat`
+   — nothing NetGet wrote, and not a library this client is built on (it frames the protocol
+   itself);
+2. a missing `memcached`, `memcp` or `memcat` fails the test, never skips it;
+3. a real session: set, gets across four keys, a second set, all answered by the server;
+4. the client acts on the model's answer, asserted from the server's side by `memcat` — and
+   emptying the loop over `result.actions` fails it.
+
+Passed three consecutive runs at `--test-threads=100` before promotion.

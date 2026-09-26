@@ -647,7 +647,7 @@ impl Protocol for MemcachedClientProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "Hand-written memcached text-protocol client on tokio \
@@ -664,8 +664,17 @@ impl Protocol for MemcachedClientProtocol {
                  touch, stats, version, and flush_all only with confirm: true.",
             )
             .e2e_testing(
-                "tests/client/memcached/real_server_test.rs against a real memcached, read \
-                 back with libmemcached's memcat.",
+                "tests/client/memcached/real_server_test.rs, 8 LLM calls, against the real C \
+                 memcached prepared and read back with libmemcached's memcp and memcat (a \
+                 separate C client library). The model sets a value with flags 42 that memcat \
+                 reads back with its flags; gets four keys and is shown two values (with CAS \
+                 uniques), a non-UTF-8 value refused as non_text_value, and a miss, each as its \
+                 own event matched on parsed fields; and stores a value built from the one \
+                 memcp wrote, which memcat reads back. A second test drives the command channel \
+                 against the same server: an injected set read back by memcat, flush_all \
+                 without confirm refused before the wire, and a disconnect. Not #[ignore]d; a \
+                 missing memcached, memcp or memcat fails the test rather than skipping it. \
+                 wire_test.rs and in_flight_test.rs pin the framing and each bound.",
             )
             .notes(
                 "Text protocol only (the binary protocol is deprecated upstream). Values are \
