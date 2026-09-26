@@ -83,6 +83,63 @@ pub(crate) fn emit_status_line(line: &str, to_stderr: bool) {
     }
 }
 
+/// When a non-interactive run ends on its own, besides Ctrl+C and every instance stopping.
+///
+/// Built once at the start of a run from `--run-for` and `--exit-after-events`, so the clock
+/// and the event count both cover startup as well as the wait loop. Checked by every
+/// non-interactive wait loop — [`run_server`], [`run_clients`] and `--client`'s own loop — so
+/// both flags mean the same thing in server and client mode.
+///
+/// Events are counted with [`AppState::access_log_total`]: every network event a server or
+/// client handles is recorded in the access log exactly once, whichever of handler, model or
+/// operator answered it, so that counter already is "events handled across all instances" and
+/// no parallel one is kept.
+#[derive(Debug, Clone)]
+pub(crate) struct RunLimits {
+    exit_after_events: Option<u64>,
+    run_for: Option<Duration>,
+    started: crate::utils::clock::Instant,
+}
+
+impl RunLimits {
+    pub(crate) fn from_args(args: &super::Args) -> Self {
+        Self {
+            exit_after_events: args.exit_after_events,
+            run_for: args.run_for.map(Duration::from_secs),
+            started: crate::utils::clock::Instant::now(),
+        }
+    }
+
+    /// `Some(reason)` once a limit has been reached.
+    pub(crate) async fn reached(&self, state: &AppState) -> Option<String> {
+        if let Some(run_for) = self.run_for {
+            if self.started.elapsed() >= run_for {
+                return Some(format!("--run-for {}s elapsed", run_for.as_secs()));
+            }
+        }
+        if let Some(limit) = self.exit_after_events {
+            let handled = state.access_log_total().await;
+            if handled >= limit {
+                return Some(format!(
+                    "--exit-after-events {limit}: {handled} network event(s) handled"
+                ));
+            }
+        }
+        None
+    }
+}
+
+/// Resolve on Ctrl+C. Spawned once per wait loop; the loop polls the flag.
+fn ctrl_c_flag() -> Arc<Mutex<bool>> {
+    let shutdown = Arc::new(Mutex::new(false));
+    let shutdown_clone = shutdown.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        *shutdown_clone.lock().await = true;
+    });
+    shutdown
+}
+
 /// Run NetGet in non-interactive mode with the given prompt
 pub async fn run_non_interactive(
     prompt: String,
@@ -91,6 +148,7 @@ pub async fn run_non_interactive(
 ) -> Result<()> {
     info!("Starting NetGet in non-interactive mode");
     debug!("Prompt: {}", prompt);
+    let limits = RunLimits::from_args(args);
 
     // Create application state
     let base_url = args
@@ -230,12 +288,14 @@ pub async fn run_non_interactive(
         std::io::stdout().flush().ok();
     }
 
-    // Check if we're in server mode
-    if state.get_mode().await == Mode::Server {
+    // Server mode whenever any server was started — including alongside clients, which then
+    // run for as long as the servers do. `Mode` records only the *first* instance's kind, so a
+    // client opened before a server would otherwise leave the servers unwaited-for.
+    if state.get_mode().await == Mode::Server || !state.get_all_servers().await.is_empty() {
         // Create a new status channel for the server
         // (the original status_rx was consumed by the forwarder task above)
         let (_new_status_tx, new_status_rx) = mpsc::unbounded_channel::<String>();
-        return run_server(&state, llm, new_status_rx).await;
+        return run_server(&state, llm, new_status_rx, limits).await;
     }
 
     // Client mode: stay alive while a client is still connected.
@@ -246,24 +306,20 @@ pub async fn run_non_interactive(
     // "join a group and log all received data" bound its socket, joined the group, logged
     // that its receive loop was listening, and was killed before a single datagram could
     // arrive. The same applies to every client with a read loop.
-    run_clients(&state).await;
+    run_clients(&state, &limits, false).await;
 
     Ok(())
 }
 
-/// Block while any client is still connected, or until Ctrl+C.
+/// Block while any client is still connected, until Ctrl+C, or until a [`RunLimits`] limit.
 ///
 /// Returns immediately when there are no clients at all, so a one-shot instruction that
-/// started nothing still exits rather than hanging.
-async fn run_clients(state: &AppState) {
-    use tokio::time::{sleep, Duration};
+/// started nothing still exits rather than hanging. `to_stderr` routes the one line saying why
+/// the wait ended.
+pub(crate) async fn run_clients(state: &AppState, limits: &RunLimits, to_stderr: bool) {
+    use tokio::time::sleep;
 
-    let shutdown = Arc::new(Mutex::new(false));
-    let shutdown_clone = shutdown.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        *shutdown_clone.lock().await = true;
-    });
+    let shutdown = ctrl_c_flag();
 
     loop {
         let live = state
@@ -277,18 +333,32 @@ async fn run_clients(state: &AppState) {
                 )
             })
             .count();
-        if live == 0 || *shutdown.lock().await {
+        if live == 0 {
+            return;
+        }
+        if *shutdown.lock().await {
+            emit_status_line("\nShutting down clients...", to_stderr);
+            return;
+        }
+        if let Some(reason) = limits.reached(state).await {
+            emit_status_line(&format!("Stopping: {reason}."), to_stderr);
             return;
         }
         sleep(Duration::from_millis(100)).await;
     }
 }
 
-/// Run a server in non-interactive mode
+/// Run every started server in non-interactive mode until they have all stopped, Ctrl+C, or a
+/// [`RunLimits`] limit.
+///
+/// Clients started alongside keep running for as long as this does. A server already in
+/// `Error` when the loop begins makes the run fail (non-zero exit) rather than serve the rest
+/// as if the configuration had loaded.
 pub(crate) async fn run_server(
     state: &AppState,
     llm: OllamaClient,
     mut status_rx: mpsc::UnboundedReceiver<String>,
+    limits: RunLimits,
 ) -> Result<()> {
     // Create status channel for server messages
     let (status_tx, mut server_status_rx) = mpsc::unbounded_channel::<String>();
@@ -298,34 +368,54 @@ pub(crate) async fn run_server(
     // is already spawned by this point, so a single check settles the sink.
     let to_stderr = server_owns_stdout(state).await;
 
-    // Server should already be started by the interpret loop above
-    // Just verify it exists and print status
-    if let Some(server_id) = state.get_first_server_id().await {
-        emit_status_line(
-            &format!(
-                "Server #{} is running. Press Ctrl+C to stop.",
-                server_id.as_u32()
-            ),
-            to_stderr,
-        );
-        emit_status_line("Waiting for connections...\n", to_stderr);
-    } else {
+    // Servers were started by the caller; report every one of them.
+    let mut servers = state.get_all_servers().await;
+    servers.sort_by_key(|s| s.id.as_u32());
+    if servers.is_empty() {
         return Err(anyhow::anyhow!(
             "No server configured. Use a command like 'listen on port 8080 via http'"
         ));
     }
+    let failed: Vec<String> = servers
+        .iter()
+        .filter_map(|s| match &s.status {
+            crate::state::server::ServerStatus::Error(e) => Some(format!(
+                "server #{} ({}): {}",
+                s.id.as_u32(),
+                s.protocol_name,
+                e
+            )),
+            _ => None,
+        })
+        .collect();
+    if !failed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{} server(s) failed to start: {}",
+            failed.len(),
+            failed.join("; ")
+        ));
+    }
+    for server in &servers {
+        let at = server
+            .local_addr
+            .map(|a| format!(" on {a}"))
+            .unwrap_or_default();
+        emit_status_line(
+            &format!(
+                "Server #{} ({}) is running{at}.",
+                server.id.as_u32(),
+                server.protocol_name
+            ),
+            to_stderr,
+        );
+    }
+    emit_status_line("Press Ctrl+C to stop.", to_stderr);
+    emit_status_line("Waiting for connections...\n", to_stderr);
 
-    // Set up Ctrl+C handler
-    let shutdown = Arc::new(Mutex::new(false));
-    let shutdown_clone = shutdown.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        let mut shutdown = shutdown_clone.lock().await;
-        *shutdown = true;
-    });
+    let shutdown = ctrl_c_flag();
 
     // Set up task execution ticker (execute tasks every 1 second, same as TUI mode)
-    use tokio::time::{interval, Duration};
+    use tokio::time::interval;
     let mut task_execution_interval = interval(Duration::from_secs(1));
 
     // Main event loop
@@ -337,6 +427,28 @@ pub(crate) async fn run_server(
                     emit_status_line("\nShutting down server...", to_stderr);
                     break;
                 }
+                if let Some(reason) = limits.reached(state).await {
+                    emit_status_line(&format!("Stopping: {reason}."), to_stderr);
+                    break;
+                }
+                // Every server stopped (closed by the model, errored, or removed): nothing is
+                // left to wait for.
+                let live = state
+                    .get_all_servers()
+                    .await
+                    .iter()
+                    .filter(|s| {
+                        matches!(
+                            s.status,
+                            crate::state::server::ServerStatus::Starting
+                                | crate::state::server::ServerStatus::Running
+                        )
+                    })
+                    .count();
+                if live == 0 {
+                    emit_status_line("All servers have stopped.", to_stderr);
+                    break;
+                }
 
                 // Process status messages from handler (drain remaining)
                 while let Ok(msg) = status_rx.try_recv() {
@@ -344,9 +456,6 @@ pub(crate) async fn run_server(
                         emit_status_line(&format!("[STATUS] {msg}"), to_stderr);
                     }
                 }
-
-                // Sleep briefly to avoid busy waiting
-                tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Process server status messages
                 while let Ok(msg) = server_status_rx.try_recv() {
@@ -374,6 +483,7 @@ pub async fn run_with_actions(
 ) -> Result<()> {
     info!("Starting NetGet in non-interactive mode (actions JSON)");
     debug!("Loading {} actions", actions.len());
+    let limits = RunLimits::from_args(args);
 
     // Create application state
     let base_url = args
@@ -441,6 +551,9 @@ pub async fn run_with_actions(
         to_stderr,
     );
 
+    // What failed to start: reported at the end, and the reason the run exits non-zero.
+    let mut failures: Vec<String> = Vec::new();
+
     // Execute each action
     for (i, action) in actions.iter().enumerate() {
         // Try to parse as common action
@@ -502,6 +615,7 @@ pub async fn run_with_actions(
                         }
                         Err(e) => {
                             eprintln!("[{}] Failed to open server: {}", i + 1, e);
+                            failures.push(format!("action {} ({} server): {}", i + 1, protocol, e));
                         }
                     }
                 }
@@ -545,6 +659,7 @@ pub async fn run_with_actions(
                         }
                         Err(e) => {
                             eprintln!("[{}] Failed to open client: {}", i + 1, e);
+                            failures.push(format!("action {} ({} client): {}", i + 1, protocol, e));
                         }
                     }
                 }
@@ -563,21 +678,40 @@ pub async fn run_with_actions(
         }
     }
 
-    // Drop status_tx to close the channel and signal the background task to finish
+    // The printer is NOT awaited. Every server started above holds a clone of `status_tx`
+    // for its whole life, so the channel only closes when the last server stops; awaiting it
+    // here parked this function forever as soon as one server was loaded — `run_server`, its
+    // task ticker and every exit condition below were never reached. The printer keeps
+    // forwarding the servers' status lines for the rest of the run, which is what it is for.
     drop(status_tx);
+    // Let it print what the loading itself queued before the summary line.
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    drop(status_printer);
 
-    // Wait for the background task to print all remaining messages
-    let _ = status_printer.await;
+    if !failures.is_empty() {
+        // A configuration that only half loaded is a failed run: exit non-zero rather than
+        // serve what did start as though everything had.
+        return Err(anyhow::anyhow!(
+            "{} of {} action(s) failed to start: {}",
+            failures.len(),
+            actions.len(),
+            failures.join("; ")
+        ));
+    }
 
     emit_status_line("\nConfiguration loaded successfully.", to_stderr);
 
-    // Check if we're in server mode
-    if state.get_mode().await == Mode::Server {
+    // Any server → serve until they all stop (clients alongside run as long as that does).
+    if !state.get_all_servers().await.is_empty() {
         // Create a new status channel for run_server
         let (_status_tx, status_rx) = mpsc::unbounded_channel::<String>();
-        // Run the server
-        return run_server(&state, llm, status_rx).await;
+        return run_server(&state, llm, status_rx, limits).await;
     }
+
+    // Clients only: stay alive while any is connected, exactly as the prompt path does.
+    run_clients(&state, &limits, to_stderr).await;
 
     Ok(())
 }

@@ -9,6 +9,22 @@ use tracing::debug;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use tracing::warn;
 
+/// What a dependency probe could establish.
+///
+/// Three answers, not two, because the startup gate must be able to tell "absent" from "could
+/// not tell": only [`DependencyStatus::Missing`] refuses a start. A probe that cannot run —
+/// no `PATH` to search, a platform with no loader query — answers
+/// [`DependencyStatus::Unknown`], and that is logged and let through, never turned into "no".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyStatus {
+    /// The probe found it.
+    Available,
+    /// The probe ran and established it is not there.
+    Missing,
+    /// The probe could not answer; the string says why.
+    Unknown(String),
+}
+
 /// A runtime dependency that a protocol requires
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProtocolDependency {
@@ -77,11 +93,37 @@ impl ProtocolDependency {
         }
     }
 
-    /// Check if this dependency is available on the system
+    /// Whether this dependency is present, for the informational consumers — the TUI's
+    /// excluded-protocol footer and the model's protocol list.
+    ///
+    /// Only a definite [`DependencyStatus::Missing`] reads as unavailable: a probe that could
+    /// not answer must not hide a protocol that may well work (the reason `DeviceAccess` derives
+    /// no dependency at all).
     pub fn is_available(&self, caps: &crate::privilege::SystemCapabilities) -> bool {
+        self.status(caps) != DependencyStatus::Missing
+    }
+
+    /// What the probe for this dependency established. See [`DependencyStatus`].
+    pub fn status(&self, caps: &crate::privilege::SystemCapabilities) -> DependencyStatus {
         match self {
-            Self::SystemLibrary(name) => check_system_library(name),
-            Self::ToolInPath(name) => check_tool_in_path(name),
+            Self::SystemLibrary(name) => system_library_status(name),
+            Self::ToolInPath(name) => tool_in_path_status(name),
+            other => {
+                if other.is_met_by_capabilities(caps) {
+                    DependencyStatus::Available
+                } else {
+                    DependencyStatus::Missing
+                }
+            }
+        }
+    }
+
+    /// The capability-derived variants, answered from the probed [`SystemCapabilities`].
+    ///
+    /// [`SystemCapabilities`]: crate::privilege::SystemCapabilities
+    fn is_met_by_capabilities(&self, caps: &crate::privilege::SystemCapabilities) -> bool {
+        match self {
+            Self::SystemLibrary(_) | Self::ToolInPath(_) => true,
             Self::RawSocketAccess => caps.has_raw_socket_access,
             Self::PrivilegedPort(_) => caps.can_bind_privileged_ports,
             Self::RootAccess => caps.is_root,
@@ -237,8 +279,12 @@ fn library_candidates(name: &str) -> Vec<String> {
     }
 }
 
-/// Check if a system library is available
-fn check_system_library(name: &str) -> bool {
+/// Probe for a system library.
+///
+/// `dlopen` success is **Available**. When the loader and the platform's own catalogue
+/// (`ldconfig -p`, `pkg-config`) both ran and neither knows the library, that is **Missing**. When
+/// no catalogue could be run at all, or the platform has no probe, the answer is **Unknown**.
+fn system_library_status(name: &str) -> DependencyStatus {
     // Ask the dynamic linker first on every Unix. This is the only probe that is
     // correct on macOS at all (see `dlopen_succeeds`), and on Linux it subsumes the
     // ldconfig search for the common case while also honouring LD_LIBRARY_PATH.
@@ -247,7 +293,7 @@ fn check_system_library(name: &str) -> bool {
         for candidate in library_candidates(name) {
             if dlopen_succeeds(&candidate) {
                 debug!("dlopen({}) succeeded - lib{} is loadable", candidate, name);
-                return true;
+                return DependencyStatus::Available;
             }
         }
         debug!(
@@ -266,7 +312,11 @@ fn check_system_library(name: &str) -> bool {
             let lib_pattern = format!("lib{}.so", name);
             let found = stdout.contains(&lib_pattern);
             debug!("Checking for lib{}: found={}", name, found);
-            return found;
+            return if found {
+                DependencyStatus::Available
+            } else {
+                DependencyStatus::Missing
+            };
         }
 
         // Fallback: try pkg-config
@@ -278,14 +328,20 @@ fn check_system_library(name: &str) -> bool {
         if let Ok(status) = pkg_config_output {
             let found = status.success();
             debug!("Checking for {} via pkg-config: found={}", name, found);
-            return found;
+            return if found {
+                DependencyStatus::Available
+            } else {
+                DependencyStatus::Missing
+            };
         }
 
         debug!(
             "Could not check for lib{} (ldconfig and pkg-config unavailable)",
             name
         );
-        false
+        DependencyStatus::Unknown(format!(
+            "dlopen found no lib{name} and neither ldconfig nor pkg-config could be run"
+        ))
     }
 
     #[cfg(target_os = "macos")]
@@ -307,47 +363,116 @@ fn check_system_library(name: &str) -> bool {
         if let Ok(status) = pkg_config_output {
             let found = status.success();
             debug!("Checking for {} via pkg-config: found={}", name, found);
-            return found;
+            return if found {
+                DependencyStatus::Available
+            } else {
+                DependencyStatus::Missing
+            };
         }
 
-        debug!("Could not check for lib{} on macOS", name);
-        false
+        // dlopen is the loader's own answer; with no pkg-config to consult there is no
+        // second opinion, and the loader not finding it under any conventional name is as
+        // definite as this platform gets.
+        debug!("dlopen and pkg-config found no lib{} on macOS", name);
+        DependencyStatus::Missing
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        // On other platforms, assume library is available (conservative)
-        // We can't easily check without platform-specific tools
+        // No loader query or package catalogue on this platform.
         warn!(
-            "Cannot check for lib{} on this platform, assuming available",
+            "Cannot check for lib{} on this platform; not treating it as missing",
             name
         );
+        DependencyStatus::Unknown(format!("no library probe for lib{name} on this platform"))
+    }
+}
+
+/// Probe for an executable on `PATH`, searching it the way `Command::new(tool)` will.
+///
+/// This walks `PATH` itself rather than running `which`: the question is whether the protocol's
+/// own `Command::new(tool)` will find a program, and a `which` that cannot be spawned (no
+/// `PATH`, a minimal container) used to read as "the tool is missing". An unset `PATH` is
+/// **Unknown**; a `PATH` searched in full without finding an executable `tool` is **Missing**.
+fn tool_in_path_status(tool: &str) -> DependencyStatus {
+    let Some(path) = std::env::var_os("PATH") else {
+        return DependencyStatus::Unknown("PATH is not set, so there is nothing to search".into());
+    };
+
+    #[cfg(windows)]
+    let names: Vec<String> = ["", ".exe", ".cmd", ".bat", ".com"]
+        .iter()
+        .map(|ext| format!("{tool}{ext}"))
+        .collect();
+    #[cfg(not(windows))]
+    let names: Vec<String> = vec![tool.to_string()];
+
+    for dir in std::env::split_paths(&path) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for name in &names {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                debug!("Found tool '{}' at {}", tool, candidate.display());
+                return DependencyStatus::Available;
+            }
+        }
+    }
+    debug!("Tool '{}' is not on PATH", tool);
+    DependencyStatus::Missing
+}
+
+/// A regular file (symlinks followed) the current user may execute.
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
         true
     }
 }
 
-/// Check if a tool is available in PATH
-fn check_tool_in_path(tool: &str) -> bool {
-    #[cfg(unix)]
-    let which_cmd = "which";
-    #[cfg(windows)]
-    let which_cmd = "where";
-    #[cfg(not(any(unix, windows)))]
-    let which_cmd = "which";
-
-    let output = Command::new(which_cmd).arg(tool).output();
-
-    if let Ok(output) = output {
-        let found = output.status.success();
-        debug!("Checking for tool '{}' in PATH: found={}", tool, found);
-        found
-    } else {
-        debug!(
-            "Could not check for tool '{}' (which/where command failed)",
-            tool
-        );
-        false
+/// The dependency that must stop a start, if any: the first **system library or tool** among
+/// `deps` whose probe established it is absent.
+///
+/// Dependencies derived from `privilege_requirement` are skipped — startup gates privilege
+/// itself, with a better message, and checking them here would report one failure twice. A
+/// probe that could not answer ([`DependencyStatus::Unknown`]) is logged and let through:
+/// dependencies inform, and "we could not tell" must never become a refusal.
+pub fn startup_blocker(
+    deps: &[ProtocolDependency],
+    caps: &crate::privilege::SystemCapabilities,
+) -> Option<ProtocolDependency> {
+    for dep in deps {
+        if !matches!(
+            dep,
+            ProtocolDependency::SystemLibrary(_) | ProtocolDependency::ToolInPath(_)
+        ) {
+            continue;
+        }
+        match dep.status(caps) {
+            DependencyStatus::Available => {}
+            DependencyStatus::Missing => return Some(dep.clone()),
+            DependencyStatus::Unknown(why) => {
+                tracing::warn!(
+                    "Could not determine whether {} is present ({}); starting anyway",
+                    dep.name(),
+                    why
+                );
+            }
+        }
     }
+    None
 }
 
 /// Check for CAP_NET_ADMIN capability on Linux

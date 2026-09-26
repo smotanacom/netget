@@ -175,6 +175,7 @@ async fn await_manual_answer(
             event_type_id,
             event_description,
             event_data,
+            timeout_secs,
         )
         .await;
     tracing::info!(

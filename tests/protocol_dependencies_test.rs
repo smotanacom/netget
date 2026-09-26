@@ -109,10 +109,12 @@ fn privileged_protocols_map_onto_the_dependency_they_actually_need() {
 
 /// gRPC must declare its runtime `protoc` dependency.
 ///
-/// This is the only protocol that shells out to anything, and it does so on every startup path:
-/// `proto_schema` is required and both `compile_proto_file` and `compile_proto_text` invoke
-/// `protoc`. Without this declaration the non-privilege half of the startup dependency gate has
-/// nothing to enforce and is decorative — the inert-mechanism shape this file exists to catch.
+/// `proto_schema` is required, and both forms a caller is told to use — a `.proto` path and
+/// inline text — are compiled by `protoc` (`compile_proto_file`, `compile_proto_text`). A
+/// pre-compiled descriptor set is not, which `startup_dependencies` accounts for
+/// (`tests/startup_dependency_gate_test.rs`). Without this declaration the non-privilege half of
+/// the startup dependency gate has nothing to enforce and is decorative — the inert-mechanism
+/// shape this file exists to catch.
 #[test]
 #[cfg(feature = "grpc")]
 fn grpc_declares_its_runtime_protoc_dependency() {

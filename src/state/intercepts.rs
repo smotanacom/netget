@@ -37,6 +37,8 @@ pub struct PendingIntercept {
     pub description: String,
     pub event_data: Option<Value>,
     pub created_unix_ms: u64,
+    /// How long the waiting dispatcher gives the operator before failing closed.
+    pub timeout_secs: u64,
     /// Taken by `resolve_intercept`; dropped by `dismiss_intercept`. When the
     /// *receiver* side is gone (the dispatcher timed out or its connection task
     /// was cancelled), the entry is dead and is pruned lazily.
@@ -53,6 +55,20 @@ pub struct InterceptView {
     pub description: String,
     pub event_data: Option<Value>,
     pub created_unix_ms: u64,
+    /// The handler's `timeout_secs`: the event fails closed this long after
+    /// `created_unix_ms` if nobody answers.
+    pub timeout_secs: u64,
+}
+
+impl InterceptView {
+    /// Whole seconds until the waiting dispatcher gives up and fails closed,
+    /// measured against `now_unix_ms` (0 once the deadline has passed).
+    pub fn seconds_until_fail_closed(&self, now_unix_ms: u64) -> u64 {
+        let deadline = self
+            .created_unix_ms
+            .saturating_add(self.timeout_secs.saturating_mul(1000));
+        deadline.saturating_sub(now_unix_ms) / 1000
+    }
 }
 
 impl PendingIntercept {
@@ -65,6 +81,7 @@ impl PendingIntercept {
             description: self.description.clone(),
             event_data: self.event_data.clone(),
             created_unix_ms: self.created_unix_ms,
+            timeout_secs: self.timeout_secs,
         }
     }
 
@@ -78,7 +95,7 @@ impl PendingIntercept {
     }
 }
 
-pub(crate) fn now_unix_ms() -> u64 {
+pub fn now_unix_ms() -> u64 {
     crate::utils::clock::SystemTime::now()
         .duration_since(crate::utils::clock::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

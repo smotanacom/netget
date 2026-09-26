@@ -376,6 +376,7 @@ async fn run_client(protocol: &str, args: &Args) -> Result<()> {
 
     // Setup logging (non-interactive mode)
     setup::init_logging(args, false)?;
+    let limits = non_interactive::RunLimits::from_args(args);
 
     let remote_addr = args.client_addr.clone().ok_or_else(|| {
         anyhow::anyhow!(
@@ -489,6 +490,10 @@ async fn run_client(protocol: &str, args: &Args) -> Result<()> {
             println!("\n[CLIENT] Shutting down...");
             break;
         }
+        if let Some(reason) = limits.reached(&state).await {
+            println!("[CLIENT] Stopping: {reason}.");
+            break;
+        }
         match state.get_client(client_id).await {
             Some(client) => {
                 if matches!(
@@ -528,6 +533,7 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
     use tokio::sync::mpsc;
 
     setup::init_logging(args, false)?;
+    let limits = non_interactive::RunLimits::from_args(args);
 
     // Resolve the protocol up front so an unknown/compiled-out name fails
     // immediately with the registry's own diagnostic (before any setup work).
@@ -653,7 +659,7 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
 
     // Hand off to the shared non-interactive server loop (Ctrl+C + task ticker).
     let (_srv_tx, srv_rx) = mpsc::unbounded_channel::<String>();
-    non_interactive::run_server(&state, llm, srv_rx).await
+    non_interactive::run_server(&state, llm, srv_rx, limits).await
 }
 
 /// Run a simple protocol in non-interactive mode

@@ -103,8 +103,8 @@ already fixed and are now marked so in their headings (7, 9, 16, 32, 39, 42, 50)
 3. **`pgwire` malformed-query panic (item 77)** — upstream; kills one connection task only.
 4. **`AppState` is one `RwLock` over everything (item 23)** — a throughput ceiling.
 5. **The `easy` layer (item 35)** — still present (`src/easy/http`). Finish or delete.
-6. **Startup does not consult the dependency system (item 20b)** — `is_protocol_available()`
-   has no caller in the startup path.
+6. **Startup does not consult the dependency system (item 20b)** — **fixed 26 Sep 2026**: all
+   four `start_*` paths refuse a definitively-missing library or tool; see the item.
 7. **`REQUIRE_DOCS_FOR_OPEN_ACTIONS` (item 29)** — a hardcoded `false` guarding a gate nobody
    enables; make it a runtime setting or delete it and its state.
 8. **ARP and DataLink are absent from the Linux `dist` set (item 54).**
@@ -186,7 +186,7 @@ Delete an entry once its context is no longer useful.
 | — DNS client tests flaky | `8f670500` | Ran against 8.8.8.8; now a local server. Three identical runs had given 1, 2 and 3 passes |
 | — live-internet test ungated | `7dc810cc` | web_search gated behind `NETGET_USE_NETWORK` |
 | — src/ test-policy violation | `9f1aade0` | 32 unit tests moved to `tests/`; `grep -rln '#\[cfg(test)\]' src/` is now empty |
-| 20b — startup ignored dependencies | `353a03fd` | Non-privilege deps enforced at startup; gRPC declares its runtime `protoc` so the gate is not decorative |
+| 20b — startup ignored dependencies | `353a03fd`, then 26 Sep 2026 | Non-privilege deps enforced at startup; gRPC declares its runtime `protoc` so the gate is not decorative. The first pass gated only `start_server_by_id`; all four `start_*` paths now go through `dependencies::startup_blocker`, which refuses only a dependency the probe established is absent |
 | 8 — verified fixed | (earlier) | ARP/DataLink/ICMP now await readiness via a oneshot and propagate bind failure, so a capture failure reports Error not Running |
 | 14 — verified fixed | (earlier) | `read_documentation` is in TOOL_ACTION_NAMES; is_tool() no longer misreports it |
 | 15 — verified fixed | (earlier) | `ConversationHandler::trim_history` exists and is called; history no longer grows unbounded |
@@ -343,7 +343,19 @@ LLM-error branch — see the systemic-issues list in CLAUDE.md.
 What remains of this item is the circuit breaker proper: nothing calls `is_available()`, so a
 backend that is down is rediscovered by every request paying the full timeout.
 
-### 20b. Startup still does not consult the dependency system **[static]**
+### 20b. Startup still does not consult the dependency system **[fixed — 26 Sep 2026]**
+
+> Fixed: `dependencies::startup_blocker` gates `start_server_from_action`, `start_server_by_id`,
+> `start_client_from_action` and `start_client_by_id`. `353a03fd` had gated only
+> `start_server_by_id`, which MCP, the model's `open_server` and `--load` never call. The probe
+> is now tri-state (`DependencyStatus::{Available, Missing, Unknown}`): only `Missing` refuses,
+> `Unknown` (e.g. no `PATH` to search) is logged and let through, and `is_available` — what the
+> TUI list and the model's list read — is "not definitively missing", so an unsure probe hides
+> nothing either. `Protocol::startup_dependencies(startup_params)` lets a dependency apply to
+> some configurations only: gRPC drops `protoc` for a pre-compiled descriptor set, which it
+> decodes without running it. A refusal registers nothing and names the dependency and its
+> install hint. `tests/startup_dependency_gate_test.rs`; each branch was verified by removing
+> it. The text below is the original finding.
 
 Item 20 is fixed (see the Fixed table): `Protocol::get_dependencies()` now derives from
 `metadata().privilege_requirement`, so all 116 protocols report correct data and

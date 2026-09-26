@@ -347,6 +347,38 @@ async fn protocol_docs_describe_the_mcp_surface() {
         text
     );
 
+    // What the server writes when the model cannot answer, and whether it keeps connections.
+    assert!(
+        text.contains("when the model cannot answer**: answers"),
+        "expected failure_mode in docs:\n{}",
+        text
+    );
+    assert!(
+        text.contains("connection-oriented"),
+        "expected connectionless in docs:\n{}",
+        text
+    );
+    // Async actions are invocable over MCP (send_to_peer / send_to_client), so they are
+    // rendered like the response actions: a heading, parameters and an example — not a bare
+    // list of names. tcp's server-level close_connection and its client's disconnect.
+    for rendered in [
+        "#### `close_connection`",
+        "#### `disconnect`",
+        "send_to_client",
+    ] {
+        assert!(
+            text.contains(rendered),
+            "expected '{}' in MCP docs:\n{}",
+            rendered,
+            text
+        );
+    }
+    assert!(
+        !text.contains("no MCP tool"),
+        "docs must not claim async actions are unreachable over MCP:\n{}",
+        text
+    );
+
     // Unknown protocols still report what is available.
     let missing = call(
         &client,

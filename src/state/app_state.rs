@@ -895,6 +895,7 @@ impl AppState {
         event_type: &str,
         description: &str,
         event_data: Option<serde_json::Value>,
+        timeout_secs: u64,
     ) -> (u64, tokio::sync::oneshot::Receiver<Vec<serde_json::Value>>) {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let mut inner = self.inner.write().await;
@@ -911,6 +912,7 @@ impl AppState {
                 description: description.to_string(),
                 event_data,
                 created_unix_ms: crate::state::intercepts::now_unix_ms(),
+                timeout_secs,
                 reply_tx: Some(reply_tx),
             });
         (id, reply_rx)
@@ -3037,6 +3039,14 @@ impl AppState {
             inner.access_logs.pop_front();
         }
         id
+    }
+
+    /// How many access-log entries have ever been recorded — one per network event a server
+    /// or client handled (whatever answered it: handler, model or operator), plus one per
+    /// injected action. Unlike the ring buffer this never shrinks, so it is a monotonic count
+    /// of handled events for the life of the process (`--exit-after-events` reads it).
+    pub async fn access_log_total(&self) -> u64 {
+        self.inner.read().await.next_access_log_id.saturating_sub(1)
     }
 
     /// Return the most recent access-log entries, newest first (up to `limit`).

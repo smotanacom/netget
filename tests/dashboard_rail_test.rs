@@ -394,6 +394,7 @@ fn the_waiting_request_comes_right_under_the_header() {
         description: "data".into(),
         event_data: None,
         created_unix_ms: 0,
+        timeout_secs: 300,
     });
     let snap = snapshot(vec![row], Vec::new());
     let rows = rows_for(&snap, &CardState::default(), 60);

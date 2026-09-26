@@ -407,6 +407,25 @@ pub struct Args {
     )]
     pub load_file: Option<String>,
 
+    /// Non-interactive only: exit (status 0) once this many network events have been handled
+    /// across every server and client.
+    #[clap(
+        long = "exit-after-events",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Non-interactive mode: exit with status 0 once N network events have been handled across all servers and clients (each entry in the access log counts once, whatever answered it - handler, model or operator)"
+    )]
+    pub exit_after_events: Option<u64>,
+
+    /// Non-interactive only: exit (status 0) after this many seconds.
+    #[clap(
+        long = "run-for",
+        value_name = "SECS",
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Non-interactive mode: run for SECS seconds, then stop everything and exit with status 0"
+    )]
+    pub run_for: Option<u64>,
+
     /// Path to mock LLM configuration file (for testing)
     #[clap(
         long = "mock-config-file",

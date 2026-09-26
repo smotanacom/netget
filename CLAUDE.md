@@ -7,6 +7,13 @@ what to say on the wire, either by reasoning per-request or via deterministic ha
 Three ways to run it: interactive TUI (default), headless (`--mcp` / `--mcp-http`, see
 `src/mcp_stdio/CLAUDE.md`), and non-interactive one-shot (`src/cli/non_interactive.rs`).
 
+A non-interactive run (a prompt, `--load`, `--server`, `--client`) serves **every** server it
+started until all have stopped or Ctrl+C, keeps a clients-only run alive while any client is
+connected, and exits **non-zero** if anything it was asked to start failed. `--run-for <SECS>`
+and `--exit-after-events <N>` end it with status 0; the event count is the access log's
+monotonic total (`AppState::access_log_total`), so it counts every handled event on every
+instance whoever answered it. `tests/non_interactive_run_limits_test.rs` drives the binary.
+
 **The interactive TUI is the full-screen ratatui dashboard (`src/tui/`)**, the only
 interactive UI — the rolling-terminal TUI that used to sit behind `--legacy-tui` was removed
 in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.rs`.
@@ -789,6 +796,14 @@ the client running the identical `Command::new("protoc")` did not) and **wiregua
 So before declaring a dependency, ask whether it can actually be *missing at runtime on a
 process that started*. If not, the declaration is decoration.
 
+**Startup enforces them, narrowly.** Every `start_*` path (server and client, `_from_action` and
+`_by_id`) calls `dependencies::startup_blocker`, which refuses only a `SystemLibrary`/`ToolInPath`
+the probe **established** is absent (`DependencyStatus::Missing`), before anything is
+registered, naming it with its install hint. A probe that cannot answer (`Unknown` — no `PATH`
+to search, no loader query on the platform) is logged and let through. A dependency that only
+some configurations need is expressed with `startup_dependencies(startup_params)`: gRPC drops
+`protoc` for a pre-compiled descriptor set.
+
 ## Adding a server protocol
 
 1. `src/server/<protocol>/mod.rs` — server loop, dual logging, connection tracking, register
@@ -1439,6 +1454,13 @@ Re-verified September 2026 against `src/mcp_stdio/`:
 | `send_first` accepted as `_send_first` and ignored on every path | **Fixed** — `params.send_first` is passed and folded into `startup_params`, though only where the protocol declares it |
 | `get_protocol_docs` returns TUI docs describing an uninvokable API | **Fixed** — `docs.rs` is MCP-shaped and mentions neither `open_server` nor `base_stack` |
 | `stop_server`/`stop_all` skip `cleanup_server_tasks()` | **Fixed** — teardown moved inside `AppState::remove_server`, pinned by `tests/mcp_stop_cleanup_test.rs` |
+
+**Everything the dashboard's buttons do is a tool too** — `send_to_client`, `send_to_peer`,
+`disconnect_peer`, `list_intercepts`, `answer_intercept` (`[]` = answer with nothing) and
+`fail_intercept`. Each validates the action `type` against the target's own set before handing
+it to a running loop; `server_status` lists connection ids and which accept `send_to_peer`.
+There is no `dismiss_intercept` tool on purpose: dismissing *is* failing closed. Details in
+`src/mcp_stdio/CLAUDE.md` ("Driving by hand").
 
 **Two remain:**
 

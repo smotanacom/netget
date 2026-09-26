@@ -181,23 +181,16 @@ pub async fn start_server_by_id(
     // direct `start_server` still attempted it and failed with whatever raw error the
     // underlying library produced.
     //
-    // Only definitively-unmet dependencies refuse. `DeviceAccess` deliberately derives no
+    // Only definitively-unmet dependencies refuse (`dependencies::startup_blocker`): a probe
+    // that could not answer is logged and let through. `DeviceAccess` deliberately derives no
     // dependency because no probe can answer honestly for an adapter or reader, and this gate
     // must never turn "we could not tell" into "no".
-    let missing: Vec<_> = protocol
-        .get_dependencies()
-        .into_iter()
-        .filter(|dep| {
-            matches!(
-                dep,
-                crate::protocol::dependencies::ProtocolDependency::SystemLibrary(_)
-                    | crate::protocol::dependencies::ProtocolDependency::ToolInPath(_)
-            )
-        })
-        .filter(|dep| !dep.is_available(&system_caps))
-        .collect();
+    let blocker = crate::protocol::dependencies::startup_blocker(
+        &protocol.startup_dependencies(server.startup_params.as_ref()),
+        &system_caps,
+    );
 
-    if let Some(dep) = missing.first() {
+    if let Some(dep) = blocker {
         let full_error = format!(
             "Cannot start {} server on port {}: {}. {}",
             protocol_name,
@@ -544,6 +537,29 @@ pub async fn start_server_from_action(
             system_caps.description()
         );
         return Err(anyhow::anyhow!(error_msg));
+    }
+
+    // Runtime dependencies privilege cannot express — a system library, a binary on PATH.
+    //
+    // Refused here, before `add_server`, like privilege and --min-stability: a server that
+    // cannot start is never registered, so no `Error` row is stranded in `list_servers` (the
+    // same reason a failed `spawn()` below removes its row), and the caller — the MCP tool
+    // error, the model's `open_server` result, a non-interactive run's exit status — gets the
+    // dependency and its install hint instead of whatever the library says part-way through
+    // spawning. Only a dependency the probe established is absent refuses; see
+    // `dependencies::startup_blocker`.
+    if let Some(dep) = crate::protocol::dependencies::startup_blocker(
+        &protocol_impl.startup_dependencies(startup_params.as_ref()),
+        &system_caps,
+    ) {
+        let msg = format!(
+            "Cannot start {} server: {}. {}",
+            protocol,
+            dep.description(),
+            dep.installation_hint()
+        );
+        let _ = status_tx.send(format!("[ERROR] {}", msg));
+        return Err(anyhow::anyhow!(msg));
     }
 
     // Create server instance
