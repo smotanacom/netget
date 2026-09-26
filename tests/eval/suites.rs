@@ -38,6 +38,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(gemini());
     #[cfg(feature = "beanstalkd")]
     cases.extend(beanstalkd());
+    #[cfg(feature = "zabbix")]
+    cases.extend(zabbix());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -406,6 +408,52 @@ fn beanstalkd() -> Vec<EvalCase> {
              version 1.13.",
             beanstalkd_probe("stats", "default"),
             Expect::contains(&["'current-jobs-ready': 5", "'current-jobs-buried': 2"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Zabbix trapper — the Zabbix project's own zabbix_sender, which prints the
+// processed/failed counts it scanned from the response.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "zabbix")]
+fn zabbix_probe(host: &str, key: &str, value: &str) -> Probe {
+    Probe::client(
+        "zabbix_sender",
+        &[
+            "-z",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-s",
+            host,
+            "-k",
+            key,
+            "-o",
+            value,
+        ],
+    )
+}
+
+#[cfg(feature = "zabbix")]
+fn zabbix() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "zabbix/accept-known-host",
+            "zabbix",
+            "You are a Zabbix server monitoring the hosts web1 and db1. Accept every \
+             value reported for them.",
+            zabbix_probe("web1", "system.cpu.load", "0.42"),
+            Expect::contains(&["processed: 1; failed: 0"]),
+        ),
+        EvalCase::new(
+            "zabbix/reject-unknown-host",
+            "zabbix",
+            "You are a Zabbix server monitoring only the host web1. Values reported \
+             for any other host cannot be stored.",
+            zabbix_probe("mystery-box", "system.cpu.load", "0.42"),
+            Expect::contains(&["processed: 0; failed: 1"]),
         ),
     ]
 }

@@ -318,6 +318,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "dict",
         "gemini",
         "beanstalkd",
+        "zabbix",
     ];
 
     let servers = tcp_servers();

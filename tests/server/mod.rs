@@ -326,6 +326,8 @@ pub mod xmlrpc;
 pub mod xmpp;
 #[cfg(feature = "yarn")]
 pub mod yarn;
+#[cfg(feature = "zabbix")]
+pub mod zabbix;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
 
