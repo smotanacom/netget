@@ -154,6 +154,34 @@ Each of these cost a debugging pass and every one presented as a model failure.
   on their own well inside the probe timeout (ignition's `timeout=230`,
   cypher-shell once the query is answered or refused — it has no connection
   timeout flag, and needs none: the Java driver waited out every model call).
+- **A client with a short built-in timeout cannot measure a model at all.**
+  Every libmemcached tool (`memcat`, `memstat`, `memping`) gives up at a 5s
+  poll timeout it has no option to raise — `memcat` printed `Error on
+  motd(NOT FOUND)` at 5.01s against a listener that answered at 8s — and
+  `mbpoll`'s `-o` is capped at 10s. Model answers take 5-90s. `memcached` is
+  driven with pymemcache and `modbus` with pymodbus instead, both with
+  `timeout=230`. Before adding a client, run it against a listener that
+  accepts and never answers and time how long it waits; `probe_check.rs`'s 5s
+  mock cannot see a 10s limit.
+- **A client that retries on its own turns one question into several model
+  calls.** libmosquitto sends a second CONNECT when no CONNACK arrives within
+  the keepalive (measured at 61s with the default 60), so `mosquitto_sub` runs
+  with `-k 300`. libcoap retransmits a Confirmable request after ~2s and the
+  CoAP server has no dedup cache, so `coap-client` sends Non-confirmable
+  (`-N`) and waits `-B 230`. sipsak resends OPTIONS on T1 doubling (5s, 15s,
+  35s, 75s at T1=5000) and the SIP server answers every copy with its own model
+  call, so it runs with `--timer-t1=10000`; one resend inside a slow answer is
+  still possible, which is why its probe checks allow two calls. `snmpget`
+  runs `-r 0`.
+- **websocat hangs up at stdin EOF**, like `nc`, before the model has answered
+  the message it sent, so its probe holds stdin open.
+- **A Python probe's library is not checked the way a binary is.**
+  `binary_available` sees `python3`, not `pymemcache`, `pymodbus`,
+  `greenstalk` or `ignition` (all `pip install`ed into the Homebrew Python
+  3.10), so a missing module is a `ModuleNotFoundError` in the client output
+  and an `event_never_reached_model` run rather than `client-missing`. The
+  standard-library clients (`smtplib`, `poplib`, `imaplib`, `nntplib`) need
+  nothing; `nntplib` was removed in Python 3.13.
 - **So every probe is checked against a mocked model first.**
   `probe_check.rs` takes a published case by id — instruction, probe and
   `Expect` unchanged — and answers its event correctly after 5 s, longer than
@@ -204,9 +232,56 @@ neither is visible to a mocked test.
    An `example` is the strongest prompt a protocol has; whatever it contains is
    what a small model will send.
 
+   **That diagnosis did not fire on any run until 26 September 2026**, for two
+   reasons at once: it looked the protocol up with the registry's exact-key
+   `get("smtp")` while the registry is keyed `"SMTP"`, and it parsed the
+   executor's `Executing action` line as JSON when the executor writes it with
+   `{:?}` — serde_json's Debug form, `Object {"type": String("send_x"), …}`.
+   Every copied example was scored `wrong_content`, including the gopher case
+   above. It now resolves the name the way `--server` does, reads the Debug
+   form, and skips the example's own `type` (an action's name is in every use
+   of it). `copied_example_is_found_in_the_executor_debug_line` pins it; the
+   lookup, the Debug parse and the `type` skip were each checked by putting
+   the old code back. One limit remains: a long value
+   the *event* supplied — an SNMP OID, a key name — also matches when it
+   appears in the example, so read the evidence before quoting the label.
+
+## What the eleven suites added on 26 September 2026 found
+
+`smtp`, `pop3`, `imap`, `nntp`, `memcached`, `mqtt`, `coap`, `modbus`, `snmp`,
+`sip` and `websocket`, 25 cases, llama3.1:8b, seed 42, 5 runs each: **30 of 125
+runs passed**, and every case either passed 5/5 or failed 5/5. The six that
+passed are `pop3/message-count`, `memcached/get-value`, `mqtt/refuse-client-id`,
+`coap/text-resource`, `modbus/holding-registers` and `sip/available`. Every
+failure was checked against the run's client output and executed actions;
+none is the harness (each case's probe passes against a correct mock). That run
+predates the classifier fix above, so its copied examples are labelled
+`wrong_content` in its JSON.
+
+- **Examples copied instead of the instruction**, the dominant shape:
+  `send_smtp_greeting`'s "mail.example.com ESMTP Service Ready" in place of the
+  requested banner; `send_snmp_response`'s "System Description" and "hostname"
+  (with both OIDs, so a one-OID `snmpget` got two varbinds); the memcached
+  stats example verbatim with no `version`; `accept_websocket`'s `"chat"`
+  subprotocol, which websocat never offered, so the executor refuses it and the
+  handshake is a 503; CoAP's `41.2` in an invented 2.05 body where 4.04 was
+  asked for.
+- **One action reused for every command of a session.** SMTP answered EHLO and
+  MAIL with the 220 greeting; NNTP answered CAPABILITIES with the 200 greeting,
+  so nntplib raises before the command under test is sent; IMAP answered
+  CAPABILITY with a bare tagged OK (twice), which imaplib rejects.
+- **A multi-line answer without its body.** POP3 `RETR` answered with a bare
+  `+OK` leaves poplib waiting for the terminating dot until its timeout; IMAP
+  `SELECT` without `* n EXISTS` makes `select()` return `[None]`.
+- **The refusal half of an instruction ignored**: RCPT for another domain
+  accepted, an out-of-range Modbus read answered with zeros, a busy SIP phone
+  answering 200, an unknown NNTP group answered 501 instead of 411, a missing
+  memcached key answered with a different key's value (pymemcache raises
+  `KeyError`), and the MQTT retained message never published after the SUBACK.
+
 ## Adding a protocol
 
-1. A function in `suites.rs` returning 3–5 `EvalCase`s, `#[cfg(feature = "…")]`.
+1. A function in `suites.rs` returning 2–5 `EvalCase`s, `#[cfg(feature = "…")]`.
 2. Add the protocol to `ALL_PROTOCOLS` in `run-eval.sh` (it validates against
    that list before spending a minute on a build).
 3. Validate the client invocation against a bare listener **before** running the
