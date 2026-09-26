@@ -6,3 +6,5 @@ mod e2e_test;
 mod line_framing_test;
 #[cfg(all(test, feature = "whois"))]
 mod peer_inject_test;
+#[cfg(all(test, feature = "whois"))]
+mod record_fields_test;

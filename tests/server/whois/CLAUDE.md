@@ -144,3 +144,13 @@ None currently identified.
 
 Referrals to another WHOIS server, WHOIS++ (RFC 1835), IDN, and non-ASCII queries. The server
 implements none of them.
+
+## `record_fields_test.rs`
+
+Calls `WhoisProtocol::execute_action` directly, no server and no model: the exact bytes of a
+record carrying every structured field (`registrant_organization`, a two-entry `domain_status`,
+`extra_fields`), the single-string status and `registrant_org` alias, that a field the model did
+not give is not printed, that `extra_fields` is refused one past `MAX_EXTRA_FIELDS` (verified by
+removing the check), and that an extra field's key or value cannot forge a line.
+`line_framing_test.rs`'s forging case now gives `admin_contact` explicitly, because the
+`Admin Name:` line it counts against used to be the fabricated default.

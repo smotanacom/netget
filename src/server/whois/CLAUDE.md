@@ -26,7 +26,7 @@ no library.
 
 | Action | Effect |
 |---|---|
-| `send_whois_record` | formats `Domain Name:` / `Registrar:` / `Registrant Name:` / `Admin Name:` / one `Name Server:` per entry, CRLF-terminated |
+| `send_whois_record` | formats `Domain Name:`, then only the fields given: `Registrar:`, one `Domain Status:` per `domain_status` entry, `Registrant Name:`, `Registrant Organization:` (`registrant_organization`, alias `registrant_org`), `Admin Name:`, one line per `extra_fields` entry (at most `MAX_EXTRA_FIELDS` = 32, refused past it), one `Name Server:` per entry; CRLF-terminated |
 | `send_whois_response` | free-form text; CRLF appended if missing |
 | `send_error` | `Error: <message>` |
 | `close_connection` | closes after the response |
@@ -45,6 +45,21 @@ with `close_connection` is still the right thing to do and is what both `send_*`
 action descriptions say;
 `tests/server/whois/e2e_test.rs` proves the real client is satisfied when they
 are paired. The timeout is a floor under the mistake, not a substitute.
+
+### The record prints what the model said, and only that
+
+The real-model eval told the model to "report the registrant organisation as Example Holdings Ltd
+and the domain status as clientTransferProhibited" (`whois/registrant-and-status`, 2/5 in the
+committed baseline). It did — as `registrant` and `domain_status` — but the action had no field
+rendering either an organisation or a status, so the status was silently dropped and the
+organisation came out as `Registrant Name`. `registrant_organization` and `domain_status` are now
+real fields, `extra_fields` covers any other line, and the description names them.
+
+The same pass removed three fabrications: an omitted `registrar`, `registrant` or
+`admin_contact` used to print `Example Registrar, Inc.`, `Registrant Contact` and `Admin Contact`.
+A WHOIS reader takes every line at its word, so an omitted field is now omitted.
+`tests/server/whois/record_fields_test.rs` pins the exact bytes, the omission, and the
+`extra_fields` bound (verified by removing it).
 
 ### Injection hygiene
 
@@ -180,14 +195,14 @@ every other domain send_error "Domain not found".
 
 ## Verified
 
-With a static `send_whois_record` handler (zero LLM calls) on 127.0.0.1:
+With a static `send_whois_record` handler (zero LLM calls) on 127.0.0.1 giving `registrar`,
+`registrant` and two `name_servers` (no `admin_contact`, so no `Admin Name:` line):
 
 ```
 $ printf 'example.com\n' | nc 127.0.0.1 PORT
 Domain Name: example.com
-Registrar: Example Registrar, Inc.
+Registrar: Example Registrar Inc.
 Registrant Name: Example Org
-Admin Name: Admin Contact
 Name Server: ns1.example.com
 Name Server: ns2.example.com
 ```

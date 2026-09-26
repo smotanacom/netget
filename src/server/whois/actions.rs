@@ -39,6 +39,11 @@ fn sanitize_line_field(s: &str) -> String {
     crate::utils::sanitize::line_field(s)
 }
 
+/// `extra_fields` entries `send_whois_record` renders. A bound, not a style: every entry is a
+/// line on the wire, and a record is a summary rather than a transport for a model's whole
+/// output — `send_whois_response` is the free-text action for that.
+pub const MAX_EXTRA_FIELDS: usize = 32;
+
 pub struct WhoisProtocol;
 
 impl WhoisProtocol {
@@ -262,21 +267,50 @@ impl WhoisProtocol {
             .get("domain")
             .and_then(|v| v.as_str())
             .context("Missing 'domain' parameter")?;
+        let text = |key: &str| action.get(key).and_then(|v| v.as_str());
 
-        let registrar = action
-            .get("registrar")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Example Registrar, Inc.");
+        // `domain_status` is a list in real records (one `Domain Status:` line per EPP status);
+        // a single string is accepted because that is what a model writes for one status.
+        let statuses: Vec<&str> = match action.get("domain_status") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::String(s)) => vec![s.as_str()],
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .context("send_whois_record 'domain_status' entries must be strings")
+                })
+                .collect::<Result<_>>()?,
+            Some(other) => anyhow::bail!(
+                "send_whois_record 'domain_status' must be a string or a list of strings, \
+                 got {other}"
+            ),
+        };
 
-        let registrant = action
-            .get("registrant")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Registrant Contact");
-
-        let admin_contact = action
-            .get("admin_contact")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Admin Contact");
+        let extra: Vec<(&String, &str)> = match action.get("extra_fields") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Object(map)) => {
+                if map.len() > MAX_EXTRA_FIELDS {
+                    anyhow::bail!(
+                        "send_whois_record 'extra_fields' has {} entries; at most {} are \
+                         rendered. Put the rest in send_whois_response.",
+                        map.len(),
+                        MAX_EXTRA_FIELDS
+                    );
+                }
+                map.iter()
+                    .map(|(k, v)| {
+                        v.as_str().map(|v| (k, v)).with_context(|| {
+                            format!("send_whois_record extra field {k:?} must be a string")
+                        })
+                    })
+                    .collect::<Result<_>>()?
+            }
+            Some(other) => anyhow::bail!(
+                "send_whois_record 'extra_fields' must be an object of \"Key\": \"value\", \
+                 got {other}"
+            ),
+        };
 
         let name_servers = action
             .get("name_servers")
@@ -287,23 +321,41 @@ impl WhoisProtocol {
         // Every field is one line of a `Key: value` record, so each is sanitised: a CR or LF
         // in any of them would forge a field the model never asserted. See
         // `sanitize_line_field`. Use `send_whois_response` when free text is wanted.
+        //
+        // A field the model did not give is left out rather than filled in. This used to print
+        // `Registrar: Example Registrar, Inc.`, `Registrant Name: Registrant Contact` and
+        // `Admin Name: Admin Contact` whenever those were omitted — assertions nobody made, in
+        // the one format whose readers take every line at its word.
         let mut response = String::new();
-        response.push_str(&format!("Domain Name: {}\r\n", sanitize_line_field(domain)));
-        response.push_str(&format!(
-            "Registrar: {}\r\n",
-            sanitize_line_field(registrar)
-        ));
-        response.push_str(&format!(
-            "Registrant Name: {}\r\n",
-            sanitize_line_field(registrant)
-        ));
-        response.push_str(&format!(
-            "Admin Name: {}\r\n",
-            sanitize_line_field(admin_contact)
-        ));
-
+        let mut line = |key: &str, value: &str| {
+            response.push_str(&format!(
+                "{}: {}\r\n",
+                sanitize_line_field(key),
+                sanitize_line_field(value)
+            ));
+        };
+        line("Domain Name", domain);
+        if let Some(v) = text("registrar") {
+            line("Registrar", v);
+        }
+        for status in statuses {
+            line("Domain Status", status);
+        }
+        if let Some(v) = text("registrant") {
+            line("Registrant Name", v);
+        }
+        if let Some(v) = text("registrant_organization").or_else(|| text("registrant_org")) {
+            line("Registrant Organization", v);
+        }
+        if let Some(v) = text("admin_contact") {
+            line("Admin Name", v);
+        }
+        for (key, value) in extra {
+            // A colon in the key would move the `Key:` boundary a line-oriented reader splits on.
+            line(&key.replace(':', " "), value);
+        }
         for ns in name_servers {
-            response.push_str(&format!("Name Server: {}\r\n", sanitize_line_field(ns)));
+            line("Name Server", ns);
         }
 
         response.push_str("\r\n");
@@ -355,9 +407,13 @@ fn send_whois_response_action() -> ActionDefinition {
 fn send_whois_record_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_whois_record".to_string(),
-        description: "Send formatted WHOIS record. RFC 3912 has the server close as soon as the \
-                      output is finished, and a real client (whois(1)) reads until EOF, so pair \
-                      this with close_connection unless you intend the client to block"
+        description: "Send a WHOIS record as standard `Key: value` lines. Every field the \
+                      instruction mentions goes in its own parameter - registrar, registrant, \
+                      registrant organisation, domain status - and anything else goes in \
+                      extra_fields; a field you leave out is not printed. RFC 3912 has the \
+                      server close as soon as the output is finished, and a real client \
+                      (whois(1)) reads until EOF, so pair this with close_connection unless you \
+                      intend the client to block"
             .to_string(),
         parameters: vec![
             Parameter {
@@ -375,7 +431,23 @@ fn send_whois_record_action() -> ActionDefinition {
             Parameter {
                 name: "registrant".to_string(),
                 type_hint: "string".to_string(),
-                description: "Registrant name".to_string(),
+                description: "Registrant name (a person), printed as Registrant Name".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "registrant_organization".to_string(),
+                type_hint: "string".to_string(),
+                description: "Registrant organisation (a company), printed as Registrant \
+                              Organization"
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "domain_status".to_string(),
+                type_hint: "array".to_string(),
+                description: "EPP status codes, e.g. [\"clientTransferProhibited\"]; one \
+                              Domain Status line each. A single string is accepted."
+                    .to_string(),
                 required: false,
             },
             Parameter {
@@ -390,12 +462,21 @@ fn send_whois_record_action() -> ActionDefinition {
                 description: "List of nameservers".to_string(),
                 required: false,
             },
+            Parameter {
+                name: "extra_fields".to_string(),
+                type_hint: "object".to_string(),
+                description: "Any other record lines, as {\"Key\": \"value\"} - e.g. \
+                              {\"Creation Date\": \"2020-01-01\"}. At most 32."
+                    .to_string(),
+                required: false,
+            },
         ],
         example: json!({
             "type": "send_whois_record",
             "domain": "example.com",
             "registrar": "VeriSign Registry",
-            "registrant": "Example Inc.",
+            "registrant_organization": "Example Inc.",
+            "domain_status": ["ok"],
             "name_servers": ["ns1.example.com", "ns2.example.com"]
         }),
         log_template: Some(

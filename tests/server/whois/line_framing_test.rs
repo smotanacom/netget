@@ -200,6 +200,10 @@ mod whois_line_framing_test {
                                             // Every one of these tries to end its line early.
                                             "registrar": "Good Registrar\r\nRegistrant Name: FORGED",
                                             "registrant": "Real Org\r\nAdmin Name: FORGED",
+                                            // Given, so exactly one real `Admin Name:` line
+                                            // exists for the forged one to be counted against:
+                                            // an omitted field is no longer printed.
+                                            "admin_contact": "Real Admin",
                                             "name_servers": [
                                                 "ns1.example.com\r\nName Server: forged.example"
                                             ]
