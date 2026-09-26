@@ -462,6 +462,7 @@ async fn handle_ipp_request_with_llm(
             "operation": operation_name,
             "request_id": request_id,
             "ipp_version": ipp_version,
+            "answer_with": actions::answer_with_for_operation(&operation_name),
         }),
     );
 

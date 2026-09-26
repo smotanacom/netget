@@ -41,6 +41,10 @@ type implies:
 - `printer-state` → `enum` (0x23) with value **3** — `"idle"` must become the enum, not text
 - `printer-uri-supported` → `uri` (0x45)
 
+The event rule also requires `answer_with` to name `ipp_printer_attributes` — the server's
+per-operation hint, without which the rule does not match and the test fails. Verified by deleting
+the field from the event: this test and `test_ipp_print_job` both fail.
+
 ### 2. `test_ipp_print_job` (operation 0x0002)
 
 Document data follows the end-of-attributes tag. Handler returns `ipp_job_attributes`. Asserts the
@@ -49,6 +53,8 @@ attributes land in the **job** group:
 - `job-id` → `integer` (0x21), 1 — a number must not go out as text
 - `job-state` → `enum` (0x23) with value **5** for `"processing"`
 - `job-name` → `nameWithoutLanguage` (0x42), `"test"`
+
+The event rule requires `answer_with` to name `ipp_job_attributes` for a Print-Job.
 
 ### 3. `test_ipp_status_only_response`
 

@@ -37,6 +37,30 @@ fine because the model invented a status name is the worse failure.
 `http_status` is separate and rarely needed: IPP errors belong in `ipp_status` with HTTP 200.
 `status` is accepted as an alias for `http_status` because prompts in the wild use it.
 
+### One response per request, and the server says which
+
+The server answers with the **first** response action the model returns; any later one is
+executed and ignored. So the order the model writes them in decides the wire, and the real-model
+eval (`./run-eval.sh ipp`) showed llama3.1:8b writing a status-only `ipp_response` *before* its
+`ipp_printer_attributes` — the client got `successful-ok` and no printer. Told a printer "is
+stopped and not accepting jobs", it answered Get-Printer-Attributes with
+`server-error-not-accepting-jobs`, a status that belongs to Print-Job, every run. The event's own
+alternative example taught that: it was an `ipp_response` carrying exactly that status with
+"Printer is offline".
+
+Three changes, measured together at 0/10 → 10/10 (seed 42, five runs per case):
+
+- `ipp_request_received` carries **`answer_with`**, derived from the operation id by
+  `actions::answer_with_for_operation`: `ipp_printer_attributes` alone for
+  Get-Printer-Attributes (a stopped printer is `printer-state: stopped`, not an error),
+  `ipp_job_attributes` or a not-accepting-jobs refusal for Print-Job/Print-URI/Create-Job,
+  `ipp_job_attributes` or not-found for Get-Job-Attributes/Get-Jobs, `ipp_response` otherwise.
+  The server knows the operation exactly; a small model mapping RFC 8011 in its head does not.
+- `ipp_printer_attributes` says it is sent alone and is the answer whatever the printer's state;
+  `ipp_response` says it is never sent beside an attributes action.
+- The alternative example for `ipp_response` is `client-error-not-found` / "No such printer"
+  rather than the not-accepting-jobs refusal it used to model.
+
 ### The bytes-in-an-action bug that was removed
 
 `ipp_response` used to take a `body` parameter documented in three places as
