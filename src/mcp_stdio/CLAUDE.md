@@ -49,8 +49,13 @@ OllamaClient (3 backends)
 
 `netget --mcp` (alias `--mcp-stdio`) triggers `mcp_stdio::run_mcp_stdio()`:
 1. Creates `NetGetMcpService` with AppState and tool router
-2. Serves via `rmcp::transport::stdio()` (stdin/stdout)
-3. Waits until client disconnects (stdin EOF)
+2. Serves via `rmcp::transport::stdio()` (stdin/stdout), wrapped in `drain::DrainOnEof`
+3. Waits until the client disconnects (stdin EOF) **and every request already received has been
+   answered**, bounded by `drain::DRAIN_LIMIT` (300s). rmcp's serve loop stops the moment its
+   input ends and drops the response of a handler still running, so a caller that writes its
+   requests and closes stdin (a shell pipeline, a one-shot script) used to get the answer to
+   `initialize` and nothing after it. `tests/mcp_stdio_eof_test.rs` pins it, with a control
+   showing the unwrapped transport still loses the answer.
 
 `netget --mcp-http PORT` triggers `mcp_stdio::run_mcp_http()`:
 1. Builds `SharedState` once via `NetGetMcpService::create_shared_state()`

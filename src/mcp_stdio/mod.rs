@@ -6,6 +6,8 @@
 
 pub mod control;
 pub mod docs;
+#[cfg(feature = "mcp-stdio")]
+pub mod drain;
 pub mod tools;
 
 use anyhow::Result;
@@ -27,12 +29,16 @@ pub async fn run_mcp_stdio(args: &Args, settings: Settings) -> Result<()> {
     // Create the MCP server service
     let service = tools::NetGetMcpService::new(args, settings).await?;
 
-    // Serve over STDIO transport
-    let server = service.serve(rmcp::transport::stdio()).await?;
+    // Serve over stdin/stdout. rmcp's own stdio transport, wrapped so that a request still
+    // being handled when stdin closes is answered before the server stops (see `drain`).
+    let (stdin, stdout) = rmcp::transport::stdio();
+    let server = service
+        .serve(drain::drain_on_eof_transport(stdin, stdout))
+        .await?;
 
     info!("MCP STDIO server initialized, waiting for requests...");
 
-    // Wait for the server to complete (stdin EOF or shutdown)
+    // Wait for the server to complete: stdin closed and every request answered, or shutdown.
     server.waiting().await?;
 
     info!("MCP STDIO server shut down");
