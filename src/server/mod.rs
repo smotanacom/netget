@@ -761,6 +761,13 @@ pub use prometheus::actions::PrometheusProtocol;
 #[cfg(feature = "prometheus")]
 pub use prometheus::PrometheusServer;
 
+#[cfg(feature = "docker")]
+pub mod docker;
+#[cfg(feature = "docker")]
+pub use docker::actions::DockerProtocol;
+#[cfg(feature = "docker")]
+pub use docker::DockerServer;
+
 #[cfg(feature = "openai")]
 pub mod openai;
 #[cfg(feature = "openai")]

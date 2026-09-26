@@ -36,7 +36,7 @@ NC=$'\033[0m'
 ALL_PROTOCOLS=(
     http dns whois gopher finger redis postgresql mysql
     ldap ipp syslog ntp telnet tcp ftp udp
-    prometheus
+    prometheus docker
 )
 
 # The default model. Chosen deliberately, and the reasoning matters:

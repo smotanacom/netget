@@ -176,6 +176,7 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("usb/serial", Reason::UsbIp),
     ("usb/smartcard", Reason::UsbIp),
     ("couchdb", Reason::HyperOwnsSocket),
+    ("docker", Reason::HyperOwnsSocket),
     ("doh", Reason::HyperOwnsSocket),
     ("dot", Reason::Reviewed),
     ("dynamo", Reason::HyperOwnsSocket),

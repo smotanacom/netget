@@ -66,6 +66,8 @@ pub mod dhcp;
 pub mod dhcpv6;
 #[cfg(feature = "dns")]
 pub mod dns;
+#[cfg(feature = "docker")]
+pub mod docker;
 #[cfg(feature = "doh")]
 pub mod doh;
 #[cfg(feature = "dot")]

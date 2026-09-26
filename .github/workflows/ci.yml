@@ -88,7 +88,7 @@ env:
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
     jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server prometheus git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus docker git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:
@@ -577,6 +577,16 @@ jobs:
           prometheus --version
           promtool --version
 
+      # docker::real_client_test drives the docker CLI only - never a daemon: every call
+      # passes -H tcp://127.0.0.1:<netget port> with DOCKER_HOST/DOCKER_CONTEXT removed and a
+      # temp DOCKER_CONFIG. GitHub's ubuntu images ship the CLI; this asserts it is there so a
+      # missing binary fails here rather than inside the test.
+      - name: Check the docker CLI is present
+        continue-on-error: true
+        run: |
+          set -eux
+          docker --version
+
       # kcat drives the kafka real-client test. ubuntu-22.04 still ships it under the
       # pre-rename package name `kafkacat`, whose binary may be either `kcat` or
       # `kafkacat` depending on the build - the test invokes `kcat`, so symlink when
@@ -712,7 +722,7 @@ jobs:
           failed=""
           for filter in \
             coap::real_client_test dns::dig_test dns::kdig_test \
-            doh::real_client_test dot::real_client_test dynamo::real_client_test \
+            docker::real_client_test doh::real_client_test dot::real_client_test dynamo::real_client_test \
             etcd::real_client_test git::e2e_test gopher::e2e_test grpc::real_client_test \
             hls::curl_test http::real_client_test imap::real_client_test \
             kafka::real_client_test kubernetes::e2e_test ldap::real_client_test \

@@ -58,6 +58,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(udp());
     #[cfg(feature = "prometheus")]
     cases.extend(prometheus());
+    #[cfg(feature = "docker")]
+    cases.extend(docker());
     cases
 }
 
@@ -824,6 +826,51 @@ fn prometheus() -> Vec<EvalCase> {
              second; 40 requests so far, 30 of them under 0.1s.",
             promtool_scrape(),
             Expect::contains(&["_bucket", "le=\"+Inf\"", "PROMTOOL-OK"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Docker — the real docker CLI pointed at NetGet with -H. DOCKER_HOST and
+// DOCKER_CONTEXT are overridden and DOCKER_CONFIG is a throwaway path, so the
+// machine's own daemon is never consulted.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "docker")]
+fn docker_cli(args: &[&str]) -> Probe {
+    let mut all = vec!["-H", "tcp://127.0.0.1:{PORT}"];
+    all.extend_from_slice(args);
+    Probe::client("docker", &all)
+        .env("DOCKER_HOST", "")
+        .env("DOCKER_CONTEXT", "default")
+        .env("DOCKER_CONFIG", "/tmp/netget-eval-docker-config")
+}
+
+#[cfg(feature = "docker")]
+fn docker() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "docker/ps-running-container",
+            "docker",
+            "Act as a Docker host running one container named eval-web from the image \
+             nginx:1.27, publishing host port 8080 to container port 80.",
+            docker_cli(&["ps"]),
+            Expect::contains(&["eval-web", "nginx:1.27", "8080->80/tcp"]),
+        ),
+        EvalCase::new(
+            "docker/ps-all-includes-stopped",
+            "docker",
+            "Act as a Docker host with a running container eval-api (image api:2) and a \
+             stopped container eval-migrate (image api:2) that exited with code 0.",
+            docker_cli(&["ps", "-a"]),
+            Expect::contains(&["eval-api", "eval-migrate", "Exited (0)"]),
+        ),
+        EvalCase::new(
+            "docker/inspect-missing",
+            "docker",
+            "Act as a Docker host with no containers at all.",
+            docker_cli(&["inspect", "eval-ghost"]),
+            Expect::default().matching(r"(?i)no such (object|container)"),
         ),
     ]
 }

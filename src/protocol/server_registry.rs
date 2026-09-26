@@ -381,6 +381,9 @@ impl ServerRegistry {
         #[cfg(feature = "prometheus")]
         self.register(Arc::new(crate::server::PrometheusProtocol::new()));
 
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::server::DockerProtocol::new()));
+
         #[cfg(feature = "ipp")]
         self.register(Arc::new(crate::server::IppProtocol::new()));
 
@@ -1220,6 +1223,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("OCI-Registry", "oci-registry"),
     ("Kubernetes", "kubernetes-server"),
     ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
     ("IPP", "ipp"),
     ("WebDAV", "webdav"),
     ("NFS", "nfs"),
