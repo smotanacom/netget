@@ -108,8 +108,9 @@ already fixed and are now marked so in their headings (7, 9, 16, 32, 39, 42, 50)
 7. **`REQUIRE_DOCS_FOR_OPEN_ACTIONS` (item 29)** — a hardcoded `false` guarding a gate nobody
    enables; make it a runtime setting or delete it and its state.
 8. **ARP and DataLink are absent from the Linux `dist` set (item 54).**
-9. **Connect events fire only with `send_first` (item 78)** — also costs the real-model eval
-   every telnet banner case. Programme 4 W2 addresses it.
+9. **Connect events fire only with `send_first` (item 78)** — **fixed 26 Sep 2026**
+   (`527e07f3`) for `tcp`, `telnet` and `tls`; `socket_file`, `pty` and `stdio` still gate theirs
+   on `send_first`. See the item.
 
 10. **Logging long tail.** 111 of 153 server `mod.rs` files use the `Log` facade
     (`src/logging/emit.rs`); 42 still hand-roll dual logging. Derive with
@@ -179,6 +180,7 @@ Delete an entry once its context is no longer useful.
 | 29/50 — dead documentation gate | (earlier) | One gate remains, behind a documented compile-time `false`; the second is gone |
 | 32 — validator accepted a superset | `272acbc0` | `advertised_user_input_actions()` narrows to what the prompt rendered, mirroring the network-event path |
 | 39 — doc gate broke mocked tests | (earlier) | The retry no longer fires; 35 tests recovered from the `#[ignore]` it caused |
+| 78 — connect events fired only with `send_first` | `527e07f3` | `tcp_connection_opened`, `telnet_connection_opened` and `tls_connection_opened` are raised for every connection; `send_first` now means "the peer is owed a greeting" (reads held until it is answered, silence warned, failure closes). Dashboard servers answer them with a zero-action static rule via `EventType::raised_on_every_connection()`. Real-model eval: telnet banner and login-prompt 0/5 → 5/5 each. `socket_file`, `pty`, `stdio` not converted |
 | 47 — tests passing while broken | `1b7f26e5`, `180c01ac`, `f0c7e42c` | NTP now requires the client to succeed; three assertion-free tests no longer count as coverage; the FIDO2 test awaits the future it was only constructing |
 | 76 — transport-level-only asserts | `1e989ba5` | nfs/ipp/vnc/webdav decode and assert real protocol output |
 | — 43 stale blanket `#[ignore]`s | `025ff3f5`, `2e3c8fbc`, `8009299b` | svn/whois/USB/bitcoin/sip/tls running; arp/igmp ignored for the real privilege reason |
@@ -531,7 +533,19 @@ malformed `COM_STMT_EXECUTE` shapes, including an explicit `panic!("bad column t
 client-chosen byte) and `kafka-protocol`'s unbounded element counts are the same shape and are
 documented in the panic audit.
 
-### 78. `tcp_connection_opened` is advertised unconditionally and fires only for `send_first` servers **[verified]**
+### 78. `tcp_connection_opened` is advertised unconditionally and fires only for `send_first` servers **[verified, fixed for tcp/telnet/tls in `527e07f3`]**
+
+**Resolution.** The second option below was taken: the event is raised on every connection and
+the handler decides whether to write anything, for `tcp`, `telnet` and `tls`. The model answers
+with no actions when there is nothing to say; `send_first` now means the peer is owed a greeting
+(reads are held until the connect event is answered, a silent answer is `decision=model_silent`,
+a failed one closes). The cost is one model call per connection for a server with no rule for
+the event; a dashboard-created server answers it with a zero-action static rule
+(`EventType::raised_on_every_connection()`, read by `src/tui/modal/form.rs`), and a TCP/TLS peer
+that leaves before the answer abandons the call. `tests/examples/tcp_examples_test.rs` now greets
+without `send_first`. **Still gated:** `socket_file` (left alone because Programme 4 W1 is
+changing that server in another worktree), `pty` and `stdio` (single-session servers whose
+`*_opened`/`*_started` event has the same shape).
 
 `src/server/tcp/actions.rs:490` describes the event as *"New TCP connection established (send
 initial greeting/banner if needed)"* and ships a `response_example` that sends a `220 Welcome`
