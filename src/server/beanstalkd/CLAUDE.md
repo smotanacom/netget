@@ -5,7 +5,7 @@ queue: it decides which job ids a `put` gets, which job a `reserve` hands out (o
 worker waits), what `delete`/`release`/`bury`/`touch`/`kick`/`peek` find, and what the stats
 say. NetGet stores no jobs and writes every byte of framing.
 
-**State**: Experimental (see Maturity). **Privilege**: `None` — the well-known port is 11300.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 11300.
 **Stack**: `ETH>IP>TCP>Beanstalkd`. **Feature**: `beanstalkd` (no dependencies).
 
 ## Library choice
@@ -141,8 +141,16 @@ No beanstalkd dissector in this Wireshark build (`tshark -G protocols` lists non
 
 ## Maturity
 
-Experimental. The evidence for Beta is in place — `tests/server/beanstalkd/real_client_test.rs`
-drives greenstalk 2.1.1 (a Python client with its own reply parser and YAML reader; the server
-uses no beanstalk library) through every command it has, asserting on what greenstalk returned
-or raised; it is not `#[ignore]`d and fails, never skips, without python3/greenstalk; CI's
-`registry-audit` installs greenstalk from PyPI and runs it. Promotion is a separate step.
+Beta. Evidence: `tests/server/beanstalkd/real_client_test.rs` drives greenstalk 2.1.1 — a
+Python beanstalkd client with its own reply parser, byte-counted payload reader and YAML reader;
+the server uses no beanstalk library, so nothing is shared — through every command greenstalk
+has, asserting on what it returned or raised, plus one exchange answered by a mocked model. It
+is not `#[ignore]`d and fails, never skips, without python3/greenstalk; CI's `registry-audit`
+installs greenstalk from PyPI and runs it. Promoted after the whole suite (27 tests) passed three
+consecutive runs at `--test-threads=100` and `scripts/beta_evidence_table.py --check` stayed
+green with `python3 greenstalk` as the peer.
+
+What Beta does **not** cover, and what Stable would need: one client only (a second independent
+one — the Go `beanstalk` package or the PHP `pheanstalk` — is condition 1); no pcap oracle (no
+dissector exists); no fuzz target (the parser is a flat line splitter with no recursion, but
+condition 3 asks for one regardless).
