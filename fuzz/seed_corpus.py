@@ -23,7 +23,7 @@ With the guards in place the bombs are refused in microseconds and nothing downs
 sees them, so they cost the running fuzzer nothing. They exist for the day a guard
 regresses.
 
-This file is the provenance for 82 otherwise-opaque binary blobs; edit it rather than
+This file is the provenance for 91 otherwise-opaque binary blobs; edit it rather than
 the blobs.
 """
 import os
@@ -400,6 +400,34 @@ write("bson_document", "huge_declared_len", struct.pack("<i", 0x7FFFFFFF) + b"\x
 # 16,384 levels at eight bytes each (~128 KiB): past the 4,861 that overflow the fuzzer's
 # 8 MiB main thread in a release build when the guard is removed (verified).
 write("bson_document", "depth_bomb", bson_nested(16384))
+
+# --- zabbix: the ZBXD framing and the sender-data request ------------------
+def zbxd(payload, flags=0x01, declared=None, reserved=0):
+    n = len(payload) if declared is None else declared
+    if flags & 0x04:
+        return b"ZBXD" + bytes([flags]) + struct.pack("<QQ", n, reserved) + payload
+    return b"ZBXD" + bytes([flags]) + struct.pack("<II", n, reserved) + payload
+
+
+# Byte for byte what zabbix_sender 7.4 sent to a capture listener.
+write("zabbix_packet", "sender_one_value", zbxd(
+    b'{"request":"sender data","data":[{"host":"host1","key":"key1","value":"42"}],'
+    b'"clock":1790403191,"ns":583083000}'))
+write("zabbix_packet", "sender_batch", zbxd(
+    b'{"request":"sender data","data":[{"host":"host1","key":"key1","value":"1"},'
+    b'{"host":"host1","key":"key2","value":"two words"},{"host":"dflt","key":"key3","value":"3"}],'
+    b'"clock":1790403284,"ns":288425000}'))
+write("zabbix_packet", "large_header", zbxd(b'{"request":"sender data","data":[]}', flags=0x05))
+write("zabbix_packet", "response", zbxd(
+    b'{"response":"success","info":"processed: 1; failed: 0; total: 1; seconds spent: 0.000055"}'))
+write("zabbix_packet", "other_request", zbxd(b'{"request":"active checks","host":"web1"}'))
+write("zabbix_packet", "compressed", zbxd(b"x\x9c\x03\x00\x00\x00\x00\x01", flags=0x03))
+# Declared lengths past the 1 MiB bound, in both header forms: refused from the header alone.
+write("zabbix_packet", "huge_declared_len", zbxd(b"", declared=0xFFFFFFFF))
+write("zabbix_packet", "huge_declared_large", zbxd(b"", flags=0x05, declared=1 << 62))
+# A JSON nesting bomb in the body: serde_json's own recursion limit (128) must turn it into a
+# parse error. 65,536 levels overflow any stack if that limit is ever switched off.
+write("zabbix_packet", "depth_bomb", zbxd(b"[" * 65536 + b"]" * 65536))
 
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %

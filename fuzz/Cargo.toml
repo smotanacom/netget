@@ -55,6 +55,7 @@ features = [
     "radius",
     "snmp",
     "stomp",
+    "zabbix",
 ]
 
 # NOT here, and it is not an oversight: `usb-fido2` (and every other USB feature).
@@ -211,6 +212,13 @@ bench = false
 [[bin]]
 name = "bson_document"
 path = "fuzz_targets/bson_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zabbix_packet"
+path = "fuzz_targets/zabbix_packet.rs"
 test = false
 doc = false
 bench = false
