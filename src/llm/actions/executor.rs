@@ -233,7 +233,11 @@ pub async fn execute_actions(
     result.raw_actions = actions.clone();
 
     for (i, action) in actions.iter().enumerate() {
-        debug!("Executing action {}: {:?}", i, action);
+        debug!(
+            "Executing action {}: {:?}",
+            i,
+            crate::utils::redact::redact_sensitive(action)
+        );
 
         let action_name = action
             .get("type")

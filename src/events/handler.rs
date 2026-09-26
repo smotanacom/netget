@@ -100,8 +100,9 @@ fn log_open_server_summary(
     // Startup params
     if let Some(params) = startup_params {
         if !params.is_null() {
+            let shown = crate::utils::redact::redact_sensitive(params);
             let params_str =
-                serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string());
+                serde_json::to_string_pretty(&shown).unwrap_or_else(|_| shown.to_string());
             let _ = status_tx.send("[INFO]   Startup Params:".to_string());
             for line in format_indented_dimmed_lines(&params_str, 8) {
                 let _ = status_tx.send(format!("[INFO] {}", line));
@@ -226,8 +227,9 @@ fn log_open_client_summary(
     // Startup params
     if let Some(params) = startup_params {
         if !params.is_null() {
+            let shown = crate::utils::redact::redact_sensitive(params);
             let params_str =
-                serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string());
+                serde_json::to_string_pretty(&shown).unwrap_or_else(|_| shown.to_string());
             let _ = status_tx.send("[INFO]   Startup Params:".to_string());
             for line in format_indented_dimmed_lines(&params_str, 8) {
                 let _ = status_tx.send(format!("[INFO] {}", line));
