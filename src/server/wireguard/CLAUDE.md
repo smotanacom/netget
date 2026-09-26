@@ -232,18 +232,6 @@ for peer_key in disconnected_peers {
 }
 ```
 
-### No inbound size bound to declare
-
-NetGet opens no socket for WireGuard. The UDP listen port is handed to
-`defguard_wireguard_rs`, which configures the kernel module (Linux) or `wireguard-go`
-(macOS), and that backend is what receives and decrypts every datagram. The only thing NetGet
-reads is `read_interface_data()` — peer keys, endpoints and byte counters from the local
-backend, never bytes a peer chose. So `metadata()` declares no `max_inbound_bytes`, and
-`tests/max_inbound_bytes_declaration_test.rs` lists `wireguard` beside the BLE profiles as a
-protocol with no read loop of its own, with that reason. There is no bound + 1 test because
-there is no NetGet read for one to reach, and this server cannot be started unprivileged here
-anyway.
-
 ## State Management
 
 ### Server State

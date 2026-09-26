@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 ///    and dropped. The allocation is a compile-time constant, so a declaration would be a knob
 ///    that does nothing. *Finished.*
 /// 2. **Delegates** — the BLE profiles have no read loop; `BluetoothBle` owns the radio.
-///    `wireguard` owns no socket at all: the kernel or `wireguard-go` does. *Finished.*
+///    *Finished.*
 /// 3. **Structural** — the peer's length field is a `u16` or narrower, so the type is the
 ///    ceiling. Worth knowing rather than declaring, because there is no constant to move.
 ///    *Finished, but see the note below.*
@@ -170,12 +170,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
     ("bluetooth_ble_running", "delegates to bluetooth_ble"),
     ("bluetooth_ble_thermometer", "delegates to bluetooth_ble"),
     ("bluetooth_ble_weight_scale", "delegates to bluetooth_ble"),
-    (
-        "wireguard",
-        "NetGet opens no socket: the UDP port belongs to the kernel module or wireguard-go, \
-         driven through defguard_wireguard_rs; NetGet reads only interface statistics from \
-         that local backend",
-    ),
     // ---- 3. Structural: the peer's length field is a u16 or narrower ----
     (
         "db2",
@@ -217,7 +211,14 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
     ),
     ("rss", "hyper Incoming is dropped unread"),
     // ---- 6. Open work ----
-    // None.
+    (
+        "http_common",
+        "a shared response helper, not a protocol: no impl Protocol, no registry entry",
+    ),
+    (
+        "wireguard",
+        "orchestrates defguard_wireguard_rs; NetGet reads no WireGuard bytes itself",
+    ),
 ];
 
 fn server_action_files() -> Vec<(String, PathBuf)> {
@@ -255,28 +256,12 @@ fn server_action_files() -> Vec<(String, PathBuf)> {
             continue;
         }
         let actions = dir.join("actions.rs");
-        if actions.is_file() && implements_a_protocol(&actions) {
+        if actions.is_file() {
             out.push((name, actions));
         }
     }
     out.sort();
     out
-}
-
-/// Whether an `actions.rs` is a protocol's, rather than a helper that happens to share the
-/// file name.
-///
-/// `http_common` has an `actions.rs` — the executor behind `send_http_response` — and no
-/// `metadata()`, no `impl Protocol` and no registry entry, so it has nothing to declare a bound
-/// on, and a baseline entry for it would be neither a finished answer nor a defect. Its bound,
-/// `MAX_REQUEST_BODY_BYTES`, is declared by the protocols that use it (`http`, `http2`,
-/// `pypi`). The test for "is a protocol" is the one thing every
-/// protocol has and a helper cannot: `fn metadata(`, outside comments.
-/// `every_directory_the_walker_skips_is_a_helper` checks the skip cannot hide a protocol.
-fn implements_a_protocol(actions: &Path) -> bool {
-    std::fs::read_to_string(actions)
-        .map(|src| strip_comments(&src).contains("fn metadata("))
-        .unwrap_or(false)
 }
 
 /// Strip `//` comments, leaving `//` inside a string literal alone.
@@ -345,48 +330,6 @@ fn every_server_declares_max_inbound_bytes_or_is_baselined_with_a_reason() {
         "these servers now declare `max_inbound_bytes` but are still in the baseline:\n  {}\n\n\
          The baseline is shrink-only — remove them.",
         fixed.join("\n  ")
-    );
-}
-
-/// A directory the walker skips must be a helper, never a protocol.
-///
-/// The skip in `server_action_files` keys on `fn metadata(` in `actions.rs`. If a protocol ever
-/// put its metadata somewhere else, the skip would silently exempt it — the dangerous direction,
-/// since this ratchet exists to catch an undeclared bound. So: nothing under a skipped directory
-/// may implement `Protocol` or `Server`, in any file.
-#[test]
-fn every_directory_the_walker_skips_is_a_helper() {
-    let mut hiding = Vec::new();
-    let mut skipped = Vec::new();
-    let Ok(entries) = std::fs::read_dir("src/server") else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        let actions = dir.join("actions.rs");
-        if !actions.is_file() || implements_a_protocol(&actions) {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        skipped.push(name.clone());
-        let Ok(files) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let src = std::fs::read_to_string(file.path()).unwrap_or_default();
-            let src = strip_comments(&src);
-            if src.contains("impl Protocol for") || src.contains("impl Server for") {
-                hiding.push(format!("{name}/{}", file.file_name().to_string_lossy()));
-            }
-        }
-    }
-    println!("skipped as helpers: {skipped:?}");
-    assert!(
-        hiding.is_empty(),
-        "these directories have an actions.rs with no `fn metadata(`, so the walker skips them, \
-         but they implement Protocol or Server — a protocol the declaration check cannot see:\n  \
-         {}",
-        hiding.join("\n  ")
     );
 }
 

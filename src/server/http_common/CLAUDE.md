@@ -11,12 +11,6 @@ via the `h3` crate and likewise shares nothing with this module.)
 There is no `Protocol`/`Server` impl in this module, no registry entry, and no
 feature flag of its own.
 
-So it declares no `max_inbound_bytes` either — there is no `metadata()` to declare it on.
-`MAX_REQUEST_BODY_BYTES` is declared by the protocols that use it (`http`, `http2`, `pypi`),
-and `tests/max_inbound_bytes_declaration_test.rs` skips any `actions.rs` with no
-`fn metadata(`, with a companion test that fails if a skipped directory implements `Protocol`
-or `Server` anywhere.
-
 ## Which features compile it
 
 The `cfg` list lives in `src/server/mod.rs` and must be kept in sync with the

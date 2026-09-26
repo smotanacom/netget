@@ -91,12 +91,6 @@ what the model is actually offered:
 - `metadata_is_beta_not_stable` - the rating is `Beta`. This assertion is the tripwire: if a future change earns
   `Stable` via a real interop test, it must be updated together with the metadata and both CLAUDE.md files.
 
-### No inbound-bound test, deliberately
-
-`max_inbound_bytes` has nothing to bound here: NetGet reads no WireGuard bytes (the kernel or
-`wireguard-go` owns the UDP socket; see `src/server/wireguard/CLAUDE.md`). The declaration
-ratchet records that reason rather than a test that would have nothing to send to.
-
 ### Root-gated real-backend harness
 
 - `test_wireguard_real_backend_startup` - `#[ignore]`d. Drives NetGet's real spawn path and requires the interface to
