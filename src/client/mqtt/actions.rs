@@ -263,10 +263,27 @@ impl Protocol for MqttClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("rumqttc async client library")
             .llm_control("Full control over subscriptions, publications, and QoS levels")
-            .e2e_testing("Mosquitto MQTT broker in Docker")
+            .e2e_testing(
+                "tests/client/mqtt/real_server_test.rs, 7 LLM calls, against Eclipse Mosquitto \
+                 (C; shares no code with rumqttc) with mosquitto_sub and mosquitto_pub on the \
+                 far side. The model's publish is read back by mosquitto_sub; Mosquitto's own \
+                 log shows NetGet's client_id and the model's QoS 1 subscription; a \
+                 mosquitto_pub message reaches the model with its topic and payload and the \
+                 model's quoting reply comes back through the broker; a retained reading and a \
+                 QoS 2 live reading on sensors/# reach the model with the granted QoS and the \
+                 retain bit intact. Not #[ignore]d, and a missing mosquitto fails the test \
+                 rather than skipping it.",
+            )
+            .notes(
+                "MQTT 3.1.1 over plain TCP. Validated against Mosquitto for connect, \
+                 subscribe (including wildcards), publish at QoS 0/1, and inbound delivery at \
+                 the granted QoS with the retain flag. Not exercised against a real broker: \
+                 TLS, username/password against a broker that enforces it, Last Will, \
+                 persistent sessions (clean_session false) and reconnection.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
