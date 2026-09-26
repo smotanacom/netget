@@ -381,6 +381,9 @@ jobs:
       #                       client is tokio-postgres). Ubuntu keeps the server binaries in
       #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
       #                       searches there, so nothing is symlinked
+      #   mysql-server      - the mysql client (Oracle's mysqld; NetGet's client is
+      #                       mysql_async). Its AppArmor profile confines it to
+      #                       /var/lib/mysql, so the step after this one unloads it
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -423,7 +426,22 @@ jobs:
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan \
-            mosquitto nginx redis-server postgresql
+            mosquitto nginx redis-server postgresql mysql-server
+
+      # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
+      # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
+      # tests run each one unprivileged against a data directory in a fresh temp dir, which the
+      # profile refuses - mysqld's --initialize fails on its first write. Unloading the profile
+      # affects only this throwaway runner. `continue-on-error` like the installs above: a
+      # missing profile must cost at most those two protocols' evidence.
+      - name: Unload the AppArmor profiles that confine mysqld and slapd
+        continue-on-error: true
+        run: |
+          for profile in usr.sbin.mysqld usr.sbin.slapd; do
+            if [ -f "/etc/apparmor.d/$profile" ]; then
+              sudo apparmor_parser -R "/etc/apparmor.d/$profile" || true
+            fi
+          done
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -763,7 +781,8 @@ jobs:
             websocket::e2e_test \
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
-            client/mqtt::real_server_test client/nats::e2e_test \
+            client/mqtt::real_server_test client/mysql::real_server_test \
+            client/nats::e2e_test \
             client/postgresql::real_server_test \
             client/redis::real_server_test ; do
             echo "::group::$filter"

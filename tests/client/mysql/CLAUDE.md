@@ -1,352 +1,92 @@
 # MySQL Client E2E Tests
 
-## Overview
+Three files, declared in `tests/client/mysql/mod.rs`. Nothing is `#[ignore]`d.
 
-End-to-end tests for the MySQL client implementation. These tests verify that the MySQL client can connect to MySQL
-servers (NetGet or real MySQL), execute queries, and handle transactions under LLM control.
+| File | Peer | Tests | LLM calls |
+|---|---|---|---|
+| `real_server_test.rs` | **real `mysqld`** + the `mysql` CLI | 1 | 6 |
+| `e2e_test.rs` | NetGet's own MySQL server | 4 | 7 + three at `expect_at_least(0)` |
+| `command_channel_test.rs` | NetGet's own MySQL server | 1 | 0 |
 
-## Test Strategy
+## Running
 
-**Approach:** Black-box testing using NetGet's own MySQL server as the test target. The tests spawn two NetGet
-instances:
-
-1. **Server instance:** MySQL server listening on a random port
-2. **Client instance:** MySQL client connecting to that server
-
-This approach ensures:
-
-- Real protocol interaction
-- LLM integration testing
-- Client-server compatibility
-
-**Alternative:** Tests could connect to a real MySQL Docker container for full protocol compliance testing.
-
-## Test Suite
-
-### Test 1: `test_mysql_client_connect_and_query`
-
-**Purpose:** Verify basic connection and simple query execution
-
-**LLM Calls:** 2
-
-1. Server startup (parse instruction, start MySQL server)
-2. Client connection (parse instruction, connect, execute query)
-
-**Flow:**
-
-1. Start MySQL server on random port
-2. Start MySQL client with connection instruction
-3. Client executes `SELECT 1` query
-4. Verify connection message in output
-5. Cleanup
-
-**Expected Behavior:**
-
-- Client shows "connected" message
-- Query executes successfully
-- No errors in output
-
-**Runtime:** ~1-2 seconds
-
----
-
-### Test 2: `test_mysql_client_with_database`
-
-**Purpose:** Test database selection via startup parameters
-
-**LLM Calls:** 2
-
-1. Server startup
-2. Client connection with database specified
-
-**Flow:**
-
-1. Start MySQL server accepting 'testdb' database
-2. Client connects with database='testdb' parameter
-3. Client executes `SELECT * FROM users`
-4. Verify protocol is "MySQL"
-5. Cleanup
-
-**Expected Behavior:**
-
-- Client connects to specific database
-- **NOT covered: startup params.** `test_mysql_client_with_database` puts `username` and
-  `database` at the *top level* of the `open_client` action, but `CommonAction::OpenClient`
-  reads them only from a nested `startup_params` object, so they are dropped before they reach
-  the client. The connected-event rule is `expect_at_least(0)`, so nothing fails. This file
-  used to claim they were "correctly parsed"; they are not exercised at all. Note the client's
-  own parsing of them was separately broken (`get_string` where `get_optional_string` was
-  meant, so any *subset* of the three failed to connect) and no test saw that either.
-- Protocol name matches
-
-**Runtime:** ~1-2 seconds
-
----
-
-### Test 3: `test_mysql_client_transaction`
-
-**Purpose:** Test transaction control (BEGIN, COMMIT, ROLLBACK)
-
-**LLM Calls:** 2
-
-1. Server startup
-2. Client transaction sequence
-
-**Flow:**
-
-1. Start MySQL server
-2. Client begins transaction
-3. Client executes INSERT query
-4. Client commits transaction
-5. Verify connection and execution
-
-**Expected Behavior:**
-
-- Transaction commands execute in sequence
-- LLM generates correct action sequence (begin → query → commit)
-- Server receives transaction control commands
-
-**Runtime:** ~1-2 seconds
-
----
-
-## LLM Call Budget
-
-**Total:** 6 LLM calls across 3 tests
-
-- Well under the < 10 call budget
-- Each test is independent (can run in parallel)
-
-**Rationale:**
-
-- Minimal LLM calls while covering key functionality
-- Tests focus on client behavior, not exhaustive SQL coverage
-- Simple queries reduce LLM complexity and test time
-
-## Test Infrastructure
-
-### Dependencies
-
-**NetGet Binary:**
-
-- Built with `--features mysql` to enable MySQL client
-- Binary path: `target/debug/netget` or `target/release/netget`
-
-**Test Helpers:**
-
-- `start_netget_server()` - Spawns server instance
-- `start_netget_client()` - Spawns client instance
-- `{AVAILABLE_PORT}` - Random port allocation
-
-**No External Services Required:**
-
-- Tests use NetGet's own MySQL server
-- No Docker containers needed (self-contained)
-
-### Feature Gating
-
-```rust
-#[cfg(all(test, feature = "mysql"))]
-mod mysql_client_tests { ... }
-```
-
-**Why:**
-
-- Tests only run when `mysql` feature is enabled
-- Prevents compilation errors when feature is disabled
-- Follows NetGet's feature-gated test pattern
-
-## Running Tests
-
-### Single Protocol
+`--test` names a **target**, not a module path:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features mysql --test client::mysql::e2e_test
+./cargo-isolated.sh test --no-default-features --features mysql \
+    --test client -- client::mysql --test-threads=100
 ```
 
-### With Logging
-
-```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features mysql --test client::mysql::e2e_test -- --nocapture
-```
-
-### Build Isolation
-
-Always use `cargo-isolated.sh` to avoid conflicts with concurrent cargo processes.
-
-## Expected Runtime
-
-**Per Test:** 1-2 seconds
-**Full Suite:** 3-6 seconds
-
-Fast because:
-
-- Minimal LLM calls (simple queries)
-- No complex data setup
-- Local server (no network latency)
-- Small result sets
-
-## Known Issues
-
-### 1. Server Response Format
-
-NetGet's MySQL server may respond differently than real MySQL. Tests verify connection and command execution, not exact
-response format.
-
-**Mitigation:** Tests focus on client behavior (sending queries, parsing responses) not server correctness.
-
-### 2. LLM Variability
-
-LLM may generate slightly different SQL syntax each run.
-
-**Mitigation:**
-
-- Simple queries (SELECT 1) are deterministic
-- Tests verify connection, not exact query text
-- Prompt engineering to guide LLM
-
-### 3. Port Conflicts
-
-Random port allocation may fail if ports are in use.
-
-**Mitigation:**
-
-- `{AVAILABLE_PORT}` finds free ports
-- Tests cleanup properly
-- Use `cargo-isolated.sh` for build isolation
-
-### 4. Timeout Issues
-
-Tests may timeout if LLM is slow or server doesn't start.
-
-**Mitigation:**
-
-- 500ms sleep buffers for startup
-- Can increase timeouts if needed
-- Tests fail fast if server/client can't start
-
-## Future Enhancements
-
-### 1. Real MySQL Server Tests
-
-Connect to Docker MySQL container for full protocol compliance:
-
-```bash
-docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=test mysql:8
-```
-
-**Benefits:**
-
-- Full MySQL protocol verification
-- Test against real-world server
-- Catch protocol incompatibilities
-
-**Challenges:**
-
-- Requires Docker
-- Slower (container startup)
-- More complex test setup
-
-### 2. Prepared Statements
-
-Test prepared statement execution:
-
-```rust
-let client_config = NetGetConfig::new(format!(
-    "Connect to MySQL. Execute prepared statement: SELECT * FROM users WHERE id = ?",
-));
-```
-
-**Note:** Requires prepared statement support in client implementation.
-
-### 3. Error Handling
-
-Test invalid queries, connection failures, authentication errors:
-
-```rust
-let client_config = NetGetConfig::new(format!(
-    "Connect to MySQL with invalid password. Verify error handling.",
-));
-```
-
-### 4. Large Result Sets
-
-Test queries returning thousands of rows:
-
-```rust
-let client_config = NetGetConfig::new(format!(
-    "Connect to MySQL. Query 10,000 rows and analyze results.",
-));
-```
-
-**Challenge:** LLM may struggle with large result sets, need pagination/streaming.
-
-### 5. Multi-Statement Queries
-
-Test executing multiple statements in one query:
-
-```sql
-CREATE TABLE temp (id INT); INSERT INTO temp VALUES (1);
-```
-
-**Note:** Requires server and client support for multi-statement execution.
-
-## Debugging Tips
-
-### View Full Output
-
-```bash
-./cargo-isolated.sh test --features mysql --test client::mysql::e2e_test -- --nocapture
-```
-
-### Check Server Logs
-
-Server output is captured in test helpers. Print with:
-
-```rust
-println!("Server output: {:?}", server.get_output().await);
-```
-
-### Verify Protocol Registration
-
-Ensure MySQL client is registered:
-
-```bash
-./cargo-isolated.sh run --features mysql -- --help
-```
-
-Look for MySQL in client protocol list.
-
-### Check Connection Details
-
-Add debug logging to client:
-
-```rust
-RUST_LOG=netget::client::mysql=trace ./cargo-isolated.sh test ...
-```
-
-## Maintenance Notes
-
-**Dependencies:**
-
-- Tests depend on `mysql_async` crate (via Cargo.toml)
-- Feature-gated on `mysql` feature
-- Require NetGet binary built with MySQL support
-
-**Test Isolation:**
-
-- Each test spawns independent server/client instances
-- Random ports prevent conflicts
-- Cleanup ensures no lingering processes
-
-**Update Frequency:**
-
-- Update when client implementation changes
-- Add tests for new actions (prepared statements, etc.)
-- Keep LLM call count < 10 total
-
-## References
-
-- Implementation: `src/client/mysql/CLAUDE.md`
-- Test Helpers: `tests/helpers/mod.rs`
-- MySQL Protocol: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basics.html
+## `real_server_test.rs` — the evidence the rating rests on
+
+The peer is Oracle's `mysqld`, set up per test by `tests/helpers/real_server.rs`:
+`mysqld --no-defaults --initialize-insecure --datadir=<dir>/data` (a setup command; a
+passwordless `root@localhost`), then `mysqld --no-defaults` on a probed loopback port with its
+socket, pid file and data in the temp dir, `--mysqlx=OFF`, `--skip-log-bin`, and an
+`--init-file` that creates the `netget_e2e` database. Ready when it logs `ready for
+connections.`. State is read back with the `mysql` CLI over TCP. **It fails, never skips,**
+when `mysqld` or `mysql` is missing, naming `brew install mysql` /
+`apt-get install mysql-server mysql-client`.
+
+`--no-defaults` must be the **first** argument, and it matters most on Ubuntu, whose
+`/etc/mysql` config sends the error log to `/var/log/mysql` (so the readiness line would never
+reach the helper) and pins the data directory and socket. Ubuntu's AppArmor profile for
+`mysqld` also confines it to `/var/lib/mysql`; CI unloads it.
+
+Measured locally (MySQL 9.3, x86_64 under Rosetta): initialisation ~2.5s, whole test ~3.5s.
+
+### `mysql_client_creates_inserts_and_selects_against_mysqld` (6 calls)
+
+The client connects with `startup_params` `{"username": "root", "database": "netget_e2e"}`.
+`mysql_connected` → `CREATE TABLE notes`; its result (matched on the query and
+`affected_rows` 0) → `INSERT … 'hello from the model'`; that result, matched on
+`affected_rows` 1 **and** `last_insert_id` 1 → `SELECT id, body`; the SELECT's result (matched
+on the query, `row_count` 1 and the body in `result`) → an `INSERT` of
+`the model saw: <body> (id <id>)` built from the row; that result → nothing. The last rule is
+listed first because its query also names `notes`. Then `mysql` must print exactly the two
+bodies in order, and `information_schema` must show the model's column type.
+
+### What it found
+
+The result event reported the **row count** as `affected_rows`, so an `INSERT` read as having
+affected nothing and a `SELECT` as having affected every row it returned. NetGet's own server
+could not show it: nothing there compared the two. The client now reads `affected_rows()` and
+`last_insert_id()` off the connection under the same guard as the query (they are overwritten
+by the next one) and reports `query`, `row_count`, `affected_rows` and `last_insert_id`
+separately. Verified by mutation: putting the row count back fails the INSERT rule.
+
+### Why this is condition 4 of the client bar
+
+The assertions are on the server's state, written by statements the model chose — one of them
+built from rows it was shown. Verified by mutation: dropping the actions the model returns for
+a `mysql_result_received` makes the test fail.
+
+No sleeps: the last mock rule is the result of the model's last statement, with autocommit on,
+so once `wait_for_mocks` returns the server holds everything.
+
+## `e2e_test.rs` — same-project
+
+The peer is NetGet's own MySQL server, so these show the two halves agree — circular evidence,
+kept for what it does cover.
+
+- `a_follow_up_query_from_the_model_actually_reaches_the_server` (7 calls) — the model's
+  answer to a result is executed: the server must see two queries.
+- `test_mysql_client_connect_and_query`, `test_mysql_client_with_database`,
+  `test_mysql_client_transaction` — connect and issue queries with `expect_at_least(0)` on the
+  model rules, so they assert little beyond a connection. `test_mysql_client_with_database`
+  puts `username`/`database` at the top level of `open_client`, where they are **not** read
+  (only a nested `startup_params` is); the real-server test is what exercises the `database`
+  parameter.
+
+## `command_channel_test.rs` (0 calls)
+
+An `execute_query` injected through `AppState::send_to_client` (the dashboard's `[ send ]`)
+reaches a NetGet MySQL server.
+
+## Not covered
+
+- TLS, and password authentication (the test server's `root` has no password, which
+  `caching_sha2_password` answers on its fast path without the RSA exchange).
+- A query the server rejects: it is logged and marks the client `Error`, and the model is not
+  told.
+- Prepared statements (the client uses the text protocol throughout).
