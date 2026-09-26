@@ -192,10 +192,29 @@ impl Protocol for PostgresqlClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
-            .implementation("tokio-postgres library with LLM integration")
+            .state(DevelopmentState::Beta)
+            .implementation(
+                "tokio-postgres (extended query protocol, NoTls). Each query's rows go back to \
+                 the model as postgresql_query_result, and the model's answer is executed in \
+                 turn, bounded at four follow-ups",
+            )
             .llm_control("Full control over SQL queries and transactions")
-            .e2e_testing("Docker PostgreSQL container")
+            .e2e_testing(
+                "tests/client/postgresql/real_server_test.rs, 6 LLM calls, against a real \
+                 PostgreSQL server (initdb + postgres on a loopback port) read back with psql \
+                 (libpq). The model creates a table, inserts a row, selects it, and inserts a \
+                 second row built from the SELECT's rows; each result event is matched on its \
+                 query and the SELECT's on the row it carries, and psql must read both rows \
+                 back exactly. Not #[ignore]d; a missing initdb, postgres or psql fails the \
+                 test rather than skipping it. e2e_test.rs pins the follow-up depth bound \
+                 against NetGet's own server.",
+            )
+            .notes(
+                "No TLS (NoTls), and only trust authentication is exercised against a real \
+                 server; password and SCRAM are untested. A query the server rejects is logged and raises no \
+                 event, so the model does not learn of the error. Cells of types other than \
+                 bool, integers, floats and text-like types reach the model as null.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

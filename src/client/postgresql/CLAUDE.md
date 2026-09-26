@@ -9,10 +9,12 @@ queries, manage transactions, and interpret results.
 
 ### Library Choice
 
-- **tokio-postgres v0.7** - Official async PostgreSQL client
-- Full PostgreSQL wire protocol implementation
-- TLS support (using NoTls for now)
-- Native connection pooling support (not used yet)
+- **tokio-postgres v0.7** - the async PostgreSQL client from the rust-postgres project
+- Frontend protocol implemented by the crate; NetGet never frames a message itself
+- `NoTls` only
+- One `tokio_postgres::Client`, shared by `Arc` between the LLM path and the command loop.
+  `query` takes `&self` and the crate pipelines requests over its own connection task, so no
+  lock is held across a round-trip to the server
 
 ### Architecture
 
@@ -69,6 +71,15 @@ host=127.0.0.1 port=5432 user=postgres password=secret dbname=mydb
 
 - `execute_query` - Execute follow-up query based on results
 
+**The follow-up chain.** The model's answer to `postgresql_query_result` is executed, and a
+follow-up query's own rows come back to the model as another `postgresql_query_result`. So
+connect → `CREATE TABLE` → `INSERT` → `SELECT` → act on the rows is four turns, each decided
+after the model saw the previous result. `execute_llm_action` and `report_query_result` call
+each other, so `execute_llm_action` returns an explicitly boxed `+ Send` future, and the chain
+is bounded by `MAX_FOLLOWUP_DEPTH` (4, as in the MySQL client): the result at depth 4 is shown
+to the model and its answer is dropped with a warning. `tests/client/postgresql/e2e_test.rs`
+pins the bound — verified by removing it, at which point the chain never stops.
+
 **Events:**
 
 - `postgresql_connected` - Fired when connection established
@@ -78,18 +89,21 @@ host=127.0.0.1 port=5432 user=postgres password=secret dbname=mydb
 
 ### Query Execution
 
-Queries are executed via `tokio_postgres::Client::query()`:
+Queries are executed via `tokio_postgres::Client::query()`, which uses the extended query
+protocol (an unnamed prepared statement per query), so one action carries one SQL statement:
 
 ```rust
 let rows = pg_client.query("SELECT * FROM users", &[]).await?;
 ```
 
-Results are converted to JSON:
+Results are converted to JSON by `pg_cell_to_json`, which never panics: `bool`, the integer
+and float types become JSON booleans and numbers, text-like types strings, and anything else
+`null`:
 
 ```json
 [
-  {"id": "1", "name": "Alice", "email": "alice@example.com"},
-  {"id": "2", "name": "Bob", "email": "bob@example.com"}
+  {"id": 1, "name": "Alice", "active": true},
+  {"id": 2, "name": "Bob", "active": false}
 ]
 ```
 
@@ -133,11 +147,13 @@ status_tx.send("[CLIENT] PostgreSQL client connected");      // → TUI
 
 - **No TLS** - Currently uses NoTls, should add rustls support
 - **No Connection Pooling** - Single connection per client
-- **No Prepared Statements** - All queries use simple query protocol
-- **Limited Type Support** - All values converted to strings
+- **One statement per action** - the extended protocol refuses a multi-statement string
+- **A rejected query raises no event** - the error is logged and sent to the status stream,
+  but the model is not told, so it cannot correct itself
+- **Types beyond bool/int/float/text reach the model as `null`** (`numeric`, `timestamp`,
+  `json`, arrays, …)
 - **No LISTEN/NOTIFY** - PostgreSQL pub/sub not implemented
 - **No COPY** - Bulk data operations not supported
-- **Synchronous Query Execution** - One query at a time
 
 ## Usage Examples
 
@@ -208,8 +224,8 @@ See `tests/client/postgresql/CLAUDE.md` for E2E testing approach.
 ## Future Enhancements
 
 - **TLS Support** - Add rustls/native-tls configuration
-- **Prepared Statements** - Use extended query protocol
-- **Type-Safe Results** - Better type conversion (not all strings)
+- **Query errors as events** - tell the model the server's error
+- **More types** - `numeric`, `timestamp`, `json`, arrays
 - **Connection Pooling** - Support multiple connections
 - **LISTEN/NOTIFY** - PostgreSQL pub/sub support
 - **COPY Protocol** - Bulk data import/export
@@ -243,8 +259,30 @@ Both the LLM path and injected commands go through one `apply_action`, so an inj
 **Never `Sent`.** `tokio_postgres` owns the socket, so NetGet cannot know how many bytes a
 query put on the wire. Every loop exit calls `remove_client_handle`.
 
-The command loop also holds the `Arc<Mutex<tokio_postgres::Client>>`, which is what keeps the
-session usable for a client created with no instruction.
+The command loop also holds an `Arc<tokio_postgres::Client>`, which is what keeps the session
+usable for a client created with no instruction.
 
 Test: `tests/client/postgresql/command_channel_test.rs` (zero LLM calls; a NetGet PostgreSQL
 server with a `*` static handler receives the injected query).
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/postgresql/real_server_test.rs` (see `tests/client/postgresql/CLAUDE.md`):
+
+1. **Real third-party server** — the PostgreSQL server itself (C), initialised per test with
+   `initdb` and read back with `psql` (libpq). NetGet's side is `tokio-postgres`, which shares
+   no code with either.
+2. **Fails rather than skips** — a missing `initdb`, `postgres` or `psql` is a test failure
+   naming the brew formula and the Ubuntu package (`tests/helpers/real_server.rs`, which also
+   searches `/usr/lib/postgresql/<major>/bin`); nothing is `#[ignore]`d. CI's `registry-audit`
+   installs the server and runs the suite in its evidence loop.
+3. **A real session** — startup and authentication, then `CREATE TABLE`, `INSERT` and `SELECT`
+   with the rows parsed and handed to the model.
+4. **Acts on the model's answer, asserted on the wire** — `psql` reads back the table the model
+   created, the row it inserted, and a second row it built from the `SELECT` result it was
+   shown. Verified by mutation: dropping the actions the model returns for a query result makes
+   the test fail.
+
+Not covered by that evidence: TLS, password/SCRAM authentication (the cluster uses `trust`),
+error reporting to the model, and types beyond bool/int/float/text.
