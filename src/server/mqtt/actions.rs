@@ -437,7 +437,8 @@ impl MqttProtocol {
 
 impl Protocol for MqttProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![ParameterDefinition {
+        vec![
+        ParameterDefinition {
             name: "max_packet_size".to_string(),
             type_hint: "integer".to_string(),
             description:
@@ -446,7 +447,30 @@ impl Protocol for MqttProtocol {
                     .to_string(),
             required: false,
             example: json!(262144),
-        }]
+        },
+        ParameterDefinition {
+            name: "first_byte_timeout_secs".to_string(),
+            type_hint: "integer".to_string(),
+            description:
+                "Seconds a connected peer may take to send its CONNECT before the broker closes \
+                 it (default 30). Every MQTT client sends CONNECT as soon as it connects."
+                    .to_string(),
+            required: false,
+            example: json!(30),
+        },
+        ParameterDefinition {
+            name: "idle_timeout_secs".to_string(),
+            type_hint: "integer".to_string(),
+            description:
+                "Seconds a session whose client declared Keep Alive 0 may be silent before the \
+                 broker closes it (default 900). A non-zero Keep Alive is honoured as MQTT \
+                 requires: the session is closed after 1.5x the client's Keep Alive with no \
+                 packet from it, and this setting does not change that."
+                    .to_string(),
+            required: false,
+            example: json!(900),
+        },
+        ]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

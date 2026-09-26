@@ -231,6 +231,36 @@ connection is closed when it is exceeded. Every parse function is bounds-checked
 ## Startup parameters
 
 - `max_packet_size` (integer, optional, default 262144, clamped to 64..=16777216)
+- `first_byte_timeout_secs` (integer, optional, default 30) — how long a peer may take to send
+  CONNECT
+- `idle_timeout_secs` (integer, optional, default 900) — silence allowed to a session whose
+  client declared Keep Alive 0; a non-zero Keep Alive is not overridable (see below)
+
+## Connection bounds
+
+| Bound | Default | Where it comes from |
+|---|---|---|
+| Until CONNECT | 30s (`first_byte_timeout_secs`) | 3.1.1 §3.1.4: a server that receives no CONNECT in a reasonable time SHOULD close |
+| After CONNECT, Keep Alive > 0 | **1.5 × the client's Keep Alive** | 3.1.1 §3.1.2.10, a MUST — `session_idle_bound` |
+| After CONNECT, Keep Alive = 0 | 900s (`idle_timeout_secs`) | a fallback, because a bound the client can switch off in its own CONNECT is no bound |
+| Connections | 256 | `accept_bounded`; the peer over the cap reads CONNACK 3 and EOF |
+
+- **The deadline wraps the read and nothing else.** Every packet is dispatched inline, so while
+  the model — or a human, through a `manual` rule — composes an answer the read is not polled and
+  no clock runs against the session. PINGREQ is how an idle subscriber keeps its session, and
+  the broker answers it by itself.
+- **Expiry closes the socket with no packet** (3.1.1 has no server DISCONNECT) and logs
+  `decision=idle_timeout` with which of the three bounds fired. The will is not published —
+  see "Last will" below.
+- **Which client state the connect bound faces: speaks inside `connect()`.** NetGet's own MQTT
+  client is `rumqttc`, whose event loop writes CONNECT on its first poll.
+- **A NetGet-client consequence worth knowing**: `src/client/mqtt/mod.rs` awaits each incoming
+  PUBLISH's model turn inside the loop that polls `rumqttc`'s event loop, so while that turn is
+  parked for a human the client sends no PINGREQ. Against this broker (or any conforming one) a
+  park longer than 1.5 × the client's `keep_alive` ends the session. That is the client's to fix
+  — polling the event loop concurrently with the model turn — not a reason to stretch a bound
+  the spec makes a MUST.
+- `tests/server/mqtt/connection_bounds_test.rs` drives all of these from the wire.
 
 ## Not implemented
 
@@ -242,8 +272,7 @@ connection is closed when it is exceeded. Every parse function is bounds-checked
 - **Last will and testament** — `will_topic` and `will_message` are surfaced, but the
   broker never publishes the will on an unclean disconnect.
 - **Session persistence** (`clean_session=false`), **QoS 2 duplicate suppression**,
-  **keep-alive enforcement** (an idle client is not disconnected), **topic wildcard
-  matching** in Rust (the model interprets `+` and `#` itself), **`$SYS` topics**,
+  **topic wildcard matching** in Rust (the model interprets `+` and `#` itself), **`$SYS` topics**,
   **clustering**, **bridging**, **authentication beyond passing the username to the
   model**.
 
