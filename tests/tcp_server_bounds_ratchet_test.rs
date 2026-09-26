@@ -32,7 +32,7 @@
 //! good enough to survive review. Removing one is the work.
 //!
 //! Run with:
-//!   ./cargo-isolated.sh test --no-default-features --features tcp --test tcp_server_bounds_ratchet -- --test-threads=100
+//!   ./cargo-isolated.sh test --no-default-features --features tcp --test tcp_server_bounds_ratchet_test -- --test-threads=100
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -407,4 +407,195 @@ fn bounds_a_read_in_time(source: &str) -> bool {
     let sleeps = source.contains("time::sleep(");
     let has_deadline = source.contains("_TIMEOUT") || source.contains("_deadline");
     sleeps && has_deadline
+}
+
+// ---------------------------------------------------------------------------------------------
+// A deadline that only covers the handshake
+// ---------------------------------------------------------------------------------------------
+
+/// Every accept loop's deadlines must reach past its handshake.
+///
+/// [`every_tcp_accept_loop_declares_a_read_deadline`] asks whether a directory bounds *a* read in
+/// time, and a `timeout(` anywhere satisfies it. Six servers satisfied it with a deadline that
+/// covered nothing a peer does once connected: `doh`, `socks5`, `websocket`, `webrtc` and
+/// `webrtc_signaling` bounded only their handshake — TLS, the SOCKS5 greeting, the HTTP upgrade
+/// head — and `mqtt`'s one `timeout(` waited on its own writer task at exit. After the handshake
+/// each read loop awaited the peer with nothing racing it, so a peer that went quiet, or vanished
+/// without a FIN, held its slot forever. All six are fixed (September 2026) and this test keeps
+/// the shape from coming back.
+///
+/// # The rule, and why it is this narrow
+///
+/// A directory is flagged when **every** `timeout(` call in its code is one of:
+///
+/// * **a handshake bound** — the call's arguments mention `handshake` (`TLS_HANDSHAKE_TIMEOUT`,
+///   `HANDSHAKE_TIMEOUT_SECS`, `SIGNALLING_HANDSHAKE_TIMEOUT`), or
+/// * **a join on its own task** — the awaited expression is a bare identifier naming a handle or
+///   a writer (`timeout(d, writer_handle)`), which bounds how long *we* wait for *ourselves*,
+///
+/// **and** it has no other deadline mechanism: none of [`POST_HANDSHAKE_MECHANISMS`], and no
+/// `time::sleep(` whose argument names a read, an idle bound or a deadline (the `select!` idiom
+/// `nats` uses — its accept-error backoff `sleep(from_millis(50))` is not one, which is why the
+/// argument is inspected rather than the call counted).
+///
+/// Measured on the tree before the six were fixed (`1e1ad6c0`), across all 95 stream servers,
+/// it flagged **exactly those six and nothing else**; on the fixed tree it flags nothing. A
+/// server whose only deadline is on its handshake but *named* differently is not caught — the
+/// rule reads names, and a loose name list is what exempted `snowflake` from the check above for
+/// months. It errs toward missing a case rather than training people to edit a baseline, and
+/// the miss is the direction the module comment warns about, so it is said here: a handshake
+/// deadline spelled `CONNECT_WAIT` would pass.
+///
+/// What it deliberately does not try to do is prove that a *post*-handshake bound covers the
+/// right read. That needs dataflow, not text: `mqtt`'s fixed read deadline and a hypothetical
+/// deadline on some unrelated helper look the same to a scan. The per-protocol
+/// `connection_bounds_test.rs` suites, which drive an idle peer from the wire, are what answer
+/// that — this test only catches the directory that has no candidate at all.
+#[test]
+fn no_accept_loop_bounds_only_its_handshake() {
+    let mut flagged = Vec::new();
+    for (name, source) in tcp_servers() {
+        let code = strip_line_comments(&source);
+        let calls = timeout_call_arguments(&code);
+        if calls.is_empty() {
+            // No `timeout(` at all: the check above decides whether something else bounds it.
+            continue;
+        }
+        let kinds: Vec<&str> = calls.iter().map(|c| classify_timeout(c)).collect();
+        let only_handshake_or_join = kinds.iter().all(|k| *k != "other");
+        let has_other_mechanism = POST_HANDSHAKE_MECHANISMS
+            .iter()
+            .any(|token| code.contains(token))
+            || sleeps_on_a_read_deadline(&code);
+        if only_handshake_or_join && !has_other_mechanism {
+            flagged.push(format!("{name} (timeouts: {})", kinds.join(", ")));
+        }
+    }
+
+    assert!(
+        flagged.is_empty(),
+        "these servers' only deadlines are on a handshake or on joining their own task, so once a \
+         peer is past the handshake nothing bounds how long it may sit silent:\n  {}\n\nBound the \
+         post-handshake read too. Own the read loop: a `timeout` around the read and nothing \
+         else (`mqtt`, `ssh_agent`). A crate owns the loop: `watch_idle` over a \
+         `ConnectionActivity` the answer holds busy (`doh`, `http2`). A session the client may \
+         hold open in silence: `watch_idle_with_probe` with a keepalive Ping (`websocket`, \
+         `webrtc`). A relay: one clock both directions touch (`socks5`).",
+        flagged.join("\n  ")
+    );
+}
+
+/// Deadline mechanisms that are never handshake-specific in this tree. The mechanisms of
+/// [`TIMEOUT_TOKENS`] other than `timeout(`, which this test classifies call by call instead.
+const POST_HANDSHAKE_MECHANISMS: &[&str] = &[
+    "IdleTimeoutReader",
+    "watch_idle",
+    "Instant::now() +",
+    "sleep_until",
+    "set_read_timeout",
+];
+
+/// `handshake`, `join`, or `other` — see [`no_accept_loop_bounds_only_its_handshake`].
+fn classify_timeout(arguments: &str) -> &'static str {
+    if arguments.to_ascii_lowercase().contains("handshake") {
+        return "handshake";
+    }
+    let awaited = arguments.rsplit(',').next().unwrap_or("").trim();
+    let awaited = awaited
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
+    let is_identifier = !awaited.is_empty()
+        && awaited
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_identifier && (awaited.contains("handle") || awaited.contains("writer")) {
+        return "join";
+    }
+    "other"
+}
+
+/// The argument text of every `timeout(` call in `code`, parentheses balanced.
+fn timeout_call_arguments(code: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
+    let mut calls = Vec::new();
+    let mut from = 0;
+    while let Some(found) = code[from..].find("timeout(") {
+        let start = from + found;
+        // `timeout(` must be the whole identifier: `read_timeout(` is a different function.
+        let preceded_by_ident =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let open = start + "timeout(".len();
+        from = open;
+        if preceded_by_ident {
+            continue;
+        }
+        let mut depth = 1usize;
+        let mut end = open;
+        while end < bytes.len() && depth > 0 {
+            match bytes[end] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            end += 1;
+        }
+        calls.push(code[open..end.saturating_sub(1)].to_string());
+    }
+    calls
+}
+
+/// A `time::sleep(` whose argument names a read, an idle bound or a deadline — the `select!`
+/// read-deadline idiom — as opposed to a retry backoff.
+fn sleeps_on_a_read_deadline(code: &str) -> bool {
+    let mut from = 0;
+    while let Some(found) = code[from..].find("time::sleep(") {
+        let open = from + found + "time::sleep(".len();
+        let close = code[open..]
+            .find(')')
+            .map(|i| open + i)
+            .unwrap_or(code.len());
+        let argument = code[open..close].to_ascii_lowercase();
+        if ["idle", "read", "deadline"]
+            .iter()
+            .any(|word| argument.contains(word))
+        {
+            return true;
+        }
+        from = open;
+    }
+    false
+}
+
+/// `code` with `//` comments removed, so a doc comment quoting `timeout(` is not read as a call.
+/// Quote-aware, so `"http://..."` in a string is kept.
+fn strip_line_comments(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    for line in code.lines() {
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut cut = line.len();
+        let chars: Vec<(usize, char)> = line.char_indices().collect();
+        for (i, &(at, c)) in chars.iter().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = true;
+            } else if c == '/' && chars.get(i + 1).map(|&(_, n)| n) == Some('/') {
+                cut = at;
+                break;
+            }
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
 }
