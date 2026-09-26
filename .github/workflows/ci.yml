@@ -388,6 +388,9 @@ jobs:
       #                       Run from a slapd.conf in a temp dir, not the packaged cn=config,
       #                       so the package's own debconf answers are never used. Same
       #                       AppArmor note as mysqld. ldapadd/ldapsearch are ldap-utils, above
+      #   openssh-server    - the ssh client (OpenSSH sshd, run unprivileged from a temp-dir
+      #                       config with public-key auth as the runner user; NetGet's client
+      #                       is russh). ssh-keygen comes from openssh-client, above
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -434,7 +437,7 @@ jobs:
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
             subversion tor wakeonlan \
-            mosquitto nginx redis-server postgresql mysql-server slapd
+            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server
 
       # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
       # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
@@ -793,7 +796,7 @@ jobs:
             client/mqtt::real_server_test client/mysql::real_server_test \
             client/nats::e2e_test \
             client/postgresql::real_server_test \
-            client/redis::real_server_test ; do
+            client/redis::real_server_test client/ssh::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
             # from the `client` test target; everything else is a real client against a
