@@ -296,6 +296,9 @@ pub struct LiveRequestTest {
     instruction: String,
     log_level: String,
     server_params: Option<Value>,
+    /// `--llm-seed` / `--llm-temperature` for the spawned netget, when set.
+    llm_seed: Option<u64>,
+    llm_temperature: Option<f32>,
 }
 
 impl LiveRequestTest {
@@ -308,7 +311,17 @@ impl LiveRequestTest {
             instruction: instruction.into(),
             log_level: "debug".to_string(),
             server_params: None,
+            llm_seed: None,
+            llm_temperature: None,
         }
+    }
+
+    /// Pin the model's sampler: `--llm-seed` and, if given, `--llm-temperature`.
+    /// Unset, netget sends neither and the model's Modelfile decides.
+    pub fn sampling(mut self, seed: Option<u64>, temperature: Option<f32>) -> Self {
+        self.llm_seed = seed;
+        self.llm_temperature = temperature;
+        self
     }
 
     /// Startup parameters for the server (`--server-params`), e.g. SOCKS5's
@@ -360,6 +373,14 @@ impl LiveRequestTest {
         if let Some(params) = &self.server_params {
             extra_args.push("--server-params".to_string());
             extra_args.push(params.to_string());
+        }
+        if let Some(seed) = self.llm_seed {
+            extra_args.push("--llm-seed".to_string());
+            extra_args.push(seed.to_string());
+        }
+        if let Some(temperature) = self.llm_temperature {
+            extra_args.push("--llm-temperature".to_string());
+            extra_args.push(temperature.to_string());
         }
 
         let config = NetGetConfig::new(&self.instruction)

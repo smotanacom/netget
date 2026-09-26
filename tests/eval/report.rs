@@ -23,9 +23,13 @@ pub struct EvalReport {
     pub generated_at: String,
     pub model: String,
     pub runs_per_case: usize,
-    /// Recorded because it is the reason the score is a rate: netget passes no
-    /// temperature or seed to its backend, so these runs cannot be pinned.
-    pub determinism: &'static str,
+    /// `--llm-seed` every run passed; `null` for an unpinned run.
+    pub seed: Option<u64>,
+    /// `--llm-temperature` every run passed; `null` leaves the model's default.
+    pub temperature: Option<f32>,
+    /// One sentence on what the seed does and does not pin, for a reader of the
+    /// JSON alone.
+    pub determinism: String,
     pub totals: Totals,
     pub protocols: Vec<ProtocolSummary>,
     pub failure_modes: Vec<FailureModeCount>,
@@ -47,6 +51,12 @@ pub struct Totals {
     /// would report if `ActionResponse::from_str` took the first JSON value in
     /// the reply instead of requiring the whole reply to be one.
     pub pass_rate_with_lenient_parse: f64,
+    /// Attempted cases with two or more runs — the population agreement is over.
+    pub cases_with_repeats: usize,
+    /// Of those, cases whose runs all reached the same verdict.
+    pub cases_verdicts_agree: usize,
+    /// Of those, cases whose runs executed byte-identical actions.
+    pub cases_actions_agree: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -83,6 +93,21 @@ fn now_iso() -> String {
 }
 
 pub fn build(model: &str, runs_per_case: usize, cases: Vec<CaseResult>) -> EvalReport {
+    let seed = super::runner::eval_seed();
+    let temperature = super::runner::eval_temperature();
+    let repeated: Vec<&CaseResult> = cases
+        .iter()
+        .filter(|c| c.verdicts_agree.is_some())
+        .collect();
+    let cases_with_repeats = repeated.len();
+    let cases_verdicts_agree = repeated
+        .iter()
+        .filter(|c| c.verdicts_agree == Some(true))
+        .count();
+    let cases_actions_agree = repeated
+        .iter()
+        .filter(|c| c.actions_agree == Some(true))
+        .count();
     let runs_total: usize = cases.iter().map(|c| c.attempts).sum();
     let runs_passed: usize = cases.iter().map(|c| c.passes).sum();
     let runs_recoverable: usize = cases.iter().map(|c| c.recoverable_runs).sum();
@@ -177,8 +202,18 @@ pub fn build(model: &str, runs_per_case: usize, cases: Vec<CaseResult>) -> EvalR
         generated_at: now_iso(),
         model: model.to_string(),
         runs_per_case,
-        determinism: "pass-rate over N independent runs; netget passes no temperature or \
-                      seed to its backend, so runs cannot be pinned",
+        seed,
+        temperature,
+        determinism: match seed {
+            Some(_) => "pass-rate over N independent runs with a pinned sampler seed; the \
+                        seed makes an identical prompt answer identically, but each run's \
+                        prompt carries its own ports and ids, so agreement is measured \
+                        (totals.cases_*_agree) rather than assumed"
+                .to_string(),
+            None => "pass-rate over N independent runs with no seed: the sampler is \
+                     unpinned and runs are expected to differ"
+                .to_string(),
+        },
         totals: Totals {
             cases_total: cases.len(),
             cases_attempted: attempted,
@@ -196,6 +231,9 @@ pub fn build(model: &str, runs_per_case: usize, cases: Vec<CaseResult>) -> EvalR
             } else {
                 0.0
             },
+            cases_with_repeats,
+            cases_verdicts_agree,
+            cases_actions_agree,
         },
         protocols,
         failure_modes,
@@ -218,18 +256,36 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Where the two artefacts go: the committed locations, or — when
+/// `NETGET_EVAL_OUT_DIR` is set — `latest.json` and `EVAL_RESULTS.md` inside
+/// that directory. A one-protocol rerun uses the second so it does not
+/// overwrite the committed whole-suite baseline with a one-row table.
+fn output_paths() -> (PathBuf, PathBuf) {
+    match std::env::var("NETGET_EVAL_OUT_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => {
+            let dir = PathBuf::from(dir);
+            (dir.join("latest.json"), dir.join("EVAL_RESULTS.md"))
+        }
+        _ => {
+            let root = repo_root();
+            (
+                root.join("eval-results").join("latest.json"),
+                root.join("EVAL_RESULTS.md"),
+            )
+        }
+    }
+}
+
 /// Write both artefacts. Returns the paths written.
 pub fn write(report: &EvalReport) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let root = repo_root();
-    let results_dir = root.join("eval-results");
-    std::fs::create_dir_all(&results_dir)?;
-
-    let json_path = results_dir.join("latest.json");
+    let (json_path, md_path) = output_paths();
+    for path in [&json_path, &md_path] {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     std::fs::write(&json_path, serde_json::to_string_pretty(report)? + "\n")?;
-
-    let md_path = root.join("EVAL_RESULTS.md");
     std::fs::write(&md_path, markdown(report))?;
-
     Ok(vec![json_path, md_path])
 }
 
@@ -256,15 +312,27 @@ fn markdown(report: &EvalReport) -> String {
 
     out.push_str("## How to read it\n\n");
     out.push_str(&format!(
-        "- **Model**: `{}` · **runs per instruction**: {}\n",
-        report.model, report.runs_per_case
+        "- **Model**: `{}` · **runs per instruction**: {} · **seed**: {} · **temperature**: {}\n",
+        report.model,
+        report.runs_per_case,
+        report
+            .seed
+            .map(|s| format!("`{}`", s))
+            .unwrap_or_else(|| "none (unpinned)".to_string()),
+        report
+            .temperature
+            .map(|t| format!("`{}`", t))
+            .unwrap_or_else(|| "the model's default".to_string()),
     ));
     out.push_str(
-        "- **The score is a rate, not a boolean.** NetGet passes exactly one option to its \
-         Ollama backend (`num_predict`); there is no temperature, seed or top-p, and no flag \
-         that sets one. The same instruction therefore produces different actions run to \
-         run. Each instruction is run N times against a **fresh netget process and a fresh \
-         server**, and the published number is passes/runs. A 2/3 is reported as 2/3.\n",
+        "- **The score is a rate, and whether the runs agreed is measured, not assumed.** \
+         Every run passes `--llm-seed` (and `--llm-temperature` when one is set), so the \
+         sampler draws the same tokens for the same prompt. But each run's prompt carries \
+         its own client port, connection id and — for DNS/LDAP-style protocols — a random \
+         query or message id, and one differing token changes every token drawn after it. \
+         Each instruction therefore still runs N times against a **fresh netget process and \
+         a fresh server**, the published number is passes/runs, and the `Runs agree` column \
+         says whether those runs reached the same verdict and executed the same actions.\n",
     );
     out.push_str(
         "- **Every case is driven by a real third-party client binary** — `dig`, `curl`, \
@@ -345,19 +413,42 @@ fn markdown(report: &EvalReport) -> String {
         ));
     }
 
+    if report.totals.cases_with_repeats > 0 {
+        out.push_str(&format!(
+            "## Reproducibility\n\n**{} of {} repeated instructions reached the same verdict \
+             on every run; {} of {} executed byte-identical actions on every run.** The second \
+             number is the strict one: an answer that must echo a random query id cannot be \
+             byte-identical across runs even when the model's choice was, so it undercounts \
+             agreement for DNS-, LDAP- and FTP-style protocols by design.\n\n",
+            report.totals.cases_verdicts_agree,
+            report.totals.cases_with_repeats,
+            report.totals.cases_actions_agree,
+            report.totals.cases_with_repeats,
+        ));
+    }
+
     out.push_str("## Per-instruction detail\n\n");
-    out.push_str("| Case | Instruction | Passed | Failure mode |\n|---|---|---:|---|\n");
+    out.push_str(
+        "| Case | Instruction | Passed | Runs agree | Failure mode |\n|---|---|---:|---|---|\n",
+    );
     for case in &report.cases {
         let score = if case.attempts == 0 {
             format!("— ({})", case.status)
         } else {
             format!("{}/{}", case.passes, case.attempts)
         };
+        let agree = match (case.verdicts_agree, case.actions_agree) {
+            (None, _) => "—",
+            (Some(true), Some(true)) => "verdict + actions",
+            (Some(true), _) => "verdict",
+            (Some(false), _) => "no",
+        };
         out.push_str(&format!(
-            "| `{}` | {} | {} | {} |\n",
+            "| `{}` | {} | {} | {} | {} |\n",
             case.id,
             escape_pipes(&case.instruction),
             score,
+            agree,
             case.dominant_failure
                 .as_ref()
                 .map(|m| format!("`{}`", m))
@@ -424,9 +515,8 @@ fn markdown(report: &EvalReport) -> String {
 
     out.push_str(
         "## Known limits of this measurement\n\n\
-         - **Runs are not reproducible.** Fixing that needs a `--llm-temperature` / \
-           `--llm-seed` flag threaded into `OllamaClient`'s `options` object; the harness \
-           will pin them the day they exist and this file will report a boolean instead.\n\
+         - **A pinned seed is not a pinned run.** The seed fixes the sampler, not the \
+           prompt; see the Reproducibility section for how often the runs agreed.\n\
          - **A pass means the client observed the right thing**, not that the frame is \
            spec-clean. The pcap oracle (Tier 1) is the check for that, and the two are \
            complementary.\n\
@@ -448,8 +538,8 @@ fn escape_pipes(text: &str) -> String {
 /// the artefact.
 pub fn print_summary(report: &EvalReport) {
     println!(
-        "\n══ real-model eval ══ model={} runs={}",
-        report.model, report.runs_per_case
+        "\n══ real-model eval ══ model={} runs={} seed={:?} temperature={:?}",
+        report.model, report.runs_per_case, report.seed, report.temperature
     );
     for p in &report.protocols {
         println!(
@@ -470,15 +560,18 @@ pub fn print_summary(report: &EvalReport) {
         report.totals.runs_total,
         pct(Some(report.totals.pass_rate))
     );
+    println!(
+        "  AGREEMENT {}/{} cases same verdict every run, {}/{} same actions",
+        report.totals.cases_verdicts_agree,
+        report.totals.cases_with_repeats,
+        report.totals.cases_actions_agree,
+        report.totals.cases_with_repeats
+    );
 }
 
 /// Where the artefacts land, for the runner script's message.
 pub fn artefact_paths() -> (PathBuf, PathBuf) {
-    let root = repo_root();
-    (
-        root.join("eval-results").join("latest.json"),
-        root.join("EVAL_RESULTS.md"),
-    )
+    output_paths()
 }
 
 pub fn exists(path: &Path) -> bool {

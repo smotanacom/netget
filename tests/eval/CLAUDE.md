@@ -65,19 +65,27 @@ event. Setup correctness is a separate question with its own tests in
    *thrown away*, and syslog scored 3/3 having executed nothing. The model
    naming an action and netget running it are different events.
 
-## Non-determinism: why the score is a rate
+## Determinism: a pinned seed, and still a rate
 
-netget passes exactly one option to its Ollama backend — `num_predict`
-(`src/llm/ollama_client.rs`). There is **no temperature, no seed, no top-p**,
-and no CLI flag that sets one, so sampling runs at whatever the model's
-Modelfile says and the same instruction genuinely produces different actions run
-to run.
+Every run passes `--llm-seed` (default 42; `--seed` / `NETGET_EVAL_SEED`, `none`
+for an unpinned run) and, when asked, `--llm-temperature` (`--temperature` /
+`NETGET_EVAL_TEMPERATURE`). netget sends both in Ollama's `options` object
+(`src/llm/ollama_client.rs`, `SamplingOptions`), and sends neither when the
+flags are absent — `tests/llm_sampling_options_test.rs` pins that from the wire.
 
-Pinning the seed would be better and is a one-field change in the `options`
-object plus a flag; until it exists, each instruction runs N times (default 3)
-against a **fresh netget process and a fresh server** — no conversation history,
-no server memory, no connection state carried between runs — and the published
-number is passes/runs with every individual verdict listed.
+**A pinned seed pins the sampler, not the run.** Ollama draws the same tokens for
+the same prompt, but each run's prompt carries its own client port, connection
+id and, for DNS/LDAP-style protocols, a random query or message id — one
+differing token changes every token drawn after it. So each instruction still
+runs N times (default 3) against a **fresh netget process and a fresh server**,
+the published number is passes/runs with every verdict listed, and each case
+reports `verdicts_agree` (every run reached the same verdict) and
+`actions_agree` (every run executed byte-identical actions). The Markdown has a
+Reproducibility section with the totals. `actions_agree` undercounts by design
+for anything that must echo a random id.
+
+`--out DIR` (`NETGET_EVAL_OUT_DIR`) writes the two artefacts into `DIR` instead
+of over the committed baseline — use it for a one-protocol rerun.
 
 ## Traps already paid for
 
