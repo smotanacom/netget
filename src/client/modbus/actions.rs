@@ -20,6 +20,10 @@ use std::sync::LazyLock;
 /// The name of the `ClientActionResult::Custom` every request travels as.
 pub const REQUEST_RESULT: &str = "modbus_request";
 
+/// The unit id requests use when neither the action nor the `unit_id` startup parameter names
+/// one. 1 is what most Modbus/TCP devices answer on, and what `mbpoll` defaults to.
+pub const DEFAULT_UNIT_ID: u8 = 1;
+
 fn param(name: &str, type_hint: &str, description: &str, required: bool) -> Parameter {
     Parameter {
         name: name.to_string(),
@@ -411,6 +415,7 @@ impl Protocol for ModbusClientProtocol {
                 .to_string(),
             required: false,
             example: json!(1),
+            default: Some(json!(DEFAULT_UNIT_ID)),
         }]
     }
 
@@ -549,12 +554,12 @@ impl Client for ModbusClientProtocol {
         Box::pin(async move {
             let unit_id = match ctx.startup_params.as_ref() {
                 Some(p) => match p.get_optional_u64("unit_id")? {
-                    None => 1,
+                    None => DEFAULT_UNIT_ID,
                     Some(n) => {
                         u8::try_from(n).map_err(|_| anyhow!("unit_id {n} is outside 0-255"))?
                     }
                 },
-                None => 1,
+                None => DEFAULT_UNIT_ID,
             };
             crate::client::modbus::ModbusClient::connect_with_llm_actions(
                 ctx.remote_addr,
