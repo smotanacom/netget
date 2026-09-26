@@ -425,6 +425,26 @@ impl RealServer {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
+    /// Wait until the server's own log contains `needle`. The server's log is often the only
+    /// place a fact is visible from outside NetGet — which subscriptions a broker holds, what a
+    /// request carried — so it is a legitimate thing to wait on, not just to print.
+    pub async fn wait_for_log(&self, needle: &str, timeout: Duration) -> E2EResult<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.log().contains(needle) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "`{}` never logged {needle:?} within {timeout:?}",
+                    self.binary
+                )
+                .into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Whether the server process is still alive.
     pub fn is_running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
@@ -503,4 +523,123 @@ fn capture<R: Read + Send + 'static>(pipe: R, log: Arc<Mutex<String>>) {
             }
         }
     });
+}
+
+/// A long-running third-party **client** tool (`mosquitto_sub`, say) whose output a test reads
+/// line by line while it runs. Killed on drop.
+///
+/// The test builds the `Command` itself, so the binary name stays a literal
+/// `Command::new("…")` in the test file — which is what `scripts/beta_evidence_table.py` and
+/// `tests/real_client_evidence_is_run_test.rs` read to learn which peer a suite drives.
+pub struct ToolProcess {
+    binary: String,
+    child: Child,
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl ToolProcess {
+    /// Spawn `command` with stdout and stderr captured. `binary` and `hint` are for the error
+    /// when it cannot be run.
+    pub fn spawn(mut command: Command, binary: &str, hint: InstallHint) -> E2EResult<Self> {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|e| missing_binary(binary, hint, e))?;
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let pipes: Vec<Box<dyn Read + Send>> = [
+            child
+                .stdout
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for pipe in pipes {
+            let lines = lines.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(pipe);
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Ok(mut l) = lines.lock() {
+                        l.push(line);
+                    }
+                }
+            });
+        }
+        Ok(Self {
+            binary: binary.to_string(),
+            child,
+            lines,
+        })
+    }
+
+    /// Every line printed so far, stdout and stderr interleaved as they arrived.
+    pub fn lines(&self) -> Vec<String> {
+        self.lines.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    /// Wait until some line satisfies `pred` and return it; an error listing everything the
+    /// tool printed if none does in time.
+    pub async fn wait_for_line<F>(
+        &self,
+        what: &str,
+        timeout: Duration,
+        pred: F,
+    ) -> E2EResult<String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(found) = self.lines().into_iter().find(|l| pred(l)) {
+                return Ok(found);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "`{}` never printed {what} within {timeout:?}. It printed:\n{}",
+                    self.binary,
+                    self.lines().join("\n")
+                )
+                .into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+impl Drop for ToolProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Run a third-party client tool to completion and return its stdout. A non-zero exit is an
+/// error carrying the tool's stderr; a tool that cannot be run is [`missing_binary`].
+///
+/// Runs on the blocking pool: a tool that waits on NetGet must not stall the runtime the mock
+/// model answers on.
+pub async fn run_tool(command: Command, binary: &str, hint: InstallHint) -> E2EResult<String> {
+    let mut command = command;
+    let output = tokio::task::spawn_blocking(move || command.stdin(Stdio::null()).output())
+        .await
+        .map_err(|e| format!("`{binary}` task failed: {e}"))?
+        .map_err(|e| missing_binary(binary, hint, e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`{binary}` exited with {}.\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
