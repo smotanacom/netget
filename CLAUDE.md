@@ -169,14 +169,16 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     the sentence existed for was the one that wrote nothing at all. Read the doc's failure
     section as a list of assertions to test, not as description.
 
-  **Ten protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
+  **Nine protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
   before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql`, `mongodb` and
-  `websocket` have neither a pcap-oracle test nor a fuzz target; `redis`, `mqtt` and `kafka` have
-  the oracle and no fuzz target. A fuzz target with a depth-bomb corpus is the cheaper of the two
-  to add. Derive this rather than trusting it:
+  `websocket` have neither a pcap-oracle test nor a fuzz target; `mqtt` and `kafka` have the
+  oracle and no fuzz target. (`redis` was in that last group until `fuzz_targets/resp_frame.rs`
+  landed in September 2026.) A fuzz target with a depth-bomb corpus is the cheaper of the two to
+  add. Derive this rather than trusting it — and note that fuzz targets are named after the
+  *decoder*, not the protocol, so read each target's `use` lines rather than grepping its name:
 
   ```bash
-  grep -rln pcap_oracle tests/server/<p>/ ; ls fuzz/fuzz_targets/ | grep <p>
+  grep -rln pcap_oracle tests/server/<p>/ ; grep -ln "<p>\|<decoder crate>" fuzz/fuzz_targets/*.rs
   ```
 
   This line used to name `whois`, `gopher`, `finger`, `dns`, `http`, `tcp`, `ntp` and `redis` as
@@ -1757,6 +1759,13 @@ Read before assuming a subsystem is sound:
   `deserialize_any`. Deriving `Deserialize` onto a shallow struct does *not* bound nesting.
   `src/utils/bencode.rs` walks the bytes iteratively before any decode, and is shared because
   four call sites across three protocols under two Cargo features need it.
+
+  **`redis` was the seventh (September 2026), and it hid under a size cap.** `redis-protocol`
+  6.0's `resp2::decode` recurses once per nested array and `*1\r\n` opens a level in four bytes,
+  so 400 KB — far under the server's 64 MiB `MAX_PENDING_FRAME_BYTES` — killed the process from
+  one unauthenticated connection. **A byte cap is not a depth cap.** `src/utils/resp.rs` walks
+  the frame iteratively first (depth 32, declared `*N`/`$N` bounded) and follows the decoder's
+  grammar exactly, which `fuzz/fuzz_targets/resp_frame.rs` checks differentially.
 
 - **Bound the *declared* size, not the remainder.** NATS's `HPUB` limit was applied to
   `total − header`, leaving `header` unbounded — and `header == total` passes every check with
