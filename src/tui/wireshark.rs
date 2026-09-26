@@ -228,6 +228,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
         // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
         "dict" => PLAIN_TCP,
+        // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
+        // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
+        // capture can show without the session keys.
+        "gemini" => tcp("tls"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
