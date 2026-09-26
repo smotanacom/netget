@@ -81,6 +81,9 @@ impl Protocol for NtpProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: a Kiss-o'-Death (RATE when overloaded, INIT otherwise), never
+            // the mechanical time response.
+            .answers_on_failure()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(123))
             .implementation("Manual 48-byte NTP packet construction")

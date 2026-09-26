@@ -181,34 +181,31 @@ impl Dhcpv6Server {
                                 message_type, peer_addr
                             ));
 
-                            // ── Why a failed message is answered with NOTHING ───────────────
+                            // ── What a failed message is answered with ─────────────────────────
                             //
-                            // A DHCPv6 reply is not an acknowledgement: it writes an address,
-                            // its lifetimes, a delegated prefix and the client's resolvers into
-                            // the host's network stack. A fabricated one misconfigures the host
-                            // or redirects its name resolution, and the client believes it for
-                            // the whole valid lifetime.
+                            // A DHCPv6 reply writes an address, its lifetimes, a delegated prefix
+                            // and the client's resolvers into the host's network stack, so nothing
+                            // positive is ever built here. Two Status Codes look like "no" and are
+                            // statements about a *lease* (RFC 8415 §21.13): NoAddrsAvail says this
+                            // link has no addresses, NoBinding that the client's lease does not
+                            // exist. Neither is sent on a failure — both would be false.
                             //
-                            // The protocol has no way to say "the backend is down". A Status
-                            // Code option looks like the place for it and is not: RFC 8415
-                            // §21.13 defines it as a statement about a *lease* — NoAddrsAvail
-                            // means this link has no addresses, NoBinding means the client's
-                            // lease does not exist here. Sending either because NetGet's model
-                            // is unreachable tells the client something false about its own
-                            // configuration, and a client that receives NoBinding in reply to a
-                            // RENEW moves to REBIND and then gives the address up.
+                            // UnspecFail is different: "failure, reason unspecified", and RFC 8415
+                            // §18.2.10 defines the client's handling of a REPLY carrying it — the
+                            // server "was unable to process the client's message", and a client
+                            // that retries MUST rate-limit. It is the protocol's own 500. So every
+                            // message answered by a REPLY (REQUEST, RENEW, REBIND, RELEASE,
+                            // INFORMATION-REQUEST) gets one on a fail-closed outcome.
                             //
-                            // Silence is the protocol's own retry path: RFC 8415 §15 has the
-                            // client retransmit with exponential backoff, so a transient
-                            // overload recovers on the client's own timer — which is what a 503
-                            // buys in HTTP. Nothing internal can leak onto the wire here
-                            // because nothing at all goes onto the wire.
+                            // SOLICIT is answered by an ADVERTISE, which has no failure form that
+                            // is not a lease statement, and RFC 8415 §18.3.1 lets a server discard
+                            // a SOLICIT; silence there sends the client to another server or to
+                            // its own retransmission timer.
                             //
-                            // The three no-reply cases are separated in the LOG instead, with a
-                            // stable `decision=` token (the src/server/radius convention): an
-                            // operator greps `decision=fail_closed_` and finds every message
-                            // NetGet dropped, distinct from the ones the model deliberately
-                            // chose not to answer.
+                            // Every outcome is logged with a stable `decision=` token (the
+                            // src/server/radius convention): grep `decision=fail_closed_` for every
+                            // message NetGet could not decide, whichever of the two it received.
+                            let mut failure = crate::utils::WireFailure::Unavailable;
                             let decision = match call_llm(
                                 &llm_clone,
                                 &state_clone,
@@ -284,16 +281,43 @@ impl Dhcpv6Server {
                                         "DHCPv6 LLM call failed for {} (category={}): {}",
                                         peer_addr, category, e
                                     ));
+                                    failure = crate::utils::WireFailure::classify(&e);
                                     "fail_closed_llm_error"
                                 }
                             };
+
+                            // A message whose answer is a REPLY gets the protocol's own "the
+                            // server failed" — see `Dhcpv6Protocol::server_failure_reply`.
+                            // SOLICIT stays silent.
+                            let mut unspec_fail_sent = false;
+                            if decision.starts_with("fail_closed_") {
+                                match protocol.server_failure_reply(failure) {
+                                    Ok(Some(reply)) => {
+                                        if socket_clone.send_to(&reply, peer_addr).await.is_ok() {
+                                            unspec_fail_sent = true;
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => log.error(format!(
+                                        "DHCPv6 could not build the UnspecFail reply for {}: {}",
+                                        peer_addr, e
+                                    )),
+                                }
+                            }
 
                             log.info(format!(
                                 "DHCPv6 {} from {} decision={}",
                                 message_type, peer_addr, decision
                             ));
 
-                            if decision.starts_with("fail_closed_") {
+                            if unspec_fail_sent {
+                                log.warn(format!(
+                                    "DHCPv6 answered {} with a REPLY carrying Status Code \
+                                     UnspecFail (no usable decision was produced; RFC 8415 has \
+                                     the client rate-limit any retry)",
+                                    peer_addr
+                                ));
+                            } else if decision.starts_with("fail_closed_") {
                                 log.warn(format!(
                                     "DHCPv6 sent no reply to {} (no usable decision was \
                                      produced; the client will retransmit)",
@@ -354,6 +378,13 @@ impl Dhcpv6Server {
 
         let client_duid = match opts.get(v6::OptionCode::ClientId) {
             Some(v6::DhcpOption::ClientId(duid)) => Some(duid.clone()),
+            _ => None,
+        };
+
+        // The server the client addressed (REQUEST, RENEW, RELEASE carry it; REBIND and
+        // SOLICIT do not). Kept only so a server-built failure reply can name the same server.
+        let addressed_server_duid = match opts.get(v6::OptionCode::ServerId) {
+            Some(v6::DhcpOption::ServerId(duid)) => Some(duid.clone()),
             _ => None,
         };
 
@@ -438,6 +469,7 @@ impl Dhcpv6Server {
                 xid: msg.xid(),
                 msg_type: msg.msg_type(),
                 client_duid,
+                addressed_server_duid,
                 ia_na_id,
                 ia_pd_id,
                 rapid_commit,

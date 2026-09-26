@@ -101,6 +101,8 @@ impl Protocol for RtspProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: 503 with Retry-After when overloaded, 500 otherwise.
+            .answers_on_failure()
             .state(DevelopmentState::Beta)
             .implementation(
                 "Manual RFC 2326 control server over TCP; SETUP allocates a real RTP UDP socket and \

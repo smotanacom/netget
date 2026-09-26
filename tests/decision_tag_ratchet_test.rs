@@ -52,9 +52,8 @@ use std::path::{Path, PathBuf};
 /// **Shrink-only.** An entry here is a protocol whose log cannot distinguish a backend outage
 /// from a model that chose silence. Adding one is not an option; removing one is the work.
 ///
-/// `tor_relay` is the last entry and was excluded from the sweep that emptied the rest of this
-/// list because another change owned that file at the same time.
-const NO_DECISION_TAG_BASELINE: &[&str] = &["tor_relay"];
+/// Empty: every server with an LLM path now tags its outcomes. Keep it that way.
+const NO_DECISION_TAG_BASELINE: &[&str] = &[];
 
 /// Strip `//` comments, leaving `//` that occurs inside a string literal alone.
 ///

@@ -25,7 +25,7 @@ M-SEARCH, and a `NOTIFY` — and there is no third one meaning "I don't know", n
 equivalent of DNS SERVFAIL, HTTP 503 or RESP `LOADING`.
 
 That places SSDP in the deliberately-silent class the root `CLAUDE.md`
-catalogues, and for the strongest reason on that list. A control point that
+catalogues (declared in `metadata()` with `.deliberately_silent()`), and for the strongest reason on that list. A control point that
 receives an advertisement caches it for `CACHE-CONTROL: max-age` seconds —
 1800 by convention — and then fetches the `LOCATION` URL. So a fabricated
 advertisement does not mislead one peer once; it plants a device that does not

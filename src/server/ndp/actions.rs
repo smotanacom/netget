@@ -225,6 +225,10 @@ impl Protocol for NdpProtocol {
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::RawSockets)
             .connectionless()
+            // Deliberately silent: Neighbor Discovery has no error reply. A Neighbor or Router
+            // Advertisement is written into the requester's neighbour or default-router cache, so a
+            // fabricated one poisons it; an unanswered solicitation is ordinary on a link.
+            .deliberately_silent()
             .implementation(
                 "Hand-written RFC 4861 codec (src/server/ndp/codec.rs), pure and transport-free: \
                  all five message types, TLV options with 8-octet length units, and the ICMPv6 \

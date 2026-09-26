@@ -842,6 +842,65 @@ async fn an_llm_failure_produces_no_datagram_at_all() -> E2EResult<()> {
     Ok(())
 }
 
+/// **The one answer that needs no model.** The same outage, but the query addresses this
+/// server as its name server: RD set (RFC 1002 §4.2.1.1 — "may only be set on a request to
+/// the NBNS") and B clear. RFC 1002 §4.2.14 gives the NBNS a word for "I cannot process this",
+/// RCODE SRV_ERR, and it asserts nothing about the name — so the querier is told the server
+/// failed instead of waiting out its retransmissions. The reply must echo the transaction id
+/// and question name, carry the NULL RR of a negative response, and be tagged in the log as
+/// the fail-closed outcome it is.
+#[tokio::test]
+async fn an_llm_failure_on_a_query_to_the_name_server_is_answered_srv_err() -> E2EResult<()> {
+    let config = NetGetConfig::new("listen on port {AVAILABLE_PORT} via netbios_ns.")
+        .with_log_level("debug")
+        .with_mock(|mock| {
+            mock.on_instruction_containing("netbios_ns")
+                .respond_with_actions(open_server_action("Answer NetBIOS name queries"))
+                .expect_calls(1)
+                .and()
+            // Deliberately NO rule for netbios_name_query: the mock answers 500.
+        });
+
+    let server = helpers::start_netget_server(config).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut query = unhex(SAMBA_NAME_QUERY);
+    let flags = u16::from_be_bytes([query[2], query[3]]) | packet::NM_FLAG_RD;
+    query[2..4].copy_from_slice(&flags.to_be_bytes());
+
+    let reply = exchange(server.port, &query).await?;
+    let (header, name, rest) = dissect(&reply);
+    assert_eq!(header.trn_id, 0x047f, "the transaction id must be echoed");
+    assert!(header.is_response(), "must be a response");
+    assert_eq!(
+        header.rcode(),
+        packet::RCODE_SRV_ERR,
+        "an outage on a query addressed to the NBNS must be answered SRV_ERR, not NAM_ERR \
+         (which would assert the name does not exist) and not a positive answer"
+    );
+    assert_eq!(
+        name,
+        &query[packet::HEADER_LEN..packet::HEADER_LEN + name.len()]
+    );
+    assert_eq!(
+        u16::from_be_bytes([rest[0], rest[1]]),
+        packet::RRTYPE_NULL,
+        "a negative response carries a NULL RR"
+    );
+
+    assert!(
+        wait_for_log(&server, "decision=fail_closed_llm_error").await,
+        "the SRV_ERR answer is still the fail-closed outcome and must be tagged as one. \
+         Output: {:?}",
+        server.get_output().await
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
 /// The mirror image: the model was reached and chose to say nothing. The wire is identical to
 /// the test above — that is the point — so only the log distinguishes them.
 #[tokio::test]

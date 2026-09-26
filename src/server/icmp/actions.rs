@@ -91,6 +91,10 @@ impl Protocol for IcmpProtocol {
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::RawSockets)
             .connectionless()
+            // Deliberately silent: RFC 792 defines no failure reply to an echo request, and a
+            // synthesised Destination Unreachable would be a false statement about reachability.
+            // Silence is exactly what a filtered host does, so every peer already handles it.
+            .deliberately_silent()
             .implementation("Raw IP sockets + pnet for ICMP packet handling")
             .llm_control("Full control - can respond to all ICMP message types")
             .e2e_testing(

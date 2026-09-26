@@ -299,6 +299,10 @@ Respond with JSON: {"status": "ok", "echo": <received_data>}
 
 ## Failure behaviour: silence, deliberately
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 When `call_llm` returns `Err`, this server writes **nothing** — and unlike the rest of the
 protocol tree, that is the correct answer rather than the "reset to Idle and write nothing"
 defect.

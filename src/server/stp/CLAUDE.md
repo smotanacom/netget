@@ -36,6 +36,10 @@ Point this at a lab segment. `tests/server/stp/CLAUDE.md` describes the isolated
 
 ## Why silence is the failure mode
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 STP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and
 its case is among the strongest there.
 

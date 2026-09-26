@@ -225,6 +225,22 @@ The LLM responds to syslog events with actions:
 }
 ```
 
+## Failure behaviour
+
+Syslog is **deliberately silent** on every path, because it is one-way: RFC 5424/5426 define no
+reply message, so there is nothing to answer a sender with whatever the model does. `metadata()`
+declares this with `.deliberately_silent()`, which `tests/failure_mode_declaration_test.rs`
+checks. The outcomes differ only in the log:
+
+| Outcome | Log |
+|---|---|
+| Model handled the message | `decision=model_handled` |
+| Model chose `ignore_syslog_message` | `decision=model_drop` |
+| Model returned nothing usable | `decision=no_answer` |
+| Backend failed (`call_llm` → `Err`) | ERROR `decision=fail_closed_llm_error category=overloaded\|unavailable` |
+
+The error text goes to the log and the status stream only; nothing reaches the wire.
+
 ## Connection Management
 
 ### Stateless Protocol

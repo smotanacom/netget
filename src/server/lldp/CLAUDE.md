@@ -145,6 +145,10 @@ Two defaults worth knowing, both chosen because the alternative would misreprese
 
 ## LLM failure → silence. This is deliberate.
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 LLDP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and it is one of
 the clearer cases. Every frame the protocol defines is a *positive assertion* that a device with
 a given identity exists on this link, and a neighbour writes it straight into its topology table

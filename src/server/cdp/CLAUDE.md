@@ -144,6 +144,10 @@ nothing saying so.
 
 ## LLM failure → silence. Always.
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 CDP is in the **deliberately-silent** class (root `CLAUDE.md`). Every frame the
 protocol defines is a positive assertion — *a device with this identity exists on
 this link* — which the neighbour caches for `ttl` seconds and an operator reads

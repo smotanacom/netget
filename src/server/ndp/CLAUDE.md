@@ -250,6 +250,10 @@ address to receive a unicast reply on — is answered on `ff02::1`.
 
 ## LLM failure → silence. This is deliberate.
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 NDP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and its case is among
 the strongest there. Every message the protocol defines is a *positive assertion* about addressing
 on this link, and the peer writes it straight into its stack. There is no error message, no NAK

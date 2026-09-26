@@ -20,16 +20,30 @@ answer therefore does not fail once — it redirects that host's traffic for hou
 doing so after the backend recovers. This is the `mdns` hazard, unicast and worse: mDNS
 poisons a link, NBNS poisons whichever host asked.
 
-So this server has **no default reply anywhere**. Nothing in `actions.rs` can synthesise a
-response; every byte that reaches the wire came out of an action the model named. When no
+So this server has **no default positive reply anywhere**. Nothing in `actions.rs` can
+synthesise a response; every positive or NAM_ERR byte that reaches the wire came out of an
+action the model named. The single server-built reply is the SRV_ERR below. When no
 usable answer is produced, nothing is sent, and the querier falls back exactly as it would if
 no NBNS server were listening — which on a broadcast query is the normal behaviour of every
 node that does not hold the name.
 
-That puts NBNS in the deliberately-silent class in the root `CLAUDE.md`, and it is a strong
-member of it: every response the protocol defines is a positive assertion about a name, and
-even the "negative" form (RFC 1002 §4.2.14) asserts that the name *does not* exist — which a
-querier may also cache.
+Almost every response the protocol defines is a positive assertion about a name, and the
+negative form with RCODE NAM_ERR (RFC 1002 §4.2.14) asserts that the name *does not* exist —
+which a querier may also act on. **One reply asserts nothing, and it is the exception this
+server makes.** RCODE SRV_ERR means "the NBNS has a problem and is unable to process the
+query" (§4.2.14 for a query, §4.2.6 for a registration): it is the name server's SERVFAIL.
+So `FailureMode` is `Answers`, narrowly (`.answers_on_failure()` in `metadata()`):
+
+- A **NAME QUERY (NB) or NAME REGISTRATION with RD set and B clear** — RD "may only be set on
+  a request to the NBNS" (§4.2.1.1), so the querier addressed this server as its name server —
+  gets a NEGATIVE response with **SRV_ERR** on every `fail_closed_*` outcome
+  (`NetbiosNsServer::server_failure_reply`). The querier learns the server failed instead of
+  waiting out its retransmissions, and nothing about the name is claimed.
+- A **broadcast** request (B set) stays silent: only the owner of a name answers a broadcast,
+  and a bystander answering anything, even an error, races it.
+- A request **without RD** is addressed to a node, not a name server, and a node that does not
+  hold the name says nothing.
+- A **node status** request stays silent: §4.2.18 defines only the positive listing.
 
 ### The wire cannot carry the distinction, so the log must
 
@@ -47,13 +61,14 @@ affords nothing:
 | Model returns no actions at all | **nothing** | `decision=fail_closed_no_action` |
 | Model's action fails to encode | **nothing** | `decision=fail_closed_action_error` |
 | LLM call errors / times out | **nothing** | `decision=fail_closed_llm_error`, plus `category=overloaded`/`category=unavailable` from `WireFailure::classify` |
+| Any `fail_closed_*` row above, on an NB query or registration with RD set and B clear | NEGATIVE response, RCODE **SRV_ERR** | the same `decision=fail_closed_*` token, with "answered SRV_ERR" |
 
 Every `fail_closed_*` line is logged at ERROR, because on this protocol it is invisible from
 outside. `decision=model_silent` is logged at INFO: it is a real answer, not a failure, and
 conflating the two is the OAuth2 defect in the direction that matters here.
 
-The error text never reaches the wire because nothing reaches the wire. There is no
-`WireFailure` string to leak.
+The error text never reaches the wire: the only failure reply is a fixed RCODE with no text
+field, so there is no `WireFailure` string to leak.
 
 ## First-level name encoding — the thing implementations get wrong
 

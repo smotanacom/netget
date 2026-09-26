@@ -438,6 +438,20 @@ impl ProtocolMetadataV2Builder {
         self
     }
 
+    /// Declare that this protocol answers the peer when the model cannot — see
+    /// [`FailureMode::Answers`].
+    ///
+    /// `Answers` is already the default, so this changes no value. It records that someone
+    /// looked at the failure path and decided, which is what
+    /// `tests/failure_mode_declaration_test.rs` requires of every connectionless server: on a
+    /// datagram protocol there is no connection to close, so silence is what a failure produces
+    /// *unless* someone wrote the answer, and a default cannot tell those two apart. Put what
+    /// the peer receives in a comment beside the call.
+    pub const fn answers_on_failure(mut self) -> Self {
+        self.failure_mode = FailureMode::Answers;
+        self
+    }
+
     /// Mark the protocol connectionless — see [`ProtocolMetadataV2::connectionless`].
     pub const fn connectionless(mut self) -> Self {
         self.connectionless = true;

@@ -163,18 +163,18 @@ impl SyslogServer {
                                     // (`WireFailure`) the answering protocols put on the wire,
                                     // so an overload is distinguishable from a hard failure.
                                     let category = crate::utils::WireFailure::classify(&e);
-                                    let tag = if category.is_overloaded() {
-                                        "llm_error_overloaded"
+                                    let category = if category.is_overloaded() {
+                                        "overloaded"
                                     } else {
-                                        "llm_error_unavailable"
+                                        "unavailable"
                                     };
                                     error!(
-                                        "Syslog message from {} decision={} (dropped, no reply is possible on syslog): {}",
-                                        peer_addr, tag, e
+                                        "Syslog message from {} decision=fail_closed_llm_error category={} (dropped, no reply is possible on syslog): {}",
+                                        peer_addr, category, e
                                     );
                                     let _ = status_clone.send(format!(
-                                        "✗ Syslog message from {} decision={} (dropped): {}",
-                                        peer_addr, tag, e
+                                        "✗ Syslog message from {} decision=fail_closed_llm_error category={} (dropped): {}",
+                                        peer_addr, category, e
                                     ));
                                 }
                             }
@@ -201,10 +201,11 @@ impl SyslogServer {
     /// nothing" and "the LLM call failed" are indistinguishable on the wire — all three
     /// are silence. They must not be indistinguishable in the log as well: the first is a
     /// decision, the other two are netget failing to make one. The error case is tagged at
-    /// the call site (`decision=llm_error_*`); this covers the successful-call cases.
+    /// the call site (`decision=fail_closed_llm_error category=…`); this covers the
+    /// successful-call cases.
     ///
     /// The tokens are stable so an operator can grep `decision=no_answer` /
-    /// `decision=llm_error_` for every message netget did not really handle.
+    /// `decision=fail_closed_` for every message netget did not really handle.
     fn decision_tag(result: &crate::llm::ExecutionResult) -> &'static str {
         if result.raw_actions.is_empty() {
             // No actions at all: the model produced nothing usable. Dropping is what

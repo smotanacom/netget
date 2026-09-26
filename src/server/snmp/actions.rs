@@ -52,6 +52,8 @@ impl Protocol for SnmpProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: a Response PDU with error-status genErr for the request's own id.
+            .answers_on_failure()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(161))
             .implementation("rasn-snmp v0.18 for parsing + manual BER encoding")

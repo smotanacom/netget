@@ -778,9 +778,21 @@ impl TorRelaySession {
                 for protocol_result in execution_result.protocol_results {
                     match protocol_result {
                         // A DESTROY chosen here replaces the CREATED2 we were about to send.
-                        ActionResult::Output(data) => return Ok(Some(data)),
+                        ActionResult::Output(data) => {
+                            info!(
+                                "Tor relay circuit 0x{:08x}: CREATE2 answered by the model's \
+                                 own cell decision=model_answer",
+                                circuit_id.as_u32()
+                            );
+                            return Ok(Some(data));
+                        }
                         ActionResult::CloseConnection => {
-                            debug!("LLM requested close after circuit creation");
+                            info!(
+                                "Tor relay circuit 0x{:08x}: model closed the connection on \
+                                 CREATE2 decision=model_reject",
+                                circuit_id.as_u32()
+                            );
+                            self.circuit_manager.destroy_circuit(circuit_id).await;
                             return Err(anyhow::anyhow!("LLM requested close"));
                         }
                         _ => {}
@@ -788,11 +800,33 @@ impl TorRelaySession {
                 }
             }
             Err(e) => {
-                // Non-fatal: CREATED2 is still sent below, so WARN.
-                Log::new(Some(&self.status_tx))
-                    .warn(format!("LLM call failed for circuit creation: {}", e));
+                // CREATED2 is admission: it completes the ntor handshake and hands the peer a
+                // circuit it will build on. The model was asked whether to admit this one and
+                // gave no answer, so admitting it anyway would turn a backend outage into
+                // "every circuit accepted". Tear it down instead, in Tor's own vocabulary:
+                // DESTROY (tor-spec 5.4) with reason 2 INTERNAL — the fault is the relay's,
+                // not the client's and not a protocol violation. The circuit's crypto state
+                // is dropped too, so what this relay believes and what the peer was told agree.
+                //
+                // Non-fatal to the connection: a DESTROY is the wire answer, so WARN.
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "Tor relay circuit 0x{:08x}: LLM call failed on CREATE2 ({}) - sent DESTROY \
+                     (reason 2 INTERNAL) decision=fail_closed_llm_error",
+                    circuit_id.as_u32(),
+                    e
+                ));
+                self.circuit_manager.destroy_circuit(circuit_id).await;
+                return Ok(Some(self.create_destroy_cell_with_reason(
+                    circuit_id,
+                    DESTROY_REASON_INTERNAL,
+                )));
             }
         }
+
+        info!(
+            "Tor relay circuit 0x{:08x}: CREATED2 sent decision=model_answer",
+            circuit_id.as_u32()
+        );
 
         // Build CREATED2 response
         // CircID (4) | Command (1) | HLEN (2) | HDATA (HLEN)
@@ -960,16 +994,32 @@ impl TorRelaySession {
                         for protocol_result in execution_result.protocol_results {
                             match protocol_result {
                                 ActionResult::Output(data) => {
-                                    // LLM wants to send a response
+                                    debug!(
+                                        "Tor relay circuit 0x{:08x}: RELAY {} answered \
+                                         decision=model_answer",
+                                        circuit_id.as_u32(),
+                                        relay_cmd_name
+                                    );
                                     return Ok(Some(data));
                                 }
                                 ActionResult::CloseConnection => {
-                                    debug!("LLM requested connection close");
+                                    info!(
+                                        "Tor relay circuit 0x{:08x}: model closed the \
+                                         connection on RELAY {} decision=model_reject",
+                                        circuit_id.as_u32(),
+                                        relay_cmd_name
+                                    );
                                     return Err(anyhow::anyhow!("LLM requested close"));
                                 }
                                 _ => {}
                             }
                         }
+                        debug!(
+                            "Tor relay circuit 0x{:08x}: RELAY {} left unanswered by the model \
+                             decision=model_silent",
+                            circuit_id.as_u32(),
+                            relay_cmd_name
+                        );
                     }
                     Err(e) => {
                         // This branch is reached only for RELAY commands the relay does not
@@ -989,7 +1039,7 @@ impl TorRelaySession {
                         // Non-fatal: a DESTROY cell (reason 2 INTERNAL) is the wire answer, so WARN.
                         Log::new(Some(&self.status_tx)).warn(format!(
                             "Tor relay circuit 0x{:08x}: LLM call failed on RELAY {} ({}) - sent \
-                             DESTROY (reason 2 INTERNAL)",
+                             DESTROY (reason 2 INTERNAL) decision=fail_closed_llm_error",
                             circuit_id.as_u32(),
                             relay_cmd_name,
                             e

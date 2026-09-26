@@ -628,6 +628,10 @@ impl Protocol for SsdpProtocol {
             // idle sweep is what keeps the connection list from growing without bound. This
             // flag is what enables it (see the root CLAUDE.md).
             .connectionless()
+            // Deliberately silent: SSDP has no error message - a 200 OK and a NOTIFY both assert
+            // that a device exists at a URL, and a control point caches that for max-age. A device
+            // that does not match a search is required to say nothing, so silence is normal.
+            .deliberately_silent()
             .state(DevelopmentState::Experimental)
             // 1900 is above 1023, so PrivilegedPort would be dead code — the
             // svn/PrivilegedPort(3690) mistake.

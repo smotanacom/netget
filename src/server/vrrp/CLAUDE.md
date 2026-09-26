@@ -36,6 +36,10 @@ Point this at a lab segment. `tests/server/vrrp/CLAUDE.md` describes the `feth` 
 
 ## Why silence is the failure mode
 
+`metadata()` declares this with `.deliberately_silent()` (`FailureMode::DeliberatelySilent`),
+which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
+the call.
+
 VRRP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues.
 
 VRRP has exactly one message type — the advertisement — and it is a *positive claim to own

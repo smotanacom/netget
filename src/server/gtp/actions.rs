@@ -320,6 +320,11 @@ impl Protocol for GtpProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: a session-management request gets its response message with a
+            // REFUSING cause (never an accepting one). Echo Requests and G-PDUs stay silent - an
+            // Echo Response asserts this node is healthy, and the only user-plane reply (Error
+            // Indication) asserts a tunnel does not exist, which tears the peer's session down.
+            .answers_on_failure()
             // Experimental. The transport genuinely executes here — both ports are above
             // 1023, so the e2e suite binds real UDP sockets and drives real datagrams
             // through the real codec, which is more than most of this tier can say. What is

@@ -351,7 +351,9 @@ ICMP has no in-band failure reply. RFC 792 defines no "cannot answer" message fo
 request, and RFC 1122 §3.2.2 forbids generating an ICMP error in response to an ICMP error, so a
 synthesised Destination Unreachable would be a false statement about reachability rather than a
 service-unavailable signal. When the LLM call fails, the server therefore **stays silent on the
-wire on purpose** — but says so loudly in the log. Every packet ends with one `decision=` tag:
+wire on purpose** — silence is exactly what a filtered host does, so every peer already handles
+it — and says so loudly in the log. `metadata()` declares this with `.deliberately_silent()`
+(`FailureMode::DeliberatelySilent`). Every packet ends with one `decision=` tag:
 
 | Tag | Meaning |
 |---|---|

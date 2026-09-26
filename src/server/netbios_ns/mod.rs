@@ -9,22 +9,22 @@
 //! NBNS is a caching name service. A querier that receives a POSITIVE NAME QUERY RESPONSE
 //! stores the address for the TTL and uses it for every subsequent connection to that name, so
 //! a fabricated answer does not merely fail once: it redirects the peer's traffic for hours.
-//! NetGet therefore never synthesises an answer of its own. If the model is unreachable, or
-//! returns nothing usable, or its action fails to encode, this server sends **nothing** and the
-//! querier falls back exactly as it would if no NBNS server were listening — which, on a
-//! broadcast query, is the normal behaviour of every node that does not hold the name.
+//! NetGet therefore never synthesises an answer about a name. If the model is unreachable, or
+//! returns nothing usable, or its action fails to encode, this server sends **nothing** on a
+//! broadcast or node-directed request, and the querier falls back exactly as it would if no
+//! NBNS server were listening — which, on a broadcast query, is the normal behaviour of every
+//! node that does not hold the name.
 //!
-//! That is the deliberately-silent class described in the root `CLAUDE.md`, and NBNS is a
-//! strong member of it: every response the protocol defines is a positive assertion about a
-//! name, and the one "negative" form (§4.2.14) is still an assertion — that the name does not
-//! exist — which a querier may also cache.
+//! The one exception is a request addressed to this server *as its name server* (RD set, B
+//! clear): that gets a NEGATIVE response with RCODE SRV_ERR, the NBNS's own "I cannot process
+//! this", which asserts nothing about the name. See `server_failure_reply`.
 //!
-//! The distinction the wire cannot carry therefore lives in the log. Every request is logged
+//! The distinction the wire mostly cannot carry lives in the log. Every request is logged
 //! with a `decision=` token so an operator can tell a refusal from an outage after the fact:
 //! `model_answer`, `model_reject`, `model_silent`, `fail_closed_no_action`,
 //! `fail_closed_llm_error`, `fail_closed_action_error`. This is the discipline `src/server/radius`
-//! established; the difference is that RADIUS can express denial on the wire and NBNS cannot,
-//! so here *every* fail-closed path is byte-for-byte identical to a dead server.
+//! established; outside the SRV_ERR case every fail-closed path is byte-for-byte identical to a
+//! dead server.
 
 pub mod actions;
 pub mod packet;
@@ -322,7 +322,12 @@ impl NetbiosNsServer {
 
         let llm_outcome = call_llm(&llm_client, &state, server_id, None, &event, &protocol).await;
 
-        let (decision, reply) = Self::decide(llm_outcome, &status_tx, peer_addr);
+        let (decision, mut reply) = Self::decide(llm_outcome, &status_tx, peer_addr);
+        let mut server_failure_sent = false;
+        if reply.is_none() && decision.is_fail_closed() {
+            reply = Self::server_failure_reply(&request);
+            server_failure_sent = reply.is_some();
+        }
 
         let summary = format!(
             "NetBIOS-NS {} {}<{:#04x}> from {} decision={}",
@@ -333,7 +338,13 @@ impl NetbiosNsServer {
             decision.as_str()
         );
         let log = Log::new(Some(&status_tx));
-        if decision.is_fail_closed() {
+        if server_failure_sent {
+            log.error(format!(
+                "{} (answered SRV_ERR: the querier addressed this server as its NBNS, and \
+                 SRV_ERR says the name server failed - it asserts nothing about the name)",
+                summary
+            ));
+        } else if decision.is_fail_closed() {
             // Loud, because on the wire this is indistinguishable from the server being down.
             log.error(format!(
                 "{} (nothing sent: no usable answer was produced, and a fabricated NetBIOS \
@@ -375,6 +386,47 @@ impl NetbiosNsServer {
                 ));
             }
         }
+    }
+
+    /// The one reply this server writes without the model: a NEGATIVE response carrying
+    /// RCODE SRV_ERR, for a request that addressed this server **as its name server**.
+    ///
+    /// RFC 1002 §4.2.1.1: the RD flag "may only be set on a request to the NBNS". A request
+    /// with RD set and B clear is a querier asking its configured NBNS, and RFC 1002 gives that
+    /// server a word for "I cannot process this": SRV_ERR (§4.2.14 for a query, §4.2.6 for a
+    /// registration) — "the NBNS has a problem and is unable to process the query". It is
+    /// the NBNS's SERVFAIL. It asserts nothing about the name, which is what separates it from
+    /// NAM_ERR and from a positive answer, and it saves the querier its retransmission
+    /// timeouts before it falls back to its next resolution method.
+    ///
+    /// Everything else stays silent:
+    /// - a **broadcast** query (B set) is answered only by the node that owns the name; a
+    ///   bystander answering anything, even an error, races the owner;
+    /// - a query **without RD** is addressed to a node, not a name server, and a node that
+    ///   does not hold the name says nothing;
+    /// - a **node status** request has no negative form at all (§4.2.18 defines only the
+    ///   positive listing).
+    fn server_failure_reply(request: &NbnsRequest) -> Option<Vec<u8>> {
+        let header = request.header;
+        if !header.recursion_desired() || header.broadcast() {
+            return None;
+        }
+        let opcode = header.opcode();
+        let has_negative_form = matches!(
+            (opcode, request.qtype),
+            (packet::OPCODE_QUERY, packet::QTYPE_NB) | (packet::OPCODE_REGISTRATION, _)
+        );
+        if !has_negative_form {
+            return None;
+        }
+        packet::encode_negative_response(
+            header.trn_id,
+            opcode,
+            true,
+            &request.question_name.raw,
+            packet::RCODE_SRV_ERR,
+        )
+        .ok()
     }
 
     /// Which event, if any, a decoded request raises.

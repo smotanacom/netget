@@ -347,6 +347,10 @@ impl Protocol for CdpProtocol {
             // Every advertisement is unsolicited and per-neighbour; nothing closes a "session",
             // so the 10-second idle sweep is the right owner of these entries.
             .connectionless()
+            // Deliberately silent: CDP has no error message. Every CDP frame is an advertisement
+            // asserting a device's identity, addresses and capabilities to every neighbour on the
+            // segment, so a fabricated one is a false statement they all record.
+            .deliberately_silent()
             .implementation(
                 "Manual CDP v1/v2 over 802.3 with LLC/SNAP encapsulation (DSAP/SSAP 0xAA, \
                  control 0x03, OUI 00:00:0c, protocol 0x2000), destination 01:00:0c:cc:cc:cc. \

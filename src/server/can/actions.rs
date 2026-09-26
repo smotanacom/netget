@@ -498,6 +498,10 @@ impl Protocol for CanProtocol {
             // bookkeeping entries exist only so the dashboard can show traffic, and the
             // 10-second idle sweep is exactly what should reap them.
             .connectionless()
+            // Deliberately silent: CAN has no error reply. An error frame destroys the frame in
+            // flight for every node and drives controllers toward bus-off, and a data frame asserts
+            // a value or command to the whole bus. Nodes ignoring frames is the normal state.
+            .deliberately_silent()
             .implementation(
                 "Frame representation, validation and the SocketCAN struct can_frame / \
                  canfd_frame wire encoding are a pure module (src/server/can/frame.rs) with no \

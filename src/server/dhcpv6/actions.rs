@@ -36,6 +36,9 @@ pub struct Dhcpv6RequestContext {
     pub msg_type: v6::MessageType,
     /// Raw DUID bytes from option 1. Absent is legal in an INFORMATION-REQUEST.
     pub client_duid: Option<Vec<u8>>,
+    /// Raw DUID bytes from option 2 — the server the client addressed, when it named one
+    /// (REQUEST, RENEW, RELEASE). Read only by [`Dhcpv6Protocol::server_failure_reply`].
+    pub addressed_server_duid: Option<Vec<u8>>,
     /// IAID of the client's IA_NA (option 3), if it sent one.
     pub ia_na_id: Option<u32>,
     /// IAID of the client's IA_PD (option 25), if it asked for a delegated prefix.
@@ -59,6 +62,58 @@ impl Dhcpv6Protocol {
         if let Ok(mut slot) = self.request_context.lock() {
             *slot = Some(context);
         }
+    }
+}
+
+impl Dhcpv6Protocol {
+    /// The one reply this server builds without the model: a REPLY whose only status is a
+    /// top-level Status Code **UnspecFail**, for a message whose answer is a REPLY.
+    ///
+    /// RFC 8415 §21.13 defines UnspecFail as "failure, reason unspecified", and §18.2.10 as the
+    /// server being "unable to process the client's message" — the client may retry, rate-
+    /// limited. It asserts nothing about addresses, prefixes or resolvers, which is what makes
+    /// it safe to send when the model could not decide. The status message is the fixed
+    /// [`crate::utils::WireFailure`] text, never the error.
+    ///
+    /// Returns `Ok(None)` for a SOLICIT: its answer is an ADVERTISE, and every status an
+    /// ADVERTISE could carry is a statement about the lease. The Server Identifier is the one
+    /// the client addressed, where it named one, so the client matches the reply to the server
+    /// it asked; otherwise the default server DUID.
+    pub fn server_failure_reply(
+        &self,
+        failure: crate::utils::WireFailure,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(context) = self
+            .request_context
+            .lock()
+            .map_err(|_| anyhow!("DHCPv6 request context lock was poisoned"))?
+            .clone()
+        else {
+            return Ok(None);
+        };
+        if context.msg_type == v6::MessageType::Solicit {
+            return Ok(None);
+        }
+
+        let mut msg = v6::Message::new_with_id(v6::MessageType::Reply, context.xid);
+        if let Some(duid) = context.client_duid {
+            msg.opts_mut().insert(v6::DhcpOption::ClientId(duid));
+        }
+        let server_duid = context
+            .addressed_server_duid
+            .unwrap_or_else(default_server_duid);
+        msg.opts_mut().insert(v6::DhcpOption::ServerId(server_duid));
+        msg.opts_mut()
+            .insert(v6::DhcpOption::StatusCode(v6::StatusCode {
+                status: v6::Status::UnspecFail,
+                msg: failure.text().to_string(),
+            }));
+
+        let mut buf = Vec::new();
+        let mut encoder = Encoder::new(&mut buf);
+        msg.encode(&mut encoder)
+            .map_err(|e| anyhow!("Failed to encode the DHCPv6 UnspecFail reply: {e}"))?;
+        Ok(Some(buf))
     }
 }
 
@@ -583,6 +638,11 @@ impl Protocol for Dhcpv6Protocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure where the protocol has a word for it: a message answered by a REPLY
+            // gets a REPLY whose Status Code is UnspecFail (RFC 8415 18.2.10, "unable to process the
+            // client's message"), which asserts nothing about the lease. SOLICIT stays silent: every
+            // status an ADVERTISE could carry is a statement about addresses.
+            .answers_on_failure()
             // Experimental, and it cannot be more than that on the evidence available. Beta
             // means "works against real clients"; no real DHCPv6 client can be pointed at this
             // server. dhclient -6, dhcpcd and odhcp6c bind UDP/546, need root, and drive a

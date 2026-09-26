@@ -1,8 +1,8 @@
 # Tor Relay E2E Tests
 
 `tests/server/tor_relay/e2e_test.rs` (one test, **2 LLM calls**, not `#[ignore]`d) and
-`tests/server/tor_relay/llm_failure_test.rs` (one test, 2 *mocked* LLM calls plus one that is
-deliberately answered with HTTP 500). Both drive the relay with the Tor client in `peer.rs`.
+`tests/server/tor_relay/llm_failure_test.rs` (two tests; each has its startup call mocked and
+one event deliberately left unmocked so the mock answers HTTP 500). Both drive the relay with the Tor client in `peer.rs`.
 
 ## Strategy
 
@@ -42,7 +42,15 @@ and `call_llm` returns `Err`. A RELAY/EXTEND — a command this relay does not i
 model is the whole answer — must then be answered with a **DESTROY cell, reason 2 INTERNAL**,
 514 bytes with the rest of the payload zero. It asserts the reply is *not* a RELAY cell (the
 peer would read that as the EXTENDED it asked for) and that the DESTROY carries the right
-reason. Before this the branch was `if let Ok(..)` and the peer got nothing at all.
+reason.
+
+`test_tor_relay_refuses_circuit_when_llm_fails_on_create2` leaves `tor_relay_circuit_created`
+unmocked instead, so the model fails on the CREATE2 itself. The reply must be DESTROY / reason
+2 INTERNAL, not CREATED2 — CREATED2 is admission, and admitting a circuit the model could not
+rule on is fail-open — and the log must carry `decision=fail_closed_llm_error`. It was checked
+by restoring the fall-through to CREATED2, at which point it fails on the `assert_ne!` against
+CREATED2. `RelayPeer::send_create2_expecting_any` exists for it: `create_circuit` asserts the
+reply is a CREATED2 and so cannot observe the alternative.
 
 No exit stream is opened and nothing outside 127.0.0.1 is contacted.
 
@@ -55,10 +63,12 @@ the list lives in `src/server/tor_relay/CLAUDE.md`.
 
 ## LLM call budget
 
-1 for server startup, 1 for the `tor_relay_circuit_created` event, in each of the two test
-files. The data path (BEGIN, DATA, END, SENDME) is decided in Rust and raises no events.
-`llm_failure_test.rs` additionally provokes one `tor_relay_relay_cell` call that has no rule and
-is therefore answered 500 — that failure is the thing under test, so it carries no expectation.
+1 for server startup, 1 for the `tor_relay_circuit_created` event, in `e2e_test.rs` and in the
+RELAY-failure test. The data path (BEGIN, DATA, END, SENDME) is decided in Rust and raises no
+events. The RELAY-failure test additionally provokes one `tor_relay_relay_cell` call that has no
+rule and is therefore answered 500; the CREATE2-failure test has only its startup call mocked
+and provokes one unmocked `tor_relay_circuit_created`. Those failures are the thing under test,
+so they carry no expectation.
 
 **The circuit-created mock must answer with an action that produces no output.**
 `detect_relay_cell` is the right one: an `Output` action from that event *replaces* the CREATED2

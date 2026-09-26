@@ -624,6 +624,10 @@ impl Protocol for VrrpProtocol {
             // The reaper in AppState::cleanup_old_connections exists for exactly this shape:
             // per-remote-address entries with no connection lifecycle that nothing ever closes.
             .connectionless()
+            // Deliberately silent: VRRP has no error form. An advertisement asserts mastership of
+            // the virtual router's addresses, so a fabricated one can take over the segment's
+            // gateway; backups already treat silence as the normal state.
+            .deliberately_silent()
             .implementation(
                 "Hand-written codec for VRRPv2 (RFC 3768), VRRPv3 (RFC 5798) and OpenBSD CARP, \
                  which share IP protocol 112 and nothing else — CARP's first octet is 0x21, the \

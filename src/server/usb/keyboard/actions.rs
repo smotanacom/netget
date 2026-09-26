@@ -327,6 +327,10 @@ impl Protocol for UsbKeyboardProtocol {
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         crate::protocol::metadata::ProtocolMetadataV2::builder()
             .state(crate::protocol::metadata::DevelopmentState::Experimental)
+            // Deliberately silent: every HID input report asserts a key press. A keyboard with
+            // nothing to report is NAKed on the interrupt endpoint, which is the normal state, and
+            // STALL would make the host reset the device. So a failure types nothing.
+            .deliberately_silent()
             .implementation("Virtual USB HID keyboard device using USB/IP protocol")
             .llm_control("LLM controls keyboard input (typing, key presses, combinations)")
             .e2e_testing("Mocked E2E over the USB/IP socket; real HID typing needs a Linux usbip client")

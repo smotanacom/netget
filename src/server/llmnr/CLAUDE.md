@@ -102,7 +102,8 @@ responder does not have.
 ## Fail-closed: an LLM failure produces silence
 
 **This protocol is in the deliberately-silent class the root `CLAUDE.md` catalogues, and its
-case is the strongest one in it.**
+case is the strongest one in it.** `metadata()` declares it with `.deliberately_silent()`, which
+`tests/failure_mode_declaration_test.rs` checks.
 
 Every other UDP protocol in NetGet answers a backend failure with an error frame, because
 silence costs the client its own timeout. Here that trade inverts twice over:

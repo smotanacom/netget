@@ -151,6 +151,19 @@ Host can set keyboard LEDs (1 byte):
 - Bits 3-4: Reserved
 - Bits 5-7: Padding
 
+## When the LLM call fails
+
+The keyboard is **deliberately silent**: every HID input report asserts a key press, a keyboard
+with nothing to report is NAKed on the interrupt endpoint (the normal state of every keyboard),
+and STALLing the endpoint would make the host reset or unbind the device. So a failed call types
+nothing. `metadata()` declares this with `.deliberately_silent()`, which
+`tests/failure_mode_declaration_test.rs` checks.
+
+The failure is dual-logged at ERROR with `decision=fail_closed_llm_error`, distinct from
+`decision=model_no_actions` (the model answered and asked for no keystrokes) and
+`decision=model_actions` (something was typed). `tests/server/usb_keyboard/llm_failure_test.rs`
+pins the tag.
+
 ## LLM Integration
 
 ### Connection Flow

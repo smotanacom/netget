@@ -82,6 +82,8 @@ impl Protocol for DnsProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
+            // Answers on failure: SERVFAIL echoing the query id, never silence.
+            .answers_on_failure()
             // STABLE, set 16 September 2026 against the six conditions in the root CLAUDE.md,
             // each verified in that pass rather than inherited. Read `.e2e_testing` and
             // `.notes` before quoting it: the rating covers the surface this server

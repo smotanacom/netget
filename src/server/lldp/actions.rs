@@ -203,6 +203,10 @@ impl Protocol for LldpProtocol {
             // rule that ospf got wrong by declaring Root when it wanted CAP_NET_RAW.
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .connectionless()
+            // Deliberately silent: LLDP has no error frame. An LLDPDU asserts chassis, port and
+            // system identity to every neighbour, which stores it in its MIB for the TTL, so a
+            // fabricated one is a false neighbour entry on every station that hears it.
+            .deliberately_silent()
             .implementation(
                 "Hand-written IEEE 802.1AB TLV codec (src/server/lldp/codec.rs), pure and \
                  transport-free; libpcap capture/injection on EtherType 0x88CC for the real \

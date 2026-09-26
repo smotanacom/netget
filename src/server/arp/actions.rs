@@ -86,6 +86,10 @@ impl Protocol for ArpProtocol {
             // to reap either way — the flag is declared because it is true, and so that a
             // later per-remote entry does not leak by default.
             .connectionless()
+            // Deliberately silent: ARP has no error reply. An ARP reply writes a MAC into the
+            // requester's neighbour cache, so a fabricated one is cache poisoning; an unanswered
+            // request is what every host that does not own the address already does.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .implementation("libpcap (pcap crate) + pnet for ARP packet handling")
             .llm_control("Optional: which MAC to advertise for a queried IP is a policy decision (LLM); with no mapping configured the server answers nothing with no LLM call")

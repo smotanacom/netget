@@ -32,28 +32,35 @@ per datagram** and carries exactly that one message's context, so two clients wh
 overlap can never echo each other's transaction id. Copied from `src/server/dhcp/`, where the
 shared-instance version of this was a real defect.
 
-## LLM failure → silence, and why a Status Code is not the answer
+## LLM failure → UnspecFail where the protocol has it, silence where it does not
 
-**When the model cannot answer, this server sends nothing at all.** Not a Status Code, not an
-empty REPLY, not a NoAddrsAvail. This is in the deliberately-silent class in the root `CLAUDE.md`
-alongside its IPv4 sibling, and the reasoning is stronger here than for most:
+**When the model cannot answer, this server never builds a positive reply** — no address, no
+prefix, no resolver, no `NoAddrsAvail`, no `NoBinding`. What it does send depends on what the
+message is answered with. `FailureMode` is `Answers` (`.answers_on_failure()` in `metadata()`),
+narrowly:
 
 - **A reply reconfigures the host.** It writes an address and its lifetimes, possibly a delegated
   prefix, and the client's recursive resolvers into the stack. A fabricated one misconfigures the
   machine or redirects its name resolution, and the client believes it for the whole valid
-  lifetime — not for one request.
-- **The protocol has no "ask again later".** RFC 8415 §21.13 defines the Status Code option as a
-  statement about a *lease*: `NoAddrsAvail` means this link has no addresses to give,
-  `NoBinding` means the client's lease does not exist here. Sending either because NetGet's
-  backend is unreachable tells the client something false about its own configuration. Worse,
-  a client that receives `NoBinding` in reply to a RENEW moves to REBIND and then gives the
-  address up (§18.2.4) — a valid lease destroyed by an internal error.
-- **Silence is the protocol's own retry path.** §15 has clients retransmit with exponential
-  backoff, so a transient overload recovers on the client's own timer. That is what a 503 buys
-  in HTTP; here it is free.
-- **Nothing internal can leak.** The ~25-protocol "answering the peer is not a licence to tell it
-  anything" defect cannot occur here, because nothing at all goes on the wire. No `WireFailure`
-  string is ever written to a socket by this protocol.
+  lifetime — not for one request. So nothing positive is ever synthesised.
+- **Two Status Codes look like "no" and are statements about a lease.** RFC 8415 §21.13:
+  `NoAddrsAvail` means this link has no addresses to give, `NoBinding` means the client's lease
+  does not exist here. Sending either because NetGet's backend is unreachable tells the client
+  something false about its own configuration — a client that receives `NoBinding` in reply to a
+  RENEW moves to REBIND and then gives the address up (§18.2.4), a valid lease destroyed by an
+  internal error. Neither is ever sent on a failure.
+- **`UnspecFail` is the one that is not.** §21.13 defines it as "failure, reason unspecified",
+  and §18.2.10 defines the client's handling of a REPLY carrying it: the server "was unable to
+  process the client's message", and a client that retries MUST rate-limit. That is the
+  protocol's own 500. So a **REQUEST, RENEW, REBIND, RELEASE or INFORMATION-REQUEST** — every
+  message answered by a REPLY — gets a REPLY carrying the client's transaction id and Client
+  Identifier, the Server Identifier the client addressed (its own option 2 where it sent one,
+  else the placeholder DUID), and a top-level Status Code `UnspecFail` whose message is the fixed
+  `WireFailure::text()` category — never the error (`Dhcpv6Protocol::server_failure_reply`).
+- **SOLICIT stays silent.** It is answered by an ADVERTISE, and every status an ADVERTISE could
+  carry is a statement about the lease; RFC 8415 §18.3.1 lets a server discard a SOLICIT, and the
+  client retransmits with backoff (§15) or moves to another server. The same applies to a
+  SOLICIT with Rapid Commit.
 
 The distinctions live in the **log** instead, with a stable `decision=` token per message — the
 `src/server/radius/` convention:
@@ -62,14 +69,15 @@ The distinctions live in the **log** instead, with a stable `decision=` token pe
 |---|---|---|
 | `model_reply` | the model's action produced a packet | yes |
 | `model_reject` | the model answered and chose to send nothing (`no_response`) | no |
-| `fail_closed_no_action` | the model produced no action at all | no |
-| `fail_closed_llm_error` | the LLM call errored | no |
+| `fail_closed_no_action` | the model produced no action at all | UnspecFail REPLY, or nothing for a SOLICIT |
+| `fail_closed_llm_error` | the LLM call errored | UnspecFail REPLY, or nothing for a SOLICIT |
 
-`grep decision=fail_closed_` finds every message NetGet dropped on the floor, distinct from the
+`grep decision=fail_closed_` finds every message NetGet could not decide, distinct from the
 ones the model deliberately declined to answer. The error itself is logged at ERROR with a
 `category=overloaded` / `category=unavailable` tag from `WireFailure::classify` — DHCPv6 cannot
 express that difference on the wire, so it is kept where an operator can act on it — and each
-fail-closed message also logs a WARN noting the client will retransmit.
+fail-closed message also logs a WARN saying which of the two it received (an UnspecFail REPLY,
+or nothing and the client will retransmit).
 
 `tests/server/dhcpv6/e2e_test.rs::test_dhcpv6_llm_failure_sends_nothing` asserts the absence
 directly, and asserts the mock rule was *called* so that the silence is provably the fail-closed
