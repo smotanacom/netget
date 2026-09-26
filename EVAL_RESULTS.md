@@ -6,1883 +6,633 @@ Every other test in this repository drives a **mock** model whose answers the te
 
 ## How to read it
 
-- **Model**: `llama3.1:8b` · **runs per instruction**: 3
+- **Model**: `llama3.1:8b` · **runs per instruction**: 5
 - **The score is a rate, not a boolean.** NetGet passes exactly one option to its Ollama backend (`num_predict`); there is no temperature, seed or top-p, and no flag that sets one. The same instruction therefore produces different actions run to run. Each instruction is run N times against a **fresh netget process and a fresh server**, and the published number is passes/runs. A 2/3 is reported as 2/3.
 - **Every case is driven by a real third-party client binary** — `dig`, `curl`, `redis-cli`, `psql`, `ldapsearch`, `ipptool`, `whois`, `ftp`, `mysql`. The `evidence` column says whether the client understands the protocol (`protocol-client`) or is only a byte pipe (`generic-transport`); a pass carried by `nc` is weaker evidence and is labelled so.
 - **A low score is a finding, not a test failure.** When the model cannot drive a protocol the defect is usually in the action descriptions. The ranked failure modes below carry the model's actual output.
 
 ## Score
 
-**7 of 54 runs passed (13%) across 18 instructions on 6 protocol(s).**
+**155 of 225 runs passed (69%) across 45 instructions on 15 protocol(s).**
 
 | Protocol | Client | Evidence | Instructions | Runs | Passed | Rate | Would pass with a lenient parse | Dominant failure |
 |---|---|---|---:|---:|---:|---:|---:|---|
-| `dns` | `dig` | protocol-client | 4 | 12 | 0 | 0% | 100% | `valid_actions_rejected_as_unparseable` |
-| `finger` | `nc` | generic-transport | 3 | 9 | 1 | 11% | 89% | `valid_actions_rejected_as_unparseable` |
-| `gopher` | `curl` | protocol-client | 3 | 9 | 4 | 44% | 67% | `no_wire_response`, `valid_actions_rejected_as_unparseable`, `wrong_content` |
-| `http` | `curl` | protocol-client | 4 | 12 | 0 | 0% | 100% | `valid_actions_rejected_as_unparseable` |
-| `redis` | `redis-cli` | protocol-client | 1 | 3 | 0 | 0% | 100% | `valid_actions_rejected_as_unparseable` |
-| `whois` | `nc` | generic-transport | 3 | 9 | 2 | 22% | 100% | `valid_actions_rejected_as_unparseable` |
+| `dns` | `dig` | protocol-client | 4 | 20 | 19 | 95% | 95% | `wrong_content` |
+| `finger` | `nc` | generic-transport | 3 | 15 | 14 | 93% | 93% | `wrong_content` |
+| `ftp` | `ftp` | protocol-client | 3 | 15 | 8 | 53% | 53% | `wrong_content` |
+| `gopher` | `curl` | protocol-client | 3 | 15 | 14 | 93% | 93% | `wrong_content` |
+| `http` | `curl` | protocol-client | 4 | 20 | 17 | 85% | 85% | `wrong_content` |
+| `ipp` | `ipptool` | protocol-client | 2 | 10 | 0 | 0% | 0% | `model_answered_with_no_actions` |
+| `ldap` | `ldapsearch` | protocol-client | 3 | 15 | 1 | 7% | 13% | `wrong_content` |
+| `mysql` | `mysql` | protocol-client | 3 | 15 | 11 | 73% | 73% | `no_wire_response` |
+| `ntp` | — | — | 1 | — | — | — | — | not attempted: no installed NTP client accepts a destination port: sntp's -r only selects the source port and ntpdate has no port option, so an unprivileged loopback port is unreachable. Binding 123 needs root. |
+| `postgresql` | `psql` | protocol-client | 3 | 15 | 8 | 53% | 53% | `wrong_content` |
+| `redis` | `redis-cli` | protocol-client | 4 | 20 | 19 | 95% | 95% | `no_wire_response` |
+| `syslog` | `nc` | generic-transport | 2 | 10 | 6 | 60% | 60% | `no_wire_response` |
+| `tcp` | `nc` | generic-transport | 3 | 15 | 15 | 100% | 100% | — |
+| `telnet` | `curl` | protocol-client | 3 | 15 | 4 | 27% | 27% | `event_never_reached_model`, `wrong_content` |
+| `udp` | `nc` | generic-transport | 2 | 10 | 7 | 70% | 70% | `wrong_content` |
+| `whois` | `nc` | generic-transport | 3 | 15 | 12 | 80% | 80% | `wrong_content` |
 
-**Read the last two columns together.** In 43 of the 47 failed runs the model named the right action with the right parameters and netget threw the reply away, because `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a *leading* ``` fence and nothing trailing, then requires `serde_json::from_str` to consume the whole string. Small models routinely append an explanation after the JSON. Taking the first value — `Deserializer::from_str(..).into_iter().next()` — would move this suite from 13% to 93% without touching a single action description.
+**Read the last two columns together.** In 1 of the 70 failed runs the model named the right action with the right parameters and netget threw the reply away, because `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a *leading* ``` fence and nothing trailing, then requires `serde_json::from_str` to consume the whole string. Small models routinely append an explanation after the JSON. Taking the first value — `Deserializer::from_str(..).into_iter().next()` — would move this suite from 69% to 69% without touching a single action description.
 
 ## Per-instruction detail
 
 | Case | Instruction | Passed | Failure mode |
 |---|---|---:|---|
-| `http/hello-page` | Serve a page that says hello. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `http/admin-404` | Return 404 Not Found for anything under /admin. Serve every other path with a short ordinary page. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `http/json-status` | Answer /status with the JSON body {"status":"ok"} and say it is JSON. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `http/permanent-redirect` | Redirect / permanently to https://example.com/. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `dns/a-record` | Answer example.com with 1.2.3.4. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `dns/wildcard-a` | Whatever name is asked for, answer 10.0.0.1. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `dns/txt-record` | Answer text queries for hello.test with the text netget-eval-ok. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `dns/nxdomain` | Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `whois/registrar-line` | Answer every query with a whois record whose registrar is NETGET-EVAL-REGISTRAR. | 1/3 | `valid_actions_rejected_as_unparseable` |
-| `whois/registrant-and-status` | For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `whois/no-match` | Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record. | 1/3 | `valid_actions_rejected_as_unparseable` |
-| `gopher/welcome-menu` | Serve a menu whose first item is labelled Welcome to NetGet. | 0/3 | `wrong_content` |
-| `gopher/text-selector` | When the selector /about is asked for, return the text NetGet eval gopher server. | 2/3 | `valid_actions_rejected_as_unparseable` |
-| `gopher/unknown-selector` | Serve a menu at the root. For any other selector, say it was not found. | 2/3 | `no_wire_response` |
-| `finger/user-record` | When someone asks about the user alice, report her real name as Alice Liddell and that she is logged in. | 1/3 | `valid_actions_rejected_as_unparseable` |
-| `finger/unknown-user` | Only the user alice exists. Say so for anyone else. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `finger/user-list` | When no user is named, list the two users alice and bob. | 0/3 | `valid_actions_rejected_as_unparseable` |
-| `redis/get-string` | Answer a read of the key greeting with the text hello-netget. | 0/3 | `valid_actions_rejected_as_unparseable` |
+| `http/hello-page` | Serve a page that says hello. | 5/5 | — |
+| `http/admin-404` | Return 404 Not Found for anything under /admin. Serve every other path with a short ordinary page. | 5/5 | — |
+| `http/json-status` | Answer /status with the JSON body {"status":"ok"} and say it is JSON. | 5/5 | — |
+| `http/permanent-redirect` | Redirect / permanently to https://example.com/. | 2/5 | `wrong_content` |
+| `dns/a-record` | Answer example.com with 1.2.3.4. | 5/5 | — |
+| `dns/wildcard-a` | Whatever name is asked for, answer 10.0.0.1. | 5/5 | — |
+| `dns/txt-record` | Answer text queries for hello.test with the text netget-eval-ok. | 4/5 | `wrong_content` |
+| `dns/nxdomain` | Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1. | 5/5 | — |
+| `whois/registrar-line` | Answer every query with a whois record whose registrar is NETGET-EVAL-REGISTRAR. | 5/5 | — |
+| `whois/registrant-and-status` | For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited. | 2/5 | `wrong_content` |
+| `whois/no-match` | Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record. | 5/5 | — |
+| `gopher/welcome-menu` | Serve a menu whose first item is labelled Welcome to NetGet. | 4/5 | `wrong_content` |
+| `gopher/text-selector` | When the selector /about is asked for, return the text NetGet eval gopher server. | 5/5 | — |
+| `gopher/unknown-selector` | Serve a menu at the root. For any other selector, say it was not found. | 5/5 | — |
+| `finger/user-record` | When someone asks about the user alice, report her real name as Alice Liddell and that she is logged in. | 5/5 | — |
+| `finger/unknown-user` | Only the user alice exists. Say so for anyone else. | 4/5 | `wrong_content` |
+| `finger/user-list` | When no user is named, list the two users alice and bob. | 5/5 | — |
+| `redis/get-string` | Answer a read of the key greeting with the text hello-netget. | 4/5 | `no_wire_response` |
+| `redis/ping` | Answer a ping with PONG. | 5/5 | — |
+| `redis/key-list` | When asked to list all keys, report exactly three: alpha, beta and gamma. | 5/5 | — |
+| `redis/counter` | When the key counter is incremented, report the new value as 42. | 5/5 | — |
+| `postgresql/select-literal` | Let anyone log in without a password, and answer the query SELECT 1 with one row holding the number 1. | 5/5 | — |
+| `postgresql/current-user` | Let anyone log in without a password. Report the current user as netget_eval. | 1/5 | `wrong_content` |
+| `postgresql/users-table` | Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol. | 2/5 | `wrong_content` |
+| `mysql/select-literal` | Let anyone log in without a password, and answer SELECT 1 with one row holding the number 1. | 5/5 | — |
+| `mysql/server-version` | Let anyone log in without a password. Report the server version as 8.0.36-netget-eval. | 1/5 | `no_wire_response` |
+| `mysql/users-table` | Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol. | 5/5 | — |
+| `ldap/single-person` | Accept anonymous connections. A search under dc=example,dc=com finds one person, Alice Liddell, whose mail address is alice@example.com. | 0/5 | `wrong_content` |
+| `ldap/two-people` | Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob. | 0/5 | `wrong_content` |
+| `ldap/empty-result` | Accept anonymous connections. There is nothing at all under dc=other,dc=com — searches there succeed and find no one. | 1/5 | `wrong_content` |
+| `ipp/printer-name` | There is one printer called NetGet-Eval-Printer. It is idle and accepting jobs. | 0/5 | `model_answered_with_no_actions` |
+| `ipp/printer-stopped` | The printer is called Eval-Stopped-Printer, it is stopped, and it is not accepting jobs. | 0/5 | `model_answered_with_no_actions` |
+| `syslog/store-message` | Keep every message that arrives. | 5/5 | — |
+| `syslog/drop-healthchecks` | Throw away any message whose text mentions healthcheck. Keep everything else. | 1/5 | `no_wire_response` |
+| `ntp/current-time` | Answer time requests with the correct current time, stratum 2. | — (no-client) | — |
+| `telnet/banner` | Greet everyone who connects with the banner NETGET EVAL TELNET. | 0/5 | `event_never_reached_model` |
+| `telnet/login-prompt` | Ask for a login name as soon as somebody connects. | 0/5 | `event_never_reached_model` |
+| `telnet/answer-command` | If somebody types the word time, answer with the line It is always noon here. | 4/5 | `wrong_content` |
+| `tcp/fixed-reply` | Reply to anything a client sends with the single line PONG-EVAL. | 5/5 | — |
+| `tcp/echo` | Echo back exactly what the client sent. | 5/5 | — |
+| `tcp/uppercase` | Send back the client's text in upper case. | 5/5 | — |
+| `ftp/banner` | Greet every connection with the banner NetGet Eval FTP, and let anyone log in anonymously. | 5/5 | — |
+| `ftp/anonymous-login` | Let anyone log in anonymously and tell them the login succeeded. | 3/5 | `wrong_content` |
+| `ftp/working-directory` | Let anyone log in anonymously. The current directory is /eval. | 0/5 | `wrong_content` |
+| `udp/fixed-reply` | Answer every datagram with the text UDP-EVAL-OK. | 4/5 | `wrong_content` |
+| `udp/echo` | Send every datagram straight back to whoever sent it, unchanged. | 3/5 | `wrong_content` |
 
 ## Failure modes, ranked
 
-### `valid_actions_rejected_as_unparseable` — 43 failed run(s)
-
-The model named the right action with the right parameters and the reply was thrown away anyway, because prose or a stray code fence sits around the JSON. **Not a description defect and not a model defect** — `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a leading ``` fence and nothing trailing, then hands the remainder to `serde_json::from_str`, which rejects any trailing byte. Small models append an explanation after the JSON constantly, so this one behaviour costs more eval passes than every description problem combined.
-
-Seen in: `http/hello-page`, `http/admin-404`, `http/json-status`, `http/permanent-redirect`, `dns/a-record`, `dns/wildcard-a`, `dns/txt-record`, `dns/nxdomain`, `whois/registrar-line`, `whois/registrant-and-status`, `whois/no-match`, `gopher/welcome-menu`, `gopher/text-selector`, `finger/user-record`, `finger/unknown-user`, `finger/user-list`, `redis/get-string`
-
-### `no_wire_response` — 3 failed run(s)
-
-The model acted but the client got nothing back within the timeout.
-
-Seen in: `gopher/welcome-menu`, `gopher/unknown-selector`, `finger/user-record`
-
-### `wrong_content` — 1 failed run(s)
+### `wrong_content` — 39 failed run(s)
 
 The model produced a valid, executable action whose content does not satisfy the instruction. This is the honest 'the model did not understand the task' bucket.
 
-Seen in: `gopher/welcome-menu`
+Seen in: `http/permanent-redirect`, `dns/txt-record`, `whois/registrant-and-status`, `gopher/welcome-menu`, `finger/unknown-user`, `postgresql/current-user`, `postgresql/users-table`, `ldap/single-person`, `ldap/two-people`, `ldap/empty-result`, `telnet/answer-command`, `ftp/anonymous-login`, `ftp/working-directory`, `udp/fixed-reply`, `udp/echo`
+
+### `model_answered_with_no_actions` — 11 failed run(s)
+
+The model was asked and returned no actions at all. The peer gets the protocol default; from the wire this is indistinguishable from an outage.
+
+Seen in: `ipp/printer-name`, `ipp/printer-stopped`, `syslog/drop-healthchecks`
+
+### `event_never_reached_model` — 10 failed run(s)
+
+No model call happened. The request did not reach the LLM path — a harness or protocol wiring problem, not a prompt problem.
+
+Seen in: `telnet/banner`, `telnet/login-prompt`
+
+### `no_wire_response` — 8 failed run(s)
+
+The model acted but the client got nothing back within the timeout.
+
+Seen in: `redis/get-string`, `mysql/server-version`, `syslog/drop-healthchecks`
+
+### `copied_example_placeholder` — 1 failed run(s)
+
+The model emitted a template placeholder (`{{…}}`) literally. Placeholders are real for static handlers and meaningless in a model's reply, so an action `example` containing one teaches the model to send something its own executor rejects.
+
+Seen in: `http/permanent-redirect`
+
+### `valid_actions_rejected_as_unparseable` — 1 failed run(s)
+
+The model named the right action with the right parameters and the reply was thrown away anyway, because prose or a stray code fence sits around the JSON. **Not a description defect and not a model defect** — `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a leading ``` fence and nothing trailing, then hands the remainder to `serde_json::from_str`, which rejects any trailing byte. Small models append an explanation after the JSON constantly, so this one behaviour costs more eval passes than every description problem combined.
+
+Seen in: `ldap/two-people`
 
 ## The model's actual output, per failing case
 
 Each block is the verbatim netget log line carrying the action the model built. This is the diagnostic input for a prompt-quality fix.
 
-<details><summary><code>http/hello-page</code> — 0/3 passed</summary>
-
-**Instruction:** Serve a page that says hello.
-
-**Client:** `curl -sS -i --max-time 230 http://127.0.0.1:{PORT}/`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}]}```Explanation:Since this is an HTTP request event, I'm emitting a `send_http_response` action to respond to the client. The status code is 200 (OK), the `Content-Type` is set to `text/html` to match the client's `Accept` header, and the response body is the HTML string saying "Hello World".
-2026-09-15T22:52:10.133001Z  WARN Malformed response (raw): Here's your response:
-
-```json
-{
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}
-  ]
-2026-09-15T22:52:10.133001Z  WARN Malformed response (raw): Here's your response:
-
-```json
-{
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}
-  ]
-}
-```
-❌ Actual response:
-{"actions": [{"type": "send_http_response", "status": 200, "headers": {"Conte...
-2026-09-15T22:52:10.133057Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:52:10.133071Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:52:10.133078Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:52:10.133117Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:52:10.133135Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:52:10.133152Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19141 chars, format=text
-2026-09-15T22:52:13.534025Z DEBUG LLM response: response_len=419 chars, tokens=4668i/113o/4781t
-2026-09-15T22:52:10.132901Z DEBUG Response (normalized): Here's your response:```json{"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}]}```Explanation:Since ...
-{"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}]}```Explanation:Since this is an HTTP request event, I'm emitting a `send_http_response` action to respond to the client. The status code is 200 (OK), the `Content-Type` is set to `text/html` to match the client's `Accept` header, and the response body is the HTML string saying "Hello World".
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}
-{"actions": [{"type": "send_http_response", "status": 200, "headers": {"Conte...
-2026-09-15T22:52:13.534118Z DEBUG Response (normalized): Here is a valid response:```json{"tools": [],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}]}```Ex...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_http_response","status": 200,"headers": {"Content-Type": "text/html"},"body": "<html><body>Hello World!</body></html>"}```I have also included a brief explanation of my reasoning, as per the instructions:```xml```This response will be executed as soon as it is received, and the client will receive the "Hello World!" page as a response.
-2026-09-15T22:52:22.392890Z  WARN Malformed response (raw): To fulfill the event of serving a page that says hello, I will use the `send_http_response` action with a status code of 200 (OK), a Content-Type of text/html, and a body that contains the HTML code for a simple "Hello World" page.
-
-Here is my response:
-
-```json
-{
-  "type": "send_http_response",
-2026-09-15T22:52:22.392890Z  WARN Malformed response (raw): To fulfill the event of serving a page that says hello, I will use the `send_http_response` action with a status code of 200 (OK), a Content-Type of text/html, and a body that contains the HTML code for a simple "Hello World" page.
-
-Here is my response:
-
-```json
-{
-  "type": "send_http_response",
-  "status": 200,
-  "headers": {
-❌ Actual response:
-{"type": "send_http_response","status": 200,"headers": {"Content-Type": "text...
-2026-09-15T22:52:22.392944Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:52:22.392957Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:52:22.392962Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:52:22.392999Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:52:22.393012Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:52:22.393031Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19189 chars, format=text
-2026-09-15T22:52:24.755473Z DEBUG LLM response: response_len=225 chars, tokens=4659i/64o/4723t
-{"type": "send_http_response","status": 200,"headers": {"Content-Type": "text/html"},"body": "<html><body>Hello World!</body></html>"}```I have also included a brief explanation of my reasoning, as per the instructions:```xml```This response will be executed as soon as it is received, and the client will receive the "Hello World!" page as a response.
-  "type": "send_http_response",
-{"type": "send_http_response","status": 200,"headers": {"Content-Type": "text...
-2026-09-15T22:52:24.755560Z DEBUG Response (normalized): Here is the corrected response:```json{"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "text/html"},"body": "<html><body>Hello World!</body></html>"}]}```
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response`, `read_file`, `send_http_response`, `read_file`, `send_http_response`, `read_file`, `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [{"type": "read_file", "path": "index.html"}],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}]}```
-2026-09-15T22:52:32.624674Z  WARN Malformed response (raw): ## Response
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "index.html"}
-  ],
-  "actions": [
-2026-09-15T22:52:32.624674Z  WARN Malformed response (raw): ## Response
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "index.html"}
-  ],
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}
-  ]
-❌ Actual response:
-{"tools": [{"type": "read_file", "path": "index.html"}],"actions": [{"type": ...
-2026-09-15T22:52:32.624715Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:52:32.624725Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:52:32.624728Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:52:32.624755Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:52:32.624765Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:52:32.624782Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18663 chars, format=text
-2026-09-15T22:52:36.005059Z DEBUG LLM response: response_len=516 chars, tokens=4561i/133o/4694t
-2026-09-15T22:52:32.624600Z DEBUG Response (normalized): ## Response```json{"tools": [{"type": "read_file", "path": "index.html"}],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello...
-{"tools": [{"type": "read_file", "path": "index.html"}],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}]}```
-    {"type": "read_file", "path": "index.html"}
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><body>Hello World</body></html>"}
-{"tools": [{"type": "read_file", "path": "index.html"}],"actions": [{"type": ...
-2026-09-15T22:52:36.005152Z DEBUG Response (normalized): **✓ Correct Response**```json{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "text/html"},"body": "<html><body>Hello World</body></html>"}]}```**Reas...
-```
-
-</details>
-
-<details><summary><code>http/admin-404</code> — 0/3 passed</summary>
-
-**Instruction:** Return 404 Not Found for anything under /admin. Serve every other path with a short ordinary page.
-
-**Client:** `curl -sS -i --max-time 230 http://127.0.0.1:{PORT}/admin/secrets`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"actions": [{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/html"},"body": "<html><body>Not Found</body></html>"}]}```In this response, I am using the `send_http_response` action to send a 404 Not Found HTTP response to the client. The `Content-Type` is set to `text/html` to match the client's Accept header, and the response body is a simple "Not Found" page in HTML.
-2026-09-15T22:52:44.486041Z  WARN Malformed response (raw): To fulfill the request, I will return a response that matches the instruction provided in the event. Since the path `/admin/secrets` is under `/admin`, which is excluded according to the instruction, I will return a 404 Not Found response.
-
-Here's my response:
-
-```json
-{
-  "actions": [
-2026-09-15T22:52:44.486041Z  WARN Malformed response (raw): To fulfill the request, I will return a response that matches the instruction provided in the event. Since the path `/admin/secrets` is under `/admin`, which is excluded according to the instruction, I will return a 404 Not Found response.
-
-Here's my response:
-
-```json
-{
-  "actions": [
-    {
-      "type": "send_http_response",
-❌ Actual response:
-{"actions": [{"type": "send_http_response","status": 404,"headers": {"Content...
-2026-09-15T22:52:44.486088Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:52:44.486099Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:52:44.486104Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:52:44.486133Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:52:44.486144Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:52:44.486164Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19443 chars, format=text
-2026-09-15T22:52:48.965453Z DEBUG LLM response: response_len=653 chars, tokens=4728i/167o/4895t
-{"actions": [{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/html"},"body": "<html><body>Not Found</body></html>"}]}```In this response, I am using the `send_http_response` action to send a 404 Not Found HTTP response to the client. The `Content-Type` is set to `text/html` to match the client's Accept header, and the response body is a simple "Not Found" page in HTML.
-  "actions": [
-      "type": "send_http_response",
-{"actions": [{"type": "send_http_response","status": 404,"headers": {"Content...
-2026-09-15T22:52:48.965568Z DEBUG Response (normalized): Based on the instruction provided, the path `/admin/secrets` is under `/admin`, which is excluded according to the instruction. Therefore, I will return a 404 Not Found response.```json{"actions": [{"...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/plain"},"body": "Not Found"}]}```**Reasoning**The path `/admin/secrets` matches the instruction to return 404 for anything under `/admin`. Since the instruction is to return a short ordinary page for other paths, and the path does not match the instruction, a 404 Not Found response is sent.
-2026-09-15T22:52:54.257135Z  WARN Malformed response (raw): **Response**
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:52:54.257135Z  WARN Malformed response (raw): **Response**
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_http_response",
-      "status": 404,
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 404,"headers...
-2026-09-15T22:52:54.257185Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:52:54.257197Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:52:54.257203Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:52:54.257235Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:52:54.257248Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:52:54.257264Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19185 chars, format=text
-2026-09-15T22:52:59.882720Z DEBUG LLM response: response_len=990 chars, tokens=4655i/227o/4882t
-2026-09-15T22:52:54.257069Z DEBUG Response (normalized): **Response**```json{"tools": [],"actions": [{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/plain"},"body": "Not Found"}]}```**Reasoning**The path `/admin/secrets` matche...
-{"tools": [],"actions": [{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/plain"},"body": "Not Found"}]}```**Reasoning**The path `/admin/secrets` matches the instruction to return 404 for anything under `/admin`. Since the instruction is to return a short ordinary page for other paths, and the path does not match the instruction, a 404 Not Found response is sent.
-  "actions": [
-      "type": "send_http_response",
-{"tools": [],"actions": [{"type": "send_http_response","status": 404,"headers...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/plain"},"body": "Not Found"}```This response will tell the client that the requested path `/admin/secrets` does not exist on the server.
-2026-09-15T22:53:07.296508Z  WARN Malformed response (raw): To process the event, we'll follow the instructions for the HTTP request. Since the path is `/admin/secrets`, which is under the `/admin` directory, we will return a 404 Not Found response according to the instruction "Return 404 Not Found for anything under /admin."
-
-Here's the JSON response:
-
-```json
-{
-  "type": "send_http_response",
-2026-09-15T22:53:07.296508Z  WARN Malformed response (raw): To process the event, we'll follow the instructions for the HTTP request. Since the path is `/admin/secrets`, which is under the `/admin` directory, we will return a 404 Not Found response according to the instruction "Return 404 Not Found for anything under /admin."
-
-Here's the JSON response:
-
-```json
-{
-  "type": "send_http_response",
-  "status": 404,
-  "headers": {
-❌ Actual response:
-{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text...
-2026-09-15T22:53:07.296549Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:53:07.296559Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:53:07.296563Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:53:07.296590Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:53:07.296599Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:53:07.296614Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19105 chars, format=text
-2026-09-15T22:53:10.821577Z DEBUG LLM response: response_len=541 chars, tokens=4632i/134o/4766t
-{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text/plain"},"body": "Not Found"}```This response will tell the client that the requested path `/admin/secrets` does not exist on the server.
-  "type": "send_http_response",
-{"type": "send_http_response","status": 404,"headers": {"Content-Type": "text...
-```
-
-</details>
-
-<details><summary><code>http/json-status</code> — 0/3 passed</summary>
-
-**Instruction:** Answer /status with the JSON body {"status":"ok"} and say it is JSON.
-
-**Client:** `curl -sS -i --max-time 230 http://127.0.0.1:{PORT}/status`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}```**Reasoning:**The client sent a GET request to the /status path. The instruction field indicates that the server should respond with a JSON body containing the status "ok". Since the client's Accept header is "*/*", we will return a Content-Type of application/json.
-2026-09-15T22:53:18.683972Z  WARN Malformed response (raw): **Response**
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:53:18.683972Z  WARN Malformed response (raw): **Response**
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_http_response",
-      "status": 200,
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers...
-2026-09-15T22:53:18.684017Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:53:18.684028Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:53:18.684034Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:53:18.684060Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:53:18.684073Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:53:18.684088Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19188 chars, format=text
-2026-09-15T22:53:27.518779Z DEBUG LLM response: response_len=491 chars, tokens=4659i/120o/4779t
-2026-09-15T22:53:18.683894Z DEBUG Response (normalized): **Response**```json{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}```**Reasoning:**The client sent...
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}```**Reasoning:**The client sent a GET request to the /status path. The instruction field indicates that the server should respond with a JSON body containing the status "ok". Since the client's Accept header is "*/*", we will return a Content-Type of application/json.
-  "actions": [
-      "type": "send_http_response",
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers...
-2026-09-15T22:53:27.518861Z DEBUG Response (normalized): **Response**```json{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}```**Reasoning:** The client sen...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}```This response includes exactly one `send_http_response` action, which produces an HTTP response with a status code of 200, a Content-Type of `application/json`, and a response body that is a JSON object with a single property named `status` with value `ok`. This matches the client's `Accept` header of `*/*`, which means it accepts any type.
-2026-09-15T22:53:35.257095Z  WARN Malformed response (raw): Here is the response to the network event:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:53:35.257095Z  WARN Malformed response (raw): Here is the response to the network event:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_http_response",
-      "status": 200,
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers...
-2026-09-15T22:53:35.257133Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:53:35.257144Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:53:35.257148Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:53:35.257175Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:53:35.257185Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:53:35.257197Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19370 chars, format=text
-✗ LLM error for GET /status → 500: ✗  LLM failed to generate valid response after retries.
-2026-09-15T22:53:35.257018Z DEBUG Response (normalized): Here is the response to the network event:```json{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}``...
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\"}"}]}```This response includes exactly one `send_http_response` action, which produces an HTTP response with a status code of 200, a Content-Type of `application/json`, and a response body that is a JSON object with a single property named `status` with value `ok`. This matches the client's `Accept` header of `*/*`, which means it accepts any type.
-  "actions": [
-      "type": "send_http_response",
-{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers...
-2026-09-15T22:53:39.993913Z DEBUG Response (normalized): Here's the revised response in the correct format:```json{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers": {"Content-Type": "application/json"},"body": "{\"status\":\"ok\...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"status\":\"ok\"}"}]}```**JSON**
-2026-09-15T22:53:51.297205Z  WARN Malformed response (raw): **Response**
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"status\":\"ok\"}"}
-  ]
-2026-09-15T22:53:51.297205Z  WARN Malformed response (raw): **Response**
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"status\":\"ok\"}"}
-  ]
-}
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response", "status": 200, "heade...
-2026-09-15T22:53:51.297240Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:53:51.297250Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:53:51.297253Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:53:51.297271Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:53:51.297280Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:53:51.297291Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18678 chars, format=text
-2026-09-15T22:53:53.951894Z DEBUG LLM response: response_len=351 chars, tokens=4561i/92o/4653t
-2026-09-15T22:53:51.297157Z DEBUG Response (normalized): **Response**```json{"tools": [],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"status\":\"ok\"}"}]}```**JSON**
-{"tools": [],"actions": [{"type": "send_http_response", "status": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"status\":\"ok\"}"}]}```**JSON**
-  "actions": [
-    {"type": "send_http_response", "status": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"status\":\"ok\"}"}
-{"tools": [],"actions": [{"type": "send_http_response", "status": 200, "heade...
-2026-09-15T22:53:53.951980Z DEBUG Response (normalized): To fulfill the given event, I will respond with the following JSON, which is the required format for the response.```json{"tools": [],"actions": [{"type": "send_http_response","status": 200,"headers":...
-```
-
-</details>
-
-<details><summary><code>http/permanent-redirect</code> — 0/3 passed</summary>
+<details><summary><code>http/permanent-redirect</code> — 2/5 passed</summary>
 
 **Instruction:** Redirect / permanently to https://example.com/.
 
 **Client:** `curl -sS -i --max-time 230 http://127.0.0.1:{PORT}/`
 
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "HTTP/1.1 301"
 
 ```
-❌ Actual response:
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}```This response will return a 301 (Moved Permanently) status code with a Location header pointing to https://example.com/, effectively redirecting the client to the desired URL.
-2026-09-15T22:53:59.583371Z  WARN Malformed response (raw): To fulfill the event, I need to act like an HTTP server and redirect the client to https://example.com/. Here's the response:
-
-```json
-{
-  "type": "send_http_response",
-  "status": 301,
-  "headers": {
-2026-09-15T22:53:59.583371Z  WARN Malformed response (raw): To fulfill the event, I need to act like an HTTP server and redirect the client to https://example.com/. Here's the response:
-
-```json
-{
-  "type": "send_http_response",
-  "status": 301,
-  "headers": {
-    "Location": "https://example.com/"
-  },
-❌ Actual response:
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://...
-2026-09-15T22:53:59.583410Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:53:59.583421Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:53:59.583425Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:53:59.583452Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:53:59.583461Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:53:59.583473Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18957 chars, format=text
-2026-09-15T22:54:03.050496Z DEBUG LLM response: response_len=419 chars, tokens=4595i/98o/4693t
-2026-09-15T22:53:59.583322Z DEBUG Response (normalized): To fulfill the event, I need to act like an HTTP server and redirect the client to https://example.com/. Here's the response:```json{"type": "send_http_response","status": 301,"headers": {"Location": ...
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}```This response will return a 301 (Moved Permanently) status code with a Location header pointing to https://example.com/, effectively redirecting the client to the desired URL.
-  "type": "send_http_response",
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://...
-2026-09-15T22:54:03.050580Z DEBUG Response (normalized): To fulfill the event, I need to act like an HTTP server and redirect the client to https://example.com/. Here's the response:```json{"type": "send_http_response","status": 301,"headers": {"Location": ...
+2026-09-23T10:05:16.926440Z DEBUG Executing action 0: Object {"type": String("send_http_response"), "status": Number(308), "headers": Object {"Location": String("https://example.com")}, "body": String("")}
 ```
 
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 3 — `copied_example_placeholder`: the model emitted a `{{…}}` template placeholder verbatim — check this action's `example` for one
 
 ```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}]}```I followed the instruction to redirect `/` permanently to `https://example.com/`. Since there's no query string, no query parameters, and no request body, the response has an empty `body` field and no `Content-Length` header.
-2026-09-15T22:54:08.731357Z  WARN Malformed response (raw): Here is the response:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:54:08.731357Z  WARN Malformed response (raw): Here is the response:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_http_response",
-      "status": 301,
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_http_response","status": 301,"headers...
-2026-09-15T22:54:08.731486Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:54:08.731510Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:54:08.731520Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:54:08.731607Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:54:08.731630Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:54:08.731665Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19007 chars, format=text
-2026-09-15T22:54:13.360934Z DEBUG LLM response: response_len=507 chars, tokens=4616i/132o/4748t
-2026-09-15T22:54:08.731210Z DEBUG Response (normalized): Here is the response:```json{"tools": [],"actions": [{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}]}```I followed the instruction to redirect ...
-{"tools": [],"actions": [{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}]}```I followed the instruction to redirect `/` permanently to `https://example.com/`. Since there's no query string, no query parameters, and no request body, the response has an empty `body` field and no `Content-Length` header.
-  "actions": [
-      "type": "send_http_response",
-{"tools": [],"actions": [{"type": "send_http_response","status": 301,"headers...
-2026-09-15T22:54:13.361018Z DEBUG Response (normalized): # Response```json{"tools": [],"actions": [{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}]}```Reasoning: The server received a request for the r...
+2026-09-23T10:05:24.793075Z DEBUG Executing action 0: Object {"type": String("send_http_response"), "status": Number(308), "headers": Object {"Location": String("https://example.com/"), "Content-Type": String("text/html")}}
 ```
 
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_http_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "HTTP/1.1 301"
 
 ```
-❌ Actual response:
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}```This response will redirect the user to the specified URL and follow the instruction to redirect / permanently.
-2026-09-15T22:54:20.833705Z  WARN Malformed response (raw): To handle the event and follow the instruction to redirect / permanently to https://example.com., I will create a response that includes the appropriate action. Since the instruction is to redirect the user to a different URL, I will use the `send_http_response` action with a status code of 301 (Moved Permanently) and the redirect URL.
-
-Here's the response:
-
-```json
-{
-  "type": "send_http_response",
-2026-09-15T22:54:20.833705Z  WARN Malformed response (raw): To handle the event and follow the instruction to redirect / permanently to https://example.com., I will create a response that includes the appropriate action. Since the instruction is to redirect the user to a different URL, I will use the `send_http_response` action with a status code of 301 (Moved Permanently) and the redirect URL.
-
-Here's the response:
-
-```json
-{
-  "type": "send_http_response",
-  "status": 301,
-  "headers": {
-❌ Actual response:
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://...
-2026-09-15T22:54:20.833836Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:54:20.833859Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:54:20.833870Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:54:20.833956Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:54:20.833979Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:54:20.834009Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19061 chars, format=text
-2026-09-15T22:54:24.419864Z DEBUG LLM response: response_len=417 chars, tokens=4607i/96o/4703t
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://example.com/"},"body": ""}```This response will redirect the user to the specified URL and follow the instruction to redirect / permanently.
-  "type": "send_http_response",
-{"type": "send_http_response","status": 301,"headers": {"Location": "https://...
-2026-09-15T22:54:24.420053Z DEBUG Response (normalized): Based on the given instructions, I will create a response that includes the appropriate action to redirect / permanently to https://example.com. Here is the response:```json{"type": "send_http_respons...
+2026-09-23T10:05:40.180270Z DEBUG Executing action 0: Object {"type": String("send_http_response"), "status": Number(308), "headers": Object {"Location": String("https://example.com/")}, "body": String("")}
 ```
 
 </details>
 
-<details><summary><code>dns/a-record</code> — 0/3 passed</summary>
-
-**Instruction:** Answer example.com with 1.2.3.4.
-
-**Client:** `dig @127.0.0.1 -p {PORT} +time=230 +tries=1 example.com A`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_a_response`, `read_file`, `send_dns_a_response`, `read_file`, `send_dns_a_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type": "send_dns_a_response","query_id": 35684,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}]}```This response includes a tool call to read a file named "config.json" and an action to send a DNS A response to the query for "example.com." with the IP address "1.2.3.4" and a TTL of 300 seconds.
-2026-09-15T22:54:33.959263Z  WARN Malformed response (raw): Here's a response in the required JSON format:
-
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "config.json"}
-  ],
-2026-09-15T22:54:33.959263Z  WARN Malformed response (raw): Here's a response in the required JSON format:
-
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "config.json"}
-  ],
-  "actions": [
-    {"type": "send_dns_a_response", 
-❌ Actual response:
-{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type":...
-2026-09-15T22:54:33.959321Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:54:33.959334Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:54:33.959340Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:54:33.959378Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:54:33.959391Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:54:33.959413Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23545 chars, format=text
-2026-09-15T22:54:37.817219Z DEBUG LLM response: response_len=377 chars, tokens=6053i/116o/6169t
-2026-09-15T22:54:33.959187Z DEBUG Response (normalized): Here's a response in the required JSON format:```json{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type": "send_dns_a_response","query_id": 35684,"domain": "example.com.","ip"...
-{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type": "send_dns_a_response","query_id": 35684,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}]}```This response includes a tool call to read a file named "config.json" and an action to send a DNS A response to the query for "example.com." with the IP address "1.2.3.4" and a TTL of 300 seconds.
-    {"type": "read_file", "path": "config.json"}
-  "actions": [
-    {"type": "send_dns_a_response", 
-{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type":...
-2026-09-15T22:54:37.817364Z DEBUG Response (normalized): Here's the response in the required JSON format:```json{"actions": [{"type": "send_dns_a_response","query_id": 35684,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}]}```This response includes an ...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_a_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_a_response","query_id": 8679,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}```This response includes the query ID, domain, and IPv4 address as required by the `send_dns_a_response` action.
-2026-09-15T22:54:45.588206Z  WARN Malformed response (raw): Here is the response:
-
-```json
-{
-  "type": "send_dns_a_response",
-  "query_id": 8679,
-  "domain": "example.com.",
-2026-09-15T22:54:45.588206Z  WARN Malformed response (raw): Here is the response:
-
-```json
-{
-  "type": "send_dns_a_response",
-  "query_id": 8679,
-  "domain": "example.com.",
-  "ip": "1.2.3.4",
-  "ttl": 300
-❌ Actual response:
-{"type": "send_dns_a_response","query_id": 8679,"domain": "example.com.","ip"...
-2026-09-15T22:54:45.588248Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:54:45.588259Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:54:45.588263Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:54:45.588292Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:54:45.588302Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:54:45.588324Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23203 chars, format=text
-2026-09-15T22:54:49.166037Z DEBUG LLM response: response_len=443 chars, tokens=5950i/125o/6075t
-2026-09-15T22:54:45.588152Z DEBUG Response (normalized): Here is the response:```json{"type": "send_dns_a_response","query_id": 8679,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}```This response includes the query ID, domain, and IPv4 address as requ...
-{"type": "send_dns_a_response","query_id": 8679,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}```This response includes the query ID, domain, and IPv4 address as required by the `send_dns_a_response` action.
-  "type": "send_dns_a_response",
-{"type": "send_dns_a_response","query_id": 8679,"domain": "example.com.","ip"...
-2026-09-15T22:54:49.166159Z DEBUG Response (normalized): Here is a valid response to the DNS query for example.com:```json{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 8679,"domain": "example.com.","ip": "1.2.3.4","ttl": 300}]}```This ...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_a_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_a_response","query_id": 42877,"domain": "example.com","ip": "1.2.3.4","ttl": 300}```This response will send a DNS A record response with the IP address 1.2.3.4 for the domain example.com.
-2026-09-15T22:54:55.604619Z  WARN Malformed response (raw): I will respond as the DNS server would.
-
-```json
-{
-  "type": "send_dns_a_response",
-  "query_id": 42877,
-  "domain": "example.com",
-2026-09-15T22:54:55.604619Z  WARN Malformed response (raw): I will respond as the DNS server would.
-
-```json
-{
-  "type": "send_dns_a_response",
-  "query_id": 42877,
-  "domain": "example.com",
-  "ip": "1.2.3.4",
-  "ttl": 300
-❌ Actual response:
-{"type": "send_dns_a_response","query_id": 42877,"domain": "example.com","ip"...
-2026-09-15T22:54:55.604672Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:54:55.604686Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:54:55.604693Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:54:55.604732Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:54:55.604750Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:54:55.604778Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23208 chars, format=text
-2026-09-15T22:54:58.993735Z DEBUG LLM response: response_len=288 chars, tokens=5958i/97o/6055t
-2026-09-15T22:54:55.604555Z DEBUG Response (normalized): I will respond as the DNS server would.```json{"type": "send_dns_a_response","query_id": 42877,"domain": "example.com","ip": "1.2.3.4","ttl": 300}```This response will send a DNS A record response wit...
-{"type": "send_dns_a_response","query_id": 42877,"domain": "example.com","ip": "1.2.3.4","ttl": 300}```This response will send a DNS A record response with the IP address 1.2.3.4 for the domain example.com.
-  "type": "send_dns_a_response",
-{"type": "send_dns_a_response","query_id": 42877,"domain": "example.com","ip"...
-2026-09-15T22:54:58.993840Z DEBUG Response (normalized): **✓ Correct Response:**```json{"tools": [],"actions": [{"type": "send_dns_a_response", "query_id": 42877, "domain": "example.com", "ip": "1.2.3.4", "ttl": 300}]}```This response will send a DNS A re...
-```
-
-</details>
-
-<details><summary><code>dns/wildcard-a</code> — 0/3 passed</summary>
-
-**Instruction:** Whatever name is asked for, answer 10.0.0.1.
-
-**Client:** `dig @127.0.0.1 -p {PORT} +time=230 +tries=1 anything.test A`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_a_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_a_response","query_id": 19866,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}```**Reasoning**Whatever name is asked for, answer 10.0.0.1, as per the server's instruction. The domain "anything.test." was queried with type A, so we're responding with an IPv4 address.
-2026-09-15T22:55:12.805137Z  WARN Malformed response (raw): **Event Response**
-```json
-{
-  "type": "send_dns_a_response",
-  "query_id": 19866,
-  "domain": "anything.test.",
-  "ip": "10.0.0.1",
-2026-09-15T22:55:12.805137Z  WARN Malformed response (raw): **Event Response**
-```json
-{
-  "type": "send_dns_a_response",
-  "query_id": 19866,
-  "domain": "anything.test.",
-  "ip": "10.0.0.1",
-  "ttl": 300
-}
-❌ Actual response:
-{"type": "send_dns_a_response","query_id": 19866,"domain": "anything.test.","...
-2026-09-15T22:55:12.805178Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:55:12.805189Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:55:12.805195Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:55:12.805226Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:55:12.805238Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:55:12.805258Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23385 chars, format=text
-2026-09-15T22:55:16.184152Z DEBUG LLM response: response_len=355 chars, tokens=6003i/111o/6114t
-2026-09-15T22:55:12.805078Z DEBUG Response (normalized): **Event Response**```json{"type": "send_dns_a_response","query_id": 19866,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}```**Reasoning**Whatever name is asked for, answer 10.0.0.1, as per the...
-{"type": "send_dns_a_response","query_id": 19866,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}```**Reasoning**Whatever name is asked for, answer 10.0.0.1, as per the server's instruction. The domain "anything.test." was queried with type A, so we're responding with an IPv4 address.
-  "type": "send_dns_a_response",
-{"type": "send_dns_a_response","query_id": 19866,"domain": "anything.test.","...
-2026-09-15T22:55:16.184257Z DEBUG Response (normalized): **Event Response**```json{"actions": [{"type": "send_dns_a_response", "query_id": 19866, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}]}```**Reasoning**Whatever name is asked for, answer 1...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_a_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 61258,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}]}```**Reasoning:**The request is for an A record query for the domain "anything.test.". According to the instruction field, the response should be 10.0.0.1, so I'm sending a response with the correct IP address.
-2026-09-15T22:55:23.017450Z  WARN Malformed response (raw): **Response:**
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:55:23.017450Z  WARN Malformed response (raw): **Response:**
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_dns_a_response",
-      "query_id": 61258,
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 61258,"do...
-2026-09-15T22:55:23.017501Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:55:23.017512Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:55:23.017518Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:55:23.017555Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:55:23.017569Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:55:23.017584Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23478 chars, format=text
-2026-09-15T22:55:26.529210Z DEBUG LLM response: response_len=406 chars, tokens=6020i/117o/6137t
-2026-09-15T22:55:23.017387Z DEBUG Response (normalized): **Response:**```json{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 61258,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}]}```**Reasoning:**The request is for an A record q...
-{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 61258,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}]}```**Reasoning:**The request is for an A record query for the domain "anything.test.". According to the instruction field, the response should be 10.0.0.1, so I'm sending a response with the correct IP address.
-  "actions": [
-      "type": "send_dns_a_response",
-{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 61258,"do...
-2026-09-15T22:55:26.529319Z DEBUG Response (normalized): Here is the corrected response:```json{"actions": [{"type": "send_dns_a_response","query_id": 61258,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}]}```This response includes the `send_dns_a_r...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_a_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_dns_a_response", "query_id": 34159, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}]}```## ReasoningThe incoming DNS query is for an A record of `anything.test.`. According to the server's instruction field, whatever name is asked for, the response should be 10.0.0.1. Therefore, the correct action is to respond with an A record containing the IP address `10.0.0.1`.
-2026-09-15T22:55:35.168283Z  WARN Malformed response (raw): ## Response
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_dns_a_response", "query_id": 34159, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}
-2026-09-15T22:55:35.168283Z  WARN Malformed response (raw): ## Response
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_dns_a_response", "query_id": 34159, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}
-  ]
-}
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_dns_a_response", "query_id": 34159, "...
-2026-09-15T22:55:35.168343Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:55:35.168357Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:55:35.168363Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:55:35.168405Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:55:35.168421Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:55:35.168438Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23628 chars, format=text
-2026-09-15T22:55:39.745773Z DEBUG LLM response: response_len=494 chars, tokens=6067i/145o/6212t
-2026-09-15T22:55:35.168206Z DEBUG Response (normalized): ## Response```json{"tools": [],"actions": [{"type": "send_dns_a_response", "query_id": 34159, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}]}```## ReasoningThe incoming DNS query is for an...
-{"tools": [],"actions": [{"type": "send_dns_a_response", "query_id": 34159, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}]}```## ReasoningThe incoming DNS query is for an A record of `anything.test.`. According to the server's instruction field, whatever name is asked for, the response should be 10.0.0.1. Therefore, the correct action is to respond with an A record containing the IP address `10.0.0.1`.
-  "actions": [
-    {"type": "send_dns_a_response", "query_id": 34159, "domain": "anything.test.", "ip": "10.0.0.1", "ttl": 300}
-{"tools": [],"actions": [{"type": "send_dns_a_response", "query_id": 34159, "...
-2026-09-15T22:55:39.745872Z DEBUG Response (normalized): ## Response```json{"tools": [],"actions": [{"type": "send_dns_a_response","query_id": 34159,"domain": "anything.test.","ip": "10.0.0.1","ttl": 300}]}```## ReasoningThe incoming DNS query is for an A r...
-```
-
-</details>
-
-<details><summary><code>dns/txt-record</code> — 0/3 passed</summary>
+<details><summary><code>dns/txt-record</code> — 4/5 passed</summary>
 
 **Instruction:** Answer text queries for hello.test with the text netget-eval-ok.
 
 **Client:** `dig @127.0.0.1 -p {PORT} +time=230 +tries=1 hello.test TXT`
 
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_txt_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-ok"
 
 ```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_dns_txt_response","query_id": 45388,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}]}```This response meets all the requirements, including:*   The JSON format is valid and includes the required keys (`tools` and `actions`).*   The `tools` array is empty because there are no tool calls needed in this response.*   The `actions` array includes one action, which is the `send_dns_txt_response` action with the required parameters.*   The `reasoning` tag is not included because the decision to respond with the specified text is straightforward.*   The `send_dns_txt_response` action meets the requirements for responding to a DNS TXT record query.
-2026-09-15T22:55:57.092226Z  WARN Malformed response (raw): Here is the response in the required format:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:55:57.092226Z  WARN Malformed response (raw): Here is the response in the required format:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_dns_txt_response",
-      "query_id": 45388,
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_dns_txt_response","query_id": 45388,"...
-2026-09-15T22:55:57.092270Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:55:57.092281Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:55:57.092285Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:55:57.092310Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:55:57.092321Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:55:57.092334Z DEBUG LLM request: model=llama3.1:8b, prompt_len=24266 chars, format=text
-2026-09-15T22:56:02.132767Z DEBUG LLM response: response_len=763 chars, tokens=6150i/179o/6329t
-2026-09-15T22:55:57.092132Z DEBUG Response (normalized): Here is the response in the required format:```json{"tools": [],"actions": [{"type": "send_dns_txt_response","query_id": 45388,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}]}```This res...
-{"tools": [],"actions": [{"type": "send_dns_txt_response","query_id": 45388,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}]}```This response meets all the requirements, including:*   The JSON format is valid and includes the required keys (`tools` and `actions`).*   The `tools` array is empty because there are no tool calls needed in this response.*   The `actions` array includes one action, which is the `send_dns_txt_response` action with the required parameters.*   The `reasoning` tag is not included because the decision to respond with the specified text is straightforward.*   The `send_dns_txt_response` action meets the requirements for responding to a DNS TXT record query.
-  "actions": [
-      "type": "send_dns_txt_response",
-{"tools": [],"actions": [{"type": "send_dns_txt_response","query_id": 45388,"...
-2026-09-15T22:56:02.132876Z DEBUG Response (normalized): Here is the response in the required format:```json{"tools": [],"actions": [{"type": "send_dns_txt_response","query_id": 45388,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}]}```This res...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_txt_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_txt_response","query_id": 26243,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}```This response will send a TXT record with the value "netget-eval-ok" for the domain "hello.test.", with a TTL of 300 seconds.
-2026-09-15T22:56:09.329148Z  WARN Malformed response (raw): To handle the DNS query for the domain "hello.test.", I'll respond with a TXT record response.
-
-Since the instruction field specifies to answer text queries for "hello.test." with the text "netget-eval-ok", I'll use the `send_dns_txt_response` action.
-
-Here's the response:
-
-```json
-2026-09-15T22:56:09.329148Z  WARN Malformed response (raw): To handle the DNS query for the domain "hello.test.", I'll respond with a TXT record response.
-
-Since the instruction field specifies to answer text queries for "hello.test." with the text "netget-eval-ok", I'll use the `send_dns_txt_response` action.
-
-Here's the response:
-
-```json
-{
-  "type": "send_dns_txt_response",
-❌ Actual response:
-{"type": "send_dns_txt_response","query_id": 26243,"domain": "hello.test.","t...
-2026-09-15T22:56:09.329188Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:56:09.329199Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:56:09.329203Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:56:09.329231Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:56:09.329241Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:56:09.329258Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23569 chars, format=text
-2026-09-15T22:56:12.259130Z DEBUG LLM response: response_len=316 chars, tokens=6019i/95o/6114t
-{"type": "send_dns_txt_response","query_id": 26243,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}```This response will send a TXT record with the value "netget-eval-ok" for the domain "hello.test.", with a TTL of 300 seconds.
-  "type": "send_dns_txt_response",
-{"type": "send_dns_txt_response","query_id": 26243,"domain": "hello.test.","t...
-2026-09-15T22:56:12.259231Z DEBUG Response (normalized): Here is the response in the correct JSON format:```json{"type": "send_dns_txt_response","query_id": 26243,"domain": "hello.test.","text": "netget-eval-ok","ttl": 300}```This response will send a TXT r...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_txt_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"actions": [{"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}]}```I've chosen to respond with a TXT record response for the domain "hello.test." with the specified query ID and TTL. This action will send the desired response back to the DNS client.
-2026-09-15T22:56:18.970117Z  WARN Malformed response (raw): Here's the response in the required JSON format:
-
-```json
-{
-  "actions": [
-    {"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}
-  ]
-2026-09-15T22:56:18.970117Z  WARN Malformed response (raw): Here's the response in the required JSON format:
-
-```json
-{
-  "actions": [
-    {"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}
-  ]
-}
-```
-❌ Actual response:
-{"actions": [{"type": "send_dns_txt_response", "query_id": 25921, "domain": "...
-2026-09-15T22:56:18.970163Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:56:18.970176Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:56:18.970181Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:56:18.970213Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:56:18.970223Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:56:18.970239Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23500 chars, format=text
-2026-09-15T22:56:22.137937Z DEBUG LLM response: response_len=321 chars, tokens=5997i/82o/6079t
-2026-09-15T22:56:18.970056Z DEBUG Response (normalized): Here's the response in the required JSON format:```json{"actions": [{"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}]}```I've chosen ...
-{"actions": [{"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}]}```I've chosen to respond with a TXT record response for the domain "hello.test." with the specified query ID and TTL. This action will send the desired response back to the DNS client.
-  "actions": [
-    {"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}
-{"actions": [{"type": "send_dns_txt_response", "query_id": 25921, "domain": "...
-2026-09-15T22:56:22.138017Z DEBUG Response (normalized): Here's the corrected response in the required JSON format:```json{"actions": [{"type": "send_dns_txt_response", "query_id": 25921, "domain": "hello.test.", "text": "netget-eval-ok", "ttl": 300}]}```Th...
+2026-09-23T10:07:54.686136Z DEBUG Executing action 0: Object {"type": String("send_dns_a_response"), "query_id": Number(7079), "domain": String("hello.test."), "ip": String("192.0.2.1"), "ttl": Number(300)}
+2026-09-23T10:07:54.686535Z DEBUG Executing action 1: Object {"type": String("send_dns_a_response"), "query_id": Number(7079), "domain": String("hello.test."), "ip": String("192.0.2.1"), "ttl": Number(300)}
 ```
 
 </details>
 
-<details><summary><code>dns/nxdomain</code> — 0/3 passed</summary>
-
-**Instruction:** Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1.
-
-**Client:** `dig @127.0.0.1 -p {PORT} +time=230 +tries=1 evil.blocked.test A`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_nxdomain` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_nxdomain","query_id": 24808,"domain": "evil.blocked.test.","query_type": "A"}```This response will return a DNS NXDOMAIN response to the client, indicating that the domain "evil.blocked.test." does not exist in the DNS system.## Reasoning (Optional)The reasoning for this response is that the domain "evil.blocked.test." is an exception, and the server instruction is to return a DNS NXDOMAIN response for any domain under "blocked.test.".
-2026-09-15T22:56:46.280762Z  WARN Malformed response (raw): Based on the provided instructions, I will now handle the network event for the active server.
-
-## Understanding the Event
-
-The network event is a DNS query for the domain "evil.blocked.test." with query type "A". The event ID is dns_query.
-
-## Following Server Instructions
-2026-09-15T22:56:46.280762Z  WARN Malformed response (raw): Based on the provided instructions, I will now handle the network event for the active server.
-
-## Understanding the Event
-
-The network event is a DNS query for the domain "evil.blocked.test." with query type "A". The event ID is dns_query.
-
-## Following Server Instructions
-
-The server instruction is to say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1.
-❌ Actual response:
-{"type": "send_dns_nxdomain","query_id": 24808,"domain": "evil.blocked.test."...
-2026-09-15T22:56:46.280906Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:56:46.280957Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:56:46.280969Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:56:46.281062Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:56:46.281090Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:56:46.281141Z DEBUG LLM request: model=llama3.1:8b, prompt_len=24497 chars, format=text
-2026-09-15T22:56:58.464895Z DEBUG LLM response: response_len=519 chars, tokens=6209i/128o/6337t
-{"type": "send_dns_nxdomain","query_id": 24808,"domain": "evil.blocked.test.","query_type": "A"}```This response will return a DNS NXDOMAIN response to the client, indicating that the domain "evil.blocked.test." does not exist in the DNS system.## Reasoning (Optional)The reasoning for this response is that the domain "evil.blocked.test." is an exception, and the server instruction is to return a DNS NXDOMAIN response for any domain under "blocked.test.".
-{"type": "send_dns_nxdomain","query_id": 24808,"domain": "evil.blocked.test."...
-2026-09-15T22:56:58.464996Z DEBUG Response (normalized): Here is the corrected response:```json{"type": "send_dns_nxdomain","query_id": 24808,"domain": "evil.blocked.test.","query_type": "A"}```This response will return a DNS NXDOMAIN response to the client...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_nxdomain` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_nxdomain","query_id": 54102,"domain": "evil.blocked.test.","query_type": "A"}```This action will respond to the client that the domain "evil.blocked.test." does not exist in the DNS system.
-2026-09-15T22:57:18.533656Z  WARN Malformed response (raw): Since the Instruction is to "Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1", we will handle the DNS query with the domain "evil.blocked.test." by sending a DNS NXDOMAIN response.
-
-```json
-{
-  "type": "send_dns_nxdomain",
-  "query_id": 54102,
-  "domain": "evil.blocked.test.",
-2026-09-15T22:57:18.533656Z  WARN Malformed response (raw): Since the Instruction is to "Say the name does not exist for anything under blocked.test. Answer everything else with 127.0.0.1", we will handle the DNS query with the domain "evil.blocked.test." by sending a DNS NXDOMAIN response.
-
-```json
-{
-  "type": "send_dns_nxdomain",
-  "query_id": 54102,
-  "domain": "evil.blocked.test.",
-  "query_type": "A"
-}
-❌ Actual response:
-{"type": "send_dns_nxdomain","query_id": 54102,"domain": "evil.blocked.test."...
-2026-09-15T22:57:18.533697Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:57:18.533708Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:57:18.533712Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:57:18.533740Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:57:18.533750Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:57:18.533770Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23544 chars, format=text
-2026-09-15T22:57:21.850720Z DEBUG LLM response: response_len=326 chars, tokens=6011i/87o/6098t
-{"type": "send_dns_nxdomain","query_id": 54102,"domain": "evil.blocked.test.","query_type": "A"}```This action will respond to the client that the domain "evil.blocked.test." does not exist in the DNS system.
-  "type": "send_dns_nxdomain",
-{"type": "send_dns_nxdomain","query_id": 54102,"domain": "evil.blocked.test."...
-2026-09-15T22:57:21.850809Z DEBUG Response (normalized): Here is the corrected response in the correct JSON format:```json{"type": "send_dns_nxdomain","query_id": 54102,"domain": "evil.blocked.test.","query_type": "A"}```This response will send a DNS NXDOMA...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_dns_nxdomain` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_dns_nxdomain","query_id": 29159,"domain": "evil.blocked.test.","query_type": "A"}```This action will send an NXDOMAIN response back to the client, indicating that the domain "evil.blocked.test." does not exist.
-2026-09-15T22:57:29.442395Z  WARN Malformed response (raw): Based on the given event, I will respond with the appropriate action.
-
-The instruction is to say the name does not exist for anything under blocked.test. and answer everything else with 127.0.0.1.
-
-Since the query is for the domain "evil.blocked.test.", which is under "blocked.test.", I will respond with the following action:
-
-```json
-2026-09-15T22:57:29.442395Z  WARN Malformed response (raw): Based on the given event, I will respond with the appropriate action.
-
-The instruction is to say the name does not exist for anything under blocked.test. and answer everything else with 127.0.0.1.
-
-Since the query is for the domain "evil.blocked.test.", which is under "blocked.test.", I will respond with the following action:
-
-```json
-{
-  "type": "send_dns_nxdomain",
-❌ Actual response:
-{"type": "send_dns_nxdomain","query_id": 29159,"domain": "evil.blocked.test."...
-2026-09-15T22:57:29.442444Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:57:29.442455Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:57:29.442460Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:57:29.442492Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:57:29.442504Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:57:29.442517Z DEBUG LLM request: model=llama3.1:8b, prompt_len=23670 chars, format=text
-2026-09-15T22:57:31.483587Z DEBUG LLM response: response_len=153 chars, tokens=6033i/45o/6078t
-{"type": "send_dns_nxdomain","query_id": 29159,"domain": "evil.blocked.test.","query_type": "A"}```This action will send an NXDOMAIN response back to the client, indicating that the domain "evil.blocked.test." does not exist.
-  "type": "send_dns_nxdomain",
-{"type": "send_dns_nxdomain","query_id": 29159,"domain": "evil.blocked.test."...
-2026-09-15T22:57:31.483694Z DEBUG Response (normalized): Here is the response in the correct format:```json{"type": "send_dns_nxdomain","query_id": 29159,"domain": "evil.blocked.test.","query_type": "A"}```
-```
-
-</details>
-
-<details><summary><code>whois/registrar-line</code> — 1/3 passed</summary>
-
-**Instruction:** Answer every query with a whois record whose registrar is NETGET-EVAL-REGISTRAR.
-
-**Client:** `nc -w 235 127.0.0.1 {PORT}`
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_record`, `read_file`, `send_whois_record` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet Eval Registrant","admin_contact": "admin@netget.example","name_servers": ["ns1.netget.example","ns2.netget.example"]}```To maintain state if needed, I will update memory with the WHOIS record.Here's the updated memory:```json{"whois_records": {"netget.example": {"registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet Eval Registrant","admin_contact": "admin@netget.example","name_servers": ["ns1.netget.example","ns2.netget.example"]}}}```
-2026-09-15T22:58:05.993550Z  WARN Malformed response (raw): You are invoking me to handle a WHOIS query event. To fulfill the event, I'll follow the instructions in the protocol.
-
-First, I need to parse the incoming data/request. In this case, the query is "netget.example".
-
-Next, I need to follow the instruction field, which is to answer every query with a WHOIS record whose registrar is NETGET-EVAL-REGISTRAR. 
-
-Since the query is for "netget.example", I will generate a WHOIS record for this domain. The record will have the registrar as NETGET-EVAL-REGI...
-2026-09-15T22:58:05.993550Z  WARN Malformed response (raw): You are invoking me to handle a WHOIS query event. To fulfill the event, I'll follow the instructions in the protocol.
-
-First, I need to parse the incoming data/request. In this case, the query is "netget.example".
-
-Next, I need to follow the instruction field, which is to answer every query with a WHOIS record whose registrar is NETGET-EVAL-REGISTRAR. 
-
-Since the query is for "netget.example", I will generate a WHOIS record for this domain. The record will have the registrar as NETGET-EVAL-REGI...
-2026-09-15T22:58:05.993582Z DEBUG Correction message preview: # ❌ Error: Invalid Response Format
-
-❌ Actual response:
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-...
-2026-09-15T22:58:05.993594Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:58:05.993605Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:58:05.993610Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:58:05.993638Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:58:05.993649Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:58:05.993663Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18130 chars, format=text
-2026-09-15T22:58:17.909460Z DEBUG LLM response: response_len=332 chars, tokens=4456i/105o/4561t
-❌ Actual response:
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet Eval Registrant","admin_contact": "admin@netget.example","name_servers": ["ns1.netget.example", "ns2.netget.example"]}```This response sends a formatted WHOIS record with the registrar and name servers specified in the instruction.
-2026-09-15T22:58:21.661572Z  WARN Malformed response (raw): To answer the WHOIS query, I'll use the `send_whois_record` action. Here's the response:
-
-```json
-{
-  "type": "send_whois_record",
-  "domain": "netget.example",
-  "registrar": "NETGET-EVAL-REGISTRAR",
-2026-09-15T22:58:21.661572Z  WARN Malformed response (raw): To answer the WHOIS query, I'll use the `send_whois_record` action. Here's the response:
-
-```json
-{
-  "type": "send_whois_record",
-  "domain": "netget.example",
-  "registrar": "NETGET-EVAL-REGISTRAR",
-  "registrant": "NetGet Eval Registrant",
-  "admin_contact": "admin@netget.example",
-❌ Actual response:
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-...
-2026-09-15T22:58:21.661608Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:58:21.661619Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:58:21.661624Z DEBUG Conversation state: 7 messages, 2 new since last call
-2026-09-15T22:58:21.661649Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:58:21.661661Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:58:21.661673Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17765 chars, format=text
-2026-09-15T22:58:27.693169Z DEBUG LLM response: response_len=733 chars, tokens=4368i/184o/4552t
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet Eval Registrant","admin_contact": "admin@netget.example","name_servers": ["ns1.netget.example","ns2.netget.example"]}```To maintain state if needed, I will update memory with the WHOIS record.Here's the updated memory:```json{"whois_records": {"netget.example": {"registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet Eval Registrant","admin_contact": "admin@netget.example","name_servers": ["ns1.netget.example","ns2.netget.example"]}}}```
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-...
-2026-09-15T22:58:17.909928Z DEBUG Response (normalized): {"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type": "send_whois_record", "domain": "netget.example", "registrar": "NETGET-EVAL-REGISTRAR", "registrant": "NetGet Eval Registra...
-2026-09-15T22:58:21.661529Z DEBUG Response (normalized): To answer the WHOIS query, I'll use the `send_whois_record` action. Here's the response:```json{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant"...
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet Eval Registrant","admin_contact": "admin@netget.example","name_servers": ["ns1.netget.example", "ns2.netget.example"]}```This response sends a formatted WHOIS record with the registrar and name servers specified in the instruction.
-  "type": "send_whois_record",
-{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-...
-2026-09-15T22:58:27.693272Z DEBUG Response (normalized): To answer the WHOIS query, I will use the `send_whois_record` action. Here's the response:```json{"tools": [],"actions": [{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-E...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_record`, `generate_random`, `send_whois_record`, `generate_random` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [{"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}],"actions": [{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet","admin_contact": "NetGet Admin","name_servers": ["ns1.netget.example", "ns2.netget.example"]}]}```This response includes a tool to generate a random string of 16 alphanumeric characters. This will be used as the domain name in the WHOIS record. The response also includes an action to send a WHOIS record with the required fields.Note: You can modify the response as needed to fit your specific requirements. The `tools` array can be used to gather additional information or perform other tasks. The `actions` array can be used to perform specific actions based on the event.
-2026-09-15T22:58:36.368245Z  WARN Malformed response (raw): Here's a sample response for the event.
-
-```json
-{
-  "tools": [
-    {"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}
-  ],
-2026-09-15T22:58:36.368245Z  WARN Malformed response (raw): Here's a sample response for the event.
-
-```json
-{
-  "tools": [
-    {"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}
-  ],
-  "actions": [
-    {
-❌ Actual response:
-{"tools": [{"type": "generate_random", "data_type": "string", "length": 16, "...
-2026-09-15T22:58:36.368284Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:58:36.368294Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:58:36.368298Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:58:36.368324Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:58:36.368335Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:58:36.368350Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18105 chars, format=text
-2026-09-15T22:58:46.981285Z DEBUG LLM response: response_len=949 chars, tokens=4412i/234o/4646t
-2026-09-15T22:58:36.368158Z DEBUG Response (normalized): Here's a sample response for the event.```json{"tools": [{"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}],"actions": [{"type": "send_whois_record","domain":...
-{"tools": [{"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}],"actions": [{"type": "send_whois_record","domain": "netget.example","registrar": "NETGET-EVAL-REGISTRAR","registrant": "NetGet","admin_contact": "NetGet Admin","name_servers": ["ns1.netget.example", "ns2.netget.example"]}]}```This response includes a tool to generate a random string of 16 alphanumeric characters. This will be used as the domain name in the WHOIS record. The response also includes an action to send a WHOIS record with the required fields.Note: You can modify the response as needed to fit your specific requirements. The `tools` array can be used to gather additional information or perform other tasks. The `actions` array can be used to perform specific actions based on the event.
-    {"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}
-  "actions": [
-      "type": "send_whois_record",
-{"tools": [{"type": "generate_random", "data_type": "string", "length": 16, "...
-2026-09-15T22:58:46.981378Z DEBUG Response (normalized): Here's a sample response that fulfills the requirements:```json{"tools": [{"type": "generate_random", "data_type": "string", "length": 16, "charset": "alphanumeric"}],"actions": [{"type": "send_whois_...
-```
-
-</details>
-
-<details><summary><code>whois/registrant-and-status</code> — 0/3 passed</summary>
+<details><summary><code>whois/registrant-and-status</code> — 2/5 passed</summary>
 
 **Instruction:** For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.
 
 **Client:** `nc -w 235 127.0.0.1 {PORT}`
 
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_response`, `read_file`, `send_whois_response`, `read_file` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "clientTransferProhibited"
 
 ```
-❌ Actual response:
-{"tools": [{"type": "read_file", "path": "whois_database.csv"}],"actions": [{"type": "send_whois_response","response": "Domain Name: netget.example\nRegistrar: Example Holdings Ltd\nDomain Status: clientTransferProhibited\n"}]}```In this response, I'm using the `read_file` tool to retrieve the WHOIS database from a CSV file. Then, I'm sending a WHOIS response using the `send_whois_response` action, with the domain name, registrar, and domain status as per the instruction.
-2026-09-15T22:59:21.938471Z  WARN Malformed response (raw): Here is a response to the WHOIS query for `netget.example`:
-
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "whois_database.csv"}
-  ],
-2026-09-15T22:59:21.938471Z  WARN Malformed response (raw): Here is a response to the WHOIS query for `netget.example`:
-
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "whois_database.csv"}
-  ],
-  "actions": [
-    {
-❌ Actual response:
-{"tools": [{"type": "read_file", "path": "whois_database.csv"}],"actions": [{...
-2026-09-15T22:59:21.938607Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:59:21.938671Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:59:21.938683Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:59:21.938766Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:59:21.938788Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:59:21.938817Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17561 chars, format=text
-2026-09-15T22:59:27.277174Z DEBUG LLM response: response_len=492 chars, tokens=4278i/119o/4397t
-2026-09-15T22:59:21.938233Z DEBUG Response (normalized): Here is a response to the WHOIS query for `netget.example`:```json{"tools": [{"type": "read_file", "path": "whois_database.csv"}],"actions": [{"type": "send_whois_response","response": "Domain Name: n...
-{"tools": [{"type": "read_file", "path": "whois_database.csv"}],"actions": [{"type": "send_whois_response","response": "Domain Name: netget.example\nRegistrar: Example Holdings Ltd\nDomain Status: clientTransferProhibited\n"}]}```In this response, I'm using the `read_file` tool to retrieve the WHOIS database from a CSV file. Then, I'm sending a WHOIS response using the `send_whois_response` action, with the domain name, registrar, and domain status as per the instruction.
-    {"type": "read_file", "path": "whois_database.csv"}
-  "actions": [
-      "type": "send_whois_response",
-{"tools": [{"type": "read_file", "path": "whois_database.csv"}],"actions": [{...
-2026-09-15T22:59:27.277254Z DEBUG Response (normalized): Here is the corrected response:```json{"tools": [{"type": "read_file", "path": "whois_database.csv"}],"actions": [{"type": "send_whois_response","response": "Domain Name: netget.example\nRegistrar: Ex...
+2026-09-23T10:14:53.739344Z DEBUG Executing action 0: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "registrant": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
 ```
 
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_record`, `read_documentation`, `send_whois_record`, `read_documentation`, `send_whois_record`, `read_documentation` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "clientTransferProhibited"
 
 ```
-❌ Actual response:
-{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions": [{"type": "send_whois_record", "domain": "netget.example", "registrar": "Example Holdings Ltd", "domain_status": "clientTransferProhibited"}]}```This response includes a tool call to read the documentation for the WHOIS protocol, which will provide the necessary information to fulfill the query. The action is to send a WHOIS record with the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.
-2026-09-15T22:59:33.851581Z  WARN Malformed response (raw): Here is the response in the correct format:
-
-```json
-{
-  "tools": [
-    {"type": "read_documentation", "protocols": ["whois"]}
-  ],
-2026-09-15T22:59:33.851581Z  WARN Malformed response (raw): Here is the response in the correct format:
-
-```json
-{
-  "tools": [
-    {"type": "read_documentation", "protocols": ["whois"]}
-  ],
-  "actions": [
-    {"type": "send_whois_record", "domain": "netget.example", "registrar": "Example Holdings Ltd", "domain_status": "clientTransferProhibited"}
-❌ Actual response:
-{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions":...
-2026-09-15T22:59:33.851622Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:59:33.851631Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:59:33.851635Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T22:59:33.851661Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:59:33.851671Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:59:33.851683Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17631 chars, format=text
-2026-09-15T22:59:37.361997Z DEBUG LLM response: response_len=580 chars, tokens=4266i/134o/4400t
-2026-09-15T22:59:33.851505Z DEBUG Response (normalized): Here is the response in the correct format:```json{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions": [{"type": "send_whois_record", "domain": "netget.example", "registrar": ...
-{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions": [{"type": "send_whois_record", "domain": "netget.example", "registrar": "Example Holdings Ltd", "domain_status": "clientTransferProhibited"}]}```This response includes a tool call to read the documentation for the WHOIS protocol, which will provide the necessary information to fulfill the query. The action is to send a WHOIS record with the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.
-    {"type": "read_documentation", "protocols": ["whois"]}
-  "actions": [
-    {"type": "send_whois_record", "domain": "netget.example", "registrar": "Example Holdings Ltd", "domain_status": "clientTransferProhibited"}
-{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions":...
-2026-09-15T22:59:37.362092Z DEBUG Response (normalized): Here's a response in the correct format:```json{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions": [{"type": "send_whois_record", "domain": "netget.example", "registrar": "Ex...
+2026-09-23T10:15:16.778751Z DEBUG Executing action 0: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "registrant": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
+2026-09-23T10:15:16.778978Z DEBUG Executing action 1: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "registrant": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
 ```
 
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_response`, `generate_random`, `send_whois_response`, `read_file` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "clientTransferProhibited"
 
 ```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_whois_response","response": "Domain Name: netget.example\nRegistrar: Example Holdings Ltd\nDomain Status: clientTransferProhibited\n"}]}```Note that I have only included the `send_whois_response` action as per the event instructions, and removed the `send_whois_record` action. I have also included the WHOIS response text with the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.
-2026-09-15T22:59:46.520095Z  WARN Malformed response (raw): Here is the response:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T22:59:46.520095Z  WARN Malformed response (raw): Here is the response:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_whois_response",
-      "response": "Domain Name: netget.example\nRegistrar: Example Holdings Ltd\nDomain Status: clientTransferProhibited\n"
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_whois_response","response": "Domain N...
-2026-09-15T22:59:46.520140Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T22:59:46.520152Z  INFO LLM request (attempt 2/2)
-2026-09-15T22:59:46.520157Z DEBUG Conversation state: 7 messages, 2 new since last call
-2026-09-15T22:59:46.520188Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T22:59:46.520199Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T22:59:46.520212Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18226 chars, format=text
-2026-09-15T22:59:50.718489Z DEBUG LLM response: response_len=648 chars, tokens=4429i/159o/4588t
-2026-09-15T22:59:43.665073Z DEBUG Response (normalized): ```json{"tools": [{"type": "generate_random", "data_type": "uuid"}],"actions": [{"type": "send_whois_record","domain": "netget.example","registrar": "Example Holdings Ltd","domain_status": "clientTran...
-2026-09-15T22:59:46.520005Z DEBUG Response (normalized): Here is the response:```json{"tools": [],"actions": [{"type": "send_whois_response","response": "Domain Name: netget.example\nRegistrar: Example Holdings Ltd\nDomain Status: clientTransferProhibited\n...
-{"tools": [],"actions": [{"type": "send_whois_response","response": "Domain Name: netget.example\nRegistrar: Example Holdings Ltd\nDomain Status: clientTransferProhibited\n"}]}```Note that I have only included the `send_whois_response` action as per the event instructions, and removed the `send_whois_record` action. I have also included the WHOIS response text with the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.
-  "actions": [
-      "type": "send_whois_response",
-{"tools": [],"actions": [{"type": "send_whois_response","response": "Domain N...
-2026-09-15T22:59:50.718593Z DEBUG Response (normalized): Here is the corrected response:```json{"tools": [{"type": "read_file", "path": "config.json"}],"actions": [{"type": "send_whois_record","domain": "netget.example","registrar": "Example Holdings Ltd","...
+2026-09-23T10:16:48.099524Z DEBUG Executing action 0: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
+2026-09-23T10:16:48.099733Z DEBUG Executing action 1: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
+2026-09-23T10:16:48.099862Z DEBUG Executing action 2: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
+2026-09-23T10:16:48.099985Z DEBUG Executing action 3: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
+2026-09-23T10:16:48.100097Z DEBUG Executing action 4: Object {"type": String("send_whois_record"), "domain": String("netget.example"), "registrar": String("Example Holdings Ltd"), "domain_status": String("clientTransferProhibited")}
 ```
 
 </details>
 
-<details><summary><code>whois/no-match</code> — 1/3 passed</summary>
-
-**Instruction:** Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record.
-
-**Client:** `nc -w 235 127.0.0.1 {PORT}`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [{"type": "send_whois_response", "response": "No match found for domain ending in .invalid."}]}```In this response, the `send_whois_response` action is used to send a custom WHOIS response indicating that no match was found for the domain ending in .invalid. The `tools` array is empty, as no additional tools are needed to gather information for this response.
-2026-09-15T23:00:03.171856Z  WARN Malformed response (raw): Here is the response that NetGet should generate based on the event and the instruction to report that no match was found for any domain ending in .invalid:
-
-```json
-{
-  "tools": [
-    {"type": "send_whois_response", "response": "No match found for domain ending in .invalid."}
-  ]
-2026-09-15T23:00:03.171856Z  WARN Malformed response (raw): Here is the response that NetGet should generate based on the event and the instruction to report that no match was found for any domain ending in .invalid:
-
-```json
-{
-  "tools": [
-    {"type": "send_whois_response", "response": "No match found for domain ending in .invalid."}
-  ]
-}
-```
-❌ Actual response:
-{"tools": [{"type": "send_whois_response", "response": "No match found for do...
-2026-09-15T23:00:03.171909Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:00:03.171922Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:00:03.171927Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:00:03.171963Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:00:03.171977Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:00:03.171995Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17413 chars, format=text
-2026-09-15T23:00:06.609301Z DEBUG LLM response: response_len=455 chars, tokens=4225i/104o/4329t
-2026-09-15T23:00:03.171772Z DEBUG Response (normalized): Here is the response that NetGet should generate based on the event and the instruction to report that no match was found for any domain ending in .invalid:```json{"tools": [{"type": "send_whois_respo...
-{"tools": [{"type": "send_whois_response", "response": "No match found for domain ending in .invalid."}]}```In this response, the `send_whois_response` action is used to send a custom WHOIS response indicating that no match was found for the domain ending in .invalid. The `tools` array is empty, as no additional tools are needed to gather information for this response.
-    {"type": "send_whois_response", "response": "No match found for domain ending in .invalid."}
-{"tools": [{"type": "send_whois_response", "response": "No match found for do...
-2026-09-15T23:00:06.609420Z DEBUG Response (normalized): Here is the corrected response:```json{"actions": [{"type": "send_whois_response", "response": "No match found for domain ending in .invalid."}]}```This response meets the required format by being pur...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_whois_response`, `read_documentation` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_whois_response","response": "No match found for the domain "}```In this response, we use the `send_whois_response` action to send a custom WHOIS response with the message "No match found for the domain" as per the instruction to report that no match was found for any domain ending in .invalid. The response text is written exactly as given, with a CRLF appended at the end.
-2026-09-15T23:00:11.461010Z  WARN Malformed response (raw): Here is the response to the WHOIS query event:
-
-```json
-{
-  "type": "send_whois_response",
-  "response": "No match found for the domain "
-}
-2026-09-15T23:00:11.461010Z  WARN Malformed response (raw): Here is the response to the WHOIS query event:
-
-```json
-{
-  "type": "send_whois_response",
-  "response": "No match found for the domain "
-}
-```
-
-❌ Actual response:
-{"type": "send_whois_response","response": "No match found for the domain "}`...
-2026-09-15T23:00:11.461057Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:00:11.461070Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:00:11.461076Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:00:11.461111Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:00:11.461123Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:00:11.461140Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17339 chars, format=text
-WHOIS "nothing.invalid" from 127.0.0.1:54697 decision=fail_closed_llm_error category=unavailable
-2026-09-15T23:00:11.460955Z DEBUG Response (normalized): Here is the response to the WHOIS query event:```json{"type": "send_whois_response","response": "No match found for the domain "}```In this response, we use the `send_whois_response` action to send a ...
-{"type": "send_whois_response","response": "No match found for the domain "}```In this response, we use the `send_whois_response` action to send a custom WHOIS response with the message "No match found for the domain" as per the instruction to report that no match was found for any domain ending in .invalid. The response text is written exactly as given, with a CRLF appended at the end.
-  "type": "send_whois_response",
-{"type": "send_whois_response","response": "No match found for the domain "}`...
-2026-09-15T23:00:15.644022Z DEBUG Response (normalized): Here is the corrected response:```{"tools": [{"type": "read_documentation", "protocols": ["whois"]}],"actions": [{"type": "send_whois_response", "response": "No match found for the domain "}]}```This ...
-```
-
-</details>
-
-<details><summary><code>gopher/welcome-menu</code> — 0/3 passed</summary>
+<details><summary><code>gopher/welcome-menu</code> — 4/5 passed</summary>
 
 **Instruction:** Serve a menu whose first item is labelled Welcome to NetGet.
 
 **Client:** `curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/`
 
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_gopher_menu` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_gopher_menu","items": [{"type": "i","display": "Welcome to NetGet"},{"type": "0","display": "About this server","selector": "/about.txt","host": "127.0.0.1","port": 70}]}]}```This response includes a single action, `send_gopher_menu`, which serves a menu with the first item labeled "Welcome to NetGet".
-2026-09-15T23:00:42.152715Z  WARN Malformed response (raw): Here is the response to the network event:
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_gopher_menu",
-2026-09-15T23:00:42.152715Z  WARN Malformed response (raw): Here is the response to the network event:
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_gopher_menu",
-      "items": [
-        {
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_gopher_menu","items": [{"type": "i","...
-2026-09-15T23:00:42.152775Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:00:42.152789Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:00:42.152795Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:00:42.152832Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:00:42.152846Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:00:42.152862Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18974 chars, format=text
-2026-09-15T23:00:45.381747Z DEBUG LLM response: response_len=403 chars, tokens=4718i/113o/4831t
-2026-09-15T23:00:42.152601Z DEBUG Response (normalized): Here is the response to the network event:```json{"tools": [],"actions": [{"type": "send_gopher_menu","items": [{"type": "i","display": "Welcome to NetGet"},{"type": "0","display": "About this server"...
-{"tools": [],"actions": [{"type": "send_gopher_menu","items": [{"type": "i","display": "Welcome to NetGet"},{"type": "0","display": "About this server","selector": "/about.txt","host": "127.0.0.1","port": 70}]}]}```This response includes a single action, `send_gopher_menu`, which serves a menu with the first item labeled "Welcome to NetGet".
-  "actions": [
-      "type": "send_gopher_menu",
-          "type": "i",
-          "type": "0",
-{"tools": [],"actions": [{"type": "send_gopher_menu","items": [{"type": "i","...
-2026-09-15T23:00:45.381839Z DEBUG Response (normalized): Here is the response to the network event:```json{"tools": [],"actions": [{"type": "send_gopher_menu","items": [{"type": "i","display": "Welcome to NetGet"},{"type": "0","display": "About this server"...
-```
-
 Run 2 — `wrong_content`: valid actions executed, but client output does not contain "Welcome to NetGet"
 
 ```
-2026-09-15T23:00:53.859980Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
-```
-
-Run 3 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-15T23:01:02.445272Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-23T10:18:06.017581Z DEBUG Executing action 0: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
+2026-09-23T10:18:06.017934Z DEBUG Executing action 1: Object {"type": String("send_gopher_menu"), "items": Array [Object {"type": String("i"), "display": String("Welcome to the gopher hole")}, Object {"type": String("0"), "display": String("About this server"), "selector": String("/about.txt"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("1"), "display": String("Files"), "selector": String("/files"), "host": String("127.0.0.1"), "port": Number(70)}, Object {"type": String("7"), "display": String("Search the archive"), "selector": String("/search"), "host": String("127.0.0.1"), "port": Number(70)}]}
 ```
 
 </details>
 
-<details><summary><code>gopher/text-selector</code> — 2/3 passed</summary>
-
-**Instruction:** When the selector /about is asked for, return the text NetGet eval gopher server.
-
-**Client:** `curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/0/about`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_gopher_text` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_gopher_text","text": "NetGet eval gopher server"}```This response meets all the requirements for the Gopher protocol and the given event context.
-2026-09-15T23:01:13.585567Z  WARN Malformed response (raw): Here's a response to the network event:
-
-```json
-{
-  "type": "send_gopher_text",
-  "text": "NetGet eval gopher server"
-}
-2026-09-15T23:01:13.585567Z  WARN Malformed response (raw): Here's a response to the network event:
-
-```json
-{
-  "type": "send_gopher_text",
-  "text": "NetGet eval gopher server"
-}
-```
-
-❌ Actual response:
-{"type": "send_gopher_text","text": "NetGet eval gopher server"}```This respo...
-2026-09-15T23:01:13.585604Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:01:13.585614Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:01:13.585619Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:01:13.585644Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:01:13.585654Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:01:13.585664Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18653 chars, format=text
-2026-09-15T23:01:15.977194Z DEBUG LLM response: response_len=342 chars, tokens=4612i/79o/4691t
-2026-09-15T23:01:13.585529Z DEBUG Response (normalized): Here's a response to the network event:```json{"type": "send_gopher_text","text": "NetGet eval gopher server"}```This response meets all the requirements for the Gopher protocol and the given event co...
-{"type": "send_gopher_text","text": "NetGet eval gopher server"}```This response meets all the requirements for the Gopher protocol and the given event context.
-  "type": "send_gopher_text",
-{"type": "send_gopher_text","text": "NetGet eval gopher server"}```This respo...
-2026-09-15T23:01:15.977283Z DEBUG Response (normalized): Here is a valid JSON response to the network event:```json{"type": "send_gopher_text","text": "NetGet eval gopher server"}```This response meets all the requirements for the Gopher protocol and the gi...
-```
-
-</details>
-
-<details><summary><code>gopher/unknown-selector</code> — 2/3 passed</summary>
-
-**Instruction:** Serve a menu at the root. For any other selector, say it was not found.
-
-**Client:** `curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/1/nowhere`
-
-Run 2 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-15T23:03:22.754821Z DEBUG Executing action 0: Object {"type": String("send_gopher_error"), "message": String("No such selector: /nowhere")}
-```
-
-</details>
-
-<details><summary><code>finger/user-record</code> — 1/3 passed</summary>
-
-**Instruction:** When someone asks about the user alice, report her real name as Alice Liddell and that she is logged in.
-
-**Client:** `nc -w 235 127.0.0.1 {PORT}`
-
-Run 2 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
-
-```
-2026-09-15T23:04:28.480349Z DEBUG Executing action 0: Object {"type": String("send_finger_user"), "login": String("alice"), "name": String("Alice Liddell"), "tty": String("*"), "idle": String("0 minutes"), "login_time": String("Mon Sep  1 09:12"), "shell": String("/bin/sh")}
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_user` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_finger_user","login": "alice","name": "Alice Liddell","tty": "ttys002","idle": "5 minutes","login_time": "Mon Sep  1 09:12","office": "Room 101","office_phone": "x1234","shell": "/bin/sh","project": "Networking","plan": "Ship the finger server."}```This response includes the user's real name, Alice Liddell, and indicates that she is logged in. The other fields are filled with placeholder values, but could be updated if the server needs to store actual user data.
-2026-09-15T23:04:39.666213Z  WARN Malformed response (raw): Here is the response to the finger_query event:
-
-```json
-{
-  "type": "send_finger_user",
-  "login": "alice",
-  "name": "Alice Liddell",
-2026-09-15T23:04:39.666213Z  WARN Malformed response (raw): Here is the response to the finger_query event:
-
-```json
-{
-  "type": "send_finger_user",
-  "login": "alice",
-  "name": "Alice Liddell",
-  "tty": "ttys002",
-  "idle": "5 minutes",
-❌ Actual response:
-{"type": "send_finger_user","login": "alice","name": "Alice Liddell","tty": "...
-2026-09-15T23:04:39.666343Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:04:39.666369Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:04:39.666379Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:04:39.666462Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:04:39.666486Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:04:39.666521Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19741 chars, format=text
-2026-09-15T23:04:43.723447Z DEBUG LLM response: response_len=307 chars, tokens=4916i/111o/5027t
-2026-09-15T23:04:39.665921Z DEBUG Response (normalized): Here is the response to the finger_query event:```json{"type": "send_finger_user","login": "alice","name": "Alice Liddell","tty": "ttys002","idle": "5 minutes","login_time": "Mon Sep  1 09:12","office...
-{"type": "send_finger_user","login": "alice","name": "Alice Liddell","tty": "ttys002","idle": "5 minutes","login_time": "Mon Sep  1 09:12","office": "Room 101","office_phone": "x1234","shell": "/bin/sh","project": "Networking","plan": "Ship the finger server."}```This response includes the user's real name, Alice Liddell, and indicates that she is logged in. The other fields are filled with placeholder values, but could be updated if the server needs to store actual user data.
-  "type": "send_finger_user",
-{"type": "send_finger_user","login": "alice","name": "Alice Liddell","tty": "...
-2026-09-15T23:04:43.723549Z DEBUG Response (normalized): ```json{"type": "send_finger_user","login": "alice","name": "Alice Liddell","tty": "ttys002","idle": "5 minutes","login_time": "Mon Sep  1 09:12","office": "Room 101","office_phone": "x1234","shell": ...
-2026-09-15T23:04:43.725710Z DEBUG Executing action 0: Object {"type": String("send_finger_user"), "login": String("alice"), "name": String("Alice Liddell"), "tty": String("ttys002"), "idle": String("5 minutes"), "login_time": String("Mon Sep  1 09:12"), "office": String("Room 101"), "office_phone": String("x1234"), "shell": String("/bin/sh"), "project": String("Networking"), "plan": String("Ship the finger server.")}
-```
-
-</details>
-
-<details><summary><code>finger/unknown-user</code> — 0/3 passed</summary>
+<details><summary><code>finger/unknown-user</code> — 4/5 passed</summary>
 
 **Instruction:** Only the user alice exists. Say so for anyone else.
 
 **Client:** `nc -w 235 127.0.0.1 {PORT}`
 
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_error` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 1 — `wrong_content`: valid actions executed, but client output does not match /(?i)no such user|not found|does not exist|no one|unknown/
 
 ```
-❌ Actual response:
-{"tools": [{"type": "send_finger_error", "message": "no such user"}]}```In this response, I used the `send_finger_error` tool to send a response that says "no such user", as per the instructions. Since the requested user "bob" does not exist, this is an appropriate response.
-2026-09-15T23:04:54.836751Z  WARN Malformed response (raw): Here's a response in the correct format:
-
-```json
-{
-  "tools": [
-    {"type": "send_finger_error", "message": "no such user"}
-  ]
-2026-09-15T23:04:54.836751Z  WARN Malformed response (raw): Here's a response in the correct format:
-
-```json
-{
-  "tools": [
-    {"type": "send_finger_error", "message": "no such user"}
-  ]
-}
-```
-❌ Actual response:
-{"tools": [{"type": "send_finger_error", "message": "no such user"}]}```In th...
-2026-09-15T23:04:54.836796Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:04:54.836808Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:04:54.836814Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:04:54.836849Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:04:54.836862Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:04:54.836877Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19214 chars, format=text
-FINGER LLM call failed for 127.0.0.1:60436: ✗  LLM failed to generate valid response after retries.
-2026-09-15T23:04:54.836694Z DEBUG Response (normalized): Here's a response in the correct format:```json{"tools": [{"type": "send_finger_error", "message": "no such user"}]}```In this response, I used the `send_finger_error` tool to send a response that say...
-{"tools": [{"type": "send_finger_error", "message": "no such user"}]}```In this response, I used the `send_finger_error` tool to send a response that says "no such user", as per the instructions. Since the requested user "bob" does not exist, this is an appropriate response.
-    {"type": "send_finger_error", "message": "no such user"}
-{"tools": [{"type": "send_finger_error", "message": "no such user"}]}```In th...
-2026-09-15T23:05:02.422845Z DEBUG Response (normalized): **Event Response:**```json{"tools": [],"actions": [{"type": "send_finger_error", "message": "no such user"}]}```**<reasoning>**Since the requested user "bob" does not exist, I chose to send a response...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_error` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_finger_error","message": "no such user"}```The reasoning behind this decision is that the instruction specifically states to say "no such user" for anyone other than `alice`, and the username `bob` does not match `alice`.
-2026-09-15T23:05:53.817896Z  WARN Malformed response (raw): Based on the event `finger_query` with the input data `username: null, verbose: true, forward_host: null, list_all: true`, I will respond with the appropriate action to fulfill the event.
-
-Since the instruction is "Only the user alice exists. Say so for anyone else.", and the username is `bob`, I will respond with the `send_finger_error` action.
-
-Here is the response:
-
-```json
-2026-09-15T23:05:53.817896Z  WARN Malformed response (raw): Based on the event `finger_query` with the input data `username: null, verbose: true, forward_host: null, list_all: true`, I will respond with the appropriate action to fulfill the event.
-
-Since the instruction is "Only the user alice exists. Say so for anyone else.", and the username is `bob`, I will respond with the `send_finger_error` action.
-
-Here is the response:
-
-```json
-{
-  "type": "send_finger_error",
-❌ Actual response:
-{"type": "send_finger_error","message": "no such user"}```The reasoning behin...
-2026-09-15T23:05:53.817935Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:05:53.817946Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:05:53.817950Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:05:53.817977Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:05:53.817987Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:05:53.817999Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19462 chars, format=text
-2026-09-15T23:06:11.060647Z DEBUG LLM response: response_len=1024 chars, tokens=4815i/276o/5091t
-{"type": "send_finger_error","message": "no such user"}```The reasoning behind this decision is that the instruction specifically states to say "no such user" for anyone other than `alice`, and the username `bob` does not match `alice`.
-  "type": "send_finger_error",
-{"type": "send_finger_error","message": "no such user"}```The reasoning behin...
-2026-09-15T23:06:11.060881Z DEBUG Response (normalized): ## Response FormatThe response must be a valid JSON object with the following structure:```json{"tools": [...],"actions": [...]}```## ToolsIf you need to gather information, you can use the `read_file...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_error` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"type": "send_finger_error","message": "no such user"}```Reasoning: The user "bob" is not the only user existing in the system, as per the instruction "Only the user alice exists. Say so for anyone else." Therefore, the correct response is to refuse the query with a one-line 'finger: <message>' notice.
-2026-09-15T23:06:26.982215Z  WARN Malformed response (raw): Here is a potential response to the network event:
-
-```json
-{
-  "type": "send_finger_error",
-  "message": "no such user"
-}
-2026-09-15T23:06:26.982215Z  WARN Malformed response (raw): Here is a potential response to the network event:
-
-```json
-{
-  "type": "send_finger_error",
-  "message": "no such user"
-}
-```
-
-❌ Actual response:
-{"type": "send_finger_error","message": "no such user"}```Reasoning: The user...
-2026-09-15T23:06:26.982331Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:06:26.982353Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:06:26.982363Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:06:26.982448Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:06:26.982471Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:06:26.982501Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19282 chars, format=text
-2026-09-15T23:06:29.758513Z DEBUG LLM response: response_len=200 chars, tokens=4782i/56o/4838t
-2026-09-15T23:06:26.982101Z DEBUG Response (normalized): Here is a potential response to the network event:```json{"type": "send_finger_error","message": "no such user"}```Reasoning: The user "bob" is not the only user existing in the system, as per the ins...
-{"type": "send_finger_error","message": "no such user"}```Reasoning: The user "bob" is not the only user existing in the system, as per the instruction "Only the user alice exists. Say so for anyone else." Therefore, the correct response is to refuse the query with a one-line 'finger: <message>' notice.
-  "type": "send_finger_error",
-{"type": "send_finger_error","message": "no such user"}```Reasoning: The user...
-2026-09-15T23:06:29.758582Z DEBUG Response (normalized): Since only the user "alice" exists, the correct response is to refuse the query with a one-line 'finger: <message>' notice.```json{"type": "send_finger_error","message": "no such user"}```
+2026-09-23T10:20:51.327964Z DEBUG Executing action 0: Object {"type": String("send_finger_error"), "message": String("Only the user alice exists.")}
 ```
 
 </details>
 
-<details><summary><code>finger/user-list</code> — 0/3 passed</summary>
-
-**Instruction:** When no user is named, list the two users alice and bob.
-
-**Client:** `nc -w 235 127.0.0.1 {PORT}`
-
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}]}```
-2026-09-15T23:06:43.514404Z  WARN Malformed response (raw): Here is the response to the finger_query event:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}
-2026-09-15T23:06:43.514404Z  WARN Malformed response (raw): Here is the response to the finger_query event:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}
-  ]
-}
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     ...
-2026-09-15T23:06:43.514454Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:06:43.514468Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:06:43.514474Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:06:43.514509Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:06:43.514523Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:06:43.514541Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19101 chars, format=text
-2026-09-15T23:06:57.608637Z DEBUG LLM response: response_len=714 chars, tokens=4769i/207o/4976t
-2026-09-15T23:06:43.514341Z DEBUG Response (normalized): Here is the response to the finger_query event:```json{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2  ...
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}]}```
-  "actions": [
-    {"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     ...
-2026-09-15T23:06:57.608839Z DEBUG Response (normalized): ```json{"tools": [],"actions": [{"type": "send_finger_response","text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -    ...
-```
-
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}]}```**<reasoning>**Since the client asked for a list of all users, I will respond with a finger block listing the two users 'alice' and 'bob'. This is in line with the server's instruction to list the two users when no user is named.
-2026-09-15T23:07:12.094798Z  WARN Malformed response (raw): **Response:**
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}
-  ]
-2026-09-15T23:07:12.094798Z  WARN Malformed response (raw): **Response:**
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}
-  ]
-}
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     ...
-2026-09-15T23:07:12.094835Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:07:12.094867Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:07:12.094879Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:07:12.094908Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:07:12.094918Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:07:12.094934Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19525 chars, format=text
-FINGER LLM call failed for 127.0.0.1:63028: ✗  LLM failed to generate valid response after retries.
-2026-09-15T23:07:23.709332Z DEBUG Response (normalized): **❌ Error: Invalid Response Format****Parse error:** Failed to parse action response: Invalid JSON❌ Actual response:{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Nam...
-2026-09-15T23:07:23.709374Z ERROR ✗ Failed to get valid response after 2 attempts
-2026-09-15T23:07:23.709443Z  WARN FINGER LLM call failed for 127.0.0.1:63028: ✗  LLM failed to generate valid response after retries.
-2026-09-15T23:07:23.709580Z DEBUG peer command task for server #1 connection #2 ended
-2026-09-15T23:07:12.094745Z DEBUG Response (normalized): **Response:**```json{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones ...
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}]}```**<reasoning>**Since the client asked for a list of all users, I will respond with a finger block listing the two users 'alice' and 'bob'. This is in line with the server's instruction to list the two users when no user is named.
-  "actions": [
-    {"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}
-{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     ...
-2026-09-15T23:07:23.709332Z DEBUG Response (normalized): **❌ Error: Invalid Response Format****Parse error:** Failed to parse action response: Invalid JSON❌ Actual response:{"tools": [],"actions": [{"type": "send_finger_response", "text": "Login     Nam...
-```
-
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `send_finger_response`, `generate_random`, `send_finger_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
-
-```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_finger_response","text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}]}```This response will list the two users "alice" and "bob" as per the instruction.
-2026-09-15T23:07:33.715715Z  WARN Malformed response (raw): To respond to the network event, I will follow the instructions and use the protocol-specific actions from the "Available Actions" list. Since the instruction field is to list the two users "alice" and "bob" when no user is named, I will execute the following actions:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-2026-09-15T23:07:33.715715Z  WARN Malformed response (raw): To respond to the network event, I will follow the instructions and use the protocol-specific actions from the "Available Actions" list. Since the instruction field is to list the two users "alice" and "bob" when no user is named, I will execute the following actions:
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "send_finger_response",
-      "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon...
-❌ Actual response:
-{"tools": [],"actions": [{"type": "send_finger_response","text": "Login     N...
-2026-09-15T23:07:33.715758Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:07:33.715769Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:07:33.715774Z DEBUG Conversation state: 7 messages, 2 new since last call
-2026-09-15T23:07:33.715801Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:07:33.715810Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:07:33.715822Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19970 chars, format=text
-2026-09-15T23:07:53.590296Z DEBUG LLM response: response_len=880 chars, tokens=4995i/214o/5209t
-2026-09-15T23:07:29.154883Z DEBUG Response (normalized): ```json{"tools": [{"type": "generate_random", "data_type": "string", "length": 16}],"actions": [{"type": "send_finger_response", "text": "Login     Name          Tty  Idle  Login Time\nalice     Alice...
-{"tools": [],"actions": [{"type": "send_finger_response","text": "Login     Name          Tty  Idle  Login Time\nalice     Alice Smith   *    2     Mon 09:12\nbob       Bob Jones     con  -     Mon 08:40"}]}```This response will list the two users "alice" and "bob" as per the instruction.
-  "actions": [
-      "type": "send_finger_response",
-{"tools": [],"actions": [{"type": "send_finger_response","text": "Login     N...
-```
-
-</details>
-
-<details><summary><code>redis/get-string</code> — 0/3 passed</summary>
+<details><summary><code>redis/get-string</code> — 4/5 passed</summary>
 
 **Instruction:** Answer a read of the key greeting with the text hello-netget.
 
 **Client:** `redis-cli -h 127.0.0.1 -p {PORT} -t 230 GET greeting`
 
-Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `redis_simple_string` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 3 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:22:55.529338Z DEBUG Executing action 0: Object {"type": String("redis_bulk_string"), "value": String("hello-netget")}
+```
+
+</details>
+
+<details><summary><code>postgresql/current-user</code> — 1/5 passed</summary>
+
+**Instruction:** Let anyone log in without a password. Report the current user as netget_eval.
+
+**Client:** `psql -h 127.0.0.1 -p {PORT} -U evaluser -d evaldb -w -t -A -c SELECT current_user`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
+
+```
+2026-09-23T10:27:08.017470Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
+2026-09-23T10:27:08.017665Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("netget_eval\n")}
+2026-09-23T10:27:08.017708Z DEBUG Executing action 2: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
+2026-09-23T10:27:08.017833Z DEBUG Executing action 3: Object {"type": String("set_memory"), "value": String("netget_eval\n")}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
+
+```
+2026-09-23T10:27:12.737758Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
+2026-09-23T10:27:12.737949Z DEBUG Executing action 1: Object {"type": String("show_message"), "message": String("User logged in: netget_eval")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
+
+```
+2026-09-23T10:27:18.046020Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
+2026-09-23T10:27:18.046205Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("current_user: netget_eval")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "netget_eval"
+
+```
+2026-09-23T10:27:26.489024Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("SELECT current_user")}
+```
+
+</details>
+
+<details><summary><code>postgresql/users-table</code> — 2/5 passed</summary>
+
+**Instruction:** Let anyone log in without a password. There is a table called users with a name column holding alice, bob and carol.
+
+**Client:** `psql -h 127.0.0.1 -p {PORT} -U evaluser -d evaldb -w -t -A -c SELECT name FROM users`
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "alice"
+
+```
+2026-09-23T10:27:56.155845Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 1")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "alice"
+
+```
+2026-09-23T10:28:16.242057Z DEBUG Executing action 0: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 3")}
+2026-09-23T10:28:16.242241Z DEBUG Executing action 1: Object {"type": String("postgresql_ok_response"), "tag": String("INSERT 0 3")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "carol"
+
+```
+2026-09-23T10:28:33.831820Z DEBUG Executing action 0: Object {"type": String("postgresql_query_response"), "columns": Array [Object {"name": String("id"), "type": String("int4")}, Object {"name": String("name"), "type": String("text")}], "rows": Array [Array [Number(1), String("Alice")], Array [Number(2), String("Bob")]]}
+2026-09-23T10:28:33.832117Z DEBUG Executing action 1: Object {"type": String("postgresql_query_response"), "columns": Array [Object {"name": String("id"), "type": String("int4")}, Object {"name": String("name"), "type": String("text")}], "rows": Array [Array [Number(1), String("Alice")], Array [Number(2), String("Bob")], Array [Number(3), String("Carol")]]}
+2026-09-23T10:28:33.832318Z DEBUG Executing action 2: Object {"type": String("set_memory"), "value": String("users: alice, bob, carol\n")}
+```
+
+</details>
+
+<details><summary><code>mysql/server-version</code> — 1/5 passed</summary>
+
+**Instruction:** Let anyone log in without a password. Report the server version as 8.0.36-netget-eval.
+
+**Client:** `/opt/homebrew/opt/mysql@8.0/bin/mysql -h 127.0.0.1 -P {PORT} -u evaluser --protocol=TCP --connect-timeout=230 -N -B -e SELECT VERSION()`
+
+Run 1 — `no_wire_response`: the model executed 10 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:32:01.915234Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
+2026-09-23T10:32:01.915511Z DEBUG Executing action 1: Object {"type": String("append_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
+2026-09-23T10:32:01.915553Z DEBUG Executing action 2: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
+2026-09-23T10:32:01.915740Z DEBUG Executing action 3: Object {"type": String("append_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
+2026-09-23T10:32:01.915768Z DEBUG Executing action 4: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
+2026-09-23T10:32:01.915962Z DEBUG Executing action 5: Object {"type": String("append_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
+2026-09-23T10:32:01.915988Z DEBUG Executing action 6: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}, Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [Object {"version": String("8.0.36-netget-eval"), "version_comment": String("NetGet Evaluated Server")}]]}
+2026-09-23T10:32:01.916154Z DEBUG Executing action 7: Object {"type": String("set_memory"), "value": String("user_authenticated=true\nlast_query: SELECT @@version_comment")}
+2026-09-23T10:32:06.519464Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}], "rows": Array [Object {"version": String("8.0.36-netget-eval")}]}
+2026-09-23T10:32:06.519704Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("version: 8.0.36-netget-eval")}
+```
+
+Run 3 — `no_wire_response`: the model executed 11 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:32:19.201999Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [String("8.0.36-netget-eval")]]}
+2026-09-23T10:32:43.517215Z DEBUG Executing action 0: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
+2026-09-23T10:32:43.517409Z DEBUG Executing action 1: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
+2026-09-23T10:32:43.517443Z DEBUG Executing action 2: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
+2026-09-23T10:32:43.517577Z DEBUG Executing action 3: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
+2026-09-23T10:32:43.517593Z DEBUG Executing action 4: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
+2026-09-23T10:32:43.517722Z DEBUG Executing action 5: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
+2026-09-23T10:32:43.517737Z DEBUG Executing action 6: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
+2026-09-23T10:32:43.517864Z DEBUG Executing action 7: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
+2026-09-23T10:32:43.517879Z DEBUG Executing action 8: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Number(0)}
+2026-09-23T10:32:43.518002Z DEBUG Executing action 9: Object {"type": String("show_message"), "message": String("Server version: 8.0.36-netget-eval")}
+```
+
+Run 4 — `no_wire_response`: the model executed 2 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:32:51.155124Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("server_version"), "type": String("VARCHAR")}], "rows": Array [Array [String("8.0.36-netget-eval")]]}
+2026-09-23T10:32:53.481211Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version"), "type": String("VARCHAR")}], "rows": Array [Object {"version": String("8.0.36-netget-eval")}]}
+```
+
+Run 5 — `no_wire_response`: the model executed 3 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:33:01.005784Z DEBUG Executing action 0: Object {"type": String("mysql_query_response"), "columns": Array [Object {"name": String("version_comment"), "type": String("VARCHAR")}], "rows": Array [Array [String("8.0.36-netget-eval")]]}
+2026-09-23T10:33:04.570856Z DEBUG Executing action 0: Object {"type": String("mysql_ok_response"), "affected_rows": Number(0), "last_insert_id": Null}
+2026-09-23T10:33:04.571047Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("server_version: 8.0.36-netget-eval\nlogin_required: false")}
+```
+
+</details>
+
+<details><summary><code>ldap/single-person</code> — 0/5 passed</summary>
+
+**Instruction:** Accept anonymous connections. A search under dc=example,dc=com finds one person, Alice Liddell, whose mail address is alice@example.com.
+
+**Client:** `ldapsearch -x -H ldap://127.0.0.1:{PORT} -b dc=example,dc=com -s sub -o nettimeout=230 -l 230 (objectClass=*)`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
+
+```
+2026-09-23T10:34:44.000399Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
+
+```
+2026-09-23T10:34:51.770570Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
+
+```
+2026-09-23T10:35:05.484801Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
+
+```
+2026-09-23T10:35:12.527483Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Invalid DN or password")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "Alice Liddell"
+
+```
+2026-09-23T10:35:25.662937Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Anonymous bind not supported")}
+2026-09-23T10:35:25.663186Z DEBUG Executing action 1: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+</details>
+
+<details><summary><code>ldap/two-people</code> — 0/5 passed</summary>
+
+**Instruction:** Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob.
+
+**Client:** `ldapsearch -x -H ldap://127.0.0.1:{PORT} -b ou=people,dc=example,dc=com -s sub -o nettimeout=230 -l 230 (objectClass=*)`
+
+Run 1 — `valid_actions_rejected_as_unparseable`: the model produced `read_file` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
 
 ```
 ❌ Actual response:
-{"tools": [],"actions": [{"type": "redis_simple_string","value": "hello-netget"}]}```This response includes the `redis_simple_string` action to send the response "hello-netget" to the client.
-2026-09-15T23:08:13.708698Z  WARN Malformed response (raw): Here is the response that meets the requirements:
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "redis_simple_string",
-2026-09-15T23:08:13.708698Z  WARN Malformed response (raw): Here is the response that meets the requirements:
-```json
-{
-  "tools": [],
-  "actions": [
-    {
-      "type": "redis_simple_string",
-      "value": "hello-netget"
-    }
+{"actions": [...]}```**When to include reasoning:**- **User input commands**: Strongly encouraged, especially for ambiguous requests, port conflicts, update vs create decisions, multi-step operations- **Network events**: Optional, use when helpful for complex logic, authentication decisions, error handling- Explain: what you understand, what you checked, why you chose this action**Reasoning rules:**1. **Tag is optional** - You can omit it for simple, straightforward cases2. **Keep it brief** - 1-3 sentences explaining key points3. **Tag can be anywhere** - Before or after JSON (will be extracted and logged)4. **Valid JSON still required** - After removing reasoning tag, valid JSON must remain## Examples✓ **Valid (tools only):**```json{"tools": [{"type": "read_file", "path": "config.json", "mode": "full"}]}```✓ **Valid (actions only):**```json{"actions": [{"type": "show_message", "message": "Hello"}]}```✓ **Valid (both tools and actions):**```json{"tools": [{"type": "read_file", "path": "config.json"},{"type": "generate_random", "data_type": "uuid"}],"actions": [{"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LI… (truncated)
+2026-09-23T10:36:52.077300Z  WARN Malformed response (raw): **Event-Specific Instructions**
+Accept anonymous connections. Under ou=people,dc=example,dc=com there are two users, alice and bob.
+
+**Network Event Instructions**
+
+You are handling a network event for an active server. Your job is to:
+
+1. **Understand the event**: Parse the incoming data/request
+2. **Follow server instructions**: Use the instruction field as your guide
 ❌ Actual response:
-{"tools": [],"actions": [{"type": "redis_simple_string","value": "hello-netge...
-2026-09-15T23:08:13.708736Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:08:13.708749Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:08:13.708754Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:08:13.708784Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:08:13.708795Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:08:13.708809Z DEBUG LLM request: model=llama3.1:8b, prompt_len=16786 chars, format=text
-2026-09-15T23:08:15.558790Z DEBUG LLM response: response_len=180 chars, tokens=4135i/50o/4185t
-2026-09-15T23:08:13.708648Z DEBUG Response (normalized): Here is the response that meets the requirements:```json{"tools": [],"actions": [{"type": "redis_simple_string","value": "hello-netget"}]}```This response includes the `redis_simple_string` action to ...
-{"tools": [],"actions": [{"type": "redis_simple_string","value": "hello-netget"}]}```This response includes the `redis_simple_string` action to send the response "hello-netget" to the client.
-  "actions": [
-      "type": "redis_simple_string",
-{"tools": [],"actions": [{"type": "redis_simple_string","value": "hello-netge...
-2026-09-15T23:08:15.558874Z DEBUG Response (normalized): Here is the response that meets the requirements:```json{"tools": [],"actions": [{"type": "redis_simple_string","value": "hello-netget"}]}```
+{"actions": [...]}```**When to include reasoning:**- **User input commands**:...
+2026-09-23T10:36:52.077837Z  INFO → Sending correction and retrying (attempt 2)...
+2026-09-23T10:36:52.077853Z  INFO LLM request (attempt 2/2)
+2026-09-23T10:36:52.077861Z DEBUG Conversation state: 7 messages, 2 new since last call
+2026-09-23T10:36:52.077907Z DEBUG Acquiring rate limiter permit for Network request
+2026-09-23T10:36:52.077920Z DEBUG Rate limiter permit acquired for Network request
+2026-09-23T10:36:52.077939Z DEBUG LLM request: model=llama3.1:8b, prompt_len=25596 chars, format=text
+2026-09-23T10:37:01.157059Z DEBUG LLM response: response_len=578 chars, tokens=6223i/151o/6374t
+2026-09-23T10:35:37.522614Z DEBUG Response (normalized): ## Response```json{"tools": [{"type": "read_file", "path": "schema.json", "mode": "grep", "pattern": "(ou=people,dc=example,dc=com)", "context_before": 5, "context_after": 5}],"actions": [{"type": "ld...
+{"actions": [...]}```**When to include reasoning:**- **User input commands**: Strongly encouraged, especially for ambiguous requests, port conflicts, update vs create decisions, multi-step operations- **Network events**: Optional, use when helpful for complex logic, authentication decisions, error handling- Explain: what you understand, what you checked, why you chose this action**Reasoning rules:**1. **Tag is optional** - You can omit it for simple, straightforward cases2. **Keep it brief** - 1-3 sentences explaining key points3. **Tag can be anywhere** - Before or after JSON (will be extracted and logged)4. **Valid JSON still required** - After removing reasoning tag, valid JSON must remain## Examples✓ **Valid (tools only):**```json{"tools": [{"type": "read_file", "path": "config.json", "mode": "full"}]}```✓ **Valid (actions only):**```json{"actions": [{"type": "show_message", "message": "Hello"}]}```✓ **Valid (both tools and actions):**```json{"tools": [{"type": "read_file", "path": "config.json"},{"type": "generate_random", "data_type": "uuid"}],"actions": [{"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"},{"type": "show… (truncated)
+{"actions": [...]}```**When to include reasoning:**- **User input commands**:...
+2026-09-23T10:37:01.157162Z DEBUG Response (normalized): **Correct Response**```json{"tools": [{"type": "read_file", "path": "schema.json", "mode": "grep", "pattern": "(ou=people,dc=example,dc=com)", "context_before": 5, "context_after": 5}],"actions": [{"t...
+2026-09-23T10:37:01.160078Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+2026-09-23T10:37:01.160303Z DEBUG Executing action 1: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
 ```
 
-Run 2 — `valid_actions_rejected_as_unparseable`: the model produced `redis_simple_string` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "alice"
 
 ```
-❌ Actual response:
-{"tools": [],"actions": [{"type": "redis_simple_string", "value": "hello-netget"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-netget`. This is a standard Redis command. I will execute the Redis `redis_simple_string` action to send the response `hello-netget`.
-2026-09-15T23:08:21.591939Z  WARN Malformed response (raw): ## Response
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "redis_simple_string", "value": "hello-netget"}
-2026-09-15T23:08:21.591939Z  WARN Malformed response (raw): ## Response
-
-```json
-{
-  "tools": [],
-  "actions": [
-    {"type": "redis_simple_string", "value": "hello-netget"}
-  ]
-}
-❌ Actual response:
-{"tools": [],"actions": [{"type": "redis_simple_string", "value": "hello-netg...
-2026-09-15T23:08:21.591976Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:08:21.591987Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:08:21.591991Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:08:21.592018Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:08:21.592029Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:08:21.592046Z DEBUG LLM request: model=llama3.1:8b, prompt_len=16990 chars, format=text
-2026-09-15T23:08:24.310937Z DEBUG LLM response: response_len=353 chars, tokens=4184i/91o/4275t
-2026-09-15T23:08:21.591891Z DEBUG Response (normalized): ## Response```json{"tools": [],"actions": [{"type": "redis_simple_string", "value": "hello-netget"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-net...
-{"tools": [],"actions": [{"type": "redis_simple_string", "value": "hello-netget"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-netget`. This is a standard Redis command. I will execute the Redis `redis_simple_string` action to send the response `hello-netget`.
-  "actions": [
-    {"type": "redis_simple_string", "value": "hello-netget"}
-{"tools": [],"actions": [{"type": "redis_simple_string", "value": "hello-netg...
-2026-09-15T23:08:24.311024Z DEBUG Response (normalized): ## Response```json{"tools": [],"actions": [{"type": "redis_simple_string", "value": "hello-netget"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-net...
+2026-09-23T10:37:11.598555Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Invalid user: anonymous bind not supported")}
 ```
 
-Run 3 — `valid_actions_rejected_as_unparseable`: the model produced `append_memory`, `redis_simple_string`, `append_memory` and the reply was discarded anyway, because text or a stray fence surrounds the JSON
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "alice"
 
 ```
-❌ Actual response:
-{"type":"append_memory","value":"greeting: hello-netget"}**Actions**None**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting "hello-netget".**Response**```json{"tools": [{"type": "append_memory", "value": "greeting: hello-netget"}],"actions": []}```
-2026-09-15T23:08:30.199523Z  WARN Malformed response (raw): **Tools**
+2026-09-23T10:37:22.440491Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
 
-1. {"type":"append_memory","value":"greeting: hello-netget"}
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "alice"
 
-**Actions**
+```
+2026-09-23T10:37:36.904252Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+2026-09-23T10:37:36.904528Z DEBUG Executing action 1: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(false), "message": String("Invalid bind credentials")}
+```
 
-None
-2026-09-15T23:08:30.199523Z  WARN Malformed response (raw): **Tools**
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "alice"
 
-1. {"type":"append_memory","value":"greeting: hello-netget"}
+```
+2026-09-23T10:37:43.127583Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
 
-**Actions**
+</details>
 
-None
+<details><summary><code>ldap/empty-result</code> — 1/5 passed</summary>
 
-**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting "hello-netget".
-❌ Actual response:
-{"type":"append_memory","value":"greeting: hello-netget"}**Actions**None**Rea...
-2026-09-15T23:08:30.199558Z  INFO → Sending correction and retrying (attempt 2)...
-2026-09-15T23:08:30.199569Z  INFO LLM request (attempt 2/2)
-2026-09-15T23:08:30.199573Z DEBUG Conversation state: 4 messages, 2 new since last call
-2026-09-15T23:08:30.199600Z DEBUG Acquiring rate limiter permit for Network request
-2026-09-15T23:08:30.199611Z DEBUG Rate limiter permit acquired for Network request
-2026-09-15T23:08:30.199625Z DEBUG LLM request: model=llama3.1:8b, prompt_len=16960 chars, format=text
-2026-09-15T23:08:33.088652Z DEBUG LLM response: response_len=373 chars, tokens=4191i/96o/4287t
-2026-09-15T23:08:30.199481Z DEBUG Response (normalized): **Tools**1. {"type":"append_memory","value":"greeting: hello-netget"}**Actions**None**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting "hello-netge...
-{"type":"append_memory","value":"greeting: hello-netget"}**Actions**None**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting "hello-netget".**Response**```json{"tools": [{"type": "append_memory", "value": "greeting: hello-netget"}],"actions": []}```
-1. {"type":"append_memory","value":"greeting: hello-netget"}
-  "tools": [{"type": "append_memory", "value": "greeting: hello-netget"}],
-  "actions": []
-{"type":"append_memory","value":"greeting: hello-netget"}**Actions**None**Rea...
-2026-09-15T23:08:33.088731Z DEBUG Response (normalized): **✓ Correct Response:**```json{"tools": [{"type": "append_memory", "value": "greeting: hello-netget"}], "actions": [{"type": "redis_simple_string", "value": "hello-netget"}]}```In this response, we ...
+**Instruction:** Accept anonymous connections. There is nothing at all under dc=other,dc=com — searches there succeed and find no one.
+
+**Client:** `ldapsearch -x -H ldap://127.0.0.1:{PORT} -b dc=other,dc=com -s sub -o nettimeout=230 -l 230 (objectClass=*)`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
+
+```
+2026-09-23T10:37:55.735796Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
+
+```
+2026-09-23T10:38:12.194585Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
+
+```
+2026-09-23T10:38:20.195958Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not match /(?i)result:\s*0\s+success/
+
+```
+2026-09-23T10:38:26.787958Z DEBUG Executing action 0: Object {"type": String("ldap_bind_response"), "message_id": Number(1), "success": Bool(true), "message": String("Bind successful")}
+```
+
+</details>
+
+<details><summary><code>syslog/drop-healthchecks</code> — 1/5 passed</summary>
+
+**Instruction:** Throw away any message whose text mentions healthcheck. Keep everything else.
+
+**Client:** `nc -u -w 1 127.0.0.1 {PORT}`
+
+Run 2 — `no_wire_response`: the model executed 2 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:48:34.037801Z DEBUG Executing action 0: Object {"type": String("store_syslog_message"), "message": String("<14>Oct 11 22:14:15 evalhost netget-eval: healthcheck ok\n")}
+2026-09-23T10:48:34.037937Z DEBUG Executing action 1: Object {"type": String("store_syslog_message"), "message": String("<34>Oct 11 22:14:15 mymachine su: 'su root' failed for user on /dev/pts/8")}
+```
+
+Run 3 — `no_wire_response`: the model executed 2 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:52:42.382892Z DEBUG Executing action 0: Object {"type": String("store_syslog_message"), "message": String("healthcheck ok")}
+2026-09-23T10:52:42.383043Z DEBUG Executing action 1: Object {"type": String("store_syslog_message"), "message": String("healthcheck ok")}
+```
+
+Run 5 — `no_wire_response`: the model executed 1 action(s) but the client saw nothing back (client exited silently)
+
+```
+2026-09-23T10:56:56.529842Z DEBUG Executing action 0: Object {"type": String("store_syslog_message"), "message": String("<14>Oct 11 22:14:15 evalhost netget-eval: healthcheck ok\n")}
+```
+
+</details>
+
+<details><summary><code>telnet/answer-command</code> — 4/5 passed</summary>
+
+**Instruction:** If somebody types the word time, answer with the line It is always noon here.
+
+**Client:** `curl -sS --max-time 230 telnet://127.0.0.1:{PORT}`
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "It is always noon here"
+
+```
+2026-09-23T11:47:33.792541Z DEBUG Executing action 0: Object {"type": String("append_memory"), "value": String("It is always noon here")}
+```
+
+</details>
+
+<details><summary><code>ftp/anonymous-login</code> — 3/5 passed</summary>
+
+**Instruction:** Let anyone log in anonymously and tell them the login succeeded.
+
+**Client:** `ftp -n -v 127.0.0.1 {PORT}`
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not match /(?i)230|logged in|login successful/
+
+```
+2026-09-23T12:05:07.575920Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not match /(?i)230|logged in|login successful/
+
+```
+2026-09-23T12:05:33.205664Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("User name okay, need password.")}
+```
+
+</details>
+
+<details><summary><code>ftp/working-directory</code> — 0/5 passed</summary>
+
+**Instruction:** Let anyone log in anonymously. The current directory is /eval.
+
+**Client:** `ftp -n -v 127.0.0.1 {PORT}`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+
+```
+2026-09-23T12:05:49.488959Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(230), "message": String("Logged in anonymously")}
+2026-09-23T12:05:49.489186Z DEBUG Executing action 1: Object {"type": String("set_memory"), "value": String("cwd: /eval\n")}
+```
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+
+```
+2026-09-23T12:06:29.558658Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-23T12:06:29.558889Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+
+```
+2026-09-23T12:06:39.824148Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+```
+
+Run 4 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+
+```
+2026-09-23T12:06:59.276622Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+2026-09-23T12:06:59.276908Z DEBUG Executing action 1: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("User name okay, need password")}
+2026-09-23T12:06:59.277083Z DEBUG Executing action 2: Object {"type": String("send_ftp_response"), "code": Number(331), "message": String("User name okay, need password")}
+```
+
+Run 5 — `wrong_content`: valid actions executed, but client output does not contain "/eval"
+
+```
+2026-09-23T12:07:07.983117Z DEBUG Executing action 0: Object {"type": String("send_ftp_response"), "code": Number(220), "message": String("FTP Server Ready")}
+```
+
+</details>
+
+<details><summary><code>udp/fixed-reply</code> — 4/5 passed</summary>
+
+**Instruction:** Answer every datagram with the text UDP-EVAL-OK.
+
+**Client:** `nc -u -w 235 127.0.0.1 {PORT}`
+
+Run 2 — `wrong_content`: valid actions executed, but client output does not contain "UDP-EVAL-OK"
+
+```
+2026-09-23T12:07:48.484451Z DEBUG Executing action 0: Object {"type": String("send_udp_response"), "data": String("Response data"), "encoding": String("text")}
+```
+
+</details>
+
+<details><summary><code>udp/echo</code> — 3/5 passed</summary>
+
+**Instruction:** Send every datagram straight back to whoever sent it, unchanged.
+
+**Client:** `nc -u -w 235 127.0.0.1 {PORT}`
+
+Run 1 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-datagram"
+
+```
+2026-09-23T12:08:27.208300Z DEBUG Executing action 0: Object {"type": String("send_udp_response"), "data": String("datagram unchanged"), "encoding": String("text")}
+```
+
+Run 3 — `wrong_content`: valid actions executed, but client output does not contain "netget-eval-datagram"
+
+```
+2026-09-23T12:08:46.165221Z DEBUG Executing action 0: Object {"type": String("send_udp_response"), "data": String("data"), "encoding": String("text")}
 ```
 
 </details>
