@@ -136,7 +136,12 @@ Everything a client or a model can send is bounds-checked before it is allocated
 
 - `ClientCutText` length is capped at `MAX_CUT_TEXT_LEN` (1 MiB) **before** the buffer is
   allocated — the length is a client-controlled u32, so without the cap a nine-byte message asks
-  for 4 GiB.
+  for 4 GiB. Over the cap the connection closes (RFB has no error message once the session is
+  up, and the payload cannot be skipped without reading it), logged
+  `decision=fail_closed_cut_text_too_large`. It is the only client message a peer sizes —
+  SetEncodings' u16 count is read four bytes at a time and discarded, never buffered — so
+  `MAX_CUT_TEXT_LEN` is the declared `max_inbound_bytes`. `tests/server/vnc/inbound_limit_test.rs`
+  drives it from the wire.
 - The requested update region is ignored entirely; the announced framebuffer is always sent, so
   a client cannot ask for a 65535×65535 rectangle.
 - An unknown client message type closes the connection. Its length is unknown, so the stream

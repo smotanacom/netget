@@ -228,10 +228,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "its MAX_WRITE_LEN bounds a write payload, not a message",
     ),
     (
-        "vnc",
-        "its MAX_CUT_TEXT_LEN bounds one message type, not the protocol",
-    ),
-    (
         "webrtc",
         "SCTP framing is owned by webrtc-rs; NetGet's own bound is underived",
     ),

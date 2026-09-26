@@ -6,3 +6,5 @@ pub mod connection_bounds_test;
 pub mod peer_inject_test;
 #[cfg(all(test, feature = "vnc"))]
 pub mod test;
+#[cfg(all(test, feature = "vnc"))]
+pub mod inbound_limit_test;

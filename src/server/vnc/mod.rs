@@ -100,12 +100,16 @@ const RFB_VERSION: &[u8] = b"RFB 003.008\n";
 /// Default desktop name announced in ServerInit.
 const DEFAULT_DESKTOP_NAME: &str = "NetGet VNC";
 
-/// Largest ClientCutText payload accepted, in bytes.
+/// Largest ClientCutText payload accepted, in bytes, and this server's declared
+/// `max_inbound_bytes`.
 ///
 /// The length field is a client-controlled u32 and the buffer for it is allocated before a
 /// single byte of payload is read; without a cap a nine-byte message asks for a 4 GiB
-/// allocation.
-const MAX_CUT_TEXT_LEN: u32 = 1 << 20;
+/// allocation. It is the only client message RFB lets a peer size: every other one is fixed
+/// length, and SetEncodings' u16 count is read four bytes at a time and discarded, never
+/// buffered. Over the cap the connection closes — the payload cannot be skipped without
+/// reading it, and RFB has no error message to send once the session is up.
+pub const MAX_CUT_TEXT_LEN: u32 = 1 << 20;
 
 /// Background of the placeholder screen.
 ///
@@ -625,7 +629,8 @@ impl VncConnection {
                         // The buffer used to be allocated straight from this client-controlled
                         // u32, so a nine-byte message could ask for a 4 GiB allocation.
                         Log::new(Some(&self.status_tx)).warn(format!(
-                            "VNC ClientCutText length {} exceeds {} byte cap, closing connection",
+                            "VNC ClientCutText length {} exceeds {} byte cap \
+                             decision=fail_closed_cut_text_too_large, closing connection",
                             length, MAX_CUT_TEXT_LEN
                         ));
                         false
