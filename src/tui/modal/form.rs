@@ -623,7 +623,12 @@ impl FormModel {
 /// The default routing an interactively created instance starts with.
 ///
 /// Servers: one `*` → manual rule — every event waits for the human driving
-/// the dashboard.
+/// the dashboard — preceded by one zero-action static rule per event the
+/// protocol raises on every connection (`EventType::on_every_connection`, e.g.
+/// `tcp_connection_opened`). Those fire for each peer before it has said
+/// anything, and parking each one would put a question in front of the human
+/// for every connection; answered with nothing ahead of time they cost no model
+/// call and no attention, and the peer's first message still parks.
 ///
 /// Clients: the same `*` → manual rule, preceded by one zero-action static
 /// rule per connect event (`<proto>_connected`), so establishing the
@@ -635,12 +640,24 @@ impl FormModel {
 /// `*_connected` glob that nothing would ever match. A client whose connect
 /// event does not follow the `_connected` naming keeps the plain manual
 /// default.
-fn default_event_handlers(section: Section, protocol: &str) -> serde_json::Value {
+pub fn default_event_handlers(section: Section, protocol: &str) -> serde_json::Value {
     let manual_fallback = serde_json::json!({
         "event_pattern": "*",
         "handler": {"type": "manual"}
     });
     let mut rules = Vec::new();
+    if section == Section::Servers {
+        if let Ok(server) = crate::protocol::server_registry::registry().resolve(protocol) {
+            for event_type in server.get_event_types() {
+                if event_type.on_every_connection {
+                    rules.push(serde_json::json!({
+                        "event_pattern": event_type.id,
+                        "handler": {"type": "static", "actions": []}
+                    }));
+                }
+            }
+        }
+    }
     if section == Section::Clients {
         // `resolve` rather than `get`: case-insensitive, same lookup the
         // management paths use for a protocol the user named.

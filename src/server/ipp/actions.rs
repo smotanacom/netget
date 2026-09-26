@@ -341,8 +341,12 @@ fn ipp_response_actions() -> Vec<ActionDefinition> {
 pub fn ipp_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "ipp_response".to_string(),
-        description: "Answer an IPP operation with a status code and no attributes. Use for \
-                      acknowledgements and for rejecting an operation."
+        description: "Answer an IPP operation with a status code and no attributes: for \
+                      operations that return nothing but a status, and for refusing one. \
+                      Never for Get-Printer-Attributes or a job operation that is being \
+                      answered - ipp_printer_attributes / ipp_job_attributes carry their own \
+                      status, and a status-only reply sent beside them is the one the client \
+                      gets. One response action per request."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -388,7 +392,14 @@ pub fn ipp_response_action() -> ActionDefinition {
 pub fn ipp_printer_attributes_action() -> ActionDefinition {
     ActionDefinition {
         name: "ipp_printer_attributes".to_string(),
-        description: "Answer Get-Printer-Attributes with a printer attribute group".to_string(),
+        description: "The answer to Get-Printer-Attributes, sent alone - it carries its own \
+                      status, so no ipp_response goes with it. Always the answer to that \
+                      operation, whatever condition the printer is in: a stopped printer, or \
+                      one refusing jobs, is still described here with ipp_status \
+                      successful-ok - printer-state 'stopped', printer-is-accepting-jobs \
+                      false - because the client asked what the printer is, not to print. \
+                      Put the printer's name in printer-name."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "attributes".to_string(),
@@ -840,6 +851,14 @@ pub static IPP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             description: "IPP version the client used, e.g. '2.0'".to_string(),
             required: true,
         },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which response action answers this operation, and what it must say. \
+                          Derived by the server from the operation id."
+                .to_string(),
+            required: true,
+        },
     ])
     .with_actions(ipp_response_actions())
     .with_alternative_example(json!({
@@ -848,8 +867,8 @@ pub static IPP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     }))
     .with_alternative_example(json!({
         "type": "ipp_response",
-        "ipp_status": "server-error-not-accepting-jobs",
-        "status_message": "Printer is offline"
+        "ipp_status": "client-error-not-found",
+        "status_message": "No such printer"
     }))
     .with_log_template(
         LogTemplate::new()
@@ -860,6 +879,33 @@ pub static IPP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 });
 
 /// Get IPP event types
+/// The `answer_with` event field: which response action answers `operation`, in words.
+///
+/// The model is told the operation's name and has three response actions to choose from, and
+/// the eval showed it choosing by the operator's wording rather than by the operation: told a
+/// printer "is stopped and not accepting jobs", llama3.1:8b answered Get-Printer-Attributes with
+/// `server-error-not-accepting-jobs` — a status that belongs to Print-Job — every run, so the
+/// client learned nothing about the printer. The server knows the operation id exactly, so it
+/// says which action answers it rather than leaving a small model to map RFC 8011 in its head.
+pub fn answer_with_for_operation(operation: &str) -> &'static str {
+    match operation {
+        "Get-Printer-Attributes" => {
+            "ipp_printer_attributes alone, with ipp_status successful-ok: describe the \
+             printer (printer-name, printer-state, printer-is-accepting-jobs) whatever state \
+             it is in - a stopped printer is printer-state 'stopped', not an error"
+        }
+        "Print-Job" | "Print-URI" | "Create-Job" => {
+            "ipp_job_attributes with the new job's job-id and job-state; or, if the printer is \
+             not accepting jobs, ipp_response with ipp_status server-error-not-accepting-jobs"
+        }
+        "Get-Job-Attributes" | "Get-Jobs" => {
+            "ipp_job_attributes with the job's attributes; or ipp_response with ipp_status \
+             client-error-not-found for a job that does not exist"
+        }
+        _ => "ipp_response with the operation's status",
+    }
+}
+
 pub fn get_ipp_event_types() -> Vec<EventType> {
     vec![IPP_REQUEST_EVENT.clone()]
 }

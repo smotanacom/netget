@@ -346,3 +346,12 @@ decision=fail_closed` audit is not diluted by socket errors.
 asserting for each that **nothing** reached the socket *and* that the right token reached the
 log. Either assertion alone is meaningless: silence with no log is the defect, and a log line
 with a datagram beside it would mean the tag was lying.
+
+## Echo means sending `data_preview` back
+
+Told to "send every datagram straight back, unchanged", llama3.1:8b sent the literal text
+`datagram unchanged` or `data` (`udp/echo` 3/5 in the committed eval baseline): nothing told it
+that `data_preview` *is* the datagram. `data_preview` now says it is the whole payload unless it
+ends in `...`, and `send_udp_response` says an echo puts it in `data` with its `data_encoding`.
+Wording only; with seed 42 `udp/echo` and `udp/fixed-reply` are 5/5.
+

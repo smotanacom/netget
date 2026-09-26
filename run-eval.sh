@@ -7,7 +7,10 @@
 # client (dig, curl, redis-cli, psql, ldapsearch, ipptool, whois, ftp), and
 # scores whether the model could serve a plain-English operator instruction.
 #
-# It costs real model time and it is NOT deterministic. It must never gate a PR.
+# It costs real model time. It must never gate a PR. Every run pins the model's
+# sampler seed (--seed, default 42), which makes an identical prompt answer
+# identically; each run's prompt still carries its own ports and ids, so the
+# report measures how often the runs agreed rather than assuming they did.
 # See tests/eval/mod.rs for the design and EVAL_RESULTS.md for the output.
 #
 # Usage:
@@ -15,9 +18,13 @@
 #   ./run-eval.sh http dns tcp          # just these
 #   ./run-eval.sh --runs 5 http         # 5 runs per instruction
 #   ./run-eval.sh --model llama3.1:8b   # pick the model explicitly
+#   ./run-eval.sh --seed 7              # sampler seed (default 42; 'none' = unpinned)
+#   ./run-eval.sh --temperature 0       # also pin the temperature (default: model's own)
+#   ./run-eval.sh --out /tmp/ipp ipp    # write the two artefacts there, not over the baseline
 #   ./run-eval.sh --list                # what would run, and with what client
 #
-# Output: eval-results/latest.json and EVAL_RESULTS.md, regenerated together.
+# Output: eval-results/latest.json and EVAL_RESULTS.md, regenerated together
+# (or DIR/latest.json and DIR/EVAL_RESULTS.md with --out DIR).
 
 set -euo pipefail
 
@@ -52,6 +59,9 @@ ALL_PROTOCOLS=(
 # artefact, because a score is only comparable within one model.
 MODEL="${NETGET_LLM_TEST_MODEL:-llama3.1:8b}"
 RUNS="${NETGET_EVAL_RUNS:-3}"
+SEED="${NETGET_EVAL_SEED:-42}"
+TEMPERATURE="${NETGET_EVAL_TEMPERATURE:-}"
+OUT_DIR="${NETGET_EVAL_OUT_DIR:-}"
 
 # A LITERAL IP, not `localhost`, and this is load-bearing rather than tidiness.
 # `reqwest` hands the URL host to its resolver unconditionally and `hyper-util`'s
@@ -76,12 +86,24 @@ while [ $# -gt 0 ]; do
             MODEL="$2"
             shift 2
             ;;
+        --seed)
+            SEED="$2"
+            shift 2
+            ;;
+        --temperature)
+            TEMPERATURE="$2"
+            shift 2
+            ;;
+        --out)
+            OUT_DIR="$2"
+            shift 2
+            ;;
         --list)
             LIST_ONLY=true
             shift
             ;;
         --help | -h)
-            sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         -*)
@@ -98,6 +120,12 @@ done
 if [ ${#PROTOCOLS[@]} -eq 0 ]; then
     PROTOCOLS=("${ALL_PROTOCOLS[@]}")
 fi
+
+# The test binary's working directory is not this one; hand it an absolute path.
+case "$OUT_DIR" in
+    "" | /*) ;;
+    *) OUT_DIR="$PROJECT_ROOT/$OUT_DIR" ;;
+esac
 
 # Validate before spending a minute on a build.
 for proto in "${PROTOCOLS[@]}"; do
@@ -123,6 +151,7 @@ if [ "$LIST_ONLY" = true ]; then
     echo "${BLUE}Features:${NC}  $FEATURES"
     echo "${BLUE}Model:${NC}     $MODEL"
     echo "${BLUE}Runs:${NC}      $RUNS per instruction"
+    echo "${BLUE}Seed:${NC}      $SEED   ${BLUE}Temperature:${NC} ${TEMPERATURE:-model default}"
     echo ""
     echo "Instruction sets live in tests/eval/suites.rs."
     exit 0
@@ -161,14 +190,19 @@ done
 echo ""
 echo "${BLUE}Protocols:${NC} ${PROTOCOLS[*]}"
 echo "${BLUE}Model:${NC}     ${MODEL}"
-echo "${BLUE}Runs:${NC}      ${RUNS} per instruction (the score is a rate, not a boolean —"
-echo "           netget passes no temperature or seed to its backend)"
+echo "${BLUE}Runs:${NC}      ${RUNS} per instruction (the score is a rate; the report says"
+echo "           whether the runs agreed)"
+echo "${BLUE}Seed:${NC}      ${SEED}   ${BLUE}Temperature:${NC} ${TEMPERATURE:-model default}"
+[ -n "$OUT_DIR" ] && echo "${BLUE}Output:${NC}    ${OUT_DIR}"
 echo ""
 
 export NETGET_USE_OLLAMA=1
 export NETGET_LLM_TEST_MODEL="$MODEL"
 export NETGET_EVAL_RUNS="$RUNS"
 export NETGET_EVAL_PROTOCOLS="$PROTO_LIST"
+export NETGET_EVAL_SEED="$SEED"
+export NETGET_EVAL_TEMPERATURE="$TEMPERATURE"
+export NETGET_EVAL_OUT_DIR="$OUT_DIR"
 
 # A separate target dir by default: the eval's feature set rarely matches
 # whatever else is building, and sharing target/ means contending on the lock
@@ -185,8 +219,9 @@ STATUS=$?
 set -e
 
 echo ""
-if [ -f eval-results/latest.json ]; then
-    echo "${GREEN}Results:${NC} eval-results/latest.json and EVAL_RESULTS.md"
+RESULTS_JSON="${OUT_DIR:-eval-results}/latest.json"
+if [ -f "$RESULTS_JSON" ]; then
+    echo "${GREEN}Results:${NC} ${RESULTS_JSON} and ${OUT_DIR:-.}/EVAL_RESULTS.md"
 else
     echo "${RED}No results file was written — the harness did not complete.${NC}" >&2
 fi

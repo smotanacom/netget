@@ -34,6 +34,11 @@ mod telnet_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock: Client sent greeting message
+                .on_event("telnet_connection_opened")
+                // Raised for every connection; this server has nothing to say first.
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(1)
+                .and()
                 .on_event("telnet_message_received")
                 .and_event_data_contains("message", "hello")
                 .respond_with_actions(serde_json::json!([
@@ -136,6 +141,11 @@ mod telnet_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock: Text received from client
+                .on_event("telnet_connection_opened")
+                // Raised for every connection; this server has nothing to say first.
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(1)
+                .and()
                 .on_event("telnet_message_received")
                 .and_event_data_contains("message", "hello")
                 .respond_with_actions(serde_json::json!([

@@ -27,7 +27,7 @@ impl Protocol for TlsProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after TLS handshake (e.g., for greeting banners)".to_string(),
+                    description: "Set true when the server speaks first after the handshake (a banner or prompt). It is the only way tls_connection_opened is raised: then nothing the peer sends is read until that event has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. Left false (the default), no connect event is raised and a connection costs no model call until the client sends something.".to_string(),
                     required: false,
                     example: serde_json::json!(false),
                     default: None,
@@ -441,17 +441,21 @@ pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
 pub static TLS_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "tls_connection_opened",
-        "TLS handshake complete, connection established (send initial greeting/banner if needed)",
+        "TLS handshake complete; the client has sent nothing yet. Raised only when the \
+         server was started with send_first, which means the client is owed a greeting: send \
+         the banner or prompt now with send_tls_data. Nothing the client sends is read until \
+         this is answered.",
         json!({
             "type": "send_tls_data",
             "data": "220 Welcome to secure server\r\n"
         }),
     )
-    // No parameters - just connection opened notification
+    // Data: `connect_event_data()` - nothing received yet, and the answer that calls for.
     .with_actions(vec![
         SEND_TLS_DATA_ACTION.clone(),
         CLOSE_THIS_CONNECTION_ACTION.clone(),
     ])
+    .with_parameters(crate::protocol::event_type::connect_event_parameters())
     .with_log_template(
         LogTemplate::new()
             .with_info("{client_ip} TLS connected")

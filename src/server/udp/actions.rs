@@ -339,13 +339,18 @@ fn send_to_address_action() -> ActionDefinition {
 fn send_udp_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_udp_response".to_string(),
-        description: "Send UDP response back to the peer that sent the current datagram"
+        description: "Send UDP response back to the peer that sent the current datagram. To \
+                      send the datagram back unchanged (an echo), put the event's data_preview \
+                      in data and its data_encoding in encoding - that is the datagram itself, \
+                      not a description of it."
             .to_string(),
         parameters: vec![
             Parameter {
                 name: "data".to_string(),
                 type_hint: "string".to_string(),
-                description: "Response payload (see 'encoding')".to_string(),
+                description: "Response payload, sent exactly as written (see 'encoding'). \
+                              The literal bytes to send: for an echo, the event's data_preview."
+                    .to_string(),
                 required: true,
             },
             encoding_parameter(),
@@ -420,8 +425,9 @@ pub static UDP_DATAGRAM_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "data_preview".to_string(),
             type_hint: "string".to_string(),
-            description: "The received payload, as text or hex per data_encoding, truncated \
-                          to the first 200 bytes with a trailing '...'"
+            description: "The received payload itself, as text or hex per data_encoding. It \
+                          is the whole datagram unless it ends in '...' (payloads over 200 \
+                          bytes are cut there). Echoing means sending this string back."
                 .to_string(),
             required: false,
         },

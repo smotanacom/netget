@@ -589,3 +589,12 @@ cd fuzz && rustup run nightly-2025-12-04 cargo fuzz build dns_message
 (`cargo +nightly fuzz` does not work on this machine: asdf's shims precede `~/.cargo/bin` on
 `PATH`, so `cargo` is not the rustup proxy and `+toolchain` is read as a subcommand name.)
 
+## Choosing the record action by `query_type`
+
+Told to "answer text queries for hello.test with the text netget-eval-ok", llama3.1:8b once
+answered the TXT query with `send_dns_a_response` (`dns/txt-record` 4/5 in the committed eval
+baseline). The `query_type` event parameter now maps each type to its action, and
+`send_dns_a_response` / `send_dns_txt_response` each say which query type they answer. Wording
+only: no executor changed, so the Stable evidence (`e2e_testing`, the six conditions below) is
+unaffected. With seed 42 the case is 5/5.
+

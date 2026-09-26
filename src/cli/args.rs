@@ -311,6 +311,23 @@ pub struct Args {
     )]
     pub llm_max_tokens: Option<u32>,
 
+    /// Sampler seed sent to the LLM backend
+    #[clap(
+        long = "llm-seed",
+        value_name = "SEED",
+        help = "Sampler seed sent with every LLM request (Ollama `options.seed`, OpenAI `seed`). With a fixed seed an identical prompt draws the same tokens, which is what makes a real-model run repeatable; a prompt that differs (a new port, a new query id) still diverges. Unset, nothing is sent and the model's own default applies."
+    )]
+    pub llm_seed: Option<u64>,
+
+    /// Sampling temperature sent to the LLM backend
+    #[clap(
+        long = "llm-temperature",
+        value_name = "TEMP",
+        value_parser = parse_temperature,
+        help = "Sampling temperature sent with every LLM request (Ollama `options.temperature`, OpenAI `temperature`). 0 is greedy decoding. Unset, nothing is sent and the model's own default applies (0.8 for most Ollama Modelfiles)."
+    )]
+    pub llm_temperature: Option<f32>,
+
     /// Path to embedded GGUF model file (enables embedded LLM inference)
     #[cfg(feature = "embedded-llm")]
     #[clap(
@@ -900,4 +917,19 @@ impl Args {
                 .unwrap_or(crate::llm::DEFAULT_MAX_QUEUED),
         }
     }
+}
+
+/// A temperature is a finite, non-negative number. Rejected here rather than sent, because
+/// backends disagree on what they do with a negative or NaN value and none of them says so.
+fn parse_temperature(value: &str) -> Result<f32, String> {
+    let t: f32 = value
+        .parse()
+        .map_err(|_| format!("'{}' is not a number", value))?;
+    if !t.is_finite() || t < 0.0 {
+        return Err(format!(
+            "temperature must be a finite number >= 0, got {}",
+            value
+        ));
+    }
+    Ok(t)
 }

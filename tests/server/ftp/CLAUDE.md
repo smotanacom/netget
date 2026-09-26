@@ -89,3 +89,10 @@ proves `first_byte_timeout_secs` and `idle_timeout_secs` are read rather than me
 a parameter that was ignored would leave the 300-second default in force and the test would time
 out. Each bound was verified by removing it and watching its test fail, and the default was
 verified by putting 60 back and watching the regression test fail.
+
+## `one_reply_test.rs`
+
+One command, one completion reply: a greeting answered with three `220`s reaches the client as
+the first only, `USER` is answered by its own `331` (the rule matches only when the event's
+`answer_with` names 331), and the drop is logged `decision=duplicate_response_dropped`. Verified by
+removing the check in `OneReply::admit`.

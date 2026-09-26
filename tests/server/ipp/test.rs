@@ -262,8 +262,12 @@ async fn test_ipp_get_printer_attributes() -> E2EResult<()> {
                 ]))
                 .expect_calls(1)
                 .and()
-                // Mock 2: IPP request received (ipp_request_received event)
+                // Mock 2: IPP request received (ipp_request_received event). The server
+                // names the answering action from the operation id; a Get-Printer-Attributes
+                // event that did not would leave a small model to guess, which is how the
+                // real-model eval answered it with a job-refusal status.
                 .on_event("ipp_request_received")
+                .and_event_data_contains("answer_with", "ipp_printer_attributes")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "ipp_printer_attributes",
@@ -406,6 +410,7 @@ async fn test_ipp_print_job() -> E2EResult<()> {
                 .and()
                 // Mock 2: IPP Print-Job request received
                 .on_event("ipp_request_received")
+                .and_event_data_contains("answer_with", "ipp_job_attributes")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "ipp_job_attributes",

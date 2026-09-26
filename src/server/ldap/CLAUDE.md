@@ -214,6 +214,15 @@ Search now reports `scope`, `filter` (rendered back to RFC 4515 text such as
 the model decides what matches — but it could not decide before, because it was only told the
 base DN.
 
+The search example's entry is `cn=Example Person,ou=example,dc=example,dc=org` — a stand-in
+under a base nobody searches. It used to be `cn=john,ou=people,dc=example,dc=com`, and told
+"there is nothing at all under dc=other,dc=com", llama3.1:8b answered that search with john
+every run (`./run-eval.sh ldap`, seed 42): a plausible entry under the very base the eval's
+other cases search reads as data, not as shape. `ldap_search_response` and the event's
+`base_dn` now say that entries sit under the searched base, that `entries: []` with result 0
+is how a search finds no one, and that the example is never data. With that, `ldap/empty-result`
+went 0/3 → 5/5.
+
 ## Actions
 
 `ldap_bind_response`, `ldap_search_response`, `ldap_add_response`, `ldap_modify_response`,

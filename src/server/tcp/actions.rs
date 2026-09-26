@@ -34,7 +34,7 @@ impl Protocol for TcpProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after connection (e.g., for FTP/SMTP greeting banners)".to_string(),
+                    description: "Set true when the server speaks first (a banner, a greeting, a login prompt). It is the only way tcp_connection_opened is raised: then nothing the peer sends is read until that event has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. Left false (the default), generic TCP is client-speaks-first and no connect event is raised, so a connection costs no model call until the client sends something.".to_string(),
                     required: false,
                     example: serde_json::json!(false),
                     default: None,
@@ -452,17 +452,21 @@ pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
 pub static TCP_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "tcp_connection_opened",
-        "New TCP connection established (send initial greeting/banner if needed)",
+        "A client has just connected and has not sent anything yet. Raised only when the \
+         server was started with send_first, which means the client is owed a greeting: send \
+         the banner or prompt now with send_tcp_data. Nothing the client sends is read until \
+         this is answered.",
         serde_json::json!({
             "type": "send_tcp_data",
             "data": "220 Welcome to server\r\n"
         }),
     )
-    // No parameters - just connection opened notification
+    // Data: `connect_event_data()` - nothing received yet, and the answer that calls for.
     .with_actions(vec![
         SEND_TCP_DATA_ACTION.clone(),
         CLOSE_THIS_CONNECTION_ACTION.clone(),
     ])
+    .with_parameters(crate::protocol::event_type::connect_event_parameters())
     .with_log_template(
         LogTemplate::new()
             .with_info("TCP connection from {client_ip}:{client_port}")

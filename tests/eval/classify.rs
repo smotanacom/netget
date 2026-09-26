@@ -25,6 +25,8 @@ const NO_PROTOCOL_CONTEXT: &str = "unknown action type and no protocol in contex
 const EXECUTING_ACTION: &str = "Executing action";
 const LLM_CALL: &str = "LLM call for event";
 const FAIL_CLOSED: &str = "decision=fail_closed";
+/// The transport's DEBUG line for a completed backend reply.
+const LLM_REPLIED: &str = "LLM response:";
 
 /// What went wrong, in the vocabulary a prompt-quality fix would be written in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +221,18 @@ fn first_json_value(text: &str) -> Option<serde_json::Value> {
     None
 }
 
+/// A `{{name` / `{{ name` template opener — the shape a copied placeholder
+/// takes. Bare `}}` is not evidence: it is how nested JSON ends.
+fn has_template_placeholder(line: &str) -> bool {
+    line.match_indices("{{").any(|(i, _)| {
+        line[i + 2..]
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    })
+}
+
 /// Every distinct mode the classifier can report, with the prose that belongs
 /// in the results file next to it.
 pub const MODE_GLOSSARY: &[(&str, &str)] = &[
@@ -266,6 +280,13 @@ pub const MODE_GLOSSARY: &[(&str, &str)] = &[
         "model_answered_with_no_actions",
         "The model was asked and returned no actions at all. The peer gets the \
          protocol default; from the wire this is indistinguishable from an outage.",
+    ),
+    (
+        "client_left_before_model_answered",
+        "The model was asked and the client hung up before it answered, so the call \
+         was abandoned with the connection. A probe problem — a client whose own \
+         timeout is shorter than a model call, or a harness that cut it off — not a \
+         prompt problem.",
     ),
     (
         "event_never_reached_model",
@@ -409,10 +430,14 @@ pub fn classify(
     // 1. A placeholder taken literally. Checked first: it also trips the
     //    executor rule below, and it is the diagnosis that names a fixable
     //    description rather than a symptom.
+    // `{{` followed by a name, not any `}}`: nested JSON closes with `}}` on
+    // every `Executing action` line that carries an object inside an object, and
+    // matching that reported IPP attribute groups and HTTP header maps as
+    // copied placeholders.
     let placeholder: Vec<String> = log
         .iter()
         .filter(|l| l.contains(EXECUTING_ACTION) || l.contains(EXECUTOR_REJECTED))
-        .filter(|l| l.contains("{{") || l.contains("}}"))
+        .filter(|l| has_template_placeholder(l))
         .map(|l| truncate(l, 900))
         .collect();
     if !placeholder.is_empty() {
@@ -515,6 +540,21 @@ pub fn classify(
             "event_never_reached_model",
             "no model call was made for this request — the event did not reach the \
              LLM path",
+            evidence,
+        );
+    }
+    if executions == 0 && lines_with(log, LLM_REPLIED).is_empty() && !probe.timed_out {
+        // Asked, never answered, and the client did not wait out its timeout:
+        // the client left mid-call and the server abandoned the model call with
+        // the connection. Scoring that as "the model said nothing" blamed the
+        // model for the probe's impatience — every ipp run, until it had a name.
+        return Diagnosis::new(
+            "client_left_before_model_answered",
+            format!(
+                "the model was asked, the client closed the connection after {:.1}s \
+                 without waiting for the answer, and the call was abandoned",
+                probe.elapsed.as_secs_f64()
+            ),
             evidence,
         );
     }

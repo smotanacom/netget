@@ -555,7 +555,7 @@ impl DnsProtocol {
 fn send_dns_a_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_dns_a_response".to_string(),
-        description: "IMPORTANT: Use this action to respond to DNS A record queries (IPv4 addresses). This is the correct DNS-specific action - do NOT use generic 'send_data' or 'show_message' actions for DNS responses. Always include the query_id from the request, the domain name, and the IPv4 address to return.".to_string(),
+        description: "Answer a query whose query_type is A with an IPv4 address. Only for query_type A: a TXT query is answered with send_dns_txt_response, AAAA with send_dns_aaaa_response, MX with send_dns_mx_response. This is the correct DNS-specific action - do NOT use generic 'send_data' or 'show_message' actions for DNS responses. Always include the query_id from the request, the domain name, and the IPv4 address to return.".to_string(),
         parameters: vec![
             Parameter {
                 name: "query_id".to_string(),
@@ -752,7 +752,7 @@ fn send_dns_mx_response_action() -> ActionDefinition {
 fn send_dns_txt_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_dns_txt_response".to_string(),
-        description: "Send DNS TXT record response (text record)".to_string(),
+        description: "Answer a query whose query_type is TXT with a text record - the only action for TXT queries. A TXT question asks for text, never for an address: when the instruction says to answer text queries with some text, this carries that text.".to_string(),
         parameters: vec![
             Parameter {
                 name: "query_id".to_string(),
@@ -908,7 +908,7 @@ pub static DNS_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "query_type".to_string(),
             type_hint: "string".to_string(),
-            description: "DNS query type (A, AAAA, MX, TXT, CNAME, etc.)".to_string(),
+            description: "DNS query type (A, AAAA, MX, TXT, CNAME, etc.). Decides the action: A -> send_dns_a_response, AAAA -> send_dns_aaaa_response, MX -> send_dns_mx_response, TXT -> send_dns_txt_response, CNAME -> send_dns_cname_response.".to_string(),
             required: true,
         },
     ])

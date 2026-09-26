@@ -65,19 +65,27 @@ event. Setup correctness is a separate question with its own tests in
    *thrown away*, and syslog scored 3/3 having executed nothing. The model
    naming an action and netget running it are different events.
 
-## Non-determinism: why the score is a rate
+## Determinism: a pinned seed, and still a rate
 
-netget passes exactly one option to its Ollama backend — `num_predict`
-(`src/llm/ollama_client.rs`). There is **no temperature, no seed, no top-p**,
-and no CLI flag that sets one, so sampling runs at whatever the model's
-Modelfile says and the same instruction genuinely produces different actions run
-to run.
+Every run passes `--llm-seed` (default 42; `--seed` / `NETGET_EVAL_SEED`, `none`
+for an unpinned run) and, when asked, `--llm-temperature` (`--temperature` /
+`NETGET_EVAL_TEMPERATURE`). netget sends both in Ollama's `options` object
+(`src/llm/ollama_client.rs`, `SamplingOptions`), and sends neither when the
+flags are absent — `tests/llm_sampling_options_test.rs` pins that from the wire.
 
-Pinning the seed would be better and is a one-field change in the `options`
-object plus a flag; until it exists, each instruction runs N times (default 3)
-against a **fresh netget process and a fresh server** — no conversation history,
-no server memory, no connection state carried between runs — and the published
-number is passes/runs with every individual verdict listed.
+**A pinned seed pins the sampler, not the run.** Ollama draws the same tokens for
+the same prompt, but each run's prompt carries its own client port, connection
+id and, for DNS/LDAP-style protocols, a random query or message id — one
+differing token changes every token drawn after it. So each instruction still
+runs N times (default 3) against a **fresh netget process and a fresh server**,
+the published number is passes/runs with every verdict listed, and each case
+reports `verdicts_agree` (every run reached the same verdict) and
+`actions_agree` (every run executed byte-identical actions). The Markdown has a
+Reproducibility section with the totals. `actions_agree` undercounts by design
+for anything that must echo a random id.
+
+`--out DIR` (`NETGET_EVAL_OUT_DIR`) writes the two artefacts into `DIR` instead
+of over the committed baseline — use it for a one-protocol rerun.
 
 ## Traps already paid for
 
@@ -107,6 +115,30 @@ Each of these cost a debugging pass and every one presented as a model failure.
   appended `-- --use-ollama`, which libtest rejects outright
   (`error: Unrecognized option: 'use-ollama'`), so the binary exited before any
   test ran. The env var was always the mechanism.
+- **The idle settle killed `ipptool` two seconds into every model call.**
+  `probe.rs` calls a response complete after two quiet seconds *following the
+  first byte*, and `ipptool -v` prints the request it is about to send before
+  sending it — so the first byte came before the exchange, the client was
+  killed mid-wait, the IPP server saw the connection drop, the model call was
+  abandoned with it, and all ten runs scored `model_answered_with_no_actions`
+  (0/10 in the September 2026 baseline). `Probe::until_exit()` makes a client's
+  exit the only completion signal; `ipptool` uses it. The classifier now names
+  this shape — asked, never answered, client gone before its own timeout — as
+  `client_left_before_model_answered` instead of blaming the model.
+- **The same settle cut off `ldapsearch` and `ftp`**, both of which talk between
+  model calls (`ldap_bind: Success (0)` before the search; `-v` narrating each
+  FTP reply). Both use `until_exit()`. And **`curl telnet://` buffers its output
+  when stdout is a pipe**, so every telnet run sat for the full `--max-time`
+  (233s) whatever the model did; the probe passes `-N`.
+- **An exited client's last output was left in the pipe.** The loop notices an
+  exit between two 250ms reads, so whatever the client wrote last — for
+  `ipptool`, the whole response — could arrive after the read that timed out
+  and never be read. The run then looked like a client that printed nothing
+  past the request echo. The probe now drains both pipes after an exit.
+- **`}}` is not a placeholder.** `copied_example_placeholder` matched any `}}`
+  on an `Executing action` line, which is how every nested JSON object ends —
+  an IPP attribute group or an HTTP header map was reported as a copied
+  `{{…}}` template. It now requires `{{` followed by a name.
 - **Never let a harness bug score against the model.** A bad regex in an
   `Expect` returns `HARNESS: …` and is classified as `harness_error`, not as a
   miss.

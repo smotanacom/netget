@@ -46,6 +46,11 @@ async fn test_telnet_close_connection_is_logged_as_a_refusal() -> E2EResult<()> 
             .respond_with_actions(open_telnet_server())
             .expect_calls(1)
             .and()
+            .on_event("telnet_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
             .on_event("telnet_message_received")
             .respond_with_actions(serde_json::json!([{ "type": "close_connection" }]))
             .expect_calls(1)
@@ -105,6 +110,11 @@ async fn test_telnet_empty_answer_is_logged_as_model_silence() -> E2EResult<()> 
     let config = NetGetConfig::new_no_scripts(prompt).with_mock(|mock| {
         mock.on_instruction_containing("via telnet")
             .respond_with_actions(open_telnet_server())
+            .expect_calls(1)
+            .and()
+            .on_event("telnet_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
             .expect_calls(1)
             .and()
             .on_event("telnet_message_received")

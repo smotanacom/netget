@@ -42,9 +42,9 @@ pub const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 /// `connect()` has returned, and short enough that an unauthenticated socket, task and
 /// `AppState` entry cannot be held for free.
 ///
-/// A `send_first` server is not the exception it looks like: the banner task raises
-/// [`ConnectionActivity::begin_work`] for the whole of its LLM round-trip, so the clock does
-/// not run while the peer is legitimately waiting to be spoken to.
+/// The connect event is not an exception either: the task answering `tcp_connection_opened`
+/// holds [`ConnectionActivity::busy`] for the whole of its LLM round-trip, so the clock does
+/// not run while a peer is legitimately waiting to be spoken to.
 ///
 /// **This was 30 seconds and that broke a real flow.** The argument for 30 was that generic TCP
 /// is client-speaks-first, so a silent peer has made no claim — true of a stranger, and false of
@@ -234,10 +234,21 @@ impl TcpServer {
                         // completes the handshake) lost that payload with no response, no
                         // error and no log line. Inserting synchronously in the accept loop
                         // closes the window: the reader task does not exist yet.
+                        //
+                        // A `send_first` server starts it in `Processing`: `tcp_connection_opened`
+                        // is being answered, and anything the peer sends meanwhile queues behind
+                        // it rather than raising a second, concurrent model call on the same
+                        // connection. The connect task moves it to `Idle` and hands over the
+                        // queue. Without `send_first` no connect event is raised, so it starts
+                        // `Idle`.
                         connections.lock().await.insert(
                             connection_id,
                             ConnectionData {
-                                state: ConnectionState::Idle,
+                                state: if send_first {
+                                    ConnectionState::Processing
+                                } else {
+                                    ConnectionState::Idle
+                                },
                                 queued_data: Vec::new(),
                                 memory: String::new(),
                                 write_half: write_half_arc.clone(),
@@ -265,7 +276,21 @@ impl TcpServer {
                             status_tx.clone(),
                         );
 
-                        // Send the greeting banner, if this server was asked for one.
+                        // Raise `tcp_connection_opened` only for a `send_first` server, where the
+                        // peer is owed a greeting and nothing is read until it is on the wire.
+                        //
+                        // Raising it for every connection was measured and rejected: generic TCP
+                        // is client-speaks-first, so a model-driven server paid one extra model
+                        // call per connection to learn there was nothing to say, and the real-model
+                        // eval showed the cost in behaviour as well as time - told to upper-case
+                        // the client's text, llama3.1:8b answered the empty connect event with a
+                        // greeting and the client's real answer arrived seconds later. A greeting
+                        // is what `send_first` is for, and its description says so.
+                        let (opened_tx, opened_rx) = tokio::sync::oneshot::channel::<()>();
+                        // Dropped by the reader task on every exit path (EOF, error, deadline,
+                        // abort), which tells the connect task its peer is gone.
+                        let (reader_alive_tx, reader_alive_rx) =
+                            tokio::sync::oneshot::channel::<()>();
                         if send_first {
                             let llm_client_clone = llm_client.clone();
                             let app_state_clone = app_state.clone();
@@ -273,19 +298,22 @@ impl TcpServer {
                             let connections_clone = connections.clone();
                             let write_half_for_conn = write_half_arc.clone();
                             let protocol_clone = protocol.clone();
-                            // The peer is waiting to be greeted, so the first-byte deadline
-                            // must not run while the model is composing the banner.
-                            let banner_busy = activity.busy();
-                            // Tracked, not detached: a banner task holds the write half and
-                            // makes an LLM call, so a detached one keeps talking to a peer
-                            // after the operator stopped the server.
+                            // The peer may be waiting to be greeted, so the first-byte deadline
+                            // must not run while the model is answering the connect event.
+                            let opened_busy = activity.busy();
+                            // Tracked, not detached: it holds the write half and makes an LLM
+                            // call, so a detached one keeps talking to a peer after the
+                            // operator stopped the server.
                             let state_for_spawn = app_state.clone();
                             state_for_spawn
                                 .spawn_server_task(server_id, async move {
-                                    let _banner_busy = banner_busy;
-                                    Self::send_banner(
+                                    let _opened_busy = opened_busy;
+                                    Self::handle_connection_opened(
                                         connection_id,
                                         server_id,
+                                        send_first,
+                                        opened_tx,
+                                        reader_alive_rx,
                                         llm_client_clone,
                                         app_state_clone,
                                         status_tx_clone,
@@ -296,6 +324,9 @@ impl TcpServer {
                                     .await;
                                 })
                                 .await;
+                        } else {
+                            drop(opened_tx);
+                            drop(reader_alive_rx);
                         }
 
                         // Spawn reader task
@@ -320,9 +351,21 @@ impl TcpServer {
                                 // would cap the accept rate rather than the number of live
                                 // connections.
                                 let _permit = permit;
+                                let _reader_alive = reader_alive_tx;
                                 let mut buffer = vec![0u8; 8192];
                                 let mut read_half = read_half;
                                 let mut seen_bytes = false;
+
+                                // `send_first`: nothing is read until the connect event has
+                                // been answered, so the greeting is on the wire before the
+                                // peer's first bytes are even looked at. Without it the read
+                                // proceeds and anything that arrives queues behind the
+                                // connect event instead (the connection starts `Processing`).
+                                if send_first {
+                                    let _ = opened_rx.await;
+                                } else {
+                                    drop(opened_rx);
+                                }
 
                                 loop {
                                     let bound = if seen_bytes {
@@ -505,13 +548,28 @@ impl TcpServer {
         Ok(local_addr)
     }
 
-    /// Send the greeting banner for a new connection (`send_first` servers only).
+    /// Answer `tcp_connection_opened` for a new connection, then release whatever the peer
+    /// sent while it was being answered.
     ///
-    /// The connection is already registered by the accept loop by the time this runs.
+    /// The accept loop calls this only for a `send_first` server, whose peer is owed a greeting:
+    /// no bytes is `decision=model_silent` (a warning), and a backend failure half-closes the
+    /// connection, because the peer is waiting for something that is not coming. The branch for
+    /// a server without `send_first` (no bytes is `decision=model_no_actions`, a failure is
+    /// logged `decision=connect_event_failed`) is kept so the function stays correct if it is
+    /// ever called for one.
+    ///
+    /// `opened` is signalled once the answer is on the wire; a `send_first` reader waits for it.
+    /// `reader_alive` resolves when the reader task ends, and abandons the call: a peer that
+    /// has already gone is not greeted.
+    /// The connection is registered as `Processing` by the accept loop, so data that arrives
+    /// meanwhile is queued; this moves it to `Idle` and processes that queue.
     #[allow(clippy::too_many_arguments)]
-    async fn send_banner(
+    async fn handle_connection_opened(
         connection_id: ConnectionId,
         server_id: crate::state::ServerId,
+        send_first: bool,
+        opened: tokio::sync::oneshot::Sender<()>,
+        reader_alive: tokio::sync::oneshot::Receiver<()>,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -519,114 +577,97 @@ impl TcpServer {
         write_half: Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
         protocol: Arc<TcpProtocol>,
     ) {
-        {
-            // Create connection opened event
-            let event = Event::new(&TCP_CONNECTION_OPENED_EVENT, serde_json::json!({}));
+        let log = Log::new(Some(&status_tx));
+        let event = Event::new(
+            &TCP_CONNECTION_OPENED_EVENT,
+            crate::protocol::event_type::connect_event_data(),
+        );
 
-            // Call LLM
-            match call_llm(
+        // A peer that connects and leaves before the connect event is answered has nobody
+        // left to greet. The call is abandoned rather than finished, so a port scan against a
+        // `send_first` server does not cost one model call per probe, each running on after its
+        // socket was gone.
+        let answer = tokio::select! {
+            answer = call_llm(
                 &llm_client,
                 &app_state,
                 server_id,
                 Some(connection_id),
                 &event,
                 protocol.as_ref(),
-            )
-            .await
-            {
-                Ok(execution_result) => {
-                    let log = Log::new(Some(&status_tx));
-                    debug!("LLM TCP banner response received");
+            ) => answer,
+            _ = reader_alive => {
+                log.debug(format!(
+                    "Connection {connection_id} closed before its connect event was answered: \
+                     decision=peer_left_before_answer"
+                ));
+                return;
+            }
+        };
 
-                    // Display messages
-                    for msg in execution_result.messages {
-                        let _ = status_tx.send(msg);
-                    }
+        match answer {
+            Ok(execution_result) => {
+                debug!("LLM TCP connect-event response received");
+                for msg in execution_result.messages {
+                    let _ = status_tx.send(msg);
+                }
 
-                    // Handle protocol results (send banner)
-                    let mut wrote_banner = false;
-                    for protocol_result in execution_result.protocol_results {
-                        match protocol_result {
-                            ActionResult::Output(output_data) => {
-                                let mut write = write_half.lock().await;
-                                if let Err(e) = write.write_all(&output_data).await {
-                                    log.error(format!("Failed to send banner: {}", e));
-                                } else if let Err(e) = write.flush().await {
-                                    log.error(format!("Failed to flush banner: {}", e));
+                let mut wrote = false;
+                let mut close = false;
+                for protocol_result in execution_result.protocol_results {
+                    match protocol_result {
+                        ActionResult::Output(output_data) => {
+                            let mut write = write_half.lock().await;
+                            if let Err(e) = write.write_all(&output_data).await {
+                                log.error(format!("Failed to send greeting: {}", e));
+                            } else if let Err(e) = write.flush().await {
+                                log.error(format!("Failed to flush greeting: {}", e));
+                            } else {
+                                drop(write);
+                                // Sent-data summary + payload are FileOnly: the send_tcp_data
+                                // action template already reports the send to the TUI.
+                                if output_data
+                                    .iter()
+                                    .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+                                {
+                                    let data_str = String::from_utf8_lossy(&output_data);
+                                    log.debug(format!(
+                                        "TCP sent {} bytes to {}: {}",
+                                        output_data.len(),
+                                        connection_id,
+                                        crate::utils::truncate_for_log(&data_str, 100)
+                                    ));
+                                    log.trace(format!("TCP sent (text): {:?}", data_str));
                                 } else {
-                                    // Sent-data summary + payload are FileOnly: the
-                                    // send_tcp_data action template already reports the
-                                    // send to the TUI (see actions.rs).
-                                    if output_data
-                                        .iter()
-                                        .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
-                                    {
-                                        let data_str = String::from_utf8_lossy(&output_data);
-                                        let preview = if data_str.len() > 100 {
-                                            format!("{}...", &data_str[..100])
-                                        } else {
-                                            data_str.to_string()
-                                        };
-                                        log.debug(format!(
-                                            "TCP sent {} bytes to {}: {}",
-                                            output_data.len(),
-                                            connection_id,
-                                            preview
-                                        ));
-                                        log.trace(format!("TCP sent (text): {:?}", data_str));
-                                    } else {
-                                        log.debug(format!(
-                                            "TCP sent {} bytes to {} (binary data)",
-                                            output_data.len(),
-                                            connection_id
-                                        ));
-                                        log.trace(format!(
-                                            "TCP sent (hex): {}",
-                                            hex::encode(&output_data)
-                                        ));
-                                    }
-                                    log.debug(format!("Sent banner to {connection_id}"));
-                                    wrote_banner = true;
+                                    log.debug(format!(
+                                        "TCP sent {} bytes to {} (binary data)",
+                                        output_data.len(),
+                                        connection_id
+                                    ));
+                                    log.trace(format!(
+                                        "TCP sent (hex): {}",
+                                        hex::encode(&output_data)
+                                    ));
                                 }
+                                app_state
+                                    .update_connection_stats(
+                                        server_id,
+                                        connection_id,
+                                        None,
+                                        Some(output_data.len() as u64),
+                                        None,
+                                        Some(1),
+                                    )
+                                    .await;
+                                wrote = true;
                             }
-                            ActionResult::CloseConnection => {
-                                connections.lock().await.remove(&connection_id);
-                                log.info(format!(
-                                    "Closed connection {connection_id} after banner: decision=model_close"
-                                ));
-                            }
-                            _ => {}
                         }
-                    }
-
-                    // A silent answer is a real answer here (a server may legitimately
-                    // greet with nothing); it is not a backend failure and must not be
-                    // logged as one.
-                    if !wrote_banner {
-                        log.debug(format!(
-                            "No banner bytes for {connection_id}: decision=model_no_actions"
-                        ));
+                        ActionResult::CloseConnection => close = true,
+                        _ => {}
                     }
                 }
-                Err(e) => {
-                    let log = Log::new(Some(&status_tx));
-                    let failure = crate::utils::WireFailure::classify(&e);
-                    let class = if failure.is_overloaded() {
-                        "overloaded"
-                    } else {
-                        "unavailable"
-                    };
-                    // The full error goes to the log and the status stream, where an
-                    // operator looks. Nothing derived from it reaches the peer.
-                    log.warn(format!(
-                        "TCP banner failed for {connection_id}: decision=fail_closed_llm_error class={class} error={e}"
-                    ));
 
-                    // A send_first server owes this peer a greeting and now has none.
-                    // Raw TCP has no error frame, so the only honest signal is FIN:
-                    // half-close so the peer's next read returns EOF immediately
-                    // instead of blocking until its own timeout. This is the same
-                    // shape as the data path below.
+                if close {
                     {
                         let mut write = write_half.lock().await;
                         let _ = write.shutdown().await;
@@ -636,10 +677,94 @@ impl TcpServer {
                         .close_connection_on_server(server_id, connection_id)
                         .await;
                     log.info(format!(
-                        "Closed connection {connection_id} after banner LLM error"
+                        "Closed connection {connection_id} on connect: decision=model_close"
+                    ));
+                    let _ = opened.send(());
+                    return;
+                }
+
+                if wrote {
+                    log.debug(format!(
+                        "Greeted {connection_id} on connect: decision=model_answer"
+                    ));
+                } else if send_first {
+                    // Asked to speak first and said nothing: the peer sits at a blank
+                    // connection. A real answer, but not the one send_first promised.
+                    log.warn(format!(
+                        "No greeting for {connection_id}: decision=model_silent (send_first \
+                         was requested but the model produced no bytes)"
+                    ));
+                } else {
+                    log.debug(format!(
+                        "No greeting for {connection_id}: decision=model_no_actions"
                     ));
                 }
             }
+            Err(e) => {
+                let failure = crate::utils::WireFailure::classify(&e);
+                let class = if failure.is_overloaded() {
+                    "overloaded"
+                } else {
+                    "unavailable"
+                };
+                if send_first {
+                    // The full error goes to the log and the status stream, where an
+                    // operator looks. Nothing derived from it reaches the peer.
+                    log.warn(format!(
+                        "TCP greeting failed for {connection_id}: decision=fail_closed_llm_error \
+                         class={class} error={e}"
+                    ));
+                    // A send_first server owes this peer a greeting and now has none. Raw
+                    // TCP has no error frame, so the only honest signal is FIN: half-close
+                    // so the peer's next read returns EOF immediately instead of blocking
+                    // until its own timeout. Same shape as the data path.
+                    {
+                        let mut write = write_half.lock().await;
+                        let _ = write.shutdown().await;
+                    }
+                    connections.lock().await.remove(&connection_id);
+                    app_state
+                        .close_connection_on_server(server_id, connection_id)
+                        .await;
+                    log.info(format!(
+                        "Closed connection {connection_id} after greeting LLM error"
+                    ));
+                    let _ = opened.send(());
+                    return;
+                }
+                // Nobody asked this server to speak first, so the peer has been failed by
+                // nothing yet: its own request will get the data path's answer (and the data
+                // path's fail-closed, if the backend is still down).
+                log.warn(format!(
+                    "TCP connect event for {connection_id} failed: \
+                     decision=connect_event_failed class={class} error={e}"
+                ));
+            }
+        }
+
+        let _ = opened.send(());
+
+        // Hand over whatever arrived while the connect event was being answered.
+        let queued = {
+            let mut conns = connections.lock().await;
+            let Some(conn) = conns.get_mut(&connection_id) else {
+                return;
+            };
+            conn.state = ConnectionState::Idle;
+            !conn.queued_data.is_empty()
+        };
+        if queued {
+            Self::handle_data_with_actions(
+                connection_id,
+                server_id,
+                Bytes::new(),
+                llm_client,
+                app_state,
+                status_tx,
+                connections,
+                protocol,
+            )
+            .await;
         }
     }
 

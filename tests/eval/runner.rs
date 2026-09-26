@@ -1,30 +1,26 @@
 //! The run loop, and how this harness handles the fact that models are not
 //! deterministic.
 //!
-//! # Why a rate and not a boolean
+//! # A pinned seed, and still a rate
 //!
-//! NetGet passes exactly one option to its Ollama backend — `num_predict`
-//! (`src/llm/ollama_client.rs`). There is no `temperature`, no `seed`, no
-//! `top_p`, and no CLI flag that would set one. So the sampling temperature
-//! here is whatever the model's own Modelfile says, typically 0.8, and **the
-//! same instruction genuinely produces different actions run to run.**
+//! Every run passes `--llm-seed` (default [`DEFAULT_SEED`], `NETGET_EVAL_SEED`;
+//! `none` sends nothing) and, when `NETGET_EVAL_TEMPERATURE` is set,
+//! `--llm-temperature`. Ollama's sampler then draws the same tokens for the same
+//! prompt, so a case whose prompt is identical run to run answers identically.
 //!
-//! Given that, there were three options:
+//! **That is weaker than it sounds, and the report measures by how much.** The
+//! prompt is not identical run to run: the event data carries an ephemeral
+//! client port, a connection id, and for DNS/LDAP-style protocols a random
+//! query or message id, and any one differing token changes every token the
+//! seed draws after it. So the harness keeps N independent runs and reports,
+//! per case, whether the runs **agreed** — the same verdict, and the same
+//! executed actions — rather than assuming they would.
 //!
-//! 1. Report a boolean from one run. Rejected: a flaky eval reported as a
-//!    boolean is worse than no eval, and this one would flip on protocols that
-//!    are 60% fine.
-//! 2. Pin the seed and report a boolean. **Not available without editing
-//!    `src/`**, which this pass may not do. It is the right long-term answer and
-//!    is written up as a recommendation in `EVAL_RESULTS.md`.
-//! 3. Report a pass *rate* over N independent runs, publish every run's verdict,
-//!    and let the reader see 2/3 rather than a rounded 0.67.
-//!
-//! This harness does (3). Every run gets a **fresh netget process and a fresh
-//! server**, so runs are independent: no conversation history, no server memory
-//! and no connection state carries between them. That costs a process start per
-//! run — cheap, because a `--server`-direct start involves no model call at all —
-//! and it buys the right to call the runs independent.
+//! Every run gets a **fresh netget process and a fresh server**, so runs are
+//! independent: no conversation history, no server memory and no connection
+//! state carries between them. That costs a process start per run — cheap,
+//! because a `--server`-direct start involves no model call at all — and it
+//! buys the right to call the runs independent.
 //!
 //! N defaults to 3 (`NETGET_EVAL_RUNS`). Nightly uses 5. Below 3 the rate
 //! carries no information; above 5 the wall clock stops being nightly-shaped.
@@ -40,6 +36,37 @@ use std::time::{Duration, Instant};
 
 /// Default repetitions per case. Overridable with `NETGET_EVAL_RUNS`.
 pub const DEFAULT_RUNS: usize = 3;
+
+/// The sampler seed every run passes unless `NETGET_EVAL_SEED` says otherwise.
+/// Fixed, so two sweeps of the same tree are comparable.
+pub const DEFAULT_SEED: u64 = 42;
+
+/// `--llm-seed` for every run: `NETGET_EVAL_SEED`, [`DEFAULT_SEED`] when unset,
+/// and no seed at all for `none` (the unpinned behaviour, for comparison).
+pub fn eval_seed() -> Option<u64> {
+    match std::env::var("NETGET_EVAL_SEED") {
+        Err(_) => Some(DEFAULT_SEED),
+        Ok(v) if v.trim().is_empty() || v.trim().eq_ignore_ascii_case("none") => None,
+        Ok(v) => Some(
+            v.trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("NETGET_EVAL_SEED={v:?} is not a u64 or `none`")),
+        ),
+    }
+}
+
+/// `--llm-temperature` for every run, from `NETGET_EVAL_TEMPERATURE`. Unset by
+/// default: the model's own temperature applies and only the seed is pinned.
+pub fn eval_temperature() -> Option<f32> {
+    std::env::var("NETGET_EVAL_TEMPERATURE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| {
+            v.trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("NETGET_EVAL_TEMPERATURE={v:?} is not a number"))
+        })
+}
 
 /// How long a third-party client may wait for the answer.
 ///
@@ -129,6 +156,9 @@ pub struct RunRecord {
     /// first JSON value instead of requiring the whole reply to be one. Non-empty
     /// only for `valid_actions_rejected_as_unparseable`.
     pub recovered_actions: Vec<String>,
+    /// What netget executed, one entry per `Executing action` line with the log
+    /// prefix (timestamp, level) removed — the comparable part, for agreement.
+    pub executed_actions: Vec<String>,
     pub client_command: String,
     pub client_output: String,
     pub client_exit: Option<i32>,
@@ -160,6 +190,11 @@ pub struct CaseResult {
     /// discarded only because the reply had text around the JSON. `passes +
     /// this` is what the score would be with a one-call fix to the parser.
     pub recoverable_runs: usize,
+    /// Every run reached the same verdict. `null` when fewer than two runs.
+    pub verdicts_agree: Option<bool>,
+    /// Every run executed exactly the same actions, byte for byte. Stricter than
+    /// `verdicts_agree`: a random query id in the answer breaks it by design.
+    pub actions_agree: Option<bool>,
     pub runs: Vec<RunRecord>,
 }
 
@@ -186,9 +221,31 @@ impl CaseResult {
             status_reason: Some(reason),
             dominant_failure: None,
             recoverable_runs: 0,
+            verdicts_agree: None,
+            actions_agree: None,
             runs: Vec::new(),
         }
     }
+}
+
+/// Whether every run agrees on `key`. `None` below two runs, where agreement
+/// is vacuous and reporting it as `true` would overstate reproducibility.
+fn all_agree<T: PartialEq>(records: &[RunRecord], key: impl Fn(&RunRecord) -> T) -> Option<bool> {
+    if records.len() < 2 {
+        return None;
+    }
+    let first = key(&records[0]);
+    Some(records[1..].iter().all(|r| key(r) == first))
+}
+
+/// The part of an `Executing action` line that is the action itself.
+fn executed_actions(log: &[String]) -> Vec<String> {
+    log.iter()
+        .filter_map(|l| {
+            l.find("Executing action")
+                .map(|i| l[i..].trim().to_string())
+        })
+        .collect()
 }
 
 /// Run one case `runs` times and score it.
@@ -249,6 +306,8 @@ pub async fn run_case(case: &EvalCase, runs: usize) -> CaseResult {
         status_reason: None,
         dominant_failure: dominant,
         recoverable_runs: recoverable,
+        verdicts_agree: all_agree(&records, |r| r.verdict),
+        actions_agree: all_agree(&records, |r| r.executed_actions.clone()),
         runs: records,
     }
 }
@@ -286,7 +345,8 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
             start_error = "Ollama did not answer /api/tags within 120s".to_string();
             continue;
         }
-        let mut builder = LiveRequestTest::new(case.protocol, case.instruction);
+        let mut builder = LiveRequestTest::new(case.protocol, case.instruction)
+            .sampling(eval_seed(), eval_temperature());
         if let Some(params) = &case.server_params {
             builder = builder.server_params(params.clone());
         }
@@ -321,6 +381,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 )),
                 model_output: Vec::new(),
                 recovered_actions: Vec::new(),
+                executed_actions: Vec::new(),
                 client_command: probe_spec.describe(),
                 client_output: String::new(),
                 client_exit: None,
@@ -376,6 +437,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 detail: Some(e),
                 model_output: Vec::new(),
                 recovered_actions: Vec::new(),
+                executed_actions: Vec::new(),
                 client_command: probe_spec.describe(),
                 client_output: String::new(),
                 client_exit: None,
@@ -394,6 +456,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
             detail: None,
             model_output: super::classify::model_output(&log),
             recovered_actions: Vec::new(),
+            executed_actions: executed_actions(&log),
             client_command: outcome.command.clone(),
             client_output: clip(&combined),
             client_exit: outcome.exit_code,
@@ -414,6 +477,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 detail: Some(detail),
                 model_output: evidence,
                 recovered_actions,
+                executed_actions: executed_actions(&log),
                 client_command: outcome.command.clone(),
                 client_output: clip(&combined),
                 client_exit: outcome.exit_code,
@@ -445,10 +509,12 @@ pub async fn run_suite(cases: &[EvalCase]) -> E2EResult<Vec<CaseResult>> {
         .collect();
 
     println!(
-        "🧪 real-model eval: {} case(s), {} run(s) each, model {}",
+        "🧪 real-model eval: {} case(s), {} run(s) each, model {}, seed {:?}, temperature {:?}",
         selected.len(),
         runs,
-        live_model()
+        live_model(),
+        eval_seed(),
+        eval_temperature()
     );
 
     let model = live_model();

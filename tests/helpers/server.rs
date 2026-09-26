@@ -311,6 +311,16 @@ impl NetGetServer {
         }
     }
 
+    /// The top-level fields of every request body the mock model received — see
+    /// `MockOllamaServer::recorded_request_fields`. Empty in real-Ollama mode.
+    #[allow(dead_code)]
+    pub fn recorded_request_fields(&self) -> Vec<(String, serde_json::Value)> {
+        self.mock_ollama_server
+            .as_ref()
+            .map(|s| s.recorded_request_fields())
+            .unwrap_or_default()
+    }
+
     pub async fn verify_mocks(&self) -> E2EResult<()> {
         // Prefer mock Ollama server if available (new approach)
         if let Some(ref server) = self.mock_ollama_server {

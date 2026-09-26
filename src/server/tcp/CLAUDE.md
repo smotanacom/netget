@@ -61,13 +61,26 @@ trimming, because a truncated payload the model cannot tell is truncated is wors
 dropped connection. Without the bound a peer that streams for the length of one LLM call — a
 few seconds — could grow NetGet's memory as fast as its link allows, pre-authentication.
 
-### 4. Optional Banner Support
+### 4. The connect event, and what `send_first` means
 
-The `send_first` parameter allows servers to send a banner before receiving client data:
+`tcp_connection_opened` is raised only for a server started with **`send_first`**, which means
+the peer is owed a greeting: the reader does not read at all until the connect event is answered,
+a silent answer is WARN `decision=model_silent`, and a backend failure half-closes
+(`decision=fail_closed_llm_error`). Without `send_first` the connection is registered `Idle` and
+no model call happens until the peer sends something; generic TCP is client-speaks-first.
 
-- Used for protocols like FTP, SMTP that send greeting on connection
-- Triggers `TCP_CONNECTION_OPENED_EVENT` which the LLM handles
-- Banner is sent immediately after connection acceptance
+Raising it for every connection was built and measured, and rejected. It cost one model call per
+connection for any server with no rule for the event, and in the seeded real-model eval
+llama3.1:8b answered the empty connect event with a greeting nobody asked for, taking `tcp` from
+15/15 to 10/15. The event and parameter descriptions say `send_first` is how a server greets, which
+is what IMPROVEMENTS item 78 asked for. `telnet`, where the server is expected to speak first, does
+raise its connect event on every connection.
+
+- With `send_first` the connection is registered `Processing`, so bytes that arrive while the
+  connect event is answered queue behind it; `handle_connection_opened` then moves it to `Idle`
+  and hands the queue to `handle_data_with_actions`. One model call at a time per connection.
+- A peer that disconnects before the connect event is answered abandons the call
+  (`decision=peer_left_before_answer`).
 
 ### 5. Stream Splitting
 
@@ -93,7 +106,7 @@ The LLM responds to TCP events with actions:
 
 **Events**:
 
-- `tcp_connection_opened` - New connection accepted (only if `send_first=true`)
+- `tcp_connection_opened` - New connection accepted (only with `send_first`; see section 4)
 - `tcp_data_received` - Data received from client
 
 **Available Actions**:
@@ -173,9 +186,9 @@ the first thing the banner task did, which raced the reader task spawned immedia
 `handle_data_with_actions` returns silently when the connection is not in the map, so a client
 that wrote before the server accepted — the normal case, since `connect()` returns as soon as
 the kernel completes the handshake — had its first payload dropped with no response, no error
-and no log line. 8 of 64 clients in a burst lost their request that way. The banner task is now
-spawned only when `send_first` is set, and `tests/connection_map_race_test.rs` pins the
-behaviour. The same shape was fixed in `socket_file` (`1f3945ee`), `tls` and `ssh_agent`.
+and no log line. 8 of 64 clients in a burst lost their request that way. The connect task runs
+for every connection and no longer registers anything, and `tests/connection_map_race_test.rs`
+pins the behaviour. The same shape was fixed in `socket_file` (`1f3945ee`), `tls` and `ssh_agent`.
 
 `handle_data_with_actions` releases the connection lock between its state check and the merge
 step, so a connection can disappear underneath it (write-then-close clients do exactly that).
@@ -228,7 +241,8 @@ struct ConnectionData {
 
 - The model cannot request a half-close: `close_this_connection` closes both directions
 - The server half-closes (`write.shutdown()`) in exactly one case — the LLM call returned
-  `Err` — for both the greeting (`send_first`) and the data path. Raw TCP has no error
+  `Err` — on the data path, and on the connect event of a `send_first` server (which owes the
+  peer a greeting; without `send_first` a failed connect event is only logged). Raw TCP has no error
   frame, so FIN is the only honest answer: the peer reads EOF immediately instead of
   blocking until its own timeout. Nothing derived from the error is ever written to the
   socket; the full error goes to the log and the status stream only
@@ -334,7 +348,7 @@ other protocol awaits the model inline, so its `read()` is not even being polled
 answer. This one hands each message to a spawned task and goes straight back to `read()`, so the
 deadline and the answer are live at the same moment. `read_bounded` therefore consults
 `ConnectionActivity`, which reports a connection with work in flight as not idle at all: the
-per-message handler and the `send_first` banner task each hold a `BusyGuard` for the whole of
+per-message handler and the connect-event task each hold a `BusyGuard` for the whole of
 their work, so an LLM round-trip, and a `manual` rule parking an event for a human
 (`src/state/intercepts.rs`, 300s by default), can never be timed out from under themselves. That
 is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted live

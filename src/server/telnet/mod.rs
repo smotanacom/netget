@@ -413,14 +413,23 @@ impl TelnetServer {
                                 status_clone.clone(),
                             );
 
-                            // If the server was started with send_first, give the handler a
-                            // chance to greet before the client says anything. Without this
-                            // Telnet has no connect-time event at all and cannot show a
-                            // login banner or prompt.
-                            if send_first {
+                            // Raise telnet_connection_opened for EVERY connection, before the
+                            // first line is read, so the handler can greet before the client
+                            // says anything. It used to be raised only with send_first, which a
+                            // server started from a one-line instruction cannot set - so
+                            // "greet everyone who connects" was unservable, and the real-model
+                            // eval scored every banner case 0. With nothing to say, the model
+                            // answers with no actions; a dashboard-created instance routes the
+                            // event to a zero-action static rule and pays nothing.
+                            //
+                            // The line reader starts only after this returns, so the first read
+                            // is always held until the connect event is answered. send_first
+                            // now says the peer is OWED a greeting: silence is then a warning,
+                            // and a backend failure prints the failure notice.
+                            {
                                 let event = Event::new(
                                     &TELNET_CONNECTION_OPENED_EVENT,
-                                    serde_json::json!({}),
+                                    crate::protocol::event_type::connect_event_data(),
                                 );
                                 match call_llm(
                                     &llm_clone,
@@ -465,6 +474,14 @@ impl TelnetServer {
                                                  decision=model_answer ({} write(s))",
                                                 remote_addr, connection_id, greeted
                                             ));
+                                        } else if !send_first {
+                                            // Nothing to say on connect is the ordinary answer
+                                            // for a server that waits for the client.
+                                            log.debug(format!(
+                                                "Telnet connect for {} (connection {}) \
+                                                 decision=model_no_actions",
+                                                remote_addr, connection_id
+                                            ));
                                         } else {
                                             // `send_first` was asked for and nothing came back,
                                             // so the peer stares at a blank screen with no
@@ -476,6 +493,17 @@ impl TelnetServer {
                                                 remote_addr, connection_id
                                             ));
                                         }
+                                    }
+                                    Err(e) if !send_first => {
+                                        // Nobody asked this server to speak first, so the peer
+                                        // has been failed by nothing yet: its first line gets
+                                        // the per-line path's answer, or that path's notice if
+                                        // the backend is still down.
+                                        log.warn(format!(
+                                            "Telnet connect event for {} (connection {}) \
+                                             decision=connect_event_failed: {}",
+                                            remote_addr, connection_id, e
+                                        ));
                                     }
                                     Err(e) => {
                                         // The client asked for a banner and is sitting at a

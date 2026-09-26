@@ -81,6 +81,11 @@ async fn a_closed_stdout_pipe_does_not_kill_a_running_server(
             }]))
             .expect_at_least(1)
             .and()
+            .on_event("tcp_connection_opened")
+            // Raised for every connection; this server has nothing to say first.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_at_least(0)
+            .and()
             .on_event("tcp_data_received")
             .respond_with_actions(serde_json::json!([{
                 "type": "send_tcp_data",

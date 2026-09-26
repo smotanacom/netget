@@ -37,6 +37,7 @@ the extended query paths.
 | Field | Notes |
 |---|---|
 | `query` | the SQL text |
+| `answer_with` | which response shape the statement needs — `postgresql_query_response` for a statement that returns rows, `postgresql_ok_response` for one that does not — from its first keyword (`crate::utils::sql`); absent when the keyword does not say |
 
 `client_ip`, `client_port`, `connection_id` and `server_id` are added by the
 event logger, so log templates may reference them.
@@ -287,3 +288,21 @@ here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_te
 this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
 source on every run, so if the mechanism changes the build fails rather than the file going
 quietly stale.
+
+## One query, one answer
+
+The real-model eval (`./run-eval.sh postgresql`) found two things no mocked test could. Told to
+report the current user or the server version, llama3.1:8b answered the `SELECT` with the
+command-tag / OK action — copied from that action's example — so the client printed a tag (or
+nothing) instead of the value; and it answered single queries with several response actions.
+
+- The event carries `answer_with` (above), and the two actions' descriptions say which statements
+  each answers — a `SELECT` of a single value is one column and one row, never a tag.
+- The server has always sent the **first** response action and ignored the rest; it now says so,
+  `decision=duplicate_response_dropped` with the count, instead of dropping them in silence.
+  `tests/server/postgresql/one_answer_per_query_test.rs` pins both: its rule matches only when
+  `answer_with` names the rows action, and it asserts the client got the first of two result sets
+  and the log carries the decision. Both halves were verified by removing them.
+
+Measured with seed 42, five runs per case: `postgresql/current-user` went 2/5 → 5/5 and `postgresql/users-table` 0/5 → 5/5.
+

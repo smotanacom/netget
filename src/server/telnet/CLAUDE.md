@@ -63,8 +63,14 @@ edit to `Cargo.toml`, which this module does not own.
    `[ message this peer ]` / `[ disconnect this peer ]` — and `AppState::send_to_peer` generally
    — can inject `send_telnet_*` / `close_connection` into this connection through the same
    executor the handlers use. The handle is removed on the close path.
-4. If started with `send_first: true`, raise `telnet_connection_opened` and write the result —
-   this is the only way to greet before the client types.
+4. Raise `telnet_connection_opened` for **every** connection and write the result — the way to
+   greet before the client types. The line reader starts only after it is answered. It used to
+   be raised only with `send_first: true`, which a server started from a one-line instruction
+   cannot set, so "greet everyone who connects" was unservable and the real-model eval scored
+   every banner case 0. With nothing to say the model answers with no actions
+   (`decision=model_no_actions`); a failure there is logged `decision=connect_event_failed` and
+   the session goes on. A dashboard-created server answers it with a zero-action static rule
+   (the event is declared `.raised_on_every_connection()`).
 5. `TelnetLineReader::next_line` in a loop; per line, raise `telnet_message_received`, write
    the result. An oversize line is refused and closes the connection rather than raising it.
 6. `close_connection` sets a flag that breaks the read loop and shuts the socket down.
@@ -109,7 +115,7 @@ LLM calls (`call_llm` → `try_execute_event_handler`).
 
 | Event                      | When                                              | Parameters |
 |----------------------------|---------------------------------------------------|------------|
-| `telnet_connection_opened` | on connect, **only if `send_first: true`**        | –          |
+| `telnet_connection_opened` | on every connect, before the first line is read  | –          |
 | `telnet_message_received`  | one complete line arrived                         | `message`  |
 
 `message` is the line with its trailing CR/LF and surrounding whitespace trimmed.
@@ -131,7 +137,7 @@ write, or a byte sequence with no line ending). There are no async (user-trigger
 
 | Parameter    | Type    | Effect                                              |
 |--------------|---------|-----------------------------------------------------|
-| `send_first` | boolean | `true` raises `telnet_connection_opened` on connect |
+| `send_first` | boolean | the peer is owed a greeting: a silent connect answer is WARN `decision=model_silent`, a failed one prints the notice line |
 
 ## Failure behaviour
 
@@ -157,9 +163,11 @@ comes back.
 | Backend failed / saturated | `\r\n[netget] <category>\r\n` — a category, never the error | ERROR `decision=fail_closed_llm_error` / `decision=fail_closed_llm_overloaded` |
 | Peer sent >8 KiB with no newline | `\r\n[netget] line too long\r\n`, then close | WARN `decision=refused_line_too_long` (no LLM call was made) |
 
-The `send_first` greeting path carries the same tags, prefixed `Telnet greeting for …` instead
-of `Telnet line from …`; `decision=model_silent` there means `send_first` was asked for and the
-model produced no banner, so the peer stares at a blank screen with no notice.
+The connect path carries the same tags, prefixed `Telnet greeting for …` / `Telnet connect for …`
+instead of `Telnet line from …`. `decision=model_silent` there means `send_first` was asked for and
+the model produced no banner, so the peer stares at a blank screen with no notice; without
+`send_first` an empty answer is `decision=model_no_actions` (DEBUG) and a failed one
+`decision=connect_event_failed` (WARN, nothing written).
 
 Two invented tokens, both because the sanctioned set has no row for them:
 `decision=model_wait_for_more` (a *deliberate* "nothing yet", which the wire cannot distinguish

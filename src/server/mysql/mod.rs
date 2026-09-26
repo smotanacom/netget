@@ -651,12 +651,11 @@ impl MysqlHandler {
             .await;
 
         // Create query event
-        let event = Event::new(
-            &MYSQL_QUERY_EVENT,
-            serde_json::json!({
-                "query": query,
-            }),
-        );
+        let mut event_data = serde_json::json!({ "query": query });
+        if let Some(hint) = actions::answer_with_for_query(query) {
+            event_data["answer_with"] = serde_json::json!(hint);
+        }
+        let event = Event::new(&MYSQL_QUERY_EVENT, event_data);
 
         let server_id = self
             .server_id
@@ -681,6 +680,27 @@ impl MysqlHandler {
                     .protocol_results
                     .iter()
                     .any(|r| matches!(r, ActionResult::CloseConnection));
+
+                // One query, one answer: the first response action is sent and any further one
+                // is dropped, and said so. The eval saw one SELECT answered with five alternating
+                // OK packets and notes; a second result for the same query has nowhere to go on
+                // the wire, and dropping it silently would make the log read as though the
+                // model's last answer were the one the client got.
+                let responses = execution_result
+                    .protocol_results
+                    .iter()
+                    .filter(|r| {
+                        matches!(r, ActionResult::Custom { name, .. }
+                            if matches!(name.as_str(), "mysql_query_response" | "mysql_error" | "mysql_ok"))
+                    })
+                    .count();
+                if responses > 1 {
+                    warn!(
+                        "MySQL connection {} decision=duplicate_response_dropped: {} response \
+                         actions for one query; sending the first",
+                        self.connection_id, responses
+                    );
+                }
 
                 // Process action results to find MySQL responses
                 for result in execution_result.protocol_results {

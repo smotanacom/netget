@@ -117,13 +117,22 @@ async fn injected_tls_data_is_encrypted_and_close_sends_eof() {
         protocol: "tls".to_string(),
         port: Some(0),
         instruction: Some(String::new()),
-        event_handlers: Some(vec![serde_json::json!({
-            "event_pattern": "*",
-            "handler": {
-                "type": "static",
-                "actions": [ { "type": "send_tls_data", "data": "static answer\n" } ]
-            }
-        })]),
+        // The connect event every connection raises is answered with nothing, as the
+        // dashboard does; otherwise the `*` rule's answer would be the first bytes the peer
+        // reads, ahead of the injected ones.
+        event_handlers: Some(vec![
+            serde_json::json!({
+                "event_pattern": "tls_connection_opened",
+                "handler": {"type": "static", "actions": []}
+            }),
+            serde_json::json!({
+                "event_pattern": "*",
+                "handler": {
+                    "type": "static",
+                    "actions": [ { "type": "send_tls_data", "data": "static answer\n" } ]
+                }
+            }),
+        ]),
         ..Default::default()
     }
     .create(&state, tx.clone())

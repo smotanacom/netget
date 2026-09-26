@@ -118,7 +118,10 @@ fn http() -> Vec<EvalCase> {
             "http",
             "Redirect / permanently to https://example.com/.",
             curl("/"),
-            Expect::contains(&["HTTP/1.1 301", "example.com"]),
+            // 301 and 308 are both permanent redirects (RFC 9110 15.4.2 and 15.4.9); 308
+            // additionally keeps the method. The committed baseline scored every 308 as a
+            // miss, which measured this file's expectation rather than the model.
+            Expect::contains(&["example.com"]).matching(r"(?m)^HTTP/1\.1 30[18]\b"),
         ),
     ]
 }
@@ -742,6 +745,10 @@ fn mysql() -> Vec<EvalCase> {
 
 #[cfg(feature = "ldap")]
 fn ldapsearch(base: &str, filter: &str) -> Probe {
+    // Bind, then search, one model call each. A bind answered with a
+    // diagnostic message makes ldapsearch print `ldap_bind: Success (0)` and
+    // carry on — so it talks between the two calls, and the idle settle used to
+    // kill it there, before the search was ever sent.
     Probe::client(
         "ldapsearch",
         &[
@@ -759,6 +766,7 @@ fn ldapsearch(base: &str, filter: &str) -> Probe {
             filter,
         ],
     )
+    .until_exit()
 }
 
 #[cfg(feature = "ldap")]
@@ -803,6 +811,9 @@ const IPPTOOL_GET_ATTRS: &str = "/usr/share/cups/ipptool/get-printer-attributes.
 
 #[cfg(feature = "ipp")]
 fn ipptool() -> Probe {
+    // `-v` echoes the request before it is sent and the answer only once it
+    // arrives, with the whole model call in between — so this client is done
+    // when it exits, never when it goes quiet.
     Probe::client(
         "ipptool",
         &[
@@ -813,6 +824,7 @@ fn ipptool() -> Probe {
             IPPTOOL_GET_ATTRS,
         ],
     )
+    .until_exit()
 }
 
 #[cfg(feature = "ipp")]
@@ -895,9 +907,18 @@ fn ntp() -> Vec<EvalCase> {
 
 #[cfg(feature = "telnet")]
 fn telnet_probe(input: Option<&str>) -> Probe {
+    // `-N`: curl buffers a telnet session's output when stdout is a pipe, so without it
+    // nothing reached the probe until `--max-time` ended the session — every telnet run took
+    // 233s whatever the model did, and the idle settle never had a byte to settle on.
     let probe = Probe::client(
         "curl",
-        &["-sS", "--max-time", "230", "telnet://127.0.0.1:{PORT}"],
+        &[
+            "-sS",
+            "-N",
+            "--max-time",
+            "230",
+            "telnet://127.0.0.1:{PORT}",
+        ],
     );
     match input {
         Some(text) => probe.stdin(text),
@@ -976,7 +997,17 @@ fn tcp() -> Vec<EvalCase> {
 
 #[cfg(feature = "ftp")]
 fn ftp_probe(script: &str) -> Probe {
-    Probe::client("ftp", &["-n", "-v", "127.0.0.1", "{PORT}"]).stdin(script)
+    // Several model calls in a row (banner, USER, PASS, PWD) with `-v` narrating each one as it
+    // lands, so the client talks between calls; the idle settle cut it off after the banner
+    // whenever the next answer took more than two seconds. It exits on `quit`.
+    //
+    // The script is `\n`-terminated. The ftp client reads its stdin by line and keeps a
+    // trailing `\r` as part of the command, so `pwd\r` and `quit\r` were `?Invalid command`
+    // and never reached the server - `ftp/working-directory` could not pass whatever the
+    // model did.
+    Probe::client("ftp", &["-n", "-v", "127.0.0.1", "{PORT}"])
+        .stdin(script)
+        .until_exit()
 }
 
 #[cfg(feature = "ftp")]
@@ -987,21 +1018,21 @@ fn ftp() -> Vec<EvalCase> {
             "ftp",
             "Greet every connection with the banner NetGet Eval FTP, and let anyone log \
              in anonymously.",
-            ftp_probe("quit\r\n"),
+            ftp_probe("quit\n"),
             Expect::contains(&["NetGet Eval FTP"]),
         ),
         EvalCase::new(
             "ftp/anonymous-login",
             "ftp",
             "Let anyone log in anonymously and tell them the login succeeded.",
-            ftp_probe("user anonymous eval@example.com\r\nquit\r\n"),
+            ftp_probe("user anonymous eval@example.com\nquit\n"),
             Expect::default().matching(r"(?i)230|logged in|login successful"),
         ),
         EvalCase::new(
             "ftp/working-directory",
             "ftp",
             "Let anyone log in anonymously. The current directory is /eval.",
-            ftp_probe("user anonymous eval@example.com\r\npwd\r\nquit\r\n"),
+            ftp_probe("user anonymous eval@example.com\npwd\nquit\n"),
             Expect::contains(&["/eval"]),
         ),
     ]
