@@ -541,3 +541,162 @@ pub fn encode_write_ack(request: &ModbusRequest) -> Vec<u8> {
 pub fn encode_exception(function_code: u8, exception_code: u8) -> Vec<u8> {
     vec![function_code | EXCEPTION_FLAG, exception_code]
 }
+
+// ---------------------------------------------------------------------------
+// The client side: requests out, responses in
+// ---------------------------------------------------------------------------
+//
+// The same grammar read the other way round, for `src/client/modbus`. It lives here rather than
+// in the client so the two directions cannot drift: the client's encoder is checked against
+// this module's own `parse_request`, the decoder the server answers real masters with.
+
+/// Encode a request's PDU.
+///
+/// Refuses anything [`parse_request`] would answer with an exception — a quantity outside the
+/// function's range, an address range past `0xFFFF` — so the client never puts on the wire a
+/// request the specification already says no to. The refusal names the reason.
+pub fn encode_request(request: &ModbusRequest) -> Result<Vec<u8>, String> {
+    let mut pdu = Vec::with_capacity(8);
+    pdu.push(request.function_code());
+    let quantity_of = |n: usize, what: &str| -> Result<u16, String> {
+        u16::try_from(n).map_err(|_| format!("{n} {what} do not fit a Modbus quantity"))
+    };
+    let byte_count_of = |octets: usize, n: usize, what: &str| -> Result<u8, String> {
+        u8::try_from(octets)
+            .map_err(|_| format!("{n} {what} need {octets} octets, past a one-octet byte count"))
+    };
+    match request {
+        ModbusRequest::ReadCoils { start, quantity }
+        | ModbusRequest::ReadDiscreteInputs { start, quantity }
+        | ModbusRequest::ReadHoldingRegisters { start, quantity }
+        | ModbusRequest::ReadInputRegisters { start, quantity } => {
+            pdu.extend_from_slice(&start.to_be_bytes());
+            pdu.extend_from_slice(&quantity.to_be_bytes());
+        }
+        ModbusRequest::WriteSingleCoil { address, value } => {
+            pdu.extend_from_slice(&address.to_be_bytes());
+            pdu.extend_from_slice(&if *value { 0xFF00u16 } else { 0x0000 }.to_be_bytes());
+        }
+        ModbusRequest::WriteSingleRegister { address, value } => {
+            pdu.extend_from_slice(&address.to_be_bytes());
+            pdu.extend_from_slice(&value.to_be_bytes());
+        }
+        ModbusRequest::WriteMultipleCoils { start, values } => {
+            let quantity = quantity_of(values.len(), "coils")?;
+            let octets = values.len().div_ceil(8);
+            pdu.extend_from_slice(&start.to_be_bytes());
+            pdu.extend_from_slice(&quantity.to_be_bytes());
+            pdu.push(byte_count_of(octets, values.len(), "coils")?);
+            let mut packed = vec![0u8; octets];
+            for (i, &on) in values.iter().enumerate() {
+                if on {
+                    packed[i / 8] |= 1 << (i % 8);
+                }
+            }
+            pdu.extend_from_slice(&packed);
+        }
+        ModbusRequest::WriteMultipleRegisters { start, values } => {
+            let quantity = quantity_of(values.len(), "registers")?;
+            let octets = values.len() * 2;
+            pdu.extend_from_slice(&start.to_be_bytes());
+            pdu.extend_from_slice(&quantity.to_be_bytes());
+            pdu.push(byte_count_of(octets, values.len(), "registers")?);
+            for v in values {
+                pdu.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+    }
+    match parse_request(&pdu) {
+        Ok(decoded) if &decoded == request => Ok(pdu),
+        Ok(_) => Err("the request does not survive its own encoding".to_string()),
+        Err(code) => Err(format!(
+            "{} at address {} for {} item(s) is not a legal Modbus request ({})",
+            request.function_name(),
+            request.start_address(),
+            request.quantity(),
+            exception_name(code)
+        )),
+    }
+}
+
+/// A decoded response, checked against the request it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModbusResponse {
+    /// FC 1/2: exactly the requested number of bits, first requested item first.
+    Bits(Vec<bool>),
+    /// FC 3/4: exactly the requested number of registers.
+    Registers(Vec<u16>),
+    /// FC 5/6/15/16: the acknowledgement echoed the request.
+    WriteAck,
+    /// `function | 0x80`, then the exception code.
+    Exception { code: u8 },
+}
+
+/// Decode a response PDU against the request it answers.
+///
+/// Every field the specification fixes is checked, because a response that disagrees with its
+/// request is a server answering a different question: the function code (or its exception
+/// form), the byte count against the quantity asked for, the PDU length against the byte count,
+/// and a write's acknowledgement against what was written. The error says which.
+pub fn parse_response(pdu: &[u8], request: &ModbusRequest) -> Result<ModbusResponse, String> {
+    let fc = request.function_code();
+    let Some(&got) = pdu.first() else {
+        return Err("empty response PDU".to_string());
+    };
+    if got == fc | EXCEPTION_FLAG {
+        return match pdu {
+            [_, code] => Ok(ModbusResponse::Exception { code: *code }),
+            _ => Err(format!(
+                "exception response is {} octets; it is exactly 2",
+                pdu.len()
+            )),
+        };
+    }
+    if got != fc {
+        return Err(format!(
+            "response carries function code {got:#04x}; the request was {fc:#04x}"
+        ));
+    }
+    let quantity = usize::from(request.quantity());
+    if request.is_bit_read() || request.is_register_read() {
+        let Some((&byte_count, data)) = pdu[1..].split_first() else {
+            return Err("read response has no byte count".to_string());
+        };
+        let expected = if request.is_bit_read() {
+            quantity.div_ceil(8)
+        } else {
+            quantity * 2
+        };
+        if usize::from(byte_count) != expected || data.len() != expected {
+            return Err(format!(
+                "read response declares {byte_count} octets and carries {}; {quantity} \
+                 item(s) need {expected}",
+                data.len()
+            ));
+        }
+        return Ok(if request.is_bit_read() {
+            ModbusResponse::Bits(
+                (0..quantity)
+                    .map(|i| data[i / 8] & (1 << (i % 8)) != 0)
+                    .collect(),
+            )
+        } else {
+            ModbusResponse::Registers(
+                data.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        });
+    }
+    // A write: the acknowledgement is fixed by the request, so compare it byte for byte.
+    let echo = encode_write_ack(request);
+    if pdu == echo.as_slice() {
+        Ok(ModbusResponse::WriteAck)
+    } else {
+        Err(format!(
+            "write acknowledgement {} does not echo the request {}",
+            hex::encode(pdu),
+            hex::encode(&echo)
+        ))
+    }
+}

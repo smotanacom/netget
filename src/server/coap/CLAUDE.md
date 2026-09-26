@@ -358,6 +358,16 @@ Experimental because it implements only the front of the protocol, so *no client
 what the protocol is for*. A CoAP client can use this for what CoAP is for — libcoap did, in
 both directions, with the bytes asserted.
 
+## NetGet's CoAP client shares `codec.rs`
+
+`src/client/coap/` encodes and decodes with this module's `CoapMessage`. The client implements
+what this server does not — Observe registration and cancellation, Block2 reassembly,
+Confirmable retransmission, separate responses and deduplication — with the extra option numbers
+kept on the client side, so nothing in this file's surface changed. Pointed at this server the
+client simply never sees a Block2 or Observe option, and a `coap_observe` is answered as a
+plain GET (`observing: false`). Its evidence is libcoap's `coap-server`, not this server; see
+`tests/client/coap/CLAUDE.md`.
+
 ## References
 
 - [RFC 7252: The Constrained Application Protocol (CoAP)](https://datatracker.ietf.org/doc/html/rfc7252)

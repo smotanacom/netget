@@ -225,9 +225,11 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (49 protocols as of September 16 2026,
-  down one from 50 because `coap` and `dns` went to Stable and `grpc` arrived; re-derive, the
-  count drifts every pass — `python3 scripts/beta_evidence_table.py --check` prints it).
+- **Beta** — human-reviewed, works against real clients (57 protocols as of 26 September 2026:
+  49 plus nine new servers that each arrived Beta on a real client — `dict`, `gemini`,
+  `prometheus`, `docker`, `vault`, `beanstalkd`, `zabbix`, `gearman`, `bolt` — less `modbus`,
+  which went to Stable; re-derive, the count drifts every pass —
+  `python3 scripts/beta_evidence_table.py --check` prints it).
 
   **Do not read the rest of this section as the list. Generate it:**
 
@@ -539,6 +541,11 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     rule matched on `reply_type` and `value` is what turns "the reply was split" into a failure
     rather than an extra LLM call; and nginx's echo quoting the previous response back made a
     looser rule answer both responses until the follow-up depth cap stopped the loop.
+
+  **Thirteen as of 26 September 2026 (13 Beta, 89 Experimental — re-derive with `--side client`).**
+  `memcached`, `coap`, `modbus` and `radius` are new clients that arrived Beta against memcached,
+  libcoap's `coap-server`, a pymodbus device and FreeRADIUS. The paragraphs below are how the
+  count got to nine first.
 
   **The same day's second half made it nine: `postgresql`, `mysql`, `ldap` and `ssh` are Beta —
   nine Beta clients, 89 Experimental.** The peers are the PostgreSQL server (`initdb` +
@@ -939,7 +946,7 @@ Two client-side gaps closed recently, both worth knowing before you touch a clie
   action for it — nothing, not even a scheduled task, could put bytes on the wire on demand.
   A client opts in with a ~25-line diff: `command_support::register_command_channel` plus a
   `tokio::select!` arm calling `handle_stream_client_command` (`src/client/command_support.rs`).
-  **99 clients are wired as of September 2026** — this paragraph said "`tcp` and `telnet`" for
+  **103 clients are wired as of 26 September 2026** — this paragraph said "`tcp` and `telnet`" for
   a long time after that stopped being true. Non-adopters simply never register (the dashboard
   greys out `[send]`); `grep -rl 'register_command_channel(' --include=mod.rs src/client` is
   the count. The channel is **bounded** — "client busy" backpressure is correct for
@@ -1870,6 +1877,15 @@ Read before assuming a subsystem is sound:
   decision on their behalf — every request is served unconditionally. Snowflake shows the model
   `has_auth_token` as a **boolean that is true for any token**, including one the server never
   issued. That is fine for a mock, but it must be said out loud rather than implied away.
+
+- **A startup parameter is printed wherever the instance is described, so a secret in one is a
+  secret in the log.** The `open_client` summary and the executor's DEBUG action line both
+  printed startup parameters verbatim — RADIUS shared secrets, MQTT and LDAP passwords among
+  them — until September 2026; `src/utils/redact.rs` now masks credential-named keys at both.
+  Name a new secret-bearing parameter so the redactor recognises it, and assert in a test that
+  the secret appears in no event and nothing NetGet printed, as the RADIUS client's does. A
+  secret the model itself put in an `open_client` action is still in the model's own output,
+  which the LLM layer logs at DEBUG (a preview) and TRACE (in full).
 
 - **A recursive parser without a depth bound kills the whole process, and `tokio::spawn`
   cannot save you.** A Rust stack overflow is a `SIGSEGV` against the guard page, not a panic —

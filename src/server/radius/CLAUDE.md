@@ -148,6 +148,16 @@ CI's `CI_FEATURES`, so the CI gate neither compiles nor runs those tests — see
 What Beta does **not** claim: Message-Authenticator, CHAP, MS-CHAP and EAP are unimplemented
 (above), and the tests cover neither, deliberately.
 
+## NetGet's RADIUS client shares `packet.rs`
+
+`src/client/radius/` builds its packets with this module's header, TLV, User-Password and
+authenticator functions. What only a client needs — CHAP-Password, and the Message-Authenticator
+HMAC-MD5 on requests and on the replies it verifies — lives in `src/client/radius/wire.rs`, so
+the statement above that *this server* neither computes nor verifies a Message-Authenticator
+stays true. Pointed at this server, the client refuses every Access-Accept/Reject it gets,
+because they carry no Message-Authenticator (`radius_error {kind:
+missing_message_authenticator}`); its evidence is FreeRADIUS, not this server.
+
 ## Known limitations
 
 - One `shared_secret` for the whole server; no per-NAS client table.
