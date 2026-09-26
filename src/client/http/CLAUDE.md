@@ -288,3 +288,19 @@ than inline — otherwise a manual rule parking that LLM call would wedge the co
 for the length of a human's think time and `send_to_client` would time out on a request
 that in fact succeeded. `make_request` is unchanged for callers; it is now
 `perform_request` (network only) followed by `notify_response` (the LLM event).
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/http/real_server_test.rs` (see `tests/client/http/CLAUDE.md`):
+
+1. **Real third-party server** — nginx (C, its own HTTP parser); NetGet's side is reqwest/hyper, so no code is shared.
+2. **Fails rather than skips** — a missing `nginx` is a test failure naming the brew formula and the
+   Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d. CI's
+   `registry-audit` installs the peer and runs the suite in its evidence loop.
+3. **A real session** — the protocol's own exchange, with the server's answers parsed and handed
+   to the model, not a connect.
+4. **Acts on the model's answer, asserted on the wire** — nginx's own access log holds the request lines, header, user agent and body length the model chose. Verified by mutation: dropping
+   the actions the model returned makes the test fail.
+
+Not covered by that evidence: HTTPS, HTTP/2, redirects, compressed or chunked bodies, and bodies larger than memory (the body is read whole, uncapped).
