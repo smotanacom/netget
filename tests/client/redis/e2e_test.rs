@@ -125,47 +125,6 @@ mod redis_client_tests {
         Ok(())
     }
 
-    /// Test Redis client connection and command execution (original test without mocks)
-    /// LLM calls: 2 (server startup, client connection)
-    #[tokio::test]
-    #[ignore = "no .with_mock() configured: the pre-mock variant of test_redis_client_connect_and_command_mocked, needs a real Ollama"]
-    async fn test_redis_client_connect_and_command() -> E2EResult<()> {
-        // Start a Redis server listening on an available port
-        let server_config = NetGetConfig::new("Listen on port {AVAILABLE_PORT} via Redis. Accept PING commands and respond with PONG.",);
-
-        let server = start_netget_server(server_config).await?;
-
-        // Give server time to start
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Now start a Redis client that connects and sends a command
-        let client_config = NetGetConfig::new(format!(
-            "Connect to 127.0.0.1:{} via Redis. Send PING command and read response.",
-            server.port
-        ));
-
-        let client = start_netget_client(client_config).await?;
-
-        // Give client time to connect and execute command
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Verify client output shows connection
-        client.wait_for_any(&["connected"], 30).await;
-        assert!(
-            client.output_contains("connected").await,
-            "Client should show connection message. Output: {:?}",
-            client.get_output().await
-        );
-
-        println!("✅ Redis client connected and executed command successfully");
-
-        // Cleanup
-        server.stop().await?;
-        client.stop().await?;
-
-        Ok(())
-    }
-
     /// Test Redis client can be controlled via LLM instructions with mocks
     /// LLM calls: 3 (server startup, client startup, SET command)
     #[tokio::test]
@@ -248,42 +207,6 @@ mod redis_client_tests {
         client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
-
-        // Cleanup
-        server.stop().await?;
-        client.stop().await?;
-
-        Ok(())
-    }
-
-    /// Test Redis client can be controlled via LLM instructions (original test without mocks)
-    /// LLM calls: 2 (server startup, client connection)
-    #[tokio::test]
-    #[ignore = "no .with_mock() configured: the pre-mock variant of test_redis_client_llm_controlled_commands_mocked, needs a real Ollama"]
-    async fn test_redis_client_llm_controlled_commands() -> E2EResult<()> {
-        // Start a simple Redis server
-        let server_config = NetGetConfig::new(
-            "Listen on port {AVAILABLE_PORT} via Redis. Log all incoming commands.",
-        );
-
-        let server = start_netget_server(server_config).await?;
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Client that sends specific commands based on LLM instruction
-        let client_config = NetGetConfig::new(format!(
-            "Connect to 127.0.0.1:{} via Redis. Execute SET key1 'value1' command.",
-            server.port
-        ));
-
-        let client = start_netget_client(client_config).await?;
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Verify the client is Redis protocol
-        assert_eq!(client.protocol, "Redis", "Client should be Redis protocol");
-
-        println!("✅ Redis client responded to LLM instruction");
 
         // Cleanup
         server.stop().await?;
