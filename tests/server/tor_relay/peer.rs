@@ -127,6 +127,32 @@ impl RelayPeer {
             .collect())
     }
 
+    /// Send a well-formed ntor CREATE2 and return whatever fixed cell comes back, unparsed.
+    ///
+    /// For tests about what the relay answers *instead of* CREATED2; `create_circuit` asserts
+    /// that the answer is a CREATED2 and so cannot observe the alternative.
+    pub async fn send_create2_expecting_any(
+        &mut self,
+        fingerprint: &[u8; 20],
+        onion_key: &[u8; 32],
+        what: &str,
+    ) -> E2EResult<Vec<u8>> {
+        let x = StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let big_x = X25519PublicKey::from(&x);
+        let mut cell = Vec::with_capacity(CELL_LEN);
+        cell.extend_from_slice(&self.circuit_id.to_be_bytes());
+        cell.push(CELL_CREATE2);
+        cell.extend_from_slice(&2u16.to_be_bytes());
+        cell.extend_from_slice(&84u16.to_be_bytes());
+        cell.extend_from_slice(fingerprint);
+        cell.extend_from_slice(onion_key);
+        cell.extend_from_slice(big_x.as_bytes());
+        cell.resize(CELL_LEN, 0);
+        self.tls.write_all(&cell).await?;
+        self.tls.flush().await?;
+        Ok(self.recv_cell(what).await)
+    }
+
     /// Run the client half of the ntor handshake and install the circuit ciphers.
     pub async fn create_circuit(
         &mut self,

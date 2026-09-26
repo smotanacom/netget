@@ -22,8 +22,8 @@
 mod tests {
     use super::super::super::helpers::{self, E2EResult, NetGetConfig};
     use super::super::peer::{
-        read_relay_identity, RelayPeer, CELL_DESTROY, CELL_RELAY, DESTROY_REASON_INTERNAL,
-        RELAY_EXTEND,
+        read_relay_identity, RelayPeer, CELL_CREATED2, CELL_DESTROY, CELL_RELAY,
+        DESTROY_REASON_INTERNAL, RELAY_EXTEND,
     };
     use serde_json::json;
 
@@ -109,6 +109,83 @@ mod tests {
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last event routinely lands after
         // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
+        server.stop().await?;
+        Ok(())
+    }
+
+    /// A CREATE2 the model could not rule on must not be admitted.
+    ///
+    /// CREATED2 completes the ntor handshake and hands the peer a circuit — it *is* admission.
+    /// Sending it on an LLM failure turned "the backend is down" into "every circuit is
+    /// accepted", which is the fail-open shape the root CLAUDE.md warns about. The relay must
+    /// answer with DESTROY / reason 2 INTERNAL instead.
+    #[tokio::test]
+    async fn test_tor_relay_refuses_circuit_when_llm_fails_on_create2() -> E2EResult<()> {
+        let prompt = "listen on port {AVAILABLE_PORT} via tor-relay. Handle TLS connections \
+                      and Tor cells.";
+        let config = NetGetConfig::new_no_scripts(prompt)
+            .with_log_level("info")
+            .with_mock(|mock| {
+                mock.on_instruction_containing("tor-relay")
+                    .respond_with_actions(json!([
+                        {
+                            "type": "open_server",
+                            "port": 0,
+                            "base_stack": "Tor Relay",
+                            "instruction": "Tor relay for LLM-failure testing"
+                        }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+                // Deliberately NO rule for `tor_relay_circuit_created`: the mock answers 500,
+                // which drives CREATE2 down its LLM-failure path.
+            });
+
+        let server = helpers::start_netget_server(config).await?;
+        let (fingerprint, onion_key) = read_relay_identity(&server).await?;
+
+        let mut peer = RelayPeer::connect(server.port).await?;
+        let versions = peer.versions_handshake().await?;
+        assert!(
+            versions.contains(&4),
+            "expected link protocol v4, got {versions:?}"
+        );
+
+        let cell = peer
+            .send_create2_expecting_any(
+                &fingerprint,
+                &onion_key,
+                "the reply to a CREATE2 the model could not rule on (the relay went silent \
+                 on LLM failure if this times out)",
+            )
+            .await?;
+
+        assert_ne!(
+            cell[4], CELL_CREATED2,
+            "an LLM failure on CREATE2 must not be answered with CREATED2: that admits the \
+             circuit the model was never able to approve"
+        );
+        assert_eq!(
+            cell[4], CELL_DESTROY,
+            "an LLM failure on CREATE2 must be answered with DESTROY (4), got command {}",
+            cell[4]
+        );
+        assert_eq!(
+            cell[5], DESTROY_REASON_INTERNAL,
+            "the DESTROY reason must be 2 INTERNAL, got {}",
+            cell[5]
+        );
+        assert!(
+            cell[6..].iter().all(|&b| b == 0),
+            "a DESTROY cell carries only its reason; the rest must be padding"
+        );
+
+        server
+            .wait_for_log("decision=fail_closed_llm_error", 30)
+            .await?;
+
         server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;

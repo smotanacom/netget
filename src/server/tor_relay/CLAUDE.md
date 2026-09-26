@@ -355,8 +355,23 @@ accepted a cell and would never speak again. DESTROY is the right vocabulary bec
 no relay-cell encryption (so it survives a circuit whose crypto is the problem) and cannot be
 mistaken for the EXTENDED/RESOLVED/TRUNCATED the peer asked for. There is no retryable cell, so
 an overload is answered identically and distinguished only in the log.
-`tor_relay_circuit_created` already handled its error and still sends CREATED2, which is
-correct: the handshake succeeded in Rust and the model was only being told about it.
+
+**`tor_relay_circuit_created` fails closed the same way.** The event fires after the ntor
+handshake has been computed in Rust but *before* CREATED2 is written, and the model's answer
+decides what goes out: an `Output` action (a `send_destroy`) replaces the CREATED2, and
+`close_connection` hangs up. That makes the model the gate on admission, and CREATED2 *is*
+admission — it completes the handshake and hands the peer a circuit to build on. So when
+`call_llm` returns `Err`, the relay sends **DESTROY / reason 2 INTERNAL** instead of CREATED2,
+drops the half-built circuit state, and logs `decision=fail_closed_llm_error`. Sending CREATED2
+there would turn a backend outage into "every circuit accepted", the OAuth2 shape in the root
+`CLAUDE.md`. A model that answers with an action producing no output (`detect_relay_cell`,
+`tor_relay_log`) has admitted the circuit, and that is logged `decision=model_answer`.
+
+**Decision tags.** Every LLM outcome on both events is logged with a `decision=` token:
+`model_answer` (CREATED2 sent, or the model's own cell), `model_reject` (the model closed the
+connection), `model_silent` (a RELAY command the model left unanswered) and
+`fail_closed_llm_error` (DESTROY / INTERNAL on either event). `FailureMode` is the default
+`Answers`: every failure is answered on the wire, with DESTROY.
 
 **Exit policy is not enforced.** `configure_exit_policy` was one of the dead actions, and
 `handle_begin_cell` connects to whatever address the BEGIN cell names. Any peer that establishes
