@@ -363,6 +363,16 @@ def scan_tests(directory: Path, known: set[str]) -> dict:
             for m in re.finditer(r'(?:tool|which_in_path|find_binary|require_tool)\(\s*"([a-z0-9_.-]+)"', code):
                 if m.group(1) not in NOT_A_PEER_BINARY:
                     file_binaries.add(m.group(1))
+        # A third-party *server* spawned through `tests/helpers/real_server.rs`. The helper
+        # resolves and spawns the binary itself, so the test file never writes
+        # `Command::new("mosquitto")` — the builder's first argument is the only place the
+        # name appears, and without this the client suites that exist to drive a real
+        # server (`mqtt`, `redis`, `etcd`, `http`) reported only their CLI tools, or, for
+        # `http`, no peer at all.
+        for m in re.finditer(r'RealServer::builder\(\s*"([^"]+)"', code):
+            name = m.group(1).split("/")[-1]
+            if name not in NOT_A_PEER_BINARY:
+                file_binaries.add(name)
         # The python-stdlib exception (see PYTHON_STDLIB_PROTOCOL_MODULES): a file that
         # spawns python3 AND carries a driver importing a stdlib protocol module is
         # driving that module as a peer, not using python as a shell.
