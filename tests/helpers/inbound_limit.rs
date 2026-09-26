@@ -47,7 +47,9 @@ impl InboundLimitServer {
         protocol: &str,
         startup_params: Option<serde_json::Value>,
     ) -> Result<Self, String> {
-        let mock = MockOllamaServer::start(
+        Self::try_start_with_mock(
+            protocol,
+            startup_params,
             MockLlmBuilder::new()
                 .on_any()
                 .respond_with_actions(serde_json::json!([]))
@@ -55,7 +57,19 @@ impl InboundLimitServer {
                 .build(),
         )
         .await
-        .map_err(|e| format!("mock ollama: {e}"))?;
+    }
+
+    /// As [`Self::try_start`], with the model's answers supplied — for a protocol whose bound
+    /// sits behind a step the model must approve (an SMB login). Every rule should still count
+    /// rather than constrain (`expect_at_least(0)`), and the last should be a catch-all.
+    pub async fn try_start_with_mock(
+        protocol: &str,
+        startup_params: Option<serde_json::Value>,
+        mock_config: super::mock_config::MockLlmConfig,
+    ) -> Result<Self, String> {
+        let mock = MockOllamaServer::start(mock_config)
+            .await
+            .map_err(|e| format!("mock ollama: {e}"))?;
 
         let state = AppState::new_with_options(false, mock.base_url());
         state

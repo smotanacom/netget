@@ -65,6 +65,17 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 /// log, tagged `decision=fail_closed_connection_cap`.
 const CONNECTION_CAP_REFUSAL: &[u8] = b"";
 
+/// The largest WRITE this server accepts, advertised as `MaxWriteSize` in the NEGOTIATE
+/// response, and this server's declared `max_inbound_bytes`.
+///
+/// There is no transport length prefix here (see `CLAUDE.md`: raw SMB2, no NBSS header), so
+/// every read is a fixed-size header or body except one: a WRITE's `Length`, a peer-chosen u32
+/// that sizes the buffer its data is read into. MS-SMB2 3.3.5.13 says a WRITE longer than the
+/// negotiated `MaxWriteSize` MUST fail with `STATUS_INVALID_PARAMETER`, and that is what happens
+/// — before the buffer is allocated, followed by a close, because the data behind the header
+/// cannot be skipped without reading it and would otherwise be parsed as the next message.
+pub const MAX_WRITE_SIZE: u32 = 1024 * 1024;
+
 const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
 /// The command is not one this server implements. Better than silence: a peer given no reply
 /// at all waits out its own timeout with the connection already desynced.
@@ -118,6 +129,10 @@ struct SmbConnectionState {
     files: HashMap<Vec<u8>, SmbFileHandle>,
     next_session_id: u64,
     next_tree_id: u32,
+    /// Set by a command whose request left unread bytes on the stream that cannot be skipped —
+    /// an over-size WRITE. The session loop sends that command's response and then closes,
+    /// rather than reading the leftover payload as the next SMB2 header.
+    close_after_reply: bool,
 }
 
 impl SmbConnectionState {
@@ -128,6 +143,7 @@ impl SmbConnectionState {
             files: HashMap::new(),
             next_session_id: 1,
             next_tree_id: 1,
+            close_after_reply: false,
         }
     }
 }
@@ -467,6 +483,14 @@ impl SmbServer {
                                 break;
                             }
                         }
+                    }
+
+                    if state.lock().await.close_after_reply {
+                        debug!(
+                            "SMB closing {} after refusing a request whose payload is unread",
+                            peer_addr
+                        );
+                        break;
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -960,16 +984,19 @@ impl SmbServer {
                 let length = u32::from_le_bytes(body_buf[4..8].try_into().unwrap());
                 let offset = u64::from_le_bytes(body_buf[8..16].try_into().unwrap());
 
-                // `length` is attacker-controlled, so cap the allocation instead of
-                // trusting a peer to be honest about a 4 GB write.
-                const MAX_WRITE_LEN: u32 = 8 * 1024 * 1024;
-                if length > MAX_WRITE_LEN {
+                // `length` is attacker-controlled and sizes the buffer below, so it is refused
+                // against the negotiated MaxWriteSize before anything is allocated — MS-SMB2
+                // 3.3.5.13's STATUS_INVALID_PARAMETER. The data behind the header is unread
+                // and cannot be skipped, so the connection closes after the reply.
+                if length > MAX_WRITE_SIZE {
                     Log::new(Some(status_tx)).warn(format!(
-                        "SMB2 WRITE: refusing {} byte write (max {})",
-                        length, MAX_WRITE_LEN
+                        "SMB2 WRITE: refusing {} byte write (MaxWriteSize {}) \
+                         decision=fail_closed_write_too_large; closing after the reply",
+                        length, MAX_WRITE_SIZE
                     ));
+                    _state.lock().await.close_after_reply = true;
                     let response =
-                        Self::build_error_response(_header, SMB2_WRITE, STATUS_ACCESS_DENIED)?;
+                        Self::build_error_response(_header, SMB2_WRITE, STATUS_INVALID_PARAMETER)?;
                     return Ok(Some(response));
                 }
 
@@ -1346,13 +1373,13 @@ impl SmbServer {
         response.extend_from_slice(&[0x00, 0x00]); // Command (NEGOTIATE)
         response.extend_from_slice(&[1, 0]); // Credit (grant 1 credit)
         response.extend_from_slice(&[0, 0, 0, 0]); // Flags
-
-        // Copy message ID from request (offset 24-31)
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]); // Reserved (process ID)
-        response.extend_from_slice(&[0; 8]); // Tree ID
-        response.extend_from_slice(&[0; 16]); // Session ID + Signature
+        response.extend_from_slice(&[0, 0, 0, 0]); // 20 NextCommand (not compounded)
+        response.extend_from_slice(&request_header[24..32]); // 24 MessageId (echoed)
+        response.extend_from_slice(&[0; 4]); // 32 Reserved (process ID)
+        response.extend_from_slice(&[0; 4]); // 36 TreeId
+        response.extend_from_slice(&[0; 8]); // 40 SessionId
+        response.extend_from_slice(&[0; 16]); // 48 Signature
+        debug_assert_eq!(response.len(), 64, "SMB2 header must be 64 bytes");
 
         // SMB2 Negotiate Response body
         response.extend_from_slice(&[65, 0]); // Structure size (65 bytes)
@@ -1369,7 +1396,9 @@ impl SmbServer {
         response.extend_from_slice(&[0x07, 0x00, 0x00, 0x00]); // Capabilities (DFS)
         response.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // Max transaction size
         response.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // Max read size
-        response.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // Max write size
+                                                               // Max write size: the bound the WRITE arm enforces, so a client never sends a write
+                                                               // this server will refuse.
+        response.extend_from_slice(&MAX_WRITE_SIZE.to_le_bytes());
 
         // System time (current time in Windows FILETIME format)
         let now = crate::utils::clock::SystemTime::now()

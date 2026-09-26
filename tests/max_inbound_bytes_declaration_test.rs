@@ -224,10 +224,6 @@ const UNDECLARED_BASELINE: &[(&str, &str)] = &[
         "its MAX_TRACE_BYTES is log truncation; the whole-request bound is underived",
     ),
     (
-        "smb",
-        "its MAX_WRITE_LEN bounds a write payload, not a message",
-    ),
-    (
         "webrtc",
         "SCTP framing is owned by webrtc-rs; NetGet's own bound is underived",
     ),
