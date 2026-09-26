@@ -56,6 +56,7 @@ portable-base = [
     "gopher",
     "dict",
     "beanstalkd",
+    "zabbix",
     "gemini",
     "finger",
     "ssdp",
@@ -214,6 +215,7 @@ ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra dep
 gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
 dict = []  # DICT (RFC 2229) dictionary server - hand-rolled line protocol, no extra deps
 beanstalkd = []  # Beanstalkd work-queue server - hand-rolled text protocol, no extra deps
+zabbix = []  # Zabbix trapper (zabbix_sender) - hand-rolled ZBXD framing, serde_json only
 gopher = []  # Gopher (RFC 1436) menu/document server - hand-rolled, no extra deps
 finger = []  # Finger (RFC 1288) user information server - hand-rolled, no extra deps
 ssdp = []  # SSDP/UPnP discovery (HTTPU over UDP multicast) - hand-rolled, no extra deps
@@ -445,6 +447,7 @@ dist-windows = [
     "gopher",
     "dict",
     "beanstalkd",
+    "zabbix",
     "gemini",
     "finger",
     "ssdp",
@@ -578,6 +581,7 @@ all-protocols = [
     "gopher",
     "dict",
     "beanstalkd",
+    "zabbix",
     "gemini",
     "finger",
     "ssdp",

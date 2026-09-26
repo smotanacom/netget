@@ -331,6 +331,12 @@ pub mod beanstalkd;
 pub use beanstalkd::actions::BeanstalkdProtocol;
 #[cfg(feature = "beanstalkd")]
 pub use beanstalkd::BeanstalkdServer;
+#[cfg(feature = "zabbix")]
+pub mod zabbix;
+#[cfg(feature = "zabbix")]
+pub use zabbix::actions::ZabbixProtocol;
+#[cfg(feature = "zabbix")]
+pub use zabbix::ZabbixServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]

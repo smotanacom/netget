@@ -177,6 +177,9 @@ impl ServerRegistry {
         #[cfg(feature = "beanstalkd")]
         self.register(Arc::new(crate::server::BeanstalkdProtocol::new()));
 
+        #[cfg(feature = "zabbix")]
+        self.register(Arc::new(crate::server::ZabbixProtocol::new()));
+
         #[cfg(feature = "gopher")]
         self.register(Arc::new(crate::server::GopherProtocol::new()));
 
@@ -1184,6 +1187,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Gopher", "gopher"),
     ("DICT", "dict"),
     ("Beanstalkd", "beanstalkd"),
+    ("Zabbix", "zabbix"),
     ("Gemini", "gemini"),
     ("Finger", "finger"),
     ("SSDP", "ssdp"),

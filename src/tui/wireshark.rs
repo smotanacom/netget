@@ -231,6 +231,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         // Beanstalkd (TCP 11300) has no dissector in this Wireshark build: `tshark -G protocols`
         // lists none. Plain TCP; its text protocol reads fine in "Follow TCP Stream".
         "beanstalkd" => PLAIN_TCP,
+        // Zabbix trapper (TCP 10051). `zabbix` is Wireshark's own dissector for the ZBXD
+        // framing (`tshark -G protocols` lists it; checked with `-d tcp.port==10051,zabbix`).
+        "zabbix" => tcp("zabbix"),
         // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
