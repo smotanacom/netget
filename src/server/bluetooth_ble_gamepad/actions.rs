@@ -48,6 +48,7 @@ impl Protocol for BluetoothBleGamepadProtocol {
             description: "Bluetooth device name to advertise (default: NetGet-Gamepad)".to_string(),
             required: false,
             example: json!("NetGet-Gamepad"),
+            default: None,
         }]
     }
 

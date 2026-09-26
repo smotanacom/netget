@@ -78,6 +78,7 @@ impl Protocol for SmbProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(445)
             // A WRITE's Length is the only peer-chosen size this server buffers; it is refused
             // against the negotiated MaxWriteSize before allocation. Tested in
             // tests/server/smb/inbound_limit_test.rs.

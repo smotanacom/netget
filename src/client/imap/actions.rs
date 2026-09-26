@@ -339,6 +339,7 @@ impl Protocol for ImapClientProtocol {
                 description: "IMAP username for authentication".to_string(),
                 required: true,
                 example: json!("user@example.com"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -346,6 +347,7 @@ impl Protocol for ImapClientProtocol {
                 description: "IMAP password for authentication".to_string(),
                 required: true,
                 example: json!("secret123"),
+                default: None,
             },
             ParameterDefinition {
                 name: "use_tls".to_string(),
@@ -353,6 +355,7 @@ impl Protocol for ImapClientProtocol {
                 description: "Whether to use TLS (default: true for port 993)".to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
         ]
     }

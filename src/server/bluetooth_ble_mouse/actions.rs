@@ -48,6 +48,7 @@ impl Protocol for BluetoothBleMouseProtocol {
             description: "Bluetooth device name to advertise (default: NetGet-Mouse)".to_string(),
             required: false,
             example: json!("NetGet-Mouse"),
+            default: None,
         }]
     }
 

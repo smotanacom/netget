@@ -284,6 +284,7 @@ impl Protocol for WebRtcProtocol {
                 type_hint: "array".to_string(),
                 required: false,
                 example: json!(["stun:stun.l.google.com:19302"]),
+                default: None,
             },
             ParameterDefinition {
                 name: "max_peers".to_string(),
@@ -294,6 +295,7 @@ impl Protocol for WebRtcProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(32),
+                default: None,
             },
             ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -305,6 +307,7 @@ impl Protocol for WebRtcProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(600),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }

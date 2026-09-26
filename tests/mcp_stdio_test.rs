@@ -329,6 +329,41 @@ async fn protocol_docs_describe_the_mcp_surface() {
         );
     }
 
+    // A declared default is printed beside its parameter, and it is the number the server
+    // falls back to — tcp's idle bound is 900 seconds (`IDLE_BETWEEN_MESSAGES_TIMEOUT`).
+    let idle = text
+        .lines()
+        .find(|l| l.starts_with("- `idle_timeout_secs`"))
+        .unwrap_or_else(|| panic!("tcp declares idle_timeout_secs:\n{text}"));
+    assert!(
+        idle.contains("default: `900`"),
+        "the default must be shown beside the parameter: {idle}"
+    );
+    // tcp has no well-known port, so an omitted port is an OS-assigned one.
+    assert!(
+        text.contains("has no well-known port"),
+        "tcp's port line must say it has no well-known port:\n{text}"
+    );
+
+    // redis does have one, and its docs name it whether or not it is free right now.
+    if cfg!(feature = "redis") {
+        let redis = call(
+            &client,
+            "get_protocol_docs",
+            serde_json::json!({ "protocol": "redis" }),
+        )
+        .await;
+        let redis = text_of(&redis);
+        let port_line = redis
+            .lines()
+            .find(|l| l.starts_with("- `port`"))
+            .unwrap_or_else(|| panic!("redis docs have a port line:\n{redis}"));
+        assert!(
+            port_line.contains("6379"),
+            "the port line must name redis's well-known port: {port_line}"
+        );
+    }
+
     // Event ids with their field names, which handlers are written against.
     assert!(
         text.contains("tcp_data_received"),

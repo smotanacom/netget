@@ -491,12 +491,18 @@ fn picker_detail_lines<'a>(
         app.styles.normal,
     )));
     lines.push(Line::from(Span::styled(
-        match (entry.kind, entry.default_port) {
+        match (entry.kind, &entry.default_port) {
             (crate::tui::app::Section::Clients, _) => {
                 "asks for the address to connect to".to_string()
             }
-            (_, Some(port)) => format!("starts on port {port}"),
-            (_, None) => "starts on an OS-assigned port (0)".to_string(),
+            (_, Some(default)) => match (default.well_known, default.fallback) {
+                (Some(port), None) => format!("starts on well-known port {port}"),
+                // Names the port it is passing over, and why.
+                (Some(_), Some(_)) => default.describe(),
+                (None, _) if default.port == 0 => "starts on an OS-assigned port (0)".to_string(),
+                (None, _) => format!("starts on port {}", default.port),
+            },
+            (_, None) => "binds no port — an interface or a local path".to_string(),
         },
         app.styles.dimmed,
     )));
@@ -547,6 +553,9 @@ fn form_lines_with_offsets<'a>(
             } else {
                 first.to_string()
             }
+        } else if field.is_default() {
+            // Says the value is the protocol's own, which is why it will not be submitted.
+            format!("{}  (default)", field.value)
         } else {
             field.value.clone()
         };

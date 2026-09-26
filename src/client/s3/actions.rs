@@ -97,6 +97,7 @@ impl crate::llm::actions::protocol_trait::Protocol for S3ClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("AKIAIOSFODNN7EXAMPLE"),
+                default: None,
             },
             ParameterDefinition {
                 name: "secret_access_key".to_string(),
@@ -104,6 +105,7 @@ impl crate::llm::actions::protocol_trait::Protocol for S3ClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+                default: None,
             },
             ParameterDefinition {
                 name: "region".to_string(),
@@ -111,6 +113,7 @@ impl crate::llm::actions::protocol_trait::Protocol for S3ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("us-east-1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "endpoint_url".to_string(),
@@ -119,6 +122,7 @@ impl crate::llm::actions::protocol_trait::Protocol for S3ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("http://localhost:9000"),
+                default: None,
             },
         ]
     }

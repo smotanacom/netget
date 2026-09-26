@@ -567,6 +567,7 @@ impl Protocol for SsdpClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "local_port".to_string(),
@@ -579,6 +580,7 @@ impl Protocol for SsdpClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "join_multicast".to_string(),
@@ -590,6 +592,7 @@ impl Protocol for SsdpClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             ParameterDefinition {
                 name: "multicast_interface".to_string(),
@@ -600,6 +603,7 @@ impl Protocol for SsdpClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "response_window_ms".to_string(),
@@ -612,6 +616,7 @@ impl Protocol for SsdpClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "user_agent".to_string(),
@@ -623,6 +628,7 @@ impl Protocol for SsdpClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("Linux/6.1 UPnP/1.1 NetGet-SSDP-Client/1.0"),
+                default: None,
             },
         ]
     }

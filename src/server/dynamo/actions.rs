@@ -146,6 +146,7 @@ impl Protocol for DynamoProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            .well_known_port(8000)
             .implementation("hyper v1.5 HTTP with manual DynamoDB API")
             .llm_control("All DynamoDB operations (GetItem, PutItem, Query)")
             .e2e_testing(

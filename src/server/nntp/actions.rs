@@ -210,6 +210,9 @@ impl Protocol for NntpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::FIRST_COMMAND_READ_TIMEOUT.as_secs()
+                )),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -222,6 +225,9 @@ impl Protocol for NntpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(600),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_COMMANDS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
@@ -258,6 +264,7 @@ impl Protocol for NntpProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(119)
             .implementation("Manual line-based NNTP parsing (RFC 3977)")
             .llm_control("All NNTP commands (LIST, GROUP, ARTICLE, POST)")
             .e2e_testing("Raw TCP NNTP client")

@@ -407,6 +407,7 @@ impl Protocol for YarnProtocol {
                     .to_string(),
                 required: false,
                 example: json!("3.3.6"),
+                default: None,
             },
             ParameterDefinition {
                 name: "cluster_id".to_string(),
@@ -416,6 +417,7 @@ impl Protocol for YarnProtocol {
                     .to_string(),
                 required: false,
                 example: json!("1476912658570"),
+                default: None,
             },
         ]
     }
@@ -441,6 +443,7 @@ impl Protocol for YarnProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(8088)
             .implementation("hyper v1 HTTP/1.1 server, manual YARN RM REST envelopes")
             .llm_control("Applications, nodes and cluster metrics invented by the LLM")
             .e2e_testing(

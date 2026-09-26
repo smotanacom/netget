@@ -41,6 +41,9 @@ impl Protocol for Http2Protocol {
                 .to_string(),
             required: false,
             example: json!(30),
+            default: Some(serde_json::json!(
+                super::h2_server::FIRST_BYTE_READ_TIMEOUT.as_secs()
+            )),
         });
         params.push(crate::llm::actions::ParameterDefinition {
             name: "idle_timeout_secs".to_string(),
@@ -52,6 +55,9 @@ impl Protocol for Http2Protocol {
                 .to_string(),
             required: false,
             example: json!(300),
+            default: Some(serde_json::json!(
+                super::h2_server::IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+            )),
         });
         params
     }
@@ -92,6 +98,7 @@ impl Protocol for Http2Protocol {
             // HTTP/2 normally runs on 443 (TLS); h2c is often 80. The preflight
             // check only fires when the requested port is actually < 1024.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(443))
+            .well_known_port(443)
             .implementation("h2 crate directly (server push), optional TLS via rustls")
             .llm_control("Response content (status, headers, text body) + server push")
             .e2e_testing("h2/reqwest + mocked LLM, tests/server/http2/e2e_test.rs (3 scenarios)")

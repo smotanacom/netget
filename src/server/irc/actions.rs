@@ -73,6 +73,7 @@ impl Protocol for IrcProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(6667)
             .implementation("Manual line-based IRC parsing, plain TCP only")
             .llm_control("Every inbound line; the model composes every reply")
             .e2e_testing("Raw TCP client issuing NICK/USER/JOIN/PRIVMSG")

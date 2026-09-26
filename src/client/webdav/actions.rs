@@ -92,6 +92,7 @@ impl Protocol for WebdavClientProtocol {
                     "User-Agent": "NetGet/1.0",
                     "Accept": "application/xml"
                 }),
+                default: None,
             },
             ParameterDefinition {
                 name: "auth".to_string(),
@@ -99,6 +100,7 @@ impl Protocol for WebdavClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("username:password"),
+                default: None,
             },
         ]
     }

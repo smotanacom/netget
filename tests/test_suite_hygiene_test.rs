@@ -145,7 +145,6 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/client/smb/e2e_test.rs", 4),
     ("tests/client/snmp/e2e_test.rs", 6),
     ("tests/client/socks5/e2e_test.rs", 1),
-    ("tests/client/ssh/e2e_test.rs", 5),
     ("tests/client/stomp/e2e_test.rs", 2),
     ("tests/client/tor/e2e_test.rs", 2),
     ("tests/client/wireguard/e2e_test.rs", 4),

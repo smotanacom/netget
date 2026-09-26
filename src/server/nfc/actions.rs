@@ -583,6 +583,7 @@ print(json.dumps({"actions": actions}))"#;
                 required: false,
 
                 example: json!("type4"),
+                default: None,
             },
             ParameterDefinition {
                 name: "uid".to_string(),
@@ -594,6 +595,7 @@ print(json.dumps({"actions": actions}))"#;
                 required: false,
 
                 example: json!("04A1B2C3D4E5F6"),
+                default: None,
             },
             ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
@@ -607,6 +609,7 @@ print(json.dumps({"actions": actions}))"#;
                 required: false,
 
                 example: json!(30),
+                default: Some(serde_json::json!(super::FIRST_FRAME_READ_TIMEOUT.as_secs())),
             },
             ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -620,6 +623,9 @@ print(json.dumps({"actions": actions}))"#;
                 required: false,
 
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_FRAMES_TIMEOUT.as_secs()
+                )),
             },
         ]
     }

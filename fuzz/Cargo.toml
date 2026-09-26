@@ -37,7 +37,7 @@ path = ".."
 default-features = false
 # One feature per decoder reached below, and nothing else. `default-features = false`
 # matters: netget's default is `all-protocols`, which would compile 136 protocols in
-# order to fuzz twenty-three decoders.
+# order to fuzz twenty-five decoders.
 features = [
     "amqp",
     "bgp",
@@ -59,6 +59,8 @@ features = [
     "stomp",
     "svn",
     "xmlrpc",
+    "zabbix",
+    "gearman",
 ]
 
 # NOT here, and it is not an oversight: `usb-fido2` (and every other USB feature).
@@ -227,6 +229,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "zabbix_packet"
+path = "fuzz_targets/zabbix_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "svn_tuple"
 path = "fuzz_targets/svn_tuple.rs"
 test = false
@@ -236,6 +245,13 @@ bench = false
 [[bin]]
 name = "xmlrpc_value"
 path = "fuzz_targets/xmlrpc_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gearman_packet"
+path = "fuzz_targets/gearman_packet.rs"
 test = false
 doc = false
 bench = false

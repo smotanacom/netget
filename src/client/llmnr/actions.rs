@@ -112,6 +112,7 @@ impl Protocol for LlmnrClientProtocol {
                         .to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "response_wait_secs".to_string(),
@@ -124,6 +125,7 @@ impl Protocol for LlmnrClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(2),
+                default: None,
             },
         ]
     }

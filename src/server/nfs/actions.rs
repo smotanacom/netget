@@ -68,6 +68,7 @@ impl Protocol for NfsProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(2049)
             // Port 2049 is above 1023, so no privilege is required to bind it. (A client
             // mounting from it may still need privileges of its own; that is the client's
             // problem, not this server's.)

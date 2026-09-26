@@ -55,6 +55,7 @@ impl Protocol for BoltProtocol {
                     .to_string(),
                 required: false,
                 example: json!("s3cret"),
+                default: None,
             },
             ParameterDefinition {
                 name: "neo4j_version".to_string(),
@@ -67,6 +68,7 @@ impl Protocol for BoltProtocol {
                 ),
                 required: false,
                 example: json!("5.26.0"),
+                default: Some(json!(super::DEFAULT_NEO4J_VERSION)),
             },
             ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
@@ -77,6 +79,7 @@ impl Protocol for BoltProtocol {
                     .to_string(),
                 required: false,
                 example: json!(30),
+                default: Some(json!(super::FIRST_BYTE_TIMEOUT.as_secs())),
             },
             ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -88,6 +91,7 @@ impl Protocol for BoltProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -129,6 +133,7 @@ impl Protocol for BoltProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(7687)
             // 7687 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(

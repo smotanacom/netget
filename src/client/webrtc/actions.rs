@@ -110,6 +110,7 @@ impl Protocol for WebRtcClientProtocol {
             type_hint: "array".to_string(),
             required: false,
             example: json!(["stun:stun.example.com:3478", "turn:turn.example.com:3478"]),
+            default: None,
         }]
     }
 

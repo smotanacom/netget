@@ -70,6 +70,7 @@ impl Protocol for RdpProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(3389)
             .implementation(
                 "Hand-written TPKT + X.224 with the [MS-RDPBCGR] RDP negotiation (CR/CC); no crate",
             )

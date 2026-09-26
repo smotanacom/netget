@@ -58,6 +58,7 @@ impl Protocol for PtyProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!("./netget.pty"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "send_first".to_string(),
@@ -67,6 +68,7 @@ impl Protocol for PtyProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(true),
+                default: None,
             },
         ]
     }

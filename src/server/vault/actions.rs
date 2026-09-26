@@ -147,6 +147,7 @@ impl Protocol for VaultProtocol {
             // asserting it prints exactly the handler's values, and hard-fails when the binary
             // is absent. Not Stable: one client, no fuzz target, no pcap-oracle test, KV v2 only.
             .state(DevelopmentState::Beta)
+            .well_known_port(8200)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1, plain HTTP. sys/seal-status, sys/health, sys/leader and the \
@@ -207,6 +208,7 @@ impl Protocol for VaultProtocol {
                     .to_string(),
                 required: false,
                 example: json!("hvs.netget-dev-token"),
+                default: None,
             },
             ParameterDefinition {
                 name: "kv_mounts".to_string(),
@@ -216,6 +218,7 @@ impl Protocol for VaultProtocol {
                     .to_string(),
                 required: false,
                 example: json!(["secret"]),
+                default: None,
             },
             ParameterDefinition {
                 name: "vault_version".to_string(),
@@ -226,6 +229,7 @@ impl Protocol for VaultProtocol {
                 ),
                 required: false,
                 example: json!("1.18.3"),
+                default: Some(serde_json::json!(super::DEFAULT_VAULT_VERSION)),
             },
         ]
     }

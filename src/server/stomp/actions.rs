@@ -86,6 +86,7 @@ impl Protocol for StompProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(61613)
             .implementation(
                 "Hand-rolled STOMP 1.2 codec over tokio TCP (src/server/stomp/frame.rs). No \
                  third-party STOMP crate on the server side: header escaping, the \

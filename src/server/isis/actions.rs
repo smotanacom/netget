@@ -68,6 +68,7 @@ impl Protocol for IsisProtocol {
                     description: "IS-IS System ID in format: 0000.0000.0001 (6 bytes in dotted hex notation)".to_string(),
                     required: false,
                     example: json!("0000.0000.0001"),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "area_id".to_string(),
@@ -75,6 +76,7 @@ impl Protocol for IsisProtocol {
                     description: "IS-IS Area ID in format: 49.0001 (NSAP format, 49 for private networks)".to_string(),
                     required: false,
                     example: json!("49.0001"),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "level".to_string(),
@@ -82,6 +84,7 @@ impl Protocol for IsisProtocol {
                     description: "IS-IS level: 'level-1' (intra-area), 'level-2' (inter-area backbone), or 'level-1+2' (both)".to_string(),
                     required: false,
                     example: json!("level-2"),
+                    default: None,
                 },
             ]
     }

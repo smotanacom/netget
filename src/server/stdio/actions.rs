@@ -56,6 +56,7 @@ impl Protocol for StdioProtocol {
                 .to_string(),
             required: false,
             example: serde_json::json!(true),
+            default: None,
         }]
     }
 

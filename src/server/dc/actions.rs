@@ -133,6 +133,7 @@ impl Protocol for DcProtocol {
                 description: "Name of the DC hub".to_string(),
                 required: false,
                 example: serde_json::json!("NetGet DC Hub"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "hub_topic".to_string(),
@@ -140,6 +141,7 @@ impl Protocol for DcProtocol {
                 description: "Hub topic/description".to_string(),
                 required: false,
                 example: serde_json::json!("Welcome to NetGet DC Hub"),
+                default: None,
             },
         ]
     }
@@ -178,6 +180,7 @@ impl Protocol for DcProtocol {
     fn metadata(&self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2::builder()
                 .state(DevelopmentState::Experimental)
+                .well_known_port(411)
                 .implementation("Manual NMDC protocol implementation - text-based with pipe delimiters")
                 .llm_control("Authentication (Lock/Key/Hello), chat messages, search results, user management (kick/redirect)")
                 .e2e_testing("tokio::net::TcpStream speaking NMDC by hand (tests/server/dc/): the $Lock handshake, chat, search, kick/redirect, the injected-peer path, and the fail-closed reply when the model is unreachable. No third-party DC++ client, so this stays Experimental")

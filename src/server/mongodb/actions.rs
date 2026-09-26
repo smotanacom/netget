@@ -194,6 +194,7 @@ impl Protocol for MongodbProtocol {
             // covering handshake plus CRUD commands. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(27017)
             .implementation(
                 "bson v3.0 with manual OP_MSG parsing: the kind-0 body and kind-1 document \
                  sequences, merged into one command document",

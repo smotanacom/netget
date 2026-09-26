@@ -379,6 +379,7 @@ impl Protocol for OllamaProtocol {
                         .to_string(),
                 required: false,
                 example: json!(30),
+                default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -391,6 +392,9 @@ impl Protocol for OllamaProtocol {
                         .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
@@ -431,6 +435,7 @@ impl Protocol for OllamaProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            .well_known_port(11434)
             .implementation("hyper with Ollama-compatible HTTP endpoints")
             .llm_control(
                 "Every endpoint is a model decision: /api/generate, /api/chat, /api/tags, \

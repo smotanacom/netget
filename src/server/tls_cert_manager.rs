@@ -275,6 +275,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Enable TLS/SSL encryption (default: false for HTTP/HTTP2, always true for QUIC)".to_string(),
             required: false,
             example: serde_json::json!(true),
+            default: None,
         },
         ParameterDefinition {
             name: "cert_path".to_string(),
@@ -282,6 +283,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Path to TLS certificate file (PEM format). If not provided, a self-signed certificate will be generated.".to_string(),
             required: false,
             example: serde_json::json!("/path/to/cert.pem"),
+            default: None,
         },
         ParameterDefinition {
             name: "key_path".to_string(),
@@ -289,6 +291,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Path to TLS private key file (PEM format). Required if cert_path is provided.".to_string(),
             required: false,
             example: serde_json::json!("/path/to/key.pem"),
+            default: None,
         },
         ParameterDefinition {
             name: "common_name".to_string(),
@@ -296,6 +299,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Common Name (CN) for self-signed certificate (default: netget-dns-server)".to_string(),
             required: false,
             example: serde_json::json!("example.com"),
+            default: None,
         },
         ParameterDefinition {
             name: "san_dns_names".to_string(),
@@ -303,6 +307,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Subject Alternative Names (DNS names) for self-signed certificate (default: [\"localhost\", \"*.local\"])".to_string(),
             required: false,
             example: serde_json::json!(["example.com", "*.example.com"]),
+            default: None,
         },
         ParameterDefinition {
             name: "validity_days".to_string(),
@@ -310,6 +315,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Certificate validity period in days for self-signed certificate (default: 365)".to_string(),
             required: false,
             example: serde_json::json!(365),
+            default: None,
         },
         ParameterDefinition {
             name: "organization".to_string(),
@@ -317,6 +323,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Organization name for self-signed certificate (default: NetGet)".to_string(),
             required: false,
             example: serde_json::json!("My Organization"),
+            default: None,
         },
         ParameterDefinition {
             name: "organizational_unit".to_string(),
@@ -324,6 +331,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
             description: "Organizational unit for self-signed certificate".to_string(),
             required: false,
             example: serde_json::json!("IT Department"),
+            default: None,
         },
     ]
 }

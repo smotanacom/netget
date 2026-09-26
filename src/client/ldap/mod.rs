@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::client::ldap::actions::{
     LDAP_CLIENT_BIND_RESPONSE_EVENT, LDAP_CLIENT_CONNECTED_EVENT,
@@ -37,6 +37,15 @@ enum Applied {
     /// The action executed but touched the connection in no way.
     Nothing(&'static str),
 }
+
+/// How many action -> operation -> response -> action turns one client will take.
+///
+/// Every operation raises a response event whose answer may be another operation, so the chain
+/// is self-referential and needs a bound rather than silence: a model that answers every search
+/// with another search would otherwise run forever. Four covers bind → search → add → react,
+/// and a runaway costs five LLM calls. The response at the bound is still shown to the model;
+/// its answer is dropped with a warning.
+const MAX_FOLLOWUP_DEPTH: usize = 4;
 
 /// LDAP client that connects to an LDAP server
 pub struct LdapClient;
@@ -164,6 +173,7 @@ impl LdapClient {
                                 &status_tx_clone,
                                 client_id,
                                 &instruction,
+                                0,
                             )
                             .await
                             {
@@ -272,6 +282,7 @@ impl LdapClient {
                     &protocol,
                     &ldap,
                     event,
+                    0,
                 )
                 .await
                 {
@@ -286,7 +297,10 @@ impl LdapClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
-    /// Execute an LDAP action from the LLM
+    /// Execute one action from the model and hand the operation's response back to it.
+    ///
+    /// Boxed `+ Send` because this and [`Self::call_llm_with_event`] call each other; `depth`
+    /// counts the turns so far and [`MAX_FOLLOWUP_DEPTH`] bounds them.
     #[allow(clippy::too_many_arguments)]
     fn execute_ldap_action<'a>(
         action: serde_json::Value,
@@ -297,6 +311,7 @@ impl LdapClient {
         status_tx: &'a mpsc::UnboundedSender<String>,
         client_id: ClientId,
         instruction: &'a str,
+        depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             match Self::apply_action(protocol.execute_action(action)?, ldap, client_id).await? {
@@ -310,6 +325,7 @@ impl LdapClient {
                         protocol,
                         ldap,
                         event,
+                        depth,
                     )
                     .await?;
                 }
@@ -371,6 +387,7 @@ impl LdapClient {
                         event: Event::new(
                             &LDAP_CLIENT_BIND_RESPONSE_EVENT,
                             serde_json::json!({
+                                "dn": dn,
                                 "success": success,
                                 "message": message,
                             }),
@@ -430,7 +447,35 @@ impl LdapClient {
                     .await
                     .context("Failed to spawn search task")??;
 
-                    let (entries, _result) = search_result.success()?;
+                    // A search the server refused (noSuchObject, a bad filter, insufficient
+                    // access) is the server's answer, not a transport error: the model is told,
+                    // exactly as it is told of a failed bind or add. Returning the error here
+                    // would end the chain with nothing raised, and the model would never learn
+                    // why its search came back empty.
+                    let entries = match search_result.success() {
+                        Ok((entries, _)) => entries,
+                        Err(e) => {
+                            let message = format!("Search failed: {:?}", e);
+                            info!("LDAP client {} search result: {}", client_id, message);
+                            return Ok(Applied::Ran {
+                                detail: format!(
+                                    "search base={} filter={}: {}",
+                                    base_dn, filter, message
+                                ),
+                                event: Event::new(
+                                    &LDAP_CLIENT_SEARCH_RESULTS_EVENT,
+                                    serde_json::json!({
+                                        "base_dn": base_dn,
+                                        "filter": filter,
+                                        "success": false,
+                                        "message": message,
+                                        "entries": [],
+                                        "count": 0,
+                                    }),
+                                ),
+                            });
+                        }
+                    };
 
                     // Convert entries to JSON
                     let mut json_entries = Vec::new();
@@ -461,6 +506,9 @@ impl LdapClient {
                         event: Event::new(
                             &LDAP_CLIENT_SEARCH_RESULTS_EVENT,
                             serde_json::json!({
+                                "base_dn": base_dn,
+                                "filter": filter,
+                                "success": true,
                                 "entries": json_entries,
                                 "count": count,
                             }),
@@ -478,18 +526,31 @@ impl LdapClient {
 
                     debug!("LDAP client {} adding entry: {}", client_id, dn);
 
-                    // Convert attributes JSON to Vec<(attribute, HashSet<value>)>
+                    // Convert attributes JSON to Vec<(attribute, HashSet<value>)>. A value may be
+                    // an array of strings or a single string: `{"cn": "Ada"}` is how a model
+                    // naturally writes a single-valued attribute, and dropping it would send an
+                    // entry without it — which the server then rejects as an object class
+                    // violation, naming an attribute the model did supply.
+                    let attrs_obj = attributes
+                        .as_object()
+                        .context("'attributes' in add action must be an object")?;
                     let mut attrs_vec = Vec::new();
-                    if let Some(attrs_obj) = attributes.as_object() {
-                        for (attr_name, attr_values) in attrs_obj {
-                            if let Some(values_arr) = attr_values.as_array() {
-                                let values: std::collections::HashSet<String> = values_arr
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect();
-                                attrs_vec.push((attr_name.clone(), values));
-                            }
-                        }
+                    for (attr_name, attr_values) in attrs_obj {
+                        let values: std::collections::HashSet<String> = match attr_values {
+                            serde_json::Value::String(v) => std::iter::once(v.clone()).collect(),
+                            serde_json::Value::Array(arr) => arr
+                                .iter()
+                                .map(|v| {
+                                    v.as_str().map(str::to_string).with_context(|| {
+                                        format!("attribute '{attr_name}' has a non-string value")
+                                    })
+                                })
+                                .collect::<Result<_>>()?,
+                            _ => anyhow::bail!(
+                                "attribute '{attr_name}' must be a string or an array of strings"
+                            ),
+                        };
+                        attrs_vec.push((attr_name.clone(), values));
                     }
 
                     let dn_owned = dn.to_string();
@@ -515,6 +576,8 @@ impl LdapClient {
                         event: Event::new(
                             &LDAP_CLIENT_MODIFY_RESPONSE_EVENT,
                             serde_json::json!({
+                                "operation": "add",
+                                "dn": dn,
                                 "success": success,
                                 "message": message,
                             }),
@@ -592,14 +655,16 @@ impl LdapClient {
                     info!("LDAP client {} modify result: {}", client_id, message);
 
                     Ok(Applied::Ran {
-                        detail: format!("modify {}: {}", dn_for_detail, message),
                         event: Event::new(
                             &LDAP_CLIENT_MODIFY_RESPONSE_EVENT,
                             serde_json::json!({
+                                "operation": "modify",
+                                "dn": dn_for_detail,
                                 "success": success,
                                 "message": message,
                             }),
                         ),
+                        detail: format!("modify {}: {}", dn_for_detail, message),
                     })
                 }
                 "ldap_delete" => {
@@ -633,6 +698,8 @@ impl LdapClient {
                         event: Event::new(
                             &LDAP_CLIENT_MODIFY_RESPONSE_EVENT,
                             serde_json::json!({
+                                "operation": "delete",
+                                "dn": dn,
                                 "success": success,
                                 "message": message,
                             }),
@@ -666,7 +733,7 @@ impl LdapClient {
         }
     }
 
-    /// Helper to call LLM with an event and execute resulting actions
+    /// Show the model an operation's response and execute what it answers, one level deeper.
     #[allow(clippy::too_many_arguments)]
     async fn call_llm_with_event(
         llm_client: &OllamaClient,
@@ -677,6 +744,7 @@ impl LdapClient {
         protocol: &Arc<LdapClientProtocol>,
         ldap: &Arc<tokio::sync::Mutex<LdapConn>>,
         event: Event,
+        depth: usize,
     ) -> Result<()> {
         let memory = app_state
             .get_memory_for_client(client_id)
@@ -704,6 +772,17 @@ impl LdapClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
 
+                if !actions.is_empty() && depth >= MAX_FOLLOWUP_DEPTH {
+                    warn!(
+                        "LDAP client {} reached the follow-up depth bound ({}); dropping {} \
+                         action(s) rather than looping",
+                        client_id,
+                        MAX_FOLLOWUP_DEPTH,
+                        actions.len()
+                    );
+                    return Ok(());
+                }
+
                 // Execute actions
                 for action in actions {
                     if let Err(e) = Self::execute_ldap_action(
@@ -715,6 +794,7 @@ impl LdapClient {
                         status_tx,
                         client_id,
                         instruction,
+                        depth + 1,
                     )
                     .await
                     {

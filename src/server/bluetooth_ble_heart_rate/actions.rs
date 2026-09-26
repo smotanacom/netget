@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleHeartRateProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-HeartRate"),
+            default: None,
         }]
     }
 

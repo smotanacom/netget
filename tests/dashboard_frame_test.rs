@@ -412,3 +412,45 @@ fn the_button_grid_walks_with_the_arrows() {
     assert!(lines.iter().all(|l| l.chars().count() <= 80));
     assert!(dump(&lines).contains("[ edit"));
 }
+
+/// Open the picker filtered to `filter`, as `a` then typing would, with the given capabilities.
+#[cfg(any(feature = "redis", feature = "dns"))]
+fn picker_frame(filter: &str, caps: &SystemCapabilities) -> String {
+    let mut app = app();
+    app.absorb_snapshot(RailSnapshot::default());
+    app.modals.push(netget::tui::modal::Modal::ProtocolPicker {
+        entries: netget::tui::modal::protocol_picker::all_entries(caps),
+        filter: filter.to_string(),
+        selected: 0,
+        prefill_remote: None,
+    });
+    let text = dump(&frame(&mut app, 120, 40));
+    println!("{text}");
+    text
+}
+
+/// The picker names the port a server will start on, and it is the protocol's registered one.
+#[cfg(feature = "redis")]
+#[test]
+fn the_picker_shows_the_well_known_port() {
+    let text = picker_frame("redis", &SystemCapabilities::detect());
+    // Whether 6379 is free on this machine decides the rest of the line; the number is shown
+    // either way.
+    assert!(
+        text.contains("well-known port 6379"),
+        "the redis server entry must name its well-known port"
+    );
+}
+
+/// Below 1024 without privilege, the picker says why the server will not take the port.
+#[cfg(feature = "dns")]
+#[test]
+fn the_picker_says_why_a_privileged_well_known_port_is_not_used() {
+    let mut caps = SystemCapabilities::detect();
+    caps.can_bind_privileged_ports = false;
+    let text = picker_frame("dns", &caps);
+    assert!(
+        text.contains("well-known port 53 needs root"),
+        "the dns entry must say it cannot take 53 and why"
+    );
+}

@@ -454,6 +454,7 @@ impl Protocol for MemcachedProtocol {
             .state(DevelopmentState::Beta)
             // 11211 is above 1023; PrivilegedPort here would be dead code.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(11211)
             // The one peer-chosen length in the text protocol is a storage command's declared
             // `<bytes>`; it is refused against this before any of the data block is read.
             // Tested from the wire in tests/server/memcached/inbound_limit_test.rs.

@@ -51,6 +51,7 @@ impl Protocol for RtpProtocol {
             ),
             required: false,
             example: json!(30),
+            default: None,
         }]
     }
 
@@ -82,6 +83,7 @@ impl Protocol for RtpProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            .well_known_udp_port(5004)
             // Deliberately silent: An RTP packet asserts media content at a timestamp; there
             // is no error packet, and a fabricated one is played.
             .deliberately_silent()

@@ -431,6 +431,7 @@ impl Protocol for CdpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
             ParameterDefinition {
                 name: "source_mac".to_string(),
@@ -444,6 +445,7 @@ impl Protocol for CdpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("00:1a:2b:3c:4d:5e"),
+                default: None,
             },
         ]
     }

@@ -98,6 +98,7 @@ impl Protocol for SshProtocol {
             // `e2e_testing` on the exec-path CRLF translation).
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(22))
+            .well_known_port(22)
             // The shell echo buffer is the only inbound allocation NetGet owns here; russh
             // bounds the transport packets around it.
             .max_inbound_bytes(crate::server::ssh::MAX_SHELL_LINE_BYTES)

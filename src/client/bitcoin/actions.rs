@@ -81,6 +81,7 @@ impl Protocol for BitcoinClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("bitcoinrpc"),
+                default: None,
             },
             ParameterDefinition {
                 name: "rpc_password".to_string(),
@@ -88,6 +89,7 @@ impl Protocol for BitcoinClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("password123"),
+                default: None,
             },
         ]
     }

@@ -1,4 +1,4 @@
 #[cfg(all(test, feature = "ssh"))]
 mod command_channel_test;
 #[cfg(all(test, feature = "ssh"))]
-mod e2e_test;
+mod real_server_test;

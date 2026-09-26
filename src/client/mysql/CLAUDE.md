@@ -93,10 +93,19 @@ Loop
 
 - **Trigger:** Query result received from server
 - **Data:**
-    - `result`: Array of row objects (JSON)
-    - `affected_rows` / `row_count`: number of rows (both are sent; the event type declares
-      `affected_rows`, the emit site had historically sent only `row_count`, so the model was
-      promised a field that never arrived)
+    - `query`: the SQL this result belongs to
+    - `result`: array of row objects keyed by column name (the text protocol carries every
+      value as a string, so an `INT` id arrives as `"1"`)
+    - `row_count`: rows returned
+    - `affected_rows`: what the server's OK packet says (1 for a one-row `INSERT`, 0 for a
+      `SELECT`) — read with `Conn::affected_rows()` under the same guard as the query, because
+      the next query overwrites it
+    - `last_insert_id`: the `AUTO_INCREMENT` id the statement generated, only when it
+      generated one
+
+  `tests/client/mysql/real_server_test.rs` matches a real `mysqld`'s INSERT result on
+  `affected_rows` 1 and `last_insert_id` 1, which a row count (0 for an `INSERT`) cannot
+  satisfy.
 - **LLM Decision:** Analyze results, execute follow-up queries, commit/rollback transaction
 
 **The answer to this event is executed**, and that was not always true. The loop used to call
@@ -154,25 +163,23 @@ asserts it from the server's side, which is the only place the effect is real.
 
 ```json
 {
+  "query": "SELECT id, name FROM users",
   "result": [
-    {"id": 1, "name": "Alice", "email": "alice@example.com"},
-    {"id": 2, "name": "Bob", "email": "bob@example.com"}
+    {"id": "1", "name": "Alice"},
+    {"id": "2", "name": "Bob"}
   ],
-  "row_count": 2
+  "row_count": 2,
+  "affected_rows": 0
 }
 ```
 
 ### Type Conversion
 
-MySQL types → JSON:
-
-- `NULL` → `null`
-- `INT/BIGINT` → `number`
-- `VARCHAR/TEXT` → `string`
-- `FLOAT/DOUBLE` → `number`
-- `DATE/DATETIME` → `string` (ISO format)
-- `TIME` → `string` (duration format)
-- `BLOB` → `string` (UTF-8 lossy)
+`Conn::query` is the **text** protocol, so a real server sends every non-NULL value as a
+string and `rows_to_json` passes it through: `INT` `1` arrives as `"1"`, `DATETIME` as
+`"2026-09-26 06:00:00"`, `BLOB` as a UTF-8-lossy string, `NULL` as `null`. The numeric and
+date arms in `rows_to_json` only fire for binary-protocol values, which this client never
+requests.
 
 ## Startup Parameters
 
@@ -218,10 +225,9 @@ LLM controls transaction boundaries:
 
 Query errors:
 
-- Set client status to `Error(message)`
-- Update UI
-- Finish LLM call (return to Idle state)
-- Do NOT disconnect (allow LLM to retry or fix query)
+- Set client status to `Error(message)` and update the UI
+- Do NOT disconnect
+- Raise **no** event: the model is not told the query failed, so it cannot correct it
 
 ## Limitations
 
@@ -366,20 +372,9 @@ Bulk data loading for LLM-generated datasets.
 
 See `tests/client/mysql/CLAUDE.md` for E2E test details.
 
-**Test Approach:**
-
-- Docker MySQL container (official `mysql:8` image)
-- Seed database with test schema/data
-- LLM executes queries, validates results
-- Test transactions (commit/rollback)
-- Test error handling (invalid queries)
-
-**LLM Call Budget:** < 10 calls per suite
-
-- 1 connection test
-- 1 simple SELECT
-- 1 transaction test
-- 1 error handling test
+The evidence is `tests/client/mysql/real_server_test.rs`: a real `mysqld` initialised per
+test, driven through CREATE / INSERT / SELECT / an INSERT built from the SELECT's rows, and
+read back with the `mysql` CLI. No Docker.
 
 ## Maintenance Notes
 
@@ -451,3 +446,26 @@ is never issued.
 
 Test: `tests/client/mysql/command_channel_test.rs` (zero LLM calls; a NetGet MySQL server with
 a `*` static handler receives the injected query).
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/mysql/real_server_test.rs` (see `tests/client/mysql/CLAUDE.md`):
+
+1. **Real third-party server** — Oracle's `mysqld` (C++), initialised per test with
+   `--initialize-insecure` and read back with the `mysql` CLI (libmysqlclient). NetGet's side
+   is `mysql_async`, which shares no code with either. (NetGet's own MySQL *server* is
+   `opensrv-mysql`; it is not involved.)
+2. **Fails rather than skips** — a missing `mysqld` or `mysql` is a test failure naming the brew
+   formula and the Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d.
+   CI's `registry-audit` installs the server and runs the suite in its evidence loop.
+3. **A real session** — the handshake and `caching_sha2_password` authentication of a real
+   MySQL 9 server, the `database` startup parameter, then `CREATE TABLE`, `INSERT` and
+   `SELECT` with the OK-packet counters and the rows handed to the model.
+4. **Acts on the model's answer, asserted on the wire** — the `mysql` CLI reads back the table
+   the model created, the row it inserted, and a second row it built from the `SELECT` result
+   it was shown. Verified by mutation: dropping the actions the model returns for a result
+   makes the test fail.
+
+Not covered by that evidence: TLS, a password (the test `root` has none), error reporting to
+the model, and prepared statements.

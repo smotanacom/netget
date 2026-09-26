@@ -62,6 +62,7 @@ impl Protocol for SvnProtocol {
             // port is < 1024, so that check could never fire and merely read as protection
             // that did not exist.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(3690)
             .implementation(
                 "Hand-rolled subset of the svn:// wire protocol, framed on ra_svn tuple \
                  structure (src/server/svn/wire.rs): nested lists and byte-counted strings, \

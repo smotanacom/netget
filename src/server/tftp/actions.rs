@@ -228,6 +228,7 @@ impl Protocol for TftpProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(69))
+            .well_known_udp_port(69)
             .implementation("Custom TFTP packet parsing and state machine")
             .llm_control("File read/write operations via memory (no disk storage)")
             .e2e_testing("Mock-based tests with RRQ/WRQ flows")

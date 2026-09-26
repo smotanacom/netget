@@ -173,6 +173,7 @@ impl Protocol for SyslogClientProtocol {
             type_hint: "string".to_string(),
             required: false,
             example: json!("tcp"),
+            default: None,
         }]
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
