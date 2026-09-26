@@ -148,7 +148,7 @@ fn postgresql_bin_dirs() -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default();
-    majors.sort_by(|a, b| b.0.cmp(&a.0));
+    majors.sort_by_key(|(major, _)| std::cmp::Reverse(*major));
     majors.into_iter().map(|(_, dir)| dir).collect()
 }
 
