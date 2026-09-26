@@ -312,6 +312,12 @@ pub mod ident;
 pub use ident::actions::IdentProtocol;
 #[cfg(feature = "ident")]
 pub use ident::IdentServer;
+#[cfg(feature = "dict")]
+pub mod dict;
+#[cfg(feature = "dict")]
+pub use dict::actions::DictProtocol;
+#[cfg(feature = "dict")]
+pub use dict::DictServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]

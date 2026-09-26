@@ -224,6 +224,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ident dissector, so naming one would be a lie and plain TCP is the honest answer.
         "finger" => tcp("finger"),
         "gopher" => tcp("gopher"),
+        // DICT (RFC 2229, TCP 2628) has no dissector in this Wireshark build: `tshark -G
+        // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
+        // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
+        "dict" => PLAIN_TCP,
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
