@@ -36,6 +36,12 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(dict());
     #[cfg(feature = "gemini")]
     cases.extend(gemini());
+    #[cfg(feature = "beanstalkd")]
+    cases.extend(beanstalkd());
+    #[cfg(feature = "zabbix")]
+    cases.extend(zabbix());
+    #[cfg(feature = "gearman")]
+    cases.extend(gearman());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -355,6 +361,153 @@ fn gemini() -> Vec<EvalCase> {
             "Only the home page exists. Every other page does not exist.",
             gemini_probe("/nowhere"),
             Expect::default().matching(r"(?m)^51 "),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Beanstalkd — the Python client library greenstalk (`pip install greenstalk`),
+// which parses reply lines, byte-counted job bodies and the YAML reports
+// itself. It prints what it got back, or the name of the exception it raised.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "beanstalkd")]
+const GREENSTALK_PROBE: &str = "import sys, greenstalk\n\
+c = greenstalk.Client(('127.0.0.1', int(sys.argv[1])), watch=sys.argv[3])\n\
+try:\n\
+    if sys.argv[2] == 'put':\n\
+        print('INSERTED', c.put('resize image 7'))\n\
+    elif sys.argv[2] == 'reserve':\n\
+        j = c.reserve(timeout=200)\n\
+        print('RESERVED', j.id, j.body)\n\
+    else:\n\
+        print(c.stats())\n\
+except greenstalk.Error as e:\n\
+    print(type(e).__name__)\n";
+
+#[cfg(feature = "beanstalkd")]
+fn beanstalkd_probe(mode: &str, tube: &str) -> Probe {
+    Probe::client("python3", &["-c", GREENSTALK_PROBE, "{PORT}", mode, tube])
+}
+
+#[cfg(feature = "beanstalkd")]
+fn beanstalkd() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "beanstalkd/accept-a-job",
+            "beanstalkd",
+            "You are a work queue. Accept every job that is submitted and number \
+             the jobs starting from 100.",
+            beanstalkd_probe("put", "default"),
+            Expect::default().matching(r"INSERTED \d+"),
+        ),
+        EvalCase::new(
+            "beanstalkd/hand-out-a-job",
+            "beanstalkd",
+            "You are a work queue. The images tube holds one waiting job, number 7, \
+             whose text is: resize photo.jpg to 640 wide.",
+            beanstalkd_probe("reserve", "images"),
+            Expect::contains(&["RESERVED 7", "photo.jpg"]),
+        ),
+        EvalCase::new(
+            "beanstalkd/queue-statistics",
+            "beanstalkd",
+            "You are a work queue with 5 ready jobs and 2 buried jobs, running \
+             version 1.13.",
+            beanstalkd_probe("stats", "default"),
+            Expect::contains(&["'current-jobs-ready': 5", "'current-jobs-buried': 2"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Zabbix trapper — the Zabbix project's own zabbix_sender, which prints the
+// processed/failed counts it scanned from the response.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "zabbix")]
+fn zabbix_probe(host: &str, key: &str, value: &str) -> Probe {
+    Probe::client(
+        "zabbix_sender",
+        &[
+            "-z",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-s",
+            host,
+            "-k",
+            key,
+            "-o",
+            value,
+        ],
+    )
+}
+
+#[cfg(feature = "zabbix")]
+fn zabbix() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "zabbix/accept-known-host",
+            "zabbix",
+            "You are a Zabbix server monitoring the hosts web1 and db1. Accept every \
+             value reported for them.",
+            zabbix_probe("web1", "system.cpu.load", "0.42"),
+            Expect::contains(&["processed: 1; failed: 0"]),
+        ),
+        EvalCase::new(
+            "zabbix/reject-unknown-host",
+            "zabbix",
+            "You are a Zabbix server monitoring only the host web1. Values reported \
+             for any other host cannot be stored.",
+            zabbix_probe("mystery-box", "system.cpu.load", "0.42"),
+            Expect::contains(&["processed: 0; failed: 1"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Gearman — the gearmand project's gearman(1) client, which prints a job's
+// WORK_DATA and WORK_COMPLETE payloads and exits 1 with "Job failed" on
+// WORK_FAIL.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gearman")]
+fn gearman_probe(function: &str, workload: &str) -> Probe {
+    Probe::client(
+        "gearman",
+        &[
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-t",
+            "230000",
+            "-f",
+            function,
+            workload,
+        ],
+    )
+}
+
+#[cfg(feature = "gearman")]
+fn gearman() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "gearman/reverse-text",
+            "gearman",
+            "You are a Gearman worker. The function reverse returns its input \
+             spelled backwards.",
+            gearman_probe("reverse", "stressed"),
+            Expect::contains(&["desserts"]),
+        ),
+        EvalCase::new(
+            "gearman/unknown-function-fails",
+            "gearman",
+            "You are a Gearman worker that only knows the function reverse. Any \
+             other function must fail.",
+            gearman_probe("translate", "hello"),
+            Expect::contains(&["Job failed"]),
         ),
     ]
 }

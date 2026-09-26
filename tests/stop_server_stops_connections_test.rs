@@ -316,6 +316,30 @@ async fn stopping_a_dict_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("DICT", b"").await;
 }
 
+/// Beanstalkd is client-speaks-first; a connected peer that has sent nothing is held by a task
+/// waiting on its first command line for up to 300 seconds.
+#[cfg(feature = "beanstalkd")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_beanstalkd_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Beanstalkd", b"").await;
+}
+
+/// A Zabbix sender that has connected and sent half a header is held by a task waiting for
+/// the rest of it; the stop must end it rather than the read deadline.
+#[cfg(feature = "zabbix")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_zabbix_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Zabbix", b"ZBXD").await;
+}
+
+/// A Gearman client that has connected and sent nothing is held by a task waiting on its first
+/// packet or admin line for up to 300 seconds.
+#[cfg(feature = "gearman")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_gearman_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Gearman", b"").await;
+}
+
 /// A Gemini peer that has connected and not yet started its TLS handshake is held by a task
 /// waiting on the ClientHello; the stop must end it rather than the handshake deadline.
 #[cfg(feature = "gemini")]

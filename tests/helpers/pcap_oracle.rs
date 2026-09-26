@@ -175,6 +175,8 @@ fn canonical_port(protocol: &str, framing: Framing) -> u16 {
         "mongodb" => 27017,
         "cassandra" => 9042,
         "memcached" => 11211,
+        "zabbix" => 10051,
+        "gearman" => 4730,
         "ldap" => 389,
         "imap" => 143,
         "pop3" => 110,

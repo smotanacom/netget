@@ -359,6 +359,9 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "prometheus",
         "docker",
         "vault",
+        "beanstalkd",
+        "zabbix",
+        "gearman",
     ];
 
     let servers = tcp_servers();

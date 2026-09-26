@@ -81,7 +81,7 @@ env:
   # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
-    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini ssdp llmnr
+    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman ssdp llmnr
     netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
     mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
     smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch
@@ -345,6 +345,9 @@ jobs:
       #   dict              - dict (the dictd project's dict(1) client)
       #   ignition-gemini   - gemini (a Python library, so pip rather than apt; see the
       #                       step after this one)
+      #   greenstalk        - beanstalkd (a Python client library, pip; same step)
+      #   zabbix-sender     - zabbix (the Zabbix project's zabbix_sender)
+      #   gearman-tools     - gearman (the gearmand project's gearman and gearadmin)
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
@@ -436,7 +439,7 @@ jobs:
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
-            subversion tor wakeonlan \
+            subversion tor wakeonlan zabbix-sender gearman-tools \
             mosquitto nginx redis-server postgresql mysql-server slapd openssh-server
 
       # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
@@ -475,6 +478,15 @@ jobs:
             | sudo debconf-set-selections
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
           tshark --version | head -1
+
+      # beanstalkd::real_client_test drives `greenstalk`, a Python beanstalkd client with its
+      # own reply parser and YAML reader. PyPI only, like ignition; the import check names a
+      # failed install here.
+      - name: Install the Beanstalkd client library (greenstalk)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user greenstalk==2.1.1
+          python3 -c "import greenstalk; print('greenstalk', greenstalk.__version__)"
 
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
       # `memccat`, `memcstat`, `memcping` - while libmemcached's own build and Homebrew's
@@ -823,7 +835,8 @@ jobs:
           failed=""
           for filter in \
             coap::real_client_test dict::real_client_test dns::dig_test dns::kdig_test \
-            gemini::real_client_test \
+            gemini::real_client_test beanstalkd::real_client_test zabbix::real_client_test \
+            gearman::real_client_test \
             docker::real_client_test doh::real_client_test dot::real_client_test dynamo::real_client_test \
             etcd::real_client_test git::e2e_test gopher::e2e_test grpc::real_client_test \
             hls::curl_test http::real_client_test imap::real_client_test \

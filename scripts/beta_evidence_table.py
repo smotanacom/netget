@@ -129,9 +129,12 @@ PYTHON_STDLIB_PROTOCOL_MODULES = (
 # the library must do the protocol's framing and parsing itself, and the server must not use
 # it. `ignition` (pip `ignition-gemini`) opens TLS through CPython's ssl module, pins the
 # certificate trust-on-first-use and parses the Gemini response header and body; NetGet's
-# Gemini server is rustls plus hand-written framing.
+# Gemini server is rustls plus hand-written framing. `greenstalk` (pip `greenstalk`) splits
+# beanstalkd reply lines, reads RESERVED/FOUND/OK payloads by their byte count and parses the
+# YAML reports itself; NetGet's Beanstalkd server is hand-written and uses no beanstalk library.
 PYTHON_THIRD_PARTY_PROTOCOL_CLIENTS = (
     "ignition",
+    "greenstalk",
 )
 
 SKIP_MESSAGE = re.compile(
