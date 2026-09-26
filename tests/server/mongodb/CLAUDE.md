@@ -19,7 +19,30 @@
 - `tests/server/mongodb/e2e_test.rs` - Main E2E tests with mocks
 - `tests/server/mongodb/connection_bounds_test.rs` - the read deadlines, from a raw socket
 - `tests/server/mongodb/bson_depth_test.rs` - a BSON nesting bomb is refused before `bson` decodes it
+- `tests/server/mongodb/document_sequence_test.rs` - OP_MSG kind-1 document sequences reach the event
 - `tests/server/mongodb/CLAUDE.md` - This file (test strategy)
+
+### `document_sequence_test.rs` — a driver's write batch reaches the model
+
+The Rust driver sends `insert_many`'s documents, `update_one`'s statement and `delete_one`'s
+statement as OP_MSG **kind-1** document sequences, not inside the body. A server that reads only
+the kind-0 body hands each of those to the model with `document`/`updates`/`deletes` null, and the
+model acknowledges a write of nothing. `driver_write_batches_reach_the_model_in_full`
+answers each with the real acknowledgement only if the event carries exactly what the driver sent,
+and with `error_response` otherwise — so the driver itself raises the failure. Three LLM calls
+plus startup.
+
+The raw half builds kind-1 sections by hand, so the encoding is certain rather than a driver's
+choice, and costs no LLM call: a `script` rule echoes the event's `document` back as a cursor, so
+the reply proves what reached the event. It also pins the checksum-bit strip, the refusal of a
+field supplied both inline and as a sequence, the refusal of an unknown required flag bit, and the
+depth scan on a sequence member — 62 levels answered, 63 refused (members are held two levels
+shallower than `MAX_BSON_DEPTH` because merging nests them under the command and an array), and
+10 000 answered with `Overflow` on a connection that stays in step.
+
+Verified by removal: without the merge, the driver test and the echo test fail (`"document":
+null`); with the member scan at `MAX_BSON_DEPTH` instead of `MAX_BSON_DEPTH - 2`, the 63-level
+member is answered and the depth test fails.
 
 ### `bson_depth_test.rs` — the decoder never sees a document it would die on
 
@@ -455,6 +478,6 @@ Two things are load-bearing:
   It is declared **after** the `find`-on-`users` rule because rules are first-match-wins and it
   would otherwise swallow the assertion.
 
-Unproven: authentication (none is implemented), OP_COMPRESSED, OP_MSG section kind 1 document
-sequences (so bulk writes), getMore/killCursors (every cursor id is 0), transactions, change
+Unproven: authentication (none is implemented), OP_COMPRESSED, OP_MSG checksum verification,
+getMore/killCursors (every cursor id is 0), transactions, change
 streams, and replica-set or sharded topology discovery.

@@ -18,7 +18,9 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
 #[cfg(feature = "mongodb-server")]
-use crate::utils::bson_depth::{scan_bson_document, BsonScan};
+use crate::utils::bson_depth::{
+    scan_bson_document, scan_bson_document_with_limit, BsonScan, MAX_BSON_DEPTH,
+};
 #[cfg(feature = "mongodb-server")]
 use bson::{doc, Bson, Document};
 
@@ -629,6 +631,10 @@ impl MongodbHandler {
                 "collection": collection,
                 "filter": self.bson_to_json(command_doc.get("filter")),
                 "document": self.bson_to_json(command_doc.get("documents").or_else(|| command_doc.get("document"))),
+                // `update` and `delete` carry their statements here — inline, or as the kind-1
+                // document sequences drivers send them as, merged by `parse_op_msg_sections`.
+                "updates": self.bson_to_json(command_doc.get("updates")),
+                "deletes": self.bson_to_json(command_doc.get("deletes")),
             });
 
             let event = Event::new(&MONGODB_COMMAND_EVENT, event_data);
@@ -790,35 +796,7 @@ impl MongodbHandler {
     /// Parse OP_MSG body (MongoDB 3.6+ wire protocol)
     #[cfg(feature = "mongodb-server")]
     fn parse_op_msg(&self, body: &[u8]) -> Result<ParsedOpMsg> {
-        // OP_MSG format: flagBits (4) + sections
-        // We only handle section kind 0 (body document)
-        if body.len() < 5 {
-            return Err(anyhow::anyhow!("OP_MSG body too short"));
-        }
-
-        let _flag_bits = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        let section_kind = body[4];
-
-        if section_kind != 0 {
-            return Err(anyhow::anyhow!(
-                "Unsupported OP_MSG section kind: {}",
-                section_kind
-            ));
-        }
-
-        // The document's shape is walked iteratively before `bson` sees it: `bson` 3.0 recurses
-        // once per nested document with no limit, and a stack overflow aborts the whole
-        // process (`src/utils/bson_depth.rs`). Only a document the scan has seen end, inside
-        // the bytes actually present, is decoded — and only those bytes are handed over, so
-        // `bson` never reserves capacity on a declared length the message does not back.
-        let section = &body[5..];
-        match scan_bson_document(section) {
-            BsonScan::Complete { consumed } => Ok(ParsedOpMsg::Command(Document::from_reader(
-                &section[..consumed],
-            )?)),
-            BsonScan::TooDeep { limit } => Ok(ParsedOpMsg::TooDeep { limit }),
-            BsonScan::Malformed => Err(anyhow::anyhow!("OP_MSG body is not a BSON document")),
-        }
+        parse_op_msg_sections(body)
     }
 
     #[cfg(not(feature = "mongodb-server"))]
@@ -970,7 +948,160 @@ const MONGODB_OVERFLOW: i32 = 15;
 #[cfg(feature = "mongodb-server")]
 const BSON_TOO_DEEP_ERRMSG: &str = "BSONObj exceeded maximum nested object depth";
 
-/// What an OP_MSG's kind-0 section held.
+/// OP_MSG `flagBits` bit 0: a CRC-32C of the message follows the last section.
+#[cfg(feature = "mongodb-server")]
+const OP_MSG_CHECKSUM_PRESENT: u32 = 1;
+
+/// OP_MSG `flagBits` bits 0-15 are *required*: a receiver must refuse a message carrying one it
+/// does not understand. Bit 0 is the only one defined, and it is handled.
+#[cfg(feature = "mongodb-server")]
+const OP_MSG_UNKNOWN_REQUIRED_FLAGS: u32 = 0xFFFE;
+
+/// Decode an OP_MSG body — `flagBits`, then sections — into one command document.
+///
+/// Two section kinds exist (MongoDB wire protocol, "OP_MSG"):
+///
+/// * **kind 0**, exactly one per message: the command's body document.
+/// * **kind 1**, zero or more: a *document sequence* — `int32 size`, a C-string identifier, then
+///   BSON documents filling the rest of `size`. Drivers use it for the arrays that can be large:
+///   `insert`'s `documents`, `update`'s `updates`, `delete`'s `deletes`. The identifier names a
+///   field of the command, and the sequence is that field's value.
+///
+/// So each sequence is merged into the body as the array field it names, and the command the
+/// model sees is the same whether the driver sent its documents inline or as a sequence. A
+/// sequence whose field the body also carries is refused, as the wire protocol requires.
+///
+/// Every document — the body and each sequence member — is walked by
+/// [`scan_bson_document`] before `bson` sees it, exactly as the body alone always was. A
+/// sequence member is scanned two levels shallower, because merging puts it inside an array
+/// inside the command, and the merged document must still be within [`MAX_BSON_DEPTH`] for
+/// everything downstream that walks it recursively. The number of documents is bounded by
+/// `MAX_MESSAGE_SIZE`, which bounds the body this is handed.
+///
+/// A checksum, when present, is stripped and not verified: NetGet does not implement CRC-32C,
+/// and drivers set the bit only when asked to.
+#[cfg(feature = "mongodb-server")]
+fn parse_op_msg_sections(body: &[u8]) -> Result<ParsedOpMsg> {
+    if body.len() < 5 {
+        return Err(anyhow::anyhow!("OP_MSG body too short"));
+    }
+    let flag_bits = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+    if flag_bits & OP_MSG_UNKNOWN_REQUIRED_FLAGS != 0 {
+        return Err(anyhow::anyhow!(
+            "OP_MSG sets required flag bits this server does not understand: {:#06x}",
+            flag_bits & OP_MSG_UNKNOWN_REQUIRED_FLAGS
+        ));
+    }
+    let mut sections = &body[4..];
+    if flag_bits & OP_MSG_CHECKSUM_PRESENT != 0 {
+        if sections.len() < 4 {
+            return Err(anyhow::anyhow!(
+                "OP_MSG declares a checksum it does not carry"
+            ));
+        }
+        sections = &sections[..sections.len() - 4];
+    }
+
+    let mut command: Option<Document> = None;
+    let mut sequences: Vec<(String, Vec<Bson>)> = Vec::new();
+
+    while let Some((&kind, rest)) = sections.split_first() {
+        match kind {
+            0 => {
+                if command.is_some() {
+                    return Err(anyhow::anyhow!(
+                        "OP_MSG carries more than one kind-0 section"
+                    ));
+                }
+                // The document's shape is walked iteratively before `bson` sees it: `bson` 3.0
+                // recurses once per nested document with no limit, and a stack overflow aborts
+                // the whole process (`src/utils/bson_depth.rs`). Only a document the scan has
+                // seen end, inside the bytes actually present, is decoded — and only those bytes
+                // are handed over, so `bson` never reserves capacity on a declared length the
+                // message does not back.
+                match scan_bson_document(rest) {
+                    BsonScan::Complete { consumed } => {
+                        command = Some(Document::from_reader(&rest[..consumed])?);
+                        sections = &rest[consumed..];
+                    }
+                    BsonScan::TooDeep { limit } => return Ok(ParsedOpMsg::TooDeep { limit }),
+                    BsonScan::Malformed => {
+                        return Err(anyhow::anyhow!("OP_MSG body is not a BSON document"))
+                    }
+                }
+            }
+            1 => {
+                let size_bytes: [u8; 4] = rest
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .context("OP_MSG document sequence truncated before its size")?;
+                let size = i32::from_le_bytes(size_bytes);
+                // The size counts itself; a sequence also needs at least an empty identifier.
+                if size < 5 || size as usize > rest.len() {
+                    return Err(anyhow::anyhow!(
+                        "OP_MSG document sequence declares {} bytes with {} present",
+                        size,
+                        rest.len()
+                    ));
+                }
+                let sequence = &rest[4..size as usize];
+                let nul = sequence
+                    .iter()
+                    .position(|&b| b == 0)
+                    .context("OP_MSG document sequence identifier is not terminated")?;
+                let identifier = std::str::from_utf8(&sequence[..nul])
+                    .context("OP_MSG document sequence identifier is not UTF-8")?
+                    .to_string();
+                let mut documents = Vec::new();
+                let mut remaining = &sequence[nul + 1..];
+                while !remaining.is_empty() {
+                    match scan_bson_document_with_limit(remaining, MAX_BSON_DEPTH - 2) {
+                        BsonScan::Complete { consumed } => {
+                            documents.push(Bson::Document(Document::from_reader(
+                                &remaining[..consumed],
+                            )?));
+                            remaining = &remaining[consumed..];
+                        }
+                        BsonScan::TooDeep { .. } => {
+                            return Ok(ParsedOpMsg::TooDeep {
+                                limit: MAX_BSON_DEPTH,
+                            })
+                        }
+                        BsonScan::Malformed => {
+                            return Err(anyhow::anyhow!(
+                                "OP_MSG document sequence '{}' holds something that is not a \
+                                 BSON document",
+                                identifier
+                            ))
+                        }
+                    }
+                }
+                sequences.push((identifier, documents));
+                sections = &rest[size as usize..];
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported OP_MSG section kind: {}",
+                    other
+                ));
+            }
+        }
+    }
+
+    let mut command = command.context("OP_MSG has no kind-0 body section")?;
+    for (identifier, documents) in sequences {
+        if command.contains_key(&identifier) {
+            return Err(anyhow::anyhow!(
+                "OP_MSG supplies '{}' both in its body and as a document sequence",
+                identifier
+            ));
+        }
+        command.insert(identifier, Bson::Array(documents));
+    }
+    Ok(ParsedOpMsg::Command(command))
+}
+
+/// What an OP_MSG held.
 enum ParsedOpMsg {
     /// A decoded command document.
     #[cfg(feature = "mongodb-server")]
