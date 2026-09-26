@@ -349,7 +349,13 @@ impl MysqlProtocol {
 pub fn mysql_query_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "mysql_query_response".to_string(),
-        description: "Send a result set in response to a SELECT query".to_string(),
+        description: "The answer to any statement that returns rows - SELECT (including \
+                      SELECT 1, SELECT VERSION(), SELECT @@version_comment), SHOW, DESCRIBE. A \
+                      single value is one column and one row, and each row is an ARRAY of \
+                      values in column order, e.g. \"rows\": [[\"8.0.36\"]]. Never answer a \
+                      SELECT with mysql_ok_response: an OK packet carries no rows, so the client \
+                      prints nothing. One response per query."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "columns".to_string(),
@@ -427,7 +433,9 @@ pub fn mysql_error_response_action() -> ActionDefinition {
 pub fn mysql_ok_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "mysql_ok_response".to_string(),
-        description: "Send an OK response for INSERT, UPDATE, DELETE, or other non-SELECT queries"
+        description: "OK packet for a statement that returns no rows: INSERT, UPDATE, \
+                      DELETE, CREATE, SET, USE. Never for SELECT, SHOW or DESCRIBE - those are \
+                      answered with mysql_query_response."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -507,12 +515,22 @@ pub static MYSQL_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "MySQL query received from client",
         json!({"type": "placeholder", "event_id": "mysql_query"}),
     )
-    .with_parameters(vec![Parameter {
-        name: "query".to_string(),
-        type_hint: "string".to_string(),
-        description: "The SQL query string sent by the client".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "query".to_string(),
+            type_hint: "string".to_string(),
+            description: "The SQL query string sent by the client".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which response shape the statement needs, from its first keyword. \
+                          Absent when the server cannot tell."
+                .to_string(),
+            required: false,
+        },
+    ])
     .with_actions(vec![
         MYSQL_QUERY_RESPONSE_ACTION.clone(),
         MYSQL_ERROR_RESPONSE_ACTION.clone(),
@@ -526,6 +544,26 @@ pub static MYSQL_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             .with_trace("MySQL: {json_pretty(.)}"),
     )
 });
+
+/// The `answer_with` event field for `sql`, or `None` when its first keyword does not say.
+///
+/// See `crate::utils::sql`. Told to "report the server version as 8.0.36-netget-eval", the model
+/// answered the client's own `SELECT @@version_comment` and `SELECT VERSION()` with OK packets or
+/// with rows written as objects, and the client printed nothing.
+pub fn answer_with_for_query(sql: &str) -> Option<&'static str> {
+    use crate::utils::sql::{statement_shape, StatementShape};
+    match statement_shape(sql) {
+        StatementShape::Rows => Some(
+            "mysql_query_response: this statement returns rows - columns, and rows as arrays of \
+             values (one column and one row for a single value) - never an OK packet",
+        ),
+        StatementShape::NoRows => Some(
+            "mysql_ok_response: this statement returns no rows - affected_rows and, for an \
+             INSERT, last_insert_id",
+        ),
+        StatementShape::Unknown => None,
+    }
+}
 
 /// Get MySQL event types
 pub fn get_mysql_event_types() -> Vec<EventType> {

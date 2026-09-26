@@ -490,12 +490,11 @@ impl PostgresqlHandler {
         self.record_stats(Some(sql.len() as u64), None, Some(1), None)
             .await;
 
-        let event = Event::new(
-            &POSTGRESQL_QUERY_EVENT,
-            serde_json::json!({
-                "query": sql,
-            }),
-        );
+        let mut event_data = serde_json::json!({ "query": sql });
+        if let Some(hint) = actions::answer_with_for_query(sql) {
+            event_data["answer_with"] = serde_json::json!(hint);
+        }
+        let event = Event::new(&POSTGRESQL_QUERY_EVENT, event_data);
 
         let server_id = self
             .server_id
@@ -549,6 +548,27 @@ impl PostgresqlHandler {
         };
 
         let mut close_requested = false;
+
+        // One query, one answer. The first response action is the one sent; any further one
+        // is dropped, and said so. The eval saw a model answer one SELECT with two
+        // `postgresql_query_response`s (the second one complete, the first not): a second
+        // result for the same query has nowhere to go on the wire, and a silent drop would
+        // make it look as though the model's last word was the one the client got.
+        let responses = execution_result
+            .protocol_results
+            .iter()
+            .filter(|r| {
+                matches!(r, ActionResult::Custom { name, .. }
+                    if matches!(name.as_str(), "postgresql_query_response" | "postgresql_ok" | "postgresql_error"))
+            })
+            .count();
+        if responses > 1 {
+            warn!(
+                "PostgreSQL connection {} decision=duplicate_response_dropped: {} response \
+                 actions for one query; sending the first",
+                self.connection_id, responses
+            );
+        }
 
         for result in execution_result.protocol_results {
             match result {

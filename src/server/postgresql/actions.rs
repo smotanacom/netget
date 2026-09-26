@@ -336,7 +336,12 @@ impl PostgresqlProtocol {
 pub fn postgresql_query_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "postgresql_query_response".to_string(),
-        description: "Send a result set in response to a SELECT query".to_string(),
+        description: "The answer to any statement that returns rows - SELECT (including \
+                      SELECT 1, SELECT current_user, SELECT version()), SHOW, VALUES, WITH. \
+                      A single value is one column and one row. Never answer a SELECT with \
+                      postgresql_ok_response: a command tag carries no rows, so the client \
+                      prints the tag and never sees the value. One response per query."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "columns".to_string(),
@@ -414,15 +419,18 @@ pub fn postgresql_error_response_action() -> ActionDefinition {
 pub fn postgresql_ok_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "postgresql_ok_response".to_string(),
-        description: "Send a command complete response for INSERT, UPDATE, DELETE, or other non-SELECT queries".to_string(),
-        parameters: vec![
-            Parameter {
-                name: "tag".to_string(),
-                type_hint: "string".to_string(),
-                description: "Command tag (e.g. 'INSERT 0 1', 'UPDATE 3', 'DELETE 2', 'CREATE TABLE')".to_string(),
-                required: true,
-            },
-        ],
+        description: "Command-complete tag for a statement that returns no rows: INSERT, \
+                      UPDATE, DELETE, CREATE, SET, BEGIN. Never for SELECT or SHOW - those \
+                      are answered with postgresql_query_response. The tag names the statement \
+                      that ran (a SELECT answered here would print 'INSERT 0 1')."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "tag".to_string(),
+            type_hint: "string".to_string(),
+            description: "Command tag (e.g. 'INSERT 0 1', 'UPDATE 3', 'DELETE 2', 'CREATE TABLE')"
+                .to_string(),
+            required: true,
+        }],
         example: json!({
             "type": "postgresql_ok_response",
             "tag": "INSERT 0 1"
@@ -458,7 +466,12 @@ pub fn close_this_connection_action() -> ActionDefinition {
 pub static POSTGRESQL_QUERY_RESPONSE_ACTION: LazyLock<ActionDefinition> =
     LazyLock::new(|| ActionDefinition {
         name: "postgresql_query_response".to_string(),
-        description: "Send a result set in response to a SELECT query".to_string(),
+        description: "The answer to any statement that returns rows - SELECT (including \
+                      SELECT 1, SELECT current_user, SELECT version()), SHOW, VALUES, WITH. \
+                      A single value is one column and one row. Never answer a SELECT with \
+                      postgresql_ok_response: a command tag carries no rows, so the client \
+                      prints the tag and never sees the value. One response per query."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "columns".to_string(),
@@ -532,18 +545,21 @@ pub static POSTGRESQL_ERROR_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLo
 });
 
 /// PostgreSQL OK response action constant
-pub static POSTGRESQL_OK_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| {
-    ActionDefinition {
+pub static POSTGRESQL_OK_RESPONSE_ACTION: LazyLock<ActionDefinition> =
+    LazyLock::new(|| ActionDefinition {
         name: "postgresql_ok_response".to_string(),
-        description: "Send a command complete response for INSERT, UPDATE, DELETE, or other non-SELECT queries".to_string(),
-        parameters: vec![
-            Parameter {
-                name: "tag".to_string(),
-                type_hint: "string".to_string(),
-                description: "Command tag (e.g. 'INSERT 0 1', 'UPDATE 3', 'DELETE 2', 'CREATE TABLE')".to_string(),
-                required: true,
-            },
-        ],
+        description: "Command-complete tag for a statement that returns no rows: INSERT, \
+                      UPDATE, DELETE, CREATE, SET, BEGIN. Never for SELECT or SHOW - those \
+                      are answered with postgresql_query_response. The tag names the statement \
+                      that ran (a SELECT answered here would print 'INSERT 0 1')."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "tag".to_string(),
+            type_hint: "string".to_string(),
+            description: "Command tag (e.g. 'INSERT 0 1', 'UPDATE 3', 'DELETE 2', 'CREATE TABLE')"
+                .to_string(),
+            required: true,
+        }],
         example: json!({
             "type": "postgresql_ok_response",
             "tag": "INSERT 0 1"
@@ -553,8 +569,7 @@ pub static POSTGRESQL_OK_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock:
                 .with_info("-> PostgreSQL OK: {tag}")
                 .with_debug("PostgreSQL ok_response: {tag}"),
         ),
-    }
-});
+    });
 
 /// PostgreSQL close connection action constant
 pub static POSTGRESQL_CLOSE_CONNECTION_ACTION: LazyLock<ActionDefinition> =
@@ -581,12 +596,22 @@ pub static POSTGRESQL_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "PostgreSQL query received from client",
         json!({"type": "placeholder", "event_id": "postgresql_query"}),
     )
-    .with_parameters(vec![Parameter {
-        name: "query".to_string(),
-        type_hint: "string".to_string(),
-        description: "The SQL query string sent by the client".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "query".to_string(),
+            type_hint: "string".to_string(),
+            description: "The SQL query string sent by the client".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which response shape the statement needs, from its first keyword. \
+                          Absent when the server cannot tell."
+                .to_string(),
+            required: false,
+        },
+    ])
     .with_actions(vec![
         POSTGRESQL_QUERY_RESPONSE_ACTION.clone(),
         POSTGRESQL_ERROR_RESPONSE_ACTION.clone(),
@@ -600,6 +625,26 @@ pub static POSTGRESQL_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             .with_trace("PostgreSQL: {json_pretty(.)}"),
     )
 });
+
+/// The `answer_with` event field for `sql`, or `None` when its first keyword does not say.
+///
+/// See `crate::utils::sql`: the real-model eval answered `SELECT current_user` with the command
+/// tag `INSERT 0 1`, copied from the ok action's example, so the client printed a tag instead of
+/// the value it asked for.
+pub fn answer_with_for_query(sql: &str) -> Option<&'static str> {
+    use crate::utils::sql::{statement_shape, StatementShape};
+    match statement_shape(sql) {
+        StatementShape::Rows => Some(
+            "postgresql_query_response: this statement returns rows - columns and rows, one \
+             column and one row for a single value - never a command tag",
+        ),
+        StatementShape::NoRows => Some(
+            "postgresql_ok_response: this statement returns no rows - the command tag of what \
+             ran, e.g. 'INSERT 0 1', 'UPDATE 3', 'SET'",
+        ),
+        StatementShape::Unknown => None,
+    }
+}
 
 /// Get PostgreSQL event types
 pub fn get_postgresql_event_types() -> Vec<EventType> {
