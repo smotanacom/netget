@@ -379,6 +379,7 @@ jobs:
       #   redis-server      - the redis client (NetGet frames RESP itself)
       #   memcached         - the memcached client (NetGet frames the text protocol itself;
       #                       read back with libmemcached's memcat/memcp, above)
+      #   pymodbus          - the modbus client (a Python device; pip, in its own step below)
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -432,6 +433,17 @@ jobs:
         run: |
           python3 -m pip install --user ignition-gemini==1.0.0
           python3 -c "import ignition; print('ignition', ignition.__version__)"
+
+      # client/modbus::real_server_test runs a pymodbus 3.15 device (its own framer and
+      # datastore, in Python; NetGet's Modbus client frames with NetGet's codec) and reads what
+      # the model wrote back with mbpoll, installed above. 3.15 because the test's device script
+      # uses the SimData/SimDevice API that replaced ModbusSlaveContext; the import check makes
+      # a failed install surface here rather than as the modbus client's evidence absent.
+      - name: Install the Modbus device library (pymodbus)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user 'pymodbus==3.15.*'
+          python3 -c "import pymodbus; from pymodbus.simulator import SimDevice; print('pymodbus', pymodbus.__version__)"
 
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
       # `memccat`, `memcstat`, `memcping`, `memccp` - while libmemcached's own build and Homebrew's
@@ -802,7 +814,8 @@ jobs:
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
             client/mqtt::keepalive_test client/mqtt::real_server_test client/nats::e2e_test \
-            client/redis::real_server_test client/memcached::real_server_test ; do
+            client/redis::real_server_test client/memcached::real_server_test \
+            client/modbus::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
             # from the `client` test target; everything else is a real client against a

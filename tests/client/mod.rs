@@ -84,6 +84,8 @@ pub mod mcp;
 pub mod mdns;
 #[cfg(feature = "memcached")]
 pub mod memcached;
+#[cfg(feature = "modbus")]
+pub mod modbus;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
 #[cfg(feature = "mqtt")]

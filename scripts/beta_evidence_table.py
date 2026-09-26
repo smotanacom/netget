@@ -134,6 +134,16 @@ PYTHON_THIRD_PARTY_PROTOCOL_CLIENTS = (
     "ignition",
 )
 
+# The same exception on the other side of the wire: a Python library that is a protocol
+# *server* in its own right, spawned by a client test through `RealServer::builder("python3")`
+# with the script the test writes importing it. `pymodbus` frames Modbus/TCP with its own
+# framer and answers from its own datastore; NetGet's Modbus client frames with NetGet's codec.
+# Without this entry the modbus client read as having only `mbpoll`, which is the tool that
+# reads the device back, not the device.
+PYTHON_THIRD_PARTY_PROTOCOL_SERVERS = (
+    "pymodbus",
+)
+
 SKIP_MESSAGE = re.compile(
     r"""(?ix)
     (?:e?println!|warn!|info!|eprint!)\s*\(\s*
@@ -383,6 +393,10 @@ def scan_tests(directory: Path, known: set[str]) -> dict:
             name = m.group(1).split("/")[-1]
             if name not in NOT_A_PEER_BINARY:
                 file_binaries.add(name)
+        if re.search(r'RealServer::builder\(\s*"python3?"', code):
+            for library in PYTHON_THIRD_PARTY_PROTOCOL_SERVERS:
+                if re.search(r"^\s*(?:import|from)\s+" + re.escape(library) + r"\b", code, re.M):
+                    file_binaries.add(f"python3 {library}")
         # The python-stdlib exception (see PYTHON_STDLIB_PROTOCOL_MODULES): a file that
         # spawns python3 AND carries a driver importing a stdlib protocol module is
         # driving that module as a peer, not using python as a shell.

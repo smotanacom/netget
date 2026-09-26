@@ -559,6 +559,12 @@ pub use nats::actions::NatsClientProtocol;
 pub mod memcached;
 #[cfg(feature = "memcached")]
 pub use memcached::actions::MemcachedClientProtocol;
+
+// modbus client
+#[cfg(feature = "modbus")]
+pub mod modbus;
+#[cfg(feature = "modbus")]
+pub use modbus::actions::ModbusClientProtocol;
 // ssdp client
 #[cfg(feature = "ssdp")]
 pub mod ssdp;
