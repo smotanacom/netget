@@ -8,6 +8,7 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
+use crate::utils::resp::{scan_resp2_frame, RespLength, RespLimits, RespScan};
 use actions::{encode_error, RedisProtocol, REDIS_COMMAND_EVENT};
 use anyhow::Result;
 use redis_protocol::resp2::decode::decode;
@@ -26,6 +27,12 @@ use tracing::{debug, error, trace, warn};
 /// connection buffer grow without bound. Real Redis caps a bulk string at 512 MB; 64 MB is
 /// far more than any LLM-authored command needs.
 pub const MAX_PENDING_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// What a frame may declare before `decode` is allowed to see it: [`crate::utils::resp`]'s
+/// depth and element bounds, and a bulk string no longer than the buffer that must hold it —
+/// a `$N` past [`MAX_PENDING_FRAME_BYTES`] can never complete, so it is refused on its header
+/// line instead of after the peer has filled 64 MiB.
+const RESP_LIMITS: RespLimits = RespLimits::with_max_bulk_len(MAX_PENDING_FRAME_BYTES);
 
 /// How long to wait for the first byte of the first command from a peer that has only
 /// connected.
@@ -284,6 +291,35 @@ impl RedisHandler {
         result
     }
 
+    /// Write one fixed RESP error, then half-close: the refusal for a frame this server will
+    /// not decode. The text is a constant chosen by the caller, never anything derived from
+    /// the peer's bytes or an internal error.
+    async fn refuse(
+        &self,
+        write_half: &Arc<tokio::sync::Mutex<tokio::io::WriteHalf<TcpStream>>>,
+        message: &str,
+    ) {
+        let reply = encode_error(message);
+        {
+            let mut writer = write_half.lock().await;
+            let _ = writer.write_all(&reply).await;
+            let _ = writer.flush().await;
+            let _ = writer.shutdown().await;
+        }
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .update_connection_stats(
+                    server_id,
+                    self.connection_id,
+                    None,
+                    Some(reply.len() as u64),
+                    None,
+                    Some(1),
+                )
+                .await;
+        }
+    }
+
     async fn run(self, stream: TcpStream) -> Result<()> {
         // Copied out before `self` is partially moved into the tasks below.
         let first_byte_timeout = self.first_byte_timeout;
@@ -387,30 +423,59 @@ impl RedisHandler {
                     "Redis client {} exceeded the {} byte frame buffer limit without completing a frame; closing",
                     self.connection_id, MAX_PENDING_FRAME_BYTES
                 ));
-                let reply = encode_error("ERR Protocol error: invalid multibulk length");
-                {
-                    let mut writer = write_half.lock().await;
-                    let _ = writer.write_all(&reply).await;
-                    let _ = writer.flush().await;
-                }
-                if let Some(server_id) = self.server_id {
-                    self.app_state
-                        .update_connection_stats(
-                            server_id,
-                            self.connection_id,
-                            None,
-                            Some(reply.len() as u64),
-                            None,
-                            Some(1),
-                        )
-                        .await;
-                }
+                self.refuse(&write_half, "ERR Protocol error: invalid multibulk length")
+                    .await;
                 return Ok(());
             }
 
             // Try to decode RESP frames
             let mut offset = 0;
             while offset < buffer.len() {
+                // The frame's shape is walked iteratively before `decode` sees it, because
+                // `decode` recurses once per nested array with no limit and a stack overflow
+                // aborts the whole process (`src/utils/resp.rs`). Only a frame the scan has
+                // seen end is decoded.
+                match scan_resp2_frame(&buffer[offset..], &RESP_LIMITS) {
+                    RespScan::Complete { .. } => {}
+                    RespScan::Incomplete => break,
+                    RespScan::TooDeep { limit } => {
+                        log.warn(format!(
+                            "Redis connection {} decision=fail_closed_resp_too_deep: frame nests \
+                             arrays deeper than {} levels; refusing and closing",
+                            self.connection_id, limit
+                        ));
+                        self.refuse(&write_half, "ERR Protocol error: nesting too deep")
+                            .await;
+                        return Ok(());
+                    }
+                    RespScan::TooLong(kind) => {
+                        let (what, reply) = match kind {
+                            RespLength::Aggregate => (
+                                "array length",
+                                "ERR Protocol error: invalid multibulk length",
+                            ),
+                            RespLength::Bulk => {
+                                ("bulk length", "ERR Protocol error: invalid bulk length")
+                            }
+                        };
+                        log.warn(format!(
+                            "Redis connection {} decision=fail_closed_resp_too_long: declared {} \
+                             exceeds the frame limit; refusing and closing",
+                            self.connection_id, what
+                        ));
+                        self.refuse(&write_half, reply).await;
+                        return Ok(());
+                    }
+                    RespScan::Malformed => {
+                        // `decode` would reject the same byte; closed without a reply, as an
+                        // undecodable frame always is.
+                        error!(
+                            "Redis connection {} sent a frame that is not RESP2; closing",
+                            self.connection_id
+                        );
+                        return Err(anyhow::anyhow!("undecodable RESP frame"));
+                    }
+                }
                 match decode(&buffer[offset..]) {
                     Ok(Some((frame, consumed))) => {
                         // From here on the peer is an established client, so the longer idle
