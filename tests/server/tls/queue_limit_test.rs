@@ -207,6 +207,12 @@ async fn data_queued_past_the_cap_is_refused_with_an_alert() -> E2EResult<()> {
         ),
     }
 
+    // The close reaches the peer before the server's own log line reaches this test's reader
+    // of its stdout; under a loaded 32-thread sweep that gap was long enough to fail a check
+    // made the instant the read returned. Wait for the line, then assert on it.
+    server
+        .wait_for_any(&["decision=fail_closed_queued_data_overflow"], 15)
+        .await;
     assert!(
         server
             .output_contains("decision=fail_closed_queued_data_overflow")
