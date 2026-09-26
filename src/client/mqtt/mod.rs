@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::protocol::StartupParams;
 
@@ -110,9 +110,9 @@ impl MqttClient {
         let disconnecting = Arc::new(AtomicBool::new(false));
 
         // Command channel for injected actions (the dashboard's [ send ]). Registered here,
-        // before the event loop task starts, so it exists throughout the connected-event LLM
-        // call that task makes on ConnAck - a manual `*` rule can park that call for minutes
-        // and the operator must still be able to publish.
+        // before the transport task starts, so it exists throughout the connected-event LLM
+        // call the turn task makes on CONNACK - a manual `*` rule can park that call for
+        // minutes and the operator must still be able to publish.
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
         let cmd_client = mqtt_client.clone();
@@ -132,38 +132,81 @@ impl MqttClient {
         });
         app_state.register_client_task(client_id, cmd_task).await;
 
-        // Spawn MQTT event loop
-        let task_registrar = app_state.clone();
-        let handle = tokio::spawn(async move {
-            handle_mqtt_events(
-                eventloop,
-                mqtt_client_clone,
-                llm_client,
-                app_state_clone,
-                status_tx_clone,
+        // Two tasks per connection, because the transport and the model run on different
+        // clocks. rumqttc writes PINGREQ and reads PINGRESP only while `EventLoop::poll` is
+        // being awaited; a model turn can take minutes (a `manual` rule parks it for a human
+        // for up to 300s), and a broker drops a client that is silent for 1.5 x keep-alive.
+        // So `poll_transport` owns the event loop and never waits on the model, and
+        // `run_model_turns` answers events one at a time, in order, from a queue - which is
+        // also what keeps two turns from ever overlapping on this connection.
+        let (turn_tx, turn_rx) = mpsc::channel::<TurnEvent>(TURN_QUEUE_CAPACITY);
+        let turn_abort = app_state
+            .spawn_client_task(
                 client_id,
-                mqtt_client_id,
-                disconnecting,
+                run_model_turns(
+                    turn_rx,
+                    mqtt_client_clone,
+                    llm_client,
+                    app_state_clone.clone(),
+                    status_tx_clone.clone(),
+                    client_id,
+                    mqtt_client_id,
+                    disconnecting.clone(),
+                ),
             )
             .await;
-        });
-        task_registrar.register_client_task(client_id, handle).await;
+        app_state
+            .spawn_client_task(
+                client_id,
+                poll_transport(
+                    eventloop,
+                    app_state_clone,
+                    status_tx_clone,
+                    client_id,
+                    disconnecting,
+                    turn_tx,
+                    turn_abort,
+                ),
+            )
+            .await;
 
         Ok(local_addr)
     }
 }
 
-/// Handle MQTT events from the broker
-#[allow(clippy::too_many_arguments)]
-async fn handle_mqtt_events(
+/// How many broker events may wait for the model while a turn is running.
+///
+/// The transport task must never block on the model - that is the whole point of running it
+/// separately - so when this queue is full an incoming PUBLISH is dropped (and logged with
+/// `decision=turn_queue_full`) rather than stalling the keep-alive. Each entry is at most one
+/// packet of rumqttc's default 10 KiB incoming limit, so the queue bounds the memory a
+/// flooding broker can pin at ~2.5 MiB per client. 256 unanswered messages is already many
+/// minutes of model time; a backlog past that is not going to be caught up with.
+const TURN_QUEUE_CAPACITY: usize = 256;
+
+/// One thing the model is asked about, in arrival order.
+enum TurnEvent {
+    /// The first CONNACK: the client's chance to subscribe or publish first.
+    Connected,
+    /// A PUBLISH delivered by the broker.
+    Message(Publish),
+}
+
+/// Own the rumqttc event loop for the life of the connection.
+///
+/// Awaiting `poll` is what drives the MQTT transport: it writes queued requests (the model's
+/// publishes and subscribes, injected commands), sends PINGREQ once per keep-alive interval
+/// and reads PINGRESP. Nothing here waits on the model; events it needs answered go onto the
+/// turn queue. Status (Connected / Disconnected / Error) is set here, so it stays true while a
+/// turn is parked.
+async fn poll_transport(
     mut eventloop: EventLoop,
-    mqtt_client: AsyncClient,
-    llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
     client_id: ClientId,
-    mqtt_client_id: String,
     disconnecting: Arc<AtomicBool>,
+    turn_tx: mpsc::Sender<TurnEvent>,
+    turn_abort: tokio::task::AbortHandle,
 ) {
     let mut connected = false;
 
@@ -183,73 +226,23 @@ async fn handle_mqtt_events(
                             let _ = status_tx
                                 .send(format!("[CLIENT] MQTT client {} connected", client_id));
                             let _ = status_tx.send("__UPDATE_UI__".to_string());
-
-                            // Call LLM with connected event
-                            if let Some(instruction) =
-                                app_state.get_instruction_for_client(client_id).await
-                            {
-                                let protocol = Arc::new(MqttClientProtocol::new());
-                                let event = ProtocolEvent::new(
-                                    &MQTT_CLIENT_CONNECTED_EVENT,
-                                    serde_json::json!({
-                                        "remote_addr": format!("connected"),
-                                        "client_id": mqtt_client_id,
-                                    }),
-                                );
-
-                                let memory = app_state
-                                    .get_memory_for_client(client_id)
-                                    .await
-                                    .unwrap_or_default();
-
-                                match call_llm_for_client(
-                                    &llm_client,
-                                    &app_state,
-                                    client_id.to_string(),
-                                    &instruction,
-                                    &memory,
-                                    Some(&event),
-                                    protocol.as_ref(),
-                                    &status_tx,
-                                )
-                                .await
-                                {
-                                    Ok(result) => {
-                                        handle_llm_actions(
-                                            result,
-                                            &mqtt_client,
-                                            &app_state,
-                                            client_id,
-                                            &protocol,
-                                            &disconnecting,
-                                        )
-                                        .await;
-                                    }
-                                    Err(e) => {
-                                        error!("LLM error for MQTT client {}: {}", client_id, e);
-                                    }
-                                }
-                            }
+                            enqueue_turn(&turn_tx, TurnEvent::Connected, client_id);
                         }
                     }
                     Event::Incoming(Packet::Publish(publish)) => {
-                        handle_incoming_message(
-                            &publish,
-                            &mqtt_client,
-                            &llm_client,
-                            &app_state,
-                            &status_tx,
+                        debug!(
+                            "MQTT client {} received message on topic '{}': {} bytes",
                             client_id,
-                            &disconnecting,
-                        )
-                        .await;
+                            publish.topic,
+                            publish.payload.len()
+                        );
+                        enqueue_turn(&turn_tx, TurnEvent::Message(publish), client_id);
                     }
                     Event::Incoming(Packet::SubAck(suback)) => {
                         debug!(
                             "MQTT client {} subscription acknowledged: {:?}",
                             client_id, suback
                         );
-                        // Could optionally notify LLM of successful subscription
                     }
                     Event::Incoming(Packet::Disconnect) => {
                         info!("MQTT client {} disconnected by broker", client_id);
@@ -261,12 +254,8 @@ async fn handle_mqtt_events(
                         let _ = status_tx.send("__UPDATE_UI__".to_string());
                         break;
                     }
-                    Event::Outgoing(_) => {
-                        // Outgoing packets are logged at trace level
-                    }
-                    _ => {
-                        // Other events (PingReq, PingResp, etc.)
-                    }
+                    // PINGREQ / PINGRESP and every outgoing packet are traced above.
+                    _ => {}
                 }
             }
             Err(e) => {
@@ -294,11 +283,135 @@ async fn handle_mqtt_events(
         }
     }
 
+    // The connection is gone, so a turn still running - or parked for a human - has nothing
+    // left to answer on, and the queued events behind it would each cost a model call for a
+    // reply that cannot be sent.
+    turn_abort.abort();
     // Every exit path lands here: drop the command handle so the dashboard stops offering
     // [ send ] on a dead connection. It also closes the command channel, which ends
     // `command_loop`.
     app_state.remove_client_handle(client_id).await;
     let _ = status_tx.send("__UPDATE_UI__".to_string());
+}
+
+/// Put an event on the turn queue without ever waiting for room.
+fn enqueue_turn(turn_tx: &mpsc::Sender<TurnEvent>, event: TurnEvent, client_id: ClientId) {
+    match turn_tx.try_send(event) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(TurnEvent::Message(publish))) => {
+            warn!(
+                "MQTT client {} dropped a message on '{}': {} events already wait for the \
+                 model decision=turn_queue_full",
+                client_id, publish.topic, TURN_QUEUE_CAPACITY
+            );
+        }
+        Err(mpsc::error::TrySendError::Full(TurnEvent::Connected)) => {
+            warn!(
+                "MQTT client {} dropped its connected event decision=turn_queue_full",
+                client_id
+            );
+        }
+        // The turn task has ended (aborted with the client); nothing to answer.
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
+}
+
+/// Answer queued events with the model, one at a time and in arrival order.
+#[allow(clippy::too_many_arguments)]
+async fn run_model_turns(
+    mut turn_rx: mpsc::Receiver<TurnEvent>,
+    mqtt_client: AsyncClient,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    client_id: ClientId,
+    mqtt_client_id: String,
+    disconnecting: Arc<AtomicBool>,
+) {
+    while let Some(turn) = turn_rx.recv().await {
+        match turn {
+            TurnEvent::Connected => {
+                handle_connected(
+                    &mqtt_client,
+                    &llm_client,
+                    &app_state,
+                    &status_tx,
+                    client_id,
+                    &mqtt_client_id,
+                    &disconnecting,
+                )
+                .await;
+            }
+            TurnEvent::Message(publish) => {
+                handle_incoming_message(
+                    &publish,
+                    &mqtt_client,
+                    &llm_client,
+                    &app_state,
+                    &status_tx,
+                    client_id,
+                    &disconnecting,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+/// Ask the model what to do now that the broker accepted the CONNECT.
+async fn handle_connected(
+    mqtt_client: &AsyncClient,
+    llm_client: &OllamaClient,
+    app_state: &Arc<AppState>,
+    status_tx: &mpsc::UnboundedSender<String>,
+    client_id: ClientId,
+    mqtt_client_id: &str,
+    disconnecting: &Arc<AtomicBool>,
+) {
+    let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+        return;
+    };
+    let protocol = Arc::new(MqttClientProtocol::new());
+    let event = ProtocolEvent::new(
+        &MQTT_CLIENT_CONNECTED_EVENT,
+        serde_json::json!({
+            "remote_addr": "connected",
+            "client_id": mqtt_client_id,
+        }),
+    );
+
+    let memory = app_state
+        .get_memory_for_client(client_id)
+        .await
+        .unwrap_or_default();
+
+    match call_llm_for_client(
+        llm_client,
+        app_state,
+        client_id.to_string(),
+        &instruction,
+        &memory,
+        Some(&event),
+        protocol.as_ref(),
+        status_tx,
+    )
+    .await
+    {
+        Ok(result) => {
+            handle_llm_actions(
+                result,
+                mqtt_client,
+                app_state,
+                client_id,
+                &protocol,
+                disconnecting,
+            )
+            .await;
+        }
+        Err(e) => {
+            error!("LLM error for MQTT client {}: {}", client_id, e);
+        }
+    }
 }
 
 /// Handle incoming MQTT message
@@ -316,13 +429,6 @@ async fn handle_incoming_message(
     let payload = String::from_utf8_lossy(&publish.payload).to_string();
     let qos = publish.qos as u8;
     let retain = publish.retain;
-
-    debug!(
-        "MQTT client {} received message on topic '{}': {} bytes",
-        client_id,
-        topic,
-        publish.payload.len()
-    );
 
     // Call LLM with message received event
     if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {

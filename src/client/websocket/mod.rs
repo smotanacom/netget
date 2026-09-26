@@ -71,6 +71,81 @@ impl Inbound {
     }
 }
 
+impl Inbound {
+    fn len(&self) -> usize {
+        match self {
+            Inbound::Text(t) => t.len(),
+            Inbound::Binary(b) => b.len(),
+        }
+    }
+}
+
+/// How many messages may wait for the model while a turn is running.
+///
+/// The read loop must never block on the model — that is the whole point of running it
+/// separately, since a read loop that waits stops answering Pings — so a message that does not
+/// fit is dropped and logged with `decision=turn_queue_full` rather than stalling the socket.
+/// 256 unanswered messages is already many minutes of model time.
+const TURN_QUEUE_CAPACITY: usize = 256;
+
+/// The queued payload bytes allowed at once, alongside [`TURN_QUEUE_CAPACITY`].
+///
+/// The count alone is not a memory bound: tungstenite's default message limit is 64 MiB, so
+/// 256 of them would be 16 GiB. 16 MiB caps what a flooding server can pin per client while a
+/// turn is parked; one message larger than that is still accepted when the queue is empty,
+/// because refusing it outright would make the limit a second, undeclared max message size.
+const TURN_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// One thing the model is asked about, in arrival order.
+enum WsTurn {
+    Connected {
+        remote_addr: String,
+        path: String,
+        subprotocol: String,
+    },
+    Message(Inbound),
+    Closed {
+        code: u16,
+        reason: String,
+    },
+}
+
+/// Put a message on the turn queue without ever waiting for room.
+fn enqueue_inbound(
+    turn_tx: &mpsc::Sender<WsTurn>,
+    queued_bytes: &std::sync::atomic::AtomicUsize,
+    frame: Inbound,
+    client_id: ClientId,
+) {
+    use std::sync::atomic::Ordering;
+    let len = frame.len();
+    let already = queued_bytes.load(Ordering::SeqCst);
+    if already > 0 && already.saturating_add(len) > TURN_QUEUE_MAX_BYTES {
+        warn!(
+            "WebSocket client {} dropped a {}-byte message: {} bytes already wait for the model \
+             decision=turn_queue_full",
+            client_id, len, already
+        );
+        return;
+    }
+    queued_bytes.fetch_add(len, Ordering::SeqCst);
+    match turn_tx.try_send(WsTurn::Message(frame)) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            queued_bytes.fetch_sub(len, Ordering::SeqCst);
+            warn!(
+                "WebSocket client {} dropped a {}-byte message: {} messages already wait for \
+                 the model decision=turn_queue_full",
+                client_id, len, TURN_QUEUE_CAPACITY
+            );
+        }
+        // The turn task has ended (aborted with the client); nothing to answer.
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            queued_bytes.fetch_sub(len, Ordering::SeqCst);
+        }
+    }
+}
+
 struct ClientData {
     state: HandlerState,
     queued: VecDeque<Inbound>,
@@ -262,147 +337,254 @@ impl WebSocketClient {
         });
         app_state.register_client_task(client_id, cmd_task).await;
 
-        // websocket_client_connected — the client's chance to speak first.
-        if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-            let event = Event::new(
-                &WEBSOCKET_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({
-                    "remote_addr": remote_addr,
-                    "path": path,
-                    "subprotocol": negotiated,
-                }),
-            );
-            let protocol = WebSocketClientProtocol::for_connection(out_tx.clone());
-            let memory = { data.lock().await.memory.clone() };
-            match call_llm_for_client(
-                &llm_client,
-                &app_state,
-                client_id.to_string(),
-                &instruction,
-                &memory,
-                Some(&event),
-                &protocol,
-                &status_tx,
+        // Two tasks per connection, because the socket and the model run on different clocks.
+        // A model turn can take minutes — a `manual` rule parks it for a human for up to 300s —
+        // and tungstenite answers a Ping only when the stream is polled: the Pong it queues on
+        // reading a Ping is flushed by the *next* read. A read loop that awaited the model
+        // stopped doing that, and a server with a liveness bound (NetGet's own closes a peer
+        // that sends no frame, not even a Pong, for `idle_timeout_secs`) hung up on it.
+        //
+        // So the read loop only reads: it answers Pings by polling, and hands every message to
+        // the turn task over a queue. The turn task answers them one at a time, in order —
+        // `websocket_client_connected` first — which is also what keeps two model turns from
+        // ever overlapping on this connection.
+        let (turn_tx, turn_rx) = mpsc::channel::<WsTurn>(TURN_QUEUE_CAPACITY);
+        let queued_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Queued before either task starts, so it is always the first turn.
+        let _ = turn_tx.try_send(WsTurn::Connected {
+            remote_addr: remote_addr.clone(),
+            path: path.clone(),
+            subprotocol: negotiated.clone(),
+        });
+
+        let turn_abort = app_state
+            .spawn_client_task(
+                client_id,
+                Self::run_model_turns(
+                    turn_rx,
+                    client_id,
+                    llm_client,
+                    app_state.clone(),
+                    status_tx.clone(),
+                    out_tx.clone(),
+                    data,
+                    queued_bytes.clone(),
+                ),
             )
-            .await
-            {
-                Ok(ClientLlmResult {
-                    actions,
-                    memory_updates,
-                }) => {
-                    if let Some(mem) = memory_updates {
-                        data.lock().await.memory = mem;
-                    }
-                    for action in actions {
-                        if let Err(e) = protocol.execute_action(action) {
-                            error!("WebSocket client action failed after connect: {}", e);
-                            let _ =
-                                status_tx.send(format!("[CLIENT] WebSocket action failed: {e}"));
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("LLM error on websocket_client_connected: {}", e);
-                    let _ = status_tx.send(format!("[CLIENT] WebSocket LLM error: {e}"));
-                }
-            }
-        }
+            .await;
 
         let read_state = app_state.clone();
         let read_status_tx = status_tx.clone();
-        let read_llm = llm_client.clone();
-        let read_out_tx = out_tx.clone();
-        let read_data = data.clone();
-
-        let handle = tokio::spawn(async move {
-            while let Some(message) = stream.next().await {
-                match message {
-                    Ok(Message::Text(text)) => {
-                        trace!("WebSocket client {} <- text {:?}", client_id, text);
-                        Self::handle_inbound(
-                            Inbound::Text(text),
-                            client_id,
-                            &read_llm,
-                            &read_state,
-                            &read_status_tx,
-                            &read_out_tx,
-                            &read_data,
-                        )
-                        .await;
-                    }
-                    Ok(Message::Binary(bytes)) => {
-                        trace!(
-                            "WebSocket client {} <- binary {} bytes: {}",
-                            client_id,
-                            bytes.len(),
-                            hex::encode(&bytes)
-                        );
-                        Self::handle_inbound(
-                            Inbound::Binary(bytes),
-                            client_id,
-                            &read_llm,
-                            &read_state,
-                            &read_status_tx,
-                            &read_out_tx,
-                            &read_data,
-                        )
-                        .await;
-                    }
-                    Ok(Message::Ping(_)) => {
-                        debug!("WebSocket client {} <- ping (pong queued)", client_id);
-                    }
-                    Ok(Message::Pong(_)) => {
-                        debug!("WebSocket client {} <- pong", client_id);
-                    }
-                    Ok(Message::Close(frame)) => {
-                        let (code, reason) = match &frame {
-                            Some(f) => (u16::from(f.code), f.reason.to_string()),
-                            None => (1005u16, String::new()),
-                        };
-                        info!(
-                            "WebSocket client {} closed by server: code={} reason={:?}",
-                            client_id, code, reason
-                        );
-                        Self::emit_closed(
-                            client_id,
-                            code,
-                            reason,
-                            &read_llm,
-                            &read_state,
-                            &read_status_tx,
-                            &read_out_tx,
-                            &read_data,
-                        )
-                        .await;
-                        break;
-                    }
-                    Ok(Message::Frame(_)) => {}
-                    Err(e) => {
-                        debug!("WebSocket client {} read ended: {}", client_id, e);
-                        break;
+        app_state
+            .spawn_client_task(client_id, async move {
+                let mut clean_close = false;
+                while let Some(message) = stream.next().await {
+                    match message {
+                        Ok(Message::Text(text)) => {
+                            trace!("WebSocket client {} <- text {:?}", client_id, text);
+                            enqueue_inbound(
+                                &turn_tx,
+                                &queued_bytes,
+                                Inbound::Text(text),
+                                client_id,
+                            );
+                        }
+                        Ok(Message::Binary(bytes)) => {
+                            trace!(
+                                "WebSocket client {} <- binary {} bytes: {}",
+                                client_id,
+                                bytes.len(),
+                                hex::encode(&bytes)
+                            );
+                            enqueue_inbound(
+                                &turn_tx,
+                                &queued_bytes,
+                                Inbound::Binary(bytes),
+                                client_id,
+                            );
+                        }
+                        Ok(Message::Ping(_)) => {
+                            // tungstenite queued the Pong; the next `stream.next()` flushes it.
+                            debug!("WebSocket client {} <- ping (pong queued)", client_id);
+                        }
+                        Ok(Message::Pong(_)) => {
+                            debug!("WebSocket client {} <- pong", client_id);
+                        }
+                        Ok(Message::Close(frame)) => {
+                            let (code, reason) = match &frame {
+                                Some(f) => (u16::from(f.code), f.reason.to_string()),
+                                None => (1005u16, String::new()),
+                            };
+                            info!(
+                                "WebSocket client {} closed by server: code={} reason={:?}",
+                                client_id, code, reason
+                            );
+                            // Behind whatever is already queued, so the model hears about the
+                            // close after the messages that preceded it.
+                            if turn_tx.try_send(WsTurn::Closed { code, reason }).is_err() {
+                                warn!(
+                                    "WebSocket client {} could not queue its close event \
+                                     decision=turn_queue_full",
+                                    client_id
+                                );
+                            }
+                            clean_close = true;
+                            break;
+                        }
+                        Ok(Message::Frame(_)) => {}
+                        Err(e) => {
+                            debug!("WebSocket client {} read ended: {}", client_id, e);
+                            break;
+                        }
                     }
                 }
-            }
 
-            read_state
-                .update_client_status(client_id, ClientStatus::Disconnected)
-                .await;
-            // Every exit path lands here: drop the command handle so the dashboard stops
-            // offering [ send ] on a dead connection, and so the command loop's channel
-            // closes and its task ends.
-            read_state.remove_client_handle(client_id).await;
-            let _ = read_status_tx.send(format!("[CLIENT] WebSocket client {client_id} closed"));
-            let _ = read_status_tx.send("__UPDATE_UI__".to_string());
-        });
+                if !clean_close {
+                    // The socket died without a Close: there is no event to report, and a turn
+                    // still running — or parked for a human — has nothing left to answer on.
+                    turn_abort.abort();
+                }
+                read_state
+                    .update_client_status(client_id, ClientStatus::Disconnected)
+                    .await;
+                // Every exit path lands here: drop the command handle so the dashboard stops
+                // offering [ send ] on a dead connection, and so the command loop's channel
+                // closes and its task ends.
+                read_state.remove_client_handle(client_id).await;
+                let _ =
+                    read_status_tx.send(format!("[CLIENT] WebSocket client {client_id} closed"));
+                let _ = read_status_tx.send("__UPDATE_UI__".to_string());
+            })
+            .await;
 
-        app_state.register_client_task(client_id, handle).await;
-
-        // The writer ends when every sender is dropped, which happens when the read loop and
+        // The writer ends when every sender is dropped, which happens when the turn task and
         // its clones go away. Nothing waits on it here so `connect` can return promptly.
         drop(writer_handle);
         drop(out_tx);
 
         Ok(local_addr)
+    }
+
+    /// Answer queued messages with the model, one at a time and in arrival order.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_model_turns(
+        mut turn_rx: mpsc::Receiver<WsTurn>,
+        client_id: ClientId,
+        llm_client: OllamaClient,
+        app_state: Arc<AppState>,
+        status_tx: mpsc::UnboundedSender<String>,
+        out_tx: mpsc::UnboundedSender<WsOut>,
+        data: Arc<Mutex<ClientData>>,
+        queued_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        while let Some(turn) = turn_rx.recv().await {
+            match turn {
+                WsTurn::Connected {
+                    remote_addr,
+                    path,
+                    subprotocol,
+                } => {
+                    Self::emit_connected(
+                        client_id,
+                        remote_addr,
+                        path,
+                        subprotocol,
+                        &llm_client,
+                        &app_state,
+                        &status_tx,
+                        &out_tx,
+                        &data,
+                    )
+                    .await;
+                }
+                WsTurn::Message(frame) => {
+                    queued_bytes.fetch_sub(frame.len(), std::sync::atomic::Ordering::SeqCst);
+                    Self::handle_inbound(
+                        frame,
+                        client_id,
+                        &llm_client,
+                        &app_state,
+                        &status_tx,
+                        &out_tx,
+                        &data,
+                    )
+                    .await;
+                }
+                WsTurn::Closed { code, reason } => {
+                    Self::emit_closed(
+                        client_id,
+                        code,
+                        reason,
+                        &llm_client,
+                        &app_state,
+                        &status_tx,
+                        &out_tx,
+                        &data,
+                    )
+                    .await;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// `websocket_client_connected` — the client's chance to speak first.
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_connected(
+        client_id: ClientId,
+        remote_addr: String,
+        path: String,
+        subprotocol: String,
+        llm_client: &OllamaClient,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+        out_tx: &mpsc::UnboundedSender<WsOut>,
+        data: &Arc<Mutex<ClientData>>,
+    ) {
+        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+            return;
+        };
+        let event = Event::new(
+            &WEBSOCKET_CLIENT_CONNECTED_EVENT,
+            serde_json::json!({
+                "remote_addr": remote_addr,
+                "path": path,
+                "subprotocol": subprotocol,
+            }),
+        );
+        let protocol = WebSocketClientProtocol::for_connection(out_tx.clone());
+        let memory = { data.lock().await.memory.clone() };
+        match call_llm_for_client(
+            llm_client,
+            app_state,
+            client_id.to_string(),
+            &instruction,
+            &memory,
+            Some(&event),
+            &protocol,
+            status_tx,
+        )
+        .await
+        {
+            Ok(ClientLlmResult {
+                actions,
+                memory_updates,
+            }) => {
+                if let Some(mem) = memory_updates {
+                    data.lock().await.memory = mem;
+                }
+                for action in actions {
+                    if let Err(e) = protocol.execute_action(action) {
+                        error!("WebSocket client action failed after connect: {}", e);
+                        let _ = status_tx.send(format!("[CLIENT] WebSocket action failed: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                error!("LLM error on websocket_client_connected: {}", e);
+                let _ = status_tx.send(format!("[CLIENT] WebSocket LLM error: {e}"));
+            }
+        }
     }
 
     /// Drain injected commands until the channel closes (the client was removed, or the read
