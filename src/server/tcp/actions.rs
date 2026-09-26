@@ -462,11 +462,12 @@ pub static TCP_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "data": "220 Welcome to server\r\n"
         }),
     )
-    // No parameters - just connection opened notification
+    // Data: `connect_event_data()` - nothing received yet, and the answer that calls for.
     .with_actions(vec![
         SEND_TCP_DATA_ACTION.clone(),
         CLOSE_THIS_CONNECTION_ACTION.clone(),
     ])
+    .with_parameters(crate::protocol::event_type::connect_event_parameters())
     .raised_on_every_connection()
     .with_log_template(
         LogTemplate::new()

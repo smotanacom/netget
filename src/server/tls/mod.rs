@@ -771,7 +771,10 @@ impl TlsServer {
         protocol: Arc<TlsProtocol>,
     ) {
         let log = Log::new(Some(&status_tx));
-        let event = Event::new(&TLS_CONNECTION_OPENED_EVENT, serde_json::json!({}));
+        let event = Event::new(
+            &TLS_CONNECTION_OPENED_EVENT,
+            crate::protocol::event_type::connect_event_data(),
+        );
 
         let answer = tokio::select! {
             answer = call_llm(

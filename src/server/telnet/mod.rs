@@ -429,7 +429,7 @@ impl TelnetServer {
                             {
                                 let event = Event::new(
                                     &TELNET_CONNECTION_OPENED_EVENT,
-                                    serde_json::json!({}),
+                                    crate::protocol::event_type::connect_event_data(),
                                 );
                                 match call_llm(
                                     &llm_clone,

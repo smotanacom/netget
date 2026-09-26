@@ -572,7 +572,10 @@ impl TcpServer {
         protocol: Arc<TcpProtocol>,
     ) {
         let log = Log::new(Some(&status_tx));
-        let event = Event::new(&TCP_CONNECTION_OPENED_EVENT, serde_json::json!({}));
+        let event = Event::new(
+            &TCP_CONNECTION_OPENED_EVENT,
+            crate::protocol::event_type::connect_event_data(),
+        );
 
         // A peer that connects and leaves before the connect event is answered has nobody
         // left to greet. The call is abandoned rather than finished: every connection now

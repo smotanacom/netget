@@ -69,6 +69,52 @@ pub struct EventType {
     pub on_every_connection: bool,
 }
 
+/// The event data of a connect event (one declared
+/// [`EventType::raised_on_every_connection`]): how much the peer has sent, which is nothing,
+/// and which answer that calls for.
+///
+/// An empty object was not enough. With `{}` as the whole event, llama3.1:8b told to "echo back
+/// what the client sent" greeted every connection with "Hello, client! What's your request?",
+/// and told to "send back the client's text in upper case" sent `CLIENT TEXT IN UPPER CASE` -
+/// it read the connect event as a request and invented the request (`tcp/echo` 5/5 -> 1/5,
+/// `tcp/uppercase` 5/5 -> 0/5 when these events began firing on every connection). Two
+/// wordings of this data were measured before this one, and both are worth knowing:
+///
+/// * a `received: "nothing - the client has only connected"` field was echoed back verbatim -
+///   any string here is something an echo instruction will send;
+/// * "no actions unless the instruction explicitly says to greet" made the model answer "ask
+///   for a login name as soon as somebody connects" with `show_message`, which never reaches
+///   the client (`telnet/login-prompt` 5/5 -> 1/5). The hint has to say where a greeting goes.
+pub fn connect_event_data() -> JsonValue {
+    serde_json::json!({
+        "bytes_received": 0,
+        "answer_with": "If the instruction says to greet, show a banner, prompt or ask for \
+                        something as soon as someone connects, send that text to the client \
+                        now with this protocol's send action (show_message only reaches the \
+                        operator's screen, never the client). Otherwise answer with no actions \
+                        ({\"actions\": []}): the client has sent 0 bytes, so there is nothing \
+                        to echo, transform or answer yet.",
+    })
+}
+
+/// The parameters [`connect_event_data`] fills, for a connect event's declaration.
+pub fn connect_event_parameters() -> Vec<Parameter> {
+    vec![
+        Parameter {
+            name: "bytes_received".to_string(),
+            type_hint: "number".to_string(),
+            description: "How much the client has sent: always 0 on a connect event".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which answer a connect event calls for".to_string(),
+            required: true,
+        },
+    ]
+}
+
 impl EventType {
     /// Create a new event type with a required response example
     ///

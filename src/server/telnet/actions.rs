@@ -412,13 +412,14 @@ pub static TELNET_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|
             "message": "Welcome to NetGet\r\nlogin: "
         }),
     )
-    // No parameters: nothing has been received yet.
+    // Data: `connect_event_data()` - nothing received yet, and the answer that calls for.
     .with_actions(vec![
         send_telnet_message_action(),
         send_telnet_line_action(),
         send_telnet_prompt_action(),
         close_connection_action(),
     ])
+    .with_parameters(crate::protocol::event_type::connect_event_parameters())
     .raised_on_every_connection()
     .with_log_template(
         LogTemplate::new()
