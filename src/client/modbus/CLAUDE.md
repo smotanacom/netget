@@ -90,7 +90,17 @@ bound is 30s) that reaps an idle master closes the socket; the transport reports
 Every model outcome logs `decision=model_actions` / `model_silent` / `llm_error`; the transport
 logs `decision=timeout`, `decision=unmatched_response`, `decision=turn_queue_full`.
 
-## Maturity
+## Maturity: Beta
 
-Evidence: `tests/client/modbus/real_server_test.rs` — pymodbus 3.15 as the device, `mbpoll` reading
-back. See `tests/client/modbus/CLAUDE.md`.
+All four conditions of the client bar hold, on `tests/client/modbus/real_server_test.rs`:
+
+1. the peer is pymodbus 3.15 — a Python implementation with its own framer and datastore, not
+   the codec this client frames with — and `mbpoll` (libmodbus) reads back;
+2. a missing `python3`, `pymodbus` or `mbpoll` fails the test, never skips it;
+3. a real session: FC 4, 16, 5, 2 and 3 answered by the device, including its own exception;
+4. the client acts on the model's answer, asserted from the device's side by `mbpoll` — and
+   emptying the loop over `result.actions` fails it.
+
+`python3 scripts/beta_evidence_table.py --side client` reads the peer as `python3 pymodbus`
+(`PYTHON_THIRD_PARTY_PROTOCOL_SERVERS`). Passed three consecutive runs at `--test-threads=100`
+before promotion.

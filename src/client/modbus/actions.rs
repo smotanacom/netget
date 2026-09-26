@@ -455,7 +455,7 @@ impl Protocol for ModbusClientProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // 502 is a destination here, never a bind.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
@@ -471,8 +471,16 @@ impl Protocol for ModbusClientProtocol {
                  event with values, an exception name, or an error kind.",
             )
             .e2e_testing(
-                "tests/client/modbus/real_server_test.rs against a pymodbus server, read back \
-                 with mbpoll.",
+                "tests/client/modbus/real_server_test.rs, 7 LLM calls, against a pymodbus 3.15 \
+                 device (Python: its own framer and datastore) read back with mbpoll (C, \
+                 libmodbus). The model reads input registers (FC 4), writes values computed \
+                 from them to holding registers (FC 16), turns a coil on (FC 5), and in one \
+                 turn reads discrete inputs (FC 2) and a register that does not exist (FC 3), \
+                 which pymodbus refuses with exception 2; mbpoll reads back the registers and \
+                 the coil. A second test injects FC 6 and FC 15 through the command channel and \
+                 mbpoll reads them back. Not #[ignore]d; a missing python3, pymodbus or mbpoll \
+                 fails the test. unanswered_test.rs covers a wrong response, a timeout and the \
+                 request queue bound; codec_test.rs the shared codec's client half.",
             )
             .notes(
                 "TCP only (no RTU/ASCII). Eight function codes. Each response is checked \
