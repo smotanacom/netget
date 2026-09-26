@@ -26,19 +26,16 @@ abstracts the complexity of gRPC and protobuf encoding.
 
 ### Connection Model
 
-**Stateless with Reconnection**:
+**One session, held for the client's lifetime**:
 
-- Client connects on startup to validate connectivity
-- Each operation (get/put/delete) creates a fresh etcd-client connection
-- No persistent connection state maintained
-- Operations are independent and idempotent
-
-**Why reconnect per operation?**:
-
-- etcd-client manages connection pooling internally
-- Simplifies error handling (no stale connection issues)
-- Matches the HTTP client pattern (stateless request-response)
-- LLM can issue operations without worrying about connection state
+- `etcd_client::Client::connect` runs once in `connect_with_llm_actions`; a failure there is a
+  failed connect.
+- The connected client is kept in `SharedEtcd` (`Arc<Mutex<etcd_client::Client>>`) and shared
+  by the connected-event handler, the follow-up chain and the injected-command loop, so the
+  session the dashboard calls "connected" is the one every operation uses.
+- Each operation **clones** the client out of the mutex and runs the RPC on the clone. The
+  client is a cheap handle over one tonic channel; holding the guard across the RPC would
+  serialise every operation behind the slowest one.
 
 ### LLM Integration
 
@@ -169,7 +166,6 @@ Both tracing macros and `status_tx` used for TUI visibility.
 
 - etcd-client manages connection pool internally
 - No explicit control over connection lifecycle
-- Reconnects on every operation (simple but potentially inefficient)
 
 ### No Streaming RPCs
 
@@ -218,12 +214,6 @@ wget https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-
 unzip protoc-28.3-linux-x86_64.zip -d $HOME/protoc
 export PATH="$HOME/protoc/bin:$PATH"
 ```
-
-### Reconnection Overhead
-
-- Each operation creates a new etcd-client connection
-- May be slow for high-frequency operations
-- **Mitigation**: etcd-client has built-in connection pooling
 
 ### No Watch Support
 
@@ -286,7 +276,6 @@ Then retrieve /app/timeout
 
 - gRPC uses HTTP/2 (multiplexed, binary)
 - Protobuf encoding is compact
-- Reconnection per operation adds overhead (future optimization: persistent connection)
 
 ## Security Considerations
 
@@ -360,7 +349,7 @@ etcd
 netget> connect to etcd at localhost:2379
 ```
 
-**Optional: Installing etcd server locally for testing**:
+**Installing etcd locally** — required: `tests/client/etcd/real_server_test.rs` spawns `etcd` and `etcdctl` and fails without them:
 
 ```bash
 # Install via Homebrew
@@ -379,8 +368,9 @@ etcd --version
 **Installation**:
 
 ```bash
-# Debian/Ubuntu - install etcd server (optional, for testing)
-sudo apt-get install etcd
+# Debian/Ubuntu - the packaged etcdctl may default to the v2 API (jammy ships 3.3);
+# the upstream v3.5 release tarball is what CI installs
+sudo apt-get install etcd-server
 
 # Fedora/RHEL
 sudo dnf install etcd
