@@ -138,6 +138,45 @@ refused).
 
 **Runtime**: ~20s in parallel, dominated by the parked-request wait.
 
+### Tests 10-14: Stream bounds (`stream_bounds_test.rs`)
+
+**Purpose**: prove the SETTINGS and the shared body budget in `src/server/http2/h2_server.rs`
+from the peer's side. In-process, no mock backend, **zero LLM calls**; requests that must stay
+open are parked on a `manual` rule.
+
+- **The SETTINGS frame carries the declared values**, read by a hand-written frame reader (not
+  `h2`, which is the server's own library): `MAX_CONCURRENT_STREAMS` 100, `INITIAL_WINDOW_SIZE`
+  65,535, `MAX_FRAME_SIZE` 16,384, `MAX_HEADER_LIST_SIZE` 32 KiB, and a stream-0 WINDOW_UPDATE
+  opening the connection window to 1 MiB.
+- **curl reads the same limit.** `curl --http2-prior-knowledge --trace-config http/2` completes
+  a static-answered GET and logs `MAX_CONCURRENT_STREAMS: 100` — nghttp2, an independent HTTP/2
+  stack, decoding our SETTINGS. The test fails, not skips, without curl.
+- **The 101st stream is refused.** A raw client ignoring the SETTINGS opens 101 streams at once
+  (HPACK from the static table only); exactly stream 201 is reset with `REFUSED_STREAM` (7), and
+  exactly 100 requests are parked. `h2`'s own client honours the limit and would never send the
+  101st, which is why this one is hand-written.
+- **The streams of a connection share one 8 MiB body budget.** An `h2` client parks a 6 MiB POST,
+  then sends 3 MiB on the same connection: that stream is answered `503` + `Retry-After: 1`
+  within 15s and never parks, while the first stays parked.
+- **The h2c upgrade path advertises the same limit** (compiled only with `http` too): curl
+  `--http2` against the HTTP/1.1 server reads `MAX_CONCURRENT_STREAMS: 100` after the `101`.
+  curl's request does not complete there — a pre-existing defect in the upgrade path, recorded
+  in `src/server/http/CLAUDE.md` — so only the SETTINGS are asserted.
+
+Verified by removal: handshaking with `h2::server::handshake` instead of `bounded_h2_builder()`
+fails the SETTINGS, curl and 101st-stream tests (curl then reads `MAX_CONCURRENT_STREAMS:
+4294967295`, and no stream is reset); doing the same on the h2c path fails the upgrade test;
+disabling the budget check leaves the second POST parked and fails the budget test.
+
+Run both feature sets:
+
+```bash
+./cargo-isolated.sh test --no-default-features --features http2 --test server -- \
+    http2::stream_bounds --test-threads=100
+./cargo-isolated.sh test --no-default-features --features http,http2 --test server -- \
+    http2::stream_bounds --test-threads=100
+```
+
 ## Total LLM Call Budget
 
 - Test 1: 1 (startup) + 4 (requests) = 5 calls

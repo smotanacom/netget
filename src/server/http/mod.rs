@@ -828,12 +828,16 @@ where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     use crate::server::Http2Protocol;
-    use h2::server;
 
     info!("Starting h2c connection for {}", connection_id);
 
     // Perform h2 server handshake
-    let mut h2_conn = server::handshake(io).await?;
+    // The same SETTINGS as a prior-knowledge HTTP/2 connection: stream count, windows, frame
+    // and header-list sizes, and one body budget shared by the connection's streams.
+    let mut h2_conn = crate::server::http2::h2_server::bounded_h2_builder()
+        .handshake(io)
+        .await?;
+    let body_budget = crate::server::http2::h2_server::BodyBudget::new();
 
     let protocol = Arc::new(Http2Protocol::new());
 
@@ -868,6 +872,7 @@ where
                 let protocol_clone = protocol.clone();
                 let filter_clone = filter.clone();
                 let activity_clone = Arc::clone(&activity);
+                let stream_budget = body_budget.clone();
 
                 // Spawn task to handle this HTTP/2 request
                 // Tracked, not detached: stop_server must abort this task too.
@@ -887,6 +892,7 @@ where
                             status_tx_clone,
                             protocol_clone,
                             filter_clone,
+                            stream_budget,
                         )
                         .await
                         {
