@@ -483,6 +483,10 @@ fn mysql() -> Vec<EvalCase> {
 
 #[cfg(feature = "ldap")]
 fn ldapsearch(base: &str, filter: &str) -> Probe {
+    // Bind, then search, one model call each. A bind answered with a
+    // diagnostic message makes ldapsearch print `ldap_bind: Success (0)` and
+    // carry on — so it talks between the two calls, and the idle settle used to
+    // kill it there, before the search was ever sent.
     Probe::client(
         "ldapsearch",
         &[
@@ -500,6 +504,7 @@ fn ldapsearch(base: &str, filter: &str) -> Probe {
             filter,
         ],
     )
+    .until_exit()
 }
 
 #[cfg(feature = "ldap")]

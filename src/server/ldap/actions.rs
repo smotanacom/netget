@@ -536,7 +536,13 @@ fn ldap_bind_response_action() -> ActionDefinition {
 fn ldap_search_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "ldap_search_response".to_string(),
-        description: "Respond to LDAP search request with directory entries".to_string(),
+        description: "Answer an LDAP search with the entries the instruction says exist \
+                      under the request's base_dn - and only those. Every entry's dn ends \
+                      with the base_dn the client searched. When nothing exists there, send \
+                      \"entries\": [] with result_code 0: a search that finds no one is a \
+                      success, not an error. The example's entry is a stand-in for the shape; \
+                      never send it as data."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "message_id".to_string(),
@@ -547,7 +553,10 @@ fn ldap_search_response_action() -> ActionDefinition {
             Parameter {
                 name: "entries".to_string(),
                 type_hint: "array".to_string(),
-                description: "Array of directory entries matching the search".to_string(),
+                description: "The matching entries, each {\"dn\": \"cn=...,<base_dn>\", \
+                              \"attributes\": {\"name\": [\"value\", ...]}}. Every attribute \
+                              value is a list of strings. [] when nothing matches."
+                    .to_string(),
                 required: true,
             },
             Parameter {
@@ -562,10 +571,10 @@ fn ldap_search_response_action() -> ActionDefinition {
             "message_id": 2,
             "entries": [
                 {
-                    "dn": "cn=john,ou=people,dc=example,dc=com",
+                    "dn": "cn=Example Person,ou=example,dc=example,dc=org",
                     "attributes": {
-                        "cn": ["john"],
-                        "mail": ["john@example.com"],
+                        "cn": ["Example Person"],
+                        "mail": ["person@example.org"],
                         "objectClass": ["person", "inetOrgPerson"]
                     }
                 }
@@ -826,10 +835,10 @@ pub static LDAP_SEARCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "type": "ldap_search_response",
             "message_id": 2,
             "entries": [{
-                "dn": "cn=john,ou=people,dc=example,dc=com",
+                "dn": "cn=Example Person,ou=example,dc=example,dc=org",
                 "attributes": {
-                    "cn": ["john"],
-                    "mail": ["john@example.com"],
+                    "cn": ["Example Person"],
+                    "mail": ["person@example.org"],
                     "objectClass": ["person", "inetOrgPerson"]
                 }
             }],
@@ -852,7 +861,10 @@ pub static LDAP_SEARCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             Parameter {
                 name: "base_dn".to_string(),
                 type_hint: "string".to_string(),
-                description: "Base DN for search (starting point)".to_string(),
+                description: "Base DN the client searched. Answer only with entries at or \
+                              under it; if the instruction puts nothing there, answer with \
+                              no entries."
+                    .to_string(),
                 required: true,
             },
             Parameter {
