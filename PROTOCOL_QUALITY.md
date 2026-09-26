@@ -87,6 +87,52 @@ Two of those numbers correct `CLAUDE.md`: command-channel adoption is 99 clients
 
 ---
 
+## Programme 4 (25–26 September 2026): robustness gaps the ratchets missed, real peers, new protocols
+
+The plan was derived from the tree rather than from this file, because nearly every box above was
+ticked. Numbers are from `scripts/beta_evidence_table.py` and the ratchets, before and after.
+
+| Measure | Before | After |
+|---|---|---|
+| Server maturity | 2 Stable · 49 Beta · 106 Experimental | **3 Stable** (`modbus` joined) · **57 Beta** · 106 Experimental |
+| Client maturity | 1 Beta · 97 Experimental | **13 Beta** · 89 Experimental |
+| Registered servers / clients | 157 / 99 | 166 / 103 |
+| Fuzz targets | 17 | 25 |
+| Servers declaring a well-known port | 1 | every socket server with a registered port (ratcheted) |
+| Pre-auth whole-process crashes found and fixed | — | 2 (`redis` RESP nesting, `mongodb` BSON nesting at 2.3 KB) |
+| Real-model eval (llama3.1:8b) | 155/225 = 69% | pending — see `EVAL_RESULTS.md` |
+
+What landed, each verified by removing the guard and watching its test fail:
+
+- **Robustness.** Depth guards for `redis` and `mongodb`; connection caps and real idle bounds
+  for `http2`, `socket_file`, `ssh_agent`, and for six servers whose only deadline covered the
+  handshake (`mqtt`, `doh`, `websocket`, `webrtc`, `webrtc_signaling`, `socks5`), with a ratchet
+  for that class; declared inbound bounds for the last ten servers; `tor_relay` no longer admits a
+  circuit when the model fails; every connectionless server declares what a failure sends;
+  `http2` bounds concurrent streams and shares one body budget per connection; NetGet's own MQTT
+  and WebSocket clients keep their transport alive while a turn is parked; startup parameters
+  that carry secrets are masked in the log.
+- **Usability.** MCP tools for what only the dashboard could do (`send_to_client`,
+  `send_to_peer`, `disconnect_peer`, `list_intercepts`, `answer_intercept`, `fail_intercept`);
+  non-interactive `--run-for` / `--exit-after-events` and a `--load` hang fixed; well-known
+  default ports resolved in one place; declared parameter defaults pre-filled in the form; every
+  start path refuses a definitively missing dependency.
+- **Evidence.** A `RealServer` test helper, and twelve clients newly Beta against real
+  third-party servers (Mosquitto, valkey, etcd, nginx, PostgreSQL, MySQL, slapd, OpenSSH,
+  memcached, libcoap, pymodbus, FreeRADIUS) — every one of which found a client defect.
+- **New servers, each Beta on a real client:** `dict`, `gemini`, `prometheus`, `docker`,
+  `vault`, `beanstalkd`, `zabbix`, `gearman`, `bolt`.
+
+Not done, and why:
+
+- **`smb`'s response headers put MessageId at offset 20, not 24**, so no real SMB client can
+  match a reply. Found while bounding its WRITE path; the fix agent was not launched.
+- **NSQ, Nostr and OTLP servers** were planned and not built.
+- **The registry-audit runner is Ubuntu 22.04**, and five evidence suites first failed there on
+  older tools (nginx 1.18, tshark 3.6, gearmand 1.1.19, libcoap 4.2.1, a Python library's
+  missing import). Each is fixed in CI or in the test; the lesson is that a Beta rating's
+  evidence has to be read in that job's log, because the job reports green regardless.
+
 ## Tier 0 — central mechanisms that protect every protocol at once
 
 These are one file each and change the failure mode for all 140 servers. Do these first; they
