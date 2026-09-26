@@ -575,6 +575,98 @@ write("xmlrpc_value", "at_depth_limit",
 write("xmlrpc_value", "depth_bomb",
       xmlrpc_call([xmlrpc_nested_array(20000, b"<value><i4>1</i4></value>")]))
 
+# --- Bolt: PackStream message bodies and chunked streams ----------------------
+# The shapes are what cypher-shell 2026.09 (neo4j-java-driver 6.2) was recorded sending; see
+# src/server/bolt/CLAUDE.md. The target decodes every input both as one message body and as a
+# chunked stream, so each message is seeded in both forms.
+def ps(v):
+    """A minimal PackStream encoder: None, bool, int, str, list, dict, and (tag, [fields])."""
+    if v is None:
+        return b"\xC0"
+    if v is True:
+        return b"\xC3"
+    if v is False:
+        return b"\xC2"
+    if isinstance(v, int):
+        if -16 <= v < 128:
+            return struct.pack(">b", v)
+        if -128 <= v < 128:
+            return b"\xC8" + struct.pack(">b", v)
+        if -32768 <= v < 32768:
+            return b"\xC9" + struct.pack(">h", v)
+        if -2**31 <= v < 2**31:
+            return b"\xCA" + struct.pack(">i", v)
+        return b"\xCB" + struct.pack(">q", v)
+    if isinstance(v, str):
+        b = v.encode()
+        if len(b) < 16:
+            return bytes([0x80 | len(b)]) + b
+        if len(b) < 256:
+            return b"\xD0" + bytes([len(b)]) + b
+        return b"\xD1" + struct.pack(">H", len(b)) + b
+    if isinstance(v, list):
+        head = bytes([0x90 | len(v)]) if len(v) < 16 else b"\xD4" + bytes([len(v)])
+        return head + b"".join(ps(x) for x in v)
+    if isinstance(v, dict):
+        head = bytes([0xA0 | len(v)]) if len(v) < 16 else b"\xD8" + bytes([len(v)])
+        return head + b"".join(ps(k) + ps(x) for k, x in v.items())
+    tag, fields = v
+    return bytes([0xB0 | len(fields), tag]) + b"".join(ps(f) for f in fields)
+
+
+def bolt_chunk(body):
+    out = b""
+    for i in range(0, len(body), 65535):
+        piece = body[i:i + 65535]
+        out += struct.pack(">H", len(piece)) + piece
+    return out + b"\x00\x00"
+
+
+BOLT_MESSAGES = {
+    "hello": (0x01, [{
+        "bolt_agent": {"product": "neo4j-java/6.2.1", "language": "Java/21",
+                       "platform": "Mac OS X; 27.0; aarch64"},
+        "user_agent": "neo4j-cypher-shell/v2026.09.0",
+        "routing": {"address": "127.0.0.1:7687"}}]),
+    "logon": (0x6A, [{"principal": "neo4j", "scheme": "basic", "credentials": "pw"}]),
+    "run": (0x10, ["MATCH (n:Person {name: $name}) RETURN n", {"name": "Alice", "n": [1, -2, 300]},
+                   {"tx_metadata": {"type": "user-direct", "app": "cypher-shell_v2026.09.0"},
+                    "db": "neo4j", "mode": "r"}]),
+    "pull": (0x3F, [{"n": 1000}]),
+    "pull_qid": (0x3F, [{"n": -1, "qid": 3}]),
+    "begin": (0x11, [{"mode": "r", "db": "movies", "tx_metadata": {"type": "user-direct"}}]),
+    "route": (0x66, [{"address": "127.0.0.1:7687"}, [], {}]),
+    "reset": (0x0F, []),
+    "goodbye": (0x02, []),
+}
+for name, message in BOLT_MESSAGES.items():
+    body = ps(message)
+    write("packstream_message", name, body)
+    write("packstream_message", name + "_chunked", bolt_chunk(body))
+write("packstream_message", "pipelined_run_pull",
+      bolt_chunk(ps(BOLT_MESSAGES["run"])) + b"\x00\x00" + bolt_chunk(ps(BOLT_MESSAGES["pull"])))
+# Parameters exactly at MAX_PACKSTREAM_DEPTH (message struct 1, parameter map 2, 30 lists).
+write("packstream_message", "at_depth_limit",
+      b"\xB3\x10\x81q\xA1\x81p" + b"\x91" * 30 + b"\x01\xA0")
+# 100,000 one-element lists (100 KB, under libFuzzer's 1 MiB inferred -max_len), as a bare body
+# and chunked: with the depth checks removed this overflows the fuzzer's 8 MiB main thread.
+BOLT_BOMB = b"\xB3\x10\x81q\xA1\x81p" + b"\x91" * 100000 + b"\xC0\xA0"
+write("packstream_message", "depth_bomb", BOLT_BOMB)
+write("packstream_message", "depth_bomb_chunked", bolt_chunk(BOLT_BOMB))
+write("packstream_message", "map_depth_bomb", b"\xA1\x81k" * 60000 + b"\xC0")
+write("packstream_message", "struct_depth_bomb", b"\xB1\x4E" * 60000 + b"\xC0")
+# Declared lengths four billion strong in five bytes: refused on the count, never allocated.
+for name, header in [("list32_huge", b"\xD6\xFF\xFF\xFF\xFF"),
+                     ("map32_huge", b"\xDA\xFF\xFF\xFF\xFF"),
+                     ("string32_huge", b"\xD2\xFF\xFF\xFF\xFF"),
+                     ("bytes32_huge", b"\xCE\xFF\xFF\xFF\xFF"),
+                     ("struct16_huge", b"\xDD\xFF\xFF\x4E")]:
+    write("packstream_message", name, header)
+    write("packstream_message", name + "_chunked", bolt_chunk(header))
+# A chunk stream that never sends its terminating zero chunk.
+write("packstream_message", "unterminated_chunks", (b"\xFF\xFF" + b"\x00" * 65535) * 3)
+
+
 total =sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
       (total, len(os.listdir(CORPUS))))

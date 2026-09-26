@@ -143,6 +143,7 @@ guard does not panic, which is the easy half.
 | `ldap_filter` | `ldap::ldap_message_len` → `decode_ldap_message` → `parse_search_request`, whose `render_filter` is the only recursive code in an LDAP request (`MAX_FILTER_DEPTH`) | a SearchRequest, which needs no bind |
 | `svn_tuple` | `svn::wire::ItemReader::read_item` (iterative) → `svn::command_event_data`, which walks the `Item` recursively (`MAX_TUPLE_DEPTH`) | the first tuple on an ra_svn connection |
 | `xmlrpc_value` | `xmlrpc::parse_method_call` (iterative) → `actions::create_method_call_event`, which walks the `XmlRpcValue` recursively (`MAX_VALUE_DEPTH`) | the first POST body |
+| `packstream_message` | `bolt::packstream::decode` (recursive, `MAX_PACKSTREAM_DEPTH`, declared lengths checked before allocation) and `Dechunker` (1 MiB cap), then `parse_request` and the event's JSON conversion; `encode ∘ decode` must be idempotent | HELLO, before any login |
 
 Every target is deterministic: no I/O, no sockets, no clock, no LLM. Several assert
 determinism explicitly by decoding twice and comparing, because a decoder that disagrees
@@ -157,9 +158,9 @@ committed precisely so 116 binary blobs have a provenance. Edit the script, not 
 python3 fuzz/seed_corpus.py .      # from the repository root
 ```
 
-Eight of those seeds are **depth bombs** — `bencode_structure`, `snmp_ber`,
+Nine targets carry **depth bombs** — `bencode_structure`, `snmp_ber`,
 `amqp_field_table`, `resp_frame`, `bson_document`, `ldap_filter`, `svn_tuple`,
-`xmlrpc_value` — and they are the reason this harness can find anything. Coverage-guided fuzzing gives **no gradient toward nesting depth**: a value
+`xmlrpc_value`, `packstream_message` — and they are the reason this harness can find anything. Coverage-guided fuzzing gives **no gradient toward nesting depth**: a value
 nested 10,000 deep runs exactly the same basic blocks as one nested 3 deep, so libFuzzer
 scores it as uninteresting and discards it. It will not grow one by itself.
 
@@ -226,6 +227,11 @@ deep nesting "cannot overflow the stack". The parsers cannot; what they build ca
 and `XmlRpcValue` are recursive types, and `Display`, `to_json`, the JSON conversion for the
 model's event and `Drop` all walk them recursively — so the depth bound is what protects
 everything downstream of the parser, and the targets drive that code, not just the parser.
+
+`packstream_message` (Bolt) the same way on 26 September 2026: with the three
+`depth > MAX_PACKSTREAM_DEPTH` checks in `bolt::packstream` removed it died with `SIGSEGV`
+while loading its seed corpus (the 100 KB `depth_bomb`); restored, 60s clean at ~108,000
+runs with the `encode ∘ decode` idempotence assertion holding throughout.
 
 This is the same discipline the AMQP field-table bound and the xmlrpc depth bound were
 verified with, and it is the only evidence that distinguishes "the fuzzer found nothing"

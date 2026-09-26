@@ -37,10 +37,11 @@ path = ".."
 default-features = false
 # One feature per decoder reached below, and nothing else. `default-features = false`
 # matters: netget's default is `all-protocols`, which would compile 136 protocols in
-# order to fuzz twenty-two decoders.
+# order to fuzz twenty-three decoders.
 features = [
     "amqp",
     "bgp",
+    "bolt",
     "cdp",
     "coap",
     "dns",
@@ -235,6 +236,13 @@ bench = false
 [[bin]]
 name = "xmlrpc_value"
 path = "fuzz_targets/xmlrpc_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packstream_message"
+path = "fuzz_targets/packstream_message.rs"
 test = false
 doc = false
 bench = false

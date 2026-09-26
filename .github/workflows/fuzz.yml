@@ -72,6 +72,7 @@ jobs:
           - ldap_filter
           - svn_tuple
           - xmlrpc_value
+          - packstream_message
     steps:
       - uses: actions/checkout@v4
 
