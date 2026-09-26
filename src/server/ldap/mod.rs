@@ -420,38 +420,20 @@ impl LdapSession {
 
     /// Decode one complete LDAPMessage and dispatch on its protocolOp.
     async fn handle_message(&mut self, data: &[u8]) -> Result<SessionStep> {
-        let envelope = read_ber_element(data).context("LDAPMessage envelope")?;
-        if envelope.tag != TAG_SEQUENCE {
-            anyhow::bail!(
-                "Invalid LDAP message: expected SEQUENCE, got tag 0x{:02x}",
-                envelope.tag
-            );
-        }
-        let body = envelope.value;
-
-        let id_element = read_ber_element(body).context("messageID")?;
-        if id_element.tag != TAG_INTEGER {
-            anyhow::bail!(
-                "Invalid LDAP message: expected messageID INTEGER, got tag 0x{:02x}",
-                id_element.tag
-            );
-        }
-        let msg_id = ber_integer(id_element.value).context("messageID value")? as i32;
-
-        let op = read_ber_element(&body[id_element.total_len..]).context("protocolOp")?;
+        let (msg_id, op_tag, op_value) = decode_ldap_message(data)?;
         debug!(
             "LDAP message id={} op=0x{:02x} ({} bytes)",
             msg_id,
-            op.tag,
-            op.value.len()
+            op_tag,
+            op_value.len()
         );
 
-        match op.tag {
-            OP_BIND_REQUEST => self.handle_bind_request(msg_id, op.value).await,
-            OP_SEARCH_REQUEST => self.handle_search_request(msg_id, op.value).await,
-            OP_ADD_REQUEST => self.handle_add_request(msg_id, op.value).await,
-            OP_MODIFY_REQUEST => self.handle_modify_request(msg_id, op.value).await,
-            OP_DELETE_REQUEST => self.handle_delete_request(msg_id, op.value).await,
+        match op_tag {
+            OP_BIND_REQUEST => self.handle_bind_request(msg_id, op_value).await,
+            OP_SEARCH_REQUEST => self.handle_search_request(msg_id, op_value).await,
+            OP_ADD_REQUEST => self.handle_add_request(msg_id, op_value).await,
+            OP_MODIFY_REQUEST => self.handle_modify_request(msg_id, op_value).await,
+            OP_DELETE_REQUEST => self.handle_delete_request(msg_id, op_value).await,
             OP_UNBIND_REQUEST => self.handle_unbind_request().await,
             other => {
                 Log::new(Some(&self.status_tx))
@@ -657,54 +639,12 @@ impl LdapSession {
     }
 
     async fn handle_search_request(&mut self, msg_id: i32, data: &[u8]) -> Result<SessionStep> {
-        // SearchRequest ::= [APPLICATION 3] SEQUENCE {
-        //     baseObject LDAPDN, scope ENUMERATED, derefAliases ENUMERATED,
-        //     sizeLimit INTEGER, timeLimit INTEGER, typesOnly BOOLEAN,
-        //     filter Filter, attributes AttributeSelection }
-        let base_element = read_ber_element(data).context("search baseObject")?;
-        let base_dn = ber_string(base_element.value);
-
-        let mut rest = &data[base_element.total_len..];
-        let mut scope = "sub".to_string();
-        if let Ok(scope_element) = read_ber_element(rest) {
-            scope = match ber_integer(scope_element.value).unwrap_or(2) {
-                0 => "base",
-                1 => "one",
-                _ => "sub",
-            }
-            .to_string();
-            rest = &rest[scope_element.total_len..];
-        }
-
-        // derefAliases, sizeLimit, timeLimit, typesOnly: read past them without interpreting.
-        for _ in 0..4 {
-            match read_ber_element(rest) {
-                Ok(element) => rest = &rest[element.total_len..],
-                Err(_) => break,
-            }
-        }
-
-        let filter = match read_ber_element(rest) {
-            Ok(filter_element) => {
-                let text = render_filter(&filter_element, 0);
-                rest = &rest[filter_element.total_len..];
-                text
-            }
-            Err(_) => "(objectClass=*)".to_string(),
-        };
-
-        let attributes = match read_ber_element(rest) {
-            Ok(list) => {
-                let mut names = Vec::new();
-                let mut cursor = list.value;
-                while let Ok(element) = read_ber_element(cursor) {
-                    names.push(serde_json::Value::String(ber_string(element.value)));
-                    cursor = &cursor[element.total_len..];
-                }
-                names
-            }
-            Err(_) => Vec::new(),
-        };
+        let SearchRequestFields {
+            base_dn,
+            scope,
+            filter,
+            attributes,
+        } = parse_search_request(data)?;
 
         Log::new(Some(&self.status_tx)).debug(format!(
             "LDAP Search request: base_dn={}, scope={}, filter={}",
@@ -955,8 +895,11 @@ const READ_CHUNK: usize = 8192;
 
 /// Maximum search-filter nesting rendered. Filters are recursive and client-supplied, so an
 /// unbounded renderer would overflow the stack on a deliberately deep filter.
+///
+/// `fuzz/fuzz_targets/ldap_filter.rs` carries a depth bomb for this; with the check in
+/// `render_filter` removed, that seed kills the fuzzer with a stack overflow.
 #[cfg(feature = "ldap")]
-const MAX_FILTER_DEPTH: usize = 32;
+pub const MAX_FILTER_DEPTH: usize = 32;
 
 #[cfg(feature = "ldap")]
 const TAG_SEQUENCE: u8 = 0x30;
@@ -1122,7 +1065,7 @@ fn ber_string(value: &[u8]) -> String {
 /// `Ok(None)` means "need more bytes"; `Err` means the stream is not LDAP and the connection
 /// should be dropped.
 #[cfg(feature = "ldap")]
-fn ldap_message_len(buffer: &[u8]) -> Result<Option<usize>> {
+pub fn ldap_message_len(buffer: &[u8]) -> Result<Option<usize>> {
     if buffer.is_empty() {
         return Ok(None);
     }
@@ -1200,6 +1143,112 @@ fn parse_partial_attribute(data: &[u8]) -> (String, Vec<serde_json::Value>) {
     }
 
     (name, values)
+}
+
+/// Split an LDAPMessage into `(messageID, protocolOp tag, protocolOp content)`.
+///
+/// Pure and public so `fuzz/fuzz_targets/ldap_filter.rs` drives the same decoder the session
+/// does; nothing here allocates or recurses.
+#[cfg(feature = "ldap")]
+pub fn decode_ldap_message(data: &[u8]) -> Result<(i32, u8, &[u8])> {
+    let envelope = read_ber_element(data).context("LDAPMessage envelope")?;
+    if envelope.tag != TAG_SEQUENCE {
+        anyhow::bail!(
+            "Invalid LDAP message: expected SEQUENCE, got tag 0x{:02x}",
+            envelope.tag
+        );
+    }
+    let body = envelope.value;
+
+    let id_element = read_ber_element(body).context("messageID")?;
+    if id_element.tag != TAG_INTEGER {
+        anyhow::bail!(
+            "Invalid LDAP message: expected messageID INTEGER, got tag 0x{:02x}",
+            id_element.tag
+        );
+    }
+    let msg_id = ber_integer(id_element.value).context("messageID value")? as i32;
+
+    let op = read_ber_element(&body[id_element.total_len..]).context("protocolOp")?;
+    Ok((msg_id, op.tag, op.value))
+}
+
+/// What a SearchRequest tells the model: the fields of `ldap_search`'s event data.
+#[cfg(feature = "ldap")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchRequestFields {
+    pub base_dn: String,
+    /// `base`, `one` or `sub`.
+    pub scope: String,
+    /// RFC 4515 text, rendered to at most `MAX_FILTER_DEPTH` levels.
+    pub filter: String,
+    pub attributes: Vec<serde_json::Value>,
+}
+
+/// Decode a SearchRequest's content octets.
+///
+/// ```text
+/// SearchRequest ::= [APPLICATION 3] SEQUENCE {
+///     baseObject LDAPDN, scope ENUMERATED, derefAliases ENUMERATED,
+///     sizeLimit INTEGER, timeLimit INTEGER, typesOnly BOOLEAN,
+///     filter Filter, attributes AttributeSelection }
+/// ```
+///
+/// The filter is the only recursive part of any LDAP request, and it is client-supplied and
+/// pre-authentication (a search needs no bind). This is the entry point the fuzz target drives.
+#[cfg(feature = "ldap")]
+pub fn parse_search_request(data: &[u8]) -> Result<SearchRequestFields> {
+    let base_element = read_ber_element(data).context("search baseObject")?;
+    let base_dn = ber_string(base_element.value);
+
+    let mut rest = &data[base_element.total_len..];
+    let mut scope = "sub".to_string();
+    if let Ok(scope_element) = read_ber_element(rest) {
+        scope = match ber_integer(scope_element.value).unwrap_or(2) {
+            0 => "base",
+            1 => "one",
+            _ => "sub",
+        }
+        .to_string();
+        rest = &rest[scope_element.total_len..];
+    }
+
+    // derefAliases, sizeLimit, timeLimit, typesOnly: read past them without interpreting.
+    for _ in 0..4 {
+        match read_ber_element(rest) {
+            Ok(element) => rest = &rest[element.total_len..],
+            Err(_) => break,
+        }
+    }
+
+    let filter = match read_ber_element(rest) {
+        Ok(filter_element) => {
+            let text = render_filter(&filter_element, 0);
+            rest = &rest[filter_element.total_len..];
+            text
+        }
+        Err(_) => "(objectClass=*)".to_string(),
+    };
+
+    let attributes = match read_ber_element(rest) {
+        Ok(list) => {
+            let mut names = Vec::new();
+            let mut cursor = list.value;
+            while let Ok(element) = read_ber_element(cursor) {
+                names.push(serde_json::Value::String(ber_string(element.value)));
+                cursor = &cursor[element.total_len..];
+            }
+            names
+        }
+        Err(_) => Vec::new(),
+    };
+
+    Ok(SearchRequestFields {
+        base_dn,
+        scope,
+        filter,
+        attributes,
+    })
 }
 
 /// Render a search filter back into RFC 4515 text for the event.

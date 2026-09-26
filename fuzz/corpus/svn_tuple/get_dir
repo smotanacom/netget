@@ -1,0 +1,1 @@
+( get-dir ( 0: ( ) true false ( kind size ) ) ) 

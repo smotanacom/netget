@@ -23,7 +23,7 @@ With the guards in place the bombs are refused in microseconds and nothing downs
 sees them, so they cost the running fuzzer nothing. They exist for the day a guard
 regresses.
 
-This file is the provenance for 82 otherwise-opaque binary blobs; edit it rather than
+This file is the provenance for 116 otherwise-opaque binary blobs; edit it rather than
 the blobs.
 """
 import os
@@ -132,6 +132,10 @@ for name, frame in [
     ("unsub", b"UNSUB 1 5\r\n"),
 ]:
     write("nats_frame", name, NATS_PREFIX + frame)
+# NATS does not nest either. Its stack overflow was `parse_frame` recursing once per blank line
+# (8 KB of newlines, one `read`, killed the process); `blank_line_prefix_len` is now a loop.
+# The blank-line run is that class's depth bomb: 32 Ki of them ahead of a PING.
+write("nats_frame", "blank_line_bomb", NATS_PREFIX + b"\r\n" * 32768 + b"PING\r\n")
 
 # --- STOMP ----------------------------------------------------------------
 write("stomp_frame", "connect",
@@ -144,6 +148,11 @@ write("stomp_frame", "subscribe",
 write("stomp_frame", "escaped_header",
       b"SEND\ndestination:/queue/a\nx\\ckey:v\\nal\n\n\x00")
 write("stomp_frame", "heartbeat", b"\n")
+# STOMP does not nest: headers are a flat, MAX_HEADERS-bounded list and the inter-frame EOL
+# drain is a loop. The recursion this framer once had was per blank line, so the equivalent of
+# a depth bomb is a long run of them — 32 Ki heart-beats ahead of one frame. It costs the
+# iterative drain nothing and is here for the day someone makes it recursive again.
+write("stomp_frame", "blank_line_bomb", b"\r\n" * 32768 + b"SEND\ndestination:/q\n\nx\x00")
 
 # --- RADIUS: Access-Request with User-Name and User-Password --------------
 attrs = (bytes([1, 2 + 5]) + b"alice" +
@@ -309,6 +318,41 @@ write("bgp_message", "open",
 notification = MARKER + struct.pack(">HB", 21, 3) + bytes([6, 0])
 write("bgp_message", "notification", b"\x00" + notification)
 
+
+# BGP path attributes do not nest in anything netgauze 0.7 decodes: every PathAttributeValue
+# variant is a flat value or a flat list, and ATTR_SET (RFC 6368), the one attribute that would
+# contain attributes, is not implemented. So there is no depth bomb; the lengths are what a
+# peer controls, and the corpus had no UPDATE at all. These seed one ordinary UPDATE and one at
+# BGP's 4096-octet maximum, carried by a long AS_PATH.
+def bgp_attr(flags, code, value):
+    if len(value) > 255:
+        return bytes([flags | 0x10, code]) + struct.pack(">H", len(value)) + value
+    return bytes([flags, code, len(value)]) + value
+
+
+def bgp_update(attrs, nlri):
+    body = struct.pack(">H", 0) + struct.pack(">H", len(attrs)) + attrs + nlri
+    return MARKER + struct.pack(">HB", 19 + len(body), 2) + body
+
+
+update_attrs = (bgp_attr(0x40, 1, b"\x00") +
+                bgp_attr(0x40, 2, bytes([2, 2]) + struct.pack(">II", 65001, 65002)) +
+                bgp_attr(0x40, 3, bytes([192, 0, 2, 1])))
+write("bgp_message", "update_ipv4",
+      b"\x01" + bgp_update(update_attrs, bytes([24, 198, 51, 100])))
+# 4096 = header 19 + two length fields 4 + ORIGIN 4 + AS_PATH (4-byte extended header + P) +
+# NEXT_HOP 7 + NLRI 4, so the AS_PATH value is P = 4054 octets: five AS_SEQUENCE segments
+# (a segment holds at most 255 four-byte ASNs, and 2k + 4N = 4054 needs k odd) of 1011 ASNs.
+as_path = b""
+for n in (255, 255, 255, 245, 1):
+    as_path += bytes([2, n]) + b"".join(struct.pack(">I", 64512 + i) for i in range(n))
+assert len(as_path) == 4054
+max_attrs = (bgp_attr(0x40, 1, b"\x00") + bgp_attr(0x40, 2, as_path) +
+             bgp_attr(0x40, 3, bytes([192, 0, 2, 1])))
+max_update = bgp_update(max_attrs, bytes([24, 198, 51, 100]))
+assert len(max_update) == 4096
+write("bgp_message", "update_max_len", b"\x01" + max_update)
+
 # --- NDEF: a text record and a URI record ------------------------------
 text_payload = bytes([2]) + b"en" + b"hello"
 write("ndef_message", "text_record",
@@ -424,6 +468,113 @@ write("bson_document", "huge_declared_len", struct.pack("<i", 0x7FFFFFFF) + b"\x
 # 8 MiB main thread in a release build when the guard is removed (verified).
 write("bson_document", "depth_bomb", bson_nested(16384))
 
-total = sum(len(files) for _, _, files in os.walk(CORPUS))
+
+# --- LDAP: SearchRequests, and the filter nesting MAX_FILTER_DEPTH bounds ---
+def ber_len(n):
+    if n < 0x80:
+        return bytes([n])
+    if n < 0x100:
+        return bytes([0x81, n])
+    if n < 0x10000:
+        return b"\x82" + struct.pack(">H", n)
+    return b"\x83" + n.to_bytes(3, "big")
+
+
+def tlv(tag, value):
+    return bytes([tag]) + ber_len(len(value)) + value
+
+
+def ldap_search(filter_bytes, msg_id=1):
+    body = (tlv(0x04, b"dc=example,dc=com") + tlv(0x0A, b"\x02") + tlv(0x0A, b"\x00") +
+            tlv(0x02, b"\x00") + tlv(0x02, b"\x00") + tlv(0x01, b"\x00") +
+            filter_bytes + tlv(0x30, tlv(0x04, b"cn") + tlv(0x04, b"mail")))
+    return tlv(0x30, tlv(0x02, bytes([msg_id])) + tlv(0x63, body))
+
+
+def ldap_nested_and(levels, inner):
+    """`levels` nested `&` filters around `inner`, built without quadratic copying."""
+    headers = []
+    size = len(inner)
+    for _ in range(levels):
+        header = b"\xa0" + ber_len(size)
+        headers.append(header)
+        size += len(header)
+    return b"".join(reversed(headers)) + inner
+
+
+ldap_eq = tlv(0xA3, tlv(0x04, b"uid") + tlv(0x04, b"alice"))
+write("ldap_filter", "search_equality", ldap_search(ldap_eq))
+write("ldap_filter", "search_present", ldap_search(tlv(0x87, b"objectClass")))
+write("ldap_filter", "search_and_or_not", ldap_search(tlv(0xA0,
+      ldap_eq + tlv(0xA1, tlv(0xA3, tlv(0x04, b"ou") + tlv(0x04, b"eng")) +
+                    tlv(0xA2, tlv(0x87, b"disabled"))))))
+write("ldap_filter", "search_substrings", ldap_search(tlv(0xA4,
+      tlv(0x04, b"cn") + tlv(0x30, tlv(0x80, b"al") + tlv(0x81, b"ic") + tlv(0x82, b"e")))))
+write("ldap_filter", "bind_simple",
+      tlv(0x30, tlv(0x02, b"\x01") + tlv(0x60, tlv(0x02, b"\x03") + tlv(0x04, b"cn=admin") +
+                                         tlv(0x80, b"secret"))))
+# render_filter stops at depth 32: the equality inside 32 `&`s is the first thing it elides.
+write("ldap_filter", "at_depth_limit", ldap_search(ldap_nested_and(32, ldap_eq)))
+# 60,000 levels at ~5 bytes each (~300 KiB, under the 1 MiB MAX_LDAP_MESSAGE, so it is framed
+# and reaches the renderer): with the depth check removed this overflows the fuzzer's 8 MiB
+# main thread (verified).
+write("ldap_filter", "depth_bomb", ldap_search(ldap_nested_and(60000, ldap_eq)))
+
+
+# --- ra_svn: tuples, and the nesting MAX_TUPLE_DEPTH bounds ---
+write("svn_tuple", "client_greeting",
+      b"( 2 ( edit-pipeline svndiff1 accepts-svndiff2 absent-entries depth mergeinfo log-revprops"
+      b" ) 32:svn://127.0.0.1/repo/trunk/proj 10:SVN/1.14.2 ( ) ) ")
+write("svn_tuple", "auth_anonymous", b"( ANONYMOUS ( 0: ) ) ")
+write("svn_tuple", "get_latest_rev", b"( get-latest-rev ( ) ) ")
+write("svn_tuple", "get_dir", b"( get-dir ( 0: ( ) true false ( kind size ) ) ) ")
+write("svn_tuple", "counted_string_with_newline", b"( check-path ( 5:a\nb c ( 12 ) ) ) ")
+write("svn_tuple", "two_commands", b"( get-latest-rev ( ) ) ( stat ( 0: ( ) ) ) ")
+# The reader refuses a 65th open list, so 64 closed lists is the deepest item it accepts.
+write("svn_tuple", "at_depth_limit", b"(" * 64 + b")" * 64)
+# 32,000 closed lists: two bytes a level, so it fits MAX_COMMAND_BYTES (64 KiB) and is a size
+# the server really admits. The reader is iterative, but the Item it builds is walked
+# recursively (Display, to_json, Drop); with MAX_TUPLE_DEPTH removed this overflows the
+# fuzzer's 8 MiB main thread (verified).
+write("svn_tuple", "depth_bomb", b"(" * 32000 + b")" * 32000)
+
+
+# --- XML-RPC: methodCalls, and the nesting MAX_VALUE_DEPTH bounds ---
+def xmlrpc_call(params):
+    return (b'<?xml version="1.0"?><methodCall><methodName>examples.getStateName</methodName>'
+            b"<params>" + b"".join(b"<param>" + p + b"</param>" for p in params) +
+            b"</params></methodCall>")
+
+
+def xmlrpc_nested_array(levels, inner):
+    return (b"<value><array><data>" * levels + inner +
+            b"</data></array></value>" * levels)
+
+
+write("xmlrpc_value", "int_param", xmlrpc_call([b"<value><i4>41</i4></value>"]))
+write("xmlrpc_value", "every_scalar", xmlrpc_call([
+    b"<value><int>-7</int></value>", b"<value><i8>9007199254740993</i8></value>",
+    b"<value><boolean>1</boolean></value>", b"<value><string>a &amp; b</string></value>",
+    b"<value><double>2.5</double></value>",
+    b"<value><dateTime.iso8601>19980717T14:08:55</dateTime.iso8601></value>",
+    b"<value><base64>aGVsbG8=</base64></value>", b"<value><nil/></value>",
+    b"<value>untyped</value>", b"<value/>"]))
+write("xmlrpc_value", "struct_and_array", xmlrpc_call([
+    b"<value><struct><member><name>id</name><value><int>1</int></value></member>"
+    b"<member><name>tags</name><value><array><data><value>a</value><value>b</value>"
+    b"</data></array></value></member></struct></value>"]))
+# 31 levels of <value><array> plus the innermost <value> is 63 frames, one under the guard.
+write("xmlrpc_value", "at_depth_limit",
+      xmlrpc_call([xmlrpc_nested_array(31, b"<value><i4>1</i4></value>")]))
+# 20,000 closed levels at 42 bytes each (~860 KB): the parser is iterative, but the
+# XmlRpcValue it builds is walked recursively (to JSON, and on drop); with MAX_VALUE_DEPTH
+# removed this overflows the fuzzer's 8 MiB main thread (verified; 16,000 already does).
+# It must stay under 1 MiB: libFuzzer caps the -max_len it infers from a corpus at 1 MiB and
+# silently TRUNCATES larger seeds, so a 40,000-level bomb (1.7 MB) arrived as malformed XML,
+# never reached the recursion, and ran 60 seconds "clean" with the guard removed.
+write("xmlrpc_value", "depth_bomb",
+      xmlrpc_call([xmlrpc_nested_array(20000, b"<value><i4>1</i4></value>")]))
+
+total =sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
       (total, len(os.listdir(CORPUS))))

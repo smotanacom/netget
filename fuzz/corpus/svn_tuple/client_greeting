@@ -1,0 +1,1 @@
+( 2 ( edit-pipeline svndiff1 accepts-svndiff2 absent-entries depth mergeinfo log-revprops ) 32:svn://127.0.0.1/repo/trunk/proj 10:SVN/1.14.2 ( ) ) 
