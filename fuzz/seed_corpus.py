@@ -23,7 +23,7 @@ With the guards in place the bombs are refused in microseconds and nothing downs
 sees them, so they cost the running fuzzer nothing. They exist for the day a guard
 regresses.
 
-This file is the provenance for 91 otherwise-opaque binary blobs; edit it rather than
+This file is the provenance for 102 otherwise-opaque binary blobs; edit it rather than
 the blobs.
 """
 import os
@@ -428,6 +428,31 @@ write("zabbix_packet", "huge_declared_large", zbxd(b"", flags=0x05, declared=1 <
 # A JSON nesting bomb in the body: serde_json's own recursion limit (128) must turn it into a
 # parse error. 65,536 levels overflow any stack if that limit is ever switched off.
 write("zabbix_packet", "depth_bomb", zbxd(b"[" * 65536 + b"]" * 65536))
+
+# --- gearman: the binary packet protocol and the admin lines ---------------
+def gearman(magic, ptype, *args, declared=None):
+    data = b"\0".join(args)
+    n = len(data) if declared is None else declared
+    return magic + struct.pack(">II", ptype, n) + data
+
+
+REQ = b"\0REQ"
+# Byte for byte what the gearman(1) CLI sent to a capture listener.
+write("gearman_packet", "submit_job", gearman(
+    REQ, 7, b"reverse", b"BE19BA24-7778-4CF6-BBFB-04CA7A3789E9", b"hello world"))
+write("gearman_packet", "submit_job_bg", gearman(
+    REQ, 18, b"reverse", b"CC4564F0-40CE-4753-A20D-75856AF9B5ED", b"bg job"))
+write("gearman_packet", "submit_job_high", gearman(REQ, 21, b"reverse", b"", b"high"))
+write("gearman_packet", "echo_req", gearman(REQ, 16, b"ping"))
+write("gearman_packet", "can_do", gearman(REQ, 1, b"reverse"))
+write("gearman_packet", "grab_job_all", gearman(REQ, 39))
+write("gearman_packet", "option_exceptions", gearman(REQ, 26, b"exceptions"))
+write("gearman_packet", "work_complete_res", gearman(b"\0RES", 13, b"H:netget:1", b"dlrow olleh"))
+write("gearman_packet", "admin_status", b"status\r\n")
+# A declared size past the 1 MiB bound: refused from the header alone.
+write("gearman_packet", "huge_declared_size", gearman(REQ, 7, declared=0xFFFFFFFF))
+# 65,536 NULs as a SUBMIT_JOB body: split_args splits only on the first two.
+write("gearman_packet", "nul_bomb", gearman(REQ, 7, b"\0" * 65536))
 
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
