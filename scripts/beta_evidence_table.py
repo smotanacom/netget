@@ -124,6 +124,16 @@ PYTHON_STDLIB_PROTOCOL_MODULES = (
     "http.client", "xmlrpc.client",
 )
 
+# Third-party Python client libraries that are a protocol peer in their own right, driven the
+# same way (python3 spawned, the library imported by the driver). Same bar as the stdlib list:
+# the library must do the protocol's framing and parsing itself, and the server must not use
+# it. `ignition` (pip `ignition-gemini`) opens TLS through CPython's ssl module, pins the
+# certificate trust-on-first-use and parses the Gemini response header and body; NetGet's
+# Gemini server is rustls plus hand-written framing.
+PYTHON_THIRD_PARTY_PROTOCOL_CLIENTS = (
+    "ignition",
+)
+
 SKIP_MESSAGE = re.compile(
     r"""(?ix)
     (?:e?println!|warn!|info!|eprint!)\s*\(\s*
@@ -370,6 +380,9 @@ def scan_tests(directory: Path, known: set[str]) -> dict:
             for module in PYTHON_STDLIB_PROTOCOL_MODULES:
                 if re.search(r"\b(?:import|from)\s+[\w., ]*\b" + re.escape(module) + r"\b", code):
                     file_binaries.add(f"python3 -m {module}")
+            for library in PYTHON_THIRD_PARTY_PROTOCOL_CLIENTS:
+                if re.search(r"^\s*(?:import|from)\s+" + re.escape(library) + r"\b", code, re.M):
+                    file_binaries.add(f"python3 {library}")
         binaries |= file_binaries
 
         file_tests = len(re.findall(r"#\[(?:tokio::)?test", code))
