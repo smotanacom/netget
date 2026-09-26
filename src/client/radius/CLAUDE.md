@@ -95,7 +95,18 @@ host, default the authentication port plus one (1812 → 1813).
 
 No EAP, MS-CHAP, CoA/Disconnect-Request (RFC 5176), RadSec, or IPv6 attributes; one server.
 
-## Maturity
+## Maturity: Beta
 
-Evidence: `tests/client/radius/real_server_test.rs` against FreeRADIUS `radiusd`. See
-`tests/client/radius/CLAUDE.md`.
+All four conditions of the client bar hold, on `tests/client/radius/real_server_test.rs`:
+
+1. the peer is FreeRADIUS `radiusd` (C), which verifies NetGet's User-Password hiding,
+   CHAP-Password, Message-Authenticator and Accounting-Request authenticator itself — nothing
+   this client is built on;
+2. a missing `radiusd` fails the test, never skips it;
+3. a real session: PAP and CHAP accepts, two rejects, accounting, Status-Server;
+4. the client acts on the model's answer, asserted from the server's side by the `detail` file
+   — and emptying the loop over `result.actions` fails it.
+
+Passed three consecutive runs at `--test-threads=100` before promotion, against FreeRADIUS
+3.2.10. CI's registry-audit runs Ubuntu 22.04's FreeRADIUS 3.0.26. Not claimed: EAP, MS-CHAP,
+CoA, and the challenge path against a real server.

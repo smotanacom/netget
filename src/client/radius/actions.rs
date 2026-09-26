@@ -653,7 +653,7 @@ impl Protocol for RadiusClientProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "RADIUS NAS (RFC 2865/2866/5997) over UDP, building packets with the server's \
@@ -671,7 +671,20 @@ impl Protocol for RadiusClientProtocol {
                  and Status-Server probes. The shared secret is a startup parameter the model \
                  never sees again.",
             )
-            .e2e_testing("tests/client/radius/real_server_test.rs against FreeRADIUS radiusd.")
+            .e2e_testing(
+                "tests/client/radius/real_server_test.rs, 8 LLM calls, against FreeRADIUS \
+                 radiusd -X run unprivileged from a minimal raddb that requires a \
+                 Message-Authenticator. PAP and CHAP are accepted with the users file's \
+                 Reply-Message, a wrong password and an always-reject user are refused, an \
+                 Accounting Start carrying the model's attributes lands in FreeRADIUS's detail \
+                 file, and Status-Server is answered; FreeRADIUS checks every authenticator \
+                 NetGet computes and NetGet verifies every reply's. The test also asserts the \
+                 shared secret reaches no event and nothing NetGet printed. A second test \
+                 injects an Access-Request (logged by FreeRADIUS as Login OK) and an \
+                 Accounting Stop through the command channel. Not #[ignore]d; a missing \
+                 radiusd fails the test. transport_test.rs refuses forged and unsigned replies \
+                 against hand-written servers.",
+            )
             .notes(
                 "No EAP, MS-CHAP, CoA/Disconnect-Request (RFC 5176), RadSec or IPv6 attributes. \
                  A challenge's State is carried back automatically on the next Access-Request \
