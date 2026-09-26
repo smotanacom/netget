@@ -126,3 +126,38 @@ fn a_second_json_value_after_the_first_is_ignored() {
         "the first value is the answer; a second is trailing content like any other"
     );
 }
+
+/// A bracketed word in the prose ahead of the JSON is not the answer.
+///
+/// The parser starts at the first `{` or `[`, so prose that quotes a name in brackets before the
+/// real answer used to be taken as an array of actions, and a bare string became the model's
+/// "action". Found by the real-model eval against the docker server, where the model wrote
+/// about the container `["eval-web"]` before its answer.
+#[test]
+fn a_bracketed_word_before_the_answer_is_skipped() {
+    let r = parse(
+        r#"The container list is ["eval-web"], so I answer:
+{"actions": [{"type": "send_docker_containers", "containers": []}]}"#,
+    );
+    assert_eq!(r.actions.len(), 1, "{:?}", r.actions);
+    assert_eq!(r.actions[0]["type"], "send_docker_containers");
+}
+
+/// With nothing answer-shaped anywhere, a bracketed word alone is still an error rather than an
+/// action named after the word.
+#[test]
+fn a_bracketed_word_with_no_answer_is_an_error() {
+    let result = ActionResponse::from_str(r#"I think the container is ["eval-web"]."#);
+    assert!(
+        result.is_err(),
+        "a quoted word must not become an action: {:?}",
+        result.map(|r| r.actions)
+    );
+}
+
+/// An empty array is still a valid answer ("do nothing").
+#[test]
+fn an_empty_array_is_still_an_answer() {
+    let r = parse("[]");
+    assert!(r.actions.is_empty() && r.tools.is_empty());
+}

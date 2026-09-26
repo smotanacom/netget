@@ -606,6 +606,33 @@ impl Parameter {
     }
 }
 
+/// The first JSON value in `text`, starting the scan at `start`, that is shaped like an answer:
+/// an object, or an array whose items are all objects. Anything else (a bare string, a number,
+/// an array of words quoted in the model's prose) is skipped and the scan resumes at the next
+/// `{` or `[`.
+fn first_answer_shaped_value(text: &str, start: usize) -> Option<serde_json::Value> {
+    let mut from = start;
+    loop {
+        let candidate = &text[from..];
+        let value = serde_json::Deserializer::from_str(candidate)
+            .into_iter::<serde_json::Value>()
+            .next()
+            .and_then(|r| r.ok());
+        match value {
+            Some(v @ serde_json::Value::Object(_)) => return Some(v),
+            Some(serde_json::Value::Array(items)) if items.iter().all(|i| i.is_object()) => {
+                return Some(serde_json::Value::Array(items))
+            }
+            _ => {}
+        }
+        // Resume at the next opening bracket after this one.
+        let next = text[from + 1..]
+            .find(['{', '['])
+            .map(|offset| from + 1 + offset)?;
+        from = next;
+    }
+}
+
 /// Normalize an LLM-emitted action/tool-call object into the canonical flat
 /// `{"type": <name>, <params...>}` shape that the action/tool parsers expect.
 ///
@@ -738,10 +765,12 @@ impl ActionResponse {
         // `StreamDeserializer` stops at the end of the first value instead of demanding it be
         // the last thing in the string. A string that is entirely one value parses exactly as
         // before, so this only ever widens what is accepted.
-        let first_value = serde_json::Deserializer::from_str(clean_json)
-            .into_iter::<serde_json::Value>()
-            .next()
-            .and_then(|r| r.ok());
+        //
+        // The first value has to be something an answer can be: an object, or an array of
+        // objects. Prose often brackets a word before the JSON starts ("the containers
+        // ["eval-web"] are ..."), and taking that array made a bare string the model's
+        // "action". Such a value is skipped and the scan moves to the next `{` or `[`.
+        let first_value = first_answer_shaped_value(json_str, json_start);
 
         if let Some(json_value) = first_value {
             use crate::llm::actions::tools::ToolAction;
