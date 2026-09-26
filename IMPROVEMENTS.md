@@ -92,35 +92,28 @@ fixes whose end-to-end validation still needs hardware — see item 2 below.
 
 ### Still open
 
-1. **`bluetooth_ble_beacon` on real Linux hardware.** *(Implemented, unverified.)* The
-   Linux-only BlueZ path exists (`bluer` registering `org.bluez.LEAdvertisement1`); macOS/Windows
-   return a clean `Err`. Payload construction is pure and tested byte-for-byte, but the BlueZ half
-   has never been compiled or run on Linux — first use is bring-up, via the `#[ignore]`d test in
-   `tests/server/bluetooth_ble_beacon/e2e_test.rs` and `btmon`. The Linux `dist` set excludes all
-   `bluetooth-ble*` (libdbus), so the shipped Linux binary does not contain it.
-2. **Real-hardware validation of the BLE and WireGuard fixes.** The CODE for the BLE shared-
-   `Peripheral` (`6394895e`) and the WireGuard `wireguard_add_peer` authorize flow (`a57f7145`)
-   landed and is unit-tested radio-/backend-free, but neither has been driven end to end: BLE
-   needs a real adapter + permission, WireGuard needs root + a backend (kernel, or `wireguard-go`
-   on macOS). `boringtun` is the recommended in-process WireGuard driver once a privileged
-   environment exists. WireGuard stays **Beta** (the reason zero protocols are Stable) until then.
-3. **`pgwire` malformed-query panic (item 77)** — the one open remotely-reachable library panic,
-   and it is upstream. Auditing library panics reachable from the wire (item 48) is standing
-   practice, not a discrete fix.
-4. **`AppState` is one `RwLock` over everything (item 23)** — a throughput ceiling, not a defect.
-5. **The `easy` layer (item 35)** — a parallel subsystem serving one protocol. Finish or delete.
-6. **Logging Step 4 long tail.** ~22 highest-traffic server protocols are on the `Log` facade; the
-   remaining server `mod.rs` (density-ordered: kafka, amqp, socks5, mqtt, dot, doh, etcd, …) and
-   all ~91 client `mod.rs` still carry hand-rolled dual logging. Mechanical, per-batch; sweep in
-   progress. The global LLM request/response de-duplication (the headline complaint) is already
-   done everywhere.
-7. **Startup-example placeholders.** ~67 protocols still carry a bare `<x_handler>` script
-   placeholder in `get_startup_examples()` (enumerated in `tests/examples/example_runnability_test.rs`'s
-   shrink-only `KNOWN_BROKEN` allowlist). Fixing one = replace the placeholder with real Python and
-   delete its allowlist entry. 68 protocols already have working examples.
-8. **The management interactive form (item 14).** The `ServerForm`/`ClientForm` model and
-   `update_server`/`update_client` executors and the `/manage` + `/update` commands are in place;
-   the full prefilled create/update TUI form is the remaining slice (in progress).
+Re-derived from source on 26 September 2026. Seven items in "Open — actionable" below were
+already fixed and are now marked so in their headings (7, 9, 16, 32, 39, 42, 50).
+
+1. **`bluetooth_ble_beacon` on real Linux hardware.** *(Implemented, unverified.)* The BlueZ
+   path has never been compiled or run on Linux; first use is bring-up via the `#[ignore]`d test
+   in `tests/server/bluetooth_ble_beacon/e2e_test.rs` and `btmon`.
+2. **Real-hardware validation of the BLE and WireGuard fixes.** Neither has been driven end to
+   end: BLE needs an adapter, WireGuard needs root and a backend. WireGuard is `Experimental`.
+3. **`pgwire` malformed-query panic (item 77)** — upstream; kills one connection task only.
+4. **`AppState` is one `RwLock` over everything (item 23)** — a throughput ceiling.
+5. **The `easy` layer (item 35)** — still present (`src/easy/http`). Finish or delete.
+6. **Startup does not consult the dependency system (item 20b)** — `is_protocol_available()`
+   has no caller in the startup path.
+7. **`REQUIRE_DOCS_FOR_OPEN_ACTIONS` (item 29)** — a hardcoded `false` guarding a gate nobody
+   enables; make it a runtime setting or delete it and its state.
+8. **ARP and DataLink are absent from the Linux `dist` set (item 54).**
+9. **Connect events fire only with `send_first` (item 78)** — also costs the real-model eval
+   every telnet banner case. Programme 4 W2 addresses it.
+
+10. **Logging long tail.** 111 of 153 server `mod.rs` files use the `Log` facade
+    (`src/logging/emit.rs`); 42 still hand-roll dual logging. Derive with
+    `grep -L 'Log::new\|crate::logging::Log' src/server/*/mod.rs`.
 
 ### Patterns worth auditing for
 
@@ -306,8 +299,9 @@ tests had been passing straight through.
 Everything below is genuinely outstanding. Items verified fixed have moved to the Fixed
 table, and historical findings to the Archive.
 
-### 7. Unknown action names fail silently at runtime **[verified]**
+### 7. Unknown action names fail silently at runtime **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: static handler action names are validated at parse time (`validate_static_action_names`, `src/events/handler.rs`). The text below is the original finding.
 A static `event_handler` naming a nonexistent action is accepted at startup and does nothing
 when the event fires: the peer gets no response, no error reaches the MCP caller, and
 `list_access_logs` records the action name as though it executed.
@@ -316,16 +310,18 @@ Fix: validate handler action names against the protocol's action catalog at pars
 `EventHandler::parse_event_handlers` (`src/events/handler.rs:1682`), and record execution
 failures in the access log.
 
-### 9. Scheduled tasks leak when servers stop via MCP **[static]**
+### 9. Scheduled tasks leak when servers stop via MCP **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: teardown moved inside `AppState::remove_server`, pinned by `tests/mcp_stop_cleanup_test.rs`. The text below is the original finding.
 `src/mcp_stdio/tools.rs:415,718` call `remove_server()` without `cleanup_server_tasks()`,
 unlike the TUI paths (`src/cli/rolling_tui.rs:2421,2466`). Orphaned server- and
 connection-scoped tasks keep firing every tick, each producing a failed LLM prompt. There is
 also no reaper under `--mcp` (`cleanup_old_servers` is only wired into the TUI loop), so
 LLM-initiated `CloseServer` leaves entries in `AppState` forever.
 
-### 16. No circuit breaker on the LLM backend **[static]**
+### 16. No circuit breaker on the LLM backend **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: `src/llm/circuit_breaker.rs` fails fast after consecutive transport failures. The text below is the original finding.
 `is_available()` exists (`src/llm/ollama_client.rs:1315`) but nothing calls it. With Ollama
 down, every request independently waits the full 120s timeout, and with `max_concurrent: 1`
 (`src/llm/rate_limiter.rs`) N connections serialize into N×120s.
@@ -392,8 +388,9 @@ setting or remove it and the state it depends on.
 ---
 
 
-### 32. Validator accepts a superset of what the prompt advertises **[static]**
+### 32. Validator accepts a superset of what the prompt advertises **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: the user-input path narrows to `advertised_user_input_actions` before validating. The text below is the original finding.
 Items 4 and the scheduled-task fix closed two cases where the advertised and validated action
 lists diverged outright. A milder version remains: several call sites pass the *unfiltered*
 list to the validator while the prompt builder applies `filter_actions_by_scripting_mode` to
@@ -411,8 +408,9 @@ the deterministic script/static path would be bypassed in favour of an LLM call.
 reachable — `easy_startup.rs` accepts no `event_handlers` — but the ordering inverts the
 project's stated preference and is a trap if easy servers ever gain handler support.
 
-### 39. `open_server`'s documentation gate makes mocked tests fragile **[static]**
+### 39. `open_server`'s documentation gate makes mocked tests fragile **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: the documentation gate is behind `REQUIRE_DOCS_FOR_OPEN_ACTIONS`, which is `false`. The text below is the original finding.
 `src/events/handler.rs:844` forces a `DocumentationRequired` retry on first use of
 `open_server`. Mock configurations that don't answer that retry never start their server, which
 is why all 4 `tests/server/dns/test.rs` tests and 7 in `tests/examples/` fail at HEAD while
@@ -420,8 +418,9 @@ DoT/DoH/mDNS survive. Either the gate should be off by default (compare
 `REQUIRE_DOCS_FOR_OPEN_ACTIONS` at `:20`, which is a hardcoded `false` — see item 29) or the
 mock helper should answer it centrally so every protocol's tests don't have to.
 
-### 42. `http3` is the QUIC transport, not HTTP/3 — **awaiting a naming decision** **[verified]**
+### 42. `http3` is the QUIC transport, not HTTP/3 **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: the server protocol is `quic` (`src/server/quic/`); the real HTTP/3 client keeps `http3`. The text below is the original finding.
 Correction to the original item: I wrote that `h3`/`h3-quinn` could be dropped because only the
 client uses them. **They cannot.** `http3` is a single feature gate over both halves, and
 `src/client/http3/mod.rs:175-176` is built on those crates. There is no `Cargo.toml` dependency
@@ -466,8 +465,9 @@ DHCP client. The general shape — a parsing crate that trusts a length field th
 which of their accessors panic on malformed input, since all of them run inside a socket task
 where a panic silently kills the server while its status still reads `Running`.
 
-### 50. Two overlapping documentation gates, one of them dead **[verified]**
+### 50. Two overlapping documentation gates, one of them dead **[fixed — re-verified 26 Sep 2026]**
 
+> Fixed: the retry gate is now behind the same `REQUIRE_DOCS_FOR_OPEN_ACTIONS` flag. The text below is the original finding.
 `REQUIRE_DOCS_FOR_OPEN_ACTIONS` (`src/events/handler.rs:20`) is a hardcoded `false` and only
 controls whether `open_server`/`open_client` appear in the action list. The gate that actually
 forces a `DocumentationRequired` retry is unconditional, at `src/events/handler.rs:807` and
