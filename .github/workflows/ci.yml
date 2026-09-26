@@ -454,6 +454,30 @@ jobs:
             mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached \
             freeradius
 
+      # jammy's libcoap2-bin is 4.2.1, whose example coap-server has no `example_data`
+      # resource (it arrived in 4.3), so client/coap::real_server_test got 4.04 for every PUT
+      # and GET. Build 4.3.5 without DTLS into /usr/local, which precedes /usr/bin on PATH, so
+      # coap-server and coap-client both come from it; coap's own server evidence uses the same
+      # coap-client. A build that names the binaries with a TLS suffix is linked to the plain
+      # name, and the final check fails this step if either is still the packaged 4.2.1.
+      - name: Build libcoap 4.3.5 (coap-server's example_data resource)
+        continue-on-error: true
+        run: |
+          git clone --quiet --depth 1 --branch v4.3.5 https://github.com/obgm/libcoap.git /tmp/libcoap
+          cmake -S /tmp/libcoap -B /tmp/libcoap/build -DENABLE_DTLS=OFF -DENABLE_DOCS=OFF \
+            -DENABLE_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/libcoap/build -j"$(nproc)"
+          sudo cmake --install /tmp/libcoap/build
+          sudo ldconfig
+          for tool in coap-server coap-client; do
+            if [ ! -x "/usr/local/bin/$tool" ]; then
+              suffixed=$(ls /usr/local/bin/"$tool"-* 2>/dev/null | head -1)
+              [ -n "$suffixed" ] && sudo ln -sf "$suffixed" "/usr/local/bin/$tool"
+            fi
+            echo "$tool -> $(command -v $tool)"
+            [ "$(command -v $tool)" = "/usr/local/bin/$tool" ] || { echo "$tool is not the 4.3.5 build" >&2; exit 1; }
+          done
+
       # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
       # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
       # tests run each one unprivileged against a data directory in a fresh temp dir, which the
