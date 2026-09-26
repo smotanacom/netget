@@ -193,6 +193,20 @@ pub struct ParameterDefinition {
 
     /// JSON example showing a valid value for this parameter
     pub example: serde_json::Value,
+
+    /// The value the protocol uses when the caller omits this parameter, when there is one.
+    ///
+    /// Declared where the code already falls back to a fixed value, so the operator can see
+    /// the value before choosing to change it: the dashboard's create form pre-fills it (and
+    /// does not submit it unless edited), and `get_protocol_docs` prints it. `None` means
+    /// omitting the parameter changes behaviour in a way no single value describes — a feature
+    /// switched off, a value derived from something else — or the parameter is required.
+    ///
+    /// Must parse as [`Self::type_hint`]; `tests/startup_param_defaults_test.rs` checks every
+    /// declaration. Point it at the constant the code falls back to
+    /// (`Some(json!(IDLE_TIMEOUT.as_secs()))`), never a literal repeating it, or the two drift.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
 }
 
 impl ParameterDefinition {
@@ -203,14 +217,21 @@ impl ParameterDefinition {
         } else {
             "optional"
         };
-        format!(
+        let mut text = format!(
             "\"{}\": {}  // {} ({})\nExample: {}",
             self.name,
             self.type_hint,
             self.description,
             required,
             serde_json::to_string(&self.example).unwrap_or_default()
-        )
+        );
+        if let Some(default) = &self.default {
+            text.push_str(&format!(
+                "\nDefault when omitted: {}",
+                serde_json::to_string(default).unwrap_or_default()
+            ));
+        }
+        text
     }
 }
 

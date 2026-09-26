@@ -43,6 +43,7 @@ impl Protocol for ZabbixProtocol {
                     .to_string(),
                 required: false,
                 example: json!(30),
+                default: Some(serde_json::json!(super::FIRST_BYTE_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -52,6 +53,7 @@ impl Protocol for ZabbixProtocol {
                     .to_string(),
                 required: false,
                 example: json!(30),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -80,6 +82,7 @@ impl Protocol for ZabbixProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            .well_known_port(10051)
             // 10051 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(

@@ -129,6 +129,7 @@ impl Protocol for GrpcClientProtocol {
                     type_hint: "string".to_string(),
                     required: true,
                     example: json!("CpUCCg9jYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIikKCkFkZFJlcXVlc3QSCwoDYQgBIAEoBVIBYRILCgNiCAIgASgFUgFiIiIKC0FkZFJlc3BvbnNlEhMKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkIKCkNhbGN1bGF0b3ISNAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0Gh0uY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM="),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "use_tls".to_string(),
@@ -136,6 +137,7 @@ impl Protocol for GrpcClientProtocol {
                     type_hint: "boolean".to_string(),
                     required: false,
                     example: json!(false),
+                    default: None,
                 },
             ]
     }

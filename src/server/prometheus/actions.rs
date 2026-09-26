@@ -91,6 +91,7 @@ impl Protocol for PrometheusProtocol {
             // peers (promtool and prometheus share the same parser code), there is no fuzz
             // target and no pcap-oracle test, and protobuf/native histograms are absent.
             .state(DevelopmentState::Beta)
+            .well_known_port(9100)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1. GET /metrics raises prometheus_scrape; the model answers with \

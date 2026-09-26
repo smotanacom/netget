@@ -1330,6 +1330,7 @@ impl Protocol for OspfProtocol {
                 description: "OSPF router ID in IPv4 address format (e.g., 1.1.1.1). Used as the Router ID of every packet sent unless the action overrides it. Defaults to the interface address.".to_string(),
                 required: false,
                 example: json!("1.1.1.1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "area_id".to_string(),
@@ -1337,6 +1338,7 @@ impl Protocol for OspfProtocol {
                 description: "OSPF area ID in IPv4 format (0.0.0.0 = backbone area). Used as the Area ID of every packet sent unless the action overrides it.".to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "network_mask".to_string(),
@@ -1344,6 +1346,7 @@ impl Protocol for OspfProtocol {
                 description: "Network mask of this interface (e.g., 255.255.255.0). Placed in outgoing Hello packets, and compared against incoming ones: RFC 2328 10.5 requires a Hello whose mask differs to be rejected.".to_string(),
                 required: false,
                 example: json!("255.255.255.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "hello_interval".to_string(),
@@ -1351,6 +1354,7 @@ impl Protocol for OspfProtocol {
                 description: "HelloInterval in seconds (default 10). Placed in outgoing Hello packets. A neighbour whose Hello advertises a different value is rejected per RFC 2328 10.5 and its adjacency is not advanced.".to_string(),
                 required: false,
                 example: json!(10),
+                default: None,
             },
             ParameterDefinition {
                 name: "router_dead_interval".to_string(),
@@ -1358,6 +1362,7 @@ impl Protocol for OspfProtocol {
                 description: "RouterDeadInterval in seconds (default 40). Placed in outgoing Hello packets and, like hello_interval, must match a neighbour's for its Hello to be accepted.".to_string(),
                 required: false,
                 example: json!(40),
+                default: None,
             },
             ParameterDefinition {
                 name: "router_priority".to_string(),
@@ -1365,6 +1370,7 @@ impl Protocol for OspfProtocol {
                 description: "Router priority for DR election (0-255, default 1). Placed in outgoing Hello packets unless the send_hello action sets its own 'priority'. No election algorithm runs - the value is advertised, nothing more.".to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
         ]
     }

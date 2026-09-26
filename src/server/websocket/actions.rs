@@ -610,6 +610,7 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!("/ws"),
+                default: None,
             },
             ParameterDefinition {
                 name: "max_message_size".to_string(),
@@ -620,6 +621,7 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1048576),
+                default: Some(serde_json::json!(super::DEFAULT_MAX_MESSAGE_SIZE)),
             },
             ParameterDefinition {
                 name: "max_frame_size".to_string(),
@@ -631,6 +633,7 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1048576),
+                default: Some(serde_json::json!(super::DEFAULT_MAX_FRAME_SIZE)),
             },
             ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -644,6 +647,7 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!(600),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }

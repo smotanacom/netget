@@ -303,6 +303,7 @@ impl Protocol for MqttClientProtocol {
                 description: "MQTT client identifier (default: auto-generated)".to_string(),
                 required: false,
                 example: json!("netget-sensor-monitor"),
+                default: None,
             },
             ParameterDefinition {
                 name: "username".to_string(),
@@ -310,6 +311,7 @@ impl Protocol for MqttClientProtocol {
                 description: "MQTT authentication username (optional)".to_string(),
                 required: false,
                 example: json!("admin"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -317,6 +319,7 @@ impl Protocol for MqttClientProtocol {
                 description: "MQTT authentication password (optional)".to_string(),
                 required: false,
                 example: json!("secret"),
+                default: None,
             },
             ParameterDefinition {
                 name: "keep_alive".to_string(),
@@ -324,6 +327,7 @@ impl Protocol for MqttClientProtocol {
                 description: "Keep-alive interval in seconds (default: 60)".to_string(),
                 required: false,
                 example: json!(60),
+                default: None,
             },
             ParameterDefinition {
                 name: "clean_session".to_string(),
@@ -331,6 +335,7 @@ impl Protocol for MqttClientProtocol {
                 description: "Start with a clean session (default: true)".to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
         ]
     }

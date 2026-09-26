@@ -88,6 +88,7 @@ impl Protocol for DynamoDbClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("us-east-1"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "endpoint_url".to_string(),
@@ -95,6 +96,7 @@ impl Protocol for DynamoDbClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("http://localhost:8000"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "access_key_id".to_string(),
@@ -102,6 +104,7 @@ impl Protocol for DynamoDbClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("AKIAIOSFODNN7EXAMPLE"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "secret_access_key".to_string(),
@@ -109,6 +112,7 @@ impl Protocol for DynamoDbClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+                    default: None,
                 },
             ]
     }

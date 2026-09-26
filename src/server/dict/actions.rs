@@ -45,6 +45,7 @@ impl Protocol for DictProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::FIRST_COMMAND_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -56,6 +57,7 @@ impl Protocol for DictProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -98,6 +100,7 @@ impl Protocol for DictProtocol {
             .state(DevelopmentState::Beta)
             // 2628 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(2628)
             .implementation(
                 "Hand-written RFC 2229 line protocol over tokio TCP: 220 banner with msg-id, \
                  RFC 2229 parameter quoting, dot-stuffed text blocks and OPTION MIME rendered \

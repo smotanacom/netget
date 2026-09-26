@@ -826,6 +826,7 @@ impl Protocol for NatsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("netget"),
+                default: None,
             },
             ParameterDefinition {
                 name: "verbose".to_string(),
@@ -837,6 +838,7 @@ impl Protocol for NatsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             ParameterDefinition {
                 name: "subscribe_subjects".to_string(),
@@ -850,6 +852,7 @@ impl Protocol for NatsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(["orders.>"]),
+                default: None,
             },
         ]
     }

@@ -800,6 +800,7 @@ pub fn request_handling_startup_parameters() -> Vec<crate::llm::actions::Paramet
                 { "methods": ["GET"], "path": "^/$", "headers": { "accept": "text/html" } },
                 { "methods": ["POST"], "path": "^/api/" }
             ]),
+            default: None,
         },
         ParameterDefinition {
             name: "filtered_response".to_string(),
@@ -811,6 +812,7 @@ pub fn request_handling_startup_parameters() -> Vec<crate::llm::actions::Paramet
                 .to_string(),
             required: false,
             example: serde_json::json!({ "status": 404, "body": "Not Found" }),
+            default: None,
         },
         ParameterDefinition {
             name: "default_response".to_string(),
@@ -827,6 +829,7 @@ pub fn request_handling_startup_parameters() -> Vec<crate::llm::actions::Paramet
                 "headers": { "Content-Type": "text/html" },
                 "body": "<!doctype html><title>Not Found</title><h1>404</h1>"
             }),
+            default: None,
         },
     ]
 }

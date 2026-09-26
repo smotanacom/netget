@@ -90,6 +90,7 @@ impl Protocol for HttpClientProtocol {
                 "User-Agent": "NetGet/1.0",
                 "Accept": "application/json"
             }),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

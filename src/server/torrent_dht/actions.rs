@@ -61,6 +61,7 @@ impl Protocol for TorrentDhtProtocol {
             .answers_on_failure()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(6881)
             .implementation("UDP KRPC protocol with bencode encoding")
             .llm_control("DHT query responses (ping, find_node, get_peers)")
             .e2e_testing("tests/server/torrent_dht/{e2e_test,llm_failure_test,bencode_depth_guard_test}.rs, 7 LLM calls, none #[ignore]d. NO third-party DHT client is involved: every query is bencode hand-built with serde_bencode over a raw UdpSocket, which is an independent *reading* of BEP 5 rather than an independent implementation. This field claimed 'Real BitTorrent clients with DHT' and no such client appears anywhere in the tree. Covered: ping/find_node/get_peers round trips, the KRPC error reply on an LLM failure (code 201 vs 202, asserted to leak nothing from netget's internals), and that a bencode depth bomb no longer kills the process. Not tested: a real DHT node, iterative lookup, token validation, IPv6/BEP 32.")

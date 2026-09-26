@@ -117,6 +117,7 @@ impl Protocol for MercurialProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(8000)
             .implementation("Hand-rolled Mercurial HTTP wire protocol v1 on hyper")
             .llm_control("Capabilities, heads, branch map, bookmark namespaces")
             .e2e_testing(

@@ -265,6 +265,9 @@ impl Protocol for Pop3Protocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::FIRST_COMMAND_READ_TIMEOUT.as_secs()
+                )),
             },
             ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -277,6 +280,9 @@ impl Protocol for Pop3Protocol {
                     .to_string(),
                 required: false,
                 example: json!(600),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_COMMANDS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
@@ -556,6 +562,7 @@ impl Protocol for Pop3Protocol {
             .llm_control("Full control over POP3 responses (+OK, -ERR, STAT, LIST, RETR, etc.)")
             .e2e_testing("Manual TCP client with line-based protocol testing")
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(110))
+            .well_known_port(110)
             .max_inbound_bytes(crate::server::pop3::MAX_COMMAND_BYTES)
             .notes(
                 "No mailbox storage: the model answers STAT/LIST/RETR itself. Plain TCP only - \

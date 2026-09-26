@@ -86,6 +86,7 @@ impl Protocol for NtpProtocol {
             .answers_on_failure()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(123))
+            .well_known_udp_port(123)
             .implementation("Manual 48-byte NTP packet construction")
             .llm_control("Optional: normal time responses are static by default (mechanical), LLM only on opt-in")
             .e2e_testing(

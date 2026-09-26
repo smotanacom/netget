@@ -662,6 +662,7 @@ impl Protocol for ImapProtocol {
                  of which are implemented.",
             )
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(143))
+            .well_known_port(143)
             .max_inbound_bytes(crate::server::imap::MAX_COMMAND_BYTES)
             .notes(
                 "Tracks session state (NotAuthenticated/Authenticated/Selected/Logout) but stores \

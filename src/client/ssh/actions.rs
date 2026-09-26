@@ -219,6 +219,7 @@ impl Protocol for SshClientProtocol {
                 description: "SSH username for authentication".to_string(),
                 required: true,
                 example: json!("testuser"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -226,6 +227,7 @@ impl Protocol for SshClientProtocol {
                 description: "SSH password for authentication (if using password auth)".to_string(),
                 required: false,
                 example: json!("testpass"),
+                default: None,
             },
             ParameterDefinition {
                 name: "auth_method".to_string(),
@@ -235,6 +237,7 @@ impl Protocol for SshClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("publickey"),
+                default: None,
             },
             ParameterDefinition {
                 name: "private_key_path".to_string(),
@@ -245,6 +248,7 @@ impl Protocol for SshClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("/home/user/.ssh/id_ed25519"),
+                default: None,
             },
             ParameterDefinition {
                 name: "private_key_passphrase".to_string(),
@@ -252,6 +256,7 @@ impl Protocol for SshClientProtocol {
                 description: "Passphrase for an encrypted private_key_path".to_string(),
                 required: false,
                 example: json!("key passphrase"),
+                default: None,
             },
         ]
     }

@@ -569,6 +569,7 @@ impl Protocol for CouchDbProtocol {
                 description: "Enable HTTP basic authentication (default: false)".to_string(),
                 required: false,
                 example: serde_json::json!(false),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "admin_username".to_string(),
@@ -576,6 +577,7 @@ impl Protocol for CouchDbProtocol {
                 description: "Admin username (if auth enabled)".to_string(),
                 required: false,
                 example: serde_json::json!("admin"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "admin_password".to_string(),
@@ -583,6 +585,7 @@ impl Protocol for CouchDbProtocol {
                 description: "Admin password (if auth enabled)".to_string(),
                 required: false,
                 example: serde_json::json!("password"),
+                default: None,
             },
         ]
     }
@@ -629,6 +632,7 @@ impl Protocol for CouchDbProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(5984)
             .implementation("hyper v1.5 HTTP server with CouchDB REST API")
             .llm_control("Database CRUD, document CRUD, views, changes, replication")
             // `couch_rs` is what the CouchDB *client* protocol uses; no test has ever pointed

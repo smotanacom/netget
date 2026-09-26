@@ -756,6 +756,7 @@ impl Protocol for VncProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(5900)
             // ClientCutText is the one client message a peer sizes; its u32 length is refused
             // against this before the buffer is allocated. Tested in
             // tests/server/vnc/inbound_limit_test.rs.
@@ -798,6 +799,7 @@ impl Protocol for VncProtocol {
                 ),
                 required: false,
                 example: json!(1024),
+                default: None,
             },
             ParameterDefinition {
                 name: "height".to_string(),
@@ -809,6 +811,7 @@ impl Protocol for VncProtocol {
                 ),
                 required: false,
                 example: json!(768),
+                default: None,
             },
             ParameterDefinition {
                 name: "desktop_name".to_string(),
@@ -818,6 +821,7 @@ impl Protocol for VncProtocol {
                         .to_string(),
                 required: false,
                 example: json!("NetGet Desktop"),
+                default: None,
             },
         ]
     }

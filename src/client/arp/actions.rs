@@ -309,6 +309,7 @@ impl Protocol for ArpClientProtocol {
             description: "Network interface name (e.g., eth0, en0)".to_string(),
             required: true,
             example: json!("eth0"),
+            default: None,
         }]
     }
 

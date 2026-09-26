@@ -534,6 +534,7 @@ impl Protocol for DataLinkClientProtocol {
                         .to_string(),
                 required: true,
                 example: json!("eth0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "promiscuous".to_string(),
@@ -543,6 +544,7 @@ impl Protocol for DataLinkClientProtocol {
                         .to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
         ]
     }

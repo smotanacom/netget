@@ -90,6 +90,7 @@ impl Protocol for TlsClientProtocol {
                         .to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             ParameterDefinition {
                 name: "server_name".to_string(),
@@ -98,6 +99,7 @@ impl Protocol for TlsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("example.com"),
+                default: None,
             },
             ParameterDefinition {
                 name: "custom_ca_cert_pem".to_string(),
@@ -106,6 +108,7 @@ impl Protocol for TlsClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"),
+                default: None,
             },
         ]
     }

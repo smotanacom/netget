@@ -54,6 +54,7 @@ impl Protocol for TorrentTrackerProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(6969)
             .implementation("HTTP server with bencode response encoding (serde_bencode)")
             .llm_control("Peer list generation, announce/scrape responses")
             .e2e_testing(

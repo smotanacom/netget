@@ -15,11 +15,10 @@ pub struct ProtocolEntry {
     pub description: String,
     pub state: DevelopmentState,
     pub notes: Option<String>,
-    /// Default port, when the protocol declares a port-based binding.
-    pub default_port: Option<u16>,
-    /// `None` when the protocol declares no binding defaults, meaning a port
-    /// must be supplied explicitly.
-    pub has_binding_defaults: bool,
+    /// The port a server starts on when none is given, and why — resolved by
+    /// `protocol::default_port` against this process's privilege and what is already bound.
+    /// `None` for a client, and for a server that binds no port at all (an interface, a pipe).
+    pub default_port: Option<crate::protocol::default_port::DefaultPort>,
     /// Set when this build cannot satisfy the protocol's privilege
     /// requirement; the entry stays listed but says why it will refuse.
     pub privilege_note: Option<String>,
@@ -55,7 +54,6 @@ pub fn entries(section: Section, caps: &SystemCapabilities) -> Vec<ProtocolEntry
                 .filter_map(|name| {
                     let protocol = registry.get(name)?;
                     let metadata = protocol.metadata();
-                    let binding = protocol.default_binding();
                     let privilege_note = if metadata.privilege_requirement.is_met_by(caps) {
                         None
                     } else {
@@ -70,8 +68,11 @@ pub fn entries(section: Section, caps: &SystemCapabilities) -> Vec<ProtocolEntry
                         description: protocol.description().to_string(),
                         state: metadata.state,
                         notes: metadata.notes.map(|n| n.to_string()),
-                        default_port: binding.as_ref().and_then(|b| b.port),
-                        has_binding_defaults: binding.is_some(),
+                        default_port: crate::protocol::default_port::default_port_for_server(
+                            protocol.as_ref(),
+                            None,
+                            caps,
+                        ),
                         privilege_note,
                     })
                 })
@@ -92,7 +93,6 @@ pub fn entries(section: Section, caps: &SystemCapabilities) -> Vec<ProtocolEntry
                         state: metadata.state,
                         notes: metadata.notes.map(|n| n.to_string()),
                         default_port: None,
-                        has_binding_defaults: false,
                         privilege_note: None,
                     })
                 })

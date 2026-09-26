@@ -300,6 +300,7 @@ impl Protocol for MysqlClientProtocol {
                 description: "MySQL username (default: root)".to_string(),
                 required: false,
                 example: json!("myuser"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "password".to_string(),
@@ -307,6 +308,7 @@ impl Protocol for MysqlClientProtocol {
                 description: "MySQL password (default: empty)".to_string(),
                 required: false,
                 example: json!("mypassword"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "database".to_string(),
@@ -314,6 +316,7 @@ impl Protocol for MysqlClientProtocol {
                 description: "Database name to connect to (default: none)".to_string(),
                 required: false,
                 example: json!("mydb"),
+                default: None,
             },
         ]
     }

@@ -48,6 +48,7 @@ impl Protocol for BluetoothBleCyclingProtocol {
             description: "Bluetooth device name to advertise (default: NetGet-Cycling)".to_string(),
             required: false,
             example: json!("NetGet-Cycling"),
+            default: None,
         }]
     }
 

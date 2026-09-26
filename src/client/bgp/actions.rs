@@ -304,6 +304,7 @@ impl Protocol for BgpClientProtocol {
                 description: "Local BGP AS number (can be fake for monitoring)".to_string(),
                 required: false,
                 example: json!(65000),
+                default: None,
             },
             ParameterDefinition {
                 name: "router_id".to_string(),
@@ -311,6 +312,7 @@ impl Protocol for BgpClientProtocol {
                 description: "BGP router ID in IPv4 format".to_string(),
                 required: false,
                 example: json!("192.168.1.100"),
+                default: None,
             },
             ParameterDefinition {
                 name: "hold_time".to_string(),
@@ -318,6 +320,7 @@ impl Protocol for BgpClientProtocol {
                 description: "BGP hold time in seconds (default 180)".to_string(),
                 required: false,
                 example: json!(180),
+                default: None,
             },
         ]
     }

@@ -524,6 +524,7 @@ impl Protocol for KafkaProtocol {
                     .to_string(),
                 required: false,
                 example: json!("netget-kafka-1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "broker_id".to_string(),
@@ -532,6 +533,7 @@ impl Protocol for KafkaProtocol {
                     .to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "advertised_host".to_string(),
@@ -542,6 +544,7 @@ impl Protocol for KafkaProtocol {
                     .to_string(),
                 required: false,
                 example: json!("localhost"),
+                default: None,
             },
         ]
     }
@@ -590,6 +593,7 @@ impl Protocol for KafkaProtocol {
             // against it. Not Stable: that is one client, Stable wants two, and consumer
             // groups do not work at all (see notes).
             .state(DevelopmentState::Beta)
+            .well_known_port(9092)
             .implementation(
                 "kafka-protocol v0.14 wire format. Implements ApiVersions v0-3 (answered by Rust), \
                  Metadata v0-8, Produce v0-8, Fetch v0-11, OffsetCommit v0-7",

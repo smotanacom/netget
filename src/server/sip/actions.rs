@@ -68,6 +68,7 @@ impl Protocol for SipProtocol {
             // names one.
             .answers_on_failure()
             .state(DevelopmentState::Beta)
+            .well_known_udp_port(5060)
             // Not rsipstack, and not a compliant stack. `Cargo.toml` declares `sip = []` -
             // there is no SIP dependency at all. `mod.rs` hand-parses the request line and
             // headers and hand-builds the status line. The old claim named a library version

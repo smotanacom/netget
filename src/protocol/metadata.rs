@@ -262,6 +262,31 @@ pub enum FailureMode {
     DeliberatelySilent,
 }
 
+/// The transport a protocol's [`ProtocolMetadataV2::well_known_port`] is registered for.
+///
+/// Not the same thing as [`ProtocolMetadataV2::connectionless`]: that says whether the runtime
+/// may reap idle peers, and TFTP is UDP yet must not be reaped. This says which socket type to
+/// probe when asking "is the well-known port already taken?" — a UDP listener on 53 says nothing
+/// about a TCP bind on 53.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortTransport {
+    Tcp,
+    Udp,
+    /// SCTP (M3UA). No in-use probe is attempted for it: the standard library has no SCTP
+    /// socket, and the real bind reports a taken port on its own.
+    Sctp,
+}
+
+impl PortTransport {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+            Self::Sctp => "sctp",
+        }
+    }
+}
+
 /// Enhanced protocol metadata with detailed implementation information
 #[derive(Debug, Clone)]
 pub struct ProtocolMetadataV2 {
@@ -343,6 +368,25 @@ pub struct ProtocolMetadataV2 {
     /// total` pass every check with a zero-length body — thirty bytes on the wire buffering
     /// toward 4 GB.
     pub max_inbound_bytes: Option<usize>,
+
+    /// The port this protocol is registered for — IANA's registry, or where IANA has none, the
+    /// default its own specification or reference implementation documents (Elasticsearch
+    /// 9200, `hg serve` 8000). Never a "developer" port like 8080 standing in for HTTP's 80.
+    ///
+    /// `None` is a claim, not an absence: the protocol has no port of its own — raw sockets,
+    /// link layer, a device, a pipe, or an application protocol carried on plain HTTP whose
+    /// port is HTTP's. `tests/well_known_port_declaration_test.rs` requires every server to
+    /// declare one or be listed there with the reason.
+    ///
+    /// This is what a server starts on when the caller names no port, subject to
+    /// [`crate::protocol::default_port::resolve_default_port`]: below 1024 it needs privilege,
+    /// and a port already taken falls back to an OS-assigned one. An explicit port — `0`
+    /// included — is never replaced.
+    pub well_known_port: Option<u16>,
+
+    /// The transport [`Self::well_known_port`] is registered for. Meaningless when that is
+    /// `None`; the builder's default is TCP.
+    pub well_known_transport: PortTransport,
 }
 
 impl ProtocolMetadataV2 {
@@ -378,6 +422,8 @@ pub struct ProtocolMetadataV2Builder {
     connectionless: bool,
     failure_mode: FailureMode,
     max_inbound_bytes: Option<usize>,
+    well_known_port: Option<u16>,
+    well_known_transport: PortTransport,
 }
 
 impl Default for ProtocolMetadataV2Builder {
@@ -398,6 +444,8 @@ impl ProtocolMetadataV2Builder {
             connectionless: false,
             failure_mode: FailureMode::Answers,
             max_inbound_bytes: None,
+            well_known_port: None,
+            well_known_transport: PortTransport::Tcp,
         }
     }
 
@@ -468,6 +516,30 @@ impl ProtocolMetadataV2Builder {
         self
     }
 
+    /// Declare the TCP port this protocol is registered for — see
+    /// [`ProtocolMetadataV2::well_known_port`].
+    pub const fn well_known_port(mut self, port: u16) -> Self {
+        self.well_known_port = Some(port);
+        self.well_known_transport = PortTransport::Tcp;
+        self
+    }
+
+    /// Declare the UDP port this protocol is registered for — see
+    /// [`ProtocolMetadataV2::well_known_port`].
+    pub const fn well_known_udp_port(mut self, port: u16) -> Self {
+        self.well_known_port = Some(port);
+        self.well_known_transport = PortTransport::Udp;
+        self
+    }
+
+    /// Declare the SCTP port this protocol is registered for — see
+    /// [`ProtocolMetadataV2::well_known_port`].
+    pub const fn well_known_sctp_port(mut self, port: u16) -> Self {
+        self.well_known_port = Some(port);
+        self.well_known_transport = PortTransport::Sctp;
+        self
+    }
+
     pub const fn build(self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2 {
             state: self.state,
@@ -479,6 +551,8 @@ impl ProtocolMetadataV2Builder {
             connectionless: self.connectionless,
             failure_mode: self.failure_mode,
             max_inbound_bytes: self.max_inbound_bytes,
+            well_known_port: self.well_known_port,
+            well_known_transport: self.well_known_transport,
         }
     }
 }

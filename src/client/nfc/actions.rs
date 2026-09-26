@@ -320,6 +320,7 @@ impl Protocol for NfcClientProtocol {
                 description: "Index of PC/SC reader to use (0-based, default: 0)".to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "reader_name".to_string(),
@@ -328,6 +329,7 @@ impl Protocol for NfcClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("reader_name"),
+                default: None,
             },
         ]
     }

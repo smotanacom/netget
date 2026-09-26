@@ -211,6 +211,7 @@ impl Protocol for WebRtcSignalingProtocol {
                 .to_string(),
             required: false,
             example: json!(600),
+            default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
         }]
     }
 

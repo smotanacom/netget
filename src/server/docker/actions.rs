@@ -120,6 +120,7 @@ impl Protocol for DockerProtocol {
             // handler's values, and hard-fails when the binary is absent. Not Stable: one
             // client, no fuzz target, no pcap-oracle test, and the API is a read-only subset.
             .state(DevelopmentState::Beta)
+            .well_known_port(2375)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1, plain TCP (the unauthenticated tcp://…:2375 shape). /_ping \
@@ -182,6 +183,7 @@ impl Protocol for DockerProtocol {
                 ),
                 required: false,
                 example: json!("1.47"),
+                default: Some(serde_json::json!(super::DEFAULT_API_VERSION)),
             },
             ParameterDefinition {
                 name: "engine_version".to_string(),
@@ -193,6 +195,7 @@ impl Protocol for DockerProtocol {
                 ),
                 required: false,
                 example: json!("27.5.1"),
+                default: Some(serde_json::json!(super::DEFAULT_ENGINE_VERSION)),
             },
         ]
     }

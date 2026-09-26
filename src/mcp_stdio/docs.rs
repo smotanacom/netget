@@ -137,25 +137,41 @@ pub async fn render_protocol_docs(protocol: &str, state: &AppState) -> Option<St
             );
             out.push_str("- `port` / `host` — ignored by this protocol.\n");
         } else {
-            let default_port = binding.as_ref().and_then(|b| b.port);
             let default_host = binding
                 .as_ref()
                 .and_then(|b| b.host.clone())
-                .unwrap_or_else(|| "127.0.0.1".to_string());
-            match default_port {
-                Some(0) | None => out.push_str(
-                    "- `port` (number) — listen port. `0` (the default) asks the OS for a \
-                     free port; the chosen port is reported in the tool result and by \
-                     `list_servers`.\n",
-                ),
-                Some(p) => {
+                .unwrap_or_else(|| crate::protocol::default_port::DEFAULT_HOST.to_string());
+            // The same resolution `start_server` applies when `port` is omitted, against this
+            // process's privilege and what is bound right now.
+            let caps = state.get_system_capabilities().await;
+            let default = crate::protocol::default_port::default_port_for_server(
+                server.as_ref(),
+                None,
+                &caps,
+            );
+            match default.as_ref().map(|d| (d.well_known, d.fallback, d.port)) {
+                Some((Some(p), None, _)) => {
                     let _ = writeln!(
                         out,
-                        "- `port` (number) — listen port. Protocol default `{}`; pass `0` \
-                         for an OS-assigned port.",
-                        p
+                        "- `port` (number) — listen port. Omit it for the well-known port \
+                         `{p}`. Pass `0` for an OS-assigned port; an explicit port, `0` \
+                         included, is always used as given."
                     );
                 }
+                Some((Some(_), Some(_), _)) => {
+                    let _ = writeln!(
+                        out,
+                        "- `port` (number) — listen port. Omitted, this server starts on an \
+                         OS-assigned port: {}. The chosen port is reported in the tool result \
+                         and by `list_servers`. An explicit port is always used as given.",
+                        default.as_ref().map(|d| d.describe()).unwrap_or_default()
+                    );
+                }
+                _ => out.push_str(
+                    "- `port` (number) — listen port. This protocol has no well-known port, so \
+                     omitting it (or passing `0`) asks the OS for a free one; the chosen port is \
+                     reported in the tool result and by `list_servers`.\n",
+                ),
             }
             let _ = writeln!(
                 out,
@@ -488,9 +504,20 @@ fn render_parameter(out: &mut String, param: &Parameter) {
 
 fn render_startup_param(out: &mut String, param: &ParameterDefinition) {
     let example = serde_json::to_string(&param.example).unwrap_or_default();
+    // The value the server uses when the parameter is omitted, where the protocol declares one.
+    let default = param
+        .default
+        .as_ref()
+        .map(|d| {
+            format!(
+                ", default: `{}`",
+                serde_json::to_string(d).unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
     let _ = writeln!(
         out,
-        "- `{}` ({}, {}) — {} Example: `{}`",
+        "- `{}` ({}, {}{}) — {} Example: `{}`",
         param.name,
         param.type_hint,
         if param.required {
@@ -498,6 +525,7 @@ fn render_startup_param(out: &mut String, param: &ParameterDefinition) {
         } else {
             "optional"
         },
+        default,
         param.description,
         example
     );

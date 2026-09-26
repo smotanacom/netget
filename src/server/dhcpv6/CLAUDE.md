@@ -6,8 +6,11 @@ RFC 6355 (DUID-UUID).
 **Transport**: UDP. Server port 547, clients on 546. IPv6 only — there is no IPv4 form.
 **Privilege**: `PrivilegeRequirement::PrivilegedPort(547)`. The gate in `server_startup.rs` only
 fires when the requested port is actually below 1024, so a test on an ephemeral port needs none.
-**Binding**: `default_binding()` returns `BindingDefaults::port_based("::1", 547)` — loopback, like
-every other protocol here. Pass `host: "::"` to serve a real link. An IPv4 host is refused at
+**Binding**: `default_binding()` returns `BindingDefaults::port_based("::1", 0)` — loopback, like
+every other protocol here — and `metadata()` declares `.well_known_udp_port(547)`. With no port
+given, `protocol::default_port` takes 547 when the process can bind privileged ports and nothing
+holds it on `::1`, and otherwise starts on an OS-assigned port and says why, instead of the
+privilege gate refusing the start. Pass `host: "::"` to serve a real link. An IPv4 host is refused at
 `spawn()` with an error saying why, rather than binding a socket no DHCPv6 client can reach.
 **Connectionless**: declared. Its "connections" are per-datagram bookkeeping entries that nothing
 closes, so the 10-second idle sweep is correct for it.

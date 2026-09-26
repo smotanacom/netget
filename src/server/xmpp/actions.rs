@@ -72,6 +72,7 @@ impl Protocol for XmppProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!("localhost"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
@@ -84,6 +85,7 @@ impl Protocol for XmppProtocol {
                         .to_string(),
                 required: false,
                 example: serde_json::json!(30),
+                default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -97,6 +99,9 @@ impl Protocol for XmppProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(900),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_STANZAS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
@@ -136,6 +141,7 @@ impl Protocol for XmppProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(5222)
             .implementation(
                 "No XML parser: raw bytes are buffered and handed to the model as text, which \
                  decides where stanzas begin and end",

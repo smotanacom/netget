@@ -328,6 +328,7 @@ impl Protocol for IdentClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(113),
+                default: None,
             },
             ParameterDefinition {
                 name: "response_timeout_secs".to_string(),
@@ -338,6 +339,7 @@ impl Protocol for IdentClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(30),
+                default: None,
             },
         ]
     }

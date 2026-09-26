@@ -278,6 +278,7 @@ impl Protocol for UsbFido2Protocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "support_fido2".to_string(),
@@ -287,6 +288,7 @@ impl Protocol for UsbFido2Protocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "auto_approve".to_string(),
@@ -296,6 +298,7 @@ impl Protocol for UsbFido2Protocol {
                     .to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "approval_timeout_secs".to_string(),
@@ -305,6 +308,7 @@ impl Protocol for UsbFido2Protocol {
                     .to_string(),
                 required: false,
                 example: json!(30),
+                default: None,
             },
         ]
     }

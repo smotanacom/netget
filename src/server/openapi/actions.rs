@@ -301,6 +301,7 @@ impl Protocol for OpenApiProtocol {
                     .to_string(),
             required: false,
             example: serde_json::json!("openapi: 3.1.0\ninfo:\n  title: My API\n  version: 1.0.0"),
+            default: None,
         }]
     }
     fn group_name(&self) -> &'static str {

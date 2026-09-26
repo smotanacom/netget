@@ -45,6 +45,7 @@ impl Protocol for BeanstalkdProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::FIRST_COMMAND_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -55,6 +56,7 @@ impl Protocol for BeanstalkdProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -97,6 +99,7 @@ impl Protocol for BeanstalkdProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
+            .well_known_port(11300)
             // 11300 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(

@@ -103,12 +103,36 @@ no MCP caller can invoke. `docs.rs` renders what an MCP caller actually has:
   written without guessing;
 - its action names with parameter schemas and JSON examples — **async ones included**, since
   `send_to_client` and `send_to_peer` make them invocable from MCP;
-- its `startup_params` schema, privilege requirement and maturity;
+- its `startup_params` schema — each parameter with `default: <v>` where the protocol declares
+  the value it falls back to (`ParameterDefinition::default`) — privilege requirement and
+  maturity;
 - for a server, its `failure_mode` (what the peer gets when the model cannot answer) and
   whether it is `connectionless`.
 
 `llm::actions::tools::execute_read_documentation` is untouched — the TUI's
 `/docs` command and the internal LLM still use it.
+
+## `start_server` without a `port`
+
+An omitted `port` means the protocol's **well-known port** (`ProtocolMetadataV2::well_known_port`
+— 6379 for redis, 53 for dns), resolved by `protocol::default_port` inside
+`start_server_from_action`, so `open_server`, `--server` and the dashboard get the same answer:
+
+- 1024 or above: taken as is.
+- below 1024: taken when `SystemCapabilities::can_bind_privileged_ports`, otherwise an
+  OS-assigned port;
+- already held on the bind address (probed with the port's own transport): an OS-assigned port.
+
+Every fallback puts one line in the tool result saying which and why ("well-known port 53 needs
+root; starting on an OS-assigned port"). A protocol with no well-known port (tcp, udp, the
+HTTP-carried mocks, anything interface- or path-bound — the list and the reasons are in
+`tests/well_known_port_declaration_test.rs`) starts on an OS-assigned port.
+
+**An explicit `port`, `0` included, is never replaced**, and a taken explicit port is an error.
+Every MCP test passes `"port": 0`, so none of them depends on the default. Before this, an omitted
+port was an error ("requires 'port' parameter") for every protocol without a `default_binding()`
+— most of them — while `get_protocol_docs` said `0` was the default; the docs now render the
+resolved default for this process, and the `start_server` schema says the same.
 
 ## Client control surface
 

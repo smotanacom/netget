@@ -44,6 +44,7 @@ impl Protocol for RtspProtocol {
                         .to_string(),
                 required: false,
                 example: json!(30),
+                default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -57,6 +58,9 @@ impl Protocol for RtspProtocol {
                         .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
@@ -104,6 +108,7 @@ impl Protocol for RtspProtocol {
             // Answers on failure: 503 with Retry-After when overloaded, 500 otherwise.
             .answers_on_failure()
             .state(DevelopmentState::Beta)
+            .well_known_port(554)
             .implementation(
                 "Manual RFC 2326 control server over TCP; SETUP allocates a real RTP UDP socket and \
                  PLAY streams G.711 via the shared rtp media engine",

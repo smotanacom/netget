@@ -63,6 +63,7 @@ impl Protocol for WhoisProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(300),
+                default: Some(serde_json::json!(super::FIRST_QUERY_READ_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -76,6 +77,7 @@ impl Protocol for WhoisProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(15),
+                default: Some(serde_json::json!(super::IDLE_AFTER_REPLY_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -110,6 +112,7 @@ impl Protocol for WhoisProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(43))
+            .well_known_port(43)
             .implementation("Manual TCP connection handling")
             .llm_control("WHOIS query responses (domain, registrant, contact info)")
             .e2e_testing(
