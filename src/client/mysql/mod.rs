@@ -28,18 +28,26 @@ use crate::state::{ClientId, ClientStatus};
 /// reaches the server — the connected-event LLM path and injected dashboard commands both
 /// go through it.
 enum Applied {
-    /// A query ran; the rows are the JSON result set reported back to the model.
-    Query {
-        query: String,
-        rows: Vec<serde_json::Value>,
-    },
+    /// A query ran; what the server said about it is reported back to the model.
+    Query(QueryOutcome),
     /// The session should end.
     Disconnect,
     /// The action executed but touched the connection in no way.
     Nothing(&'static str),
 }
 
-/// MySQL client that connects to a MySQL server
+/// What the server returned for one query.
+///
+/// `affected_rows` and `last_insert_id` come from the server's OK packet, read off the
+/// connection before its guard is released, not derived from the result set: an `INSERT`
+/// returns no rows and affects one, and a `SELECT` returns rows and affects none.
+struct QueryOutcome {
+    query: String,
+    rows: Vec<serde_json::Value>,
+    affected_rows: u64,
+    last_insert_id: Option<u64>,
+}
+
 /// How many action -> query -> result -> action turns one client will take before stopping.
 ///
 /// The chain is genuinely self-referential, so it needs a bound rather than silence: a model
@@ -48,6 +56,7 @@ enum Applied {
 /// small enough that a runaway costs four LLM calls rather than an unbounded number.
 const MAX_FOLLOWUP_DEPTH: usize = 4;
 
+/// MySQL client that connects to a MySQL server
 pub struct MysqlClient;
 
 impl MysqlClient {
@@ -258,7 +267,7 @@ impl MysqlClient {
         while let Some(command) = command_rx.recv().await {
             let action = command.action.clone();
 
-            let mut follow_up: Option<Vec<serde_json::Value>> = None;
+            let mut follow_up: Option<QueryOutcome> = None;
             let outcome = match protocol.execute_action(action.clone()) {
                 Err(e) => Ok(ClientSendOutcome::Rejected {
                     error: e.to_string(),
@@ -271,14 +280,15 @@ impl MysqlClient {
                         Ok(Applied::Nothing(what)) => Ok(ClientSendOutcome::Executed {
                             detail: what.to_string(),
                         }),
-                        Ok(Applied::Query { query, rows }) => {
+                        Ok(Applied::Query(outcome)) => {
                             let detail = format!(
-                                "query executed by mysql_async ({} rows); \
+                                "query executed by mysql_async ({} rows, {} affected); \
                                  no byte count — the driver owns the socket: {}",
-                                rows.len(),
-                                crate::utils::truncate::truncate_for_log(&query, 80)
+                                outcome.rows.len(),
+                                outcome.affected_rows,
+                                crate::utils::truncate::truncate_for_log(&outcome.query, 80)
                             );
-                            follow_up = Some(rows);
+                            follow_up = Some(outcome);
                             Ok(ClientSendOutcome::Executed { detail })
                         }
                     }
@@ -319,10 +329,10 @@ impl MysqlClient {
             // The model must see the result of a user-injected query exactly as it sees the
             // result of one it asked for. Done *after* the reply so the dashboard is not
             // blocked for the length of an LLM round-trip.
-            if let Some(rows) = follow_up {
+            if let Some(outcome) = follow_up {
                 Self::report_query_result(
                     client_id,
-                    rows,
+                    outcome,
                     &protocol,
                     &conn,
                     &app_state,
@@ -370,9 +380,9 @@ impl MysqlClient {
             )
             .await?
             {
-                Applied::Query { rows, .. } => {
+                Applied::Query(outcome) => {
                     Self::report_query_result(
-                        client_id, rows, protocol, conn, app_state, llm_client, status_tx, depth,
+                        client_id, outcome, protocol, conn, app_state, llm_client, status_tx, depth,
                     )
                     .await;
                 }
@@ -407,26 +417,35 @@ impl MysqlClient {
 
                 trace!("MySQL client {} executing query: {}", client_id, query_str);
 
-                let rows: Result<Vec<Row>> = {
+                // The OK packet's counters live on the connection and are overwritten by the
+                // next query, so they are read under the same guard as the query itself.
+                let result: Result<(Vec<Row>, u64, Option<u64>)> = {
                     let mut conn_guard = conn.lock().await;
-                    conn_guard
-                        .query(&query_str)
-                        .await
-                        .context("Failed to execute query")
+                    match conn_guard.query(&query_str).await {
+                        Ok(rows) => Ok((
+                            rows,
+                            conn_guard.affected_rows(),
+                            conn_guard.last_insert_id(),
+                        )),
+                        Err(e) => Err(anyhow::Error::from(e).context("Failed to execute query")),
+                    }
                 };
 
-                match rows {
-                    Ok(rows) => {
+                match result {
+                    Ok((rows, affected_rows, last_insert_id)) => {
                         let json_rows = rows_to_json(&rows);
                         info!(
-                            "MySQL client {} query returned {} rows",
+                            "MySQL client {} query returned {} rows, {} affected",
                             client_id,
-                            json_rows.len()
+                            json_rows.len(),
+                            affected_rows
                         );
-                        Ok(Applied::Query {
+                        Ok(Applied::Query(QueryOutcome {
                             query: query_str,
                             rows: json_rows,
-                        })
+                            affected_rows,
+                            last_insert_id: last_insert_id.filter(|id| *id != 0),
+                        }))
                     }
                     Err(e) => {
                         error!("MySQL client {} query error: {}", client_id, e);
@@ -478,7 +497,7 @@ impl MysqlClient {
     #[allow(clippy::too_many_arguments)]
     async fn report_query_result(
         client_id: ClientId,
-        json_rows: Vec<serde_json::Value>,
+        outcome: QueryOutcome,
         protocol: &Arc<MysqlClientProtocol>,
         conn: &Arc<Mutex<Conn>>,
         app_state: &Arc<AppState>,
@@ -490,18 +509,16 @@ impl MysqlClient {
             return;
         };
 
-        let event = Event::new(
-            &MYSQL_CLIENT_RESULT_RECEIVED_EVENT,
-            serde_json::json!({
-                "result": json_rows,
-                // Both names: `affected_rows` is what MYSQL_CLIENT_RESULT_RECEIVED_EVENT
-                // declares and therefore what the model is told to expect, while `row_count`
-                // is what this site has always sent. Emitting only the undeclared one meant
-                // the model was promised a field that never arrived.
-                "affected_rows": json_rows.len(),
-                "row_count": json_rows.len(),
-            }),
-        );
+        let mut data = serde_json::json!({
+            "query": outcome.query,
+            "result": outcome.rows,
+            "row_count": outcome.rows.len(),
+            "affected_rows": outcome.affected_rows,
+        });
+        if let Some(id) = outcome.last_insert_id {
+            data["last_insert_id"] = serde_json::json!(id);
+        }
+        let event = Event::new(&MYSQL_CLIENT_RESULT_RECEIVED_EVENT, data);
 
         let memory = app_state
             .get_memory_for_client(client_id)

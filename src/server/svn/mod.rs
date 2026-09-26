@@ -392,7 +392,11 @@ fn auth_event_data(item: &wire::Item, url: Option<&str>, client_ip: &str) -> ser
 /// into `args` — that is the shape the model is being asked to answer, and leaving it wrapped
 /// would make every argument index one deeper than the protocol document says. A tuple that is
 /// not that shape (`( get-latest-rev )`, or a peer improvising) keeps its remaining elements.
-fn command_event_data(item: &wire::Item, client_ip: &str) -> (String, serde_json::Value) {
+///
+/// Public for `fuzz/fuzz_targets/svn_tuple.rs`: this is where a parsed item is walked
+/// recursively (`to_string`, `to_json`), so it is the half of the path `MAX_TUPLE_DEPTH`
+/// protects — the parser itself is iterative.
+pub fn command_event_data(item: &wire::Item, client_ip: &str) -> (String, serde_json::Value) {
     let elements: &[wire::Item] = match item {
         wire::Item::List(items) => items,
         _ => std::slice::from_ref(item),

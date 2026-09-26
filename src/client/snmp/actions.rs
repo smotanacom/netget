@@ -267,6 +267,7 @@ impl Protocol for SnmpClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("public"),
+                default: None,
             },
             ParameterDefinition {
                 name: "version".to_string(),
@@ -274,6 +275,7 @@ impl Protocol for SnmpClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("v2c"),
+                default: None,
             },
             ParameterDefinition {
                 name: "timeout_ms".to_string(),
@@ -281,6 +283,7 @@ impl Protocol for SnmpClientProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(5000),
+                default: None,
             },
             ParameterDefinition {
                 name: "retries".to_string(),
@@ -288,6 +291,7 @@ impl Protocol for SnmpClientProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(3),
+                default: None,
             },
         ]
     }

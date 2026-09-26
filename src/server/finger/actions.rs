@@ -197,6 +197,7 @@ impl Protocol for FingerProtocol {
                 .to_string(),
             required: false,
             example: json!(false),
+            default: None,
         }]
     }
 
@@ -208,6 +209,7 @@ impl Protocol for FingerProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(79))
+            .well_known_port(79)
             .implementation(
                 "Hand-rolled tokio TCP loop; RFC 1288 {Q1}/{Q2} query grammar parsed in \
                  FingerQuery::parse. No library, no dependency.",

@@ -9,8 +9,8 @@ file.
 
 ## What runs
 
-`tests/server/mqtt/mod.rs` declares three modules, all gated `#[cfg(all(test, feature = "mqtt"))]`.
-Seven tests, none `#[ignore]`d, none able to skip.
+`tests/server/mqtt/mod.rs` declares every module in the directory, all gated on `feature = "mqtt"`.
+None `#[ignore]`d, none able to skip.
 
 | Test | File | What it proves |
 |---|---|---|
@@ -22,6 +22,12 @@ Seven tests, none `#[ignore]`d, none able to skip.
 | `test_mqtt_refuses_subscribe_when_llm_fails` | `llm_failure_test.rs` | SUBACK 0x80 per filter, tagged `decision=fail_closed_llm_*` on `mqtt_subscribe`, while the CONNECT on the same connection is tagged `decision=model_answer` |
 | `injected_mqtt_publish_reaches_raw_socket_and_close_sends_eof` | `peer_inject_test.rs` | the dashboard's `[ message this peer ]` / `[ disconnect this peer ]` reach a live connection |
 | `test_mqtt_pubsub_session_against_mosquitto_clients` | `real_client_test.rs` | **Eclipse Mosquitto's C clients** complete the same pub/sub session across two connections |
+| `the_connection_past_the_cap_gets_connack_server_unavailable_and_the_slot_comes_back` | `connection_bounds_test.rs` | 256 admitted, the 257th reads CONNACK 3 and EOF, closing one frees one slot |
+| `a_peer_that_never_sends_connect_is_closed_at_the_connect_bound` | `connection_bounds_test.rs` | no CONNECT within `first_byte_timeout_secs` → closed |
+| `a_silent_session_is_closed_at_one_and_a_half_times_its_keep_alive` | `connection_bounds_test.rs` | Keep Alive 2s → closed at ~3s (3.1.1 §3.1.2.10), with both other bounds set to 120s |
+| `a_session_that_keeps_pinging_is_not_closed` | `connection_bounds_test.rs` | PINGREQ every second for 8s against a 3s bound → every PINGRESP arrives, session live |
+| `keep_alive_zero_falls_back_to_the_idle_bound_rather_than_to_no_bound` | `connection_bounds_test.rs` | Keep Alive 0 → closed at `idle_timeout_secs` |
+| `a_packet_parked_for_a_human_keeps_its_session` | `connection_bounds_test.rs` | a SUBSCRIBE parked by a `manual` rule keeps its Keep Alive 2s session for 12s |
 
 `test_mqtt_subscribe_and_receive_a_published_message` is the evidence behind the **Beta**
 rating. `rumqttc` is an unconditional dev-dependency, so it either compiles and runs or the
@@ -80,9 +86,11 @@ not a slow path: the client declares the connection dead while the call is in fl
 ## Not covered
 
 TLS (8883), WebSocket transport, MQTT v5, retained messages, wildcard subscription matching,
-last-will delivery, session resume across reconnect, and keep-alive timeout enforcement — the
-broker does not implement a subscription table, a retained-message store or keep-alive reaping,
-so there is nothing to test. See `src/server/mqtt/CLAUDE.md` for why storage is absent.
+last-will delivery and session resume across reconnect — the broker does not implement a
+subscription table or a retained-message store, so there is nothing to test. Keep-alive
+reaping *is* implemented and tested (`connection_bounds_test.rs`); removing the deadline around
+the read failed the connect, keep-alive and Keep Alive 0 tests, and replacing 1.5x Keep Alive
+with the fallback failed the keep-alive test. See `src/server/mqtt/CLAUDE.md` for why storage is absent.
 
 ## Running
 

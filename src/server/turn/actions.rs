@@ -57,6 +57,7 @@ impl Protocol for TurnProtocol {
                         .to_string(),
                 required: false,
                 example: json!("203.0.113.5"),
+                default: None,
             },
             ParameterDefinition {
                 name: "peer_scope".to_string(),
@@ -72,6 +73,7 @@ impl Protocol for TurnProtocol {
                     .to_string(),
                 required: false,
                 example: json!("public"),
+                default: None,
             },
         ]
     }
@@ -96,6 +98,7 @@ impl Protocol for TurnProtocol {
             // allocation or permission is ever granted on that path.
             .answers_on_failure()
             .state(DevelopmentState::Experimental)
+            .well_known_udp_port(3478)
             .implementation("Manual TURN protocol (RFC 8656) with a real UDP relay: every granted allocation binds its own socket and forwards traffic both ways")
             .llm_control("Whether to grant Allocate/Refresh/CreatePermission/ChannelBind, the lifetime, and which peers are permitted (policy, LLM). With no policy configured the server grants nothing with no LLM call. The data plane never calls the LLM")
             .e2e_testing("Mocked E2E relays a payload between two real UDP peers in both directions (tests/server/turn/e2e_test.rs)")

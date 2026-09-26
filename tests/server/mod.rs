@@ -4,6 +4,8 @@
 pub mod amqp;
 #[cfg(feature = "arp")]
 pub mod arp;
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
 #[cfg(feature = "bgp")]
 pub mod bgp;
 #[cfg(feature = "bitcoin")]
@@ -42,6 +44,8 @@ pub mod bluetooth_ble_running;
 pub mod bluetooth_ble_thermometer;
 #[cfg(feature = "bluetooth-ble-weight-scale")]
 pub mod bluetooth_ble_weight_scale;
+#[cfg(feature = "bolt")]
+pub mod bolt;
 #[cfg(feature = "bootp")]
 pub mod bootp;
 #[cfg(feature = "can")]
@@ -64,8 +68,12 @@ pub mod dc;
 pub mod dhcp;
 #[cfg(feature = "dhcpv6")]
 pub mod dhcpv6;
+#[cfg(feature = "dict")]
+pub mod dict;
 #[cfg(feature = "dns")]
 pub mod dns;
+#[cfg(feature = "docker")]
+pub mod docker;
 #[cfg(feature = "doh")]
 pub mod doh;
 #[cfg(feature = "dot")]
@@ -82,6 +90,10 @@ pub mod etcd;
 pub mod finger;
 #[cfg(feature = "ftp")]
 pub mod ftp;
+#[cfg(feature = "gearman")]
+pub mod gearman;
+#[cfg(feature = "gemini")]
+pub mod gemini;
 #[cfg(feature = "git")]
 pub mod git;
 #[cfg(feature = "gopher")]
@@ -186,6 +198,8 @@ pub mod ospf;
 pub mod pop3;
 #[cfg(feature = "postgresql")]
 pub mod postgresql;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 #[cfg(all(feature = "pty", unix))]
@@ -296,6 +310,8 @@ pub mod usb_msc;
 pub mod usb_serial;
 #[cfg(feature = "usb-smartcard")]
 pub mod usb_smartcard;
+#[cfg(feature = "vault")]
+pub mod vault;
 #[cfg(feature = "vnc")]
 pub mod vnc;
 #[cfg(feature = "vrrp")]
@@ -320,6 +336,8 @@ pub mod xmlrpc;
 pub mod xmpp;
 #[cfg(feature = "yarn")]
 pub mod yarn;
+#[cfg(feature = "zabbix")]
+pub mod zabbix;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
 

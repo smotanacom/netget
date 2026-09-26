@@ -115,6 +115,7 @@ impl Protocol for IpsecProtocol {
             // Fabricating one is worse than any timeout.
             .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(500))
+            .well_known_udp_port(500)
             .implementation(
                 "Receive-only IKE honeypot: manual 28-byte header parsing plus payload-chain \
                  walk. No cryptography, no Security Associations, no tunnel interface, and \

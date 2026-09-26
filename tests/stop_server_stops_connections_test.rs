@@ -308,6 +308,55 @@ async fn stopping_a_whois_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("WHOIS", b"").await;
 }
 
+/// DICT greets first and then waits for a command, so the peer holds an idle, greeted
+/// connection — the state its 300-second first-command bound would otherwise cover.
+#[cfg(feature = "dict")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_dict_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("DICT", b"").await;
+}
+
+/// Beanstalkd is client-speaks-first; a connected peer that has sent nothing is held by a task
+/// waiting on its first command line for up to 300 seconds.
+#[cfg(feature = "beanstalkd")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_beanstalkd_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Beanstalkd", b"").await;
+}
+
+/// A Zabbix sender that has connected and sent half a header is held by a task waiting for
+/// the rest of it; the stop must end it rather than the read deadline.
+#[cfg(feature = "zabbix")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_zabbix_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Zabbix", b"ZBXD").await;
+}
+
+/// A Gearman client that has connected and sent nothing is held by a task waiting on its first
+/// packet or admin line for up to 300 seconds.
+#[cfg(feature = "gearman")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_gearman_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Gearman", b"").await;
+}
+
+/// A Bolt client that has sent the magic and not yet its version proposals is held by a task
+/// waiting on the rest of the 20-byte handshake for up to 30 seconds; the stop must end it
+/// rather than that deadline.
+#[cfg(feature = "bolt")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_bolt_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Bolt", &[0x60, 0x60, 0xB0, 0x17]).await;
+}
+
+/// A Gemini peer that has connected and not yet started its TLS handshake is held by a task
+/// waiting on the ClientHello; the stop must end it rather than the handshake deadline.
+#[cfg(feature = "gemini")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_gemini_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Gemini", b"").await;
+}
+
 /// An HTTP connection with a request in flight must not survive the stop.
 ///
 /// The task here is hyper's `serve_connection`, not a read loop netget wrote, so this is the

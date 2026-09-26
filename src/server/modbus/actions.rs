@@ -40,19 +40,48 @@ impl ModbusProtocol {
 
 impl Protocol for ModbusProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![crate::llm::actions::ParameterDefinition {
-            name: "unit_id".to_string(),
-            type_hint: "integer".to_string(),
-            description:
-                "Modbus unit (slave) identifier this device answers for, 0-255. When set, a \
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "unit_id".to_string(),
+                type_hint: "integer".to_string(),
+                description:
+                    "Modbus unit (slave) identifier this device answers for, 0-255. When set, a \
                  request addressed to any other unit id is answered with exception 0x0B \
                  (gateway target device failed to respond), which is how a real Modbus/TCP \
                  gateway behaves. When omitted the server answers on every unit id, which is \
                  what most Modbus/TCP devices do."
+                        .to_string(),
+                required: false,
+                example: json!(1),
+                default: None,
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description: "Seconds a newly connected peer may send nothing before the server \
+                              closes it, silently. Default 30: a Modbus client sends its first \
+                              request as soon as it connects."
                     .to_string(),
-            required: false,
-            example: json!(1),
-        }]
+                required: false,
+                example: json!(30),
+                default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description: "Seconds a peer that has already sent a request may then send \
+                              nothing before the server closes it. Default 600, twice the window \
+                              a `manual` rule gives a human to answer; a SCADA master polls every \
+                              few seconds, so lower it (real gateways use ~60) when no human is \
+                              answering."
+                    .to_string(),
+                required: false,
+                example: json!(600),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                )),
+            },
+        ]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -100,11 +129,17 @@ impl Protocol for ModbusProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Beta)
+            // STABLE against the six conditions in the root CLAUDE.md, re-derived from source on
+            // 26 September 2026. Read `.e2e_testing` and `.notes`, and "Maturity: the six
+            // conditions" in src/server/modbus/CLAUDE.md, before quoting it: the rating covers
+            // the evidence for the surface this server implements, which is Modbus TCP with
+            // eight function codes.
+            .state(DevelopmentState::Stable)
             // 502 is below 1024 so this requirement genuinely fires; server_startup only
             // enforces it when the port actually requested is privileged, so running on a
             // high port as an unprivileged user still works.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(502))
+            .well_known_port(502)
             .implementation(
                 "Hand-rolled MBAP + PDU codec (src/server/modbus/codec.rs); function codes \
                  1/2/3/4/5/6/15/16 with spec-mandated exception responses",
@@ -115,32 +150,44 @@ impl Protocol for ModbusProtocol {
                  echo) is server-side",
             )
             .e2e_testing(
-                "TWO independent implementations, neither #[ignore]d and neither able to skip. \
-                 (1) tokio-modbus 0.17, in \
-                 test_modbus_reads_writes_and_exceptions_against_tokio_modbus: connect_slave, \
-                 read_holding_registers, write_single_register and a spec exception path, all \
-                 asserted on decoded values. (2) mbpoll on libmodbus -- a C implementation -- \
-                 in tests/server/modbus/real_client_test.rs::\
-                 test_modbus_reads_writes_and_exceptions_against_mbpoll, which FAILS rather \
-                 than skips when mbpoll is absent: FC 3 register values, FC 1 coil bits \
-                 asserted in order (so the bit packing is checked, not just the byte count), \
-                 an FC 6 write whose address+value echo libmodbus validates, and an FC 4 \
-                 illegal-data-address exception libmodbus reports as an error rather than as \
-                 data. UNPROVEN: Modbus RTU/ASCII (not implemented), function codes outside \
-                 1/2/3/4/5/6/15/16, request pipelining beyond the sequential case, and any \
-                 real PLC.",
+                "STABLE rests on all six conditions, each checked against source and by running \
+                 it on 26 September 2026. (1) TWO independent clients, neither #[ignore]d and \
+                 neither able to skip, each driving ALL EIGHT function codes this server \
+                 implements with every answer asserted on what the client decoded: tokio-modbus \
+                 0.17 (e2e_test.rs::test_modbus_reads_writes_and_exceptions_against_tokio_modbus \
+                 -- the server does not link it) and mbpoll on libmodbus, a C implementation \
+                 (real_client_test.rs::test_modbus_reads_writes_and_exceptions_against_mbpoll, \
+                 which FAILS when mbpoll is absent). Register values and coil/discrete-input \
+                 bits are asserted in order, ten bits across a byte boundary; FC 5/6/15/16 are \
+                 accepted only if the values each client packed reached the model as sent, and \
+                 each client validates the echo; each has an exception path decoded as an \
+                 exception, not data. (2) pcap_oracle_test.rs runs Wireshark's mbtcp dissector \
+                 over one session of all eight function codes and an exception, both \
+                 directions. (3) fuzz/fuzz_targets/modbus_adu.rs: 226,125 runs in 61s, clean. \
+                 Modbus does not nest, so the corpus seeds every declared length instead of a \
+                 depth bomb (max_adu, over_max_adu, declared_longer_than_sent, each quantity \
+                 limit), and the target asserts framing round-trips and that every accepted \
+                 read can be answered. (4) bounds_test.rs and connection_bounds_test.rs drive \
+                 every declared bound from the wire -- MAX_ADU_LEN (inbound, via the MBAP \
+                 length field: 260 octets answered, 261 closed), MAX_BUFFERED (2080 queued \
+                 tolerated, 2081 closed), MAX_CONNECTIONS (256 admitted, 257th closed \
+                 silently, the slot returned after both kinds of close), both read deadlines, \
+                 the four quantity limits and the unit_id filter -- each verified by REMOVING \
+                 the bound and watching its test fail. (5) Both CLAUDE.md files were re-read \
+                 against source; the false claims are corrected in them. (6) No #[ignore] and \
+                 no skip gate in tests/server/modbus/. UNPROVEN, because none of it is \
+                 implemented: Modbus RTU/ASCII, function codes outside 1/2/3/4/5/6/15/16, \
+                 Modbus Security; and no real PLC has been pointed at it.",
             )
             .notes(
-                "Validated against the tokio-modbus 0.17 client, which is a separate \
-                 implementation from this server's hand-rolled codec: read_coils, \
-                 read_discrete_inputs, read_holding_registers, read_input_registers, \
-                 write_single_register, write_multiple_registers and an illegal-data-address \
-                 exception were all decoded by it, and against mbpoll on libmodbus, a C \
-                 implementation, which decoded register values, coil bits in order, an FC 6 \
-                 write echo and an illegal-data-address exception. Untested: Modbus RTU/ASCII \
-                 (not implemented), function codes outside 1/2/3/4/5/6/15/16 (answered with \
-                 exception 0x01), request pipelining beyond the sequential case, and any \
-                 real PLC or pymodbus peer",
+                "The rating covers Modbus TCP with function codes 1/2/3/4/5/6/15/16 and nothing \
+                 else; any other function code is answered with exception 0x01. A connection \
+                 the server closes (framing error, queue overrun) stops its reader and returns \
+                 its connection-cap slot at once, even while the peer holds its end open. A \
+                 model answering with an action the event does \
+                 not offer (bits for a register read) is refused by the LLM layer as an unknown \
+                 action and logged decision=fail_closed_llm_error; the wire answer is exception \
+                 0x04 either way. Untested: any real PLC, and pymodbus",
             )
             .max_inbound_bytes(crate::server::modbus::codec::MAX_ADU_LEN)
             .build()
@@ -252,6 +299,23 @@ impl Server for ModbusProtocol {
                 None => None,
             };
 
+            // A zero deadline would close every connection before it could speak, so it is
+            // refused rather than honoured.
+            let secs = |name: &str, default: std::time::Duration| -> Result<std::time::Duration> {
+                let value = match ctx.startup_params.as_ref() {
+                    Some(p) => p.get_optional_u64(name)?,
+                    None => None,
+                };
+                match value {
+                    None => Ok(default),
+                    Some(0) => anyhow::bail!("{name} must be at least 1 second, got 0"),
+                    Some(n) => Ok(std::time::Duration::from_secs(n)),
+                }
+            };
+            let first_byte_timeout =
+                secs("first_byte_timeout_secs", super::FIRST_BYTE_READ_TIMEOUT)?;
+            let idle_timeout = secs("idle_timeout_secs", super::IDLE_BETWEEN_REQUESTS_TIMEOUT)?;
+
             let listen_addr = ctx.legacy_listen_addr();
             super::ModbusServer::spawn_with_llm_actions(
                 listen_addr,
@@ -260,6 +324,8 @@ impl Server for ModbusProtocol {
                 ctx.status_tx,
                 unit_id,
                 ctx.server_id,
+                first_byte_timeout,
+                idle_timeout,
             )
             .await
         })

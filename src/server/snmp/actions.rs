@@ -56,6 +56,7 @@ impl Protocol for SnmpProtocol {
             .answers_on_failure()
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(161))
+            .well_known_udp_port(161)
             .implementation("rasn-snmp v0.18 for parsing + manual BER encoding")
             .llm_control("OID responses (sysDescr, ifTable, custom MIBs)")
             .e2e_testing("Net-SNMP's own snmpget/snmpgetnext (tests/server/snmp/test.rs), run with -On -Oe so the assertions pin the decoded type tag and value rather than the local MIB set. Not ignored, and it hard-fails rather than skipping when the binaries are absent. Not the `snmp` Rust crate, whatever the older notes said")

@@ -161,6 +161,7 @@ fn param_values_coerced_by_declared_type() {
             description: "max connections".to_string(),
             required: false,
             example: serde_json::json!(10),
+            default: None,
         },
         ParameterDefinition {
             name: "verbose".to_string(),
@@ -168,6 +169,7 @@ fn param_values_coerced_by_declared_type() {
             description: "verbose".to_string(),
             required: false,
             example: serde_json::json!(true),
+            default: None,
         },
         ParameterDefinition {
             name: "label".to_string(),
@@ -175,6 +177,7 @@ fn param_values_coerced_by_declared_type() {
             description: "a label".to_string(),
             required: false,
             example: serde_json::json!("x"),
+            default: None,
         },
     ];
     let mut form = InteractiveForm::create_server("tcp", &schema);
@@ -198,6 +201,7 @@ fn bad_numeric_param_rejected_naming_field() {
         description: "max connections".to_string(),
         required: false,
         example: serde_json::json!(10),
+        default: None,
     }];
     let mut form = InteractiveForm::create_server("tcp", &schema);
     form.set_field_value("max_conns", "not-a-number");

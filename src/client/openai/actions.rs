@@ -105,6 +105,7 @@ impl Protocol for OpenAiClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("sk-..."),
+                default: None,
             },
             ParameterDefinition {
                 name: "default_model".to_string(),
@@ -112,6 +113,7 @@ impl Protocol for OpenAiClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("gpt-4"),
+                default: None,
             },
             ParameterDefinition {
                 name: "organization".to_string(),
@@ -119,6 +121,7 @@ impl Protocol for OpenAiClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("org-..."),
+                default: None,
             },
         ]
     }

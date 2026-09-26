@@ -10,6 +10,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, Mutex};
@@ -78,6 +79,43 @@ fn take_framed_message(pending: &mut Vec<u8>) -> Result<Option<Vec<u8>>> {
     Ok(Some(frame))
 }
 
+/// How long a connected peer may send nothing at all before the server closes it.
+///
+/// The agent protocol is client-speaks-first — the server has nothing to say until asked — and
+/// a real client (`ssh-add`, `ssh`) writes its first request the moment it connects. The peer
+/// that does not is NetGet's own `ssh_agent` client: it connects inside `connect()`, writes
+/// nothing, and waits for a model action or for a person to use `[ send message ]` —
+/// **connected and silent**. So 300 seconds, the window a `manual` rule gives a human
+/// (`src/state/intercepts.rs`), for `tcp`'s reason. Declared as the `first_byte_timeout_secs`
+/// startup parameter; a stranger is still bounded, and capped at [`MAX_CONNECTIONS`].
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long an established session may be silent between requests.
+///
+/// OpenSSH's own agent sets no idle bound on a client connection, so there is no upstream
+/// number to copy; `ssh` holds its agent connection for the authentication phase and closes it,
+/// and a forwarded agent opens a fresh connection per request. Fifteen minutes, `tcp`'s number,
+/// is far longer than any of those. The read is not polled while a request is being answered —
+/// each one is handled inline, sequentially, before the loop reads again — so a model round-trip
+/// or a `manual` rule parked for a human can never run against this clock. Declared as the
+/// `idle_timeout_secs` startup parameter.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up to
+/// [`MAX_AGENT_MESSAGE_LEN`] of a partial message, so this is the multiplier that turns that
+/// per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: nothing.
+///
+/// The protocol's only negative is `SSH_AGENT_FAILURE`, which is an *answer* — written to a peer
+/// that has asked nothing it would be read as the reply to whatever the client sends first. The
+/// same reasoning keeps `raise_connection_opened` from writing one. A clean EOF, logged by
+/// `accept_bounded_unix` with `decision=fail_closed_connection_cap`, is the honest refusal.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]
 enum ConnectionState {
@@ -105,7 +143,16 @@ impl SshAgentServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<PathBuf> {
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(FIRST_BYTE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_REQUESTS_TIMEOUT);
+
         // Remove a stale socket left behind by a previous run, so bind() does not fail with
         // EADDRINUSE. Only ever unlink an actual socket: `socket_path` comes from a startup
         // parameter, i.e. ultimately from model output, and blindly removing whatever is at
@@ -138,10 +185,19 @@ impl SshAgentServer {
 
         // Spawn accept loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
+                match crate::server::accept_bounded::accept_bounded_unix(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "SSH Agent",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         info!("Accepted SSH Agent connection {}", connection_id);
@@ -232,13 +288,47 @@ impl SshAgentServer {
                         // Tracked, not detached: stop_server must abort this task too.
                         let task_owner = app_state.clone();
                         task_owner.spawn_server_task(server_id, async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // connections rather than accepts.
+                            let _permit = permit;
                             let mut buffer = vec![0u8; 8192];
                             let mut read_half = read_half;
                             // Bytes received but not yet forming a complete message.
                             let mut pending: Vec<u8> = Vec::new();
+                            let mut seen_bytes = false;
 
                             loop {
-                                match read_half.read(&mut buffer).await {
+                                let bound = if seen_bytes {
+                                    idle_timeout
+                                } else {
+                                    first_byte_timeout
+                                };
+                                // The deadline wraps this read and nothing else: every request
+                                // is answered inline below, so the clock is not running while
+                                // the model — or a human — composes the reply.
+                                let read = match tokio::time::timeout(
+                                    bound,
+                                    read_half.read(&mut buffer),
+                                )
+                                .await
+                                {
+                                    Ok(read) => read,
+                                    Err(_) => {
+                                        connections_clone.lock().await.remove(&connection_id);
+                                        app_state_clone
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ = status_tx_clone.send(format!(
+                                            "SSH Agent connection {} sent nothing for {}s; \
+                                             closing idle connection",
+                                            connection_id,
+                                            bound.as_secs()
+                                        ));
+                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                        break;
+                                    }
+                                };
+                                match read {
                                     Ok(0) => {
                                         // Connection closed
                                         connections_clone.lock().await.remove(&connection_id);
@@ -253,6 +343,7 @@ impl SshAgentServer {
                                         break;
                                     }
                                     Ok(n) => {
+                                        seen_bytes = true;
                                         trace!(
                                             "SSH Agent received {} bytes on connection {}",
                                             n,
@@ -324,7 +415,14 @@ impl SshAgentServer {
                         }).await;
                     }
                     Err(e) => {
-                        error!("Failed to accept SSH Agent connection: {}", e);
+                        // A listener error (EMFILE, the socket torn down) recurs immediately,
+                        // so continuing would spin a hot loop flooding the status channel.
+                        error!("SSH Agent accept failed, listener stopped: {}", e);
+                        let _ = status_tx.send(format!(
+                            "[ERROR] SSH Agent accept failed, listener stopped: {}",
+                            e
+                        ));
+                        break;
                     }
                 }
             }

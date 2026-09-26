@@ -45,24 +45,39 @@ library. This allows NetGet to connect to MQTT brokers and perform publish/subsc
 └─────────────┘
 ```
 
-### Event Loop Pattern
+### Two tasks: the transport and the model
 
-rumqttc uses an EventLoop that yields events from the broker:
+rumqttc's `EventLoop` does all of its I/O — writing queued requests, sending PINGREQ once per
+keep-alive interval, reading PINGRESP — only while `EventLoop::poll` is being awaited. A model
+turn can take minutes (a `manual` rule parks it for a human for up to 300s by default), and a
+broker disconnects a client that sends nothing for 1.5 × its keep-alive (MQTT 3.1.1 §3.1.2.10).
+So the client runs two tasks per connection, both registered with `spawn_client_task`:
 
-1. **Connection**: Create `MqttOptions` with broker address, client ID, credentials
-2. **AsyncClient**: Used to send actions (subscribe, publish, disconnect)
-3. **EventLoop**: Polls for incoming events (ConnAck, Publish, SubAck, etc.)
-4. **LLM Integration**: On each event, call LLM to decide actions
+1. **`poll_transport`** owns the `EventLoop` and never waits on the model. It sets
+   `ClientStatus` (Connected / Disconnected / Error), so status stays true while a turn is
+   parked, and puts the first CONNACK and every incoming PUBLISH onto the turn queue.
+2. **`run_model_turns`** takes events off that queue one at a time, in arrival order, asks the
+   model, and applies its actions through the `AsyncClient` handle (rumqttc's request channel,
+   drained by the transport task).
 
-### State Machine
+One consumer is what keeps two turns from overlapping on a connection — the per-connection
+state machine rule — without a hand-rolled Idle/Processing/Accumulating enum: events that arrive
+during a turn wait in the queue, exactly as they would in `Accumulating`.
 
-We use the same client state machine as other protocols:
+**The queue is bounded and never blocks the transport.** `TURN_QUEUE_CAPACITY` is 256 events;
+past that an incoming PUBLISH is dropped with a WARN carrying `decision=turn_queue_full`, because
+blocking the transport task on a full queue would stop PINGREQ again. Each entry is at most one
+packet of rumqttc's default 10 KiB incoming limit, so a flooding broker can pin ~2.5 MiB per
+client.
 
-- **Idle**: Waiting for events
-- **Processing**: LLM is processing an event
-- **Accumulating**: New events arrived while processing (queue for next cycle)
+When the transport ends (broker DISCONNECT, a socket error, or a `disconnect` action) it aborts
+the turn task: a turn still running or parked has nothing left to answer on, and the events queued
+behind it would each cost a model call for a reply that cannot be sent.
 
-This prevents concurrent LLM calls on the same client.
+`tests/client/mqtt/keepalive_test.rs` holds this against the real `mosquitto` broker: a 2-second
+keep-alive, a `mqtt_connected` turn parked for ten seconds, and then — from the broker's side —
+PINGREQ seen during the park, no timeout applied, and the answered publish delivered to
+`mosquitto_sub`.
 
 ## LLM Integration
 
@@ -163,7 +178,6 @@ Wildcards cannot be used in publish topics.
 3. **Will messages**: Allow LLM to set Last Will and Testament
 4. **Retained message handling**: Better visibility into retained messages
 5. **Shared subscriptions**: Support for load balancing across multiple clients
-6. **Message queuing**: Buffer messages during LLM processing instead of dropping
 
 ## Testing Strategy
 
@@ -181,8 +195,8 @@ Adopted, archetype **(a)**: `rumqttc::AsyncClient` is a cheap clonable handle to
 loop's request channel, so the command loop holds its own clone and nothing had to be
 restructured or wrapped in a `Mutex`.
 
-- The channel is registered in `connect_with_llm_actions`, **before** the event loop task starts
-  and therefore before the `mqtt_connected` LLM call that task makes on CONNACK — a manual `*`
+- The channel is registered in `connect_with_llm_actions`, **before** the transport task starts
+  and therefore before the `mqtt_connected` LLM call the turn task makes on CONNACK — a manual `*`
   rule can park that call for minutes and `[ send ]` has to work throughout.
   `tests/client/mqtt/command_channel_test.rs` guards it with `wait_for_client_handle`.
 - `apply_action` is shared by the LLM path and the command path, so the mapping from
@@ -200,6 +214,22 @@ request has been accepted into the event loop's queue; the loop writes the packe
 reports no byte count. Claiming one here would be a guess, so the truthful answer is `Executed`
 with a specific detail.
 
-A `disconnect` also sets a flag the event loop reads: rumqttc surfaces the closed socket as a
+A `disconnect` also sets a flag the transport task reads: rumqttc surfaces the closed socket as a
 poll **error**, and without the flag a deliberate hang-up was reported as
 `ClientStatus::Error(...)`.
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/mqtt/real_server_test.rs` (see `tests/client/mqtt/CLAUDE.md`):
+
+1. **Real third-party server** — Eclipse Mosquitto (`mosquitto`, C), with `mosquitto_sub`/`mosquitto_pub` on the far side; NetGet's side is rumqttc, so no code is shared.
+2. **Fails rather than skips** — a missing `mosquitto`, `mosquitto_sub` or `mosquitto_pub` is a test failure naming the brew formula and the
+   Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d. CI's
+   `registry-audit` installs the peer and runs the suite in its evidence loop.
+3. **A real session** — the protocol's own exchange, with the server's answers parsed and handed
+   to the model, not a connect.
+4. **Acts on the model's answer, asserted on the wire** — `mosquitto_sub` prints the payloads the model published, and Mosquitto's own log records the model's subscription. Verified by mutation: dropping
+   the actions the model returned makes the test fail.
+
+Not covered by that evidence: TLS, enforced username/password, Last Will, persistent sessions and reconnection.

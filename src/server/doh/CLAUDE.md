@@ -224,7 +224,8 @@ a caller that asked for port 0 would be told the port was 0. The accept loop's
    DoH drew an empty peer list however many clients were talking to it, and
    `{client_ip}` in the `doh_query` template rendered empty because `call_llm` was
    passed `None` for the connection
-5. **Close**: Connection ends when client closes or error occurs
+5. **Close**: Connection ends when client closes, an error occurs, or it carries no query for
+   `idle_timeout_secs` (default 300) — a GOAWAY, then close
 
 ### State Management
 
@@ -273,10 +274,10 @@ All limitations from standard DNS protocol apply:
 ### 5. No Rate Limiting
 
 - No per-client request limits
-- No connection limits
-- Vulnerable to DoS attacks without external rate limiting
+- Connections are capped at 256 (`accept_bounded`) and bounded in time as below, but queries
+  per connection are not
 
-Two unbounded resources were closed in September 2026, and they were worse than
+Three unbounded resources were closed in September 2026, and they were worse than
 "no rate limiting":
 
 - **The request body was read with `req.collect()`, which has no cap.** Over an
@@ -286,6 +287,14 @@ Two unbounded resources were closed in September 2026, and they were worse than
   message cannot be larger) and anything over gets `413`.
 - **The TLS handshake had no timeout**, so connecting and then saying nothing held
   a task open forever. Bounded at 10s.
+- **Nothing bounded a connection after its handshake.** hyper applies no idle bound to an
+  HTTP/2 session, so a peer that completed TLS and then never sent the preface — or sent one
+  query and went quiet — held its slot for good. `IDLE_BETWEEN_QUERIES_TIMEOUT` (300s, the
+  `idle_timeout_secs` startup parameter) is a `watch_idle` over a `ConnectionActivity` raced
+  against `serve_connection`; every request's service future holds the connection busy, so a
+  query waiting on the model or parked for a human is never idle. On expiry the connection gets
+  a GOAWAY (`graceful_shutdown`). 300s stays above the 90 seconds `reqwest` — NetGet's own DoH
+  client, which is lazy and never connected-and-silent — keeps an idle pooled connection.
 
 Per-connection tasks are also registered with `AppState::register_server_task` now,
 so `stop_server` aborts them; unregistered, they outlived the server.

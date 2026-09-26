@@ -636,6 +636,7 @@ impl Protocol for SsdpProtocol {
             // 1900 is above 1023, so PrivilegedPort would be dead code — the
             // svn/PrivilegedPort(3690) mistake.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(1900)
             .implementation(
                 "Hand-rolled HTTPU codec (src/server/ssdp/message.rs) over a tokio \
                  UdpSocket. Parses M-SEARCH and NOTIFY, renders the UDA 1.1 §1.3.3 response \
@@ -708,6 +709,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1000),
+                default: None,
             },
             ParameterDefinition {
                 name: "server_header".to_string(),
@@ -719,6 +721,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("Linux/6.1 UPnP/1.1 MiniDLNA/1.3.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "join_multicast".to_string(),
@@ -731,6 +734,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
             ParameterDefinition {
                 name: "multicast_interface".to_string(),
@@ -742,6 +746,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "notify_target".to_string(),
@@ -758,6 +763,7 @@ impl Protocol for SsdpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("239.255.255.250:1900"),
+                default: None,
             },
         ]
     }

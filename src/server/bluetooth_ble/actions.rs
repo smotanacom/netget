@@ -215,6 +215,7 @@ impl Protocol for BluetoothBleProtocol {
             description: "Bluetooth device name for advertising (default: NetGet-BLE)".to_string(),
             required: false,
             example: json!("MyDevice"),
+            default: None,
         }]
     }
 

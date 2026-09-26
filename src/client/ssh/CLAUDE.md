@@ -9,7 +9,7 @@ control.
 
 ### Primary Library: russh
 
-**Crate:** `russh` v0.44+
+**Crate:** `russh` v0.45
 **Why:** Pure Rust SSH implementation with async support and good channel management.
 
 **Key Features:**
@@ -27,14 +27,13 @@ control.
 
 ### Key Library: russh-keys
 
-**Crate:** `russh-keys` v0.44+
+**Crate:** `russh-keys` v0.45
 **Why:** Key management and cryptography for russh.
 
 **Features:**
 
-- Public key parsing and validation
-- Server key verification
-- Key fingerprinting
+- Loading the private key for public-key authentication (`load_secret_key`, OpenSSH format,
+  optionally passphrase-protected)
 
 ## Architecture
 
@@ -44,7 +43,7 @@ control.
 
 1. Resolve hostname and connect to SSH server
 2. Perform SSH handshake and version exchange
-3. Authenticate (currently password-only)
+3. Authenticate (password, or public key from `private_key_path`)
 4. Trigger `ssh_connected` event to LLM
 5. Wait for LLM to issue commands
 6. Execute commands via SSH channels
@@ -69,17 +68,20 @@ control.
 
 ### Authentication
 
-**Current Implementation:**
+Startup parameters: `username` (required), `auth_method` (`password` / `publickey`),
+`password`, `private_key_path`, `private_key_passphrase`.
 
-- Password authentication only
-- Server key verification disabled (accepts all keys for testing)
+- **`publickey`** — `private_key_path` is loaded with `russh_keys::load_secret_key` before the
+  TCP connection is opened, so an unreadable key is reported as that rather than as a failed
+  handshake. The key's contents never reach the model, an event or the log. When
+  `private_key_path` is given and `auth_method` is not, public-key auth is used.
+- **`password`** — the default when no key path is given; `password` is then required.
+- A refused credential fails the connect with `SSH authentication failed: the server refused
+  the <method> credential for '<user>'`, and no `ssh_connected` event is raised.
+- **The server's host key is accepted unconditionally** — there is no `known_hosts` check and
+  no pinning parameter, so the client is not safe against an active network attacker.
 
-**Future Enhancements:**
-
-- Public key authentication
-- SSH agent support
-- Known hosts verification
-- Interactive keyboard authentication
+Not implemented: SSH agent, keyboard-interactive, certificates.
 
 ## LLM Integration
 
@@ -92,8 +94,22 @@ control.
 
 2. **Output Event:** `ssh_output_received`
     - Triggered after command execution completes
-    - Provides command output (stdout) and exit code
+    - Provides `command`, `output` (stdout), `stderr` (when the command wrote any) and
+      `exit_code` (when the server sent one)
     - LLM analyzes output and decides next action
+
+**Reading a command's result waits for the channel to close, not for EOF.** EOF only says no
+more data is coming; OpenSSH sends `exit-status` *after* its EOF and then closes the channel.
+The loop stops at CLOSE, at the end of the channel, or at EOF once the status is in hand. It
+used to stop at EOF, and against a real `sshd` every command's exit status was lost —
+`tests/client/ssh/real_server_test.rs` matches on `exit_code`, and putting the early break back
+fails it. Stderr (extended data type 1) is collected separately.
+
+**The follow-up chain is bounded.** An output's answer is executed and its own output comes
+back in turn; `MAX_FOLLOWUP_DEPTH` (4) stops a model that answers every output with another
+command. The output at the bound is shown to the model and its answer dropped with a warning.
+The real-server test counts the commands sshd ran (exactly five), and fails without the
+bound.
 
 ### Actions
 
@@ -166,8 +182,7 @@ User Instruction → Connect to SSH server → Authenticate
 ### Current Limitations
 
 1. **Authentication:**
-    - Password only (no pubkey yet)
-    - No SSH agent support
+    - Password and public key; no SSH agent, keyboard-interactive or certificates
     - Server key verification disabled
 
 2. **Command Execution:**
@@ -191,7 +206,6 @@ User Instruction → Connect to SSH server → Authenticate
 **Security Issues:**
 
 - Accepts all server keys (MITM risk)
-- Password authentication (less secure than pubkey)
 - No host key verification
 
 **For Production Use:**
@@ -241,12 +255,12 @@ User Instruction → Connect to SSH server → Authenticate
 ### Phase 1 (Current)
 
 - ✅ Password authentication
+- ✅ Public key authentication (`private_key_path`)
 - ✅ Command execution
-- ✅ Output capture
+- ✅ Output capture (stdout, stderr, exit status)
 
 ### Phase 2 (Next)
 
-- [ ] Public key authentication
 - [ ] Host key verification
 - [ ] PTY allocation for interactive commands
 
@@ -267,11 +281,8 @@ User Instruction → Connect to SSH server → Authenticate
 
 See `tests/client/ssh/CLAUDE.md` for detailed testing approach.
 
-**Test Server Options:**
-
-- OpenSSH server (most common)
-- Dropbear (lightweight)
-- Local SSH server on localhost:22
+The evidence is `tests/client/ssh/real_server_test.rs`: OpenSSH's `sshd` run unprivileged per
+test from a config in a temp dir, public-key auth as the current user.
 
 ## Example Prompts
 
@@ -321,3 +332,25 @@ the same `Arc<Mutex<Handle<..>>>` and `Arc<Mutex<ClientData>>`:
   the same mutex) and would block every injected command for the whole round-trip.
 - The memory string is cloned out of `ClientData` before each `call_llm_for_client`, never
   borrowed across it.
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/ssh/real_server_test.rs` (see `tests/client/ssh/CLAUDE.md`):
+
+1. **Real third-party server** — OpenSSH's `sshd` (C), run unprivileged per test with host and
+   user keys made by `ssh-keygen`. NetGet's side is `russh`, which shares no code with OpenSSH.
+   (NetGet's own SSH *server* is also russh; it is not involved.)
+2. **Fails rather than skips** — a missing `sshd` or `ssh-keygen` is a test failure naming the
+   brew formula and the Ubuntu package; nothing is `#[ignore]`d. CI's `registry-audit` installs
+   `openssh-server` and runs the suite in its evidence loop.
+3. **A real session** — key exchange, public-key authentication as the current user, a session
+   channel per command with stdout, stderr and exit status read back, and a disconnect; plus a
+   refused key.
+4. **Acts on the model's answer, asserted on the wire** — the commands the model chose ran on
+   the server and wrote a file, one line of it built from the stdout, stderr and exit status
+   the model was shown; sshd's own log records the login and the model's disconnect. Verified
+   by mutation: dropping the actions the model returns for an output makes the test fail.
+
+Not covered by that evidence: password authentication against a real server (an unprivileged
+sshd cannot check a password), host key verification (there is none), PTY, SFTP, forwarding.

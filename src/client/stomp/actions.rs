@@ -302,6 +302,7 @@ impl Protocol for StompClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("/"),
+                default: None,
             },
             ParameterDefinition {
                 name: "login".to_string(),
@@ -311,6 +312,7 @@ impl Protocol for StompClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("guest"),
+                default: None,
             },
             ParameterDefinition {
                 name: "passcode".to_string(),
@@ -320,6 +322,7 @@ impl Protocol for StompClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("guest"),
+                default: None,
             },
             ParameterDefinition {
                 name: "use_stomp_command".to_string(),
@@ -330,6 +333,7 @@ impl Protocol for StompClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             ParameterDefinition {
                 name: "handshake_timeout_secs".to_string(),
@@ -340,6 +344,7 @@ impl Protocol for StompClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(20),
+                default: None,
             },
         ]
     }

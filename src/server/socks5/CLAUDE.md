@@ -35,9 +35,10 @@ Two more things the wire does not carry:
   cannot tell "the model refused you" from "the backend was down". The log can:
   `decision=model_reject` / `model_silent` / `model_allow` /
   `fail_closed_llm_error`, following `src/server/radius/`.
-- The handshake reads time out after 30s (`HANDSHAKE_TIMEOUT_SECS`), so a peer
-  that connects and stalls no longer holds a task forever. The number of
-  concurrent connections is still unbounded.
+- The handshake reads time out after 30s (`HANDSHAKE_TIMEOUT_SECS`), an established
+  tunnel that moves nothing either way is closed after `idle_timeout_secs` (default
+  3600), and at most 256 connections are admitted at once (`MAX_CONNECTIONS`; the
+  257th reads `05 FF`). See "Connection bounds" below.
 
 ## Library Choices
 
@@ -93,8 +94,10 @@ Server → Client: [VER=5, REP, RSV=0, ATYP, BND.ADDR, BND.PORT]
 
 **Phase 4: Data Relay**
 
-- **Pass-through mode**: Direct bidirectional copy between client ↔ target (tokio::io::copy_bidirectional)
-- **MITM mode**: Inspect each data chunk via LLM (`SOCKS5_DATA_TO_TARGET_EVENT`, `SOCKS5_DATA_FROM_TARGET_EVENT`)
+- **Pass-through mode**: Direct bidirectional copy between client ↔ target (`tokio::io::copy_bidirectional`
+  over two `TouchOnRead` wrappers that share one idle clock), raced against `watch_idle`
+- **MITM mode**: Inspect each data chunk via LLM (`SOCKS5_DATA_TO_TARGET_EVENT`, `SOCKS5_DATA_FROM_TARGET_EVENT`),
+  with the same idle clock as a third `select!` arm
 
 ### Filter Configuration System
 
@@ -270,9 +273,35 @@ queued data live in the module's own private types.
 6. Phase 4: Relay data (pass-through or MITM)
 7. Connection closes → Mark as closed
 
-**Concurrent Connections**: Each connection handled in a separate tokio task. No
-limit is enforced. Handshake reads time out after 30s, which bounds how long a
-silent peer can hold one, but not how many peers can arrive.
+**Concurrent Connections**: Each connection handled in a separate task spawned through
+`spawn_server_task`, admitted through `accept_bounded` (256).
+
+## Connection bounds
+
+| Bound | Default | Mechanism |
+|---|---|---|
+| Handshake (greeting, auth, CONNECT) | 30s (`HANDSHAKE_TIMEOUT_SECS`) | `timeout` around each phase's reads |
+| Established tunnel, nothing moved **either way** | 3600s (`idle_timeout_secs`, `RELAY_IDLE_TIMEOUT`) | one `ConnectionActivity` both directions touch, raced against the relay with `watch_idle` |
+| Connections | 256 (`MAX_CONNECTIONS`) | `accept_bounded`; the peer over the cap reads `05 FF` |
+
+- **Both directions combined, not per direction.** A download moves bytes only
+  target → client and a slow upload only client → target; both are live tunnels, so a
+  byte read from *either* side resets the one clock. Only a tunnel that has moved nothing
+  at all, both ways, is idle. On expiry both sockets are closed and the log says
+  `decision=idle_timeout` with the byte counts.
+- **Why an hour.** A proxy carries whatever TCP its clients bring, and some of it is
+  long-idle by design: IMAP IDLE is re-issued every 29 minutes (RFC 2177), an SSH session
+  with no `ServerAliveInterval` can sit silent indefinitely, and RFC 5382 REQ-5 asks NATs to
+  keep an idle TCP mapping for over two hours. An hour clears the application keepalives in
+  common use and the 300-second window a `manual` rule gives a human. Raise it for SSH
+  without keepalives; lower it for a proxy exposed to strangers.
+- **MITM: an answer is activity.** Each chunk is decided inline, and holds the tunnel busy
+  while it is, so a decision parked for a human is never on the clock *and* its completion
+  starts a fresh bound — without the latter the relay would come back from a long park to a
+  clock that had run out and close the tunnel the moment it forwarded the chunk.
+- Byte counts come from the wrappers, so the rail's `↓/↑` are right on the idle path too,
+  where `copy_bidirectional` never returns its own figures.
+- `tests/server/socks5/connection_bounds_test.rs` drives all of it from the wire.
 
 ## MITM Inspection Mode
 

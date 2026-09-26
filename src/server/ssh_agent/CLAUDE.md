@@ -71,6 +71,31 @@ no retry, so the client blocks forever on a reply that was never generated — `
 `tests/connection_map_race_test.rs` covers it; the same shape was fixed in `socket_file`
 (`1f3945ee`), `tcp` and `tls`.
 
+`default_binding()` returns empty binding defaults, so the dashboard and MCP can start the
+agent with only a `socket_path`. Without it `server_startup.rs` treated the protocol as
+"unmigrated" and demanded a `port` — the defect `socket_file` had first.
+
+### Connection bounds
+
+Declared in `mod.rs` beside their arguments; the two read bounds are startup parameters.
+
+| Bound | Default | Parameter | Mechanism |
+|---|---|---|---|
+| First byte | 300s | `first_byte_timeout_secs` | `tokio::time::timeout` around the `read()` |
+| Idle between requests | 900s | `idle_timeout_secs` | the same, once the peer has sent anything |
+| Connections | 256 | — | `accept_bounded_unix`; the peer over the cap reads a clean EOF |
+
+- **Which client state the first-byte bound faces: connected and silent.** `ssh-add` and `ssh`
+  ask the moment they connect, but NetGet's own `ssh_agent` client connects inside `connect()`
+  and waits for a model action or a person, so the default is the 300s a `manual` rule gives a
+  human. OpenSSH's agent has no idle bound of its own to copy.
+- **The deadline wraps the read and nothing else.** Requests are answered inline, before the
+  loop reads again, so a model round-trip or a `manual` rule parked for a human never runs
+  against the clock — no `ConnectionActivity` is needed here, unlike `socket_file`.
+- **The cap refusal is silent**: the protocol's only negative, `SSH_AGENT_FAILURE`, is an
+  answer, and written unasked it would be read as the reply to the client's first request.
+- A listener error stops the accept loop rather than spinning on it.
+
 ### Responses
 
 `send_response` prepends the length and writes. It waits on the write lock; it used to
@@ -205,7 +230,9 @@ adds exist only in whatever the handler chooses to remember.
 
 ## Testing
 
-`tests/server/ssh_agent/e2e_test.rs` exists (unlike ssh, telnet and ftp). Manual check:
+`tests/server/ssh_agent/e2e_test.rs` exists (unlike ssh, telnet and ftp);
+`connection_bounds_test.rs` drives the cap and both read deadlines from the peer's end. Manual
+check:
 
 ```
 SSH_AUTH_SOCK=./netget-ssh-agent.sock ssh-add -l

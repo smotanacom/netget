@@ -610,6 +610,7 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!("/ws"),
+                default: None,
             },
             ParameterDefinition {
                 name: "max_message_size".to_string(),
@@ -620,6 +621,7 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1048576),
+                default: Some(serde_json::json!(super::DEFAULT_MAX_MESSAGE_SIZE)),
             },
             ParameterDefinition {
                 name: "max_frame_size".to_string(),
@@ -631,6 +633,21 @@ impl Protocol for WebSocketProtocol {
                         .to_string(),
                 required: false,
                 example: json!(1048576),
+                default: Some(serde_json::json!(super::DEFAULT_MAX_FRAME_SIZE)),
+            },
+            ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description:
+                    "Seconds an upgraded connection may send no frame at all before the server \
+                     closes it with 1001 (default 600). The server pings at half of it and every \
+                     client answers a ping with a pong automatically, so a live but silent \
+                     client is never closed; a message still being answered never counts as \
+                     idle."
+                        .to_string(),
+                required: false,
+                example: json!(600),
+                default: Some(serde_json::json!(super::IDLE_TIMEOUT.as_secs())),
             },
         ]
     }

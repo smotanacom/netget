@@ -628,6 +628,7 @@ impl Protocol for EapolProtocol {
                         .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
             ParameterDefinition {
                 name: "eapol_version".to_string(),
@@ -638,6 +639,7 @@ impl Protocol for EapolProtocol {
                         .to_string(),
                 required: false,
                 example: json!(2),
+                default: None,
             },
         ]
     }

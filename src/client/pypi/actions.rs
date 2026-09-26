@@ -130,6 +130,7 @@ impl Protocol for PypiClientProtocol {
             type_hint: "string".to_string(),
             required: false,
             example: json!("https://pypi.org"),
+            default: None,
         }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {

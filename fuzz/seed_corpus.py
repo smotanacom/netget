@@ -23,7 +23,7 @@ With the guards in place the bombs are refused in microseconds and nothing downs
 sees them, so they cost the running fuzzer nothing. They exist for the day a guard
 regresses.
 
-This file is the provenance for 82 otherwise-opaque binary blobs; edit it rather than
+This file is the provenance for 136 otherwise-opaque binary blobs; edit it rather than
 the blobs.
 """
 import os
@@ -132,6 +132,10 @@ for name, frame in [
     ("unsub", b"UNSUB 1 5\r\n"),
 ]:
     write("nats_frame", name, NATS_PREFIX + frame)
+# NATS does not nest either. Its stack overflow was `parse_frame` recursing once per blank line
+# (8 KB of newlines, one `read`, killed the process); `blank_line_prefix_len` is now a loop.
+# The blank-line run is that class's depth bomb: 32 Ki of them ahead of a PING.
+write("nats_frame", "blank_line_bomb", NATS_PREFIX + b"\r\n" * 32768 + b"PING\r\n")
 
 # --- STOMP ----------------------------------------------------------------
 write("stomp_frame", "connect",
@@ -144,6 +148,11 @@ write("stomp_frame", "subscribe",
 write("stomp_frame", "escaped_header",
       b"SEND\ndestination:/queue/a\nx\\ckey:v\\nal\n\n\x00")
 write("stomp_frame", "heartbeat", b"\n")
+# STOMP does not nest: headers are a flat, MAX_HEADERS-bounded list and the inter-frame EOL
+# drain is a loop. The recursion this framer once had was per blank line, so the equivalent of
+# a depth bomb is a long run of them — 32 Ki heart-beats ahead of one frame. It costs the
+# iterative drain nothing and is here for the day someone makes it recursive again.
+write("stomp_frame", "blank_line_bomb", b"\r\n" * 32768 + b"SEND\ndestination:/q\n\nx\x00")
 
 # --- RADIUS: Access-Request with User-Name and User-Password --------------
 attrs = (bytes([1, 2 + 5]) + b"alice" +
@@ -214,6 +223,29 @@ write("modbus_adu", "write_single", mbap(3, 1, bytes([6]) + struct.pack(">HH", 1
 write("modbus_adu", "two_adus",
       mbap(4, 1, bytes([3]) + struct.pack(">HH", 0, 1)) +
       mbap(5, 1, bytes([3]) + struct.pack(">HH", 1, 1)))
+# Modbus has no nesting — an ADU is a flat header and a flat PDU, and no decoder here calls
+# itself — so there is no depth bomb to plant. What a peer controls instead is every length
+# it declares, and these seeds sit on each one. `max_adu` is exactly MAX_ADU_LEN (MBAP length
+# 254); `over_max_adu` is the same frame one octet longer (length 255, refused);
+# `declared_longer_than_sent` announces 254 and carries 5 (must ask for more, never read past
+# the end); `zero_length` and `not_modbus` are the two framing refusals.
+write("modbus_adu", "max_adu", mbap(6, 1, bytes([0x41]) + b"\xaa" * 252))
+write("modbus_adu", "over_max_adu", mbap(7, 1, bytes([0x41]) + b"\xaa" * 253))
+write("modbus_adu", "declared_longer_than_sent",
+      struct.pack(">HHHB", 8, 0, 254, 1) + bytes([3]) + struct.pack(">HH", 0, 1))
+write("modbus_adu", "zero_length", struct.pack(">HHHB", 9, 0, 0, 1))
+write("modbus_adu", "not_modbus", struct.pack(">HHHB", 10, 7, 6, 1) + bytes([3, 0, 0, 0, 1]))
+# The PDU-level lengths: each quantity limit at its maximum, and a write whose byte count
+# disagrees with its quantity.
+write("modbus_adu", "read_coils_max", mbap(11, 1, bytes([1]) + struct.pack(">HH", 0, 2000)))
+write("modbus_adu", "read_registers_max",
+      mbap(12, 1, bytes([3]) + struct.pack(">HH", 0xFFFF - 124, 125)))
+write("modbus_adu", "write_coils_max",
+      mbap(13, 1, bytes([0x0F]) + struct.pack(">HHB", 0, 1968, 246) + b"\x55" * 246))
+write("modbus_adu", "write_registers_max",
+      mbap(14, 1, bytes([0x10]) + struct.pack(">HHB", 0, 123, 246) + b"\x00\x01" * 123))
+write("modbus_adu", "byte_count_mismatch",
+      mbap(15, 1, bytes([0x10]) + struct.pack(">HHB", 0, 2, 3) + b"\x00\x0a\x01"))
 
 # --- CoAP: confirmable GET /.well-known/core ----------------------------
 def coap_opt(delta, value):
@@ -285,6 +317,41 @@ write("bgp_message", "open",
       b"\x01" + MARKER + struct.pack(">HB", 19 + len(open_body), 1) + open_body)
 notification = MARKER + struct.pack(">HB", 21, 3) + bytes([6, 0])
 write("bgp_message", "notification", b"\x00" + notification)
+
+
+# BGP path attributes do not nest in anything netgauze 0.7 decodes: every PathAttributeValue
+# variant is a flat value or a flat list, and ATTR_SET (RFC 6368), the one attribute that would
+# contain attributes, is not implemented. So there is no depth bomb; the lengths are what a
+# peer controls, and the corpus had no UPDATE at all. These seed one ordinary UPDATE and one at
+# BGP's 4096-octet maximum, carried by a long AS_PATH.
+def bgp_attr(flags, code, value):
+    if len(value) > 255:
+        return bytes([flags | 0x10, code]) + struct.pack(">H", len(value)) + value
+    return bytes([flags, code, len(value)]) + value
+
+
+def bgp_update(attrs, nlri):
+    body = struct.pack(">H", 0) + struct.pack(">H", len(attrs)) + attrs + nlri
+    return MARKER + struct.pack(">HB", 19 + len(body), 2) + body
+
+
+update_attrs = (bgp_attr(0x40, 1, b"\x00") +
+                bgp_attr(0x40, 2, bytes([2, 2]) + struct.pack(">II", 65001, 65002)) +
+                bgp_attr(0x40, 3, bytes([192, 0, 2, 1])))
+write("bgp_message", "update_ipv4",
+      b"\x01" + bgp_update(update_attrs, bytes([24, 198, 51, 100])))
+# 4096 = header 19 + two length fields 4 + ORIGIN 4 + AS_PATH (4-byte extended header + P) +
+# NEXT_HOP 7 + NLRI 4, so the AS_PATH value is P = 4054 octets: five AS_SEQUENCE segments
+# (a segment holds at most 255 four-byte ASNs, and 2k + 4N = 4054 needs k odd) of 1011 ASNs.
+as_path = b""
+for n in (255, 255, 255, 245, 1):
+    as_path += bytes([2, n]) + b"".join(struct.pack(">I", 64512 + i) for i in range(n))
+assert len(as_path) == 4054
+max_attrs = (bgp_attr(0x40, 1, b"\x00") + bgp_attr(0x40, 2, as_path) +
+             bgp_attr(0x40, 3, bytes([192, 0, 2, 1])))
+max_update = bgp_update(max_attrs, bytes([24, 198, 51, 100]))
+assert len(max_update) == 4096
+write("bgp_message", "update_max_len", b"\x01" + max_update)
 
 # --- NDEF: a text record and a URI record ------------------------------
 text_payload = bytes([2]) + b"en" + b"hello"
@@ -400,6 +467,259 @@ write("bson_document", "huge_declared_len", struct.pack("<i", 0x7FFFFFFF) + b"\x
 # 16,384 levels at eight bytes each (~128 KiB): past the 4,861 that overflow the fuzzer's
 # 8 MiB main thread in a release build when the guard is removed (verified).
 write("bson_document", "depth_bomb", bson_nested(16384))
+
+
+# --- LDAP: SearchRequests, and the filter nesting MAX_FILTER_DEPTH bounds ---
+def ber_len(n):
+    if n < 0x80:
+        return bytes([n])
+    if n < 0x100:
+        return bytes([0x81, n])
+    if n < 0x10000:
+        return b"\x82" + struct.pack(">H", n)
+    return b"\x83" + n.to_bytes(3, "big")
+
+
+def tlv(tag, value):
+    return bytes([tag]) + ber_len(len(value)) + value
+
+
+def ldap_search(filter_bytes, msg_id=1):
+    body = (tlv(0x04, b"dc=example,dc=com") + tlv(0x0A, b"\x02") + tlv(0x0A, b"\x00") +
+            tlv(0x02, b"\x00") + tlv(0x02, b"\x00") + tlv(0x01, b"\x00") +
+            filter_bytes + tlv(0x30, tlv(0x04, b"cn") + tlv(0x04, b"mail")))
+    return tlv(0x30, tlv(0x02, bytes([msg_id])) + tlv(0x63, body))
+
+
+def ldap_nested_and(levels, inner):
+    """`levels` nested `&` filters around `inner`, built without quadratic copying."""
+    headers = []
+    size = len(inner)
+    for _ in range(levels):
+        header = b"\xa0" + ber_len(size)
+        headers.append(header)
+        size += len(header)
+    return b"".join(reversed(headers)) + inner
+
+
+ldap_eq = tlv(0xA3, tlv(0x04, b"uid") + tlv(0x04, b"alice"))
+write("ldap_filter", "search_equality", ldap_search(ldap_eq))
+write("ldap_filter", "search_present", ldap_search(tlv(0x87, b"objectClass")))
+write("ldap_filter", "search_and_or_not", ldap_search(tlv(0xA0,
+      ldap_eq + tlv(0xA1, tlv(0xA3, tlv(0x04, b"ou") + tlv(0x04, b"eng")) +
+                    tlv(0xA2, tlv(0x87, b"disabled"))))))
+write("ldap_filter", "search_substrings", ldap_search(tlv(0xA4,
+      tlv(0x04, b"cn") + tlv(0x30, tlv(0x80, b"al") + tlv(0x81, b"ic") + tlv(0x82, b"e")))))
+write("ldap_filter", "bind_simple",
+      tlv(0x30, tlv(0x02, b"\x01") + tlv(0x60, tlv(0x02, b"\x03") + tlv(0x04, b"cn=admin") +
+                                         tlv(0x80, b"secret"))))
+# render_filter stops at depth 32: the equality inside 32 `&`s is the first thing it elides.
+write("ldap_filter", "at_depth_limit", ldap_search(ldap_nested_and(32, ldap_eq)))
+# 60,000 levels at ~5 bytes each (~300 KiB, under the 1 MiB MAX_LDAP_MESSAGE, so it is framed
+# and reaches the renderer): with the depth check removed this overflows the fuzzer's 8 MiB
+# main thread (verified).
+write("ldap_filter", "depth_bomb", ldap_search(ldap_nested_and(60000, ldap_eq)))
+
+
+# --- ra_svn: tuples, and the nesting MAX_TUPLE_DEPTH bounds ---
+write("svn_tuple", "client_greeting",
+      b"( 2 ( edit-pipeline svndiff1 accepts-svndiff2 absent-entries depth mergeinfo log-revprops"
+      b" ) 32:svn://127.0.0.1/repo/trunk/proj 10:SVN/1.14.2 ( ) ) ")
+write("svn_tuple", "auth_anonymous", b"( ANONYMOUS ( 0: ) ) ")
+write("svn_tuple", "get_latest_rev", b"( get-latest-rev ( ) ) ")
+write("svn_tuple", "get_dir", b"( get-dir ( 0: ( ) true false ( kind size ) ) ) ")
+write("svn_tuple", "counted_string_with_newline", b"( check-path ( 5:a\nb c ( 12 ) ) ) ")
+write("svn_tuple", "two_commands", b"( get-latest-rev ( ) ) ( stat ( 0: ( ) ) ) ")
+# The reader refuses a 65th open list, so 64 closed lists is the deepest item it accepts.
+write("svn_tuple", "at_depth_limit", b"(" * 64 + b")" * 64)
+# 32,000 closed lists: two bytes a level, so it fits MAX_COMMAND_BYTES (64 KiB) and is a size
+# the server really admits. The reader is iterative, but the Item it builds is walked
+# recursively (Display, to_json, Drop); with MAX_TUPLE_DEPTH removed this overflows the
+# fuzzer's 8 MiB main thread (verified).
+write("svn_tuple", "depth_bomb", b"(" * 32000 + b")" * 32000)
+
+
+# --- XML-RPC: methodCalls, and the nesting MAX_VALUE_DEPTH bounds ---
+def xmlrpc_call(params):
+    return (b'<?xml version="1.0"?><methodCall><methodName>examples.getStateName</methodName>'
+            b"<params>" + b"".join(b"<param>" + p + b"</param>" for p in params) +
+            b"</params></methodCall>")
+
+
+def xmlrpc_nested_array(levels, inner):
+    return (b"<value><array><data>" * levels + inner +
+            b"</data></array></value>" * levels)
+
+
+write("xmlrpc_value", "int_param", xmlrpc_call([b"<value><i4>41</i4></value>"]))
+write("xmlrpc_value", "every_scalar", xmlrpc_call([
+    b"<value><int>-7</int></value>", b"<value><i8>9007199254740993</i8></value>",
+    b"<value><boolean>1</boolean></value>", b"<value><string>a &amp; b</string></value>",
+    b"<value><double>2.5</double></value>",
+    b"<value><dateTime.iso8601>19980717T14:08:55</dateTime.iso8601></value>",
+    b"<value><base64>aGVsbG8=</base64></value>", b"<value><nil/></value>",
+    b"<value>untyped</value>", b"<value/>"]))
+write("xmlrpc_value", "struct_and_array", xmlrpc_call([
+    b"<value><struct><member><name>id</name><value><int>1</int></value></member>"
+    b"<member><name>tags</name><value><array><data><value>a</value><value>b</value>"
+    b"</data></array></value></member></struct></value>"]))
+# 31 levels of <value><array> plus the innermost <value> is 63 frames, one under the guard.
+write("xmlrpc_value", "at_depth_limit",
+      xmlrpc_call([xmlrpc_nested_array(31, b"<value><i4>1</i4></value>")]))
+# 20,000 closed levels at 42 bytes each (~860 KB): the parser is iterative, but the
+# XmlRpcValue it builds is walked recursively (to JSON, and on drop); with MAX_VALUE_DEPTH
+# removed this overflows the fuzzer's 8 MiB main thread (verified; 16,000 already does).
+# It must stay under 1 MiB: libFuzzer caps the -max_len it infers from a corpus at 1 MiB and
+# silently TRUNCATES larger seeds, so a 40,000-level bomb (1.7 MB) arrived as malformed XML,
+# never reached the recursion, and ran 60 seconds "clean" with the guard removed.
+write("xmlrpc_value", "depth_bomb",
+      xmlrpc_call([xmlrpc_nested_array(20000, b"<value><i4>1</i4></value>")]))
+
+# --- Bolt: PackStream message bodies and chunked streams ----------------------
+# The shapes are what cypher-shell 2026.09 (neo4j-java-driver 6.2) was recorded sending; see
+# src/server/bolt/CLAUDE.md. The target decodes every input both as one message body and as a
+# chunked stream, so each message is seeded in both forms.
+def ps(v):
+    """A minimal PackStream encoder: None, bool, int, str, list, dict, and (tag, [fields])."""
+    if v is None:
+        return b"\xC0"
+    if v is True:
+        return b"\xC3"
+    if v is False:
+        return b"\xC2"
+    if isinstance(v, int):
+        if -16 <= v < 128:
+            return struct.pack(">b", v)
+        if -128 <= v < 128:
+            return b"\xC8" + struct.pack(">b", v)
+        if -32768 <= v < 32768:
+            return b"\xC9" + struct.pack(">h", v)
+        if -2**31 <= v < 2**31:
+            return b"\xCA" + struct.pack(">i", v)
+        return b"\xCB" + struct.pack(">q", v)
+    if isinstance(v, str):
+        b = v.encode()
+        if len(b) < 16:
+            return bytes([0x80 | len(b)]) + b
+        if len(b) < 256:
+            return b"\xD0" + bytes([len(b)]) + b
+        return b"\xD1" + struct.pack(">H", len(b)) + b
+    if isinstance(v, list):
+        head = bytes([0x90 | len(v)]) if len(v) < 16 else b"\xD4" + bytes([len(v)])
+        return head + b"".join(ps(x) for x in v)
+    if isinstance(v, dict):
+        head = bytes([0xA0 | len(v)]) if len(v) < 16 else b"\xD8" + bytes([len(v)])
+        return head + b"".join(ps(k) + ps(x) for k, x in v.items())
+    tag, fields = v
+    return bytes([0xB0 | len(fields), tag]) + b"".join(ps(f) for f in fields)
+
+
+def bolt_chunk(body):
+    out = b""
+    for i in range(0, len(body), 65535):
+        piece = body[i:i + 65535]
+        out += struct.pack(">H", len(piece)) + piece
+    return out + b"\x00\x00"
+
+
+BOLT_MESSAGES = {
+    "hello": (0x01, [{
+        "bolt_agent": {"product": "neo4j-java/6.2.1", "language": "Java/21",
+                       "platform": "Mac OS X; 27.0; aarch64"},
+        "user_agent": "neo4j-cypher-shell/v2026.09.0",
+        "routing": {"address": "127.0.0.1:7687"}}]),
+    "logon": (0x6A, [{"principal": "neo4j", "scheme": "basic", "credentials": "pw"}]),
+    "run": (0x10, ["MATCH (n:Person {name: $name}) RETURN n", {"name": "Alice", "n": [1, -2, 300]},
+                   {"tx_metadata": {"type": "user-direct", "app": "cypher-shell_v2026.09.0"},
+                    "db": "neo4j", "mode": "r"}]),
+    "pull": (0x3F, [{"n": 1000}]),
+    "pull_qid": (0x3F, [{"n": -1, "qid": 3}]),
+    "begin": (0x11, [{"mode": "r", "db": "movies", "tx_metadata": {"type": "user-direct"}}]),
+    "route": (0x66, [{"address": "127.0.0.1:7687"}, [], {}]),
+    "reset": (0x0F, []),
+    "goodbye": (0x02, []),
+}
+for name, message in BOLT_MESSAGES.items():
+    body = ps(message)
+    write("packstream_message", name, body)
+    write("packstream_message", name + "_chunked", bolt_chunk(body))
+write("packstream_message", "pipelined_run_pull",
+      bolt_chunk(ps(BOLT_MESSAGES["run"])) + b"\x00\x00" + bolt_chunk(ps(BOLT_MESSAGES["pull"])))
+# Parameters exactly at MAX_PACKSTREAM_DEPTH (message struct 1, parameter map 2, 30 lists).
+write("packstream_message", "at_depth_limit",
+      b"\xB3\x10\x81q\xA1\x81p" + b"\x91" * 30 + b"\x01\xA0")
+# 100,000 one-element lists (100 KB, under libFuzzer's 1 MiB inferred -max_len), as a bare body
+# and chunked: with the depth checks removed this overflows the fuzzer's 8 MiB main thread.
+BOLT_BOMB = b"\xB3\x10\x81q\xA1\x81p" + b"\x91" * 100000 + b"\xC0\xA0"
+write("packstream_message", "depth_bomb", BOLT_BOMB)
+write("packstream_message", "depth_bomb_chunked", bolt_chunk(BOLT_BOMB))
+write("packstream_message", "map_depth_bomb", b"\xA1\x81k" * 60000 + b"\xC0")
+write("packstream_message", "struct_depth_bomb", b"\xB1\x4E" * 60000 + b"\xC0")
+# Declared lengths four billion strong in five bytes: refused on the count, never allocated.
+for name, header in [("list32_huge", b"\xD6\xFF\xFF\xFF\xFF"),
+                     ("map32_huge", b"\xDA\xFF\xFF\xFF\xFF"),
+                     ("string32_huge", b"\xD2\xFF\xFF\xFF\xFF"),
+                     ("bytes32_huge", b"\xCE\xFF\xFF\xFF\xFF"),
+                     ("struct16_huge", b"\xDD\xFF\xFF\x4E")]:
+    write("packstream_message", name, header)
+    write("packstream_message", name + "_chunked", bolt_chunk(header))
+# A chunk stream that never sends its terminating zero chunk.
+write("packstream_message", "unterminated_chunks", (b"\xFF\xFF" + b"\x00" * 65535) * 3)
+
+
+total =sum(len(files) for _, _, files in os.walk(CORPUS))
+# --- zabbix: the ZBXD framing and the sender-data request ------------------
+def zbxd(payload, flags=0x01, declared=None, reserved=0):
+    n = len(payload) if declared is None else declared
+    if flags & 0x04:
+        return b"ZBXD" + bytes([flags]) + struct.pack("<QQ", n, reserved) + payload
+    return b"ZBXD" + bytes([flags]) + struct.pack("<II", n, reserved) + payload
+
+
+# Byte for byte what zabbix_sender 7.4 sent to a capture listener.
+write("zabbix_packet", "sender_one_value", zbxd(
+    b'{"request":"sender data","data":[{"host":"host1","key":"key1","value":"42"}],'
+    b'"clock":1790403191,"ns":583083000}'))
+write("zabbix_packet", "sender_batch", zbxd(
+    b'{"request":"sender data","data":[{"host":"host1","key":"key1","value":"1"},'
+    b'{"host":"host1","key":"key2","value":"two words"},{"host":"dflt","key":"key3","value":"3"}],'
+    b'"clock":1790403284,"ns":288425000}'))
+write("zabbix_packet", "large_header", zbxd(b'{"request":"sender data","data":[]}', flags=0x05))
+write("zabbix_packet", "response", zbxd(
+    b'{"response":"success","info":"processed: 1; failed: 0; total: 1; seconds spent: 0.000055"}'))
+write("zabbix_packet", "other_request", zbxd(b'{"request":"active checks","host":"web1"}'))
+write("zabbix_packet", "compressed", zbxd(b"x\x9c\x03\x00\x00\x00\x00\x01", flags=0x03))
+# Declared lengths past the 1 MiB bound, in both header forms: refused from the header alone.
+write("zabbix_packet", "huge_declared_len", zbxd(b"", declared=0xFFFFFFFF))
+write("zabbix_packet", "huge_declared_large", zbxd(b"", flags=0x05, declared=1 << 62))
+# A JSON nesting bomb in the body: serde_json's own recursion limit (128) must turn it into a
+# parse error. 65,536 levels overflow any stack if that limit is ever switched off.
+write("zabbix_packet", "depth_bomb", zbxd(b"[" * 65536 + b"]" * 65536))
+
+# --- gearman: the binary packet protocol and the admin lines ---------------
+def gearman(magic, ptype, *args, declared=None):
+    data = b"\0".join(args)
+    n = len(data) if declared is None else declared
+    return magic + struct.pack(">II", ptype, n) + data
+
+
+REQ = b"\0REQ"
+# Byte for byte what the gearman(1) CLI sent to a capture listener.
+write("gearman_packet", "submit_job", gearman(
+    REQ, 7, b"reverse", b"BE19BA24-7778-4CF6-BBFB-04CA7A3789E9", b"hello world"))
+write("gearman_packet", "submit_job_bg", gearman(
+    REQ, 18, b"reverse", b"CC4564F0-40CE-4753-A20D-75856AF9B5ED", b"bg job"))
+write("gearman_packet", "submit_job_high", gearman(REQ, 21, b"reverse", b"", b"high"))
+write("gearman_packet", "echo_req", gearman(REQ, 16, b"ping"))
+write("gearman_packet", "can_do", gearman(REQ, 1, b"reverse"))
+write("gearman_packet", "grab_job_all", gearman(REQ, 39))
+write("gearman_packet", "option_exceptions", gearman(REQ, 26, b"exceptions"))
+write("gearman_packet", "work_complete_res", gearman(b"\0RES", 13, b"H:netget:1", b"dlrow olleh"))
+write("gearman_packet", "admin_status", b"status\r\n")
+# A declared size past the 1 MiB bound: refused from the header alone.
+write("gearman_packet", "huge_declared_size", gearman(REQ, 7, declared=0xFFFFFFFF))
+# 65,536 NULs as a SUBMIT_JOB body: split_args splits only on the first two.
+write("gearman_packet", "nul_bomb", gearman(REQ, 7, b"\0" * 65536))
 
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %

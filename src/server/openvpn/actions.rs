@@ -197,6 +197,7 @@ impl Protocol for OpenvpnProtocol {
             // unprivileged), so nothing here needs elevation. Declaring Root, as
             // this protocol used to, made it unstartable for no benefit.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_udp_port(1194)
             .implementation(
                 "Control channel only. Decodes the OpenVPN UDP wire format (P_CONTROL_*, \
                  P_ACK_V1, P_DATA_V1/V2); implements the reliability layer (packet ids, ACK \

@@ -135,7 +135,6 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/client/http_proxy/e2e_test.rs", 2),
     ("tests/client/isis/e2e_test.rs", 5),
     ("tests/client/maven/e2e_test.rs", 5),
-    ("tests/client/mqtt/e2e_test.rs", 9),
     ("tests/client/nfs/e2e_test.rs", 4),
     ("tests/client/oauth2/e2e_test.rs", 5),
     ("tests/client/ollama/e2e_test.rs", 5),
@@ -146,7 +145,6 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/client/smb/e2e_test.rs", 4),
     ("tests/client/snmp/e2e_test.rs", 6),
     ("tests/client/socks5/e2e_test.rs", 1),
-    ("tests/client/ssh/e2e_test.rs", 5),
     ("tests/client/stomp/e2e_test.rs", 2),
     ("tests/client/tor/e2e_test.rs", 2),
     ("tests/client/wireguard/e2e_test.rs", 4),
@@ -158,6 +156,7 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/server/icmp/e2e_test.rs", 1),
     ("tests/server/igmp/e2e_test.rs", 1),
     ("tests/server/isis/e2e_test.rs", 3),
+    ("tests/server/mqtt/connection_bounds_test.rs", 1), // PINGREQ once a second is the cadence under test
     ("tests/server/openvpn/e2e_test.rs", 1),
     ("tests/server/rip/e2e_test.rs", 3),
     ("tests/server/rtp/e2e_test.rs", 1),

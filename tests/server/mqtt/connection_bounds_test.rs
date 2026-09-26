@@ -1,4 +1,5 @@
-//! The connection cap on a real, running MQTT broker, driven from the wire.
+//! The connection cap and the read deadlines on a real, running MQTT broker, driven from the
+//! wire.
 //!
 //! An MQTT connection is a *session*, not a request: a subscriber holds its socket open for the
 //! life of the application, so this broker's live-connection count is its client count rather
@@ -24,6 +25,25 @@
 //! over-cap peer is then admitted and, having sent no CONNECT, is answered with nothing — so
 //! the `read_to_end` times out and the test fails on "was neither answered nor closed".
 //!
+//! # The read deadlines
+//!
+//! Each asserted from the peer's side, with the startup parameters set short:
+//!
+//! * **No CONNECT within `first_byte_timeout_secs`** — the peer is closed (3.1.1 §3.1.4).
+//! * **A session with a non-zero Keep Alive** is closed after 1.5x of it with no packet from the
+//!   client (§3.1.2.10, a MUST), and a session that keeps sending PINGREQ inside that window is
+//!   *not* closed. The other two bounds are set long, so a test that passed on either of them
+//!   would time out instead.
+//! * **A session that declared Keep Alive 0** is closed at `idle_timeout_secs` instead, so the
+//!   client cannot switch the bound off in its own CONNECT.
+//! * **A packet parked for a human keeps its session**, far past 1.5x Keep Alive: packets are
+//!   dispatched inline, so the read — and the deadline around it — is not running while the
+//!   answer is composed.
+//!
+//! Removing the `timeout` around the read in `handle_mqtt_connection` makes the first three
+//! hang to their windows; the fourth is the pin against the deadline being moved outward to
+//! cover dispatch as well.
+//!
 //! The broker is model-free: an empty instruction really is model-free, where `None` is replaced
 //! by a default one. MQTT is client-speaks-first, so a peer that never sends CONNECT provokes no
 //! model call. Loopback only.
@@ -38,7 +58,7 @@ use std::time::Duration;
 use netget::cli::management::ServerForm;
 use netget::state::app_state::AppState;
 use netget::state::ServerId;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
@@ -73,11 +93,27 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 }
 
 async fn start_server(state: &AppState) -> (ServerId, u16) {
+    // The admitted peers send no CONNECT; keep them past the connect bound for the whole test.
+    start_server_with(
+        state,
+        serde_json::json!({"first_byte_timeout_secs": 300}),
+        vec![],
+    )
+    .await
+}
+
+async fn start_server_with(
+    state: &AppState,
+    startup_params: serde_json::Value,
+    event_handlers: Vec<serde_json::Value>,
+) -> (ServerId, u16) {
     let (tx, _rx) = mpsc::unbounded_channel();
     let server_id = ServerForm {
         protocol: "mqtt".to_string(),
         port: Some(0),
         instruction: Some(String::new()),
+        startup_params: Some(startup_params),
+        event_handlers: Some(event_handlers),
         ..Default::default()
     }
     .create(state, tx)
@@ -163,5 +199,213 @@ async fn the_connection_past_the_cap_gets_connack_server_unavailable_and_the_slo
         admitted,
         "the cap never freed its slot after an admitted connection ended — the permit is being \
          held past the life of the connection, which wedges the broker shut"
+    );
+}
+
+/// An MQTT 3.1.1 CONNECT with clean session and the given Keep Alive.
+fn connect_packet(keep_alive: u16) -> Vec<u8> {
+    let client_id = b"bounds";
+    let mut body = vec![0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02];
+    body.extend_from_slice(&keep_alive.to_be_bytes());
+    body.extend_from_slice(&(client_id.len() as u16).to_be_bytes());
+    body.extend_from_slice(client_id);
+    let mut packet = vec![0x10, body.len() as u8];
+    packet.extend_from_slice(&body);
+    packet
+}
+
+const CONNACK_ACCEPTED: [u8; 4] = [0x20, 0x02, 0x00, 0x00];
+const PINGREQ: [u8; 2] = [0xC0, 0x00];
+
+/// Every CONNECT is accepted by a static rule — no model — so what follows is a live session.
+fn accept_every_connect() -> serde_json::Value {
+    serde_json::json!({
+        "event_pattern": "mqtt_connect",
+        "handler": {
+            "type": "static",
+            "actions": [{"type": "mqtt_connack", "return_code": 0, "session_present": false}]
+        }
+    })
+}
+
+async fn connected_session(port: u16, keep_alive: u16) -> TcpStream {
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    peer.write_all(&connect_packet(keep_alive))
+        .await
+        .expect("write CONNECT");
+    let mut connack = [0u8; 4];
+    tokio::time::timeout(Duration::from_secs(20), peer.read_exact(&mut connack))
+        .await
+        .expect("no CONNACK within 20s")
+        .expect("read CONNACK");
+    assert_eq!(
+        connack, CONNACK_ACCEPTED,
+        "the static rule did not accept the CONNECT"
+    );
+    peer
+}
+
+async fn has_live_connection(state: &AppState, id: ServerId) -> bool {
+    state
+        .get_server(id)
+        .await
+        .map(|s| {
+            s.connections
+                .values()
+                .any(|c| !matches!(c.status, netget::state::server::ConnectionStatus::Closed))
+        })
+        .unwrap_or(false)
+}
+
+/// Read until EOF and say how long it took, or `None` if it never came inside `window`.
+async fn time_to_eof(peer: &mut TcpStream, window: Duration) -> Option<Duration> {
+    let started = std::time::Instant::now();
+    let mut sink = Vec::new();
+    match tokio::time::timeout(window, peer.read_to_end(&mut sink)).await {
+        Ok(_) => Some(started.elapsed()),
+        Err(_) => None,
+    }
+}
+
+#[tokio::test]
+async fn a_peer_that_never_sends_connect_is_closed_at_the_connect_bound() {
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        serde_json::json!({"first_byte_timeout_secs": 4}),
+        vec![],
+    )
+    .await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    let elapsed = time_to_eof(&mut peer, Duration::from_secs(50))
+        .await
+        .expect("a peer that sent no CONNECT was never closed — the connect bound is not applied");
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "closed after {}ms, which is not the declared 4s bound",
+        elapsed.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn a_silent_session_is_closed_at_one_and_a_half_times_its_keep_alive() {
+    let state = new_state().await;
+    // Both other bounds are set long: a test that passed on either of them times out instead.
+    let (_, port) = start_server_with(
+        &state,
+        serde_json::json!({"first_byte_timeout_secs": 120, "idle_timeout_secs": 120}),
+        vec![accept_every_connect()],
+    )
+    .await;
+
+    // Keep Alive 2s: the broker must close after 3s with nothing from the client.
+    let mut peer = connected_session(port, 2).await;
+    let elapsed = time_to_eof(&mut peer, Duration::from_secs(50))
+        .await
+        .expect("a session silent past 1.5x its Keep Alive was never closed (3.1.1 §3.1.2.10)");
+    assert!(
+        elapsed >= Duration::from_millis(2500) && elapsed < Duration::from_secs(40),
+        "closed after {}ms; 1.5x a 2-second Keep Alive is 3s",
+        elapsed.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn a_session_that_keeps_pinging_is_not_closed() {
+    let state = new_state().await;
+    let (server_id, port) = start_server_with(
+        &state,
+        serde_json::json!({"first_byte_timeout_secs": 120, "idle_timeout_secs": 120}),
+        vec![accept_every_connect()],
+    )
+    .await;
+
+    let mut peer = connected_session(port, 2).await;
+    // Eight seconds of PINGREQ every second — well past 1.5x Keep Alive in total, never past it
+    // between packets. Each PINGRESP is read back, so a closed connection fails here.
+    for i in 0..8 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        peer.write_all(&PINGREQ).await.expect("write PINGREQ");
+        let mut pingresp = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(10), peer.read_exact(&mut pingresp))
+            .await
+            .unwrap_or_else(|_| panic!("no PINGRESP to ping {i}"))
+            .unwrap_or_else(|e| {
+                panic!("the broker closed a session that was pinging inside its Keep Alive: {e}")
+            });
+        assert_eq!(
+            pingresp,
+            [0xD0, 0x00],
+            "ping {i} was not answered with PINGRESP"
+        );
+    }
+    assert!(
+        has_live_connection(&state, server_id).await,
+        "the broker no longer has a live connection for a session that kept pinging"
+    );
+}
+
+#[tokio::test]
+async fn keep_alive_zero_falls_back_to_the_idle_bound_rather_than_to_no_bound() {
+    let state = new_state().await;
+    let (_, port) = start_server_with(
+        &state,
+        serde_json::json!({"first_byte_timeout_secs": 120, "idle_timeout_secs": 3}),
+        vec![accept_every_connect()],
+    )
+    .await;
+
+    let mut peer = connected_session(port, 0).await;
+    let elapsed = time_to_eof(&mut peer, Duration::from_secs(50))
+        .await
+        .expect(
+            "a Keep Alive 0 session was never closed — the client switched the bound off in its \
+             own CONNECT",
+        );
+    assert!(
+        elapsed >= Duration::from_millis(1500) && elapsed < Duration::from_secs(40),
+        "closed after {}ms, which is not the declared 3s idle bound",
+        elapsed.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn a_packet_parked_for_a_human_keeps_its_session() {
+    let state = new_state().await;
+    let (server_id, port) = start_server_with(
+        &state,
+        serde_json::json!({"first_byte_timeout_secs": 120, "idle_timeout_secs": 120}),
+        vec![
+            accept_every_connect(),
+            serde_json::json!({
+                "event_pattern": "*",
+                "handler": {"type": "manual", "timeout_secs": 600}
+            }),
+        ],
+    )
+    .await;
+
+    // Keep Alive 2s, then a SUBSCRIBE whose SUBACK is parked for a human. The client sends
+    // nothing more: it is waiting for the SUBACK, which is the broker's to send.
+    let mut peer = connected_session(port, 2).await;
+    peer.write_all(&[0x82, 0x06, 0x00, 0x01, 0x00, 0x01, b't', 0x00])
+        .await
+        .expect("write SUBSCRIBE");
+
+    // Four times the 3-second keep-alive bound, well inside the 600-second window.
+    let closed = time_to_eof(&mut peer, Duration::from_secs(12)).await;
+    assert!(
+        closed.is_none(),
+        "the broker closed a session after {closed:?} while its SUBACK was parked for a human — \
+         the keep-alive deadline is covering dispatch as well as the read"
+    );
+    assert!(
+        has_live_connection(&state, server_id).await,
+        "the broker no longer has a live connection for a session whose answer is parked"
     );
 }

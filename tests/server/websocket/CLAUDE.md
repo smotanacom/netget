@@ -43,6 +43,16 @@ same crate the server frames with. This is what the WebSocket server's `Beta` ra
 | `test_websocket_subprotocol_and_rejection` | the model picks one offered subprotocol and it is echoed; a declined upgrade returns the handler's own status | 4 |
 | `test_websocket_with_websocat` | a real external client gets the unprompted greeting and its echo | 1 |
 | `test_websocket_handshake_backend_failure_is_tagged_fail_closed` | an unanswerable `websocket_handshake` is refused with 503, logged `decision=fail_closed_llm_error`, and never as `decision=model_reject` | 1 + one deliberately failing event |
+| `connection_bounds_test::the_handshake_past_the_cap_gets_a_503_and_the_slot_comes_back` | 256 upgrades admitted, the 257th gets 503, closing one frees one slot | 0 |
+| `connection_bounds_test::an_upgraded_peer_that_never_answers_the_keepalive_is_closed_with_1001` | a raw peer that never writes after the upgrade is sent the `netget-keepalive` Ping, then Close 1001, then EOF, at `idle_timeout_secs` (2s here) | 0 |
+| `connection_bounds_test::a_client_that_only_answers_pings_is_not_closed` | a tokio-tungstenite client that sends nothing but its automatic Pongs is kept for five idle bounds and pinged at least twice | 0 |
+| `connection_bounds_test::a_message_parked_for_a_human_keeps_its_connection` | a text message routed to `manual` keeps its connection for four idle bounds, and the busy connection is sent nothing — no Ping, no Close | 0 |
+
+The three idle tests were verified by removal: with the watchdog arm disabled the first two
+fail; with the keepalive Ping removed a live client is closed; with the `busy()` guards removed
+the parked connection is sent Close 1001. The tungstenite client in the second is not circular
+evidence in the sense the header warns about — it asserts this server's keepalive schedule, not
+its framing.
 
 ### `test_websocket_wire_protocol_against_raw_client`
 

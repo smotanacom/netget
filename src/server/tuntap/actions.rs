@@ -679,6 +679,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("utun7"),
+                default: None,
             },
             ParameterDefinition {
                 name: "mode".to_string(),
@@ -691,6 +692,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("tun"),
+                default: None,
             },
             ParameterDefinition {
                 name: "address".to_string(),
@@ -702,6 +704,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("10.7.0.1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "netmask".to_string(),
@@ -712,6 +715,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("255.255.255.0"),
+                default: None,
             },
             ParameterDefinition {
                 name: "mtu".to_string(),
@@ -719,6 +723,7 @@ impl Protocol for TunTapProtocol {
                 description: "Interface MTU, 576-65535. Default 1500.".to_string(),
                 required: false,
                 example: json!(1500),
+                default: None,
             },
             ParameterDefinition {
                 name: "packet_filter".to_string(),
@@ -738,6 +743,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("icmp"),
+                default: None,
             },
             ParameterDefinition {
                 name: "llm_escalation".to_string(),
@@ -752,6 +758,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("unhandled"),
+                default: None,
             },
             ParameterDefinition {
                 name: "llm_max_per_minute".to_string(),
@@ -766,6 +773,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!(6),
+                default: None,
             },
             ParameterDefinition {
                 name: "packet_information".to_string(),
@@ -783,6 +791,7 @@ impl Protocol for TunTapProtocol {
                         .to_string(),
                 required: false,
                 example: json!("auto"),
+                default: None,
             },
         ]
     }

@@ -29,7 +29,14 @@ client-first, so it could never have been honoured.
 | `database` | the `$db` field, or `admin` |
 | `collection` | the *value* of the command key (`{find: "users"}` ⇒ `"users"`), or null |
 | `filter` | the `filter` sub-document as relaxed extended JSON, or null |
-| `document` | the `documents` or `document` field as relaxed extended JSON, or null |
+| `document` | the `documents` or `document` field as relaxed extended JSON, or null — for `insert`, the array of documents |
+| `updates` | `update`'s statements (`[{q, u, multi, upsert}, …]`), or null |
+| `deletes` | `delete`'s statements (`[{q, limit}, …]`), or null |
+
+These three are read after kind-1 document sequences have been merged into the
+command (see "Wire format"), so they are the same whether a driver sent its
+arrays inline or — as the Rust driver does for `insert_many`, `update_one` and
+`delete_one` — as sequences.
 
 `mongodb_disconnected`, once when the socket closes:
 
@@ -142,7 +149,25 @@ E2E tests failed at the connection step.
 Request header (16 bytes, little-endian):
 `messageLength | requestID | responseTo | opCode`
 
-Request body for OP_MSG (2013): `flagBits (4) | sectionKind (1) | BSON document`.
+Request body for OP_MSG (2013): `flagBits (4) | sections… | [checksum (4)]`.
+
+- **kind 0**, exactly one: the command's body document.
+- **kind 1**, zero or more: a document sequence — `int32 size` (counting itself),
+  a C-string identifier, then BSON documents filling the rest of `size`. Drivers
+  send `insert`'s `documents`, `update`'s `updates` and `delete`'s `deletes` this
+  way. `parse_op_msg_sections` merges each into the command as the array field its
+  identifier names, so everything downstream sees one document. A sequence whose
+  field the body also carries is refused, as the wire protocol requires.
+- `flagBits` bits 0-15 are *required*: bit 0 (`checksumPresent`) is understood
+  (the trailing CRC-32C is stripped, **not verified** — NetGet implements no
+  CRC-32C), and any other required bit closes the connection.
+
+Every document — the body and each sequence member — goes through the depth scan
+below before `bson` sees it. A sequence member is scanned against
+`MAX_BSON_DEPTH - 2`, because merging puts it inside an array inside the command,
+and the merged document must stay within `MAX_BSON_DEPTH` for the recursive walks
+downstream. How many documents one message may carry is bounded by
+`MAX_MESSAGE_SIZE` (48 MB), the bound on the body the parser is handed.
 
 Response: `messageLength | requestID=0 | responseTo=<requestID> | opCode=2013`,
 then `flagBits=0 | sectionKind=0 | BSON document`.
@@ -177,8 +202,8 @@ seven bytes a level, and measured against 3.0.0 a **debug** build overflows a
 `OP_MSG` of an unauthenticated connection went straight to it, so ten kilobytes
 killed the whole process — a `SIGSEGV` on the guard page, not a panic.
 
-`parse_op_msg` now runs `crate::utils::bson_depth::scan_bson_document` on the
-kind-0 section first: an iterative walk, the end offset of each open document in
+`parse_op_msg` runs `crate::utils::bson_depth::scan_bson_document` on every
+document in the message — the kind-0 body and each kind-1 sequence member — first: an iterative walk, the end offset of each open document in
 a fixed 64-slot array, every element sized exactly as `bson`'s own
 `RawIter::get_next_kvp` sizes it, every length checked against the document that
 contains it. `Complete` is decoded (and only the bytes the scan measured, so
@@ -238,7 +263,10 @@ is *not* closed.
 
 Anything other than opCode 2013 closes the connection rather than being skipped —
 skipping left the client waiting forever for a reply it could parse. OP_QUERY
-(2004), OP_COMPRESSED (2012) and section kind 1 are all rejected this way.
+(2004) and OP_COMPRESSED (2012) are rejected this way, as is an OP_MSG that is
+malformed: an unknown section kind, a document sequence whose size disagrees with
+the message, a second kind-0 section, a field supplied both inline and as a
+sequence, or an unknown required flag bit.
 
 ## Architecture
 
@@ -308,8 +336,8 @@ same first/idle pair `mssql`, `db2` and `whois` use.
 
 - **Authentication** (SCRAM), **TLS**, **compression** (OP_COMPRESSED),
   **checksums**.
-- **OP_MSG section kind 1** (document sequences) — a bulk insert that uses them
-  is rejected.
+- **OP_MSG checksum verification** — a `checksumPresent` checksum is stripped,
+  not checked.
 - **Cursors** — `find_response` always returns `id: 0`, i.e. a single batch;
   `getMore` has no action.
 - **Aggregation, transactions, change streams, GridFS, indexes, sharding,
@@ -323,6 +351,15 @@ Five cases: find, insert, update, delete, error. All pass.
 
 `peer_inject_test.rs` needs only `mongodb-server` — it speaks raw OP_MSG rather
 than driving the client crate, so it is gated on the server feature alone.
+
+`document_sequence_test.rs`: the official driver's `insert_many`, `update_one`
+and `delete_one` send their arrays as kind-1 sequences, and a mock rule accepts
+each only if `document` / `updates` / `deletes` carries what the driver sent;
+raw OP_MSG then pins the merge (echoed back through a `script` rule), the
+checksum strip, the duplicate-field refusal, an unknown required flag, and the
+depth scan on a sequence member (62 levels answered, 63 refused, 10 000 answered
+with `Overflow`). With the merge removed, the driver's `insert_many` reaches the
+model as `"document": null`, which is how the test was verified.
 
 `bson_depth_test.rs`, also raw OP_MSG and server-only: a 10 000-level command
 gets the `Overflow` reply and both the same connection and a fresh one still

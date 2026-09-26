@@ -33,7 +33,8 @@ sides.
 | `websocket_client_binary_message` | a binary message; `data` + `encoding` round-trip | same |
 | `websocket_client_closed` | the server closed | **`with_no_actions()`** — nothing can go on the wire after the closing handshake, so the common actions (`show_message`, `set_memory`, `append_to_log`) are the only honest vocabulary |
 
-Pings from the server are answered automatically and pongs are logged, neither raises an event.
+Pings from the server are answered automatically — by the read loop, which keeps polling while a
+turn runs — and pongs are logged; neither raises an event.
 
 ## Startup parameters
 
@@ -49,14 +50,41 @@ All three are declared and read.
 `https://` address fails immediately with an explanatory error rather than being silently
 downgraded.
 
-## Connection state machine
+## Two tasks: the read loop and the model
 
-Same Idle → Processing → Accumulating machine as the server, with the same
-`wait_for_websocket_data` semantics (hold this message, join the next of the same kind onto it).
+A model turn can take minutes — a `manual` rule parks it for a human for up to 300s by default —
+and tungstenite answers a server's Ping only when the stream is polled: reading a Ping queues the
+Pong, and the *next* read flushes it. A server with a liveness bound (NetGet's own closes a peer
+that sends no frame, not even a Pong, for `idle_timeout_secs`) hangs up on a client that stops
+reading while it thinks. So `connect_with_llm_actions` returns as soon as the handshake is done,
+and the connection runs on two tasks, both registered with `spawn_client_task`:
+
+1. **The read loop** only reads. Text and binary messages go onto the turn queue; a Close frame
+   queues `websocket_client_closed` behind them and ends the loop; a socket error ends it and
+   aborts the turn task, since there is nothing left to answer on.
+2. **`run_model_turns`** answers the queue one turn at a time, in order:
+   `websocket_client_connected` first (queued before either task starts), then each message,
+   then the close.
+
+One consumer is what keeps two turns from overlapping on a connection. The Idle → Processing →
+Accumulating machine is still there for `wait_for_websocket_data` (hold this message, join the
+next of the same kind onto it); messages that arrive during a turn wait in the queue.
+
+**The queue is bounded two ways and never blocks the read loop**, because a read loop that
+waits for room stops answering Pings again: 256 messages (`TURN_QUEUE_CAPACITY`) and 16 MiB of
+queued payload (`TURN_QUEUE_MAX_BYTES` — the count alone is no memory bound when tungstenite's
+default message limit is 64 MiB). A message that does not fit is dropped with a WARN carrying
+`decision=turn_queue_full`. One message larger than 16 MiB is still accepted into an empty
+queue, so the byte bound never acts as a second, undeclared message-size limit.
+
 The `SplitSink` lives behind an `Arc<Mutex<_>>`. LLM-produced actions send a `WsOut` down an
 `mpsc` channel that a single writer task drains, so no lock is held across an LLM call; injected
 commands write through the same sink themselves (see below). A frame is written under the lock,
 so the two producers can never interleave halves of a frame.
+
+`tests/client/websocket/keepalive_test.rs` holds this against a NetGet WebSocket server with a
+2-second liveness bound: the connected turn and a message turn are each parked for ten seconds,
+and the server still holds the connection and receives each answer.
 
 ## Validation
 
@@ -83,9 +111,10 @@ comes back byte-for-byte when the event's `data` and `encoding` are fed straight
 Adopted. `AppState::send_to_client(client_id, action, timeout)` executes an action inside the
 running client and answers with a `ClientSendOutcome`.
 
-- The channel is registered **before** the `websocket_client_connected` LLM call, which a manual
-  `*` rule parks until a human answers it. `tests/client/websocket/command_channel_test.rs`
-  guards that with `wait_for_client_handle` before it sends anything.
+- The channel is registered **before** the turn task starts, and so before the
+  `websocket_client_connected` LLM call, which a manual `*` rule parks until a human answers it.
+  `tests/client/websocket/command_channel_test.rs` guards that with `wait_for_client_handle`
+  before it sends anything.
 - `command_loop` (in `mod.rs`) executes the action through
   `WebSocketClientProtocol::for_connection` against a **private** frame channel it drains
   synchronously, then writes those frames itself through the shared sink. So the frame encoding,
@@ -100,5 +129,4 @@ running client and answers with a `ClientSendOutcome`.
 | `Disconnected` | `close_websocket` (the closing frame goes out first) or `disconnect` |
 
 On disconnect — and on a write error — the loop closes the sink and drops the command handle
-itself rather than waiting for the read loop, which may still be inside the
-`websocket_client_closed` LLM call.
+itself rather than waiting for the read loop to see the connection end.

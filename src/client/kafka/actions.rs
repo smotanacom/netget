@@ -493,6 +493,7 @@ impl Protocol for KafkaClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("netget-kafka-client"),
+                default: None,
             },
             ParameterDefinition {
                 name: "topics".to_string(),
@@ -503,6 +504,7 @@ impl Protocol for KafkaClientProtocol {
                 type_hint: "array".to_string(),
                 required: false,
                 example: json!(["orders"]),
+                default: None,
             },
             ParameterDefinition {
                 name: "partition".to_string(),
@@ -513,6 +515,7 @@ impl Protocol for KafkaClientProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "start_offset".to_string(),
@@ -523,6 +526,7 @@ impl Protocol for KafkaClientProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "poll_interval_ms".to_string(),
@@ -531,6 +535,7 @@ impl Protocol for KafkaClientProtocol {
                 type_hint: "integer".to_string(),
                 required: false,
                 example: json!(1000),
+                default: None,
             },
             ParameterDefinition {
                 name: "group_id".to_string(),
@@ -539,6 +544,7 @@ impl Protocol for KafkaClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("netget-consumer-group"),
+                default: None,
             },
         ]
     }

@@ -380,6 +380,7 @@ impl Protocol for VncClientProtocol {
             description: "VNC password (optional, for VNC authentication)".to_string(),
             required: false,
             example: json!("mypassword"),
+            default: None,
         }]
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {

@@ -49,6 +49,7 @@ impl Protocol for IppProtocol {
                 .to_string(),
             required: false,
             example: serde_json::json!(false),
+            default: None,
         }]
     }
 
@@ -87,6 +88,7 @@ impl Protocol for IppProtocol {
             // preflight check in server_startup.rs should fire rather than letting the bind
             // fail with a bare EPERM.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(631))
+            .well_known_port(631)
             .implementation("hyper HTTP/1 + manual IPP (RFC 8010) attribute encoding")
             .llm_control("IPP status code, printer attributes, job attributes, HTTP status")
             .e2e_testing("ipptool / curl --data-binary, and tests/server/ipp/test.rs")

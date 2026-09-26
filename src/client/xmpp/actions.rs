@@ -125,6 +125,7 @@ impl Protocol for XmppClientProtocol {
                 description: "JID (Jabber ID) to connect as (e.g., user@example.com)".to_string(),
                 required: false,
                 example: serde_json::json!("alice@example.com"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "password".to_string(),
@@ -132,6 +133,7 @@ impl Protocol for XmppClientProtocol {
                 description: "Password for authentication".to_string(),
                 required: false,
                 example: serde_json::json!("secret"),
+                default: None,
             },
         ]
     }

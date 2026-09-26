@@ -90,6 +90,7 @@ impl Protocol for DnsProtocol {
             // implements, which is plain UDP DNS with one record per answer.
             .state(DevelopmentState::Stable)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(53))
+            .well_known_udp_port(53)
             .implementation("hickory-proto for parsing and construction; UDP only, no TCP fallback")
             .llm_control("Response records (A, AAAA, MX, TXT, CNAME, NXDOMAIN)")
             .e2e_testing(

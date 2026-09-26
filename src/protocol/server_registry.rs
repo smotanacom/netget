@@ -168,6 +168,21 @@ impl ServerRegistry {
         #[cfg(feature = "ident")]
         self.register(Arc::new(crate::server::IdentProtocol::new()));
 
+        #[cfg(feature = "gemini")]
+        self.register(Arc::new(crate::server::GeminiProtocol::new()));
+
+        #[cfg(feature = "dict")]
+        self.register(Arc::new(crate::server::DictProtocol::new()));
+
+        #[cfg(feature = "beanstalkd")]
+        self.register(Arc::new(crate::server::BeanstalkdProtocol::new()));
+
+        #[cfg(feature = "zabbix")]
+        self.register(Arc::new(crate::server::ZabbixProtocol::new()));
+
+        #[cfg(feature = "gearman")]
+        self.register(Arc::new(crate::server::GearmanProtocol::new()));
+
         #[cfg(feature = "gopher")]
         self.register(Arc::new(crate::server::GopherProtocol::new()));
 
@@ -377,6 +392,18 @@ impl ServerRegistry {
 
         #[cfg(feature = "kubernetes-server")]
         self.register(Arc::new(crate::server::KubernetesProtocol::new()));
+
+        #[cfg(feature = "prometheus")]
+        self.register(Arc::new(crate::server::PrometheusProtocol::new()));
+
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::server::DockerProtocol::new()));
+
+        #[cfg(feature = "vault")]
+        self.register(Arc::new(crate::server::VaultProtocol::new()));
+
+        #[cfg(feature = "bolt")]
+        self.register(Arc::new(crate::server::BoltProtocol::new()));
 
         #[cfg(feature = "ipp")]
         self.register(Arc::new(crate::server::IppProtocol::new()));
@@ -1173,6 +1200,11 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("STOMP", "stomp"),
     ("Ident", "ident"),
     ("Gopher", "gopher"),
+    ("DICT", "dict"),
+    ("Beanstalkd", "beanstalkd"),
+    ("Zabbix", "zabbix"),
+    ("Gearman", "gearman"),
+    ("Gemini", "gemini"),
     ("Finger", "finger"),
     ("SSDP", "ssdp"),
     ("LLMNR", "llmnr"),
@@ -1216,6 +1248,10 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("NPM", "npm"),
     ("OCI-Registry", "oci-registry"),
     ("Kubernetes", "kubernetes-server"),
+    ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
+    ("Vault", "vault"),
+    ("Bolt", "bolt"),
     ("IPP", "ipp"),
     ("WebDAV", "webdav"),
     ("NFS", "nfs"),

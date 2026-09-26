@@ -133,6 +133,7 @@ impl Protocol for NdpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
             ParameterDefinition {
                 name: "udp_peer".to_string(),
@@ -143,6 +144,7 @@ impl Protocol for NdpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("127.0.0.1:34567"),
+                default: None,
             },
             ParameterDefinition {
                 name: "link_local_address".to_string(),
@@ -156,6 +158,7 @@ impl Protocol for NdpProtocol {
                 ),
                 required: false,
                 example: json!("fe80::1"),
+                default: None,
             },
             ParameterDefinition {
                 name: "link_layer_address".to_string(),
@@ -169,6 +172,7 @@ impl Protocol for NdpProtocol {
                 ),
                 required: false,
                 example: json!("02:00:00:00:00:01"),
+                default: None,
             },
         ]
     }

@@ -224,6 +224,27 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ident dissector, so naming one would be a lie and plain TCP is the honest answer.
         "finger" => tcp("finger"),
         "gopher" => tcp("gopher"),
+        // DICT (RFC 2229, TCP 2628) has no dissector in this Wireshark build: `tshark -G
+        // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
+        // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
+        "dict" => PLAIN_TCP,
+        // Neo4j's Bolt (TCP 7687) has no dissector in this Wireshark build (4.6.8): `tshark -G
+        // protocols` lists nothing matching bolt, neo4j or packstream. Plain TCP; the chunked
+        // PackStream is binary, so "Follow TCP Stream" in hex is what a capture offers.
+        "bolt" => PLAIN_TCP,
+        // Beanstalkd (TCP 11300) has no dissector in this Wireshark build: `tshark -G protocols`
+        // lists none. Plain TCP; its text protocol reads fine in "Follow TCP Stream".
+        "beanstalkd" => PLAIN_TCP,
+        // Zabbix trapper (TCP 10051). `zabbix` is Wireshark's own dissector for the ZBXD
+        // framing (`tshark -G protocols` lists it; checked with `-d tcp.port==10051,zabbix`).
+        "zabbix" => tcp("zabbix"),
+        // Gearman (TCP 4730). `gearman` is Wireshark's own dissector for the binary packet
+        // protocol (`tshark -G protocols` lists it; checked with `-d tcp.port==4730,gearman`).
+        "gearman" => tcp("gearman"),
+        // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
+        // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
+        // capture can show without the session keys.
+        "gemini" => tcp("tls"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
@@ -235,7 +256,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),

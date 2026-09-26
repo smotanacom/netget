@@ -40,6 +40,20 @@ pub enum SshApplied {
     Disconnected,
 }
 
+/// How the client authenticates, decided from the startup parameters before connecting.
+enum SshCredential {
+    Password(String),
+    PublicKey(Arc<key::KeyPair>),
+}
+
+/// How many action -> command -> output -> action turns one client will take.
+///
+/// Every command's output goes back to the model, whose answer may be another command, so the
+/// chain is self-referential and needs a bound rather than silence. Four matches the database
+/// and directory clients; the output at the bound is shown to the model and its answer is
+/// dropped with a warning.
+const MAX_FOLLOWUP_DEPTH: usize = 4;
+
 /// SSH client handler
 struct ClientHandler;
 
@@ -76,23 +90,43 @@ impl SshClient {
 
         let username = params.get_string("username")?;
         let password = params.get_optional_string("password")?;
+        let private_key_path = params.get_optional_string("private_key_path")?;
+        let private_key_passphrase = params.get_optional_string("private_key_passphrase")?;
+        // A key path with no explicit method means public-key auth: naming a key and then
+        // being asked for a password would be the surprising reading.
         let auth_method = params
             .get_optional_string("auth_method")?
-            .unwrap_or_else(|| "password".to_string());
+            .unwrap_or_else(|| {
+                if private_key_path.is_some() {
+                    "publickey".to_string()
+                } else {
+                    "password".to_string()
+                }
+            });
 
-        if auth_method != "password" {
-            return Err(anyhow::anyhow!(
-                "Only password authentication is currently supported"
-            ));
-        }
-
-        if password.is_none() {
-            return Err(anyhow::anyhow!(
-                "Password is required for password authentication"
-            ));
-        }
-
-        let password = password.unwrap();
+        // Decide the credential before touching the network, so a missing password or an
+        // unreadable key is reported as that rather than as a failed handshake.
+        let credential = match auth_method.as_str() {
+            "password" => SshCredential::Password(
+                password
+                    .context("auth_method 'password' needs the 'password' startup parameter")?,
+            ),
+            "publickey" => {
+                let path = private_key_path.context(
+                    "auth_method 'publickey' needs the 'private_key_path' startup parameter",
+                )?;
+                // The key is the operator's file, read once here; its contents never reach
+                // the model, an event or the log.
+                let key = russh_keys::load_secret_key(&path, private_key_passphrase.as_deref())
+                    .with_context(|| format!("Failed to load SSH private key from {path}"))?;
+                SshCredential::PublicKey(Arc::new(key))
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unknown SSH auth_method '{other}': expected 'password' or 'publickey'"
+                ))
+            }
+        };
 
         info!(
             "SSH client {} connecting to {} as user '{}'",
@@ -139,14 +173,22 @@ impl SshClient {
             .context("Failed to connect to SSH server")?;
 
         // Authenticate
-        let auth_result = session
-            .authenticate_password(username.clone(), password)
-            .await
-            .context("SSH authentication failed")?;
+        let auth_result = match credential {
+            SshCredential::Password(password) => session
+                .authenticate_password(username.clone(), password)
+                .await
+                .context("SSH authentication failed")?,
+            SshCredential::PublicKey(key) => session
+                .authenticate_publickey(username.clone(), key)
+                .await
+                .context("SSH authentication failed")?,
+        };
 
         if !auth_result {
             return Err(anyhow::anyhow!(
-                "SSH authentication failed: incorrect credentials"
+                "SSH authentication failed: the server refused the {} credential for '{}'",
+                auth_method,
+                username
             ));
         }
 
@@ -258,6 +300,7 @@ impl SshClient {
                                 &app_state_clone,
                                 &status_tx_clone,
                                 &client_data_clone,
+                                0,
                             )
                             .await
                             {
@@ -319,6 +362,7 @@ impl SshClient {
                     &app_state,
                     &status_tx,
                     &client_data,
+                    0,
                 )
                 .await
                 .map(|applied| match applied {
@@ -364,7 +408,7 @@ impl SshClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
-    /// Execute an SSH action (helper function)
+    /// Execute an SSH action (helper function). `depth` counts the follow-up turns so far.
     #[allow(clippy::too_many_arguments)]
     async fn execute_ssh_action(
         session_arc: &Arc<Mutex<Handle<ClientHandler>>>,
@@ -375,6 +419,7 @@ impl SshClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         client_data: &Arc<Mutex<ClientData>>,
+        depth: usize,
     ) -> Result<SshApplied> {
         let result = protocol.as_ref().execute_action(action)?;
         Self::apply_ssh_result(
@@ -386,6 +431,7 @@ impl SshClient {
             app_state,
             status_tx,
             client_data,
+            depth,
         )
         .await
     }
@@ -403,6 +449,7 @@ impl SshClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         client_data: &Arc<Mutex<ClientData>>,
+        depth: usize,
     ) -> Result<SshApplied> {
         match action_result {
             ClientActionResult::Custom { name, data } if name == "execute_command" => {
@@ -432,9 +479,15 @@ impl SshClient {
                     .await
                     .context("Failed to execute command")?;
 
-                // Read output
+                // Read output until the channel is done. EOF only says the server will send no
+                // more *data*: OpenSSH sends `exit-status` after its EOF and then closes the
+                // channel, so stopping at EOF loses the exit status of every command. Stop at
+                // CLOSE, at the end of the channel, or at EOF once the status is already in
+                // hand (a server may send it first).
                 let mut output = Vec::new();
+                let mut stderr = Vec::new();
                 let mut exit_code: Option<u32> = None;
+                let mut eof = false;
 
                 loop {
                     match channel.wait().await {
@@ -446,37 +499,53 @@ impl SshClient {
                                 data.len()
                             );
                         }
+                        // Extended data type 1 is SSH_EXTENDED_DATA_STDERR (RFC 4254 §5.2).
+                        Some(ChannelMsg::ExtendedData { ref data, ext: 1 }) => {
+                            stderr.extend_from_slice(data);
+                        }
                         Some(ChannelMsg::ExitStatus { exit_status }) => {
                             exit_code = Some(exit_status);
                             debug!("SSH command exit status: {}", exit_status);
+                            if eof {
+                                break;
+                            }
                         }
                         Some(ChannelMsg::Eof) => {
                             debug!("SSH channel EOF");
-                            break;
+                            eof = true;
+                            if exit_code.is_some() {
+                                break;
+                            }
                         }
+                        Some(ChannelMsg::Close) | None => break,
                         Some(_) => {}
-                        None => break,
                     }
                 }
 
                 let output_str = String::from_utf8_lossy(&output).to_string();
+                let stderr_str = String::from_utf8_lossy(&stderr).to_string();
                 trace!("SSH command output: {}", output_str);
 
                 let applied = SshApplied::Executed(format!(
-                    "execute_command {:?}: exit_code={}, {} bytes of output",
+                    "execute_command {:?}: exit_code={}, {} bytes of output, {} of stderr",
                     command,
                     exit_code
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "unknown".to_string()),
-                    output.len()
+                    output.len(),
+                    stderr.len()
                 ));
 
                 // Call LLM with output
                 if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
                     let mut event_data = serde_json::json!({
+                        "command": command,
                         "output": output_str,
                     });
 
+                    if !stderr_str.is_empty() {
+                        event_data["stderr"] = serde_json::json!(stderr_str);
+                    }
                     if let Some(code) = exit_code {
                         event_data["exit_code"] = serde_json::json!(code);
                     }
@@ -508,6 +577,17 @@ impl SshClient {
                                 client_data.lock().await.memory = mem;
                             }
 
+                            if !actions.is_empty() && depth >= MAX_FOLLOWUP_DEPTH {
+                                warn!(
+                                    "SSH client {} reached the follow-up depth bound ({}); \
+                                     dropping {} action(s) rather than looping",
+                                    client_id,
+                                    MAX_FOLLOWUP_DEPTH,
+                                    actions.len()
+                                );
+                                return Ok(applied);
+                            }
+
                             // Execute follow-up actions
                             for next_action in actions {
                                 // Recursive call for follow-up commands (boxed to avoid infinite size)
@@ -527,6 +607,7 @@ impl SshClient {
                                     &app_clone,
                                     &status_clone,
                                     &data_clone,
+                                    depth + 1,
                                 ))
                                 .await
                                 {

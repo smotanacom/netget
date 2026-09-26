@@ -188,6 +188,27 @@ Scripting mode doesn't provide sufficient context for these decisions. Per-conne
     - Validates LLM receives data inspection events
     - Tests data modification and forwarding
 
+### Connection bounds (`connection_bounds_test.rs`)
+
+In-process (`ServerForm` + `AppState`), model-free, **0 LLM calls**; each test stands up its own
+loopback target with a plain `TcpListener`. The relay idle bound is set to 2s through
+`idle_timeout_secs`.
+
+1. **The cap** — 256 admitted, the 257th reads `05 FF`, closing one frees one slot.
+2. **Silent both ways** — the client reads EOF at the idle bound, and so does the target side.
+3. **Traffic only upstream** — a byte every 500ms client → target for four bounds, the target
+   never answering: every byte arrives, the tunnel stays open, and it closes once both go quiet.
+4. **Traffic only downstream** — the same, target → client: a download is a live tunnel.
+5. **MITM chunk parked for a human** — with `mitm_by_default` and a `manual` rule on
+   `socks5_data_to_target`, the tunnel survives four bounds with the chunk unforwarded; the
+   test then answers the intercept (`forward_socks5_data`), the chunk reaches the target, and
+   the tunnel is still open half a bound later.
+
+Verified by removal: with the passthrough `watch_idle` arm disabled, 2 and 3 fail; with a
+second, per-direction clock for the target side, 4 fails ("the client side was closed at
+tick 4"); with the MITM `busy()` guards removed, 5 fails on the tunnel closing ~250ms after
+the answer.
+
 ### Coverage Gaps
 
 **Not Yet Tested**:
@@ -198,7 +219,6 @@ Scripting mode doesn't provide sufficient context for these decisions. Per-conne
 - Multiple authentication methods in handshake
 - Proxy chaining (SOCKS5 → SOCKS5 → target)
 - Malformed SOCKS5 messages (fuzzing)
-- Connection timeout handling
 - Target server connection failures
 - Large data transfers (multi-megabyte files)
 

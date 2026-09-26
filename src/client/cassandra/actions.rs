@@ -271,6 +271,7 @@ impl Protocol for CassandraClientProtocol {
                 description: "Default keyspace to use".to_string(),
                 required: false,
                 example: json!("my_keyspace"),
+                default: None,
             },
             ParameterDefinition {
                 name: "username".to_string(),
@@ -278,6 +279,7 @@ impl Protocol for CassandraClientProtocol {
                 description: "Username for authentication".to_string(),
                 required: false,
                 example: json!("cassandra"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -285,6 +287,7 @@ impl Protocol for CassandraClientProtocol {
                 description: "Password for authentication".to_string(),
                 required: false,
                 example: json!("cassandra"),
+                default: None,
             },
         ]
     }

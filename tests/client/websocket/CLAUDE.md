@@ -76,3 +76,22 @@ for registering the channel ahead of the connected-event LLM call); `send_websoc
 and the text in the server's; a payload-less ping returns `Executed`, not `Sent{0}`; close code
 1006 is `Rejected` by the protocol's own validation; a polite close returns `Disconnected` and the
 command handle disappears.
+
+## `keepalive_test.rs` — Pings are answered while a turn is parked
+
+The peer is a **NetGet WebSocket server** with `idle_timeout_secs = 2`: it Pings at one second
+and closes with 1001 a peer that has sent no frame, not even a Pong, for two. That is
+deliberately NetGet against NetGet — the server's liveness bound is what the client has to
+satisfy, and no third-party server here has a bound short enough to test in seconds. It is
+regression evidence for the client's keep-alive, not interoperability evidence.
+
+Two turns are parked on `manual` rules for ten seconds each: `websocket_client_connected`, then
+`websocket_client_text_message` for the server's static reply to the first answer. After each
+park the server must still list the connection as live, and after each answer the answered text
+must appear in the server's access log. **LLM calls: 0.** Runtime ~20s, almost all of it the two
+deliberate parks.
+
+Verified by removal both ways: with the pre-split client (connected turn run inside `connect()`,
+before any read loop) the first park fails; with the read loop calling `handle_inbound` inline
+instead of queueing, the second park fails — `left: 0, right: 1` on the live-connection count in
+both cases.

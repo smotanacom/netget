@@ -6,6 +6,7 @@
 pub mod binding_defaults;
 pub mod client_registry;
 pub mod connect_context;
+pub mod default_port;
 pub mod dependencies;
 pub mod docs;
 pub mod dual;

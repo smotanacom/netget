@@ -567,6 +567,7 @@ impl Protocol for CouchDbClientProtocol {
                 description: "CouchDB username (for basic auth)".to_string(),
                 required: false,
                 example: json!("admin"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "password".to_string(),
@@ -574,6 +575,7 @@ impl Protocol for CouchDbClientProtocol {
                 description: "CouchDB password (for basic auth)".to_string(),
                 required: false,
                 example: json!("password"),
+                default: None,
             },
         ]
     }

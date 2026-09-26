@@ -153,6 +153,7 @@ impl Protocol for WireguardProtocol {
             // completed a handshake in this environment.
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::Root)
+            .well_known_udp_port(51820)
             .implementation(
                 "Thin orchestration layer over defguard_wireguard_rs v0.7 - NetGet \
                  implements NONE of the WireGuard protocol itself (no Noise_IK, no crypto, \

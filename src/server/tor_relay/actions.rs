@@ -118,6 +118,7 @@ impl Protocol for TorRelayProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(9001)
             .implementation("Custom partial Tor OR protocol: TLS 1.3, ntor server handshake (Curve25519/HMAC-SHA256/HKDF), per-circuit AES-128-CTR, stream multiplexing to TCP targets, SENDME windows. Cells are framed by length, so VERSIONS and other variable-length cells no longer desynchronise the reader, and VERSIONS is answered - but the rest of the link handshake (CERTS/AUTH_CHALLENGE/NETINFO) is still neither sent nor parsed. The relay logs its identity fingerprint and onion public key at startup, which a peer needs to run ntor at all.")
             .llm_control("Two events: circuit created, and RELAY commands the relay does not implement. Actions: log, DESTROY a circuit, close the connection. Everything on the data path - BEGIN, DATA, END, SENDME, exit policy - is decided in Rust with no LLM involvement.")
             .e2e_testing("tests/server/tor_relay/e2e_test.rs, 2 LLM calls, not #[ignore]d. A Tor client written from tor-spec in the test file (independent of the server's own circuit.rs) runs VERSIONS, then a full ntor CREATE2/CREATED2 whose server AUTH value it recomputes and checks, then RELAY/BEGIN to a localhost HTTP server, then RELAY/DATA out and back - asserting the HTTP body decrypts correctly with the backward key. Not tested: a real tor or Arti binary, which still cannot use this relay because the link handshake stops after VERSIONS; cell digests; EXTEND; multi-hop.")

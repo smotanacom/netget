@@ -373,6 +373,36 @@ pub async fn start_server_from_action(
         }
     }
 
+    // === Default port ===
+    //
+    // Only when the caller named no port at all. An explicit port — `0` included — is the
+    // caller's decision and is never replaced. Without a port, a protocol with a well-known
+    // port takes it when this process can bind it and nothing already holds it, and otherwise
+    // starts on an OS-assigned port and says why; see `protocol::default_port`. A protocol with
+    // no well-known port and no `default_binding()` gets 0, so the unmigrated path below always
+    // receives a port.
+    let port = match port {
+        Some(explicit) => Some(explicit),
+        None => {
+            let caps = state.get_system_capabilities().await;
+            match crate::protocol::default_port::default_port_for_server(
+                protocol_impl.as_ref(),
+                host.as_deref(),
+                &caps,
+            ) {
+                Some(default) => {
+                    let _ = status_tx.send(format!(
+                        "[INFO] {} server: no port given; {}",
+                        protocol,
+                        default.describe()
+                    ));
+                    Some(default.port)
+                }
+                None => None,
+            }
+        }
+    };
+
     // === send_first ===
     //
     // `send_first` is a top-level parameter of this function (and of the

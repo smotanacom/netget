@@ -30,7 +30,11 @@ in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.
   at the foot of a server's peers. Nothing is selected or drilled into: ↑/↓ walk every row,
   ←/→ walk a row's buttons (and fold / unfold a section), Enter acts, letters act on the card
   under the cursor. One `+ new server or client` row at the foot opens a picker listing
-  both kinds together.
+  both kinds together. A server entry names the port it will start on — its **well-known
+  port** ("starts on well-known port 6379"), or why not ("well-known port 53 needs root;
+  starting on an OS-assigned port", "… is in use; …") — resolved by `protocol::default_port`
+  when the picker opens and again on Enter, and the create form's `port` field is pre-filled
+  with that number and says where it came from.
 - **Right column is one stream.** Machine events derived from snapshot diffs (instances
   starting, peers connecting, every request with its answer, questions parked for you —
   Enter opens the thing a line names), the `[LEVEL]` log lines, and the conversation (what
@@ -47,7 +51,10 @@ in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.
 Everything applies through `cli::management`'s `ServerForm`/`ClientForm`/`update_*`, so
 validation and the hot-apply vs restart split are identical to the LLM and MCP paths. The forms
 submit only *changed* fields — re-sending an unchanged port or host reads as a change and forces
-a needless restart.
+a needless restart. A startup parameter's declared `default` (`ParameterDefinition::default`) is
+pre-filled as its value, marked `(default)`, and counts as unchanged on create as well as edit,
+so an untouched default is never submitted and the new instance's `startup_params` records only
+what the operator chose.
 
 **Every action is an `InstanceAction`** (`cards.rs`), executed by `actions::run` whether it
 came from a letter (`x` stop, `e` edit, `r` rules, `m` driver, `c` connect a client to a
@@ -108,15 +115,15 @@ netget --mcp   # then call list_protocols / get_protocol_docs
 
 Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/protocol/metadata.rs`):
 
-- **Stable** — **two as of 16 September 2026: `coap` and `dns`.** Before that there were none,
-  and three protocols had held the rating and lost it, each for the same reason: nobody had
-  said what it required, so "Stable" meant whoever set it felt good about the code. The bar
-  below is what replaced that, and `coap` and `dns` are the first to be measured against it
-  rather than against a feeling. Each carries its own justification in `metadata()` — read
-  `e2e_testing` and `notes` there, and the "Maturity: the six conditions" section at the foot
-  of each `src/server/<p>/CLAUDE.md`, before quoting either rating: both say in as many words
-  that the rating covers the evidence for the surface the server *implements*, which in both
-  cases is a subset of the RFC.
+- **Stable** — **three as of 26 September 2026: `coap`, `dns` and `modbus`.** Before
+  16 September 2026 there were none, and three protocols had held the rating and lost it, each
+  for the same reason: nobody had said what it required, so "Stable" meant whoever set it felt
+  good about the code. The bar below is what replaced that, and these three are the ones
+  measured against it rather than against a feeling. Each carries its own justification in
+  `metadata()` — read `e2e_testing` and `notes` there, and the "Maturity: the six conditions"
+  section at the foot of each `src/server/<p>/CLAUDE.md`, before quoting any of the ratings:
+  each says in as many words that the rating covers the evidence for the surface the server
+  *implements*, which in every case is a subset of the specification.
 
   **One condition was false for `coap` when that pass began, and how it broke generalises.**
   `fuzz/fuzz_targets/coap_message.rs` had not compiled since `0996d00f` made
@@ -159,11 +166,10 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   clients in its own `e2e_testing`, each has a `tests/server/<p>/` file using `pcap_oracle`, each
   has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What was left
   for them was condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
-  re-verified against source). **`coap` and `dns` went the rest of the way and are Stable;
-  `modbus` is the remaining candidate.**
+  re-verified against source). **All three went the rest of the way and are Stable** — `coap`
+  and `dns` on 16 September, `modbus` on 26 September 2026.
 
-  Two things that pass turned up which are worth carrying to `modbus` and to whatever comes
-  after it:
+  Things those passes turned up which are worth carrying to whatever comes next:
 
   - **Condition 4 is where the declared number turns out to be the wrong number.** `coap`
     declared `.max_inbound_bytes(MAX_PAYLOAD_LEN)`, which bounds what the server *writes*;
@@ -175,6 +181,16 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     "returned nothing usable"; `call_llm` returns `Ok` in exactly that case, so the one clause
     the sentence existed for was the one that wrote nothing at all. Read the doc's failure
     section as a list of assertions to test, not as description.
+  - **Condition 1 can be true of a sample rather than the surface.** `modbus` had two clients
+    for weeks, but neither issued FC 2, 5 or 15 and one never issued FC 16, while `metadata()`
+    named FC 2 as decoded. Count the verbs each client drives against the verbs the server
+    implements. The same pass found condition 2 satisfied by exception frames alone — the
+    success paths were read by a client library that never showed the test the bytes.
+  - **Condition 4 finds defects, not just missing tests.** Testing that a closed connection
+    returns its cap slot found that a Modbus connection closed for a framing error kept its
+    slot as long as the peer held its end open: `close` shut the write half from another task
+    and the reader never learned. A bound the test removal cannot move — `MAX_BUFFERED` was
+    checked at a second site that could never fire — is a comment, and was removed.
 
   **Nine protocols now have two clients and still fail conditions 2 or 3**, which is worth knowing
   before picking the next one: `doh`, `dot`, `etcd`, `grpc`, `postgresql` and `websocket` have
@@ -489,12 +505,72 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     mirror would turn these into evidence; the public endpoint never will.
 
   **What is installed on this machine**, so the remaining cost is a number rather than a guess:
-  `nats-server` (already in use), `redis-server` (valkey), `postgres`, `mysqld`, `nginx`, `sshd`,
-  `httpd`, `unbound`, `smbd`, `tor`, `openvpn`, `slapd` (under openldap's `libexec`) and
-  libmemcached's tools. Missing, for the list above: `mosquitto`, `vsftpd`, `memcached`, `etcd`,
-  `mongod`, and a MinIO or LocalStack for the AWS clients. **Nothing was installed** — hard-failing
-  a gate makes that binary a requirement everywhere the suite runs, which is a decision for
-  whoever owns the CI image, not one to take unilaterally.
+  `nats-server` (already in use), `redis-server` (valkey), `mosquitto`, `etcd`, `postgres`,
+  `mysqld`, `nginx`, `sshd`, `httpd`, `unbound`, `smbd`, `tor`, `openvpn`, `slapd` (under
+  openldap's `libexec`) and libmemcached's tools. Missing, for the list above: `vsftpd`,
+  `memcached`, `mongod`, and a MinIO or LocalStack for the AWS clients.
+
+  **Applied again 26 September 2026: `mqtt`, `redis`, `etcd` and `http` are Beta — five Beta
+  clients, 93 Experimental.** The difference from the first pass is that the peers were stood up
+  rather than found: `tests/helpers/real_server.rs` (`RealServer`) spawns a third-party server on
+  a loopback port in a temp dir of its own, waits for its own "listening" log line, kills its
+  process group on drop and **fails naming the brew formula and the Ubuntu package** when the
+  binary is absent. Each client then has `tests/client/<p>/real_server_test.rs`: Mosquitto with
+  `mosquitto_sub`/`mosquitto_pub`, a real `redis-server` read back with `redis-cli`, the official
+  Go `etcd` read back with `etcdctl`, and nginx asserted through its own access log. Every one
+  asserts condition 4 from the server's side of the wire, and every one was checked by mutation
+  — emptying the loop over the model's actions fails it. CI now installs those servers
+  (`registry-audit`, plus `redis-server` and `nginx` in the blocking `test` job, because `redis`
+  and `http` are in `CI_FEATURES` and their real-server tests run there), and
+  `tests/real_client_evidence_is_run_test.rs` scans `tests/client/` as well as `tests/server/`,
+  so a client suite that drives a real server and runs in no CI job fails the build. Before that
+  extension the one Beta client's own evidence, `nats`, ran in no CI job at all.
+
+  Two findings from it are worth carrying to the next client:
+
+  - **A real server finds framing bugs a same-project one agrees with.** The redis client read
+    replies **line by line**, so `GET k` → `$5\r\nhello\r\n` reached the model as two events,
+    `"$5"` and `"hello"`, and it split commands on whitespace, so `SET k "a b"` stored `"a`.
+    NetGet's own Redis server never exposed either: the tests against it asserted only that the
+    model was called. `src/client/redis/resp.rs` now reads one whole RESP2/RESP3 reply per event
+    (depth, declared size and element count bounded — without the depth bound a 40 KB reply
+    aborts the process on a stack overflow) and splits the way `redis-cli` does.
+  - **Match each mocked reply on its parsed content, and put the most specific rule first.** A
+    rule matched on `reply_type` and `value` is what turns "the reply was split" into a failure
+    rather than an extra LLM call; and nginx's echo quoting the previous response back made a
+    looser rule answer both responses until the follow-up depth cap stopped the loop.
+
+  **The same day's second half made it nine: `postgresql`, `mysql`, `ldap` and `ssh` are Beta —
+  nine Beta clients, 89 Experimental.** The peers are the PostgreSQL server (`initdb` +
+  `postgres`, read back with `psql`), Oracle's `mysqld` (`--initialize-insecure`, read back with
+  the `mysql` CLI), OpenLDAP's `slapd` (a temp-dir `slapd.conf`, seeded with `ldapadd`, read back
+  with `ldapsearch`) and OpenSSH's `sshd` run **unprivileged** (a temp-dir `sshd_config`,
+  `ssh-keygen` keys, public-key auth as the current user — an unprivileged sshd can log in no one
+  else and check no password). `RealServer` grew `setup_command` for the data directory a server
+  needs before it will start, and `graceful_stop`, because a SIGKILLed postmaster leaks a System
+  V shared memory segment and macOS allows 32. CI installs all four in `registry-audit` only
+  (none is in `CI_FEATURES`), and unloads Ubuntu's AppArmor profiles for `mysqld` and `slapd`,
+  which confine them to their packaged paths.
+
+  Every one of the four had defects NetGet's own servers had never shown, which is the point of
+  the exercise and worth expecting of the next client:
+
+  - **A result that did not say what it was.** MySQL reported the *row count* as
+    `affected_rows`, so an `INSERT` read as affecting nothing; LDAP's one response event for add,
+    modify and delete named neither the operation nor the DN; SSH's output event did not name
+    its command. A mock matched on the server's own answer (`affected_rows` 1, `last_insert_id`
+    1, `operation` add) is what caught each.
+  - **A real server's normal sequence breaking a loop written against our own.** The SSH client
+    stopped reading at the channel's EOF; OpenSSH sends `exit-status` *after* EOF, so every exit
+    status was lost.
+  - **A refusal that raised nothing.** A search slapd answered with `noSuchObject` ended the LDAP
+    chain silently, and an attribute written as a plain string (`{"cn": "Ada"}`) was dropped
+    from an add. Both reached the model only once the server said no.
+  - **Chains that were one step deep, or unbounded.** PostgreSQL executed the model's answer to
+    a result and dropped that query's rows, so create → insert → select → act was impossible;
+    LDAP and SSH followed the chain with no bound at all. All three now follow it and stop at
+    `MAX_FOLLOWUP_DEPTH` 4, as MySQL already did, and each bound has a test that fails without
+    it — the LDAP one counts the searches in slapd's own log.
 
   **Do not read the four groups above as the list — generate them:**
 
@@ -511,7 +587,10 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   the hand audit and sharpened it: 62 self-served rather than "~60", **zero** protocols in the
   "real peer, evidence runs" group, and `mqtt` alone in "real peer, unreachable". What no scan
   can check is condition 4 — that the client acts on the model's answer — and the script says so
-  instead of implying it passed.
+  instead of implying it passed. It reads a server spawned through `RealServer::builder("<bin>")`
+  as a binary peer, since the helper, not the test file, is what spawns it. Re-derived
+  26 September 2026 after the promotions above: Beta 9, Experimental 89 — 55 self-served, 9
+  wrong peer, 25 with no peer, and none left in either "real peer" group.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (107 of the 158 `src/server/*/actions.rs` the script below walks, re-derived
   16 September 2026). Note the script
@@ -761,6 +840,20 @@ port below 1024. Two failure modes to avoid:
 
 - **A `PrivilegedPort` above 1023 can never fire.** `svn` declared `PrivilegedPort(3690)`, which
   read as protection and was dead code. Declare `None` if the default port is unprivileged.
+
+**The port itself is `well_known_port`, not `PrivilegedPort`.** Every socket server declares
+`.well_known_port(n)` / `.well_known_udp_port(n)` / `.well_known_sctp_port(n)` in `metadata()` —
+IANA's number, or where IANA has none the default the protocol's own specification or reference
+implementation documents (Elasticsearch 9200, `hg serve` 8000), never 8080 standing in for HTTP.
+It is what a server starts on when the caller names no port (picker, create form, `ServerForm`,
+MCP `start_server`, `open_server`, `--server`), through one function,
+`protocol::default_port::default_port_for_server`: 1024 and above as is, below 1024 only when
+`can_bind_privileged_ports`, and a port already held on the bind address falls back to an
+OS-assigned one — each fallback said out loud. **An explicit port, `0` included, is never
+replaced.** `tests/well_known_port_declaration_test.rs` requires every server to declare one or
+sit in its `NO_WELL_KNOWN_PORT` list with the reason (link layer, devices, pipes, the generic
+`tcp`/`udp`, and application protocols carried on plain HTTP), and requires every
+`PrivilegedPort(n)` to equal the declared port and the transport to match `stack_name()`.
 - **A test can start an entirely different protocol and still pass.** `ospf`'s three e2e
   tests pass `"base_stack": "UDP"`, which `open_server` renames to `protocol` — so what
   starts is the **generic UDP server**, not `src/server/ospf/`. The mocked event is
@@ -817,8 +910,8 @@ some configurations need is expressed with `startup_dependencies(startup_params)
    the accept-loop `JoinHandle` via `AppState::register_server_task()` (required for
    `stop_server` to actually release the socket)
 2. `src/server/<protocol>/actions.rs` — implement `ProtocolActions`: `metadata()` (state +
-   privilege), `get_startup_parameters()`, async/sync actions, `get_event_types()`,
-   `execute_action()`
+   privilege + `well_known_port`), `get_startup_parameters()`, async/sync actions,
+   `get_event_types()`, `execute_action()`
 3. `src/server/<protocol>/CLAUDE.md` — implementation notes, library choice, limitations
 4. `src/server/mod.rs` — feature-gated `pub mod`
 5. `src/protocol/server_registry.rs` — feature-gated `register()`
@@ -873,6 +966,16 @@ Two related traps when declaring parameters: a parameter that is declared but ne
 dead weight the model will try to use (nine were found in the cloud protocols alone), and a
 parameter read but never declared is rejected at startup. Both are worth a grep when you touch
 `get_startup_parameters()`.
+
+**Declare `default` where the code falls back to a fixed value** — every read deadline
+(`first_byte_timeout_secs`, `idle_timeout_secs`, `handshake_timeout_secs`) and size cap does.
+Point it at the constant the code uses, `default: Some(json!(super::IDLE_TIMEOUT.as_secs()))`,
+so the form, `get_protocol_docs` and the model's prompt show the number the server will actually
+use; a literal copy drifts the first time someone tunes the constant.
+`tests/startup_param_defaults_test.rs` refuses a literal (source scan, every feature set) and a
+default that does not parse as its `type_hint` or sits on a required parameter (registry walk,
+compiled protocols only). `default: None` is right where omitting the parameter switches a
+feature off or derives the value from something else — no single number describes that.
 
 ## Testing
 
@@ -1111,6 +1214,8 @@ of the test file**, not out of this table):
 | `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | **4 params** |
 | `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | **empty** |
 | `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
+| `well_known_port_declaration_test` | a server with no declared well-known port and no stated reason; a `PrivilegedPort(n)` or transport disagreeing with it | `NO_WELL_KNOWN_PORT` — finished answers, not a queue |
+| `startup_param_defaults_test` | a declared parameter `default` written as a literal instead of the constant the code uses (the type check is a registry walk) | **empty** |
 
 A third check worth understanding: `event_action_declarations_test` probes each advertised
 name with a bare `{"type": name}`, which finds *unknown action* but can never find a wrong
@@ -2082,6 +2187,13 @@ Read before assuming a subsystem is sound:
   converted to them in September 2026. `tests/stop_server_stops_connections_test.rs` is the
   contract (asserted from the **peer's** side, which is the only vantage that distinguishes a
   live connection from an aborted one) and `tests/detached_task_drift_test.rs` is the ratchet.
+  It reads **every `.rs` file** of each protocol directory in both trees, not only `mod.rs`: a
+  `mod.rs`-only scan passed a probe spawn placed in `http2/h2_server.rs`, the same blind spot
+  `tcp_server_bounds_ratchet_test.rs` had. Widening it found no existing site — every spawn
+  outside a `mod.rs` is bound to a `let` and registered, aborted on exit, or held in
+  `usb/guard.rs`'s `AbortOnDrop`. The shared `src/server/peer_support.rs` is outside the
+  population; its one spawn (the injected-command task) ends when its channel closes, which
+  `remove_server` and each protocol's close path cause by dropping the peer handle.
 
   **Every call must end `.await`.** An unawaited `spawn_server_task` constructs the future and
   never polls it, so the task never runs at all — and that compiles, because an unawaited future

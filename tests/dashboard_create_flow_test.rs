@@ -575,3 +575,59 @@ fn a_client_with_a_required_startup_param_is_asked_for_it_not_started_blind() {
     );
     assert!(form.missing_required().is_none());
 }
+
+/// A declared default is the field's value, and leaving it alone submits nothing.
+///
+/// tcp declares `idle_timeout_secs` with its default pointing at the constant the server falls
+/// back to, so the form shows the real number — and submitting it untouched must not record it
+/// in `startup_params`, which is what "the forms submit only changed fields" means for a
+/// pre-filled value. Editing it must submit it, as a number.
+#[test]
+fn a_declared_default_is_prefilled_and_not_submitted_unless_edited() {
+    let mut form = FormModel::for_create(Section::Servers, "TCP", None);
+    let target = FieldTarget::StartupParam("idle_timeout_secs".to_string());
+    let field = form
+        .fields
+        .iter()
+        .find(|f| f.target == target)
+        .expect("tcp declares idle_timeout_secs");
+    assert_eq!(field.value, "900", "pre-filled with the declared default");
+    assert!(field.is_default());
+    assert!(!field.changed(), "a pre-filled default is not a change");
+    assert!(
+        field.help.contains("Default: 900."),
+        "the help names the default: {}",
+        field.help
+    );
+
+    let untouched = form.to_server_form().expect("form assembles");
+    assert_eq!(
+        untouched.startup_params, None,
+        "an untouched default must not be submitted"
+    );
+
+    form.set_field_value(&target, "60".to_string());
+    let edited = form.to_server_form().expect("form assembles");
+    assert_eq!(
+        edited.startup_params,
+        Some(serde_json::json!({ "idle_timeout_secs": 60 })),
+        "an edited default is submitted, typed"
+    );
+}
+
+/// The `send_first` field says what it does, not that it does nothing.
+#[test]
+fn send_first_help_describes_the_protocols_that_honour_it() {
+    let form = FormModel::for_create(Section::Servers, "TCP", None);
+    let send_first = form
+        .fields
+        .iter()
+        .find(|f| f.target == FieldTarget::SendFirst)
+        .expect("server forms have send_first");
+    assert!(
+        !send_first.help.contains("ignored on every path"),
+        "stale help text: {}",
+        send_first.help
+    );
+    assert!(send_first.help.contains("declare a `send_first`"));
+}

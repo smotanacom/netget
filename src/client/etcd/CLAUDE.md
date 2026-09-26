@@ -4,7 +4,7 @@
 
 etcd client for connecting to etcd v3 servers and performing key-value operations under LLM control.
 
-**Status**: Experimental
+**Status**: Beta (see "Maturity: Beta" at the foot)
 **Protocol Version**: etcd v3 (gRPC)
 **Default Port**: 2379
 
@@ -26,19 +26,16 @@ abstracts the complexity of gRPC and protobuf encoding.
 
 ### Connection Model
 
-**Stateless with Reconnection**:
+**One session, held for the client's lifetime**:
 
-- Client connects on startup to validate connectivity
-- Each operation (get/put/delete) creates a fresh etcd-client connection
-- No persistent connection state maintained
-- Operations are independent and idempotent
-
-**Why reconnect per operation?**:
-
-- etcd-client manages connection pooling internally
-- Simplifies error handling (no stale connection issues)
-- Matches the HTTP client pattern (stateless request-response)
-- LLM can issue operations without worrying about connection state
+- `etcd_client::Client::connect` runs once in `connect_with_llm_actions`; a failure there is a
+  failed connect.
+- The connected client is kept in `SharedEtcd` (`Arc<Mutex<etcd_client::Client>>`) and shared
+  by the connected-event handler, the follow-up chain and the injected-command loop, so the
+  session the dashboard calls "connected" is the one every operation uses.
+- Each operation **clones** the client out of the mutex and runs the RPC on the clone. The
+  client is a cheap handle over one tonic channel; holding the guard across the RPC would
+  serialise every operation behind the slowest one.
 
 ### LLM Integration
 
@@ -169,7 +166,6 @@ Both tracing macros and `status_tx` used for TUI visibility.
 
 - etcd-client manages connection pool internally
 - No explicit control over connection lifecycle
-- Reconnects on every operation (simple but potentially inefficient)
 
 ### No Streaming RPCs
 
@@ -218,12 +214,6 @@ wget https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-
 unzip protoc-28.3-linux-x86_64.zip -d $HOME/protoc
 export PATH="$HOME/protoc/bin:$PATH"
 ```
-
-### Reconnection Overhead
-
-- Each operation creates a new etcd-client connection
-- May be slow for high-frequency operations
-- **Mitigation**: etcd-client has built-in connection pooling
 
 ### No Watch Support
 
@@ -286,7 +276,6 @@ Then retrieve /app/timeout
 
 - gRPC uses HTTP/2 (multiplexed, binary)
 - Protobuf encoding is compact
-- Reconnection per operation adds overhead (future optimization: persistent connection)
 
 ## Security Considerations
 
@@ -360,7 +349,7 @@ etcd
 netget> connect to etcd at localhost:2379
 ```
 
-**Optional: Installing etcd server locally for testing**:
+**Installing etcd locally** — required: `tests/client/etcd/real_server_test.rs` spawns `etcd` and `etcdctl` and fails without them:
 
 ```bash
 # Install via Homebrew
@@ -379,8 +368,9 @@ etcd --version
 **Installation**:
 
 ```bash
-# Debian/Ubuntu - install etcd server (optional, for testing)
-sudo apt-get install etcd
+# Debian/Ubuntu - the packaged etcdctl may default to the v2 API (jammy ships 3.3);
+# the upstream v3.5 release tarball is what CI installs
+sudo apt-get install etcd-server
 
 # Fedora/RHEL
 sudo dnf install etcd
@@ -451,3 +441,19 @@ a manual rule parking that LLM call cannot wedge the command loop.
 
 The old 5-second idle-poll task is gone; the command loop ends when `remove_client` drops the
 command sender.
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/etcd/real_server_test.rs` (see `tests/client/etcd/CLAUDE.md`):
+
+1. **Real third-party server** — the official Go `etcd`, read back with the official `etcdctl`; NetGet's side is `etcd-client` on tonic, while etcd is grpc-go, so no code is shared.
+2. **Fails rather than skips** — a missing `etcd` or `etcdctl` is a test failure naming the brew formula and the
+   Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d. CI's
+   `registry-audit` installs the peer and runs the suite in its evidence loop.
+3. **A real session** — the protocol's own exchange, with the server's answers parsed and handed
+   to the model, not a connect.
+4. **Acts on the model's answer, asserted on the wire** — `etcdctl` reads back a value the model built from a GET response, and finds the key it deleted gone. Verified by mutation: dropping
+   the actions the model returned makes the test fail.
+
+Not covered by that evidence: range reads, transactions, watches, leases, auth and TLS.

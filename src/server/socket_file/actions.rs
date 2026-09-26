@@ -61,6 +61,7 @@ impl Protocol for SocketFileProtocol {
                 description: "Filesystem path for the Unix domain socket file (e.g., ./netget.sock)".to_string(),
                 required: true,
                 example: serde_json::json!("./netget.sock"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "send_first".to_string(),
@@ -68,6 +69,30 @@ impl Protocol for SocketFileProtocol {
                 description: "Whether the server should send the first message after connection (e.g., for greeting banners)".to_string(),
                 required: false,
                 example: serde_json::json!(false),
+                default: None,
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send nothing before the server closes \
+                              it. Default 300, matching the window a `manual` rule gives a human \
+                              to answer one event - a peer is often NetGet's own socket_file \
+                              client waiting for someone to use [ send message ]."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(300),
+                default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an established session may be silent between messages \
+                              before the server closes it. Default 900. A message still being \
+                              answered never counts as silence."
+                    .to_string(),
+                required: false,
+                example: serde_json::json!(900),
+                default: Some(serde_json::json!(super::IDLE_BETWEEN_MESSAGES_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -231,6 +256,19 @@ impl Server for SocketFileProtocol {
                 .flatten()
                 .unwrap_or(false);
 
+            // Both read bounds are the operator's to tune; the defaults are argued beside
+            // FIRST_BYTE_READ_TIMEOUT and IDLE_BETWEEN_MESSAGES_TIMEOUT in mod.rs.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             use crate::server::socket_file::SocketFileServer;
             let socket_path_buf = std::path::PathBuf::from(socket_path);
             let _result_path = SocketFileServer::spawn_with_llm_actions(
@@ -240,6 +278,8 @@ impl Server for SocketFileProtocol {
                 ctx.status_tx,
                 send_first,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await?;
 

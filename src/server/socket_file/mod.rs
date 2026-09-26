@@ -10,6 +10,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, Mutex};
@@ -24,6 +25,76 @@ use crate::protocol::Event;
 use crate::server::SocketFileProtocol;
 use crate::state::app_state::AppState;
 use actions::{SOCKET_FILE_CONNECTION_OPENED_EVENT, SOCKET_FILE_DATA_RECEIVED_EVENT};
+
+/// How long a connected peer may send nothing at all before the server closes it.
+///
+/// 300 seconds, the window a `manual` rule gives a human to answer one event
+/// (`src/state/intercepts.rs`), for the reason `tcp` gives for the same number: this is the
+/// generic byte stream over a filesystem socket, and the peer it most often has is NetGet's own
+/// `socket_file` client, which connects inside `connect()`, writes nothing, and waits for a
+/// person to use `[ send message ]` — **connected and silent**. A shorter bound drops that peer
+/// while the operator is still looking at it. A stranger is still bounded, and still capped at
+/// [`MAX_CONNECTIONS`]; the node is owner-only (0600), so the stranger is a local process of the
+/// same user. Declared as the `first_byte_timeout_secs` startup parameter.
+///
+/// A `send_first` server is not the exception it looks like: the banner task holds the
+/// connection's [`ConnectionActivity`](crate::server::accept_bounded::ConnectionActivity) busy
+/// for the whole of its model round-trip, so the clock does not run while the peer is waiting
+/// to be spoken to.
+const FIRST_BYTE_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long an established session may be silent between messages.
+///
+/// Fifteen minutes, `tcp`'s number: three times the window a `manual` rule gives a human, so a
+/// session whose last exchange was composed by hand still has minutes of think-time left. A
+/// message still being answered is never silence — the reader consults `ConnectionActivity`.
+/// Declared as the `idle_timeout_secs` startup parameter.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: Duration = Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may queue bytes
+/// while its LLM call is in flight, so this is the multiplier that turns the per-connection cost
+/// into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes: nothing.
+///
+/// A raw byte stream has no vocabulary — anything written would be read as payload — so the
+/// refusal is a clean EOF, logged by `accept_bounded_unix` with
+/// `decision=fail_closed_connection_cap`. Same reasoning as `tcp`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
+/// Read from `reader` with a deadline that a connection doing work can never trip.
+///
+/// Returns `None` when the peer has genuinely been silent for `bound`, and the read's own
+/// result otherwise. The read loop hands each message to a spawned task and goes straight back
+/// to `read()`, so the deadline and an answer in progress are live at the same moment;
+/// consulting [`ConnectionActivity::idle_for`](crate::server::accept_bounded::ConnectionActivity::idle_for)
+/// — which reports a connection with work in flight as not idle — keeps the deadline from
+/// closing the connection it is in the middle of answering. The same helper as `tcp`'s.
+async fn read_bounded<R>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    activity: &crate::server::accept_bounded::ConnectionActivity,
+    bound: Duration,
+) -> Option<std::io::Result<usize>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    loop {
+        match tokio::time::timeout(bound, reader.read(buffer)).await {
+            Ok(result) => return Some(result),
+            Err(_) => match activity.idle_for() {
+                // Work in flight: the peer is waiting on us, not the other way round.
+                None => continue,
+                // Something crossed the connection inside the window; wait again from there.
+                Some(idle) if idle < bound => continue,
+                Some(_) => return None,
+            },
+        }
+    }
+}
 
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +151,7 @@ pub struct SocketFileServer;
 
 impl SocketFileServer {
     /// Spawn the socket file server with integrated LLM actions
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         socket_path: PathBuf,
         llm_client: OllamaClient,
@@ -87,7 +159,15 @@ impl SocketFileServer {
         status_tx: mpsc::UnboundedSender<String>,
         send_first: bool,
         server_id: crate::state::ServerId,
+        first_byte_timeout_secs: Option<u64>,
+        idle_timeout_secs: Option<u64>,
     ) -> Result<PathBuf> {
+        let first_byte_timeout = first_byte_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(FIRST_BYTE_READ_TIMEOUT);
+        let idle_timeout = idle_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(IDLE_BETWEEN_MESSAGES_TIMEOUT);
         // Remove a stale socket file, but ONLY if the path really is a socket.
         //
         // `socket_path` comes from the LLM or an MCP caller, so an unconditional
@@ -153,12 +233,21 @@ impl SocketFileServer {
         // Spawn accept loop
         let task_registrar = app_state.clone();
         let cleanup = SocketCleanup(socket_path.clone());
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             // Moved in so it drops (and unlinks) when the loop ends or the task is aborted.
             let _cleanup = cleanup;
             loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
+                match crate::server::accept_bounded::accept_bounded_unix(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Socket file",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         info!("Accepted socket file connection {}", connection_id);
@@ -166,6 +255,12 @@ impl SocketFileServer {
                         // Split stream
                         let (read_half, write_half) = tokio::io::split(stream);
                         let write_half_arc = Arc::new(Mutex::new(write_half));
+
+                        // Whether this connection is doing work the peer is waiting on. The
+                        // read deadline consults it, so an LLM round-trip or a `manual` rule
+                        // parked for a human is never mistaken for an idle peer.
+                        let activity =
+                            Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
 
                         // Add connection to ServerInstance
                         use crate::state::server::{
@@ -221,10 +316,14 @@ impl SocketFileServer {
                             let connections_clone = connections.clone();
                             let write_half_for_conn = write_half_arc.clone();
                             let protocol_clone = protocol.clone();
+                            // The peer is waiting to be greeted, so the first-byte deadline
+                            // must not run while the banner is being composed.
+                            let banner_busy = activity.busy();
                             // Tracked, not detached: stop_server must abort this task too.
                             let task_owner = app_state.clone();
                             task_owner
                                 .spawn_server_task(server_id, async move {
+                                    let _banner_busy = banner_busy;
                                     Self::send_banner(
                                         connection_id,
                                         server_id,
@@ -246,15 +345,53 @@ impl SocketFileServer {
                         let status_tx_clone = status_tx.clone();
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
+                        let activity_clone = activity.clone();
                         // Tracked, not detached: stop_server must abort this task too.
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // connections rather than accepts.
+                                let _permit = permit;
                                 let mut buffer = vec![0u8; 8192];
                                 let mut read_half = read_half;
+                                let mut seen_bytes = false;
 
                                 loop {
-                                    match read_half.read(&mut buffer).await {
+                                    let bound = if seen_bytes {
+                                        idle_timeout
+                                    } else {
+                                        first_byte_timeout
+                                    };
+                                    // The deadline wraps this read and nothing else.
+                                    let read = match read_bounded(
+                                        &mut read_half,
+                                        &mut buffer,
+                                        &activity_clone,
+                                        bound,
+                                    )
+                                    .await
+                                    {
+                                        Some(result) => result,
+                                        None => {
+                                            connections_clone.lock().await.remove(&connection_id);
+                                            app_state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "Socket file connection {connection_id} sent \
+                                                 nothing for {}s; closing idle connection",
+                                                bound.as_secs()
+                                            ));
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                    };
+                                    match read {
                                         Ok(0) => {
                                             // Connection closed
                                             connections_clone.lock().await.remove(&connection_id);
@@ -272,6 +409,8 @@ impl SocketFileServer {
                                             break;
                                         }
                                         Ok(n) => {
+                                            seen_bytes = true;
+                                            activity_clone.touch();
                                             let data = Bytes::copy_from_slice(&buffer[..n]);
 
                                             // Feeds the dashboard rail's counters and refreshes
@@ -325,10 +464,16 @@ impl SocketFileServer {
                                             let status_clone = status_tx_clone.clone();
                                             let conns_clone = connections_clone.clone();
                                             let protocol_clone = protocol_clone.clone();
+                                            // Busy for the whole of the answer — the LLM call,
+                                            // a script, or a `manual` rule parked for a human —
+                                            // so the read deadline cannot close the connection
+                                            // this is an answer for.
+                                            let busy = activity_clone.busy();
                                             // Tracked, not detached: stop_server must abort this task too.
                                             let task_owner = app_state_clone.clone();
                                             task_owner
                                                 .spawn_server_task(server_id, async move {
+                                                    let _busy = busy;
                                                     Self::handle_data_with_actions(
                                                         connection_id,
                                                         server_id,

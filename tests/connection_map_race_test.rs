@@ -448,6 +448,8 @@ async fn ssh_agent_request_written_before_accept_is_answered() {
         state.clone(),
         status_tx,
         server_id,
+        None,
+        None,
     )
     .await
     .expect("SSH agent server should start");

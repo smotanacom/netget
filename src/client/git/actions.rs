@@ -119,6 +119,7 @@ impl Protocol for GitClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("./my-repo"),
+                default: None,
             },
             ParameterDefinition {
                 // Read by `GitClient::connect_with_llm_actions`, which builds a
@@ -139,6 +140,7 @@ impl Protocol for GitClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("/Users/you/netget-git-sandbox"),
+                default: None,
             },
             ParameterDefinition {
                 // Read by `GitClient::connect_with_llm_actions` and enforced in
@@ -156,6 +158,7 @@ impl Protocol for GitClientProtocol {
                 type_hint: "boolean".to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             ParameterDefinition {
                 name: "username".to_string(),
@@ -163,6 +166,7 @@ impl Protocol for GitClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("git-user"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -170,6 +174,7 @@ impl Protocol for GitClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("ghp_xxxxxxxxxxxxx"),
+                default: None,
             },
         ]
     }

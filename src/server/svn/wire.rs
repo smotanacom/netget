@@ -23,6 +23,9 @@
 //! whole NetGet process with it, not just the connection's task. This is the sixth wire format
 //! in this repository to need that treatment; `src/utils/bencode.rs` is the precedent.
 //!
+//! Iterative parsing is not enough on its own, because the value it builds is recursive: see
+//! [`MAX_TUPLE_DEPTH`] for what the depth bound protects.
+//!
 //! Three limits, all applied to the number the peer *declared* rather than to what has already
 //! arrived:
 //!
@@ -38,9 +41,14 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 /// How deeply lists may nest before the message is refused.
 ///
 /// Real ra_svn traffic is three or four deep (a command's params, a dirent's date/author
-/// sub-tuples). 64 leaves an order of magnitude of headroom and still refuses a depth bomb
-/// long before the stack — which, being an explicit `Vec`, would in fact grow on the heap;
-/// the cap is what keeps that from being an unbounded allocation instead.
+/// sub-tuples). 64 leaves an order of magnitude of headroom.
+///
+/// The reader's own stack is an explicit `Vec`, so reading a deep tuple cannot overflow the
+/// thread stack — but the `Item` it returns is a recursive enum, and everything downstream walks
+/// it recursively: `Display` and `to_json` in `command_event_data`, and `Drop`. Without this cap
+/// 32 000 closed lists — 64 000 bytes, inside `MAX_COMMAND_BYTES` — become a 32 000-deep `Item`
+/// whose first walk overflows the stack and takes the process with it. That was verified with
+/// `fuzz/fuzz_targets/svn_tuple.rs`: disabling this check makes its `depth_bomb` seed `SIGSEGV`.
 pub const MAX_TUPLE_DEPTH: usize = 64;
 
 /// One ra_svn item.

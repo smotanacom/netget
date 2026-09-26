@@ -66,8 +66,15 @@ Nesting is capped at `MAX_VALUE_DEPTH` (64) and the request body at
 The nesting cap is applied on **`<value>`, `<array>` and `<struct>` alike**. It used to be on
 `<value>` only, and `<array>` / `<struct>` pushed a container with no check at all — a
 well-formed `<array><array><array>…` is 7 bytes a level, so a body at the 4 MiB cap pushed
-about 600 000 frames. The parser is iterative, so this was allocation rather than a stack
-overflow, but it is allocation a peer chooses and nothing needs.
+about 600 000 frames. That container stack is a `Vec`, so on its own it is allocation rather
+than a stack overflow.
+
+**The value the parser builds is the stack risk**, and `MAX_VALUE_DEPTH` is what bounds it.
+`XmlRpcValue` is recursive, and the request path walks it recursively — the JSON conversion in
+`actions::create_method_call_event` and `Drop` — so a deep, *closed*
+`<value><array><data>…</data></array></value>` nest parses fine and then overflows the stack
+on its first walk. `fuzz/fuzz_targets/xmlrpc_value.rs` drives exactly that path; with the check
+disabled its 20 000-level `depth_bomb` seed kills it with `SIGSEGV`.
 
 ### XML safety: entity expansion and recursion
 

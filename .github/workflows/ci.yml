@@ -81,14 +81,14 @@ env:
   # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
-    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger ssdp llmnr
+    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman ssdp llmnr
     netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
     mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
     smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
     jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:
@@ -342,6 +342,12 @@ jobs:
       #                       and dummy credentials, so nothing can reach real AWS)
       #   aria2             - torrent_tracker (aria2c)
       #   curl              - gopher, hls
+      #   dict              - dict (the dictd project's dict(1) client)
+      #   ignition-gemini   - gemini (a Python library, so pip rather than apt; see the
+      #                       step after this one)
+      #   greenstalk        - beanstalkd (a Python client library, pip; same step)
+      #   zabbix-sender     - zabbix (the Zabbix project's zabbix_sender)
+      #   gearman-tools     - gearman (the gearmand project's gearman and gearadmin)
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
@@ -366,6 +372,32 @@ jobs:
       #   subversion (svn)  - svn (the real ra_svn client; info/ls/log)
       #   tor               - tor_relay
       #   wakeonlan         - wol
+      #
+      # Installed by their own steps below rather than apt: the vault CLI (vault), and
+      # cypher-shell (bolt; Neo4j's release zip, run on the runner image's own Java 21).
+      #
+      # And the third-party SERVERS the client real-server tests drive
+      # (tests/client/<p>/real_server_test.rs, spawned by tests/helpers/real_server.rs on a
+      # loopback port of their own; the system services apt starts alongside are unused):
+      #
+      #   mosquitto         - the mqtt client (Eclipse Mosquitto, C; NetGet's client is rumqttc)
+      #   nginx             - the http client (NetGet's client is reqwest/hyper)
+      #   redis-server      - the redis client (NetGet frames RESP itself)
+      #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
+      #                       client is tokio-postgres). Ubuntu keeps the server binaries in
+      #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
+      #                       searches there, so nothing is symlinked
+      #   mysql-server      - the mysql client (Oracle's mysqld; NetGet's client is
+      #                       mysql_async). Its AppArmor profile confines it to
+      #                       /var/lib/mysql, so the step after this one unloads it
+      #   slapd             - the ldap client (OpenLDAP; NetGet's client is the ldap3 crate).
+      #                       Run from a slapd.conf in a temp dir, not the packaged cn=config,
+      #                       so the package's own debconf answers are never used. Same
+      #                       AppArmor note as mysqld. ldapadd/ldapsearch are ldap-utils, above
+      #   openssh-server    - the ssh client (OpenSSH sshd, run unprivileged from a temp-dir
+      #                       config with public-key auth as the runner user; NetGet's client
+      #                       is russh). ssh-keygen comes from openssh-client, above
+      #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
       #
@@ -400,13 +432,69 @@ jobs:
       # running.
       - name: Install the third-party clients the real-client tests drive
         continue-on-error: true
+        # slapd's postinst asks debconf for a domain and an admin password; without this the
+        # install blocks on a prompt nobody answers.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get install -y --no-install-recommends \
-            aria2 awscli curl bind9-dnsutils ffmpeg freeradius-utils \
+          sudo -E apt-get install -y --no-install-recommends \
+            aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
-            subversion tor wakeonlan
+            subversion tor wakeonlan zabbix-sender gearman-tools \
+            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server
+
+      # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
+      # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
+      # tests run each one unprivileged against a data directory in a fresh temp dir, which the
+      # profile refuses - mysqld's --initialize fails on its first write. Unloading the profile
+      # affects only this throwaway runner. `continue-on-error` like the installs above: a
+      # missing profile must cost at most those two protocols' evidence.
+      - name: Unload the AppArmor profiles that confine mysqld and slapd
+        continue-on-error: true
+        run: |
+          for profile in usr.sbin.mysqld usr.sbin.slapd; do
+            if [ -f "/etc/apparmor.d/$profile" ]; then
+              sudo apparmor_parser -R "/etc/apparmor.d/$profile" || true
+            fi
+          done
+
+      # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
+      # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
+      # packages it, so it comes from PyPI into the python3 the test spawns; the import check
+      # makes a failed install surface here rather than as gemini's evidence silently absent.
+      - name: Install the Gemini client library (ignition)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user ignition-gemini==1.0.0
+          python3 -c "import ignition; print('ignition', ignition.__version__)"
+
+      # gemini::real_client_test also runs the pcap oracle over the TLS it recorded, and the
+      # oracle FAILS rather than skips without tshark. jammy's tshark 3.6 has the `tls`
+      # dissector that check needs; only the Test job's redis case needs >= 4.0 (`resp`).
+      # The preseed answers the capture-permission prompt that would otherwise hang the job.
+      - name: install tshark 4.x (the pcap oracle in the Gemini and Zabbix evidence)
+        continue-on-error: true
+        run: |
+          # jammy's own tshark is 3.6, which has no `zabbix` dissector (zabbix's evidence runs
+          # the oracle too); the Wireshark stable PPA carries 4.x for jammy.
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
+          tshark --version | head -1
+          tshark -G protocols | awk -F'\t' '$3=="zabbix"{f=1} END{if(!f){print "no zabbix dissector in this tshark" > "/dev/stderr"; exit 1}}'
+
+      # beanstalkd::real_client_test drives `greenstalk`, a Python beanstalkd client with its
+      # own reply parser and YAML reader. PyPI only, like ignition; the import check names a
+      # failed install here.
+      - name: Install the Beanstalkd client library (greenstalk)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user greenstalk==2.1.1
+          python3 -c "import greenstalk; print('greenstalk', greenstalk.__version__)"
 
       # Debian and Ubuntu ship libmemcached's client tools under a `memc` prefix -
       # `memccat`, `memcstat`, `memcping` - while libmemcached's own build and Homebrew's
@@ -475,18 +563,38 @@ jobs:
       #
       # `continue-on-error` for the same reason as the apt step: a download that 404s must
       # cost etcd's evidence, not everybody else's.
-      - name: Install etcdctl (etcd 3.5, the v3/gRPC client)
+      #
+      # The same tarball carries the `etcd` server, which the etcd CLIENT's real-server test
+      # (tests/client/etcd/real_server_test.rs) spawns: Go and grpc-go, where NetGet's client
+      # is etcd-client on tonic. That test reads the client port out of 3.5's
+      # "serving client traffic insecurely" log line, checked against 3.5.17.
+      - name: Install etcd and etcdctl (etcd 3.5, the v3/gRPC server and client)
         continue-on-error: true
         run: |
           set -eux
           curl -fsSL -o /tmp/etcd.tgz \
             https://github.com/etcd-io/etcd/releases/download/v3.5.17/etcd-v3.5.17-linux-amd64.tar.gz
           sudo tar -xzf /tmp/etcd.tgz -C /usr/local/bin --strip-components=1 \
-            etcd-v3.5.17-linux-amd64/etcdctl
+            etcd-v3.5.17-linux-amd64/etcdctl etcd-v3.5.17-linux-amd64/etcd
           # The test's own gate is `etcdctl version`, and it is the exact invocation that
           # exited 3 under 3.3.25. Asserting it here means a client in the wrong API mode
           # fails this step rather than one protocol's test.
           etcdctl version
+          etcd --version
+
+      # nats-server, which the nats CLIENT's Beta rests on (tests/client/nats/e2e_test.rs
+      # spawns it with `-a 127.0.0.1 -p -1`). Upstream's release tarball rather than apt, so
+      # the version is pinned rather than whatever the image's archive carries.
+      # `continue-on-error` for the same reason as the apt step.
+      - name: Install nats-server
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/nats.tgz \
+            https://github.com/nats-io/nats-server/releases/download/v2.10.24/nats-server-v2.10.24-linux-amd64.tar.gz
+          sudo tar -xzf /tmp/nats.tgz -C /usr/local/bin --strip-components=1 \
+            nats-server-v2.10.24-linux-amd64/nats-server
+          nats-server --version
 
       # stuntman's `stunclient` drives `stun::real_client_test`, and it is built here rather
       # than installed because it is in NO current apt repository: the `stuntman-client`
@@ -561,6 +669,64 @@ jobs:
           grpcurl --version
           websocat --version
           mongosh --version
+
+      # promtool and prometheus drive prometheus::real_client_test. The upstream release
+      # rather than apt: jammy's `prometheus` package is 2.31, which predates Prometheus 3's
+      # scrape_protocols spelling the test pins, and it would put a daemon unit on the runner.
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Install prometheus and promtool (upstream release)
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/prometheus.tgz \
+            https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz
+          sudo tar -xzf /tmp/prometheus.tgz -C /usr/local/bin --strip-components=1 \
+            prometheus-3.5.0.linux-amd64/prometheus prometheus-3.5.0.linux-amd64/promtool
+          prometheus --version
+          promtool --version
+
+      # docker::real_client_test drives the docker CLI only - never a daemon: every call
+      # passes -H tcp://127.0.0.1:<netget port> with DOCKER_HOST/DOCKER_CONTEXT removed and a
+      # temp DOCKER_CONFIG. GitHub's ubuntu images ship the CLI; this asserts it is there so a
+      # missing binary fails here rather than inside the test.
+      - name: Check the docker CLI is present
+        continue-on-error: true
+        run: |
+          set -eux
+          docker --version
+
+      # The vault CLI drives vault::real_client_test. HashiCorp's release zip rather than
+      # its apt repository, which would also install and enable a vault server unit. The test
+      # runs the CLI with a cleared environment and a temp HOME, against NetGet only.
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Install the vault CLI (HashiCorp release)
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/vault.zip \
+            https://releases.hashicorp.com/vault/1.18.3/vault_1.18.3_linux_amd64.zip
+          sudo unzip -o /tmp/vault.zip vault -d /usr/local/bin
+          vault version
+
+      # cypher-shell drives bolt::real_client_test. The smallest route on Ubuntu is Neo4j's
+      # release zip (~45 MB, the same artifact Homebrew installs): Neo4j's apt repository
+      # would need its signing key and source list, and its `cypher-shell` package pulls a JRE
+      # the image already has. cypher-shell 2026.x needs Java 21, which the ubuntu-22.04
+      # image ships as JAVA_HOME_21_X64; the wrapper points the launcher at it so the job's
+      # default JAVA_HOME (used by maven) is left alone.
+      # `continue-on-error` for the same reason as the apt step above.
+      - name: Install cypher-shell (Neo4j release zip)
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/cypher-shell.zip \
+            https://dist.neo4j.org/cypher-shell/cypher-shell-2026.09.0.zip
+          sudo unzip -q -o /tmp/cypher-shell.zip -d /opt
+          printf '%s\n' '#!/bin/sh' \
+            'JAVA_HOME="${JAVA_HOME_21_X64:-$JAVA_HOME}" exec /opt/cypher-shell-2026.09.0/bin/cypher-shell "$@"' \
+            | sudo tee /usr/local/bin/cypher-shell > /dev/null
+          sudo chmod +x /usr/local/bin/cypher-shell
+          cypher-shell --version
 
       # kcat drives the kafka real-client test. ubuntu-22.04 still ships it under the
       # pre-rename package name `kafkacat`, whose binary may be either `kcat` or
@@ -696,8 +862,11 @@ jobs:
           # signal; the summary is on the run's own page.
           failed=""
           for filter in \
-            coap::real_client_test dns::dig_test dns::kdig_test \
-            doh::real_client_test dot::real_client_test dynamo::real_client_test \
+            bolt::real_client_test \
+            coap::real_client_test dict::real_client_test dns::dig_test dns::kdig_test \
+            gemini::real_client_test beanstalkd::real_client_test zabbix::real_client_test \
+            gearman::real_client_test \
+            docker::real_client_test doh::real_client_test dot::real_client_test dynamo::real_client_test \
             etcd::real_client_test git::e2e_test gopher::e2e_test grpc::real_client_test \
             hls::curl_test http::real_client_test imap::real_client_test \
             kafka::real_client_test kubernetes::e2e_test ldap::real_client_test \
@@ -707,16 +876,31 @@ jobs:
             mercurial::real_client_test mysql::real_client_test npm::e2e_test \
             oci_registry::e2e_test ollama::real_client_test openvpn:: \
             postgresql::real_client_test \
+            prometheus::real_client_test \
             pypi::e2e_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \
             svn::real_client_test \
-            torrent_tracker::real_client_test webdav::real_client_test \
+            torrent_tracker::real_client_test vault::real_client_test webdav::real_client_test \
             websocket::e2e_test \
-            wol::real_client_test ; do
+            wol::real_client_test \
+            client/etcd::real_server_test client/http::real_server_test \
+            client/ldap::real_server_test \
+            client/mqtt::keepalive_test client/mqtt::real_server_test \
+            client/mysql::real_server_test client/nats::e2e_test \
+            client/postgresql::real_server_test \
+            client/redis::real_server_test client/ssh::real_server_test ; do
             echo "::group::$filter"
-            if ! cargo test --locked --all-features --test server -- \
-                 --test-threads=100 --nocapture "$filter" ; then
+            # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
+            # from the `client` test target; everything else is a real client against a
+            # NetGet server, from `server`.
+            target=server
+            test_filter="$filter"
+            case "$filter" in
+              client/*) target=client ; test_filter="${filter#client/}" ;;
+            esac
+            if ! cargo test --locked --all-features --test "$target" -- \
+                 --test-threads=100 --nocapture "$test_filter" ; then
               echo "::error::$filter failed - a Beta rating rests on this test"
               failed="$failed $filter"
             fi
@@ -766,6 +950,11 @@ jobs:
       #   dig       bind9-dnsutils  server::dns::dig_test        (ISC BIND)
       #   kdig      knot-dnsutils   server::dns::kdig_test       (Knot - the second resolver)
       #   redis-cli redis-tools     server::redis::real_client_test (the C client, not redis-rs)
+      #                             and client::redis::real_server_test
+      #   redis-server redis-server client::redis::real_server_test (the real server the
+      #                             redis CLIENT is tested against)
+      #   nginx     nginx           client::http::real_server_test (the real server the http
+      #                             CLIENT is tested against)
       #
       # `curl` and `python3`, which server::http::real_client_test drives, are preinstalled on
       # every GitHub runner image and are not listed here.
@@ -777,12 +966,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bind9-dnsutils knot-dnsutils redis-tools
+            bind9-dnsutils knot-dnsutils redis-tools redis-server nginx
           # Not decoration: these fail the step when a package silently stopped shipping
           # the binary, which is a clearer signal than three test failures later on.
           dig -v
           kdig -V
           redis-cli --version
+          redis-server --version
+          # /usr/sbin, which the real-server helper also searches.
+          nginx -v
 
       # The pcap oracle (tests/helpers/pcap_oracle.rs) runs tshark over the bytes each
       # server emitted, as an independent decoder. It deliberately FAILS rather than

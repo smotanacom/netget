@@ -20,8 +20,9 @@
 //!
 //! # The rule
 //!
-//! Over `src/{server,client}/*/mod.rs` and `src/{server,client}/*/*/mod.rs`, a `tokio::spawn(..)`
-//! is flagged when **all** of these hold:
+//! Over every `.rs` file in `src/{server,client}/*/` and `src/{server,client}/*/*/` — not only
+//! `mod.rs`; see [`protocol_source_files`] — a `tokio::spawn(..)` is flagged when **all** of
+//! these hold:
 //!
 //! 1. it is a whole statement — the previous non-whitespace, non-comment character is `;`, `{`
 //!    or `}`, and the call is followed by `;`;
@@ -258,7 +259,34 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
-fn protocol_mod_files(root: &Path) -> Vec<PathBuf> {
+/// Every `.rs` file of every protocol directory: `src/{server,client}/<p>/*.rs` and, for the
+/// families that nest one level deeper (`usb`, the Bluetooth profiles), `<p>/<q>/*.rs`.
+///
+/// **Every file, not only `mod.rs`.** Until 26 September 2026 this read `mod.rs` alone, the same
+/// blind spot `tcp_server_bounds_ratchet_test.rs` had until it was widened: a protocol that keeps
+/// its connection handling in a second file (`http2/h2_server.rs`, `nfs/guard.rs`,
+/// `mysql/<helper>.rs`, the USB/IP handlers) was never scanned at all, so a detached
+/// per-connection task there passed this gate by living one file over.
+///
+/// Widening it added no finding and so no baseline entry: every `tokio::spawn` outside a
+/// `mod.rs` is bound to a `let` — registered a line later (`nfs/guard.rs`'s connection task,
+/// `http2/h2_server.rs`'s accept loop), aborted on the exit path (`nfs/guard.rs`'s downstream
+/// relay), or held in `usb/guard.rs`'s `AbortOnDrop`. What the widening buys is the next one: a
+/// statement-form spawn added to `h2_server.rs` is flagged by this population and was passed by
+/// the `mod.rs`-only one (checked both ways when it was widened).
+fn protocol_source_files(root: &Path) -> Vec<PathBuf> {
+    fn rust_files_in(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("rs") {
+                out.push(p);
+            }
+        }
+    }
+
     let mut files = Vec::new();
     for tree in ["src/server", "src/client"] {
         let dir = root.join(tree);
@@ -270,16 +298,13 @@ fn protocol_mod_files(root: &Path) -> Vec<PathBuf> {
             if !p.is_dir() {
                 continue;
             }
-            let direct = p.join("mod.rs");
-            if direct.is_file() {
-                files.push(direct);
-            }
-            // one level deeper, for `src/server/usb/<device>/mod.rs`
+            rust_files_in(&p, &mut files);
+            // one level deeper, for `src/server/usb/<device>/`
             if let Ok(inner) = std::fs::read_dir(&p) {
                 for ie in inner.flatten() {
-                    let ip = ie.path().join("mod.rs");
-                    if ip.is_file() {
-                        files.push(ip);
+                    let ip = ie.path();
+                    if ip.is_dir() {
+                        rust_files_in(&ip, &mut files);
                     }
                 }
             }
@@ -289,10 +314,32 @@ fn protocol_mod_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+#[test]
+fn the_scan_reads_every_file_of_a_protocol_not_only_its_mod_rs() {
+    let files = protocol_source_files(&repo_root());
+    for expected in [
+        "src/server/http2/h2_server.rs",
+        "src/server/nfs/guard.rs",
+        "src/server/tcp/mod.rs",
+    ] {
+        assert!(
+            files.iter().any(|f| f.ends_with(expected)),
+            "the population must include {expected}; a file the scan never opens cannot be \
+             flagged, whatever it spawns"
+        );
+    }
+    assert!(
+        files
+            .iter()
+            .any(|f| f.to_string_lossy().contains("src/server/usb/") && !f.ends_with("mod.rs")),
+        "the population must reach into nested families' non-`mod.rs` files too"
+    );
+}
+
 fn current_findings() -> BTreeSet<String> {
     let root = repo_root();
     let mut found = BTreeSet::new();
-    for path in protocol_mod_files(&root) {
+    for path in protocol_source_files(&root) {
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };

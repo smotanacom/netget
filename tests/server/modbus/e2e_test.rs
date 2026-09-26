@@ -126,7 +126,7 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
             })
             .expect_calls(1)
             .and()
-            // 4. Coil read.
+            // 4. Coil read (FC 1) and discrete-input read (FC 2).
             .on_event("modbus_read_bits")
             .respond_with_actions_from_event(|event| {
                 let quantity = event["quantity"].as_u64().unwrap_or(1);
@@ -137,7 +137,30 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
                     "values": values
                 }])
             })
-            .expect_calls(1)
+            .expect_calls(2)
+            .and()
+            // 4b. Coil writes (FC 5 and FC 15). Accepted only if the coil values the client
+            //     sent reached the model intact, so the unpacking of FC 15's bit field is
+            //     checked through the event, not assumed.
+            .on_event("modbus_write_request")
+            .and_event_data_contains("function", "coil")
+            .respond_with_actions_from_event(|event| {
+                let values = event["coil_values"].clone();
+                if values == serde_json::json!([true])
+                    || values
+                        == serde_json::json!([
+                            true, false, true, true, false, false, true, true, true
+                        ])
+                {
+                    serde_json::json!([{"type": "send_modbus_write_ack"}])
+                } else {
+                    serde_json::json!([{
+                        "type": "send_modbus_exception",
+                        "exception_code": "illegal_data_value"
+                    }])
+                }
+            })
+            .expect_calls(2)
             .and()
             // 5. Refused write - the explicit denial path, structurally distinct from
             //    an acknowledgement. Declared before the accepted-write rule.
@@ -203,6 +226,36 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
         coils,
         vec![true, false, false, true],
         "coil bits must survive the LSB-first packing round trip"
+    );
+
+    // --- FC 2: read discrete inputs ----------------------------------------
+    let inputs = ctx
+        .read_discrete_inputs(100, 10)
+        .await
+        .expect("transport error on read_discrete_inputs")
+        .expect("server returned an exception for read_discrete_inputs");
+    assert_eq!(
+        inputs,
+        vec![true, false, false, true, false, false, true, false, false, true],
+        "ten discrete inputs span two bytes; both must unpack LSB-first"
+    );
+
+    // --- FC 5: write single coil, accepted ---------------------------------
+    ctx.write_single_coil(3, true)
+        .await
+        .expect("transport error on write_single_coil")
+        .expect("server should have accepted this coil write (tokio-modbus checks the echo)");
+
+    // --- FC 15: write multiple coils, accepted -----------------------------
+    ctx.write_multiple_coils(
+        0x13,
+        &[true, false, true, true, false, false, true, true, true],
+    )
+    .await
+    .expect("transport error on write_multiple_coils")
+    .expect(
+        "server should have accepted this write; an exception here means the nine coil values \
+         did not reach the model as sent",
     );
 
     // --- FC 6: write single register, accepted ----------------------------
@@ -303,6 +356,25 @@ async fn test_modbus_spec_exceptions_and_mbap_framing() -> E2EResult<()> {
         pdu,
         vec![0x81, 0x03],
         "a coil quantity above 2000 must produce exception 0x03"
+    );
+
+    // One ADU split across two TCP writes, cut inside the MBAP header. The first write leaves
+    // the connection Accumulating; only the second completes a frame. A server that framed each
+    // read on its own would see a 4-octet fragment and either wait forever or call it garbage.
+    let split = adu(0x0707, 0x01, &[0x08, 0x00, 0x00, 0x00, 0x00]);
+    stream.write_all(&split[..4]).await?;
+    stream.flush().await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stream.write_all(&split[4..]).await?;
+    let (txid, _, pdu) = read_adu(&mut stream).await;
+    assert_eq!(
+        txid, 0x0707,
+        "the reassembled frame is answered with its own id"
+    );
+    assert_eq!(
+        pdu,
+        vec![0x88, 0x01],
+        "a frame split across segments must be reassembled"
     );
 
     drop(stream);

@@ -41,8 +41,9 @@ NC=$'\033[0m'
 # and Cargo feature name are the same for all of these; if that ever stops being
 # true this list grows a mapping.
 ALL_PROTOCOLS=(
-    http dns whois gopher finger redis postgresql mysql
+    http dns whois gopher finger dict gemini beanstalkd zabbix gearman redis postgresql mysql
     ldap ipp syslog ntp telnet tcp ftp udp
+    prometheus docker vault bolt
 )
 
 # The default model. Chosen deliberately, and the reasoning matters:

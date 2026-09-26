@@ -81,7 +81,8 @@ grep -n "_EVENT," src/server/websocket/mod.rs   # the emit side
 | `websocket_close` | the client started the closing handshake | send text, close |
 
 **Pong frames are deliberately not an event.** A keepalive pong would otherwise cost a model
-call per heartbeat. They are logged at DEBUG.
+call per heartbeat. They are logged at DEBUG, and they count as activity for the idle bound
+below — that is what they are for.
 
 **Every connection costs two model calls before the first message** (`websocket_handshake`, then
 `websocket_connection_opened`). For a deterministic endpoint use script or static handlers, which
@@ -189,6 +190,38 @@ Every one is declared and read; nothing is declared and unused.
 | `path` | only this exact path is upgraded; anything else gets 404 without a model call |
 | `max_message_size` | reassembled-message ceiling, default 1 MiB, clamped to 64 MiB |
 | `max_frame_size` | single-frame ceiling, same default and clamp |
+| `idle_timeout_secs` | how long an upgraded connection may send no frame at all, default 600 |
+
+## Connection bounds
+
+| Bound | Default | Mechanism |
+|---|---|---|
+| Request head | 15s (`HANDSHAKE_TIMEOUT_SECS`) | `timeout` around reading the HTTP head, before the upgrade |
+| Upgraded, no frame from the peer | 600s (`idle_timeout_secs`) | `accept_bounded::watch_idle_with_probe` over a `ConnectionActivity`, the probe a Ping, raced against the frame loop |
+| Connections | 256 | `accept_bounded`; the peer over the cap reads `503` + `Retry-After` |
+
+**The upgraded bound is on liveness, not on conversation.** A WebSocket client is entitled to
+hold a session open with nothing to say, so at half the bound the server sends a Ping (payload
+`netget-keepalive`), and every RFC 6455 endpoint answers a Ping with a Pong by itself (§5.5.2)
+— browsers, tungstenite, websocat, NetGet's own client — with no application code. Any inbound
+frame counts: text, binary, Ping, Pong, Close. What reaches the bound is a peer that has stopped
+reading or vanished without a FIN. It is closed with **1001** ("going away", §7.4.1) and the log
+says `decision=idle_timeout`.
+
+**Why 600 and not 300: clients that stop reading while they think.** tungstenite, like most
+WebSocket libraries, flushes the Pong for a Ping from inside a *read*, so a client whose
+application stops reading while it decides what to say — a model turn, or a person answering a
+`manual` rule's 300-second window — answers late. At twice that window a Ping sent at the worst
+moment is still answered inside the bound. NetGet's own client does not need the margin: it
+reads on a task of its own while turns run on another, and
+`tests/client/websocket/keepalive_test.rs` holds it to a 2-second bound through two ten-second
+parked turns.
+
+**Busy is not idle.** Handlers run on their own tasks while the frame loop keeps reading, so each
+holds `ConnectionActivity` busy for the whole of its answer; a message waiting on the model or
+parked for a human by a `manual` rule is neither pinged nor closed, however long it takes.
+
+`tests/server/websocket/connection_bounds_test.rs` drives all of it from the wire.
 
 ## Connection directory (not storage)
 
@@ -238,5 +271,3 @@ Checked against **three peers, two of them not this repository's code**:
   client asking for compression gets none.
 - **Autobahn test suite conformance.** Not run. The framing is `tungstenite`'s, which does pass
   it, but that is an inherited claim and not one this protocol has checked.
-- Per-connection tasks are not cancelled by `stop_server` — the repo-wide limitation, not
-  specific to this protocol.

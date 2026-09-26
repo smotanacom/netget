@@ -37,6 +37,7 @@ impl Protocol for TcpProtocol {
                     description: "The peer is owed a greeting (e.g. an FTP/SMTP-style banner): nothing the peer sends is read until tcp_connection_opened has been answered, a silent answer is logged as a missing greeting, and a failed one closes the connection. tcp_connection_opened is raised for every connection either way; without this flag the model may answer it with no actions and a failure there is only logged.".to_string(),
                     required: false,
                     example: serde_json::json!(false),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "first_byte_timeout_secs".to_string(),
@@ -49,6 +50,7 @@ impl Protocol for TcpProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(300),
+                    default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "idle_timeout_secs".to_string(),
@@ -58,6 +60,7 @@ impl Protocol for TcpProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(900),
+                    default: Some(serde_json::json!(super::IDLE_BETWEEN_MESSAGES_TIMEOUT.as_secs())),
                 },
             ]
     }

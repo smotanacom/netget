@@ -313,6 +313,7 @@ impl Protocol for IrcClientProtocol {
                 description: "IRC nickname (default: netget_user)".to_string(),
                 required: false,
                 example: json!("mybot"),
+                default: None,
             },
             ParameterDefinition {
                 name: "username".to_string(),
@@ -320,6 +321,7 @@ impl Protocol for IrcClientProtocol {
                 description: "IRC username (default: netget)".to_string(),
                 required: false,
                 example: json!("botuser"),
+                default: None,
             },
             ParameterDefinition {
                 name: "realname".to_string(),
@@ -327,6 +329,7 @@ impl Protocol for IrcClientProtocol {
                 description: "IRC real name (default: NetGet IRC Client)".to_string(),
                 required: false,
                 example: json!("My IRC Bot"),
+                default: None,
             },
         ]
     }

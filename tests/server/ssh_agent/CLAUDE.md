@@ -34,6 +34,18 @@ keys and performs signing operations for SSH clients.
   algorithm name for a signature, both framed by the server), that a truncated or mislabelled
   blob is *refused*, that the hex escape hatches still pass bytes through verbatim, and that
   giving both spellings of the same thing is an error rather than a coin toss.
+- `connection_bounds_test.rs` - the connection cap and both read deadlines, from the peer's
+  end of the socket. In-process (`ServerForm` + `AppState`) and model-free: the LLM endpoint is
+  a dead port and every rule is static or manual, so 0 calls. The read bounds are set short
+  through `first_byte_timeout_secs` / `idle_timeout_secs`. Four tests: a silent peer reads EOF
+  at the first-byte bound; after one static-answered request the idle bound governs (the
+  first-byte one is set 60s, the wrong way round); a request parked for a human keeps its
+  connection far past both bounds; 256 sockets fill the cap, the 257th reads EOF at once, and
+  closing one frees exactly one slot. Removing the read deadline failed the first two and
+  raising the cap to 100 000 failed the fourth. The parked test has no guard to remove —
+  requests are answered inline, so the read is simply not polled — and is a regression pin
+  against the deadline being moved outward. It also pins `default_binding()`: before it, this
+  protocol could not be started with only a `socket_path` ("requires 'port' parameter").
 
 ## LLM Call Budget
 

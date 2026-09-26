@@ -70,6 +70,7 @@ impl Protocol for TelnetProtocol {
                     description: "The peer is owed a greeting: a telnet_connection_opened answer with nothing in it is logged as a missing banner, and a backend failure prints a notice line. telnet_connection_opened is raised for every connection either way, and nothing the client types is read until it has been answered".to_string(),
                     required: false,
                     example: serde_json::json!(true),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "first_byte_timeout_secs".to_string(),
@@ -85,6 +86,7 @@ impl Protocol for TelnetProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(300),
+                    default: Some(serde_json::json!(super::FIRST_LINE_READ_TIMEOUT.as_secs())),
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "idle_timeout_secs".to_string(),
@@ -97,6 +99,7 @@ impl Protocol for TelnetProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(600),
+                    default: Some(serde_json::json!(super::IDLE_BETWEEN_LINES_TIMEOUT.as_secs())),
                 },
             ]
     }
@@ -133,6 +136,7 @@ impl Protocol for TelnetProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(23))
+            .well_known_port(23)
             .implementation(
                 "Line-based text over TCP. IAC sequences are stripped from the stream but not \
                  answered; lines are capped at 8 KiB.",

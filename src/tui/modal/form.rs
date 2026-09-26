@@ -2,9 +2,9 @@
 //!
 //! Fields are derived from `ServerForm` / `ClientForm` plus the protocol's own
 //! declared startup parameters (`management::server_declared_params` /
-//! `client_declared_params`). `ParameterDefinition` has no default, so
-//! `example` is rendered as a dim placeholder — the only prefill signal there
-//! is.
+//! `client_declared_params`). A parameter's declared `default` is pre-filled as
+//! its value and left out of the submission unless edited; a parameter without
+//! one shows its `example` as a dim `e.g.` placeholder.
 //!
 //! Applying routes through the same `management` APIs the LLM and MCP use, so
 //! validation, the hot-apply/restart split, and validation-before-mutation all
@@ -55,6 +55,11 @@ pub struct Field {
     pub original: String,
     /// Shown dimmed when the value is empty.
     pub placeholder: String,
+    /// The protocol's declared default for a startup parameter, as the text the field holds.
+    /// A field is pre-filled with it and `original` is set to match, so leaving it alone
+    /// submits nothing and the protocol's own fallback applies — the value shown *is* that
+    /// fallback, because the declaration points at the constant the code uses.
+    pub default: Option<String>,
     pub help: String,
     pub required: bool,
     /// Multi-line fields open the text editor rather than editing inline.
@@ -69,6 +74,7 @@ impl Field {
             value: String::new(),
             original: String::new(),
             placeholder: String::new(),
+            default: None,
             help: help.to_string(),
             required: false,
             multiline: false,
@@ -77,6 +83,13 @@ impl Field {
 
     pub fn changed(&self) -> bool {
         self.value.trim() != self.original.trim()
+    }
+
+    /// The field holds the protocol's declared default, untouched.
+    pub fn is_default(&self) -> bool {
+        self.default
+            .as_deref()
+            .is_some_and(|d| d.trim() == self.value.trim())
     }
 }
 
@@ -147,7 +160,10 @@ impl FormModel {
                 let mut send_first = Field::simple(
                     FieldTarget::SendFirst,
                     "send_first",
-                    "Speak first on connect. NOTE: currently ignored on every path.",
+                    "Speak first on connect, before the peer sends anything. Honoured by the \
+                     protocols that declare a `send_first` startup parameter (tcp, telnet, \
+                     redis, ldap, mysql, postgresql, …); any other protocol ignores it with a \
+                     warning.",
                 );
                 send_first.value = "false".to_string();
                 fields.push(send_first);
@@ -193,6 +209,21 @@ impl FormModel {
             default_event_handlers(section, protocol).to_string(),
         );
         model
+    }
+
+    /// Say on the port field where its pre-filled value came from: the well-known port, or
+    /// why it is not the well-known port ("well-known port 53 needs root; …").
+    pub fn note_default_port(&mut self, default: &crate::protocol::default_port::DefaultPort) {
+        if let Some(port) = self
+            .fields
+            .iter_mut()
+            .find(|f| f.target == FieldTarget::Port)
+        {
+            port.help = format!(
+                "TCP/UDP port to bind. 0 asks the OS for a free one. Default: {}.",
+                default.describe()
+            );
+        }
     }
 
     /// Build an edit-form pre-filled from a live instance.
@@ -462,15 +493,17 @@ impl FormModel {
 
     /// Assemble the startup-params object from the per-parameter fields.
     ///
-    /// On edit, an untouched parameter is omitted: `update_server` merges the
-    /// supplied params over the stored ones, and re-sending them all would
-    /// trigger a restart for no reason.
+    /// An untouched parameter is omitted, in both modes. On edit, `update_server` merges the
+    /// supplied params over the stored ones, and re-sending them all would trigger a restart
+    /// for no reason. On create, the only untouched parameter with a value is one pre-filled
+    /// with its declared default, and omitting it leaves the protocol's fallback — the same
+    /// value — in charge, so the new instance's `startup_params` records only what the
+    /// operator chose.
     fn startup_params(&self) -> Option<serde_json::Value> {
-        let editing = matches!(self.mode, FormMode::Edit(_));
         let mut map = serde_json::Map::new();
         for field in &self.fields {
             if let FieldTarget::StartupParam(name) = &field.target {
-                if editing && !field.changed() {
+                if !field.changed() {
                     continue;
                 }
                 let raw = field.value.trim();
@@ -673,22 +706,35 @@ fn push_param_fields(
                 other => other.to_string(),
             })
             .unwrap_or_default();
-        let example = match &param.example {
+        let as_text = |v: &serde_json::Value| match v {
             serde_json::Value::Null => String::new(),
             serde_json::Value::String(s) => s.clone(),
             other => other.to_string(),
         };
+        let example = as_text(&param.example);
+        let default = param.default.as_ref().map(as_text);
+        // A declared default fills an otherwise empty field, with `original` matching so an
+        // untouched default is never submitted (see `startup_params`).
+        let value = match (&existing, &default) {
+            (e, Some(d)) if e.is_empty() => d.clone(),
+            _ => existing,
+        };
+        let help = match &default {
+            Some(d) => format!("{} ({}) Default: {d}.", param.description, param.type_hint),
+            None => format!("{} ({})", param.description, param.type_hint),
+        };
         fields.push(Field {
             target: FieldTarget::StartupParam(param.name.clone()),
             label: param.name.clone(),
-            value: existing.clone(),
-            original: existing,
+            original: value.clone(),
+            value,
             placeholder: if example.is_empty() {
                 String::new()
             } else {
                 format!("e.g. {example}")
             },
-            help: format!("{} ({})", param.description, param.type_hint),
+            default,
+            help,
             required: param.required,
             multiline: false,
         });

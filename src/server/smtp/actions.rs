@@ -147,6 +147,7 @@ impl Protocol for SmtpProtocol {
                     description: "Enable SMTPS (implicit TLS) mode (default: false)".to_string(),
                     required: false,
                     example: json!(true),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "tls_common_name".to_string(),
@@ -154,6 +155,7 @@ impl Protocol for SmtpProtocol {
                     description: "TLS certificate Common Name (CN) (default: 'netget-smtp-server')".to_string(),
                     required: false,
                     example: json!("mail.example.com"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "tls_san_dns_names".to_string(),
@@ -161,6 +163,7 @@ impl Protocol for SmtpProtocol {
                     description: "TLS certificate Subject Alternative Names (DNS names) (default: ['localhost', '*.local'])".to_string(),
                     required: false,
                     example: json!(["mail.example.com", "localhost", "*.example.com"]),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "tls_validity_days".to_string(),
@@ -168,6 +171,7 @@ impl Protocol for SmtpProtocol {
                     description: "TLS certificate validity period in days (default: 365)".to_string(),
                     required: false,
                     example: json!(365),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "tls_organization".to_string(),
@@ -175,6 +179,7 @@ impl Protocol for SmtpProtocol {
                     description: "TLS certificate Organization (O) (default: 'NetGet')".to_string(),
                     required: false,
                     example: json!("Example Corp"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "tls_organizational_unit".to_string(),
@@ -182,6 +187,7 @@ impl Protocol for SmtpProtocol {
                     description: "TLS certificate Organizational Unit (OU) (default: 'SMTP Server')".to_string(),
                     required: false,
                     example: json!("IT Department"),
+                    default: None,
                 },
             ]
     }
@@ -227,6 +233,7 @@ impl Protocol for SmtpProtocol {
             .llm_control("All SMTP commands + responses")
             .e2e_testing("Raw TCP client driving the SMTP command sequence")
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(25))
+            .well_known_port(25)
             .notes(
                 "Accepts mail but stores nothing - the model answers every command. No AUTH, no \
                  STARTTLS, no PIPELINING. Every DATA body line costs one model call unless an \

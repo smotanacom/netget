@@ -69,6 +69,7 @@ impl Protocol for GrpcProtocol {
                     description: "Protobuf schema definition. IMPORTANT: For LLM responses, use inline .proto text (proto3 syntax). LLMs should NOT use base64-encoded FileDescriptorSet (truncation issues). Alternatively, provide path to .proto file on disk.".to_string(),
                     required: true,
                     example: json!("syntax = \"proto3\"; package test; service UserService { rpc GetUser(UserId) returns (User); } message UserId { int32 id = 1; } message User { int32 id = 1; string name = 2; string email = 3; }"),
+                    default: None,
                 },
             ]
     }

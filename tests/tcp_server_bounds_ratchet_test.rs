@@ -32,7 +32,7 @@
 //! good enough to survive review. Removing one is the work.
 //!
 //! Run with:
-//!   ./cargo-isolated.sh test --no-default-features --features tcp --test tcp_server_bounds_ratchet -- --test-threads=100
+//!   ./cargo-isolated.sh test --no-default-features --features tcp --test tcp_server_bounds_ratchet_test -- --test-threads=100
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -53,6 +53,11 @@ use std::path::{Path, PathBuf};
 /// `ConnectionActivity` shape `etcd` and `s3` established rather than a deadline inside hyper's
 /// own reads, because hyper keeps polling a connection while a request is being answered and
 /// such a deadline fires in the middle of a model round-trip.
+///
+/// That "every one of the 92" was true of the population this test measured and false of the
+/// tree: when the population was widened on 26 September 2026 (see [`tcp_servers`]) it grew to
+/// 95, and the three it had missed — `http2`, `socket_file`, `ssh_agent` — had no deadline at
+/// all. They were fixed rather than baselined, so the list is still empty.
 const TIMEOUT_BASELINE: &[&str] = &[];
 
 /// Protocols that open a TCP accept loop without a connection cap.
@@ -70,6 +75,10 @@ const TIMEOUT_BASELINE: &[&str] = &[];
 /// plain close because every message they could send would have to echo something the refused
 /// peer never sent — or, for `doh` and `dot`, would be a malformed TLS record rather than a
 /// refusal at all.
+///
+/// The widened population of 26 September 2026 found three more with no cap — `http2`,
+/// `socket_file` and `ssh_agent` — and all three now go through `accept_bounded` or its Unix
+/// twin `accept_bounded_unix`.
 ///
 /// Nothing here makes a cap impossible. This is work left.
 const CAP_BASELINE: &[&str] = &[];
@@ -104,22 +113,32 @@ fn server_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server")
 }
 
-/// Every protocol directory under `src/server` whose `mod.rs` opens a TCP accept loop, with the
-/// whole directory's Rust source concatenated — a protocol may put its bounds in a sibling
-/// module, and `nfs` does exactly that.
+/// Every protocol directory under `src/server` that opens a stream accept loop — TCP or Unix
+/// domain — with the whole directory's Rust source concatenated, because a protocol may put its
+/// bounds in a sibling module, and `nfs` does exactly that.
+///
+/// **The listener is looked for in every `.rs` file of the directory, not only `mod.rs`.**
+/// Until 26 September 2026 only `mod.rs` was read for it, and three servers were invisible:
+/// `http2` binds in `h2_server.rs`, while `socket_file` and `ssh_agent` bind a `UnixListener`,
+/// which was not counted as a listener at all. All three had neither a connection cap nor a read
+/// deadline — the "counted a token, not the thing" blind spot the module comment describes, one
+/// file over. Widening the population added exactly those three directories and no other, so it
+/// costs no false positives; the run on the unfixed tree flagged all three in both checks.
 fn tcp_servers() -> Vec<(String, String)> {
     let root = server_root();
     let mut found = Vec::new();
 
     for entry in walk_dirs(&root) {
-        let mod_rs = entry.join("mod.rs");
-        let Ok(mod_src) = std::fs::read_to_string(&mod_rs) else {
-            continue;
-        };
-        // Both ways a server opens a TCP accept loop. Matching only the first is what hid 60
-        // of 92 protocols from this test: `create_reusable_tcp_listener` returns a
-        // `TcpListener` without its caller ever writing the type.
-        if !mod_src.contains("TcpListener") && !mod_src.contains("create_reusable_tcp_listener") {
+        let own_source = rust_sources(&entry);
+        // Every way a server here opens a stream accept loop, looked for in every file of the
+        // directory. Matching only `TcpListener` is what hid 60 of 92 protocols from this test:
+        // `create_reusable_tcp_listener` returns a `TcpListener` without its caller ever
+        // writing the type. `UnixListener` is the same accept-loop shape over a filesystem
+        // socket, with the same exposure to a peer that connects and says nothing.
+        if !LISTENER_TOKENS
+            .iter()
+            .any(|token| own_source.contains(token))
+        {
             continue;
         }
         let name = entry
@@ -128,7 +147,6 @@ fn tcp_servers() -> Vec<(String, String)> {
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
 
-        let mut combined = String::new();
         // A protocol's own directory, plus — for one that nests a level deeper — its family
         // directory. `nfs` declares both its bounds in `nfs/guard.rs`, a sibling module, and
         // this walk has always picked that up because it is in the same directory. The USB
@@ -137,24 +155,37 @@ fn tcp_servers() -> Vec<(String, String)> {
         // `usb/keyboard` declaring the bound in its own `mod.rs` would mean six copies of one
         // number. Without this, the check measured a token's *location* rather than whether a
         // read is bounded — the same class of blind spot as the `TcpListener` one above.
-        for dir in [Some(entry.as_path()), family_dir(&root, &entry)]
-            .into_iter()
-            .flatten()
-        {
-            for file in std::fs::read_dir(dir).expect("read protocol dir").flatten() {
-                let path = file.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        combined.push_str(&text);
-                    }
-                }
-            }
+        let mut combined = own_source;
+        if let Some(family) = family_dir(&root, &entry) {
+            combined.push_str(&rust_sources(family));
         }
         found.push((name, combined));
     }
 
     found.sort();
     found
+}
+
+/// How a server opens a stream accept loop. See [`tcp_servers`].
+const LISTENER_TOKENS: &[&str] = &[
+    "TcpListener",
+    "create_reusable_tcp_listener",
+    "UnixListener",
+];
+
+/// Every `.rs` file directly in `dir`, concatenated. Nested directories are protocols of their
+/// own in [`walk_dirs`], so they are not folded in here.
+fn rust_sources(dir: &Path) -> String {
+    let mut combined = String::new();
+    for file in std::fs::read_dir(dir).expect("read protocol dir").flatten() {
+        let path = file.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                combined.push_str(&text);
+            }
+        }
+    }
+    combined
 }
 
 /// The family directory of a protocol that nests one level deeper (`src/server/usb` for
@@ -314,6 +345,24 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "webrtc",
         "webrtc_signaling",
         "websocket",
+        // The three the widened population found (26 September 2026). Each has a
+        // `connection_bounds_test.rs` that fills the cap from the wire and drives both read
+        // bounds from the peer's side.
+        "http2",
+        "socket_file",
+        "ssh_agent",
+        // New protocols, born with both bounds (Programme 4).
+        "dict",
+        "gemini",
+        "bolt",
+        // Programme 4 new HTTP-layered servers, each with a connection_bounds_test.rs driving
+        // the shared tests/helpers/http_bounds.rs checks.
+        "prometheus",
+        "docker",
+        "vault",
+        "beanstalkd",
+        "zabbix",
+        "gearman",
     ];
 
     let servers = tcp_servers();
@@ -321,7 +370,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         let (_, source) = servers
             .iter()
             .find(|(name, _)| leaf(name) == *protocol)
-            .unwrap_or_else(|| panic!("{protocol} no longer binds a TcpListener in its mod.rs"));
+            .unwrap_or_else(|| panic!("{protocol} no longer opens a listener in its directory"));
 
         assert!(
             TIMEOUT_TOKENS.iter().any(|token| source.contains(token)),
@@ -370,4 +419,195 @@ fn bounds_a_read_in_time(source: &str) -> bool {
     let sleeps = source.contains("time::sleep(");
     let has_deadline = source.contains("_TIMEOUT") || source.contains("_deadline");
     sleeps && has_deadline
+}
+
+// ---------------------------------------------------------------------------------------------
+// A deadline that only covers the handshake
+// ---------------------------------------------------------------------------------------------
+
+/// Every accept loop's deadlines must reach past its handshake.
+///
+/// [`every_tcp_accept_loop_declares_a_read_deadline`] asks whether a directory bounds *a* read in
+/// time, and a `timeout(` anywhere satisfies it. Six servers satisfied it with a deadline that
+/// covered nothing a peer does once connected: `doh`, `socks5`, `websocket`, `webrtc` and
+/// `webrtc_signaling` bounded only their handshake — TLS, the SOCKS5 greeting, the HTTP upgrade
+/// head — and `mqtt`'s one `timeout(` waited on its own writer task at exit. After the handshake
+/// each read loop awaited the peer with nothing racing it, so a peer that went quiet, or vanished
+/// without a FIN, held its slot forever. All six are fixed (September 2026) and this test keeps
+/// the shape from coming back.
+///
+/// # The rule, and why it is this narrow
+///
+/// A directory is flagged when **every** `timeout(` call in its code is one of:
+///
+/// * **a handshake bound** — the call's arguments mention `handshake` (`TLS_HANDSHAKE_TIMEOUT`,
+///   `HANDSHAKE_TIMEOUT_SECS`, `SIGNALLING_HANDSHAKE_TIMEOUT`), or
+/// * **a join on its own task** — the awaited expression is a bare identifier naming a handle or
+///   a writer (`timeout(d, writer_handle)`), which bounds how long *we* wait for *ourselves*,
+///
+/// **and** it has no other deadline mechanism: none of [`POST_HANDSHAKE_MECHANISMS`], and no
+/// `time::sleep(` whose argument names a read, an idle bound or a deadline (the `select!` idiom
+/// `nats` uses — its accept-error backoff `sleep(from_millis(50))` is not one, which is why the
+/// argument is inspected rather than the call counted).
+///
+/// Measured on the tree before the six were fixed (`1e1ad6c0`), across all 95 stream servers,
+/// it flagged **exactly those six and nothing else**; on the fixed tree it flags nothing. A
+/// server whose only deadline is on its handshake but *named* differently is not caught — the
+/// rule reads names, and a loose name list is what exempted `snowflake` from the check above for
+/// months. It errs toward missing a case rather than training people to edit a baseline, and
+/// the miss is the direction the module comment warns about, so it is said here: a handshake
+/// deadline spelled `CONNECT_WAIT` would pass.
+///
+/// What it deliberately does not try to do is prove that a *post*-handshake bound covers the
+/// right read. That needs dataflow, not text: `mqtt`'s fixed read deadline and a hypothetical
+/// deadline on some unrelated helper look the same to a scan. The per-protocol
+/// `connection_bounds_test.rs` suites, which drive an idle peer from the wire, are what answer
+/// that — this test only catches the directory that has no candidate at all.
+#[test]
+fn no_accept_loop_bounds_only_its_handshake() {
+    let mut flagged = Vec::new();
+    for (name, source) in tcp_servers() {
+        let code = strip_line_comments(&source);
+        let calls = timeout_call_arguments(&code);
+        if calls.is_empty() {
+            // No `timeout(` at all: the check above decides whether something else bounds it.
+            continue;
+        }
+        let kinds: Vec<&str> = calls.iter().map(|c| classify_timeout(c)).collect();
+        let only_handshake_or_join = kinds.iter().all(|k| *k != "other");
+        let has_other_mechanism = POST_HANDSHAKE_MECHANISMS
+            .iter()
+            .any(|token| code.contains(token))
+            || sleeps_on_a_read_deadline(&code);
+        if only_handshake_or_join && !has_other_mechanism {
+            flagged.push(format!("{name} (timeouts: {})", kinds.join(", ")));
+        }
+    }
+
+    assert!(
+        flagged.is_empty(),
+        "these servers' only deadlines are on a handshake or on joining their own task, so once a \
+         peer is past the handshake nothing bounds how long it may sit silent:\n  {}\n\nBound the \
+         post-handshake read too. Own the read loop: a `timeout` around the read and nothing \
+         else (`mqtt`, `ssh_agent`). A crate owns the loop: `watch_idle` over a \
+         `ConnectionActivity` the answer holds busy (`doh`, `http2`). A session the client may \
+         hold open in silence: `watch_idle_with_probe` with a keepalive Ping (`websocket`, \
+         `webrtc`). A relay: one clock both directions touch (`socks5`).",
+        flagged.join("\n  ")
+    );
+}
+
+/// Deadline mechanisms that are never handshake-specific in this tree. The mechanisms of
+/// [`TIMEOUT_TOKENS`] other than `timeout(`, which this test classifies call by call instead.
+const POST_HANDSHAKE_MECHANISMS: &[&str] = &[
+    "IdleTimeoutReader",
+    "watch_idle",
+    "Instant::now() +",
+    "sleep_until",
+    "set_read_timeout",
+];
+
+/// `handshake`, `join`, or `other` — see [`no_accept_loop_bounds_only_its_handshake`].
+fn classify_timeout(arguments: &str) -> &'static str {
+    if arguments.to_ascii_lowercase().contains("handshake") {
+        return "handshake";
+    }
+    let awaited = arguments.rsplit(',').next().unwrap_or("").trim();
+    let awaited = awaited
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
+    let is_identifier = !awaited.is_empty()
+        && awaited
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_identifier && (awaited.contains("handle") || awaited.contains("writer")) {
+        return "join";
+    }
+    "other"
+}
+
+/// The argument text of every `timeout(` call in `code`, parentheses balanced.
+fn timeout_call_arguments(code: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
+    let mut calls = Vec::new();
+    let mut from = 0;
+    while let Some(found) = code[from..].find("timeout(") {
+        let start = from + found;
+        // `timeout(` must be the whole identifier: `read_timeout(` is a different function.
+        let preceded_by_ident =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let open = start + "timeout(".len();
+        from = open;
+        if preceded_by_ident {
+            continue;
+        }
+        let mut depth = 1usize;
+        let mut end = open;
+        while end < bytes.len() && depth > 0 {
+            match bytes[end] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            end += 1;
+        }
+        calls.push(code[open..end.saturating_sub(1)].to_string());
+    }
+    calls
+}
+
+/// A `time::sleep(` whose argument names a read, an idle bound or a deadline — the `select!`
+/// read-deadline idiom — as opposed to a retry backoff.
+fn sleeps_on_a_read_deadline(code: &str) -> bool {
+    let mut from = 0;
+    while let Some(found) = code[from..].find("time::sleep(") {
+        let open = from + found + "time::sleep(".len();
+        let close = code[open..]
+            .find(')')
+            .map(|i| open + i)
+            .unwrap_or(code.len());
+        let argument = code[open..close].to_ascii_lowercase();
+        if ["idle", "read", "deadline"]
+            .iter()
+            .any(|word| argument.contains(word))
+        {
+            return true;
+        }
+        from = open;
+    }
+    false
+}
+
+/// `code` with `//` comments removed, so a doc comment quoting `timeout(` is not read as a call.
+/// Quote-aware, so `"http://..."` in a string is kept.
+fn strip_line_comments(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    for line in code.lines() {
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut cut = line.len();
+        let chars: Vec<(usize, char)> = line.char_indices().collect();
+        for (i, &(at, c)) in chars.iter().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = true;
+            } else if c == '/' && chars.get(i + 1).map(|&(_, n)| n) == Some('/') {
+                cut = at;
+                break;
+            }
+        }
+        out.push_str(&line[..cut]);
+        out.push('\n');
+    }
+    out
 }

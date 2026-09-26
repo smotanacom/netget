@@ -64,6 +64,7 @@ impl Protocol for ProxyProtocol {
                     description: "Certificate mode: 'generate' (MITM - decrypt HTTPS using a CA generated fresh at startup, requires clients to trust it) or 'none' (pass-through, no decryption, allow/block only). Default: 'none'. 'load_from_file' is not implemented and is rejected at startup.".to_string(),
                     required: false,
                     example: json!("generate"),
+                    default: None,
                 },
                 // cert_path / key_path are read by ProxyServer::spawn_with_llm_actions in the
                 // 'load_from_file' branch. They must be declared even though that mode is
@@ -77,6 +78,7 @@ impl Protocol for ProxyProtocol {
                     description: "Path to a CA certificate in PEM format. Only read when certificate_mode is 'load_from_file', which is NOT implemented and is rejected at startup - so setting this cannot make HTTPS interception use your own CA. Use certificate_mode 'generate' with ca_export_path instead.".to_string(),
                     required: false,
                     example: json!("./ca.crt"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "key_path".to_string(),
@@ -84,6 +86,7 @@ impl Protocol for ProxyProtocol {
                     description: "Path to the CA private key in PEM format. Same restriction as cert_path: only read by the unimplemented 'load_from_file' certificate mode. The key is never read by any working code path.".to_string(),
                     required: false,
                     example: json!("./ca.key"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "ca_export_path".to_string(),
@@ -91,6 +94,7 @@ impl Protocol for ProxyProtocol {
                     description: "Write the generated MITM CA certificate (public certificate only, never the private key) to this path. Clients must be configured to trust this certificate or HTTPS interception will fail with an unknown-issuer error. The CA is regenerated on every server start, so a previously exported file stops working once the server restarts.".to_string(),
                     required: false,
                     example: json!("./netget-ca.crt"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "request_filter_mode".to_string(),
@@ -98,6 +102,7 @@ impl Protocol for ProxyProtocol {
                     description: "Request filter mode: 'all' (intercept everything), 'match_only' (only if filters match), 'none' (pass through)".to_string(),
                     required: false,
                     example: json!("match_only"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "response_filter_mode".to_string(),
@@ -105,6 +110,7 @@ impl Protocol for ProxyProtocol {
                     description: "Response filter mode: 'all', 'match_only', or 'none'".to_string(),
                     required: false,
                     example: json!("all"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "https_connection_filter_mode".to_string(),
@@ -112,6 +118,7 @@ impl Protocol for ProxyProtocol {
                     description: "HTTPS connection filter mode (pass-through only): 'all', 'match_only', or 'none'".to_string(),
                     required: false,
                     example: json!("match_only"),
+                    default: None,
                 },
             ]
     }
@@ -164,6 +171,7 @@ impl Protocol for ProxyProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(8080)
             .implementation("Manual HTTP/1.1 with rcgen v0.14 + rustls")
             .llm_control("Request pass/block/modify, response pass/block/modify (MITM only), HTTPS allow/block")
             .e2e_testing("reqwest configured as a real proxy client against local target servers (tests/server/proxy/test.rs), plus mocked-LLM startup and MITM scenarios (tests/server/proxy/e2e_test.rs). No curl and no browser has been run against it.")

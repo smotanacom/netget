@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleThermometerProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-Thermometer"),
+            default: None,
         }]
     }
 

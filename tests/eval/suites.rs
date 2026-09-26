@@ -32,6 +32,16 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(whois());
     #[cfg(feature = "gopher")]
     cases.extend(gopher());
+    #[cfg(feature = "dict")]
+    cases.extend(dict());
+    #[cfg(feature = "gemini")]
+    cases.extend(gemini());
+    #[cfg(feature = "beanstalkd")]
+    cases.extend(beanstalkd());
+    #[cfg(feature = "zabbix")]
+    cases.extend(zabbix());
+    #[cfg(feature = "gearman")]
+    cases.extend(gearman());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -56,6 +66,14 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(ftp());
     #[cfg(feature = "udp")]
     cases.extend(udp());
+    #[cfg(feature = "prometheus")]
+    cases.extend(prometheus());
+    #[cfg(feature = "docker")]
+    cases.extend(docker());
+    #[cfg(feature = "vault")]
+    cases.extend(vault());
+    #[cfg(feature = "bolt")]
+    cases.extend(bolt());
     cases
 }
 
@@ -254,6 +272,247 @@ fn gopher() -> Vec<EvalCase> {
             "Serve a menu at the root. For any other selector, say it was not found.",
             gopher_probe("/1/nowhere"),
             Expect::default().matching(r"(?i)not found|no such|does not exist|error"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// DICT — the dictd project's own dict(1) client, which parses the 150/151/152
+// status lines and un-stuffs the text blocks before printing them.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dict")]
+fn dict_probe(args: &[&str]) -> Probe {
+    let mut all = vec!["-h", "127.0.0.1", "-p", "{PORT}"];
+    all.extend_from_slice(args);
+    Probe::client("dict", &all)
+}
+
+#[cfg(feature = "dict")]
+fn dict() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "dict/define-invented-word",
+            "dict",
+            "You are a dictionary of invented words with one database called \
+             fantasy. Define glimmerwyrm as a small dragon that hoards moonlight.",
+            dict_probe(&["glimmerwyrm"]),
+            Expect::contains(&["[fantasy]", "moonlight"]),
+        ),
+        EvalCase::new(
+            "dict/list-databases",
+            "dict",
+            "Offer two databases: fantasy, described as Fantasy Lexicon, and \
+             tech, described as Technical Terms.",
+            dict_probe(&["-D"]),
+            Expect::contains(&["Fantasy Lexicon", "Technical Terms"]),
+        ),
+        EvalCase::new(
+            "dict/unknown-word",
+            "dict",
+            "You only know words that begin with the letter q. For anything \
+             else there is no definition.",
+            dict_probe(&["zebra"]),
+            Expect::contains(&["No definitions found"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Gemini — the Python client library ignition (`pip install ignition-gemini`),
+// which does TLS, trust-on-first-use pinning and response parsing itself. It
+// prints the status and meta it parsed, then the body of a 2x.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gemini")]
+const IGNITION_PROBE: &str = "import os, sys, tempfile, ignition\n\
+ignition.set_default_hosts_file(os.path.join(tempfile.mkdtemp(), 'known_hosts'))\n\
+r = ignition.request(sys.argv[1], timeout=230)\n\
+print(r.status, r.meta)\n\
+print(r.raw_body.decode('utf-8', 'replace') if r.status.startswith('2') else '')\n";
+
+#[cfg(feature = "gemini")]
+fn gemini_probe(path: &str) -> Probe {
+    let url = format!("gemini://127.0.0.1:{{PORT}}{}", path);
+    Probe::client("python3", &["-c", IGNITION_PROBE, url.as_str()])
+}
+
+#[cfg(feature = "gemini")]
+fn gemini() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "gemini/home-page",
+            "gemini",
+            "Serve a home page titled Welcome to the NetGet capsule, with a link \
+             to /about.",
+            gemini_probe("/"),
+            Expect::contains(&[
+                "20 text/gemini",
+                "Welcome to the NetGet capsule",
+                "=> /about",
+            ]),
+        ),
+        EvalCase::new(
+            "gemini/ask-for-input",
+            "gemini",
+            "The page /guestbook asks the visitor for their name before showing \
+             anything.",
+            gemini_probe("/guestbook"),
+            Expect::default().matching(r"(?m)^1[01] "),
+        ),
+        EvalCase::new(
+            "gemini/not-found",
+            "gemini",
+            "Only the home page exists. Every other page does not exist.",
+            gemini_probe("/nowhere"),
+            Expect::default().matching(r"(?m)^51 "),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Beanstalkd — the Python client library greenstalk (`pip install greenstalk`),
+// which parses reply lines, byte-counted job bodies and the YAML reports
+// itself. It prints what it got back, or the name of the exception it raised.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "beanstalkd")]
+const GREENSTALK_PROBE: &str = "import sys, greenstalk\n\
+c = greenstalk.Client(('127.0.0.1', int(sys.argv[1])), watch=sys.argv[3])\n\
+try:\n\
+    if sys.argv[2] == 'put':\n\
+        print('INSERTED', c.put('resize image 7'))\n\
+    elif sys.argv[2] == 'reserve':\n\
+        j = c.reserve(timeout=200)\n\
+        print('RESERVED', j.id, j.body)\n\
+    else:\n\
+        print(c.stats())\n\
+except greenstalk.Error as e:\n\
+    print(type(e).__name__)\n";
+
+#[cfg(feature = "beanstalkd")]
+fn beanstalkd_probe(mode: &str, tube: &str) -> Probe {
+    Probe::client("python3", &["-c", GREENSTALK_PROBE, "{PORT}", mode, tube])
+}
+
+#[cfg(feature = "beanstalkd")]
+fn beanstalkd() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "beanstalkd/accept-a-job",
+            "beanstalkd",
+            "You are a work queue. Accept every job that is submitted and number \
+             the jobs starting from 100.",
+            beanstalkd_probe("put", "default"),
+            Expect::default().matching(r"INSERTED \d+"),
+        ),
+        EvalCase::new(
+            "beanstalkd/hand-out-a-job",
+            "beanstalkd",
+            "You are a work queue. The images tube holds one waiting job, number 7, \
+             whose text is: resize photo.jpg to 640 wide.",
+            beanstalkd_probe("reserve", "images"),
+            Expect::contains(&["RESERVED 7", "photo.jpg"]),
+        ),
+        EvalCase::new(
+            "beanstalkd/queue-statistics",
+            "beanstalkd",
+            "You are a work queue with 5 ready jobs and 2 buried jobs, running \
+             version 1.13.",
+            beanstalkd_probe("stats", "default"),
+            Expect::contains(&["'current-jobs-ready': 5", "'current-jobs-buried': 2"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Zabbix trapper — the Zabbix project's own zabbix_sender, which prints the
+// processed/failed counts it scanned from the response.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "zabbix")]
+fn zabbix_probe(host: &str, key: &str, value: &str) -> Probe {
+    Probe::client(
+        "zabbix_sender",
+        &[
+            "-z",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-s",
+            host,
+            "-k",
+            key,
+            "-o",
+            value,
+        ],
+    )
+}
+
+#[cfg(feature = "zabbix")]
+fn zabbix() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "zabbix/accept-known-host",
+            "zabbix",
+            "You are a Zabbix server monitoring the hosts web1 and db1. Accept every \
+             value reported for them.",
+            zabbix_probe("web1", "system.cpu.load", "0.42"),
+            Expect::contains(&["processed: 1; failed: 0"]),
+        ),
+        EvalCase::new(
+            "zabbix/reject-unknown-host",
+            "zabbix",
+            "You are a Zabbix server monitoring only the host web1. Values reported \
+             for any other host cannot be stored.",
+            zabbix_probe("mystery-box", "system.cpu.load", "0.42"),
+            Expect::contains(&["processed: 0; failed: 1"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Gearman — the gearmand project's gearman(1) client, which prints a job's
+// WORK_DATA and WORK_COMPLETE payloads and exits 1 with "Job failed" on
+// WORK_FAIL.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gearman")]
+fn gearman_probe(function: &str, workload: &str) -> Probe {
+    Probe::client(
+        "gearman",
+        &[
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "{PORT}",
+            "-t",
+            "230000",
+            "-f",
+            function,
+            workload,
+        ],
+    )
+}
+
+#[cfg(feature = "gearman")]
+fn gearman() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "gearman/reverse-text",
+            "gearman",
+            "You are a Gearman worker. The function reverse returns its input \
+             spelled backwards.",
+            gearman_probe("reverse", "stressed"),
+            Expect::contains(&["desserts"]),
+        ),
+        EvalCase::new(
+            "gearman/unknown-function-fails",
+            "gearman",
+            "You are a Gearman worker that only knows the function reverse. Any \
+             other function must fail.",
+            gearman_probe("translate", "hello"),
+            Expect::contains(&["Job failed"]),
         ),
     ]
 }
@@ -799,6 +1058,198 @@ fn udp() -> Vec<EvalCase> {
             "Send every datagram straight back to whoever sent it, unchanged.",
             nc_udp("netget-eval-datagram\n"),
             Expect::contains(&["netget-eval-datagram"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus — curl fetches /metrics and pipes it to promtool, the Prometheus
+// project's own parser and linter. `PROMTOOL-OK` is printed only when promtool
+// exits 0, so a case passes only if the model's metrics rendered into an
+// exposition a real scraper accepts. `tee /dev/stderr` keeps the body in the
+// probe output for the content checks.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "prometheus")]
+fn promtool_scrape() -> Probe {
+    Probe::client(
+        "sh",
+        &[
+            "-c",
+            "curl -sS --max-time 230 http://127.0.0.1:{PORT}/metrics | tee /dev/stderr \
+             | promtool check metrics && echo PROMTOOL-OK",
+        ],
+    )
+}
+
+#[cfg(feature = "prometheus")]
+fn prometheus() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "prometheus/queue-depth-gauge",
+            "prometheus",
+            "Expose a gauge named netget_eval_queue_depth whose value is 17.",
+            promtool_scrape(),
+            Expect::contains(&["netget_eval_queue_depth 17", "PROMTOOL-OK"]),
+        ),
+        EvalCase::new(
+            "prometheus/requests-by-status",
+            "prometheus",
+            "Count HTTP requests by status code: 1500 requests answered 200 and 12 answered \
+             404 so far.",
+            promtool_scrape(),
+            Expect::contains(&["PROMTOOL-OK"]).matching(r#"(?i)="?200"?[,}][^\n]* 1500"#),
+        ),
+        EvalCase::new(
+            "prometheus/latency-histogram",
+            "prometheus",
+            "Report request latency in seconds as a histogram with buckets at 0.1, 0.5 and 1 \
+             second; 40 requests so far, 30 of them under 0.1s.",
+            promtool_scrape(),
+            Expect::contains(&["_bucket", "le=\"+Inf\"", "PROMTOOL-OK"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Docker — the real docker CLI pointed at NetGet with -H. DOCKER_HOST and
+// DOCKER_CONTEXT are overridden and DOCKER_CONFIG is a throwaway path, so the
+// machine's own daemon is never consulted.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "docker")]
+fn docker_cli(args: &[&str]) -> Probe {
+    let mut all = vec!["-H", "tcp://127.0.0.1:{PORT}"];
+    all.extend_from_slice(args);
+    Probe::client("docker", &all)
+        .env("DOCKER_HOST", "")
+        .env("DOCKER_CONTEXT", "default")
+        .env("DOCKER_CONFIG", "/tmp/netget-eval-docker-config")
+}
+
+#[cfg(feature = "docker")]
+fn docker() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "docker/ps-running-container",
+            "docker",
+            "Act as a Docker host running one container named eval-web from the image \
+             nginx:1.27, publishing host port 8080 to container port 80.",
+            docker_cli(&["ps"]),
+            Expect::contains(&["eval-web", "nginx:1.27", "8080->80/tcp"]),
+        ),
+        EvalCase::new(
+            "docker/ps-all-includes-stopped",
+            "docker",
+            "Act as a Docker host with a running container eval-api (image api:2) and a \
+             stopped container eval-migrate (image api:2) that exited with code 0.",
+            docker_cli(&["ps", "-a"]),
+            Expect::contains(&["eval-api", "eval-migrate", "Exited (0)"]),
+        ),
+        EvalCase::new(
+            "docker/inspect-missing",
+            "docker",
+            "Act as a Docker host with no containers at all.",
+            docker_cli(&["inspect", "eval-ghost"]),
+            Expect::default().matching(r"(?i)no such (object|container)"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Vault — HashiCorp's vault CLI with VAULT_ADDR at NetGet. HOME is a throwaway
+// path so no token helper from the operator's own config is read.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "vault")]
+fn vault_cli(args: &[&str]) -> Probe {
+    Probe::client("vault", args)
+        .env("VAULT_ADDR", "http://127.0.0.1:{PORT}")
+        .env("VAULT_TOKEN", "hvs.netget-eval")
+        .env("HOME", "/tmp/netget-eval-vault-home")
+}
+
+#[cfg(feature = "vault")]
+fn vault() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "vault/read-a-field",
+            "vault",
+            "Act as a Vault server. The secret at app/db in the secret mount holds the username \
+             payments and the password NETGET-EVAL-PW.",
+            vault_cli(&["kv", "get", "-field=password", "secret/app/db"]),
+            Expect::contains(&["NETGET-EVAL-PW"]),
+        ),
+        EvalCase::new(
+            "vault/list-keys",
+            "vault",
+            "Act as a Vault server whose secret mount has three secrets under app: db, stripe \
+             and smtp.",
+            vault_cli(&["kv", "list", "secret/app"]),
+            Expect::contains(&["db", "stripe", "smtp"]),
+        ),
+        EvalCase::new(
+            "vault/missing-secret",
+            "vault",
+            "Act as a Vault server with an empty secret mount.",
+            vault_cli(&["kv", "get", "secret/app/nothing"]),
+            Expect::default().matching(r"(?i)no value found"),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Bolt — Neo4j's own cypher-shell (Java, neo4j-java-driver). HOME is a
+// throwaway path so no history or config from the operator's own profile is
+// read, and --non-interactive keeps it from waiting on a terminal.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "bolt")]
+fn bolt_shell(query: &str) -> Probe {
+    Probe::client(
+        "cypher-shell",
+        &[
+            "-a",
+            "bolt://127.0.0.1:{PORT}",
+            "-u",
+            "neo4j",
+            "-p",
+            "netget-eval",
+            "--non-interactive",
+            "--format",
+            "plain",
+            query,
+        ],
+    )
+    .env("HOME", "/tmp/netget-eval-cypher-shell-home")
+}
+
+#[cfg(feature = "bolt")]
+fn bolt() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "bolt/people-by-name",
+            "bolt",
+            "Act as a Neo4j graph database that accepts any login. The graph has three Person \
+             nodes, named Ada, Grace and Linus.",
+            bolt_shell("MATCH (p:Person) RETURN p.name AS name"),
+            Expect::contains(&["name", "Ada", "Grace", "Linus"]),
+        ),
+        EvalCase::new(
+            "bolt/count",
+            "bolt",
+            "Act as a Neo4j graph database that accepts any login. It holds exactly 42 Movie \
+             nodes and nothing else.",
+            bolt_shell("MATCH (m:Movie) RETURN count(m) AS movies"),
+            Expect::contains(&["movies", "42"]),
+        ),
+        EvalCase::new(
+            "bolt/syntax-error",
+            "bolt",
+            "Act as a Neo4j graph database that accepts any login. Reject any query that is \
+             not valid Cypher with Neo4j's syntax error.",
+            bolt_shell("SELECT name FROM people"),
+            Expect::default().matching(r"(?i)(invalid|syntax|unexpected|expected)"),
         ),
     ]
 }

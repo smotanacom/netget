@@ -8,11 +8,18 @@
 //! What is driven is a real master/slave session, not a connect:
 //!
 //! ```text
-//!   FC 3  read holding registers  -> values asserted on mbpoll's printed output
-//!   FC 1  read coils             -> bit pattern asserted on mbpoll's printed output
-//!   FC 6  write single register  -> acknowledged, mbpoll reports the write
-//!   FC 4  read input registers   -> exception 0x02, mbpoll reports the Modbus error
+//!   FC 3   read holding registers   -> values asserted on mbpoll's printed output
+//!   FC 1   read coils               -> bit pattern asserted on mbpoll's printed output
+//!   FC 2   read discrete inputs     -> ten bits across two bytes, asserted in order
+//!   FC 6   write single register    -> acknowledged, mbpoll reports the write
+//!   FC 16  write multiple registers -> acknowledged; the values reached the model intact
+//!   FC 5   write single coil        -> acknowledged
+//!   FC 15  write multiple coils     -> acknowledged; the bits reached the model intact
+//!   FC 4   read input registers     -> exception 0x02, mbpoll reports the Modbus error
 //! ```
+//!
+//! That is every function code the server implements, so the second client covers the same
+//! surface as the first rather than a sample of it.
 //!
 //! This test is **not** `#[ignore]`d and does **not** skip when mbpoll is missing —
 //! see `require_mbpoll`.
@@ -123,7 +130,8 @@ async fn test_modbus_reads_writes_and_exceptions_against_mbpoll() -> E2EResult<(
             })
             .expect_calls(1)
             .and()
-            // Coil read. Same width contract, on the bit path.
+            // Coil read (FC 1) and discrete-input read (FC 2). Same width contract, on the bit
+            // path.
             .on_event("modbus_read_bits")
             .respond_with_actions_from_event(|event| {
                 let quantity = event["quantity"].as_u64().unwrap_or(1);
@@ -132,6 +140,43 @@ async fn test_modbus_reads_writes_and_exceptions_against_mbpoll() -> E2EResult<(
                     "type": "send_modbus_bits",
                     "values": values
                 }])
+            })
+            .expect_calls(2)
+            .and()
+            // Coil writes (FC 5 and FC 15), accepted only when the bits libmodbus packed are the
+            // bits the model is shown — otherwise refused, and the test sees an exception.
+            .on_event("modbus_write_request")
+            .and_event_data_contains("function", "coil")
+            .respond_with_actions_from_event(|event| {
+                let values = event["coil_values"].clone();
+                if values == serde_json::json!([true])
+                    || values
+                        == serde_json::json!([
+                            true, false, true, true, false, true, false, false, true
+                        ])
+                {
+                    serde_json::json!([{"type": "send_modbus_write_ack"}])
+                } else {
+                    serde_json::json!([{
+                        "type": "send_modbus_exception",
+                        "exception_code": "illegal_data_value"
+                    }])
+                }
+            })
+            .expect_calls(2)
+            .and()
+            // FC 16, same contract on registers. Declared before the single-register rule.
+            .on_event("modbus_write_request")
+            .and_event_data_contains("function", "write_multiple_registers")
+            .respond_with_actions_from_event(|event| {
+                if event["register_values"] == serde_json::json!([1000, 2000, 65535]) {
+                    serde_json::json!([{"type": "send_modbus_write_ack"}])
+                } else {
+                    serde_json::json!([{
+                        "type": "send_modbus_exception",
+                        "exception_code": "illegal_data_value"
+                    }])
+                }
             })
             .expect_calls(1)
             .and()
@@ -236,6 +281,49 @@ async fn test_modbus_reads_writes_and_exceptions_against_mbpoll() -> E2EResult<(
     );
     println!("[real-client] libmodbus unpacked NetGet's coil bits in the right order");
 
+    // -- FC 2, read discrete inputs ----------------------------------------------------
+    //
+    // Ten bits span two response bytes, so this checks the packing across a byte boundary,
+    // which four coils cannot.
+    let (stdout, stderr, ok) = mbpoll(
+        &[
+            "-m",
+            "tcp",
+            "-1",
+            "-0",
+            "-a",
+            "1",
+            "-t",
+            "1",
+            "-r",
+            "0",
+            "-c",
+            "10",
+            "-p",
+            &port,
+            "127.0.0.1",
+        ],
+        "read discrete inputs",
+    )
+    .await?;
+    assert!(
+        ok,
+        "mbpoll failed reading discrete inputs from NetGet. stderr: {stderr}"
+    );
+    let input_values: Vec<&str> = stdout
+        .lines()
+        .filter_map(|l| l.split(':').nth(1))
+        .map(|v| v.trim())
+        .filter(|v| *v == "0" || *v == "1")
+        .collect();
+    assert_eq!(
+        input_values,
+        vec!["1", "0", "0", "1", "0", "0", "1", "0", "0", "1"],
+        "libmodbus unpacked a different discrete-input pattern than the model supplied, so the \
+         second response byte is packed wrong.\nstdout:\n{stdout}"
+    );
+    println!("[real-client] libmodbus unpacked ten discrete inputs across two bytes");
+
     // -- FC 6, write single register ---------------------------------------------------
     //
     // A write is the other direction: mbpoll checks that the server echoed the
@@ -270,6 +358,106 @@ async fn test_modbus_reads_writes_and_exceptions_against_mbpoll() -> E2EResult<(
         "mbpoll did not report a completed write.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     println!("[real-client] libmodbus accepted NetGet's FC 6 write echo");
+
+    // -- FC 16, write multiple registers -----------------------------------------------
+    //
+    // Three values make mbpoll use FC 16. The mock accepts only if [1000, 2000, 65535] reached
+    // the model, and libmodbus checks the start+quantity echo.
+    let (stdout, stderr, ok) = mbpoll(
+        &[
+            "-m",
+            "tcp",
+            "-1",
+            "-0",
+            "-a",
+            "1",
+            "-t",
+            "4",
+            "-r",
+            "20",
+            "-p",
+            &port,
+            "127.0.0.1",
+            "1000",
+            "2000",
+            "65535",
+        ],
+        "write multiple registers",
+    )
+    .await?;
+    assert!(
+        ok && stdout.to_lowercase().contains("written"),
+        "mbpoll did not complete an FC 16 write against NetGet.\nstdout:\n{stdout}\nstderr:\n\
+         {stderr}"
+    );
+    println!("[real-client] libmodbus accepted NetGet's FC 16 echo");
+
+    // -- FC 5, write single coil ---------------------------------------------------------
+    let (stdout, stderr, ok) = mbpoll(
+        &[
+            "-m",
+            "tcp",
+            "-1",
+            "-0",
+            "-a",
+            "1",
+            "-t",
+            "0",
+            "-r",
+            "3",
+            "-p",
+            &port,
+            "127.0.0.1",
+            "1",
+        ],
+        "write single coil",
+    )
+    .await?;
+    assert!(
+        ok && stdout.to_lowercase().contains("written"),
+        "mbpoll did not complete an FC 5 write against NetGet.\nstdout:\n{stdout}\nstderr:\n\
+         {stderr}"
+    );
+    println!("[real-client] libmodbus accepted NetGet's FC 5 echo");
+
+    // -- FC 15, write multiple coils -----------------------------------------------------
+    //
+    // Nine coils, so libmodbus packs two bytes. The mock accepts only the exact pattern.
+    let (stdout, stderr, ok) = mbpoll(
+        &[
+            "-m",
+            "tcp",
+            "-1",
+            "-0",
+            "-a",
+            "1",
+            "-t",
+            "0",
+            "-r",
+            "0",
+            "-p",
+            &port,
+            "127.0.0.1",
+            "1",
+            "0",
+            "1",
+            "1",
+            "0",
+            "1",
+            "0",
+            "0",
+            "1",
+        ],
+        "write multiple coils",
+    )
+    .await?;
+    assert!(
+        ok && stdout.to_lowercase().contains("written"),
+        "mbpoll did not complete an FC 15 write against NetGet — an exception here means the \
+         nine coil bits libmodbus packed did not reach the model as sent.\nstdout:\n{stdout}\n\
+         stderr:\n{stderr}"
+    );
+    println!("[real-client] libmodbus accepted NetGet's FC 15 echo");
 
     // -- FC 4, the exception path ------------------------------------------------------
     //

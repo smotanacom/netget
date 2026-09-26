@@ -72,7 +72,25 @@ pub static MONGODB_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "document".to_string(),
             type_hint: "object".to_string(),
-            description: "Document to insert or update".to_string(),
+            description: "For insert: the array of documents to insert. For other commands \
+                          that carry one, the document"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "updates".to_string(),
+            type_hint: "array".to_string(),
+            description: "For update: the update statements, each {q: filter, u: update, \
+                          multi, upsert}. Null for other commands"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "deletes".to_string(),
+            type_hint: "array".to_string(),
+            description: "For delete: the delete statements, each {q: filter, limit}. Null for \
+                          other commands"
+                .to_string(),
             required: false,
         },
     ])
@@ -176,11 +194,18 @@ impl Protocol for MongodbProtocol {
             // covering handshake plus CRUD commands. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
-            .implementation("bson v3.0 with manual OP_MSG parsing (section kind 0 only)")
+            .well_known_port(27017)
+            .implementation(
+                "bson v3.0 with manual OP_MSG parsing: the kind-0 body and kind-1 document \
+                 sequences, merged into one command document",
+            )
             .llm_control("Query responses (documents, counts, errors)")
             .e2e_testing(
                 "TWO independent clients, neither #[ignore]d and neither able to skip. \
-                 (1) the official mongodb Rust driver, covering handshake plus CRUD commands. \
+                 (1) the official mongodb Rust driver, covering handshake plus CRUD commands, \
+                 including insert_many/update_one/delete_one whose arrays it sends as OP_MSG \
+                 kind-1 document sequences (document_sequence_test.rs asserts they reach the \
+                 event). \
                  (2) mongosh 2.11 -- MongoDB's own shell on the Node.js driver -- in \
                  tests/server/mongodb/real_client_test.rs::test_mongodb_find_against_mongosh, \
                  which FAILS rather than skips when mongosh is absent: it completes the \
@@ -189,7 +214,7 @@ impl Protocol for MongodbProtocol {
                  is run with `--apiVersion 1`, which is load-bearing: without it the Node \
                  driver opens with the legacy OP_QUERY handshake, which this server answers by \
                  closing the connection. UNPROVEN: authentication (none is implemented), \
-                 OP_COMPRESSED, OP_MSG section kind 1 document sequences (so bulk writes), \
+                 OP_COMPRESSED, OP_MSG checksum verification (the checksum is stripped), \
                  getMore/killCursors (every cursor id is 0, i.e. single batch), transactions, \
                  change streams, and replica-set or sharded topology discovery.",
             )

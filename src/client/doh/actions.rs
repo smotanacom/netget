@@ -90,6 +90,7 @@ impl Protocol for DohClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("-----BEGIN CERTIFICATE-----\n..."),
+                default: None,
             },
             ParameterDefinition {
                 name: "insecure_skip_verify".to_string(),
@@ -103,6 +104,7 @@ impl Protocol for DohClientProtocol {
                 type_hint: "boolean".to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
         ]
     }

@@ -98,6 +98,7 @@ impl Protocol for KubernetesClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("kube-system"),
+                default: None,
             },
             ParameterDefinition {
                 name: "kubeconfig".to_string(),
@@ -105,6 +106,7 @@ impl Protocol for KubernetesClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("~/.kube/config"),
+                default: None,
             },
         ]
     }

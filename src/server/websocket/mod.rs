@@ -74,13 +74,38 @@ const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE: usize = 1024 * 1024;
 pub const MAX_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 
+/// How long an upgraded connection may go without a single frame from the peer.
+///
+/// A WebSocket is a session the client is entitled to hold open with nothing to say — so this
+/// bound is on the **peer's liveness**, not on its conversation. At half of it the server sends
+/// a Ping; every RFC 6455 endpoint answers a Ping with a Pong by itself (§5.5.2 — browsers,
+/// tungstenite, websocat and NetGet's own client all do, without any application code), and a
+/// Pong is a frame, so a live-but-silent client never reaches the bound. What does is a peer
+/// that has stopped reading or vanished without a FIN: exactly the socket that would otherwise
+/// sit in a slot forever. Every inbound frame counts — text, binary, Ping, Pong, Close.
+///
+/// 600 seconds, twice the default window a `manual` rule gives a human (300s,
+/// `src/state/intercepts.rs`). tungstenite, like most WebSocket libraries, answers a Ping from
+/// inside a read, so a client that stops reading while its application thinks — a model turn,
+/// a person — answers late. At twice that window a Ping sent at the worst moment is still
+/// answered inside the bound. NetGet's own client keeps reading through a parked turn
+/// (`tests/client/websocket/keepalive_test.rs` holds it to a 2-second bound); the margin is for
+/// peers that do not. The keepalive costs one small frame per idle connection every five
+/// minutes, which no deployment notices. Declared as the `idle_timeout_secs` startup parameter.
+///
+/// **A message still being answered is not silence.** Handlers run in their own tasks while the
+/// frame loop keeps reading, so each holds the connection's `ConnectionActivity` busy for the
+/// whole of its answer — a model round-trip, or a `manual` rule parked for a human — and the
+/// watchdog neither pings nor closes while anything is in flight. On expiry the server sends
+/// Close 1001 ("going away", RFC 6455 §7.4.1) and ends the connection.
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Concurrent connections this server admits before it starts refusing.
 ///
 /// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HANDSHAKE_TIMEOUT_SECS`]
-/// bounds how long a peer can hold a slot before it has sent a request head; nothing bounds an
-/// *upgraded* connection at all, and nothing should — a WebSocket is a session the client is
-/// entitled to hold open in silence, which is the whole point of the protocol. That makes the
-/// cap the only bound this server has on its total, rather than the second of two.
+/// bounds how long a peer can hold a slot before it has sent a request head, and
+/// [`IDLE_TIMEOUT`] how long an upgraded one can hold it without showing it is alive. Neither
+/// bounds how many there are at once; this does.
 ///
 /// So the number is a statement about sessions, not about arrival rate. Each one costs a
 /// socket, two tasks and up to [`DEFAULT_MAX_MESSAGE_SIZE`] of reassembly buffer; 256 is far
@@ -468,32 +493,43 @@ impl WebSocketServer {
     ) -> Result<SocketAddr> {
         // Every parameter read here is declared in `get_startup_parameters()`, and every
         // parameter declared there is read here. Errors are propagated, never unwrapped.
-        let (path_filter, max_message_size, max_frame_size) = match startup_params.as_ref() {
-            Some(params) => {
-                let path = params
-                    .get_optional_string("path")
-                    .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
-                    .map(|p| {
-                        if p.starts_with('/') {
-                            p
-                        } else {
-                            format!("/{p}")
-                        }
-                    });
-                let msg = params
-                    .get_optional_u64("max_message_size")
-                    .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
-                    .map(|v| (v as usize).clamp(125, MAX_SIZE_LIMIT))
-                    .unwrap_or(DEFAULT_MAX_MESSAGE_SIZE);
-                let frame = params
-                    .get_optional_u64("max_frame_size")
-                    .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
-                    .map(|v| (v as usize).clamp(125, MAX_SIZE_LIMIT))
-                    .unwrap_or(DEFAULT_MAX_FRAME_SIZE);
-                (path, msg, frame)
-            }
-            None => (None, DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_MAX_FRAME_SIZE),
-        };
+        let (path_filter, max_message_size, max_frame_size, idle_timeout) =
+            match startup_params.as_ref() {
+                Some(params) => {
+                    let path = params
+                        .get_optional_string("path")
+                        .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
+                        .map(|p| {
+                            if p.starts_with('/') {
+                                p
+                            } else {
+                                format!("/{p}")
+                            }
+                        });
+                    let msg = params
+                        .get_optional_u64("max_message_size")
+                        .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
+                        .map(|v| (v as usize).clamp(125, MAX_SIZE_LIMIT))
+                        .unwrap_or(DEFAULT_MAX_MESSAGE_SIZE);
+                    let frame = params
+                        .get_optional_u64("max_frame_size")
+                        .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
+                        .map(|v| (v as usize).clamp(125, MAX_SIZE_LIMIT))
+                        .unwrap_or(DEFAULT_MAX_FRAME_SIZE);
+                    let idle = params
+                        .get_optional_u64("idle_timeout_secs")
+                        .map_err(|e| anyhow::anyhow!("WebSocket startup parameter error: {e}"))?
+                        .map(std::time::Duration::from_secs)
+                        .unwrap_or(IDLE_TIMEOUT);
+                    (path, msg, frame, idle)
+                }
+                None => (
+                    None,
+                    DEFAULT_MAX_MESSAGE_SIZE,
+                    DEFAULT_MAX_FRAME_SIZE,
+                    IDLE_TIMEOUT,
+                ),
+            };
 
         let ws_config = WebSocketConfig {
             max_message_size: Some(max_message_size),
@@ -556,6 +592,7 @@ impl WebSocketServer {
                                     path_filter,
                                     ws_config,
                                     permit,
+                                    idle_timeout,
                                 )
                                 .await
                                 {
@@ -595,6 +632,7 @@ impl WebSocketServer {
         path_filter: Option<String>,
         ws_config: WebSocketConfig,
         permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
+        idle_timeout: std::time::Duration,
     ) -> Result<()> {
         // ---- 1. read the request head -------------------------------------
         let (head_bytes, leftover) = match tokio::time::timeout(
@@ -815,6 +853,7 @@ impl WebSocketServer {
             },
             path,
             peer_addr,
+            idle_timeout,
         )
         .await;
 
@@ -958,6 +997,7 @@ impl WebSocketServer {
         ctx: ConnCtx,
         path: String,
         peer_addr: SocketAddr,
+        idle_timeout: std::time::Duration,
     ) {
         let (mut sink, mut stream) = ws_stream.split();
 
@@ -1045,12 +1085,45 @@ impl WebSocketServer {
         let mut handlers: JoinSet<()> = JoinSet::new();
         let ctx = Arc::new(ctx);
 
-        while let Some(message) = stream.next().await {
+        // Whether this connection is doing anything: touched by every inbound frame, held busy
+        // by every handler for the whole of its answer. See IDLE_TIMEOUT.
+        let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+
+        loop {
+            let keepalive_tx = ctx.out_tx.clone();
+            let message = tokio::select! {
+                message = stream.next() => message,
+                _ = crate::server::accept_bounded::watch_idle_with_probe(
+                    Arc::clone(&activity),
+                    idle_timeout,
+                    move || {
+                        let _ = keepalive_tx.send(WsOut::Ping(
+                            crate::server::accept_bounded::KEEPALIVE_PING_PAYLOAD.to_vec(),
+                        ));
+                    },
+                ) => {
+                    Log::new(Some(&ctx.status_tx)).info(format!(
+                        "WebSocket {} sent no frame for {}s, not even a Pong; closing \
+                         decision=idle_timeout",
+                        ctx.connection_id,
+                        idle_timeout.as_secs()
+                    ));
+                    let _ = ctx.out_tx.send(WsOut::Close {
+                        code: 1001,
+                        reason: "idle timeout".to_string(),
+                    });
+                    break;
+                }
+            };
+            let Some(message) = message else { break };
+            activity.touch();
             match message {
                 Ok(Message::Text(text)) => {
                     trace!("WebSocket {} <- text {:?}", ctx.connection_id, text);
                     let ctx = ctx.clone();
+                    let busy = activity.busy();
                     handlers.spawn(async move {
+                        let _busy = busy;
                         Self::handle_inbound(ctx, Inbound::Text(text)).await;
                     });
                 }
@@ -1062,14 +1135,18 @@ impl WebSocketServer {
                         hex::encode(&bytes)
                     );
                     let ctx = ctx.clone();
+                    let busy = activity.busy();
                     handlers.spawn(async move {
+                        let _busy = busy;
                         Self::handle_inbound(ctx, Inbound::Binary(bytes)).await;
                     });
                 }
                 Ok(Message::Ping(payload)) => {
                     // The pong is already queued by the framing layer.
                     let ctx = ctx.clone();
+                    let busy = activity.busy();
                     handlers.spawn(async move {
+                        let _busy = busy;
                         Self::handle_inbound(ctx, Inbound::Ping(payload)).await;
                     });
                 }

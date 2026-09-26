@@ -1,33 +1,67 @@
 # HTTP Client E2E Tests
 
-## Test Strategy
+Three files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
 
-Unit tests for HTTP client state management. Full integration tests would use httpbin.org or local server.
+| File | Peer | Tests | LLM calls |
+|---|---|---|---|
+| `real_server_test.rs` | **nginx** | 1 | 5 |
+| `e2e_test.rs` | NetGet's own HTTP server | 2 | 8 (4 + 4, server and client mocks) |
+| `command_channel_test.rs` | NetGet's own HTTP server, in-process | 1 | 0 |
 
-## LLM Call Budget
+```bash
+./cargo-isolated.sh test --no-default-features --features http --test client -- http:: --test-threads=100
+```
 
-**Target:** < 10 calls
-**Actual:** 0 calls (unit tests only)
+## `real_server_test.rs` — the evidence the rating rests on
 
-## Tests
+NetGet's client is `reqwest` over hyper. The server is nginx, a C implementation with its own
+HTTP parser, started per test by `tests/helpers/real_server.rs`: foreground, one worker,
+unprivileged, `-p {dir} -e stderr`, with pid, access log and all five temp paths inside its temp
+dir, on a probed loopback port, ready when it logs `start worker processes` (printed only after
+the listener is bound). HTTP **is** this client's protocol, so nginx is valid evidence for it —
+the generic-HTTP exclusion rules out protocols layered on HTTP, not HTTP itself. **It fails,
+never skips,** when `nginx` is missing.
 
-1. **test_http_client_initialization** (0 LLM calls)
-    - Create HTTP client instance
-    - Verify fields
+### `http_client_follows_the_model_through_nginx` (5 calls)
 
-2. **test_http_client_status** (0 LLM calls)
-    - Test status transitions
-    - Verify state management
+NetGet starts with `default_headers` `User-Agent: netget-e2e/1`. `http_connected` →
+`GET /hello.txt` (a static file). Its 200 (matched on `status_code` and the file's text) →
+`POST /echo` with `X-NetGet: model saw <body>` and a 13-byte body, the header built from the
+response the model was shown. nginx's `return` echoes the request line and header; that 200
+(matched on the echo containing the model's header value) → `GET /missing`. The 404 (matched on
+`status_code` 404) → nothing.
 
-## Runtime
+Then **nginx's own access log** (`$request|$http_x_netget|$http_user_agent|$content_length|$status`)
+must be exactly:
 
-**Expected:** < 5 seconds
+```
+GET /hello.txt HTTP/1.1|-|netget-e2e/1|-|200
+POST /echo HTTP/1.1|model saw hello from nginx|netget-e2e/1|13|200
+GET /missing HTTP/1.1|-|netget-e2e/1|-|404
+```
 
-## Future Tests
+**Condition 4 of the client bar**: every field of that log was chosen by the model, one of them
+from a response it was shown. Verified by mutation: dropping the actions in
+`notify_response`'s loop fails the test.
 
-- Integration test with httpbin.org
-- Test actual HTTP requests with LLM
-- Test response parsing
+Two things worth knowing if you extend it:
+
+- **Rule order matters.** The echo quotes `hello from nginx` back, so the echo rule must come
+  before the hello.txt rule — first match wins, and in the other order the hello.txt rule
+  answers the echo too and the chain loops until the follow-up depth cap stops it.
+- **No sleeps.** The last rule is the 404's response, and nginx writes the access-log line when
+  it sends a response, so the log is complete once `wait_for_mocks` returns.
+
+## `e2e_test.rs` — same-project
+
+`test_http_client_get_request` and `test_http_client_lllm_controlled_request` (4 calls each,
+across a server mock and a client mock) drive the client against NetGet's own HTTP server.
+Circular for client evidence — kept because both sides' mocks are asserted.
+
+## Not covered
+
+HTTPS against a real server, redirects, chunked or compressed responses, and large bodies
+(`response.text()` reads the whole body with no cap).
 
 ## `command_channel_test.rs`
 

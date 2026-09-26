@@ -73,6 +73,9 @@ handles them; illegal header names/values are dropped rather than sent.
   HTTP/2 read it nowhere, so setting it changed nothing.
 - Request body over the 8 MiB cap → `413`, `decision=refused_body_too_large`, no LLM
   call.
+- A body that would take its connection past the shared 8 MiB body budget → `503` +
+  `Retry-After: 1`, `decision=refused_connection_body_budget`, no LLM call (see Stream bounds).
+- A stream past `MAX_CONCURRENT_STREAMS` → `RST_STREAM(REFUSED_STREAM)` from `h2`, no event.
 - Invalid status/header from the model → 500 / header dropped
   (`build_h2_response_head`), never a panic and never a dead stream.
 - Errors from `send_response`/`send_data` propagate out of `handle_h2_request`
@@ -87,7 +90,9 @@ handles them; illegal header names/values are dropped rather than sent.
 - Optional TLS via `tls_cert_manager` (`tokio_rustls` in front of the `h2`
   handshake). **ALPN is never advertised**, so a browser will not select HTTP/2
   over TLS on its own — clients must pick `h2` explicitly, or use cleartext h2c.
-- One task per connection, one task per stream. Streams on a connection are
+- One task per connection, one task per stream, both spawned through
+  `AppState::spawn_server_task` so `stop_server` aborts open connections and answers in
+  progress, not only the accept loop. Streams on a connection are
   processed concurrently; how many *model* calls run at once is bounded by
   `--llm-max-concurrent` (default 1). Do not reason about this from `--ollama-lock` —
   that flag is accepted and inert, and its plumbing was deleted.
@@ -97,6 +102,56 @@ handles them; illegal header names/values are dropped rather than sent.
   fail-open, so a typo means more LLM traffic, not less.
 - Handling mode priority is the generic one: script → static → LLM, through
   `call_llm` → `try_execute_event_handler`.
+
+### Connection bounds
+
+All four live in `h2_server.rs` beside their arguments. The two read bounds are declared startup
+parameters, so the operator can change them.
+
+| Bound | Default | Parameter | Mechanism |
+|---|---|---|---|
+| First byte | 30s | `first_byte_timeout_secs` | `TcpStream::peek` with a deadline, before rustls or `h2` sees the socket |
+| TLS handshake + preface | 30s | — | `timeout` around `TlsAcceptor::accept` and `server::handshake`; no model and no person is involved in this phase |
+| Idle between requests | 300s | `idle_timeout_secs` | `watch_idle` over a `ConnectionActivity` raced against `accept()`; on expiry a GOAWAY (`graceful_shutdown`), then close |
+| Connections | 128 | — | `accept_bounded`; h2c peers over the cap read an HTTP/1.1 `503` + `Retry-After`, TLS peers a plain close |
+
+- **Busy is not idle.** Every stream's task holds the connection's `ConnectionActivity` busy for
+  the whole of its answer, so a request waiting on the model or parked for a human by a
+  `manual` rule never lets the idle watchdog fire. PING frames are answered by `h2` and are
+  not counted as activity.
+- **Which client state the first-byte bound faces: lazy.** NetGet's own HTTP/2 client is a
+  pooled `reqwest` client with `http2_prior_knowledge()`; it opens no socket until it has a
+  request to send, so it is never connected and silent. 300s idle stays above the 90 seconds
+  that pool keeps an idle connection.
+
+### Stream bounds
+
+`h2` advertises no stream limit and a 16 MiB header list unless told otherwise, so every
+connection is handshaken with `bounded_h2_builder()` — prior-knowledge h2c, TLS, and the
+HTTP/1.1 `Upgrade: h2c` path in `src/server/http/mod.rs` alike. Each value is argued beside its
+constant in `h2_server.rs`.
+
+| SETTINGS / bound | Value | Why |
+|---|---|---|
+| `MAX_CONCURRENT_STREAMS` | 100 | RFC 9113 §6.5.2's recommended floor, Apache's default. A stream past it is reset by `h2` with `REFUSED_STREAM` (safe to retry) |
+| `INITIAL_WINDOW_SIZE` | 65,535 | the protocol default, stated: bounds what `h2` holds for a stream this server has stopped reading |
+| connection window | 1 MiB | a `WINDOW_UPDATE` on stream 0 opens it past 64 KiB so 100 uploads do not serialise; bounds unread body bytes across all streams |
+| `MAX_FRAME_SIZE` | 16,384 | the protocol minimum; nothing a request carries needs more |
+| `MAX_HEADER_LIST_SIZE` | 32 KiB | nginx's HTTP/1.1 equivalent; `h2`'s 16 MiB default × 100 streams was 1.6 GiB |
+| body budget per connection | 8 MiB | see below |
+
+**One body budget per connection, not one per stream.** A stream buffers its body whole, up to
+`http_common::MAX_REQUEST_BODY_BYTES` (8 MiB). Per stream alone that is 800 MiB a connection at
+100 streams. So the streams of a connection share one 8 MiB `BodyBudget`: a single upload can
+still use all of it, and a stream whose body would take the connection past it is answered
+**503** + `Retry-After: 1` with `decision=refused_connection_body_budget`, before the model sees
+it. Its bytes are released at once; every other stream's when its answer has been sent. The 413
+for one body over 8 MiB is unchanged. Per connection that is 8 MiB of bodies + 1 MiB of unread
+data in `h2` + 100 × 32 KiB of headers ≈ 12 MiB, ≈ 1.5 GiB across 128 connections.
+
+Not bounded here: what the server *sends*. `h2`'s per-stream send buffer
+(`max_send_buffer_size`, 400 KiB) is left at its default, and a response body comes from the
+model or a handler rather than from the peer.
 
 ### Connection state
 
@@ -122,7 +177,14 @@ exists to write it.
 multiplexing), driven with `reqwest`'s `http2_prior_knowledge()`.
 `tests/server/http2/failure_semantics_test.rs` — 2 more: `500` on backend failure with
 no internal detail and no `Retry-After` in the body, and `413` (proven to cost no LLM
-call) for a body over the size cap. Both declared in `tests/server/http2/mod.rs`.
+call) for a body over the size cap.
+`tests/server/http2/connection_bounds_test.rs` — the four connection bounds above, from the
+peer's side, in-process and model-free.
+`tests/server/http2/stream_bounds_test.rs` — the stream bounds: the SETTINGS frame read by a
+hand-written frame reader and by curl (nghttp2), a 101st stream refused with `REFUSED_STREAM`
+while the first 100 park, the shared body budget answering `503`, and (with `http` compiled in)
+the same stream limit on the h2c upgrade path. All four files are declared in
+`tests/server/http2/mod.rs`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http2 \

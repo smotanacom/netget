@@ -53,7 +53,8 @@ pub mod http_common;
     feature = "smtp",
     feature = "pop3",
     feature = "tls",
-    feature = "kubernetes-server"
+    feature = "kubernetes-server",
+    feature = "gemini"
 ))]
 pub mod tls_cert_manager;
 
@@ -312,6 +313,36 @@ pub mod ident;
 pub use ident::actions::IdentProtocol;
 #[cfg(feature = "ident")]
 pub use ident::IdentServer;
+#[cfg(feature = "gemini")]
+pub mod gemini;
+#[cfg(feature = "gemini")]
+pub use gemini::actions::GeminiProtocol;
+#[cfg(feature = "gemini")]
+pub use gemini::GeminiServer;
+#[cfg(feature = "dict")]
+pub mod dict;
+#[cfg(feature = "dict")]
+pub use dict::actions::DictProtocol;
+#[cfg(feature = "dict")]
+pub use dict::DictServer;
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
+#[cfg(feature = "beanstalkd")]
+pub use beanstalkd::actions::BeanstalkdProtocol;
+#[cfg(feature = "beanstalkd")]
+pub use beanstalkd::BeanstalkdServer;
+#[cfg(feature = "zabbix")]
+pub mod zabbix;
+#[cfg(feature = "zabbix")]
+pub use zabbix::actions::ZabbixProtocol;
+#[cfg(feature = "zabbix")]
+pub use zabbix::ZabbixServer;
+#[cfg(feature = "gearman")]
+pub mod gearman;
+#[cfg(feature = "gearman")]
+pub use gearman::actions::GearmanProtocol;
+#[cfg(feature = "gearman")]
+pub use gearman::GearmanServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]
@@ -753,6 +784,34 @@ pub mod kubernetes;
 pub use kubernetes::actions::KubernetesProtocol;
 #[cfg(feature = "kubernetes-server")]
 pub use kubernetes::KubernetesServer;
+
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
+#[cfg(feature = "prometheus")]
+pub use prometheus::actions::PrometheusProtocol;
+#[cfg(feature = "prometheus")]
+pub use prometheus::PrometheusServer;
+
+#[cfg(feature = "docker")]
+pub mod docker;
+#[cfg(feature = "docker")]
+pub use docker::actions::DockerProtocol;
+#[cfg(feature = "docker")]
+pub use docker::DockerServer;
+
+#[cfg(feature = "vault")]
+pub mod vault;
+#[cfg(feature = "vault")]
+pub use vault::actions::VaultProtocol;
+#[cfg(feature = "vault")]
+pub use vault::VaultServer;
+
+#[cfg(feature = "bolt")]
+pub mod bolt;
+#[cfg(feature = "bolt")]
+pub use bolt::actions::BoltProtocol;
+#[cfg(feature = "bolt")]
+pub use bolt::BoltServer;
 
 #[cfg(feature = "openai")]
 pub mod openai;

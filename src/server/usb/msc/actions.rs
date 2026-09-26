@@ -341,6 +341,7 @@ impl Protocol for UsbMscProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!("/tmp/prepared.img"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
@@ -355,6 +356,9 @@ impl Protocol for UsbMscProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(30),
+                default: Some(serde_json::json!(
+                    crate::server::usb::guard::DEFAULT_FIRST_MESSAGE_TIMEOUT.as_secs()
+                )),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -369,6 +373,9 @@ impl Protocol for UsbMscProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(1800),
+                default: Some(serde_json::json!(
+                    crate::server::usb::guard::DEFAULT_IDLE_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
