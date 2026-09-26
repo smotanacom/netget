@@ -5,7 +5,7 @@ proxy (port 10051). The model is the server's item processing: it sees the value
 reported and decides how many it accepts. NetGet renders every byte of the response, including
 the `info` string whose counts decide `zabbix_sender`'s exit status.
 
-**State**: Experimental (see Maturity). **Privilege**: `None` — the well-known port is 10051.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 10051.
 **Stack**: `ETH>IP>TCP>Zabbix`. **Feature**: `zabbix` (no dependencies beyond serde_json).
 
 ## Library choice
@@ -106,9 +106,17 @@ exchange recorded through a relay, and it is clean.
 
 ## Maturity
 
-Experimental. The evidence for Beta is in place — `tests/server/zabbix/real_client_test.rs`
-drives the Zabbix project's own `zabbix_sender` 7.4 (C; not linked; the server uses no Zabbix
-library) and asserts on its printed counts and its exit status, including exit 2 on a backend
-failure; the Wireshark dissector reads the recorded exchange clean; it is not `#[ignore]`d and
-fails, never skips, without the binary; CI's `registry-audit` installs Ubuntu's `zabbix-sender`
-and runs it. Promotion is a separate step.
+Beta. Evidence: `tests/server/zabbix/real_client_test.rs` drives the Zabbix project's own
+`zabbix_sender` 7.4 (C; not linked; the server uses no Zabbix library) and asserts on the counts
+it printed and on its exit status — which it chooses by scanning our `info` string, so a
+misrendered string is a wrong exit code — for a single value, a batch with a rejected value, a
+backend failure and a mocked-model decision; Wireshark's own `zabbix` dissector reads a recorded
+exchange clean. It is not `#[ignore]`d and fails, never skips, without the binary; CI's
+`registry-audit` installs Ubuntu's `zabbix-sender` and runs it. The `zabbix_packet` fuzz target
+has run clean. Promoted after the whole suite (26 tests) passed three consecutive runs at
+`--test-threads=100` and `scripts/beta_evidence_table.py --check` stayed green with
+`zabbix_sender` as the peer.
+
+What Beta does **not** cover, and what Stable would need: one client only (a second independent
+sender — the Python `zabbix-utils` or `py-zabbix` `ZabbixSender`, or the Go agent 2 — is
+condition 1); compressed packets are refused rather than served.

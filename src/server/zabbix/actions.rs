@@ -79,7 +79,7 @@ impl Protocol for ZabbixProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // 10051 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
