@@ -36,6 +36,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(dict());
     #[cfg(feature = "gemini")]
     cases.extend(gemini());
+    #[cfg(feature = "beanstalkd")]
+    cases.extend(beanstalkd());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -349,6 +351,61 @@ fn gemini() -> Vec<EvalCase> {
             "Only the home page exists. Every other page does not exist.",
             gemini_probe("/nowhere"),
             Expect::default().matching(r"(?m)^51 "),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Beanstalkd — the Python client library greenstalk (`pip install greenstalk`),
+// which parses reply lines, byte-counted job bodies and the YAML reports
+// itself. It prints what it got back, or the name of the exception it raised.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "beanstalkd")]
+const GREENSTALK_PROBE: &str = "import sys, greenstalk\n\
+c = greenstalk.Client(('127.0.0.1', int(sys.argv[1])), watch=sys.argv[3])\n\
+try:\n\
+    if sys.argv[2] == 'put':\n\
+        print('INSERTED', c.put('resize image 7'))\n\
+    elif sys.argv[2] == 'reserve':\n\
+        j = c.reserve(timeout=200)\n\
+        print('RESERVED', j.id, j.body)\n\
+    else:\n\
+        print(c.stats())\n\
+except greenstalk.Error as e:\n\
+    print(type(e).__name__)\n";
+
+#[cfg(feature = "beanstalkd")]
+fn beanstalkd_probe(mode: &str, tube: &str) -> Probe {
+    Probe::client("python3", &["-c", GREENSTALK_PROBE, "{PORT}", mode, tube])
+}
+
+#[cfg(feature = "beanstalkd")]
+fn beanstalkd() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "beanstalkd/accept-a-job",
+            "beanstalkd",
+            "You are a work queue. Accept every job that is submitted and number \
+             the jobs starting from 100.",
+            beanstalkd_probe("put", "default"),
+            Expect::default().matching(r"INSERTED \d+"),
+        ),
+        EvalCase::new(
+            "beanstalkd/hand-out-a-job",
+            "beanstalkd",
+            "You are a work queue. The images tube holds one waiting job, number 7, \
+             whose text is: resize photo.jpg to 640 wide.",
+            beanstalkd_probe("reserve", "images"),
+            Expect::contains(&["RESERVED 7", "photo.jpg"]),
+        ),
+        EvalCase::new(
+            "beanstalkd/queue-statistics",
+            "beanstalkd",
+            "You are a work queue with 5 ready jobs and 2 buried jobs, running \
+             version 1.13.",
+            beanstalkd_probe("stats", "default"),
+            Expect::contains(&["'current-jobs-ready': 5", "'current-jobs-buried': 2"]),
         ),
     ]
 }

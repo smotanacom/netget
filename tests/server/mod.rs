@@ -4,6 +4,8 @@
 pub mod amqp;
 #[cfg(feature = "arp")]
 pub mod arp;
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
 #[cfg(feature = "bgp")]
 pub mod bgp;
 #[cfg(feature = "bitcoin")]

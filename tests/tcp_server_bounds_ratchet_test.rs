@@ -317,6 +317,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         // New protocols, born with both bounds (Programme 4).
         "dict",
         "gemini",
+        "beanstalkd",
     ];
 
     let servers = tcp_servers();
