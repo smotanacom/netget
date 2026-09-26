@@ -664,15 +664,53 @@ impl SshAgentProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for SshAgentProtocol {
+    /// A Unix socket has no host and no port.
+    ///
+    /// Without this, `server_startup.rs` treats the protocol as "unmigrated" and *requires* a
+    /// `port`, so starting it from the dashboard or over MCP with only a `socket_path` failed
+    /// with "requires 'port' parameter" — the same defect `socket_file` had. Declaring empty
+    /// binding defaults opts into the path where port is optional; the listen address that
+    /// path computes is ignored, since the server binds `socket_path`.
+    fn default_binding(&self) -> Option<crate::protocol::BindingDefaults> {
+        Some(crate::protocol::BindingDefaults {
+            mac_address: None,
+            interface: None,
+            host: None,
+            port: None,
+        })
+    }
+
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![ParameterDefinition {
-            name: "socket_path".to_string(),
-            type_hint: "string".to_string(),
-            description: "Path to Unix domain socket (default: ./netget-ssh-agent.sock)"
-                .to_string(),
-            required: false,
-            example: json!("./netget-ssh-agent.sock"),
-        }]
+        vec![
+            ParameterDefinition {
+                name: "socket_path".to_string(),
+                type_hint: "string".to_string(),
+                description: "Path to Unix domain socket (default: ./netget-ssh-agent.sock)"
+                    .to_string(),
+                required: false,
+                example: json!("./netget-ssh-agent.sock"),
+            },
+            ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds a connected peer may send no request at all before the \
+                              server closes it. Default 300: ssh-add and ssh ask at once, but \
+                              NetGet's own ssh_agent client connects and waits for a person."
+                    .to_string(),
+                required: false,
+                example: json!(300),
+            },
+            ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "number".to_string(),
+                description: "Seconds an established connection may be silent between requests \
+                              before the server closes it. Default 900. A request still being \
+                              answered never counts as silence."
+                    .to_string(),
+                required: false,
+                example: json!(900),
+            },
+        ]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -840,6 +878,19 @@ impl Server for SshAgentProtocol {
 
             let socket_path_buf = std::path::PathBuf::from(socket_path);
 
+            // Both read bounds are the operator's to tune; the defaults are argued beside
+            // FIRST_BYTE_READ_TIMEOUT and IDLE_BETWEEN_REQUESTS_TIMEOUT in mod.rs.
+            let secs = |name: &str| -> Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
+            let idle_timeout_secs = secs("idle_timeout_secs")?;
+
             use crate::server::ssh_agent::SshAgentServer;
             let _actual_path = SshAgentServer::spawn_with_llm_actions(
                 socket_path_buf,
@@ -847,6 +898,8 @@ impl Server for SshAgentProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                first_byte_timeout_secs,
+                idle_timeout_secs,
             )
             .await?;
 

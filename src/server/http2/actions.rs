@@ -31,6 +31,28 @@ impl Protocol for Http2Protocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
         let mut params = crate::server::tls_cert_manager::get_tls_startup_parameters();
         params.extend(crate::server::http_common::handler::request_handling_startup_parameters());
+        params.push(crate::llm::actions::ParameterDefinition {
+            name: "first_byte_timeout_secs".to_string(),
+            type_hint: "number".to_string(),
+            description: "Seconds a connected peer may send nothing at all (no TLS ClientHello, \
+                          no HTTP/2 preface) before the server closes it. Default 30: HTTP/2 is \
+                          client-speaks-first, and NetGet's own HTTP/2 client opens no socket \
+                          until it has a request to send."
+                .to_string(),
+            required: false,
+            example: json!(30),
+        });
+        params.push(crate::llm::actions::ParameterDefinition {
+            name: "idle_timeout_secs".to_string(),
+            type_hint: "number".to_string(),
+            description: "Seconds an established connection may carry no request before the \
+                          server sends GOAWAY and closes it. Default 300, above the 90 seconds \
+                          reqwest keeps an idle pooled connection. A request still being \
+                          answered never counts as idle."
+                .to_string(),
+            required: false,
+            example: json!(300),
+        });
         params
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -172,6 +194,21 @@ impl Server for Http2Protocol {
                 None
             };
 
+            // Both bounds are the operator's to tune; the defaults are argued beside
+            // FIRST_BYTE_READ_TIMEOUT and IDLE_BETWEEN_REQUESTS_TIMEOUT in h2_server.rs.
+            let secs = |name: &str| -> anyhow::Result<Option<u64>> {
+                Ok(ctx
+                    .startup_params
+                    .as_ref()
+                    .map(|p| p.get_optional_u64(name))
+                    .transpose()?
+                    .flatten())
+            };
+            let bounds = crate::server::http2::h2_server::H2Bounds::from_secs(
+                secs("first_byte_timeout_secs")?,
+                secs("idle_timeout_secs")?,
+            );
+
             // Use h2-based server for full server push support
             H2Server::spawn_with_push_support(
                 ctx.legacy_listen_addr(),
@@ -180,6 +217,7 @@ impl Server for Http2Protocol {
                 ctx.status_tx,
                 ctx.server_id,
                 tls_config,
+                bounds,
             )
             .await
         })

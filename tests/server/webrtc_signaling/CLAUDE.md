@@ -163,6 +163,22 @@ connection ends, and the model is not called; a fresh `register` is still served
 removal twice: with the `WebSocketConfig` limits set to `None` no close arrived, and without
 the 1009 send the close carried no code.
 
+### Connection bounds (`connection_bounds_test.rs`)
+
+In-process and model-free (0 LLM calls). Four tests: the cap (1024 upgrades, the next gets 503,
+closing one frees one slot); a raw upgraded peer that never writes is sent the
+`netget-keepalive` Ping and then Close 1001 at `idle_timeout_secs` (2s here); a tokio-tungstenite
+client that sends nothing but its automatic Pongs is kept for five bounds and pinged at least
+twice; a `register` whose `webrtc_signaling_peer_connected` event is parked for a human keeps
+its connection and receives exactly the `registered` frame — no Ping, no Close — for four
+bounds, and once the intercept is answered the connection gets a fresh bound rather than being
+closed at once.
+
+Verified by removal: disabling the watchdog arm fails the keepalive and live-client tests;
+removing the probe from `accept_bounded::watch_idle_with_probe` fails both again; replacing the
+per-frame `busy()` guard with a bare `touch()` fails the parked test on the Close sent the
+moment the parked event is answered.
+
 ## Event Types Tested
 
 1. **webrtc_signaling_peer_connected** - Triggered when peer registers via WebSocket

@@ -59,6 +59,96 @@ const _REPLY_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
 /// the cost of holding one was a single `connect()`.
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 
+/// How long an established tunnel may carry nothing **in either direction** before it is closed.
+///
+/// `HANDSHAKE_TIMEOUT_SECS` ends at the CONNECT reply; after it the relay used to have no bound
+/// at all, so a tunnel whose client and target had both gone quiet — typically because one end
+/// vanished without a FIN — held two sockets and a slot for as long as the process lived.
+///
+/// **Silence is measured on both directions combined, not per direction.** A download is a
+/// tunnel where only the target speaks and a slow upload one where only the client does; either
+/// is a live tunnel, so a byte read from *either* side resets the clock. Only a tunnel that has
+/// moved nothing at all, both ways, is idle.
+///
+/// One hour, because a proxy carries whatever TCP its clients bring and some of that is
+/// long-idle by design: IMAP IDLE is re-issued every 29 minutes (RFC 2177), an SSH session with no
+/// `ServerAliveInterval` can sit silent indefinitely, and RFC 5382 REQ-5 asks NATs to keep an idle
+/// TCP mapping for over two hours. An hour clears the application keepalives in common use and
+/// the 300-second window a `manual` rule gives a human, and a tunnel silent both ways for that
+/// long has almost certainly lost an end. Declared as the `idle_timeout_secs` startup parameter —
+/// raise it for SSH without keepalives, lower it for a proxy exposed to strangers.
+///
+/// In MITM mode every chunk is answered by the model before it is forwarded, and that answer —
+/// a model round-trip, or a `manual` rule parked for a human — holds the tunnel busy, so the
+/// clock never runs against a chunk that is being decided.
+pub const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// A borrowed stream that records every byte it reads on a shared
+/// [`ConnectionActivity`](crate::server::accept_bounded::ConnectionActivity), so one idle clock can
+/// cover both directions of a `copy_bidirectional` relay. Writes pass straight through.
+struct TouchOnRead<'a> {
+    inner: &'a mut TcpStream,
+    activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
+    bytes_read: u64,
+}
+
+impl<'a> TouchOnRead<'a> {
+    fn new(
+        inner: &'a mut TcpStream,
+        activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
+    ) -> Self {
+        Self {
+            inner,
+            activity,
+            bytes_read: 0,
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for TouchOnRead<'_> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut *this.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &poll {
+            let n = buf.filled().len() - before;
+            if n > 0 {
+                this.bytes_read += n as u64;
+                this.activity.touch();
+            }
+        }
+        poll
+    }
+}
+
+impl tokio::io::AsyncWrite for TouchOnRead<'_> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut *self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 /// Concurrent client connections this proxy admits before it starts refusing.
 ///
 /// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. [`HANDSHAKE_TIMEOUT_SECS`]
@@ -173,6 +263,8 @@ impl Socks5Server {
                 Socks5FilterConfig::default()
             });
 
+        let mut relay_idle = RELAY_IDLE_TIMEOUT;
+
         // Apply startup parameters if provided
         if let Some(ref params) = startup_params {
             Log::new(Some(&status_tx)).info("Applying SOCKS5 startup parameters");
@@ -245,6 +337,11 @@ impl Socks5Server {
                 Log::new(Some(&status_tx)).info(format!("Filter mode: {:?}", config.filter_mode));
             }
 
+            // Parse the relay idle bound (argued beside RELAY_IDLE_TIMEOUT).
+            if let Some(secs) = params.get_optional_u64("idle_timeout_secs")? {
+                relay_idle = std::time::Duration::from_secs(secs);
+            }
+
             // Parse MITM mode
             if let Some(mitm) = params.get_optional_bool("mitm_by_default")? {
                 config.mitm_by_default = mitm;
@@ -314,6 +411,7 @@ impl Socks5Server {
                                     protocol_clone,
                                     server_id,
                                     config_clone,
+                                    relay_idle,
                                 )
                                 .await
                                 {
@@ -358,6 +456,7 @@ impl Socks5Server {
         protocol: Arc<Socks5Protocol>,
         server_id: ServerId,
         config: Socks5FilterConfig,
+        relay_idle: std::time::Duration,
     ) -> Result<()> {
         // Add connection to ServerInstance
         use crate::state::server::{
@@ -557,34 +656,58 @@ impl Socks5Server {
                 &status_tx,
                 &protocol,
                 server_id,
+                relay_idle,
             )
             .await?;
         } else {
-            // Passthrough mode: direct relay
-            match tokio::io::copy_bidirectional(&mut client_stream, &mut target_stream).await {
-                Ok((client_to_target_bytes, target_to_client_bytes)) => {
+            // Passthrough mode: direct relay, raced against one idle clock that both directions
+            // touch. See RELAY_IDLE_TIMEOUT.
+            let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+            let mut client = TouchOnRead::new(&mut client_stream, Arc::clone(&activity));
+            let mut target = TouchOnRead::new(&mut target_stream, Arc::clone(&activity));
+            let outcome = tokio::select! {
+                result = tokio::io::copy_bidirectional(&mut client, &mut target) => Some(result),
+                _ = crate::server::accept_bounded::watch_idle(Arc::clone(&activity), relay_idle) => None,
+            };
+            // Counted by the wrappers, so the figures are right on the idle path too, where
+            // `copy_bidirectional` never returns its own.
+            let (client_to_target_bytes, target_to_client_bytes) =
+                (client.bytes_read, target.bytes_read);
+            match outcome {
+                Some(Ok(_)) => {
                     Log::new(Some(&status_tx)).info(format!(
                         "SOCKS5 {} relay complete: {}↑ {}↓",
                         connection_id, client_to_target_bytes, target_to_client_bytes
                     ));
-                    // Without this the rail's ↓/↑ counters sit at zero for the whole life of
-                    // a connection that may have relayed gigabytes.
-                    app_state
-                        .update_connection_stats(
-                            server_id,
-                            connection_id,
-                            Some(client_to_target_bytes),
-                            Some(target_to_client_bytes),
-                            None,
-                            None,
-                        )
-                        .await;
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     Log::new(Some(&status_tx))
                         .warn(format!("SOCKS5 {} relay error: {}", connection_id, e));
                 }
+                None => {
+                    Log::new(Some(&status_tx)).info(format!(
+                        "SOCKS5 {} tunnel to {} moved nothing either way for {}s; closing \
+                         decision=idle_timeout ({}↑ {}↓)",
+                        connection_id,
+                        target_addr,
+                        relay_idle.as_secs(),
+                        client_to_target_bytes,
+                        target_to_client_bytes
+                    ));
+                }
             }
+            // Without this the rail's ↓/↑ counters sit at zero for the whole life of a
+            // connection that may have relayed gigabytes.
+            app_state
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some(client_to_target_bytes),
+                    Some(target_to_client_bytes),
+                    None,
+                    None,
+                )
+                .await;
         }
 
         Ok(())
@@ -602,6 +725,7 @@ impl Socks5Server {
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<Socks5Protocol>,
         server_id: ServerId,
+        relay_idle: std::time::Duration,
     ) -> Result<()> {
         use actions::{SOCKS5_DATA_FROM_TARGET_EVENT, SOCKS5_DATA_TO_TARGET_EVENT};
 
@@ -612,8 +736,23 @@ impl Socks5Server {
         let mut client_to_target_total = 0u64;
         let mut target_to_client_total = 0u64;
 
+        // One clock for both directions (see RELAY_IDLE_TIMEOUT). Each chunk holds it busy while
+        // the model decides it, so a decision parked for a human is never mistaken for silence.
+        let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+
         loop {
             tokio::select! {
+                _ = crate::server::accept_bounded::watch_idle(Arc::clone(&activity), relay_idle) => {
+                    Log::new(Some(status_tx)).info(format!(
+                        "SOCKS5 {} MITM tunnel to {} moved nothing either way for {}s; closing \
+                         decision=idle_timeout",
+                        connection_id,
+                        target_addr,
+                        relay_idle.as_secs()
+                    ));
+                    break;
+                }
+
                 // Read from client (data going to target)
                 result = client_stream.read(&mut client_buf) => {
                     match result {
@@ -622,6 +761,7 @@ impl Socks5Server {
                             break;
                         }
                         Ok(n) => {
+                            let _busy = activity.busy();
                             let data = &client_buf[..n];
                             Log::new(Some(status_tx)).trace(format!("SOCKS5 {} client→target {} bytes: {:?}", connection_id, n, data));
 
@@ -696,6 +836,7 @@ impl Socks5Server {
                             break;
                         }
                         Ok(n) => {
+                            let _busy = activity.busy();
                             let data = &target_buf[..n];
                             Log::new(Some(status_tx)).trace(format!("SOCKS5 {} target→client {} bytes: {:?}", connection_id, n, data));
 

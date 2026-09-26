@@ -33,6 +33,8 @@ rather than something this protocol can impose.
 |---|---|---|
 | `socket_path` | yes | path to create, e.g. `./netget.sock` |
 | `send_first` | no | send a banner on connect (raises `socket_file_connection_opened`) |
+| `first_byte_timeout_secs` | no | seconds a connected peer may send nothing (default 300) |
+| `idle_timeout_secs` | no | seconds a session may be silent between messages (default 900) |
 
 No port is involved. `default_binding()` returns empty binding defaults so that
 `server_startup.rs` does not demand one; without that declaration this protocol
@@ -108,6 +110,26 @@ the slice sat inside an all-printable-ASCII branch and so could not panic today,
 but it is one edit to the guard away from the multi-byte-UTF-8 crash that
 `truncate_for_log` exists to prevent.
 
+### Connection bounds
+
+Declared in `mod.rs` beside their arguments; the two read bounds are startup parameters.
+
+| Bound | Default | Parameter | Mechanism |
+|---|---|---|---|
+| First byte | 300s | `first_byte_timeout_secs` | `read_bounded` (a `timeout` around the `read()` that consults `ConnectionActivity`) |
+| Idle between messages | 900s | `idle_timeout_secs` | the same, once the peer has sent anything |
+| Connections | 256 | — | `accept_bounded_unix`; the peer over the cap reads a clean EOF (a byte stream has no refusal vocabulary) |
+
+- **Which client state the first-byte bound faces: connected and silent.** NetGet's own
+  `socket_file` client connects inside `connect()` and writes nothing until a model action or a
+  person's `[ send message ]`, so the default is `tcp`'s 300s — the window a `manual` rule gives
+  a human — rather than a stranger-shaped 30s.
+- **Busy is not idle.** The read loop hands every message to a spawned task and goes straight
+  back to `read()`, so the deadline and an answer in progress are live at once. Each handler
+  task (and a `send_first` banner task) holds `ConnectionActivity` busy, and `read_bounded`
+  never closes a connection with work in flight — `tcp`'s shape exactly.
+- `tests/server/socket_file/connection_bounds_test.rs` drives all three from the peer's end.
+
 ### When the LLM call fails
 
 A raw byte stream has no error frame, so there is nothing safe to *say*: the only
@@ -131,8 +153,8 @@ Three outcomes stay distinguishable in the log:
 
 A `mode` startup parameter: the socket is always `0600` and there is no way to
 ask for group access. Peer credentials (`SO_PEERCRED` — a Unix socket can
-identify the connecting process; the model is not told), idle timeouts,
-backpressure, and any bound on how much `wait_for_more` accumulates. `SocketAddr` is required by
+identify the connecting process; the model is not told), backpressure, and any
+bound on how much `wait_for_more` accumulates. `SocketAddr` is required by
 internal APIs, so connections report the placeholder `127.0.0.1:0`; the real path
 is in `protocol_info.socket_path`.
 

@@ -87,7 +87,9 @@ handles them; illegal header names/values are dropped rather than sent.
 - Optional TLS via `tls_cert_manager` (`tokio_rustls` in front of the `h2`
   handshake). **ALPN is never advertised**, so a browser will not select HTTP/2
   over TLS on its own — clients must pick `h2` explicitly, or use cleartext h2c.
-- One task per connection, one task per stream. Streams on a connection are
+- One task per connection, one task per stream, both spawned through
+  `AppState::spawn_server_task` so `stop_server` aborts open connections and answers in
+  progress, not only the accept loop. Streams on a connection are
   processed concurrently; how many *model* calls run at once is bounded by
   `--llm-max-concurrent` (default 1). Do not reason about this from `--ollama-lock` —
   that flag is accepted and inert, and its plumbing was deleted.
@@ -97,6 +99,29 @@ handles them; illegal header names/values are dropped rather than sent.
   fail-open, so a typo means more LLM traffic, not less.
 - Handling mode priority is the generic one: script → static → LLM, through
   `call_llm` → `try_execute_event_handler`.
+
+### Connection bounds
+
+All four live in `h2_server.rs` beside their arguments. The two read bounds are declared startup
+parameters, so the operator can change them.
+
+| Bound | Default | Parameter | Mechanism |
+|---|---|---|---|
+| First byte | 30s | `first_byte_timeout_secs` | `TcpStream::peek` with a deadline, before rustls or `h2` sees the socket |
+| TLS handshake + preface | 30s | — | `timeout` around `TlsAcceptor::accept` and `server::handshake`; no model and no person is involved in this phase |
+| Idle between requests | 300s | `idle_timeout_secs` | `watch_idle` over a `ConnectionActivity` raced against `accept()`; on expiry a GOAWAY (`graceful_shutdown`), then close |
+| Connections | 128 | — | `accept_bounded`; h2c peers over the cap read an HTTP/1.1 `503` + `Retry-After`, TLS peers a plain close |
+
+- **Busy is not idle.** Every stream's task holds the connection's `ConnectionActivity` busy for
+  the whole of its answer, so a request waiting on the model or parked for a human by a
+  `manual` rule never lets the idle watchdog fire. PING frames are answered by `h2` and are
+  not counted as activity.
+- **Which client state the first-byte bound faces: lazy.** NetGet's own HTTP/2 client is a
+  pooled `reqwest` client with `http2_prior_knowledge()`; it opens no socket until it has a
+  request to send, so it is never connected and silent. 300s idle stays above the 90 seconds
+  that pool keeps an idle connection.
+- **Not bounded here**: `SETTINGS_MAX_CONCURRENT_STREAMS` is left at `h2`'s default, so one
+  admitted connection can open many streams, each buffering a body of up to 8 MiB.
 
 ### Connection state
 
@@ -122,7 +147,9 @@ exists to write it.
 multiplexing), driven with `reqwest`'s `http2_prior_knowledge()`.
 `tests/server/http2/failure_semantics_test.rs` — 2 more: `500` on backend failure with
 no internal detail and no `Retry-After` in the body, and `413` (proven to cost no LLM
-call) for a body over the size cap. Both declared in `tests/server/http2/mod.rs`.
+call) for a body over the size cap.
+`tests/server/http2/connection_bounds_test.rs` — the four bounds above, from the peer's side,
+in-process and model-free. All three files are declared in `tests/server/http2/mod.rs`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http2 \

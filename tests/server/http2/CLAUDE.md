@@ -115,6 +115,29 @@ so every `http2_request` is a backend failure.
 
 **LLM Calls**: 1 each (startup only).
 
+### Tests 6-9: Connection bounds (`connection_bounds_test.rs`)
+
+**Purpose**: prove each bound in `src/server/http2/h2_server.rs` is applied, from the peer's
+side. In-process (`ServerForm` + `AppState`), no mock backend: the LLM endpoint is a dead port
+and every rule is static or manual, so **zero LLM calls**. The read bounds are set short through
+the `first_byte_timeout_secs` / `idle_timeout_secs` startup parameters.
+
+- A raw socket that sends nothing reads EOF at the first-byte bound, and no bytes before it.
+- An `h2` client that completes one static-answered GET and then goes quiet sees its client
+  connection end at the idle bound (a GOAWAY, then close) — not at the first-byte bound, which
+  is set 60s and the wrong way round on purpose.
+- A GET routed to `manual` (parked for a human) keeps its connection open well past both short
+  bounds: the stream's task holds `ConnectionActivity` busy.
+- 128 idle sockets fill the cap; the 129th reads `HTTP/1.1 503` + `Retry-After` and EOF;
+  closing one admitted socket frees exactly one slot.
+
+Each was verified by removing what it tests: the `peek` deadline (test 6 hangs to its 49s
+window), the `watch_idle` arm (test 7 never ends), the `busy()` guard (test 8 sees the
+connection closed under the parked request), and the cap raised to 100 000 (test 9 is never
+refused).
+
+**Runtime**: ~20s in parallel, dominated by the parked-request wait.
+
 ## Total LLM Call Budget
 
 - Test 1: 1 (startup) + 4 (requests) = 5 calls

@@ -126,6 +126,23 @@ not the actual DNS queries.
 - exactly one A record, holding the address that domain's handler chose
 - HTTP/2 connection persists between requests
 
+### Connection bounds (`connection_bounds_test.rs`)
+
+In-process (`ServerForm` + `AppState`), model-free (dead-port LLM, static or manual rules), zero
+LLM calls. Four tests:
+
+- **The cap**: 256 completed handshakes are admitted, the 257th is closed before its
+  handshake completes, and closing one frees exactly one slot.
+- **Silent after the handshake**: a peer that completes TLS and never sends the HTTP/2 preface
+  reads EOF at the idle bound (`idle_timeout_secs`, set to 3s).
+- **Quiet after an answer**: an `h2` client whose `GET /dns-query` with no `dns=` is answered
+  400 by the server itself sees its connection end at the idle bound (a GOAWAY, then close).
+- **Parked for a human**: a POSTed query routed to `manual` keeps its connection for four times
+  the idle bound — every request holds `ConnectionActivity` busy.
+
+Verified by removal: with the `watch_idle` arm disabled the two idle tests fail; with the
+`busy()` guard removed the parked test sees its connection closed.
+
 ## Known Issues
 
 ### 1. Self-Signed Certificate Handling

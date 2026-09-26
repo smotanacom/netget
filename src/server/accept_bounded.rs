@@ -164,12 +164,50 @@ pub async fn accept_bounded(
     }
 }
 
+/// [`accept_bounded`] for a Unix domain socket listener (`socket_file`, `ssh_agent`).
+///
+/// A filesystem socket is exposed to every local process that can write the node, and a peer
+/// that connects and says nothing holds a task and an `AppState` entry exactly as a TCP peer
+/// does, so it needs the same cap. There is no peer address to log, so the refusal line names
+/// the listener's own path instead.
+#[cfg(unix)]
+pub async fn accept_bounded_unix(
+    listener: &tokio::net::UnixListener,
+    limiter: &ConnectionLimiter,
+    refusal: &[u8],
+    protocol: &str,
+    status_tx: Option<&mpsc::UnboundedSender<String>>,
+) -> std::io::Result<(tokio::net::UnixStream, ConnectionPermit)> {
+    loop {
+        let (socket, _) = listener.accept().await?;
+
+        match limiter.try_acquire() {
+            Some(permit) => return Ok((socket, permit)),
+            None => {
+                let path = listener
+                    .local_addr()
+                    .ok()
+                    .and_then(|a| a.as_pathname().map(|p| p.display().to_string()))
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                Log::new(status_tx).warn(format!(
+                    "{} connection on {} refused decision=fail_closed_connection_cap \
+                     (limit {} concurrent)",
+                    protocol,
+                    path,
+                    limiter.max()
+                ));
+                refuse(socket, refusal).await;
+            }
+        }
+    }
+}
+
 /// Write the protocol's "busy" bytes and close.
 ///
 /// Both halves are best-effort and time-bounded: the peer is already being refused, so nothing
 /// here may block the accept loop. Bytes first, then an explicit shutdown so the peer reads the
 /// refusal followed by a clean EOF rather than a reset that discards it.
-async fn refuse(mut socket: TcpStream, refusal: &[u8]) {
+async fn refuse<S: tokio::io::AsyncWrite + Unpin>(mut socket: S, refusal: &[u8]) {
     let _ = tokio::time::timeout(REFUSAL_WRITE_TIMEOUT, async {
         if !refusal.is_empty() {
             let _ = socket.write_all(refusal).await;
@@ -382,6 +420,46 @@ pub async fn watch_idle(activity: Arc<ConnectionActivity>, idle: Duration) {
         }
     }
 }
+
+/// [`watch_idle`] for a session protocol whose client may legitimately say nothing for a long
+/// time: resolve once `activity` has been idle for `idle`, having called `probe` once at half
+/// of it.
+///
+/// This is the shape for WebSocket-carried servers (`websocket`, `webrtc`, `webrtc_signaling`):
+/// the probe queues a Ping, every RFC 6455 endpoint answers a Ping with a Pong by itself, and the
+/// caller touches `activity` on every inbound frame — so a live-but-silent client is never
+/// closed, and what reaches the bound is a peer that has stopped reading or vanished without a
+/// FIN. The bound is on liveness, not on conversation.
+///
+/// The probe fires once per silent stretch, not per tick: any activity starts a new stretch, and
+/// a busy connection (work in flight) is neither probed nor reported idle.
+pub async fn watch_idle_with_probe<F: FnMut()>(
+    activity: Arc<ConnectionActivity>,
+    idle: Duration,
+    mut probe: F,
+) {
+    let tick = (idle / 20).clamp(Duration::from_millis(100), Duration::from_secs(15));
+    let mut probed = false;
+    loop {
+        tokio::time::sleep(tick).await;
+        match activity.idle_for() {
+            Some(elapsed) if elapsed >= idle => return,
+            Some(elapsed) if elapsed >= idle / 2 => {
+                if !probed {
+                    probe();
+                    probed = true;
+                }
+            }
+            // Busy, or heard from recently: the next silent stretch gets its own probe.
+            _ => probed = false,
+        }
+    }
+}
+
+/// The payload of the keepalive Ping the WebSocket-carried servers send through
+/// [`watch_idle_with_probe`]. A Pong echoes it (RFC 6455 §5.5.3); it is not checked, because any
+/// frame is proof of life, but it makes the Ping identifiable in a capture.
+pub const KEEPALIVE_PING_PAYLOAD: &[u8] = b"netget-keepalive";
 
 /// Milliseconds on a monotonic clock. `utils::clock` rather than `std::time::Instant`, which
 /// panics on wasm32 (see the project CLAUDE.md).

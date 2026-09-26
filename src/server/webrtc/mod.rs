@@ -86,6 +86,24 @@ fn message_too_big_close() -> Message {
     }))
 }
 
+/// How long a signalling connection may go without a single frame from the peer.
+///
+/// The signalling WebSocket *is* the peer's lifetime here — the
+/// peer connection it negotiates is torn down when it closes — so between the answer and the end
+/// of the session it is normally silent while the data channel carries the traffic, and the
+/// handshake deadline says nothing about that stretch. The bound is on the peer's **liveness**, not its conversation: at half of it the server
+/// sends a Ping (`accept_bounded::watch_idle_with_probe`), every RFC 6455 endpoint answers a Ping
+/// with a Pong by itself — a browser tab, tungstenite, NetGet's own client — and any inbound
+/// frame resets the clock. What reaches the bound is a peer that has stopped reading or vanished
+/// without a FIN, and it is closed with 1001 ("going away") and `decision=idle_timeout`.
+///
+/// 600 seconds, the number `websocket` uses and for the same reason: NetGet's own WebRTC client
+/// (`src/client/webrtc/mod.rs`) does not read its signalling socket while its connected-event
+/// model turn runs, and a `manual` rule parks that turn for up to 300 seconds; twice that window
+/// keeps the operator's own peer. Declared as the `idle_timeout_secs` startup parameter.
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+
 /// Largest number of data-channel events queued behind one in-flight LLM call.
 ///
 /// Each queued event costs its own model round-trip when it is drained, so a peer
@@ -784,6 +802,7 @@ impl WebRtcServer {
     /// Returns only once the socket is bound, so a bind failure surfaces as
     /// `ServerStatus::Error` rather than a server that reports Running and listens to
     /// nothing.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_with_llm_actions(
         listen_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -792,6 +811,7 @@ impl WebRtcServer {
         server_id: ServerId,
         ice_server_urls: Vec<String>,
         max_peers: usize,
+        idle_timeout: std::time::Duration,
     ) -> Result<SocketAddr> {
         let listener = TcpListener::bind(listen_addr)
             .await
@@ -845,6 +865,7 @@ impl WebRtcServer {
                                     status_tx,
                                     llm_client,
                                     server_id,
+                                    idle_timeout,
                                 )
                                 .await
                                 {
@@ -881,6 +902,7 @@ impl WebRtcServer {
         status_tx: mpsc::UnboundedSender<String>,
         llm_client: OllamaClient,
         server_id: ServerId,
+        idle_timeout: std::time::Duration,
     ) -> Result<()> {
         // Two bounds, both absent before and both reachable by anyone who can open
         // a TCP connection — `max_peers` gates *accepted offers*, so it bounds
@@ -932,7 +954,44 @@ impl WebRtcServer {
 
         let mut peer_ctx: Option<PeerCtx> = None;
 
-        while let Some(frame) = ws_rx.next().await {
+        // Touched by every inbound frame, Pongs included, and busy while one is handled.
+        let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+
+        loop {
+            let keepalive_tx = out_tx.clone();
+            let frame = tokio::select! {
+                frame = ws_rx.next() => frame,
+                _ = crate::server::accept_bounded::watch_idle_with_probe(
+                    Arc::clone(&activity),
+                    idle_timeout,
+                    move || {
+                        let _ = keepalive_tx.send(Message::Ping(
+                            crate::server::accept_bounded::KEEPALIVE_PING_PAYLOAD.to_vec(),
+                        ));
+                    },
+                ) => {
+                    info!(
+                        "WebRTC signalling from {} sent no frame for {}s, not even a Pong; \
+                         closing decision=idle_timeout",
+                        remote_addr,
+                        idle_timeout.as_secs()
+                    );
+                    let _ = out_tx.send(Message::Close(Some(
+                        tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away,
+                            reason: "idle timeout".into(),
+                        },
+                    )));
+                    break;
+                }
+            };
+            let Some(frame) = frame else { break };
+            // Busy for the rest of this iteration. The offer decision below runs inline, so the
+            // watchdog is not even polled while it is outstanding — but the guard's release is
+            // what gives the connection a fresh bound afterwards. Without it, a decision parked
+            // for a human longer than the bound would come back to a clock that had long run
+            // out, and the peer would be closed the instant its answer was sent.
+            let _busy = activity.busy();
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(tokio_tungstenite::tungstenite::Error::Capacity(e)) => {

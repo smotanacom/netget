@@ -39,6 +39,7 @@ use actions::{
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -110,6 +111,54 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 /// exactly what `accept_bounded` does next.
 const CONNECTION_CAP_REFUSAL: &[u8] = &[PKT_CONNACK << 4, 0x02, 0x00, CONNACK_SERVER_UNAVAILABLE];
 
+/// How long a connected peer may take to complete its CONNECT.
+///
+/// MQTT is client-speaks-first and 3.1.1 §3.1.4 says a server that receives no CONNECT "within
+/// a reasonable amount of time" SHOULD close. Every client sends CONNECT the moment its socket
+/// is up — including NetGet's own, whose `rumqttc` event loop writes it on its first poll inside
+/// `connect()` — so a peer still silent after 30 seconds has begun no session at all. Declared
+/// as the `first_byte_timeout_secs` startup parameter.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a session whose client declared a Keep Alive of **0** may be silent.
+///
+/// A non-zero Keep Alive sets the bound itself — see [`session_idle_bound`] — but 0 turns the
+/// mechanism off (§3.1.2.10), and a bound that the peer can switch off in its own CONNECT is no
+/// bound at all: one byte of the CONNECT would hold a slot forever. So those sessions get this
+/// instead: fifteen minutes, `tcp`'s number, far longer than any client that chose 0 on purpose
+/// goes between packets in practice, and a clean reconnect for one that does. Declared as the
+/// `idle_timeout_secs` startup parameter, because the operator knows whether their subscribers
+/// are the long-silent kind.
+pub const IDLE_WITHOUT_KEEP_ALIVE: Duration = Duration::from_secs(900);
+
+/// The read deadlines a connection is served under, resolved from the startup parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct MqttBounds {
+    /// Until CONNECT has been accepted.
+    pub connect: Duration,
+    /// After CONNECT, for a client that declared Keep Alive 0.
+    pub idle_without_keep_alive: Duration,
+}
+
+/// The silence a session is allowed once CONNECT has been accepted.
+///
+/// **One and a half times the client's own Keep Alive**, which is what 3.1.1 §3.1.2.10 requires
+/// of the server: "If the Keep Alive value is non-zero and the Server does not receive a Control
+/// Packet from the Client within one and a half times the Keep Alive time period, it MUST
+/// disconnect the Network Connection to the Client as if the network had failed." A client that
+/// has nothing to publish meets it with PINGREQ, so a healthy idle subscriber is never cut. A
+/// Keep Alive of 0 falls back to `fallback` (see [`IDLE_WITHOUT_KEEP_ALIVE`]).
+///
+/// The answer is not on this clock: every packet is dispatched inline, so the read is not polled
+/// while the model — or a human, through a `manual` rule — composes a reply.
+pub fn session_idle_bound(keep_alive_secs: u16, fallback: Duration) -> Duration {
+    if keep_alive_secs == 0 {
+        fallback
+    } else {
+        Duration::from_millis(u64::from(keep_alive_secs) * 1500)
+    }
+}
+
 /// MQTT broker
 pub struct MqttServer;
 
@@ -133,6 +182,23 @@ impl MqttServer {
                 Err(e) => return Err(anyhow::anyhow!("MQTT startup parameter error: {}", e)),
             },
             None => DEFAULT_MAX_PACKET_SIZE,
+        };
+
+        // Both read bounds are the operator's to tune; the defaults are argued beside
+        // CONNECT_TIMEOUT and IDLE_WITHOUT_KEEP_ALIVE. A non-zero Keep Alive is the client's
+        // own, and is not overridable: 3.1.1 §3.1.2.10 makes 1.5x of it a MUST.
+        let secs = |name: &str| -> Result<Option<Duration>> {
+            match startup_params.as_ref() {
+                Some(params) => params
+                    .get_optional_u64(name)
+                    .map(|v| v.map(Duration::from_secs))
+                    .map_err(|e| anyhow::anyhow!("MQTT startup parameter error: {}", e)),
+                None => Ok(None),
+            }
+        };
+        let bounds = MqttBounds {
+            connect: secs("first_byte_timeout_secs")?.unwrap_or(CONNECT_TIMEOUT),
+            idle_without_keep_alive: secs("idle_timeout_secs")?.unwrap_or(IDLE_WITHOUT_KEEP_ALIVE),
         };
 
         let listener = TcpListener::bind(listen_addr).await?;
@@ -183,6 +249,7 @@ impl MqttServer {
                                     server_id,
                                     max_packet_size,
                                     permit,
+                                    bounds,
                                 )
                                 .await
                                 {
@@ -232,6 +299,7 @@ async fn handle_mqtt_connection(
     // This connection's slot in the accept loop's cap. Shared with the writer task below, so
     // the slot is released by whichever of the two ends last.
     permit: Arc<crate::server::accept_bounded::ConnectionPermit>,
+    bounds: MqttBounds,
 ) -> Result<()> {
     let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -331,11 +399,37 @@ async fn handle_mqtt_connection(
     );
 
     let mut client_id: Option<String> = None;
+    // The Keep Alive the client declared in its CONNECT, once one has been accepted.
+    let mut keep_alive: Option<u16> = None;
     let mut buffer: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = vec![0u8; 4096];
 
     let close_reason = loop {
-        let n = match read_half.read(&mut chunk).await {
+        // Before CONNECT: the connect bound. After it: 1.5x the client's own Keep Alive, or the
+        // fallback when it declared 0. The deadline wraps the read and nothing else — packets
+        // are dispatched inline below, so a model round-trip is never on this clock.
+        let bound = match keep_alive {
+            None => bounds.connect,
+            Some(ka) => session_idle_bound(ka, bounds.idle_without_keep_alive),
+        };
+        let read = match tokio::time::timeout(bound, read_half.read(&mut chunk)).await {
+            Ok(read) => read,
+            Err(_) => {
+                Log::new(Some(&status_tx)).info(format!(
+                    "MQTT connection {} from {} sent nothing for {}ms decision=idle_timeout                      ({}); closing",
+                    connection_id,
+                    peer_addr,
+                    bound.as_millis(),
+                    match keep_alive {
+                        None => "no CONNECT".to_string(),
+                        Some(0) => "keep-alive 0".to_string(),
+                        Some(ka) => format!("1.5x keep-alive {}s", ka),
+                    }
+                ));
+                break "idle deadline expired";
+            }
+        };
+        let n = match read {
             Ok(0) => break "peer closed the connection",
             Ok(n) => {
                 app_state
@@ -394,6 +488,7 @@ async fn handle_mqtt_connection(
             let keep_open = dispatch_packet(
                 packet,
                 &mut client_id,
+                &mut keep_alive,
                 &llm_client,
                 &app_state,
                 &status_tx,
@@ -510,6 +605,7 @@ async fn cleanup(
 async fn dispatch_packet(
     packet: RawPacket,
     client_id: &mut Option<String>,
+    keep_alive: &mut Option<u16>,
     llm_client: &OllamaClient,
     app_state: &Arc<AppState>,
     status_tx: &mpsc::UnboundedSender<String>,
@@ -539,6 +635,7 @@ async fn dispatch_packet(
                 connect.client_id.clone()
             };
             *client_id = Some(effective_id.clone());
+            *keep_alive = Some(connect.keep_alive);
             actions::register_client(server_id, &effective_id, out_tx.clone());
             protocol.set_client_id(&effective_id);
 

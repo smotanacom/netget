@@ -36,6 +36,23 @@ calls.
 
 **Rationale**: Each test uses one LLM call (per connection). Total: 3 calls, well under the 10-call budget.
 
+## Connection bounds (`connection_bounds_test.rs`)
+
+In-process (`ServerForm` + `AppState`), model-free — the LLM endpoint is a dead port and every
+rule is static or manual, so these add **zero** LLM calls and do not spawn the binary. The read
+bounds are set short through `first_byte_timeout_secs` / `idle_timeout_secs`.
+
+1. A peer that connects and sends nothing reads EOF at the first-byte bound.
+2. After one static-answered message the idle bound governs — the first-byte bound is set 60s,
+   the wrong way round, so a first-byte bound applied to the whole connection times it out.
+3. A message routed to `manual` keeps its connection open far past both bounds. Asserted on the
+   server's view as well as the peer's: the parked handler holds the write half, so a reader
+   that gave up shows the peer no EOF, and only `live_connections` catches it.
+4. 256 idle sockets fill the cap; the 257th reads EOF at once; closing one frees exactly one slot.
+
+Verified by removing each bound: the read deadline made 1 and 2 fail, `busy()` removed made 3
+fail (on the `live_connections` assertion), the cap raised to 100 000 made 4 fail.
+
 ## Expected Runtime
 
 **Whole suite: about 3 seconds.** Every call is answered by an in-process `MockOllamaServer`, so
@@ -128,17 +145,16 @@ Received: ACK: Hello, Socket!
 - ✓ LLM-controlled echo responses
 - ✓ LLM-controlled custom protocols (PING/PONG, line-based)
 - ✓ Socket file cleanup
+- ✓ Many concurrent connections, the connection cap, and both read deadlines (`connection_bounds_test.rs`)
 
 ### Not Covered (Future Tests)
 
-- ✗ Multiple concurrent connections on same socket file
 - ✗ Socket file permissions and ownership — the server chmods the node to `0600` after bind, and
   nothing asserts it. The tests connect as the same user, so they would pass either way; only a
   second uid could prove the restriction, which a unit test cannot arrange
 - ✗ Large data transfer (>8KB buffer)
 - ✗ Binary protocol handling
 - ✗ wait_for_more accumulation
-- ✗ Connection timeout/idle handling
 - ✗ Credential passing (SO_PEERCRED)
 
 ## Performance Notes
@@ -161,10 +177,9 @@ Received: ACK: Hello, Socket!
 
 ## Future Enhancements
 
-1. **Multi-connection test**: Validate concurrent clients on same socket file
-2. **Binary protocol test**: Hex-encoded data send/receive
-3. **Accumulation test**: wait_for_more for incomplete data
-4. **Permission test**: assert `srw-------` on the node after start (a `metadata().permissions()`
+1. **Binary protocol test**: Hex-encoded data send/receive
+2. **Accumulation test**: wait_for_more for incomplete data
+3. **Permission test**: assert `srw-------` on the node after start (a `metadata().permissions()`
    check is cheap and would at least catch the chmod being dropped, even if it cannot prove
    another user is refused)
-5. **Credential test**: SO_PEERCRED for client PID/UID/GID
+4. **Credential test**: SO_PEERCRED for client PID/UID/GID
