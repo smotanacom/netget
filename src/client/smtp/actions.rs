@@ -81,6 +81,7 @@ impl Protocol for SmtpClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("user@example.com"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -88,6 +89,7 @@ impl Protocol for SmtpClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("secret123"),
+                default: None,
             },
             ParameterDefinition {
                 name: "use_tls".to_string(),
@@ -95,6 +97,7 @@ impl Protocol for SmtpClientProtocol {
                 type_hint: "boolean".to_string(),
                 required: false,
                 example: json!(true),
+                default: None,
             },
         ]
     }

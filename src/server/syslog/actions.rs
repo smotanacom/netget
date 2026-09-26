@@ -56,6 +56,7 @@ impl Protocol for SyslogProtocol {
             .deliberately_silent()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(514))
+            .well_known_udp_port(514)
             .implementation("syslog_loose v0.22 for parsing RFC 3164/5424 messages")
             .llm_control("Message filtering, forwarding, alerting")
             .e2e_testing("logger command (Linux/macOS built-in)")

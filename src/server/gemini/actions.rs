@@ -43,6 +43,7 @@ impl Protocol for GeminiProtocol {
                     .to_string(),
                 required: false,
                 example: json!("/etc/gemini/cert.pem"),
+                default: None,
             },
             ParameterDefinition {
                 name: "key_path".to_string(),
@@ -50,6 +51,7 @@ impl Protocol for GeminiProtocol {
                 description: "Path to the PEM private key for cert_path".to_string(),
                 required: false,
                 example: json!("/etc/gemini/key.pem"),
+                default: None,
             },
             ParameterDefinition {
                 name: "handshake_timeout_secs".to_string(),
@@ -59,6 +61,7 @@ impl Protocol for GeminiProtocol {
                     .to_string(),
                 required: false,
                 example: json!(60),
+                default: Some(serde_json::json!(super::HANDSHAKE_TIMEOUT.as_secs())),
             },
             ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
@@ -70,6 +73,7 @@ impl Protocol for GeminiProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(super::FIRST_BYTE_TIMEOUT.as_secs())),
             },
         ]
     }
@@ -106,6 +110,7 @@ impl Protocol for GeminiProtocol {
             .state(DevelopmentState::Beta)
             // 1965 is unprivileged.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(1965)
             .implementation(
                 "tokio-rustls TLS 1.2/1.3 with an rcgen self-signed certificate (or \
                  cert_path/key_path); hand-written request validation, response header and \

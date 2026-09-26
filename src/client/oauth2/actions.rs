@@ -158,6 +158,7 @@ impl Protocol for OAuth2ClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("my-client-id"),
+                default: None,
             },
             ParameterDefinition {
                 name: "client_secret".to_string(),
@@ -165,6 +166,7 @@ impl Protocol for OAuth2ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("my-client-secret"),
+                default: None,
             },
             ParameterDefinition {
                 name: "auth_url".to_string(),
@@ -172,6 +174,7 @@ impl Protocol for OAuth2ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("https://provider.com/oauth/authorize"),
+                default: None,
             },
             ParameterDefinition {
                 name: "token_url".to_string(),
@@ -179,6 +182,7 @@ impl Protocol for OAuth2ClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("https://provider.com/oauth/token"),
+                default: None,
             },
             ParameterDefinition {
                 name: "scopes".to_string(),
@@ -186,6 +190,7 @@ impl Protocol for OAuth2ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("read write"),
+                default: None,
             },
         ]
     }

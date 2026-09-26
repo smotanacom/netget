@@ -450,6 +450,7 @@ impl Protocol for ZookeeperProtocol {
             // covering a real ZooKeeper client completing session and node operations. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(2181)
             .implementation(
                 "Hand-rolled ZooKeeper wire protocol. The ConnectRequest/ConnectResponse \
                  session handshake, pings and closeSession are answered by the server; every \

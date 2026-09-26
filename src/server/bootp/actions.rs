@@ -85,6 +85,7 @@ impl Protocol for BootpProtocol {
             // address and a claim to be the boot server.
             .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(67))
+            .well_known_udp_port(67)
             .implementation("dhcproto v0.12 for parsing (BOOTP format)")
             .llm_control("BOOTREQUEST→BOOTREPLY flow + boot file location")
             .e2e_testing("Manual BOOTP packet construction - 3 LLM calls")

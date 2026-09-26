@@ -94,6 +94,9 @@ impl Protocol for DohProtocol {
                 .to_string(),
             required: false,
             example: json!(300),
+            default: Some(serde_json::json!(
+                super::IDLE_BETWEEN_QUERIES_TIMEOUT.as_secs()
+            )),
         }]
     }
     fn get_async_actions(&self, state: &AppState) -> Vec<ActionDefinition> {
@@ -123,6 +126,7 @@ impl Protocol for DohProtocol {
             .state(DevelopmentState::Beta)
             // DoH is normally served on TCP/443, which is a privileged port.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(443))
+            .well_known_port(443)
             .implementation("hickory-proto + hyper + tokio-rustls; DNS actions and action execution are delegated to the DNS protocol")
             .llm_control("Same as DNS (delegates to DNS protocol)")
             .e2e_testing(

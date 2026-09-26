@@ -243,6 +243,7 @@ impl Protocol for Socks5ClientProtocol {
                 type_hint: "string".to_string(),
                 required: true,
                 example: json!("example.com:80"),
+                default: None,
             },
             ParameterDefinition {
                 name: "auth_username".to_string(),
@@ -250,6 +251,7 @@ impl Protocol for Socks5ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("user"),
+                default: None,
             },
             ParameterDefinition {
                 name: "auth_password".to_string(),
@@ -257,6 +259,7 @@ impl Protocol for Socks5ClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("password"),
+                default: None,
             },
         ]
     }

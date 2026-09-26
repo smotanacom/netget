@@ -125,6 +125,7 @@ impl Protocol for LldpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
             ParameterDefinition {
                 name: "udp_peer".to_string(),
@@ -137,6 +138,7 @@ impl Protocol for LldpProtocol {
                         .to_string(),
                 required: false,
                 example: json!("127.0.0.1:34567"),
+                default: None,
             },
             ParameterDefinition {
                 name: "advertise_interval_secs".to_string(),
@@ -149,6 +151,7 @@ impl Protocol for LldpProtocol {
                         .to_string(),
                 required: false,
                 example: json!(30),
+                default: None,
             },
             ParameterDefinition {
                 name: "source_mac".to_string(),
@@ -161,6 +164,7 @@ impl Protocol for LldpProtocol {
                 ),
                 required: false,
                 example: json!("02:00:00:00:00:01"),
+                default: None,
             },
         ]
     }

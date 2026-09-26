@@ -151,6 +151,7 @@ impl Protocol for IsisClientProtocol {
                 .to_string(),
             required: true,
             example: json!("eth0"),
+            default: None,
         }]
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {

@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-Keyboard"),
+            default: None,
         }]
     }
 

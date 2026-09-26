@@ -60,6 +60,7 @@ impl crate::llm::actions::protocol_trait::Protocol for StunProtocol {
             // decision=static_fallback_llm_error, deliberately not fail_closed_*.
             .answers_on_failure()
             .state(DevelopmentState::Beta)
+            .well_known_udp_port(3478)
             .implementation("Manual STUN protocol (RFC 8489)")
             .llm_control("Optional: Binding responses are static by default (mechanical), LLM only on opt-in")
             .e2e_testing(

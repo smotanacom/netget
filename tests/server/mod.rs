@@ -4,6 +4,8 @@
 pub mod amqp;
 #[cfg(feature = "arp")]
 pub mod arp;
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
 #[cfg(feature = "bgp")]
 pub mod bgp;
 #[cfg(feature = "bitcoin")]
@@ -86,6 +88,8 @@ pub mod etcd;
 pub mod finger;
 #[cfg(feature = "ftp")]
 pub mod ftp;
+#[cfg(feature = "gearman")]
+pub mod gearman;
 #[cfg(feature = "gemini")]
 pub mod gemini;
 #[cfg(feature = "git")]
@@ -330,6 +334,8 @@ pub mod xmlrpc;
 pub mod xmpp;
 #[cfg(feature = "yarn")]
 pub mod yarn;
+#[cfg(feature = "zabbix")]
+pub mod zabbix;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
 

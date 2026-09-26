@@ -61,6 +61,7 @@ impl Protocol for SocketFileProtocol {
                 description: "Filesystem path for the Unix domain socket file (e.g., ./netget.sock)".to_string(),
                 required: true,
                 example: serde_json::json!("./netget.sock"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "send_first".to_string(),
@@ -68,6 +69,7 @@ impl Protocol for SocketFileProtocol {
                 description: "Whether the server should send the first message after connection (e.g., for greeting banners)".to_string(),
                 required: false,
                 example: serde_json::json!(false),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
@@ -79,6 +81,7 @@ impl Protocol for SocketFileProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(300),
+                default: Some(serde_json::json!(super::FIRST_BYTE_READ_TIMEOUT.as_secs())),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -89,6 +92,7 @@ impl Protocol for SocketFileProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!(900),
+                default: Some(serde_json::json!(super::IDLE_BETWEEN_MESSAGES_TIMEOUT.as_secs())),
             },
         ]
     }

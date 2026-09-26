@@ -58,6 +58,7 @@ impl Protocol for NamedPipeProtocol {
                     .to_string(),
                 required: true,
                 example: serde_json::json!("./netget.fifo"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "response_pipe_path".to_string(),
@@ -70,6 +71,7 @@ impl Protocol for NamedPipeProtocol {
                     .to_string(),
                 required: false,
                 example: serde_json::json!("./netget.resp.fifo"),
+                default: None,
             },
         ]
     }

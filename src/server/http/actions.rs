@@ -62,6 +62,7 @@ impl Protocol for HttpProtocol {
             // Default HTTP port is privileged; the preflight check only fires
             // when the requested port is actually < 1024.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(80))
+            .well_known_port(80)
             .implementation("hyper v1.0 HTTP/1.1 server, optional TLS via rustls")
             .llm_control("Response content (status, headers, text body) — one response per request")
             .e2e_testing(

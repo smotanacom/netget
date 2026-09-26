@@ -152,6 +152,7 @@ impl Protocol for OpenIdConnectClientProtocol {
                     type_hint: "string".to_string(),
                     required: true,
                     example: json!("my-application-id"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "client_secret".to_string(),
@@ -159,6 +160,7 @@ impl Protocol for OpenIdConnectClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("secret-key-12345"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "redirect_uri".to_string(),
@@ -166,6 +168,7 @@ impl Protocol for OpenIdConnectClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("http://localhost:8080/callback"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "scopes".to_string(),
@@ -173,6 +176,7 @@ impl Protocol for OpenIdConnectClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("openid profile email"),
+                    default: None,
                 },
                 ParameterDefinition {
                     name: "flow".to_string(),
@@ -180,6 +184,7 @@ impl Protocol for OpenIdConnectClientProtocol {
                     type_hint: "string".to_string(),
                     required: false,
                     example: json!("device_code"),
+                    default: None,
                 },
             ]
     }

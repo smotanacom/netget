@@ -85,6 +85,7 @@ impl Protocol for CassandraProtocol {
             // covering the official Rust CQL driver completing a session and statements. Not Stable: Stable additionally wants spec
             // compliance and scripting support reviewed, which has not been done here.
             .state(DevelopmentState::Beta)
+            .well_known_port(9042)
             .implementation(
                 "cassandra-protocol v3.0 for frame parsing; response bodies built by hand. \
                  Protocol v4 only.",

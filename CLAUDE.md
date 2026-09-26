@@ -30,7 +30,11 @@ in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.
   at the foot of a server's peers. Nothing is selected or drilled into: ↑/↓ walk every row,
   ←/→ walk a row's buttons (and fold / unfold a section), Enter acts, letters act on the card
   under the cursor. One `+ new server or client` row at the foot opens a picker listing
-  both kinds together.
+  both kinds together. A server entry names the port it will start on — its **well-known
+  port** ("starts on well-known port 6379"), or why not ("well-known port 53 needs root;
+  starting on an OS-assigned port", "… is in use; …") — resolved by `protocol::default_port`
+  when the picker opens and again on Enter, and the create form's `port` field is pre-filled
+  with that number and says where it came from.
 - **Right column is one stream.** Machine events derived from snapshot diffs (instances
   starting, peers connecting, every request with its answer, questions parked for you —
   Enter opens the thing a line names), the `[LEVEL]` log lines, and the conversation (what
@@ -47,7 +51,10 @@ in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.
 Everything applies through `cli::management`'s `ServerForm`/`ClientForm`/`update_*`, so
 validation and the hot-apply vs restart split are identical to the LLM and MCP paths. The forms
 submit only *changed* fields — re-sending an unchanged port or host reads as a change and forces
-a needless restart.
+a needless restart. A startup parameter's declared `default` (`ParameterDefinition::default`) is
+pre-filled as its value, marked `(default)`, and counts as unchanged on create as well as edit,
+so an untouched default is never submitted and the new instance's `startup_params` records only
+what the operator chose.
 
 **Every action is an `InstanceAction`** (`cards.rs`), executed by `actions::run` whether it
 came from a letter (`x` stop, `e` edit, `r` rules, `m` driver, `c` connect a client to a
@@ -533,6 +540,38 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     rather than an extra LLM call; and nginx's echo quoting the previous response back made a
     looser rule answer both responses until the follow-up depth cap stopped the loop.
 
+  **The same day's second half made it nine: `postgresql`, `mysql`, `ldap` and `ssh` are Beta —
+  nine Beta clients, 89 Experimental.** The peers are the PostgreSQL server (`initdb` +
+  `postgres`, read back with `psql`), Oracle's `mysqld` (`--initialize-insecure`, read back with
+  the `mysql` CLI), OpenLDAP's `slapd` (a temp-dir `slapd.conf`, seeded with `ldapadd`, read back
+  with `ldapsearch`) and OpenSSH's `sshd` run **unprivileged** (a temp-dir `sshd_config`,
+  `ssh-keygen` keys, public-key auth as the current user — an unprivileged sshd can log in no one
+  else and check no password). `RealServer` grew `setup_command` for the data directory a server
+  needs before it will start, and `graceful_stop`, because a SIGKILLed postmaster leaks a System
+  V shared memory segment and macOS allows 32. CI installs all four in `registry-audit` only
+  (none is in `CI_FEATURES`), and unloads Ubuntu's AppArmor profiles for `mysqld` and `slapd`,
+  which confine them to their packaged paths.
+
+  Every one of the four had defects NetGet's own servers had never shown, which is the point of
+  the exercise and worth expecting of the next client:
+
+  - **A result that did not say what it was.** MySQL reported the *row count* as
+    `affected_rows`, so an `INSERT` read as affecting nothing; LDAP's one response event for add,
+    modify and delete named neither the operation nor the DN; SSH's output event did not name
+    its command. A mock matched on the server's own answer (`affected_rows` 1, `last_insert_id`
+    1, `operation` add) is what caught each.
+  - **A real server's normal sequence breaking a loop written against our own.** The SSH client
+    stopped reading at the channel's EOF; OpenSSH sends `exit-status` *after* EOF, so every exit
+    status was lost.
+  - **A refusal that raised nothing.** A search slapd answered with `noSuchObject` ended the LDAP
+    chain silently, and an attribute written as a plain string (`{"cn": "Ada"}`) was dropped
+    from an add. Both reached the model only once the server said no.
+  - **Chains that were one step deep, or unbounded.** PostgreSQL executed the model's answer to
+    a result and dropped that query's rows, so create → insert → select → act was impossible;
+    LDAP and SSH followed the chain with no bound at all. All three now follow it and stop at
+    `MAX_FOLLOWUP_DEPTH` 4, as MySQL already did, and each bound has a test that fails without
+    it — the LDAP one counts the searches in slapd's own log.
+
   **Do not read the four groups above as the list — generate them:**
 
   ```bash
@@ -550,7 +589,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   can check is condition 4 — that the client acts on the model's answer — and the script says so
   instead of implying it passed. It reads a server spawned through `RealServer::builder("<bin>")`
   as a binary peer, since the helper, not the test file, is what spawns it. Re-derived
-  26 September 2026 after the promotions above: Beta 5, Experimental 93 — 59 self-served, 9
+  26 September 2026 after the promotions above: Beta 9, Experimental 89 — 55 self-served, 9
   wrong peer, 25 with no peer, and none left in either "real peer" group.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (107 of the 158 `src/server/*/actions.rs` the script below walks, re-derived
@@ -797,6 +836,20 @@ port below 1024. Two failure modes to avoid:
 
 - **A `PrivilegedPort` above 1023 can never fire.** `svn` declared `PrivilegedPort(3690)`, which
   read as protection and was dead code. Declare `None` if the default port is unprivileged.
+
+**The port itself is `well_known_port`, not `PrivilegedPort`.** Every socket server declares
+`.well_known_port(n)` / `.well_known_udp_port(n)` / `.well_known_sctp_port(n)` in `metadata()` —
+IANA's number, or where IANA has none the default the protocol's own specification or reference
+implementation documents (Elasticsearch 9200, `hg serve` 8000), never 8080 standing in for HTTP.
+It is what a server starts on when the caller names no port (picker, create form, `ServerForm`,
+MCP `start_server`, `open_server`, `--server`), through one function,
+`protocol::default_port::default_port_for_server`: 1024 and above as is, below 1024 only when
+`can_bind_privileged_ports`, and a port already held on the bind address falls back to an
+OS-assigned one — each fallback said out loud. **An explicit port, `0` included, is never
+replaced.** `tests/well_known_port_declaration_test.rs` requires every server to declare one or
+sit in its `NO_WELL_KNOWN_PORT` list with the reason (link layer, devices, pipes, the generic
+`tcp`/`udp`, and application protocols carried on plain HTTP), and requires every
+`PrivilegedPort(n)` to equal the declared port and the transport to match `stack_name()`.
 - **A test can start an entirely different protocol and still pass.** `ospf`'s three e2e
   tests pass `"base_stack": "UDP"`, which `open_server` renames to `protocol` — so what
   starts is the **generic UDP server**, not `src/server/ospf/`. The mocked event is
@@ -853,8 +906,8 @@ some configurations need is expressed with `startup_dependencies(startup_params)
    the accept-loop `JoinHandle` via `AppState::register_server_task()` (required for
    `stop_server` to actually release the socket)
 2. `src/server/<protocol>/actions.rs` — implement `ProtocolActions`: `metadata()` (state +
-   privilege), `get_startup_parameters()`, async/sync actions, `get_event_types()`,
-   `execute_action()`
+   privilege + `well_known_port`), `get_startup_parameters()`, async/sync actions,
+   `get_event_types()`, `execute_action()`
 3. `src/server/<protocol>/CLAUDE.md` — implementation notes, library choice, limitations
 4. `src/server/mod.rs` — feature-gated `pub mod`
 5. `src/protocol/server_registry.rs` — feature-gated `register()`
@@ -909,6 +962,16 @@ Two related traps when declaring parameters: a parameter that is declared but ne
 dead weight the model will try to use (nine were found in the cloud protocols alone), and a
 parameter read but never declared is rejected at startup. Both are worth a grep when you touch
 `get_startup_parameters()`.
+
+**Declare `default` where the code falls back to a fixed value** — every read deadline
+(`first_byte_timeout_secs`, `idle_timeout_secs`, `handshake_timeout_secs`) and size cap does.
+Point it at the constant the code uses, `default: Some(json!(super::IDLE_TIMEOUT.as_secs()))`,
+so the form, `get_protocol_docs` and the model's prompt show the number the server will actually
+use; a literal copy drifts the first time someone tunes the constant.
+`tests/startup_param_defaults_test.rs` refuses a literal (source scan, every feature set) and a
+default that does not parse as its `type_hint` or sits on a required parameter (registry walk,
+compiled protocols only). `default: None` is right where omitting the parameter switches a
+feature off or derives the value from something else — no single number describes that.
 
 ## Testing
 
@@ -1147,6 +1210,8 @@ of the test file**, not out of this table):
 | `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | **4 params** |
 | `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | **empty** |
 | `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
+| `well_known_port_declaration_test` | a server with no declared well-known port and no stated reason; a `PrivilegedPort(n)` or transport disagreeing with it | `NO_WELL_KNOWN_PORT` — finished answers, not a queue |
+| `startup_param_defaults_test` | a declared parameter `default` written as a literal instead of the constant the code uses (the type check is a registry walk) | **empty** |
 
 A third check worth understanding: `event_action_declarations_test` probes each advertised
 name with a bare `{"type": name}`, which finds *unknown action* but can never find a wrong

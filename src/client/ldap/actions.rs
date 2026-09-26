@@ -35,6 +35,12 @@ pub static LDAP_CLIENT_BIND_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(
     )
     .with_parameters(vec![
         Parameter {
+            name: "dn".to_string(),
+            type_hint: "string".to_string(),
+            description: "The DN the bind was for".to_string(),
+            required: true,
+        },
+        Parameter {
             name: "success".to_string(),
             type_hint: "boolean".to_string(),
             description: "Whether bind was successful".to_string(),
@@ -58,6 +64,32 @@ pub static LDAP_CLIENT_SEARCH_RESULTS_EVENT: LazyLock<EventType> = LazyLock::new
     )
     .with_parameters(vec![
         Parameter {
+            name: "base_dn".to_string(),
+            type_hint: "string".to_string(),
+            description: "The search base this result belongs to".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "filter".to_string(),
+            type_hint: "string".to_string(),
+            description: "The filter this result belongs to".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "success".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "Whether the server completed the search (false for e.g. \
+                          noSuchObject; `message` then carries the server's result)"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "message".to_string(),
+            type_hint: "string".to_string(),
+            description: "The server's result when the search failed".to_string(),
+            required: false,
+        },
+        Parameter {
             name: "entries".to_string(),
             type_hint: "array".to_string(),
             description: "Array of LDAP entries with DN and attributes".to_string(),
@@ -76,10 +108,22 @@ pub static LDAP_CLIENT_SEARCH_RESULTS_EVENT: LazyLock<EventType> = LazyLock::new
 pub static LDAP_CLIENT_MODIFY_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "ldap_modify_response",
-        "LDAP modify operation response received",
+        "Response to an add, modify or delete",
         json!({"type": "wait_for_more"}),
     )
     .with_parameters(vec![
+        Parameter {
+            name: "operation".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which operation this answers: add, modify or delete".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "dn".to_string(),
+            type_hint: "string".to_string(),
+            description: "The entry the operation was for".to_string(),
+            required: true,
+        },
         Parameter {
             name: "success".to_string(),
             type_hint: "boolean".to_string(),
@@ -313,18 +357,30 @@ impl Protocol for LdapClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
-            .implementation("ldap3 crate with full directory operations")
+            .state(DevelopmentState::Beta)
+            .implementation(
+                "ldap3 (synchronous LdapConn on spawn_blocking). Every operation's response \
+                 goes back to the model - bind, search (including a search the server refuses), \
+                 add, modify, delete - and the model's answer is executed in turn, bounded at \
+                 four follow-ups",
+            )
             .llm_control("Full control over bind, search, add, modify, delete operations")
             .e2e_testing(
-                "tests/client/ldap/command_channel_test.rs runs. The three tests in \
-                 tests/client/ldap/e2e_test.rs need a Docker OpenLDAP container and are all \
-                 #[ignore]d, so nothing in the default suite drives this client against a \
-                 real directory.",
+                "tests/client/ldap/real_server_test.rs, 19 LLM calls, against OpenLDAP's slapd \
+                 (mdb, core/cosine/inetorgperson) seeded with ldapadd and read back with \
+                 ldapsearch. The model binds as the rootdn, searches, adds an entry whose \
+                 description it built from the search result, modifies a mail and deletes an \
+                 entry; ldapsearch must find each effect. A search slapd refuses \
+                 (noSuchObject) reaches the model and it creates the missing OU. The follow-up \
+                 bound is asserted from slapd's own log: exactly five searches. Not \
+                 #[ignore]d; a missing slapd, ldapadd, ldapsearch or schema directory fails \
+                 the test rather than skipping it.",
             )
             .notes(
                 "ldap3's synchronous LdapConn owns the socket, so every verb runs on \
-                 spawn_blocking and NetGet never sees the wire bytes. Bind credentials come \
+                 spawn_blocking and NetGet never sees the wire bytes. Simple bind only: no \
+                 SASL, no LDAPS or StartTLS. Search results are not paged, and attributes \
+                 whose values are not UTF-8 (jpegPhoto, certificates) are left out of them. Bind credentials come \
                  from the model or the operator; no key material or system account is read.",
             )
             .build()

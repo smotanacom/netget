@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleBatteryProtocol {
                 description: "Bluetooth device name to advertise (default: NetGet-Battery)".to_string(),
                 required: false,
                 example: json!("NetGet-Battery"),
+                default: None,
             },
             ParameterDefinition {
                 name: "initial_level".to_string(),
@@ -56,6 +57,7 @@ impl Protocol for BluetoothBleBatteryProtocol {
                 description: "Initial battery level as a percentage, 0-100, folded into the instruction given to the LLM (default: 100). A value above 100 is refused, not clamped: the Battery Level characteristic reserves everything past 100.".to_string(),
                 required: false,
                 example: json!(80),
+                default: None,
             },
         ]
     }

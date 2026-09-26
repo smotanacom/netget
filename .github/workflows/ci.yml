@@ -81,7 +81,7 @@ env:
   # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
-    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini ssdp llmnr
+    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman ssdp llmnr
     netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
     mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
     smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch
@@ -345,6 +345,9 @@ jobs:
       #   dict              - dict (the dictd project's dict(1) client)
       #   ignition-gemini   - gemini (a Python library, so pip rather than apt; see the
       #                       step after this one)
+      #   greenstalk        - beanstalkd (a Python client library, pip; same step)
+      #   zabbix-sender     - zabbix (the Zabbix project's zabbix_sender)
+      #   gearman-tools     - gearman (the gearmand project's gearman and gearadmin)
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
@@ -380,6 +383,20 @@ jobs:
       #   memcached         - the memcached client (NetGet frames the text protocol itself;
       #                       read back with libmemcached's memcat/memcp, above)
       #   pymodbus          - the modbus client (a Python device; pip, in its own step below)
+      #   postgresql        - the postgresql client (the C server, initdb + postgres; NetGet's
+      #                       client is tokio-postgres). Ubuntu keeps the server binaries in
+      #                       /usr/lib/postgresql/<major>/bin, off PATH - real_server.rs
+      #                       searches there, so nothing is symlinked
+      #   mysql-server      - the mysql client (Oracle's mysqld; NetGet's client is
+      #                       mysql_async). Its AppArmor profile confines it to
+      #                       /var/lib/mysql, so the step after this one unloads it
+      #   slapd             - the ldap client (OpenLDAP; NetGet's client is the ldap3 crate).
+      #                       Run from a slapd.conf in a temp dir, not the packaged cn=config,
+      #                       so the package's own debconf answers are never used. Same
+      #                       AppArmor note as mysqld. ldapadd/ldapsearch are ldap-utils, above
+      #   openssh-server    - the ssh client (OpenSSH sshd, run unprivileged from a temp-dir
+      #                       config with public-key auth as the runner user; NetGet's client
+      #                       is russh). ssh-keygen comes from openssh-client, above
       #   etcd, nats-server - release tarballs, in their own steps below
       #
       # NOT here, and each absence is load-bearing:
@@ -415,14 +432,33 @@ jobs:
       # running.
       - name: Install the third-party clients the real-client tests drive
         continue-on-error: true
+        # slapd's postinst asks debconf for a domain and an admin password; without this the
+        # install blocks on a prompt nobody answers.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          sudo -E apt-get install -y --no-install-recommends \
             aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
-            subversion tor wakeonlan \
-            mosquitto nginx redis-server memcached
+            subversion tor wakeonlan zabbix-sender gearman-tools \
+            mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached
+
+      # Ubuntu ships AppArmor profiles that confine these daemons to their packaged paths:
+      # mysqld to /var/lib/mysql, slapd to /etc/ldap and /var/lib/ldap. The client real-server
+      # tests run each one unprivileged against a data directory in a fresh temp dir, which the
+      # profile refuses - mysqld's --initialize fails on its first write. Unloading the profile
+      # affects only this throwaway runner. `continue-on-error` like the installs above: a
+      # missing profile must cost at most those two protocols' evidence.
+      - name: Unload the AppArmor profiles that confine mysqld and slapd
+        continue-on-error: true
+        run: |
+          for profile in usr.sbin.mysqld usr.sbin.slapd; do
+            if [ -f "/etc/apparmor.d/$profile" ]; then
+              sudo apparmor_parser -R "/etc/apparmor.d/$profile" || true
+            fi
+          done
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -433,6 +469,27 @@ jobs:
         run: |
           python3 -m pip install --user ignition-gemini==1.0.0
           python3 -c "import ignition; print('ignition', ignition.__version__)"
+
+      # gemini::real_client_test also runs the pcap oracle over the TLS it recorded, and the
+      # oracle FAILS rather than skips without tshark. jammy's tshark 3.6 has the `tls`
+      # dissector that check needs; only the Test job's redis case needs >= 4.0 (`resp`).
+      # The preseed answers the capture-permission prompt that would otherwise hang the job.
+      - name: install tshark (the pcap oracle in the Gemini evidence)
+        continue-on-error: true
+        run: |
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
+          tshark --version | head -1
+
+      # beanstalkd::real_client_test drives `greenstalk`, a Python beanstalkd client with its
+      # own reply parser and YAML reader. PyPI only, like ignition; the import check names a
+      # failed install here.
+      - name: Install the Beanstalkd client library (greenstalk)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user greenstalk==2.1.1
+          python3 -c "import greenstalk; print('greenstalk', greenstalk.__version__)"
 
       # client/modbus::real_server_test runs a pymodbus 3.15 device (its own framer and
       # datastore, in Python; NetGet's Modbus client frames with NetGet's codec) and reads what
@@ -793,7 +850,8 @@ jobs:
           failed=""
           for filter in \
             coap::real_client_test dict::real_client_test dns::dig_test dns::kdig_test \
-            gemini::real_client_test \
+            gemini::real_client_test beanstalkd::real_client_test zabbix::real_client_test \
+            gearman::real_client_test \
             docker::real_client_test doh::real_client_test dot::real_client_test dynamo::real_client_test \
             etcd::real_client_test git::e2e_test gopher::e2e_test grpc::real_client_test \
             hls::curl_test http::real_client_test imap::real_client_test \
@@ -813,9 +871,12 @@ jobs:
             websocket::e2e_test \
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
-            client/mqtt::keepalive_test client/mqtt::real_server_test client/nats::e2e_test \
-            client/redis::real_server_test client/memcached::real_server_test \
-            client/modbus::real_server_test ; do
+            client/ldap::real_server_test \
+            client/memcached::real_server_test client/modbus::real_server_test \
+            client/mqtt::keepalive_test client/mqtt::real_server_test \
+            client/mysql::real_server_test client/nats::e2e_test \
+            client/postgresql::real_server_test \
+            client/redis::real_server_test client/ssh::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
             # from the `client` test target; everything else is a real client against a

@@ -472,6 +472,7 @@ impl Protocol for OspfClientProtocol {
                 description: "OSPF router ID (defaults to interface IP)".to_string(),
                 required: false,
                 example: json!("1.1.1.1"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "area_id".to_string(),
@@ -479,6 +480,7 @@ impl Protocol for OspfClientProtocol {
                 description: "OSPF area ID (default: 0.0.0.0)".to_string(),
                 required: false,
                 example: json!("0.0.0.0"),
+                default: None,
             },
         ]
     }
@@ -506,6 +508,9 @@ impl Protocol for OspfClientProtocol {
             // socket buffer and accumulates nothing across reads, so there is no peer-chosen
             // length to declare.
             max_inbound_bytes: None,
+            // A client listens on nothing, so it has no port of its own to declare.
+            well_known_port: None,
+            well_known_transport: PortTransport::Tcp,
         }
     }
     fn description(&self) -> &'static str {

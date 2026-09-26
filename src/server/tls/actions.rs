@@ -30,6 +30,7 @@ impl Protocol for TlsProtocol {
                     description: "Whether the server should send the first message after TLS handshake (e.g., for greeting banners)".to_string(),
                     required: false,
                     example: serde_json::json!(false),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "cert_path".to_string(),
@@ -37,6 +38,7 @@ impl Protocol for TlsProtocol {
                     description: "Path to TLS certificate file (PEM format). If not provided, a self-signed certificate will be generated.".to_string(),
                     required: false,
                     example: serde_json::json!("/path/to/cert.pem"),
+                    default: None,
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "key_path".to_string(),
@@ -44,6 +46,7 @@ impl Protocol for TlsProtocol {
                     description: "Path to TLS private key file (PEM format). Required if cert_path is provided.".to_string(),
                     required: false,
                     example: serde_json::json!("/path/to/key.pem"),
+                    default: None,
                 },
                 // Three read deadlines, not two, because the handshake wait and the wait for
                 // the first application record face different peers: one that has not proved
@@ -60,6 +63,7 @@ impl Protocol for TlsProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(60),
+                    default: Some(serde_json::json!(super::HANDSHAKE_READ_TIMEOUT.as_secs())),
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "first_byte_timeout_secs".to_string(),
@@ -74,6 +78,7 @@ impl Protocol for TlsProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(300),
+                    default: Some(serde_json::json!(super::FIRST_RECORD_READ_TIMEOUT.as_secs())),
                 },
                 crate::llm::actions::ParameterDefinition {
                     name: "idle_timeout_secs".to_string(),
@@ -87,6 +92,7 @@ impl Protocol for TlsProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(300),
+                    default: Some(serde_json::json!(super::IDLE_AFTER_DATA_TIMEOUT.as_secs())),
                 },
             ]
     }

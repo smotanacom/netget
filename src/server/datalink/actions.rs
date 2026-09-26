@@ -61,6 +61,7 @@ impl Protocol for DataLinkProtocol {
                     description: "Optional BPF (Berkeley Packet Filter) expression to filter captured packets (e.g., 'arp', 'tcp port 80')".to_string(),
                     required: false,
                     example: json!("arp"),
+                    default: None,
                 },
             ]
     }

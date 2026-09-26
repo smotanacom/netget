@@ -49,6 +49,7 @@ impl Protocol for BluetoothBlePresenterProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-Presenter"),
+            default: None,
         }]
     }
 

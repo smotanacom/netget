@@ -48,6 +48,7 @@ impl Protocol for BluetoothBleDataStreamProtocol {
             description: "Bluetooth device name to advertise (default: NetGet-Stream)".to_string(),
             required: false,
             example: json!("NetGet-Stream"),
+            default: None,
         }]
     }
 

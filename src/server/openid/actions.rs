@@ -510,6 +510,7 @@ impl Protocol for OpenIdProtocol {
                         .to_string(),
                 required: false,
                 example: serde_json::json!("http://localhost:8080"),
+                default: None,
             },
             ParameterDefinition {
                 name: "supported_scopes".to_string(),
@@ -519,6 +520,7 @@ impl Protocol for OpenIdProtocol {
                         .to_string(),
                 required: false,
                 example: serde_json::json!(["openid", "profile", "email"]),
+                default: None,
             },
         ]
     }

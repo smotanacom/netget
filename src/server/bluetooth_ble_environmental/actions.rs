@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleEnvironmentalProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-Environmental"),
+            default: None,
         }]
     }
 

@@ -76,6 +76,7 @@ impl Protocol for NatsProtocol {
                     .to_string(),
                 required: false,
                 example: json!("netget-nats"),
+                default: None,
             },
             ParameterDefinition {
                 name: "max_payload".to_string(),
@@ -88,6 +89,7 @@ impl Protocol for NatsProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1_048_576),
+                default: Some(serde_json::json!(DEFAULT_MAX_PAYLOAD)),
             },
         ]
     }
@@ -136,6 +138,7 @@ impl Protocol for NatsProtocol {
             // Default port 4222 is unprivileged. Declaring PrivilegedPort(4222) would be
             // dead code - the preflight only fires below 1024.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(4222)
             // The per-instance bound is `max_payload` (1 MiB by default), checked against the
             // size a PUB/HPUB declares before its payload is buffered; this is the ceiling no
             // configuration can exceed. Tested in tests/server/nats/inbound_limit_test.rs.

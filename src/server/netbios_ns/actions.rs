@@ -172,6 +172,7 @@ impl Protocol for NetbiosNsProtocol {
                 ),
                 required: false,
                 example: json!(3600),
+                default: None,
             },
             ParameterDefinition {
                 name: "node_type".to_string(),
@@ -183,6 +184,7 @@ impl Protocol for NetbiosNsProtocol {
                         .to_string(),
                 required: false,
                 example: json!("b"),
+                default: None,
             },
         ]
     }
@@ -234,6 +236,7 @@ impl Protocol for NetbiosNsProtocol {
             .answers_on_failure()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(137))
+            .well_known_udp_port(137)
             .implementation(
                 "Hand-written RFC 1001/1002 codec (src/server/netbios_ns/packet.rs); no NBNS \
                  crate exists. 12-octet header, first-level name encoding, NB/NBSTAT queries \

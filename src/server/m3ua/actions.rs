@@ -825,6 +825,7 @@ impl Protocol for M3uaProtocol {
             // M3UA's registered port is 2905, above 1023, so no privilege is required. SCTP
             // itself needs none either — it is a kernel protocol like TCP, not a raw socket.
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_sctp_port(2905)
             .implementation(
                 "RFC 4666 common header, TLV parameters and ASP state machine, hand-written; \
                  SCTP transport via a socket2 SOCK_STREAM/IPPROTO_SCTP socket, plus a \
@@ -882,6 +883,7 @@ impl Protocol for M3uaProtocol {
                     .to_string(),
                 required: false,
                 example: json!("sctp"),
+                default: None,
             },
             ParameterDefinition {
                 name: "routing_context".to_string(),
@@ -892,6 +894,7 @@ impl Protocol for M3uaProtocol {
                     .to_string(),
                 required: false,
                 example: json!(100),
+                default: None,
             },
             ParameterDefinition {
                 name: "network_appearance".to_string(),
@@ -902,6 +905,7 @@ impl Protocol for M3uaProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
         ]
     }

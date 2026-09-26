@@ -373,6 +373,7 @@ impl Protocol for MongodbClientProtocol {
                 description: "MongoDB database name (default: admin)".to_string(),
                 required: false,
                 example: json!("testdb"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "username".to_string(),
@@ -380,6 +381,7 @@ impl Protocol for MongodbClientProtocol {
                 description: "MongoDB username (if authentication required)".to_string(),
                 required: false,
                 example: json!("myuser"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "password".to_string(),
@@ -387,6 +389,7 @@ impl Protocol for MongodbClientProtocol {
                 description: "MongoDB password (if authentication required)".to_string(),
                 required: false,
                 example: json!("mypassword"),
+                default: None,
             },
         ]
     }

@@ -82,6 +82,7 @@ impl Protocol for Db2Protocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .well_known_port(446)
             .implementation(
                 "Hand-rolled DRDA/DDM codec (src/server/db2/drda.rs) against the public DRDA spec — \
                  no maintained Rust DRDA crate exists",

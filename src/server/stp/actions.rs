@@ -480,6 +480,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("raw"),
+                default: None,
             },
             ParameterDefinition {
                 name: "bridge_mac".to_string(),
@@ -490,6 +491,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("02:00:00:00:00:01"),
+                default: None,
             },
             ParameterDefinition {
                 name: "bridge_priority".to_string(),
@@ -501,6 +503,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(32768),
+                default: None,
             },
             ParameterDefinition {
                 name: "system_id_extension".to_string(),
@@ -511,6 +514,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(0),
+                default: None,
             },
             ParameterDefinition {
                 name: "port_priority".to_string(),
@@ -520,6 +524,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(128),
+                default: None,
             },
             ParameterDefinition {
                 name: "port_number".to_string(),
@@ -529,6 +534,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(1),
+                default: None,
             },
             ParameterDefinition {
                 name: "protocol_version".to_string(),
@@ -539,6 +545,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!("rstp"),
+                default: None,
             },
             ParameterDefinition {
                 name: "hello_time".to_string(),
@@ -548,6 +555,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(2),
+                default: None,
             },
             ParameterDefinition {
                 name: "max_age".to_string(),
@@ -557,6 +565,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(20),
+                default: None,
             },
             ParameterDefinition {
                 name: "forward_delay".to_string(),
@@ -566,6 +575,7 @@ impl Protocol for StpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(15),
+                default: None,
             },
         ]
     }

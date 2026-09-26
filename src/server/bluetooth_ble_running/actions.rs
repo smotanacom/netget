@@ -48,6 +48,7 @@ impl Protocol for BluetoothBleRunningProtocol {
             description: "Bluetooth device name to advertise (default: NetGet-Running)".to_string(),
             required: false,
             example: json!("NetGet-Running"),
+            default: None,
         }]
     }
 

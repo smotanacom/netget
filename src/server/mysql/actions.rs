@@ -46,6 +46,7 @@ impl Protocol for MysqlProtocol {
                         .to_string(),
                     required: false,
                     example: serde_json::json!(false),
+                    default: None,
                 },
             ]
     }
@@ -84,6 +85,7 @@ impl Protocol for MysqlProtocol {
             // target with a depth-bomb corpus, and a test per declared bound, none of which
             // exist here.
             .state(DevelopmentState::Beta)
+            .well_known_port(3306)
             .implementation("opensrv-mysql v0.7 protocol library")
             // The number this server publishes and the number it enforces are one number:
             // opensrv-mysql answers `SELECT @@max_allowed_packet` with 67108864 itself,

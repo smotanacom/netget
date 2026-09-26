@@ -172,6 +172,7 @@ impl Protocol for WireguardClientProtocol {
                 description: "WireGuard server's public key (base64 encoded)".to_string(),
                 required: true,
                 example: json!("xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg="),
+                default: None,
             },
             ParameterDefinition {
                 name: "server_endpoint".to_string(),
@@ -179,6 +180,7 @@ impl Protocol for WireguardClientProtocol {
                 description: "Server endpoint IP:port (e.g., 1.2.3.4:51820)".to_string(),
                 required: true,
                 example: json!("1.2.3.4:51820"),
+                default: None,
             },
             ParameterDefinition {
                 name: "client_address".to_string(),
@@ -186,6 +188,7 @@ impl Protocol for WireguardClientProtocol {
                 description: "Client's VPN IP address with CIDR (e.g., 10.20.30.2/32)".to_string(),
                 required: true,
                 example: json!("10.20.30.2/32"),
+                default: None,
             },
             ParameterDefinition {
                 name: "allowed_ips".to_string(),
@@ -194,6 +197,7 @@ impl Protocol for WireguardClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!(["0.0.0.0/0", "::/0"]),
+                default: None,
             },
             ParameterDefinition {
                 name: "keepalive".to_string(),
@@ -201,6 +205,7 @@ impl Protocol for WireguardClientProtocol {
                 description: "Persistent keepalive interval in seconds (optional)".to_string(),
                 required: false,
                 example: json!(25),
+                default: None,
             },
             ParameterDefinition {
                 name: "private_key".to_string(),
@@ -209,6 +214,7 @@ impl Protocol for WireguardClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("YAnz5TF+lXXJte14tji3zlMNftft3YEPi775qQV8mno="),
+                default: None,
             },
         ]
     }

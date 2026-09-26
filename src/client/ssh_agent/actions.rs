@@ -74,6 +74,7 @@ impl Protocol for SshAgentClientProtocol {
                 .to_string(),
             required: false,
             example: json!("./netget-ssh-agent.sock"),
+            default: None,
         }]
     }
 

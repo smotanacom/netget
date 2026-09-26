@@ -253,6 +253,7 @@ impl Protocol for DcClientProtocol {
                 description: "Nickname to use on the hub".to_string(),
                 required: true,
                 example: json!("alice"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "description".to_string(),
@@ -260,6 +261,7 @@ impl Protocol for DcClientProtocol {
                 description: "Client description".to_string(),
                 required: false,
                 example: json!("NetGet DC Client"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "email".to_string(),
@@ -270,6 +272,7 @@ impl Protocol for DcClientProtocol {
                     .to_string(),
                 required: false,
                 example: json!("user@example.com"),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "share_size".to_string(),
@@ -277,6 +280,7 @@ impl Protocol for DcClientProtocol {
                 description: "Total bytes shared (fake for testing)".to_string(),
                 required: false,
                 example: json!(1073741824u64),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "use_tls".to_string(),
@@ -284,6 +288,7 @@ impl Protocol for DcClientProtocol {
                 description: "Use TLS encryption (DCCS protocol, port 412)".to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "auto_reconnect".to_string(),
@@ -291,6 +296,7 @@ impl Protocol for DcClientProtocol {
                 description: "Automatically reconnect if disconnected".to_string(),
                 required: false,
                 example: json!(false),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "max_reconnect_attempts".to_string(),
@@ -298,6 +304,7 @@ impl Protocol for DcClientProtocol {
                 description: "Maximum reconnection attempts (0 = unlimited)".to_string(),
                 required: false,
                 example: json!(5),
+                default: None,
             },
             crate::llm::actions::ParameterDefinition {
                 name: "initial_reconnect_delay_secs".to_string(),
@@ -305,6 +312,7 @@ impl Protocol for DcClientProtocol {
                 description: "Initial delay before reconnecting (exponential backoff)".to_string(),
                 required: false,
                 example: json!(2),
+                default: None,
             },
         ]
     }

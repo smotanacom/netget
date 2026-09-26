@@ -198,6 +198,9 @@ impl Protocol for FtpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::FIRST_COMMAND_READ_TIMEOUT.as_secs()
+                )),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "idle_timeout_secs".to_string(),
@@ -210,6 +213,9 @@ impl Protocol for FtpProtocol {
                     .to_string(),
                 required: false,
                 example: json!(300),
+                default: Some(serde_json::json!(
+                    super::IDLE_BETWEEN_COMMANDS_TIMEOUT.as_secs()
+                )),
             },
         ]
     }
@@ -254,6 +260,7 @@ impl Protocol for FtpProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(21))
+            .well_known_port(21)
             .implementation("Manual line-based parsing with tokio")
             .llm_control("All FTP replies on the control connection")
             .e2e_testing("raw TCP client (nc); real FTP clients cannot transfer files")

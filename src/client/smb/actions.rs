@@ -149,6 +149,7 @@ impl Protocol for SmbClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("guest"),
+                default: None,
             },
             ParameterDefinition {
                 name: "password".to_string(),
@@ -156,6 +157,7 @@ impl Protocol for SmbClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!(""),
+                default: None,
             },
             ParameterDefinition {
                 name: "domain".to_string(),
@@ -163,6 +165,7 @@ impl Protocol for SmbClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("WORKGROUP"),
+                default: None,
             },
             ParameterDefinition {
                 name: "workgroup".to_string(),
@@ -170,6 +173,7 @@ impl Protocol for SmbClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("WORKGROUP"),
+                default: None,
             },
         ]
     }

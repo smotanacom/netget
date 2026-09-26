@@ -49,6 +49,7 @@ impl Protocol for BluetoothBleWeightScaleProtocol {
                 .to_string(),
             required: false,
             example: json!("NetGet-WeightScale"),
+            default: None,
         }]
     }
 

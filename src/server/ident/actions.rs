@@ -192,6 +192,7 @@ impl Protocol for IdentProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(113))
+            .well_known_port(113)
             .implementation(
                 "Hand-rolled tokio TCP line reader; no library. One query, one reply, close, \
                  per RFC 1413. INVALID-PORT is decided in Rust without an LLM call.",

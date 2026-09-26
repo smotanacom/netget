@@ -58,6 +58,8 @@ features = [
     "stomp",
     "svn",
     "xmlrpc",
+    "zabbix",
+    "gearman",
 ]
 
 # NOT here, and it is not an oversight: `usb-fido2` (and every other USB feature).
@@ -226,6 +228,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "zabbix_packet"
+path = "fuzz_targets/zabbix_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "svn_tuple"
 path = "fuzz_targets/svn_tuple.rs"
 test = false
@@ -235,6 +244,13 @@ bench = false
 [[bin]]
 name = "xmlrpc_value"
 path = "fuzz_targets/xmlrpc_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gearman_packet"
+path = "fuzz_targets/gearman_packet.rs"
 test = false
 doc = false
 bench = false

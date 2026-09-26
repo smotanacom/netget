@@ -16,6 +16,7 @@ fn param(name: &str, type_hint: &str) -> ParameterDefinition {
         description: String::new(),
         required: false,
         example: json!(null),
+        default: None,
     }
 }
 

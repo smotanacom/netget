@@ -153,6 +153,7 @@ impl Protocol for KubernetesProtocol {
             // admission, RBAC and authentication are all absent (see `notes`).
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
+            .well_known_port(6443)
             .implementation(
                 "hyper HTTP/1.1 + serde_json, optional tokio-rustls TLS. JSON only - no \
                  protobuf, so no protoc, kube or k8s-openapi dependency. Discovery (/version, \
@@ -218,6 +219,7 @@ impl Protocol for KubernetesProtocol {
             ),
             required: false,
             example: json!("v1.29.4"),
+            default: None,
         });
         params.push(ParameterDefinition {
             name: "resources".to_string(),
@@ -237,6 +239,7 @@ impl Protocol for KubernetesProtocol {
                 {"group": "example.com", "version": "v1", "name": "widgets", "kind": "Widget",
                  "namespaced": true, "shortNames": ["wd"]}
             ]),
+            default: None,
         });
         params
     }
