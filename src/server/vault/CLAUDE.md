@@ -3,7 +3,7 @@
 NetGet answers what HashiCorp's `vault` CLI needs for `vault status` and `vault kv get / put /
 list / metadata get` against a KV v2 mount. The model holds the secrets; NetGet stores nothing.
 
-**State**: Experimental. **Privilege**: `None` (8200 is unprivileged). **Feature**: `vault` (no
+**State**: Beta. **Privilege**: `None` (8200 is unprivileged). **Feature**: `vault` (no
 dependencies beyond the always-present HTTP stack). **Group**: AI & API. **Keywords**: `vault`,
 `hashicorp vault`, `openbao`, `secrets engine`, `kv v2`.
 
@@ -92,3 +92,17 @@ No peer handle: hyper owns the socket (`HyperOwnsSocket`).
 KV v1, delete / undelete / destroy / patch, metadata writes, `sys/mounts` (`vault secrets list`),
 token lookup and every auth method, policies, leases, response wrapping, namespaces, every other
 secrets engine, TLS.
+
+## Maturity
+
+Beta. The bar is "works against real clients", and the evidence is
+`tests/server/vault/real_client_test.rs`: HashiCorp's `vault` CLI — which negotiates the KV
+version through the preflight and decodes our envelope into its own `api.Secret` — prints
+exactly the handler's values for `status`, `kv put`, `kv get` (table, `-field`, `-format=json`),
+`kv list` and `kv metadata get`, and reports a 404, a 403 and a 405 in its own words.
+`require_tool("vault")` **hard-fails** when the binary is absent; if that gate is ever softened
+to a skip, demote this in the same commit. Promoted after the suite passed three consecutive
+runs at `--test-threads=100`.
+
+Not Stable: one client (no SDK such as `vaultrs` or hvac drives it yet), no fuzz target, no
+pcap-oracle test (Wireshark has no Vault dissector), and only KV v2 is implemented.

@@ -142,7 +142,11 @@ impl Protocol for VaultProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta on evidence: tests/server/vault/real_client_test.rs drives HashiCorp's own
+            // vault CLI through status, kv put/get/list/metadata get, a 404, a 403 and a 405,
+            // asserting it prints exactly the handler's values, and hard-fails when the binary
+            // is absent. Not Stable: one client, no fuzz target, no pcap-oracle test, KV v2 only.
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1, plain HTTP. sys/seal-status, sys/health, sys/leader and the \
