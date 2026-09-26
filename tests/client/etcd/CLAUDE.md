@@ -1,208 +1,58 @@
 # etcd Client E2E Test Documentation
 
-## Overview
+Three files, declared in `tests/client/etcd/mod.rs`. Nothing is `#[ignore]`d and nothing needs
+Docker.
 
-End-to-end tests for the etcd client implementation, validating connectivity, key-value operations, and error handling
-against a real etcd server.
-
-## Test Strategy
-
-### Approach
-
-**Direct Library Testing**: Tests use `etcd-client` crate directly against Docker etcd server, validating the underlying
-library behavior before full NetGet LLM integration.
-
-**Why Not Full LLM Integration?**:
-
-- etcd client operations are synchronous and stateless (reconnect per operation)
-- No persistent connection state or read loop to test
-- LLM integration is minimal (just action parsing and event generation)
-- Direct library testing is faster and more reliable
-
-### Test Environment
-
-- **etcd Server**: Docker container (`quay.io/coreos/etcd:v3.5.17`)
-- **Port**: 2379 (mapped to localhost)
-- **Startup Time**: ~3 seconds for etcd to be ready
-- **Cleanup**: Automatic Docker container stop after each test
-
-## Test Coverage
-
-### Test 1: `test_etcd_client_basic_operations`
-
-**Purpose**: Validate basic PUT, GET, DELETE operations
-
-**Flow**:
-
-1. Start etcd server in Docker
-2. Connect etcd-client
-3. PUT `/test/key1` = `value1`
-4. GET `/test/key1` → verify value
-5. DELETE `/test/key1` → verify deleted count
-6. GET `/test/key1` → verify key is gone
-7. Stop etcd server
-
-**LLM Calls**: 0 (direct library testing)
-**Runtime**: ~5-7 seconds (includes Docker startup)
-
-### Test 2: `test_etcd_client_multiple_keys`
-
-**Purpose**: Validate multiple key-value operations
-
-**Flow**:
-
-1. Start etcd server
-2. PUT 3 config keys (`/app/config/database`, `/app/config/timeout`, `/app/config/max_connections`)
-3. GET each key individually → verify values
-4. Stop etcd server
-
-**LLM Calls**: 0
-**Runtime**: ~5-7 seconds
-
-### Test 3: `test_etcd_client_nonexistent_key`
-
-**Purpose**: Validate GET behavior for nonexistent keys
-
-**Flow**:
-
-1. Start etcd server
-2. GET `/does/not/exist` → verify empty response
-3. Stop etcd server
-
-**LLM Calls**: 0
-**Runtime**: ~4-5 seconds
-
-## LLM Call Budget
-
-**Total LLM Calls**: 0 (direct library testing only)
-**Budget**: < 10 calls (well under limit)
-
-**Rationale**: etcd client is a thin wrapper around etcd-client library. Testing the library directly validates core
-functionality without LLM overhead.
-
-## Runtime
-
-**Total Runtime**: ~15-20 seconds for all 3 tests
-
-- Docker etcd startup: ~3 seconds per test
-- etcd operations: < 1 second per test
-- Docker cleanup: < 1 second per test
-
-## Known Issues
-
-### Docker Availability
-
-Tests require Docker to be running. If Docker is unavailable:
-
-- Tests will fail with "docker: command not found" or connection errors
-- **Workaround**: Skip tests or run against external etcd server
-
-### Port Conflicts
-
-If port 2379 is already in use:
-
-- Docker container start will fail
-- **Workaround**: Stop conflicting etcd instance or modify test port
-
-### etcd Startup Time
-
-etcd container takes 2-3 seconds to be ready:
-
-- Tests include 3-second sleep after Docker start
-- **If flaky**: Increase sleep duration in `start_etcd_server()`
-
-### Cleanup
-
-Tests use `docker run --rm` for auto-cleanup:
-
-- Container is removed automatically when stopped
-- **If manual cleanup needed**: `docker stop netget-etcd-test && docker rm netget-etcd-test`
-
-## Future Enhancements
-
-### Phase 2: Full LLM Integration Tests
-
-Once client action execution is implemented:
-
-- Test LLM-generated `etcd_get`, `etcd_put`, `etcd_delete` actions
-- Test event-driven response handling
-- Test memory updates across operations
-
-### Phase 3: Advanced Operations
-
-- Range queries (prefix-based get)
-- Transactions (compare-and-swap)
-- Watch (streaming)
-- Leases (TTL expiration)
-
-### Phase 4: Error Scenarios
-
-- Connection failures
-- Invalid key formats
-- etcd cluster unavailability
-- Network timeouts
-
-## Running Tests
+| File | Peer | Tests | LLM calls |
+|---|---|---|---|
+| `real_server_test.rs` | **the official Go `etcd`** + `etcdctl` | 1 | 6 |
+| `e2e_test.rs` | NetGet's own etcd server | 3 | 18 (7 + 8 + 3) |
+| `command_channel_test.rs` | NetGet's own etcd server, in-process | 1 | 0 |
 
 ```bash
-# Run all etcd client tests
-export PATH="$HOME/bin:$PATH"  # Ensure protoc is in PATH
-./cargo-isolated.sh test --no-default-features --features etcd --test client::etcd::e2e_test
-
-# Run specific test
-./cargo-isolated.sh test --no-default-features --features etcd --test client::etcd::e2e_test test_etcd_client_basic_operations
-
-# With output
-./cargo-isolated.sh test --no-default-features --features etcd --test client::etcd::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features etcd --test client -- etcd:: --test-threads=100
 ```
 
-## Dependencies
+`protoc` must be installed: the `etcd` feature's `build.rs` compiles the server's protos.
 
-### System Requirements
+## `real_server_test.rs` — the evidence the rating rests on
 
-- **Docker**: Required for running etcd server
-- **protoc**: Protocol buffer compiler (required by etcd-client build)
-    - Install: `apt-get install protobuf-compiler` (Debian/Ubuntu)
-    - Or download from: https://github.com/protocolbuffers/protobuf/releases
+NetGet's client is `etcd-client` (Rust, tonic). The server is the official `etcd` (Go,
+grpc-go), started per test by `tests/helpers/real_server.rs` as a single member with client and
+peer URLs on `http://127.0.0.1:0`; the client port is read back from etcd's own
+`serving client traffic insecurely … "address":"127.0.0.1:N"` log line (3.4's
+`serving insecure client requests on …` is accepted too), so there is no probe-port race.
+State is read back with the official `etcdctl`. **It fails, never skips,** when either binary
+is missing.
 
-### Rust Crates (dev-dependencies)
+### `etcd_client_puts_gets_and_deletes_against_the_official_etcd` (6 calls)
 
-- `etcd-client = "0.15"` - etcd v3 client library
-- `tokio-test = "0.4"` - Async test utilities
+`etcd_connected` → `etcd_put netget/greeting`; its response (operation `put`, key
+`netget/greeting`) → `etcd_get`; the get response (operation `get`, value present in `kvs`) →
+`etcd_put netget/echo = "the model saw: <value> at version <version>"`, built from the `kvs`
+entry etcd returned; that put's response → `etcd_delete netget/greeting`; the delete response
+(`deleted` 1) → nothing. Then `etcdctl get netget/echo --print-value-only` must print
+`the model saw: hello from the model at version 1`, and `netget/greeting` must be gone.
 
-## Test Maintenance
+**Condition 4 of the client bar**: the value `etcdctl` reads was composed by the model from a
+response it was shown. Verified by mutation: dropping the actions in `notify_response`'s loop
+makes the test fail while the mock still records calls.
 
-### Updating etcd Version
+No sleeps: the last rule is the delete's response, so when `wait_for_mocks` returns, etcd has
+applied everything the model sent.
 
-If updating etcd Docker image version:
+## `e2e_test.rs` — same-project
 
-1. Update image tag in `start_etcd_server()` function
-2. Verify etcd v3 API compatibility
-3. Run all tests to validate
+`test_etcd_client_basic_operations` (7 calls), `test_etcd_client_multiple_keys` (8) and
+`test_etcd_client_nonexistent_key` (3) drive the client against NetGet's own etcd server, each
+side with its own mock. That is the circular case for *client* evidence — the two halves were
+written to agree — so these are kept for what they add (multiple keys, a missing key, both
+mocks asserted) and are not what the rating rests on.
 
-### etcd Server Configuration
+## Not covered
 
-Current configuration:
-
-- Single-node cluster (no replication)
-- No authentication
-- No TLS
-- HTTP-only (not HTTPS)
-
-For production-like testing, consider:
-
-- Multi-node cluster
-- TLS encryption
-- Authentication (username/password)
-- Lease/watch operations
-
-## Key Design Principles
-
-1. **Simplicity** - Test core library behavior, defer LLM integration testing
-2. **Isolation** - Each test starts fresh etcd server, no state leakage
-3. **Fast** - Direct library calls, no LLM latency
-4. **Reliable** - Docker ensures consistent etcd behavior
-5. **Observable** - Print statements show test progress
+Range/prefix reads, transactions, watches, leases, authentication and TLS: the client offers
+the model `etcd_get`, `etcd_put` and `etcd_delete` on single keys only.
 
 ## `command_channel_test.rs` — injected actions
 

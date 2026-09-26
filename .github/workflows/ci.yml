@@ -370,6 +370,15 @@ jobs:
       #   tor               - tor_relay
       #   wakeonlan         - wol
       #
+      # And the third-party SERVERS the client real-server tests drive
+      # (tests/client/<p>/real_server_test.rs, spawned by tests/helpers/real_server.rs on a
+      # loopback port of their own; the system services apt starts alongside are unused):
+      #
+      #   mosquitto         - the mqtt client (Eclipse Mosquitto, C; NetGet's client is rumqttc)
+      #   nginx             - the http client (NetGet's client is reqwest/hyper)
+      #   redis-server      - the redis client (NetGet frames RESP itself)
+      #   etcd, nats-server - release tarballs, in their own steps below
+      #
       # NOT here, and each absence is load-bearing:
       #
       #   etcd-client  - jammy's is etcd **3.3.25**, whose etcdctl defaults to the **v2**
@@ -409,7 +418,8 @@ jobs:
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak \
-            subversion tor wakeonlan
+            subversion tor wakeonlan \
+            mosquitto nginx redis-server
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -488,18 +498,38 @@ jobs:
       #
       # `continue-on-error` for the same reason as the apt step: a download that 404s must
       # cost etcd's evidence, not everybody else's.
-      - name: Install etcdctl (etcd 3.5, the v3/gRPC client)
+      #
+      # The same tarball carries the `etcd` server, which the etcd CLIENT's real-server test
+      # (tests/client/etcd/real_server_test.rs) spawns: Go and grpc-go, where NetGet's client
+      # is etcd-client on tonic. That test reads the client port out of 3.5's
+      # "serving client traffic insecurely" log line, checked against 3.5.17.
+      - name: Install etcd and etcdctl (etcd 3.5, the v3/gRPC server and client)
         continue-on-error: true
         run: |
           set -eux
           curl -fsSL -o /tmp/etcd.tgz \
             https://github.com/etcd-io/etcd/releases/download/v3.5.17/etcd-v3.5.17-linux-amd64.tar.gz
           sudo tar -xzf /tmp/etcd.tgz -C /usr/local/bin --strip-components=1 \
-            etcd-v3.5.17-linux-amd64/etcdctl
+            etcd-v3.5.17-linux-amd64/etcdctl etcd-v3.5.17-linux-amd64/etcd
           # The test's own gate is `etcdctl version`, and it is the exact invocation that
           # exited 3 under 3.3.25. Asserting it here means a client in the wrong API mode
           # fails this step rather than one protocol's test.
           etcdctl version
+          etcd --version
+
+      # nats-server, which the nats CLIENT's Beta rests on (tests/client/nats/e2e_test.rs
+      # spawns it with `-a 127.0.0.1 -p -1`). Upstream's release tarball rather than apt, so
+      # the version is pinned rather than whatever the image's archive carries.
+      # `continue-on-error` for the same reason as the apt step.
+      - name: Install nats-server
+        continue-on-error: true
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/nats.tgz \
+            https://github.com/nats-io/nats-server/releases/download/v2.10.24/nats-server-v2.10.24-linux-amd64.tar.gz
+          sudo tar -xzf /tmp/nats.tgz -C /usr/local/bin --strip-components=1 \
+            nats-server-v2.10.24-linux-amd64/nats-server
+          nats-server --version
 
       # stuntman's `stunclient` drives `stun::real_client_test`, and it is built here rather
       # than installed because it is in NO current apt repository: the `stuntman-client`
@@ -727,10 +757,21 @@ jobs:
             svn::real_client_test \
             torrent_tracker::real_client_test webdav::real_client_test \
             websocket::e2e_test \
-            wol::real_client_test ; do
+            wol::real_client_test \
+            client/etcd::real_server_test client/http::real_server_test \
+            client/mqtt::real_server_test client/nats::e2e_test \
+            client/redis::real_server_test ; do
             echo "::group::$filter"
-            if ! cargo test --locked --all-features --test server -- \
-                 --test-threads=100 --nocapture "$filter" ; then
+            # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
+            # from the `client` test target; everything else is a real client against a
+            # NetGet server, from `server`.
+            target=server
+            test_filter="$filter"
+            case "$filter" in
+              client/*) target=client ; test_filter="${filter#client/}" ;;
+            esac
+            if ! cargo test --locked --all-features --test "$target" -- \
+                 --test-threads=100 --nocapture "$test_filter" ; then
               echo "::error::$filter failed - a Beta rating rests on this test"
               failed="$failed $filter"
             fi
@@ -780,6 +821,11 @@ jobs:
       #   dig       bind9-dnsutils  server::dns::dig_test        (ISC BIND)
       #   kdig      knot-dnsutils   server::dns::kdig_test       (Knot - the second resolver)
       #   redis-cli redis-tools     server::redis::real_client_test (the C client, not redis-rs)
+      #                             and client::redis::real_server_test
+      #   redis-server redis-server client::redis::real_server_test (the real server the
+      #                             redis CLIENT is tested against)
+      #   nginx     nginx           client::http::real_server_test (the real server the http
+      #                             CLIENT is tested against)
       #
       # `curl` and `python3`, which server::http::real_client_test drives, are preinstalled on
       # every GitHub runner image and are not listed here.
@@ -791,12 +837,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bind9-dnsutils knot-dnsutils redis-tools
+            bind9-dnsutils knot-dnsutils redis-tools redis-server nginx
           # Not decoration: these fail the step when a package silently stopped shipping
           # the binary, which is a clearer signal than three test failures later on.
           dig -v
           kdig -V
           redis-cli --version
+          redis-server --version
+          # /usr/sbin, which the real-server helper also searches.
+          nginx -v
 
       # The pcap oracle (tests/helpers/pcap_oracle.rs) runs tshark over the bytes each
       # server emitted, as an independent decoder. It deliberately FAILS rather than

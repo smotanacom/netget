@@ -204,10 +204,22 @@ impl Protocol for EtcdClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("etcd-client crate for gRPC-based KV operations")
             .llm_control("Full control over get/put/delete operations")
-            .e2e_testing("Docker etcd container")
+            .e2e_testing(
+                "tests/client/etcd/real_server_test.rs, 6 LLM calls, against the official Go \
+                 etcd (grpc-go; NetGet's client is etcd-client on tonic, so no code is shared) \
+                 read back with etcdctl. The model puts a key, gets it, puts a second value \
+                 built from the kvs entry etcd returned, and deletes the first; etcdctl must \
+                 find exactly that value and the deleted key gone. Checked against etcd 3.5.17 \
+                 and 3.7.1. Not #[ignore]d, and a missing etcd or etcdctl fails the test rather \
+                 than skipping it.",
+            )
+            .notes(
+                "Single-key get, put and delete only: no range or prefix reads, transactions, \
+                 watches, leases, authentication or TLS.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

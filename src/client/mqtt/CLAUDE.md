@@ -203,3 +203,19 @@ with a specific detail.
 A `disconnect` also sets a flag the event loop reads: rumqttc surfaces the closed socket as a
 poll **error**, and without the flag a deliberate hang-up was reported as
 `ClientStatus::Error(...)`.
+
+## Maturity: Beta
+
+Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
+`tests/client/mqtt/real_server_test.rs` (see `tests/client/mqtt/CLAUDE.md`):
+
+1. **Real third-party server** — Eclipse Mosquitto (`mosquitto`, C), with `mosquitto_sub`/`mosquitto_pub` on the far side; NetGet's side is rumqttc, so no code is shared.
+2. **Fails rather than skips** — a missing `mosquitto`, `mosquitto_sub` or `mosquitto_pub` is a test failure naming the brew formula and the
+   Ubuntu package (`tests/helpers/real_server.rs`); nothing is `#[ignore]`d. CI's
+   `registry-audit` installs the peer and runs the suite in its evidence loop.
+3. **A real session** — the protocol's own exchange, with the server's answers parsed and handed
+   to the model, not a connect.
+4. **Acts on the model's answer, asserted on the wire** — `mosquitto_sub` prints the payloads the model published, and Mosquitto's own log records the model's subscription. Verified by mutation: dropping
+   the actions the model returned makes the test fail.
+
+Not covered by that evidence: TLS, enforced username/password, Last Will, persistent sessions and reconnection.

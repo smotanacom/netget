@@ -409,8 +409,11 @@ impl EtcdClient {
         info!("etcd client {} getting key: {}", client_id, key);
 
         let resp = {
-            let mut guard = etcd.lock().await;
-            guard
+            // A clone of the client, not the guard: `etcd_client::Client` is a cheap handle
+            // over one tonic channel, and holding the lock across the RPC would serialise every
+            // operation behind the slowest one.
+            let mut client = etcd.lock().await.clone();
+            client
                 .get(key.clone(), None)
                 .await
                 .context("Failed to get key from etcd")?
@@ -460,8 +463,11 @@ impl EtcdClient {
         info!("etcd client {} putting key: {} = {}", client_id, key, value);
 
         let resp = {
-            let mut guard = etcd.lock().await;
-            guard
+            // A clone of the client, not the guard: `etcd_client::Client` is a cheap handle
+            // over one tonic channel, and holding the lock across the RPC would serialise every
+            // operation behind the slowest one.
+            let mut client = etcd.lock().await.clone();
+            client
                 .put(key.clone(), value.clone(), None)
                 .await
                 .context("Failed to put key to etcd")?
@@ -493,8 +499,11 @@ impl EtcdClient {
         info!("etcd client {} deleting key: {}", client_id, key);
 
         let resp = {
-            let mut guard = etcd.lock().await;
-            guard
+            // A clone of the client, not the guard: `etcd_client::Client` is a cheap handle
+            // over one tonic channel, and holding the lock across the RPC would serialise every
+            // operation behind the slowest one.
+            let mut client = etcd.lock().await.clone();
+            client
                 .delete(key.clone(), None)
                 .await
                 .context("Failed to delete key from etcd")?

@@ -39,12 +39,32 @@ pub static REDIS_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock:
             "command": "SET result OK"
         }),
     )
-    .with_parameters(vec![Parameter {
-        name: "response".to_string(),
-        type_hint: "string".to_string(),
-        description: "The response line from Redis".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "response".to_string(),
+            type_hint: "string".to_string(),
+            description: "One complete reply rendered as redis-cli prints it: OK, (integer) 3, \
+                          \"value\", (nil), (error) ERR ...; arrays and maps as JSON"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "reply_type".to_string(),
+            type_hint: "string".to_string(),
+            description: "simple_string, error, integer, bulk_string, null, array, map, set, \
+                          push, boolean, double, big_number or verbatim_string"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "value".to_string(),
+            type_hint: "any".to_string(),
+            description: "The reply as JSON: a string, an integer, null, an array, an object \
+                          for a map, or {\"error\": \"...\"} for an error"
+                .to_string(),
+            required: true,
+        },
+    ])
 });
 
 /// Redis client protocol action handler
@@ -66,7 +86,10 @@ impl Protocol for RedisClientProtocol {
                 parameters: vec![Parameter {
                     name: "command".to_string(),
                     type_hint: "string".to_string(),
-                    description: "Redis command (e.g., GET key, SET key value)".to_string(),
+                    description: "Redis command as typed at redis-cli (e.g. GET key, \
+                                  SET greeting \"hello world\"). Quote an argument that contains \
+                                  spaces with double or single quotes."
+                        .to_string(),
                     required: true,
                 }],
                 example: json!({
@@ -140,10 +163,29 @@ impl Protocol for RedisClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
-            .implementation("Direct TCP with simplified RESP parsing")
+            .state(DevelopmentState::Beta)
+            .implementation(
+                "Hand-written RESP on tokio (src/client/redis/resp.rs): commands split the way \
+                 redis-cli splits them and sent as RESP arrays; one complete RESP2/RESP3 reply \
+                 per event, bounded in depth, declared size and element count",
+            )
             .llm_control("Full control over Redis commands")
-            .e2e_testing("Docker Redis container")
+            .e2e_testing(
+                "tests/client/redis/real_server_test.rs, 9 LLM calls, against a real \
+                 redis-server (Valkey locally, Redis on Ubuntu) read back with redis-cli. The \
+                 model SETs a quoted value containing a space, GETs it, and RPUSHes a line built \
+                 from the reply it was shown; a hash written by redis-cli reaches the model as \
+                 one four-element array event. Every reply is matched on its parsed reply_type \
+                 and value, so a reply split across events fails. Not #[ignore]d, and a missing \
+                 redis-server or redis-cli fails the test rather than skipping it. \
+                 resp_reader_test.rs pins the framing and each bound byte by byte.",
+            )
+            .notes(
+                "No AUTH or SELECT startup parameters: both are reachable only as explicit \
+                 commands. Pub/Sub pushes and RESP3 (HELLO 3) are parsed but not exercised \
+                 against a real server. Non-UTF-8 bulk strings reach the model through a lossy \
+                 conversion. No connect timeout.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -246,6 +288,9 @@ impl Client for RedisClientProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing 'command' field")?
                     .to_string();
+                // Refused here, before anything reaches the wire: an unbalanced quote has no
+                // honest reading, and guessing one would send a command the model did not write.
+                crate::client::redis::resp::split_command(&command)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "redis_command".to_string(),

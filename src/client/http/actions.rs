@@ -222,10 +222,24 @@ impl Protocol for HttpClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("reqwest HTTP/HTTPS client library (HTTP/1.1, HTTP/2 via rustls)")
             .llm_control("Full control over requests (method, path, headers, body)")
-            .e2e_testing("httpbin.org or local HTTPS server")
+            .e2e_testing(
+                "tests/client/http/real_server_test.rs, 5 LLM calls, against nginx (C, its own \
+                 HTTP parser; NetGet's client is reqwest/hyper). The model GETs a static file, \
+                 POSTs a header built from that file with a 13-byte body, and GETs a missing \
+                 path; nginx's own access log must hold exactly those request lines, the \
+                 model's header value, the default_headers User-Agent, the body length and the \
+                 200/200/404 statuses. HTTP is this client's protocol, so a real HTTP server is \
+                 the right peer. Not #[ignore]d, and a missing nginx fails the test rather than \
+                 skipping it.",
+            )
+            .notes(
+                "Validated against nginx over plain HTTP/1.1. HTTPS, HTTP/2, redirects, \
+                 compressed or chunked bodies are not exercised against a real server, and a \
+                 response body is read whole with no size cap.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
