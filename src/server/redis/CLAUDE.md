@@ -107,10 +107,48 @@ length-prefixed, so it can carry any bytes, newlines included.
   regression is loud); if nothing else was produced the no-response error above
   is sent.
 - **Undecodable RESP** → the connection is closed.
+- **Arrays nested deeper than 32** (`utils::resp::MAX_RESP_DEPTH`) →
+  `-ERR Protocol error: nesting too deep`, half-close, logged
+  `decision=fail_closed_resp_too_deep`. Refused as soon as the 33rd level opens,
+  whether or not the rest of the frame has arrived. See "RESP nesting" below.
+- **A declared length that can never complete** — `*N` past 2^20 values
+  (`MAX_RESP_ELEMENTS`, also the cap on all values in one frame), or `$N` past
+  `MAX_PENDING_FRAME_BYTES` → `-ERR Protocol error: invalid multibulk length` /
+  `invalid bulk length` on the header line, half-close, logged
+  `decision=fail_closed_resp_too_long`.
 - **Incomplete frame larger than 64 MB** (`MAX_PENDING_FRAME_BYTES`) → an error
   is sent and the connection closed. Without this cap a client announcing
   `$2000000000\r\n` and stalling would grow the per-connection buffer without
   bound.
+
+All three refusals are fixed strings — nothing from the peer's bytes or an
+internal error reaches the wire.
+
+### RESP nesting
+
+`redis-protocol` 6.0's `resp2::decode` recurses `d_parse_frame` → `d_parse_array`
+→ `nom::multi::count(d_parse_frame)` with no depth limit, and `build_owned_frame`
+recurses over the result again. `*1\r\n` is four bytes per level, so 100 000
+levels — 400 KB, far under the 64 MB buffer cap — overflowed the stack of the
+task decoding it. A stack overflow is a `SIGSEGV` against the guard page, not a
+panic: **the whole NetGet process died**, from one unauthenticated connection.
+
+`src/utils/resp.rs::scan_resp2_frame` now walks each frame iteratively before
+`decode` sees it — one counter per open array in a fixed 32-slot array, no
+recursion, no allocation — and the read loop decodes only what it reports
+`Complete`. It follows the decoder's grammar exactly (the same
+`str::parse::<isize>` for lengths; a bulk string's two trailing bytes skipped
+unchecked, as `nom_take(2)` does), so it never refuses a frame `decode` would
+accept within the bounds. `Malformed` closes the connection without decoding,
+as an undecodable frame always has.
+
+A declared length was **not** an allocation bomb on its own: `nom` 7.1.3's
+`count` caps its initial `Vec::with_capacity` at 64 KiB. What it did do was
+let a peer announce `*4000000000` and hold the connection until 64 MB had
+arrived; that is now refused on the header line.
+
+Real Redis never nests a *request* at all (`Protocol error: expected '$', got
+'*'`); 32 is kept because the same guard is meant for reply shapes too.
 
 ## Architecture
 
@@ -126,14 +164,15 @@ length-prefixed, so it can carry any bytes, newlines included.
   `handle_connection` wraps `run` so the connection is always marked `Closed` in
   `AppState` on exit; `update_connection_stats` is called for bytes/packets in
   both directions.
-- Read into a `Vec`, `decode()` frames off the front, drain what was consumed.
+- Read into a `Vec`, `scan_resp2_frame()` then `decode()` frames off the front,
+  drain what was consumed.
   Multiple pipelined frames in one read are processed in order, each with its own
   LLM call.
 - Reply verbs are encoded in `execute_action` (`actions.rs`), which returns the
   RESP bytes as `ActionResult::Output`. The read loop only concatenates `Output`
   bytes (flattening `Multiple`) and writes them; it encodes nothing itself except
-  the three errors it synthesises (frame cap, LLM failure, no-response), which
-  call the same `actions::encode_error`.
+  the errors it synthesises (frame cap, nesting, declared length, LLM failure,
+  no-response), which call the same `actions::encode_error`.
 - Responses for one command are accumulated into a single buffer and written
   once, so a `close_this_connection` issued alongside a reply still flushes.
 - No per-connection state machine: commands on one connection are handled
@@ -179,7 +218,7 @@ injecting into a strictly request/response protocol, not a NetGet bug.
 
 ## Testing
 
-Five files, declared in `tests/server/redis/mod.rs`:
+Seven files, declared in `tests/server/redis/mod.rs`:
 
 - `e2e_test.rs` — six `redis-rs` tests, one per RESP2 reply type.
 - `real_client_test.rs` — the real `redis-cli` binary, seven commands on one
@@ -191,6 +230,14 @@ Five files, declared in `tests/server/redis/mod.rs`:
   than just the listener. Zero LLM calls.
 - `llm_failure_test.rs` — the RESP error a client sees when the backend fails.
 - `peer_inject_test.rs` — dashboard injection through `send_to_peer`.
+- `connection_bounds_test.rs` — the read deadlines (see "Connection bounds").
+- `resp_depth_test.rs` — a 100 000-level nesting bomb is refused and the
+  server still answers a fresh connection; 32 levels answered, 33 refused;
+  impossible `*N`/`$N` refused at the header. Zero LLM calls. Without the
+  guard the test binary aborts with `stack overflow`.
+
+`fuzz/fuzz_targets/resp_frame.rs` drives the guard and `decode` as a pair, with
+a depth-bomb seed.
 
 `--test` names a **target**, so `--test server::redis::e2e_test` makes cargo list
 its targets and exit having run nothing — it does not fail, so it silently looks

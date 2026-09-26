@@ -18,6 +18,8 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
 #[cfg(feature = "mongodb-server")]
+use crate::utils::bson_depth::{scan_bson_document, BsonScan};
+#[cfg(feature = "mongodb-server")]
 use bson::{doc, Bson, Document};
 
 /// Largest MongoDB wire message we will accept.
@@ -553,7 +555,25 @@ impl MongodbHandler {
             }
 
             let command_doc = match self.parse_op_msg(&body) {
-                Ok(doc) => doc,
+                Ok(ParsedOpMsg::Command(doc)) => doc,
+                Ok(ParsedOpMsg::TooDeep { limit }) => {
+                    // The whole message has been read, so the connection is still in step:
+                    // answer this request with MongoDB's own depth error and carry on, as a
+                    // real server does. Nothing from the document reaches the model.
+                    warn!(
+                        "MongoDB connection {} decision=fail_closed_bson_too_deep: command \
+                         document nests deeper than {} levels; refused without decoding",
+                        self.connection_id, limit
+                    );
+                    let _ = self.status_tx.send(format!(
+                        "[WARN] MongoDB connection {} decision=fail_closed_bson_too_deep",
+                        self.connection_id
+                    ));
+                    let doc = mongodb_error_doc(MONGODB_OVERFLOW, BSON_TOO_DEEP_ERRMSG);
+                    let response_bytes = self.encode_op_msg_response(request_id, doc)?;
+                    self.write_response(write_half, &response_bytes).await?;
+                    continue;
+                }
                 Err(e) => {
                     error!("MongoDB: malformed OP_MSG from {}: {}", self.remote_addr, e);
                     let _ = self
@@ -769,7 +789,7 @@ impl MongodbHandler {
 
     /// Parse OP_MSG body (MongoDB 3.6+ wire protocol)
     #[cfg(feature = "mongodb-server")]
-    fn parse_op_msg(&self, body: &[u8]) -> Result<Document> {
+    fn parse_op_msg(&self, body: &[u8]) -> Result<ParsedOpMsg> {
         // OP_MSG format: flagBits (4) + sections
         // We only handle section kind 0 (body document)
         if body.len() < 5 {
@@ -786,13 +806,23 @@ impl MongodbHandler {
             ));
         }
 
-        // Parse BSON document starting at byte 5
-        let doc = Document::from_reader(&body[5..])?;
-        Ok(doc)
+        // The document's shape is walked iteratively before `bson` sees it: `bson` 3.0 recurses
+        // once per nested document with no limit, and a stack overflow aborts the whole
+        // process (`src/utils/bson_depth.rs`). Only a document the scan has seen end, inside
+        // the bytes actually present, is decoded — and only those bytes are handed over, so
+        // `bson` never reserves capacity on a declared length the message does not back.
+        let section = &body[5..];
+        match scan_bson_document(section) {
+            BsonScan::Complete { consumed } => Ok(ParsedOpMsg::Command(Document::from_reader(
+                &section[..consumed],
+            )?)),
+            BsonScan::TooDeep { limit } => Ok(ParsedOpMsg::TooDeep { limit }),
+            BsonScan::Malformed => Err(anyhow::anyhow!("OP_MSG body is not a BSON document")),
+        }
     }
 
     #[cfg(not(feature = "mongodb-server"))]
-    fn parse_op_msg(&self, _body: &[u8]) -> Result<Document> {
+    fn parse_op_msg(&self, _body: &[u8]) -> Result<ParsedOpMsg> {
         Err(anyhow::anyhow!("MongoDB server feature not enabled"))
     }
 
@@ -929,6 +959,25 @@ const MONGODB_INTERNAL_ERROR: i32 = 1;
 /// assert anything about replica-set topology.
 #[cfg(feature = "mongodb-server")]
 const MONGODB_TEMPORARILY_UNAVAILABLE: i32 = 365;
+
+/// MongoDB `Overflow`: the code its own BSON validator raises for a document nested past its
+/// depth limit, which is exactly the refusal this server makes.
+#[cfg(feature = "mongodb-server")]
+const MONGODB_OVERFLOW: i32 = 15;
+
+/// The `errmsg` for a command document refused by [`scan_bson_document`] — MongoDB's own
+/// wording for the same refusal, and a constant: nothing from the peer's bytes is echoed.
+#[cfg(feature = "mongodb-server")]
+const BSON_TOO_DEEP_ERRMSG: &str = "BSONObj exceeded maximum nested object depth";
+
+/// What an OP_MSG's kind-0 section held.
+enum ParsedOpMsg {
+    /// A decoded command document.
+    #[cfg(feature = "mongodb-server")]
+    Command(Document),
+    /// Nested past [`crate::utils::bson_depth::MAX_BSON_DEPTH`]; never decoded.
+    TooDeep { limit: usize },
+}
 
 /// Build a MongoDB command-failure document.
 #[cfg(feature = "mongodb-server")]

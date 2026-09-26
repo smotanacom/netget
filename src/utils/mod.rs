@@ -1,8 +1,10 @@
 //! Utility modules
 
 pub mod bencode;
+pub mod bson_depth;
 pub mod clock;
 pub mod line_reader;
+pub mod resp;
 pub mod sanitize;
 pub mod save_load;
 pub mod shutdown;

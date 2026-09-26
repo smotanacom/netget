@@ -1,6 +1,6 @@
 # Redis Protocol E2E Tests
 
-Six files, all declared in `tests/server/redis/mod.rs`.
+Seven files, all declared in `tests/server/redis/mod.rs`.
 
 | File | Tests | What it proves | LLM calls |
 |---|---|---|---|
@@ -10,6 +10,7 @@ Six files, all declared in `tests/server/redis/mod.rs`.
 | `resp_framing_test.rs` | 3 | Model output cannot split a frame; `stop_server` stops sessions | 0 |
 | `llm_failure_test.rs` | 1 | The RESP error a client sees when the backend fails | 1 |
 | `peer_inject_test.rs` | 1 | Dashboard injection reaches the socket | 0 |
+| `resp_depth_test.rs` | 4 | A RESP nesting bomb or an impossible declared length is refused before the decoder, and the process survives | 0 |
 
 ## Running
 
@@ -135,6 +136,29 @@ That last one is the slowest test in this directory and cannot be made cheaper: 
 about a number larger than 30, so the wait has to be larger than 30 too. The other two use
 short overrides for exactly the reason the parameters exist — a test asserting the 300-second
 default by waiting it out would be the slowest thing in the suite.
+
+## `resp_depth_test.rs` — the decoder never sees a frame it would die on
+
+`redis-protocol` 6.0 recurses once per nested array with no limit, and `*1\r\n` opens a level
+in four bytes, so a few hundred kilobytes from an unauthenticated peer overflowed the stack and
+aborted the **whole process** — a `SIGSEGV` on the guard page, not a panic.
+`src/utils/resp.rs` walks every frame iteratively first; these four tests drive it from a raw
+socket with a `*` static handler answering `+PONG`, no model:
+
+| Test | Claim |
+|---|---|
+| `a_nesting_bomb_is_refused_and_the_server_survives` | 100 000 levels (400 KB) get `-ERR` or a bare close — the peer is still writing when the server hangs up, so its kernel may see RST first — and never `+PONG`; then a **fresh connection** still gets `+PONG` |
+| `a_small_bomb_gets_the_fixed_error_then_eof` | 40 levels fit one read, so the exact `-ERR Protocol error: nesting too deep\r\n` arrives, then EOF |
+| `a_frame_at_the_depth_limit_is_answered_and_one_deeper_is_not` | 32 levels are answered, 33 refused — the bound does not refuse what it allows |
+| `an_impossible_declared_length_is_refused_at_the_header` | `*4000000000` and `$4000000000` get `invalid multibulk length` / `invalid bulk length` on the header line, not after 64 MiB |
+
+**Without the guard the first test does not fail — the test binary aborts** with
+`has overflowed its stack / fatal runtime error: stack overflow` (SIGABRT), which is how the
+defect was confirmed and how the guard was verified by removal. With the element and bulk
+limits lifted, the last test fails on an empty read instead.
+
+The same guard/decoder pair is fuzzed by `fuzz/fuzz_targets/resp_frame.rs`, whose corpus
+carries a 65 536-level `depth_bomb`.
 
 ## Scripting
 
