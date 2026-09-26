@@ -798,7 +798,7 @@ jobs:
             websocket::e2e_test \
             wol::real_client_test \
             client/etcd::real_server_test client/http::real_server_test \
-            client/mqtt::real_server_test client/nats::e2e_test \
+            client/mqtt::keepalive_test client/mqtt::real_server_test client/nats::e2e_test \
             client/redis::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run

@@ -2118,6 +2118,13 @@ Read before assuming a subsystem is sound:
   converted to them in September 2026. `tests/stop_server_stops_connections_test.rs` is the
   contract (asserted from the **peer's** side, which is the only vantage that distinguishes a
   live connection from an aborted one) and `tests/detached_task_drift_test.rs` is the ratchet.
+  It reads **every `.rs` file** of each protocol directory in both trees, not only `mod.rs`: a
+  `mod.rs`-only scan passed a probe spawn placed in `http2/h2_server.rs`, the same blind spot
+  `tcp_server_bounds_ratchet_test.rs` had. Widening it found no existing site — every spawn
+  outside a `mod.rs` is bound to a `let` and registered, aborted on exit, or held in
+  `usb/guard.rs`'s `AbortOnDrop`. The shared `src/server/peer_support.rs` is outside the
+  population; its one spawn (the injected-command task) ends when its channel closes, which
+  `remove_server` and each protocol's close path cause by dropping the peer handle.
 
   **Every call must end `.await`.** An unawaited `spawn_server_task` constructs the future and
   never polls it, so the task never runs at all — and that compiles, because an unawaited future

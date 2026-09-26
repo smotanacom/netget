@@ -77,6 +77,24 @@ broker (its access log); an unknown action is `Rejected`; `disconnect` returns `
 leaves the client `Disconnected` with no handle (not `Error`, which is what the poll error would
 otherwise have been read as).
 
+## `keepalive_test.rs` — PINGREQ keeps flowing while a turn is parked
+
+The peer is the **real Eclipse `mosquitto` broker** (`/opt/homebrew/sbin/mosquitto`, else
+`mosquitto` on `PATH`), started per test on a free loopback port with `listener <port> 127.0.0.1`,
+`allow_anonymous true` and its log in a temp file; `mosquitto_sub` verifies delivery. Both
+binaries are **required** — the test panics with an install hint rather than skipping, because a
+skip is a silent pass wherever the suite runs without them.
+
+The client connects with `keep_alive: 2`; mosquitto disconnects a client silent for 1.5 × that.
+Its `mqtt_connected` turn is parked on a `manual` rule for ten seconds. Then, before the turn is
+answered, the broker's own log must show `Received PINGREQ from netget-keepalive-probe` and no
+`exceeded timeout` line for it, and the client must still be `Connected`. The turn is answered
+with a publish, and `mosquitto_sub -C 1` must print it. **LLM calls: 0.** Runtime ~10s.
+
+Verified by removal: with the pre-split client (model turn inside the loop that polls rumqttc)
+the broker logs `disconnected: exceeded timeout` three seconds into the park and the test fails
+on that assertion.
+
 ## Running
 
 ```bash

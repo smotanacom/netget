@@ -91,6 +91,129 @@ const MAX_CONNECTIONS: usize = 128;
 pub const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
     Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
 
+/// `SETTINGS_MAX_CONCURRENT_STREAMS`: how many streams one peer may have open at once.
+///
+/// 100, the floor RFC 9113 §6.5.2 recommends so as "not to unnecessarily limit parallelism",
+/// and Apache's `H2MaxSessionStreams` default (nginx uses 128). `h2` advertises no limit at all
+/// unless told to, so without this one admitted connection could open streams without end, each
+/// with a task, a parked request and a body buffer. A stream past the limit is reset by `h2`
+/// with `REFUSED_STREAM`, which tells the client the request was not processed and is safe to
+/// retry; conforming clients never send one because they read this SETTINGS first.
+pub const MAX_CONCURRENT_STREAMS: u32 = 100;
+
+/// `SETTINGS_INITIAL_WINDOW_SIZE`: how much request body a stream may send before this server
+/// reads it. 65,535 bytes, the protocol's own default, stated rather than inherited: it bounds
+/// what `h2` holds for a stream this server has stopped reading (a refused body, see
+/// [`BodyBudget`]), and the handler releases capacity as it reads, so it costs an upload nothing
+/// but round trips.
+pub const INITIAL_STREAM_WINDOW_BYTES: u32 = 65_535;
+
+/// The connection-level receive window: the most unread request-body bytes `h2` buffers across
+/// every stream of one connection together. 1 MiB, so that [`MAX_CONCURRENT_STREAMS`] streams
+/// uploading at once do not serialise on the protocol's 64 KiB default while the total stays
+/// small next to [`CONNECTION_BODY_BUDGET_BYTES`].
+pub const INITIAL_CONNECTION_WINDOW_BYTES: u32 = 1024 * 1024;
+
+/// `SETTINGS_MAX_FRAME_SIZE`: the largest frame payload this server accepts. 16,384 bytes, the
+/// protocol minimum and default. Nothing a request carries needs a larger frame, and a larger
+/// frame is a larger single allocation a peer can ask for.
+pub const MAX_FRAME_BYTES: u32 = 16_384;
+
+/// `SETTINGS_MAX_HEADER_LIST_SIZE`: the largest decoded header list one request may carry.
+///
+/// 32 KiB, nginx's HTTP/1.1 equivalent (`large_client_header_buffers 4 8k`). `h2`'s own default
+/// is 16 MiB, which times [`MAX_CONCURRENT_STREAMS`] is 1.6 GiB of headers per connection; at
+/// 32 KiB it is 3.2 MiB. Real browsers send a few kilobytes including cookies.
+pub const MAX_HEADER_LIST_BYTES: u32 = 32 * 1024;
+
+/// The request-body bytes all streams of one connection may hold at once.
+///
+/// Each stream buffers its body whole before the model sees it, up to
+/// `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB). Per stream alone, that is 800 MiB a
+/// connection at [`MAX_CONCURRENT_STREAMS`] and 100 GiB across [`MAX_CONNECTIONS`] — no bound
+/// at all in practice. So the streams of a connection share one budget of the same 8 MiB: a
+/// single upload can still use all of it, and the per-connection ceiling is what HTTP/1.1's
+/// one-request-at-a-time connection costs. A stream whose body would take the connection past
+/// it is answered `503` with `Retry-After` (`decision=refused_connection_body_budget`) and never
+/// reaches the model; its bytes are released as soon as it is refused, and every stream's are
+/// released when its answer has been sent.
+///
+/// Per connection that makes body buffers 8 MiB, `h2`'s unread data at most
+/// [`INITIAL_CONNECTION_WINDOW_BYTES`] (1 MiB), and decoded headers at most
+/// [`MAX_CONCURRENT_STREAMS`] × [`MAX_HEADER_LIST_BYTES`] (3.2 MiB): about 12 MiB, and about
+/// 1.5 GiB across [`MAX_CONNECTIONS`].
+pub const CONNECTION_BODY_BUDGET_BYTES: usize = crate::server::http_common::MAX_REQUEST_BODY_BYTES;
+
+/// The `h2` server builder every HTTP/2 connection is handshaken with — prior-knowledge h2c,
+/// TLS, and the HTTP/1.1 `Upgrade: h2c` path in `src/server/http/mod.rs` alike — so the
+/// SETTINGS above hold on every way in.
+pub fn bounded_h2_builder() -> server::Builder {
+    let mut builder = server::Builder::new();
+    builder
+        .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
+        .initial_window_size(INITIAL_STREAM_WINDOW_BYTES)
+        .initial_connection_window_size(INITIAL_CONNECTION_WINDOW_BYTES)
+        .max_frame_size(MAX_FRAME_BYTES)
+        .max_header_list_size(MAX_HEADER_LIST_BYTES);
+    builder
+}
+
+/// One connection's share of [`CONNECTION_BODY_BUDGET_BYTES`], cloned into each stream's task.
+#[derive(Clone, Default)]
+pub struct BodyBudget(Arc<std::sync::atomic::AtomicUsize>);
+
+impl BodyBudget {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bytes currently held by this connection's streams.
+    pub fn in_use(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn reservation(&self) -> BodyReservation {
+        BodyReservation {
+            budget: self.clone(),
+            held: 0,
+        }
+    }
+}
+
+/// The bytes one stream's body holds against its connection's [`BodyBudget`]; released on drop.
+struct BodyReservation {
+    budget: BodyBudget,
+    held: usize,
+}
+
+impl BodyReservation {
+    /// Take `n` more bytes, or refuse without taking any if the connection would exceed its
+    /// budget.
+    fn grow(&mut self, n: usize) -> bool {
+        use std::sync::atomic::Ordering;
+        let taken = self
+            .budget
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(n)
+                    .filter(|&total| total <= CONNECTION_BODY_BUDGET_BYTES)
+            })
+            .is_ok();
+        if taken {
+            self.held += n;
+        }
+        taken
+    }
+}
+
+impl Drop for BodyReservation {
+    fn drop(&mut self) {
+        self.budget
+            .0
+            .fetch_sub(self.held, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// The two read bounds a connection is served under, resolved from the startup parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct H2Bounds {
@@ -387,24 +510,29 @@ where
 {
     // The preface exchange is bounded separately from the first byte: a peer that sent one byte
     // and stalled has passed the first-byte bound and would otherwise sit here forever.
-    let mut h2_conn =
-        match tokio::time::timeout(HANDSHAKE_TIMEOUT, server::handshake(tcp_stream)).await {
-            Ok(conn) => conn?,
-            Err(_) => {
-                debug!(
-                    "HTTP/2 connection {} did not complete the preface in {}s; closing",
-                    connection_id,
-                    HANDSHAKE_TIMEOUT.as_secs()
-                );
-                return Ok(());
-            }
-        };
+    let mut h2_conn = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        bounded_h2_builder().handshake(tcp_stream),
+    )
+    .await
+    {
+        Ok(conn) => conn?,
+        Err(_) => {
+            debug!(
+                "HTTP/2 connection {} did not complete the preface in {}s; closing",
+                connection_id,
+                HANDSHAKE_TIMEOUT.as_secs()
+            );
+            return Ok(());
+        }
+    };
     debug!("HTTP/2 handshake complete for connection {}", connection_id);
 
     // Whether this connection is answering anything. Every stream's task holds it busy for the
     // whole of its answer, so the idle watchdog below cannot close a connection whose request is
     // waiting on the model or parked for a human, however long that takes.
     let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+    let body_budget = BodyBudget::new();
 
     // Handle incoming requests. `accept` must keep being polled while streams are answered —
     // it is what drives the connection, including the frames those answers write — so the
@@ -436,6 +564,7 @@ where
         let protocol_clone = protocol.clone();
         let filter_clone = filter.clone();
         let busy = activity.busy();
+        let stream_budget = body_budget.clone();
 
         // One task per stream, tracked so stop_server aborts an answer in progress too.
         let task_owner = app_state.clone();
@@ -452,6 +581,7 @@ where
                     status_clone,
                     protocol_clone,
                     filter_clone,
+                    stream_budget,
                 )
                 .await
                 {
@@ -514,6 +644,7 @@ pub async fn handle_h2_request(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<Http2Protocol>,
     filter: Arc<RequestFilter>,
+    body_budget: BodyBudget,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Extract request metadata
     let method = request.method().to_string();
@@ -542,6 +673,9 @@ pub async fn handle_h2_request(
     let mut body_stream = request.into_body();
     let mut body_bytes = Vec::new();
     let mut body_too_large = false;
+    // Held until this stream's answer has been sent; see CONNECTION_BODY_BUDGET_BYTES.
+    let mut reservation = body_budget.reservation();
+    let mut over_connection_budget = false;
 
     loop {
         match body_stream.data().await {
@@ -550,6 +684,10 @@ pub async fn handle_h2_request(
                     > crate::server::http_common::MAX_REQUEST_BODY_BYTES
                 {
                     body_too_large = true;
+                    break;
+                }
+                if !reservation.grow(chunk.len()) {
+                    over_connection_budget = true;
                     break;
                 }
                 body_bytes.extend_from_slice(&chunk);
@@ -566,6 +704,42 @@ pub async fn handle_h2_request(
                 break;
             }
         }
+    }
+
+    if over_connection_budget {
+        let held_by_others = body_budget.in_use().saturating_sub(body_bytes.len());
+        // Release this stream's share before answering: it is refused, not waiting.
+        drop(body_bytes);
+        drop(reservation);
+        warn!(
+            "HTTP/2 {} {} decision=refused_connection_body_budget: the connection's other \
+             streams hold {} of {} body bytes",
+            method, uri, held_by_others, CONNECTION_BODY_BUDGET_BYTES
+        );
+        let _ = status_tx.send(format!("→ HTTP/2 {} {} → 503", method, uri));
+        let body = "Service Unavailable: this connection is already buffering as many request \
+                    bodies as it may; retry when an earlier request has been answered\n";
+        let response = build_h2_response_head(
+            503,
+            [
+                ("content-type".to_string(), "text/plain".to_string()),
+                ("retry-after".to_string(), "1".to_string()),
+            ],
+            "HTTP/2 connection body budget",
+        );
+        let mut stream = send_response.send_response(response, false)?;
+        stream.send_data(Bytes::from(body), true)?;
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(body.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+        return Ok(());
     }
 
     if body_too_large {

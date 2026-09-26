@@ -84,13 +84,14 @@ pub const MAX_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 /// that has stopped reading or vanished without a FIN: exactly the socket that would otherwise
 /// sit in a slot forever. Every inbound frame counts — text, binary, Ping, Pong, Close.
 ///
-/// 600 seconds, and the number is set by NetGet's own client rather than by a stranger. That
-/// client (`src/client/websocket/mod.rs`) runs each inbound message's model turn inside its read
-/// loop, so while a turn is parked for a human by a `manual` rule — up to 300 seconds by default
-/// (`src/state/intercepts.rs`) — it reads nothing and its Pong waits in the queue. Twice that
-/// window means a Ping sent at the worst moment is still answered, late, well inside the bound.
-/// The keepalive costs one small frame per idle connection every five minutes, which no
-/// deployment notices. Declared as the `idle_timeout_secs` startup parameter.
+/// 600 seconds, twice the default window a `manual` rule gives a human (300s,
+/// `src/state/intercepts.rs`). tungstenite, like most WebSocket libraries, answers a Ping from
+/// inside a read, so a client that stops reading while its application thinks — a model turn,
+/// a person — answers late. At twice that window a Ping sent at the worst moment is still
+/// answered inside the bound. NetGet's own client keeps reading through a parked turn
+/// (`tests/client/websocket/keepalive_test.rs` holds it to a 2-second bound); the margin is for
+/// peers that do not. The keepalive costs one small frame per idle connection every five
+/// minutes, which no deployment notices. Declared as the `idle_timeout_secs` startup parameter.
 ///
 /// **A message still being answered is not silence.** Handlers run in their own tasks while the
 /// frame loop keeps reading, so each holds the connection's `ConnectionActivity` busy for the

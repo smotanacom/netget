@@ -121,7 +121,20 @@ line (`✗ LLM error for …`) has no `decision=`, so the dashboard shows the fa
 - `h2c` upgrade: an `Upgrade: h2c` request with an `HTTP2-Settings` header gets
   `101 Switching Protocols` and the connection is handed to
   `http2::h2_server::handle_h2_request` (feature-gated on `http2`; without it the
-  server answers `501`). The request filter is carried across the upgrade.
+  server answers `501`). The request filter is carried across the upgrade, and the
+  handshake uses `http2::h2_server::bounded_h2_builder()` and a per-connection
+  `BodyBudget`, so an upgraded connection advertises and enforces the same stream limit,
+  windows, frame and header-list sizes and body budget as a prior-knowledge one.
+- **Known defect: the upgraded request itself is never answered.** RFC 7540 §3.2 makes the
+  request that carried `Upgrade: h2c` stream 1 of the new connection, half-closed from the
+  client, to be answered over HTTP/2. The upgraded socket is handed to a fresh `h2` server
+  handshake that knows nothing of stream 1, so a client that follows the RFC — curl
+  `--http2` against `http://` — has its WINDOW_UPDATE on stream 1 answered with
+  GOAWAY(PROTOCOL_ERROR) and gets no response. Seen with curl 8.22 in
+  `tests/server/http2/stream_bounds_test.rs`, which asserts only the SETTINGS for that reason.
+  Fixing it means answering the HTTP/1.1 request as stream 1; no method on `h2` 0.4's
+  `server::Builder` or `Connection` adopts a stream opened by an upgrade, so it needs either
+  that or a different framing layer.
 
 ### Connection state
 
@@ -310,4 +323,6 @@ and the connection moves to a task that outlives the HTTP/1 one, so the connecti
 upgrade would quietly hand the slot back while the peer was still on it, which is an un-cap
 reachable with one request. The upgraded connection gets its own `ConnectionActivity` and the
 same `IDLE_BETWEEN_REQUESTS_TIMEOUT` watchdog around `h2_conn.accept()`, with each spawned
-request holding the busy guard. This path is untested end to end (see **Gaps** above).
+request holding the busy guard. This path is untested end to end (see **Gaps** above) beyond
+the SETTINGS curl reads from it, and a real client's request does not complete over it (see the
+known defect above).

@@ -208,12 +208,14 @@ frame counts: text, binary, Ping, Pong, Close. What reaches the bound is a peer 
 reading or vanished without a FIN. It is closed with **1001** ("going away", §7.4.1) and the log
 says `decision=idle_timeout`.
 
-**Why 600 and not 300: NetGet's own client.** `src/client/websocket/mod.rs` runs each inbound
-message's model turn inside its read loop, so while a turn is parked for a human (a `manual`
-rule's 300-second window) it reads nothing and its Pong sits in tungstenite's queue. At twice
-that window, a Ping sent at the worst moment is still answered — late — inside the bound. The
-client-side fix is to keep reading while a turn is parked; until then this number is what keeps
-the operator's own peer from being dropped mid-answer.
+**Why 600 and not 300: clients that stop reading while they think.** tungstenite, like most
+WebSocket libraries, flushes the Pong for a Ping from inside a *read*, so a client whose
+application stops reading while it decides what to say — a model turn, or a person answering a
+`manual` rule's 300-second window — answers late. At twice that window a Ping sent at the worst
+moment is still answered inside the bound. NetGet's own client does not need the margin: it
+reads on a task of its own while turns run on another, and
+`tests/client/websocket/keepalive_test.rs` holds it to a 2-second bound through two ten-second
+parked turns.
 
 **Busy is not idle.** Handlers run on their own tasks while the frame loop keeps reading, so each
 holds `ConnectionActivity` busy for the whole of its answer; a message waiting on the model or
