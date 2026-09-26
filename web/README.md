@@ -2,7 +2,7 @@
 
 The landing page (`site/index.html`, served at netget.net) runs NetGet itself: the dashboard,
 the protocol servers and the LLM plumbing, compiled to `wasm32-unknown-unknown`. This
-directory holds the build script and the headless test; the code is in `crates/`.
+directory holds the build script and the headless tests; the code is in `crates/`.
 
 ## What runs where
 
@@ -29,6 +29,7 @@ rustup component add llvm-tools            # llvm-ar, for ring's C objects (see 
 cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')"
 ./web/build.sh                              # -> site/demo/pkg/ (gitignored)
 node web/test/smoke.mjs                     # headless end-to-end check of the bundle
+python3 web/test/page_composer.py           # the real page in headless Chromium (Playwright; not in CI)
 cd site && python3 -m http.server 8000      # then open http://localhost:8000/
 ./site/deploy.sh                            # publish: S3 + CloudFront, see site/CLAUDE.md
 ```
@@ -50,9 +51,16 @@ Two things the script handles that are easy to lose an hour to:
 
 - `key(json)`, `mouse(json)`, `text(str)`, `resize(cols, rows)` — terminal input.
 - `set_llm_handler(fn)` — `fn(requestJson) -> Promise<replyJson | object>`. A request is
-  `{id, kind: "generate" | "chat", model, messages: [{role, content}], tools: [...]}`. A
-  reply is `{content?, tool_calls?: [{name, arguments}], prompt_tokens?,
-  completion_tokens?}` or `{error}`.
+  `{id, kind: "generate" | "chat", model, messages: [{role, content}], tools: [...],
+  actions: [...]}`. A reply is `{content?, tool_calls?: [{name, arguments}],
+  prompt_tokens?, completion_tokens?}` or `{error}`.
+
+  `actions` is every action the prompt offers, as data: `{name, description, tool, generic,
+  parameters: [{name, type, description, required, choices?}], example, schema}`
+  (`netget::llm::bridge::offered_action` documents each field). It is the only structured
+  description a network event's request has — that path deliberately sends no native
+  `tools` — and each `example` is one the action's own executor accepts. Nothing on the
+  Ollama/OpenAI wire carries it.
 - `start_server(json, cb)` — `cli::management::ServerForm`, the same path the dashboard's
   own form and MCP use.
 - `connect(port, onData, onClose) -> id`, `send(id, bytes)`, `close(id)` — a TCP client on
@@ -63,6 +71,17 @@ Two things the script handles that are easy to lose an hour to:
 `site/js/demo.js` is the page: the dashboard terminal, a Telnet terminal (with the IAC
 negotiation a plain client does), a browser that speaks HTTP/1.1 over `connect()`, a raw
 socket, and the model panel with its three modes.
+
+When the visitor is the model, `site/js/composer.js` turns `actions` into a form, after the
+dashboard's intercept composer: a picker of the offered actions (the protocol's own first
+action preselected, not a `generic` one), one control per parameter by type, every field
+prefilled from the action's example, "Add another action", "Answer with nothing" (`{"actions":
+[]}`, a real answer), "Refuse (fail closed)", the schema behind a disclosure, and a Raw JSON
+tab that mirrors the form and is sent verbatim when used. Its reply is the JSON envelope as
+`content`, or `tool_calls` for a chat request whose entries are all native tools. A request
+without `actions` gets the raw editor alone. The top half of the file is DOM-free so
+`smoke.mjs` builds the same default reply under Node; `web/test/page_composer.py` drives the
+page itself, with xterm.js stubbed and every non-local request answered by the test.
 
 ## Which protocols are in the browser build
 

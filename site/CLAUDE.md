@@ -5,6 +5,11 @@ bundle, which is the one thing here that is built: `./web/build.sh` from the rep
 writes it (gitignored), `web/README.md` explains it, and `./deploy.sh` refuses to run
 without it. `./deploy.sh` is the whole publishing pipeline.
 
+`js/demo.js` is the demo page's script and `js/composer.js` the "you are the model" answer
+form it opens for each model request (built from the request's offered `actions`; see
+`web/README.md`). `composer.js`'s pure half is imported by `web/test/smoke.mjs`, so keep
+DOM access out of module top level.
+
 What is in this directory is public, with one exception: `deploy.sh` and every `*.md` —
 this file included — are excluded from the sync, because this one names infrastructure IDs.
 The internal planning documents under `docs/` are not part of the site at all. Adding a
