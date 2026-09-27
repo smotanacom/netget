@@ -865,6 +865,7 @@ async fn dispatch_packet(
                     "client_id": name,
                     "packet_id": sub.packet_id,
                     "topics": topics,
+                    "answer_with": subscribe_answer_with(sub.packet_id, &sub.topics),
                 }),
             );
 
@@ -990,6 +991,28 @@ async fn dispatch_packet(
             true
         }
     }
+}
+
+/// What a SUBSCRIBE is answered with, spelled out for this one: the SUBACK, then the retained
+/// messages.
+///
+/// The real-model eval (`mqtt/retained-message`, 0/5) found llama3.1:8b told "the topic holds
+/// the retained reading 19.5" sending the SUBACK and nothing else, so the subscriber waited out
+/// its timeout for a message that was never published. A broker that stores nothing can only
+/// deliver a retained message if the model publishes it, and the model follows a per-request
+/// hint far better than the general action list.
+pub fn subscribe_answer_with(packet_id: u16, topics: &[(String, u8)]) -> String {
+    let filters: Vec<&str> = topics.iter().map(|(f, _)| f.as_str()).collect();
+    let granted: Vec<String> = topics.iter().map(|(_, q)| q.to_string()).collect();
+    format!(
+        "mqtt_suback with packet_id {packet_id} and granted_qos [{}] (one entry per filter; \
+         128 refuses one). Then, for each topic matching {:?} that your instruction gives a \
+         retained message or current value, mqtt_publish with that topic, the value as \
+         payload and retain true - the subscriber is waiting for it. Publish nothing if the \
+         instruction gives none.",
+        granted.join(", "),
+        filters
+    )
 }
 
 /// Outcome of handing an event to the handler chain (script -> static -> LLM).

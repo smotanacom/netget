@@ -21,7 +21,7 @@ use crate::state::ServerId;
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -108,6 +108,10 @@ pub struct MqttProtocol {
     /// Bitmask of MQTT packet types written to *this* connection, used by the
     /// connection loop to tell whether the handler produced the mandatory reply.
     written_types: AtomicU32,
+    /// Whether this connection has had its CONNACK. Unlike `written_types` it is never
+    /// cleared: a connection gets exactly one (MQTT 3.1.1 3.2), and a second is a protocol
+    /// violation libmosquitto answers by dropping the connection.
+    connack_sent: AtomicBool,
 }
 
 impl Default for MqttProtocol {
@@ -126,6 +130,7 @@ impl MqttProtocol {
             status_tx: None,
             client_id: RwLock::new(None),
             written_types: AtomicU32::new(0),
+            connack_sent: AtomicBool::new(false),
         }
     }
 
@@ -143,6 +148,7 @@ impl MqttProtocol {
             status_tx: Some(status_tx),
             client_id: RwLock::new(None),
             written_types: AtomicU32::new(0),
+            connack_sent: AtomicBool::new(false),
         }
     }
 
@@ -238,6 +244,21 @@ impl MqttProtocol {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // A connection gets one CONNACK. A model answered one CONNECT with two, and the
+        // subscriber dropped the connection as a protocol error before it could subscribe.
+        if self.out_tx.is_some() && self.connack_sent.load(Ordering::SeqCst) {
+            let message = format!(
+                "MQTT decision=duplicate_response_dropped: a second CONNACK for '{}' was not \
+                 sent; a connection gets exactly one",
+                self.current_client_id().unwrap_or_else(|| "?".into())
+            );
+            warn!("{}", message);
+            if let Some(tx) = &self.status_tx {
+                let _ = tx.send(format!("[WARN] {}", message));
+            }
+            return Ok(ActionResult::NoAction);
+        }
+
         self.log(format!(
             "MQTT -> CONNACK rc={} session_present={} to '{}'",
             return_code,
@@ -249,6 +270,7 @@ impl MqttProtocol {
             PKT_CONNACK,
             build_connack(return_code as u8, session_present),
         )?;
+        self.connack_sent.store(true, Ordering::SeqCst);
 
         Ok(ActionResult::Custom {
             name: "mqtt_connack".to_string(),
@@ -849,8 +871,10 @@ pub fn mqtt_publish_action() -> ActionDefinition {
             Parameter {
                 name: "retain".to_string(),
                 type_hint: "boolean".to_string(),
-                description: "Set the RETAIN flag on the delivered message. The broker stores \
-                              nothing, so this only marks the packet for the receiving client."
+                description: "Set the RETAIN flag on the delivered message: true for the \
+                              retained message a subscriber gets right after its SUBACK. The \
+                              broker stores nothing, so this only marks the packet for the \
+                              receiving client."
                     .to_string(),
                 required: false,
             },
@@ -1186,7 +1210,11 @@ pub static MQTT_PUBLISH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static MQTT_SUBSCRIBE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "mqtt_subscribe",
-        "MQTT client subscribed to topic filters and is waiting for SUBACK",
+        "MQTT client subscribed to topic filters and is waiting for SUBACK. A broker also \
+         delivers, right after the SUBACK, the retained message of every topic the filters \
+         match - this broker stores nothing, so those are the ones your instruction names, \
+         sent with mqtt_publish and retain true. answer_with spells out both for this \
+         subscription.",
         json!({"type": "placeholder", "event_id": "mqtt_subscribe"}),
     )
     .with_parameters(vec![
@@ -1207,6 +1235,14 @@ pub static MQTT_SUBSCRIBE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             type_hint: "array".to_string(),
             description: "Requested subscriptions, in order: [{\"filter\": \"home/#\", \
                           \"qos\": 1}]. granted_qos must have one entry per element."
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "The SUBACK this subscription needs, and the retained messages that \
+                          follow it"
                 .to_string(),
             required: true,
         },

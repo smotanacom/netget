@@ -76,6 +76,13 @@ Every subprocess test calls `wait_for_mocks(30)` then `verify_mocks()`.
 | `test_mqtt_refuses_*` | 1 startup each; the per-packet call is *made to fail on purpose* |
 | `test_mqtt_keyword_detection` | 0 — no subprocess |
 | `injected_mqtt_publish_reaches_raw_socket_and_close_sends_eof` | 0 — static handlers, LLM points at an unreachable URL |
+| `subscribe_is_told_to_publish_the_retained_message_and_connack_is_sent_once` | 1 startup + 1 `mqtt_connect` + 1 `mqtt_subscribe` |
+
+`answer_with_test.rs` drives raw bytes: the CONNECT is answered with two CONNACKs and the next
+packet the client reads must be its SUBACK (the second CONNACK is dropped and logged
+`decision=duplicate_response_dropped`); the SUBSCRIBE rule matches only on an `answer_with`
+naming the packet id and `retain true`, and the retained PUBLISH (`0x31`, topic, `19.5`) must
+follow the SUBACK. This is the real-model eval's `mqtt/retained-message` shape.
 
 Roughly 10 across the suite, which is the target.
 
@@ -85,7 +92,8 @@ not a slow path: the client declares the connection dead while the call is in fl
 
 ## Not covered
 
-TLS (8883), WebSocket transport, MQTT v5, retained messages, wildcard subscription matching,
+TLS (8883), WebSocket transport, MQTT v5, a retained-message *store* (the model publishes a
+retained message itself; `answer_with_test.rs` covers that path), wildcard subscription matching,
 last-will delivery and session resume across reconnect — the broker does not implement a
 subscription table or a retained-message store, so there is nothing to test. Keep-alive
 reaping *is* implemented and tested (`connection_bounds_test.rs`); removing the deadline around
