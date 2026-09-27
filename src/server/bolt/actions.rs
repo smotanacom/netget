@@ -518,13 +518,42 @@ fn close_connection_action() -> ActionDefinition {
     }
 }
 
+/// The `answer_with` field of `bolt_authenticate`: what the login is decided on.
+///
+/// Told "act as a Neo4j graph database that accepts any login. Reject any query that is not
+/// valid Cypher with Neo4j's syntax error", llama3.1:8b answered the login with
+/// `reject_bolt_login` five runs in five - "Reject" was the instruction's operative verb, and
+/// nothing in the login event said that no query was being decided yet. The request now says
+/// what the login turns on, and that query rules wait for the query.
+pub fn login_answer_with(principal: &str, scheme: &str, credentials_present: bool) -> String {
+    let user = if principal.is_empty() {
+        "no user name".to_string()
+    } else {
+        format!("user \"{principal}\"")
+    };
+    let credential = if credentials_present {
+        "a credential"
+    } else {
+        "no credential"
+    };
+    format!(
+        "decide only whether {user} (scheme {scheme}, {credential}) may log in. \
+         accept_bolt_login unless your instructions refuse this user, this scheme, or a login \
+         without a credential. No query has been sent yet: rules about queries - rejecting \
+         invalid Cypher, refusing writes - are applied to each query when it arrives, never \
+         to the login"
+    )
+}
+
 /// HELLO (Bolt 5.0) or LOGON (5.1+) with the client's credentials.
 pub static BOLT_AUTHENTICATE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "bolt_authenticate",
-        "A client is logging in to the graph database. Decide whether to let it in. The \
-         credential itself is never shown; when the server has a configured password NetGet \
-         has already checked it.",
+        "A client is logging in to the graph database - this decision is about the login \
+         only, before any query has been sent. Decide whether this user may connect. Rules \
+         your instructions give about queries (reject invalid Cypher, refuse writes, ...) do \
+         not apply here: queries arrive later as bolt_query. The credential itself is never \
+         shown; when the server has a configured password NetGet has already checked it.",
         json!({"type": "accept_bolt_login"}),
     )
     .with_parameters(vec![
@@ -556,6 +585,14 @@ pub static BOLT_AUTHENTICATE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             name: "password_configured".to_string(),
             type_hint: "boolean".to_string(),
             description: "True when the server has a password and the client's matched it"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "What this login is decided on: the user, the scheme and whether a \
+                          credential was sent - never a query, which has not been sent yet"
                 .to_string(),
             required: true,
         },

@@ -801,6 +801,11 @@ impl Session {
                 "principal": principal,
                 "credentials_present": credentials.is_some_and(|c| !c.is_empty()),
                 "password_configured": self.config.password.is_some(),
+                "answer_with": actions::login_answer_with(
+                    &principal,
+                    &scheme,
+                    credentials.is_some_and(|c| !c.is_empty()),
+                ),
             }),
         );
         let (results, refused) = match self.ask(&event, "login").await {

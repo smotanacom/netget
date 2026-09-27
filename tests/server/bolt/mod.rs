@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "bolt"))]
+mod answer_with_test;
+#[cfg(all(test, feature = "bolt"))]
 mod common;
 #[cfg(all(test, feature = "bolt"))]
 mod connection_bounds_test;
