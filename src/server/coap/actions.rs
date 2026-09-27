@@ -296,8 +296,17 @@ impl Server for CoapProtocol {
                 let payload = decode_payload(&action)?;
 
                 // Content-Format: explicit wins; otherwise text/plain when there is a
-                // payload at all, so a client is never handed bytes with no media type.
+                // payload at all, so a client is never handed bytes with no media type. An
+                // empty string is "no media type", which is what a model writes for a 4.04
+                // with no body; it reads as absent rather than as an unknown media type.
                 let content_format = match action.get("content_format") {
+                    Some(serde_json::Value::String(s)) if s.trim().is_empty() => {
+                        if payload.is_empty() {
+                            None
+                        } else {
+                            Some(0)
+                        }
+                    }
                     Some(serde_json::Value::String(s)) => {
                         Some(codec::content_format_id(s).ok_or_else(|| {
                             anyhow::anyhow!(
@@ -440,10 +449,13 @@ fn send_coap_response_action() -> ActionDefinition {
              response code it deserves: 2.05 Content for a successful GET, 2.01 Created / \
              2.04 Changed for a POST or PUT, 2.02 Deleted for a DELETE, 4.04 Not Found for a \
              resource this device does not have, 4.05 Method Not Allowed, 4.00 Bad Request, \
-             5.03 Service Unavailable. Invent representations that are plausible for the \
-             device you are impersonating and keep them consistent across requests with \
-             set_memory. The message type of the reply (ACK for a CON request, NON for a NON \
-             request), the message id and the token echo are handled for you."
+             5.03 Service Unavailable. A path your instructions do not give this device is \
+             4.04 with no payload - never a representation invented for it. Where the \
+             instructions leave a resource's value open, invent one that is plausible for the \
+             device and keep it consistent across requests with set_memory. The example's \
+             payload is a placeholder for the shape, never data. The message type of the reply \
+             (ACK for a CON request, NON for a NON request), the message id and the token echo \
+             are handled for you."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -490,8 +502,8 @@ fn send_coap_response_action() -> ActionDefinition {
         example: json!({
             "type": "send_coap_response",
             "code": "2.05",
-            "payload": "{\"pct\": 41.2}",
-            "content_format": "application/json"
+            "payload": "<the resource's representation>",
+            "content_format": "text/plain"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -552,13 +564,15 @@ pub static IGNORE_COAP_REQUEST_ACTION: LazyLock<ActionDefinition> =
 pub static COAP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "coap_request",
-        "A CoAP client is requesting a resource. Decide what this device holds at that path \
-         and answer with a representation and a response code, or refuse.",
+        "A CoAP client is requesting a resource. Decide whether this device has a resource \
+         at that path - only the resources your instructions give it exist - and answer with \
+         its representation and a response code, or 4.04 when there is none. answer_with \
+         says which, for this request.",
         json!({
             "type": "send_coap_response",
             "code": "2.05",
-            "payload": "{\"pct\": 41.2}",
-            "content_format": "application/json"
+            "payload": "<the resource's representation>",
+            "content_format": "text/plain"
         }),
     )
     .with_parameters(vec![
@@ -633,6 +647,15 @@ pub static COAP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             required: false,
         },
         Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which answer this request takes, by method and path: the success \
+                 code when your instructions give this device the resource, 4.04 when they \
+                 do not."
+                .to_string(),
+            required: true,
+        },
+        Parameter {
             name: "payload_encoding".to_string(),
             type_hint: "string".to_string(),
             description:
@@ -660,6 +683,39 @@ pub static COAP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             .with_trace("CoAP request: {json_pretty(.)}"),
     )
 });
+
+/// The `answer_with` event field: the answer this request takes, by method and path.
+///
+/// The code table in `send_coap_response`'s description was not enough on its own: told "you
+/// are a greenhouse sensor whose only resource is /temperature", llama3.1:8b answered a GET of
+/// /humidity with an invented 2.05 `{"humidity": 41.2}` - the value lifted from the action's
+/// example - five times in five. A small model reads the request in front of it, not a table,
+/// so the request names both outcomes and the one that applies when the instructions are
+/// silent about the path. It leads with the lookup and gives the 4.04 as the literal action:
+/// a first version that named the success code first was still answered with an invented 2.05
+/// in 2 runs of 5.
+pub fn answer_with_for_request(method: &str, path: &str) -> String {
+    let found = match method {
+        "POST" => "send_coap_response with code \"2.04\" (\"2.01\" when the POST creates a \
+                   resource)"
+            .to_string(),
+        "PUT" => "send_coap_response with code \"2.04\" (\"2.01\" when the PUT creates the \
+                  resource)"
+            .to_string(),
+        "DELETE" => "send_coap_response with code \"2.02\" and no payload".to_string(),
+        _ => format!(
+            "send_coap_response with code \"2.05\" whose payload is exactly what they say \
+             {path} returns, character for character - text stays text, never rewritten as \
+             JSON"
+        ),
+    };
+    format!(
+        "first look in your instructions for a resource at {path}. If they give this device \
+         none there - including when they say it has only other resources - answer exactly \
+         {{\"type\": \"send_coap_response\", \"code\": \"4.04\"}} and nothing else; never \
+         invent a resource they do not describe. If they do give one, {found}"
+    )
+}
 
 /// All CoAP event types. The single entry is emitted for every well-formed request.
 pub fn get_coap_event_types() -> Vec<EventType> {

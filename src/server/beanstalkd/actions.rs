@@ -364,21 +364,23 @@ fn reserve_job_action() -> ActionDefinition {
     ActionDefinition {
         name: "reserve_beanstalkd_job".to_string(),
         description: "Hand a job to a worker that reserved: NetGet answers RESERVED <job_id> \
-                      <bytes> followed by the body. Give the body as text; NetGet counts it."
+                      <bytes> followed by the body. Give the body as text; NetGet counts it. \
+                      The example's id and body are placeholders for the shape, never data."
             .to_string(),
         parameters: vec![
             param("job_id", "number", "The job's id, a positive integer", true),
             param(
                 "body",
                 "string",
-                "The job's payload as text (at most 65535 bytes)",
+                "The job's payload as text, exactly as your instructions give it (at most \
+                 65535 bytes)",
                 true,
             ),
         ],
         example: json!({
             "type": "reserve_beanstalkd_job",
-            "job_id": 17,
-            "body": "{\"image\": 7, \"width\": 640}"
+            "job_id": 1,
+            "body": "<the job's text, word for word>"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -416,7 +418,11 @@ fn found_job_action() -> ActionDefinition {
             param("job_id", "number", "The job's id, a positive integer", true),
             param("body", "string", "The job's payload as text", true),
         ],
-        example: json!({"type": "send_beanstalkd_found", "job_id": 17, "body": "resize image 7"}),
+        example: json!({
+            "type": "send_beanstalkd_found",
+            "job_id": 1,
+            "body": "<the job's text, word for word>"
+        }),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> beanstalkd FOUND {job_id}")
@@ -463,19 +469,22 @@ fn stats_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_beanstalkd_stats".to_string(),
         description: "Answer stats, stats-tube or stats-job with a flat report. NetGet renders \
-                      it as the YAML dictionary beanstalkd sends (OK <bytes> then ---). Names \
-                      are like current-jobs-ready; values are numbers or short ASCII strings."
+                      it as the YAML dictionary beanstalkd sends (OK <bytes> then ---). Use \
+                      beanstalkd's own stat names (the event's answer_with lists them) with \
+                      the figures your instructions give; the example's figures are \
+                      placeholders, never data."
             .to_string(),
         parameters: vec![param(
             "stats",
             "object",
-            "Object of stat name -> number or string, e.g. {\"current-jobs-ready\": 3, \
-             \"version\": \"1.13\"}",
+            "Object of stat name -> number or string: current-jobs-ready, \
+             current-jobs-reserved, current-jobs-delayed, current-jobs-buried, total-jobs, \
+             version, ...",
             true,
         )],
         example: json!({
             "type": "send_beanstalkd_stats",
-            "stats": {"current-jobs-ready": 3, "current-jobs-reserved": 1, "total-jobs": 42, "version": "1.13"}
+            "stats": {"current-jobs-ready": 0, "current-jobs-delayed": 0, "version": "0.0"}
         }),
         log_template: Some(
             LogTemplate::new()
@@ -518,6 +527,62 @@ fn close_connection_action() -> ActionDefinition {
                 .with_debug("beanstalkd close_connection"),
         ),
     }
+}
+
+/// The `answer_with` field of `beanstalkd_reserve`.
+///
+/// `reserve_beanstalkd_job`'s example body used to be `{"image": 7, "width": 640}`. Told "the
+/// images tube holds one waiting job, number 7, whose text is: resize photo.jpg to 640 wide",
+/// llama3.1:8b handed out job 7 with that example body, five runs in five - the example's 7
+/// and 640 matched the instruction closely enough to pass for it. The example is now a
+/// placeholder, and the request says where the body comes from.
+pub fn reserve_answer_with(tubes: &[String]) -> String {
+    format!(
+        "reserve_beanstalkd_job with the id of a job your instructions say is waiting in one \
+         of the tubes this worker watches ({}), and as its body that job's text exactly as \
+         your instructions give it, word for word. wait_for_beanstalkd_job when your \
+         instructions give no waiting job in those tubes",
+        tubes.join(", ")
+    )
+}
+
+/// The `answer_with` field of `beanstalkd_stats`: the action, and beanstalkd's own stat names
+/// for the scope.
+///
+/// Told "5 ready jobs and 2 buried jobs, running version 1.13", llama3.1:8b answered `stats`
+/// with the example's own names - `current-jobs-ready`, `current-jobs-reserved`, `total-jobs`,
+/// `version` - putting the 2 buried jobs under `current-jobs-reserved` because the example had
+/// no `current-jobs-buried` to put them in, five runs in five. The request now carries the
+/// names beanstalkd itself reports for the scope, so the model can find the one each figure
+/// belongs to.
+pub fn stats_answer_with(scope: &str) -> String {
+    let names = match scope {
+        "tubes" => {
+            return "send_beanstalkd_tubes with every tube your instructions say exists \
+                    (default always does)"
+                .to_string()
+        }
+        "job" => {
+            "id, tube, state (ready, delayed, reserved or buried), pri, age, delay, ttr, \
+                  time-left, reserves, timeouts, releases, buries, kicks"
+        }
+        "tube" => {
+            "name, current-jobs-urgent, current-jobs-ready, current-jobs-reserved, \
+                   current-jobs-delayed, current-jobs-buried, total-jobs, current-using, \
+                   current-waiting, current-watching, pause"
+        }
+        _ => {
+            "current-jobs-urgent, current-jobs-ready, current-jobs-reserved, \
+              current-jobs-delayed, current-jobs-buried, total-jobs, current-tubes, \
+              current-connections, current-workers, uptime, version"
+        }
+    };
+    format!(
+        "send_beanstalkd_stats whose stats object uses beanstalkd's own names for this scope - \
+         {names} - with every figure your instructions give put under the name it belongs to \
+         (buried jobs under current-jobs-buried, ready jobs under current-jobs-ready, and so \
+         on). Send NOT_FOUND with send_beanstalkd_status for a tube or job that does not exist"
+    )
 }
 
 /// `put <pri> <delay> <ttr> <bytes>` with its body.
@@ -571,10 +636,21 @@ pub static BEANSTALKD_RESERVE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "A worker wants a job from one of the tubes it watches. Hand one out with \
          reserve_beanstalkd_job, or keep it waiting with wait_for_beanstalkd_job when there is \
          none (NetGet answers TIMED_OUT itself when timeout_secs runs out).",
-        json!({"type": "reserve_beanstalkd_job", "job_id": 17, "body": "resize image 7"}),
+        json!({
+            "type": "reserve_beanstalkd_job",
+            "job_id": 1,
+            "body": "<the job's text, word for word>"
+        }),
     )
     .with_parameters(vec![
         param("tubes", "array", "The tubes this worker watches", true),
+        param(
+            "answer_with",
+            "string",
+            "Which answer this reserve takes: the waiting job your instructions give, with \
+             its id and its text word for word, or wait_for_beanstalkd_job when there is none",
+            true,
+        ),
         param(
             "timeout_secs",
             "number",
@@ -679,10 +755,16 @@ pub static BEANSTALKD_STATS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
          'tubes' (list-tubes) -> send_beanstalkd_tubes.",
         json!({
             "type": "send_beanstalkd_stats",
-            "stats": {"current-jobs-ready": 3, "total-jobs": 42, "version": "1.13"}
+            "stats": {"current-jobs-ready": 0, "current-jobs-delayed": 0, "version": "0.0"}
         }),
     )
     .with_parameters(vec![
+        param(
+            "answer_with",
+            "string",
+            "Which answer this request takes, with beanstalkd's own stat names for its scope",
+            true,
+        ),
         Parameter {
             name: "scope".to_string(),
             type_hint: "string".to_string(),

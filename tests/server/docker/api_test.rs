@@ -305,3 +305,28 @@ fn version_and_info_default_everything_the_model_left_out() {
     let vols = render_volumes(&json!([])).unwrap();
     assert_eq!(vols, json!({"Volumes": [], "Warnings": []}));
 }
+
+/// A model that copies one ID onto every container (the action example's, in the eval) gets
+/// distinct IDs: the first keeps it, each repeat gets the one derived from its name.
+#[test]
+fn a_repeated_container_id_is_replaced_by_the_name_derived_one() {
+    let copied = "3f4e1a2b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f";
+    let rendered = render_container_list(&json!([
+        {"id": copied, "names": ["eval-api"], "image": "api:2", "state": "running"},
+        {"id": copied, "names": ["eval-migrate"], "image": "api:2", "state": "exited"}
+    ]))
+    .expect("both containers render");
+    let first = rendered[0]["Id"].as_str().unwrap();
+    let second = rendered[1]["Id"].as_str().unwrap();
+    assert_eq!(first, copied, "the first keeps the ID it was given");
+    assert_eq!(second, api::derived_id("container:eval-migrate"));
+    assert_ne!(first[..12], second[..12]);
+
+    // Distinct IDs are left alone.
+    let distinct = render_container_list(&json!([
+        {"id": "aaaaaaaaaaaa", "names": ["a"], "image": "x", "state": "running"},
+        {"id": "bbbbbbbbbbbb", "names": ["b"], "image": "x", "state": "running"}
+    ]))
+    .unwrap();
+    assert_eq!(distinct[1]["Id"], "bbbbbbbbbbbb");
+}

@@ -31,6 +31,8 @@ async fn a_zabbix_trapper_against_a_mocked_model() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 .on_event("zabbix_sender_data")
+                // Matches only when the event carries the per-request hint naming its hosts.
+                .and_event_data_contains("answer_with", "this request carries")
                 .respond_with_actions_from_event(|e| {
                     // Counts derived from what the model was shown, so the reply proves the
                     // items, their values and item_count reached it.

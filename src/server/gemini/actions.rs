@@ -348,7 +348,10 @@ fn send_gemtext_action() -> ActionDefinition {
         name: "send_gemtext".to_string(),
         description: "Answer with a gemtext page (status 20, text/gemini). Give the page as \
                       structured lines; NetGet writes the gemtext syntax, so text never turns \
-                      into a link or heading by accident."
+                      into a link or heading by accident. The titles, text and links are the \
+                      ones your instructions give the page, word for word; the example's are \
+                      placeholders for the shape, never data. Not for a page that asks the \
+                      visitor something first - that is send_gemini_input."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -371,11 +374,11 @@ fn send_gemtext_action() -> ActionDefinition {
         example: json!({
             "type": "send_gemtext",
             "lines": [
-                {"type": "heading1", "text": "Welcome"},
-                {"type": "text", "text": "A capsule served by NetGet."},
-                {"type": "link", "url": "/about", "text": "About this capsule"},
-                {"type": "list", "text": "No tracking"},
-                {"type": "preformatted", "alt": "ascii art", "text": " /\\_/\\\n( o.o )"}
+                {"type": "heading1", "text": "<page title>"},
+                {"type": "text", "text": "<a paragraph>"},
+                {"type": "link", "url": "/<path>", "text": "<link label>"},
+                {"type": "list", "text": "<a list item>"},
+                {"type": "preformatted", "alt": "<caption>", "text": "<preformatted text>"}
             ]
         }),
         log_template: Some(
@@ -437,8 +440,10 @@ fn send_gemini_input_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_gemini_input".to_string(),
         description: "Ask the visitor for a line of input (status 10, or 11 for sensitive \
-                      input such as a password). The client re-requests the same URL with the \
-                      answer as the query."
+                      input such as a password), instead of a page: a page that asks for a \
+                      name, a search term or a password before showing anything answers its \
+                      first request (no query) with this alone. The client re-requests the same \
+                      URL with the answer as the query."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -515,17 +520,58 @@ fn close_connection_action() -> ActionDefinition {
     }
 }
 
+/// The `answer_with` field of `gemini_request`: which single response this request takes.
+///
+/// Two failures in the real-model eval (llama3.1:8b, seed 42) shaped it. Told "the page
+/// /guestbook asks the visitor for their name before showing anything", the model answered
+/// with a page reading "What is your name?" followed by `send_gemini_input` - and only the
+/// first response is ever sent, so the visitor got a page and never a prompt, five runs in
+/// five. Told "serve a home page titled Welcome to the NetGet capsule", it sent the example
+/// page ("Welcome", "A capsule served by NetGet.") first and the right page after it, four
+/// runs in five. The request now says the prompt comes alone and first, and where a page's
+/// words come from. It names the path against the home page and leads with the 51 as a literal
+/// action: without that, told "only the home page exists", the model served the home page for
+/// /nowhere 4 runs in 5.
+pub fn answer_with_for_request(path: &str, query: Option<&str>) -> String {
+    match query {
+        Some(answer) => format!(
+            "the visitor answered the prompt at {path} with \"{answer}\": answer with the \
+             page that follows (send_gemtext), as your instructions describe it. One action \
+             only"
+        ),
+        None => {
+            let which = if path.is_empty() || path == "/" {
+                " (the home page)"
+            } else {
+                " (not the home page, which is /)"
+            };
+            format!(
+                "the visitor asked for {path}{which}. Exactly one action - only the first is \
+                 sent. First look in your instructions for a page at {path}: if they give none \
+                 there - including when they say only other pages exist - answer exactly \
+                 {{\"type\": \"send_gemini_response\", \"status\": 51, \"meta\": \"Not \
+                 found\"}} and nothing else. If that page asks the visitor for something (a \
+                 name, a search term, a password) before showing anything, answer \
+                 send_gemini_input with that question and nothing else - no page before it. \
+                 Otherwise send_gemtext whose lines carry exactly the titles, text and links \
+                 they give that page, word for word"
+            )
+        }
+    }
+}
+
 /// One request: an absolute gemini:// URL.
 pub static GEMINI_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "gemini_request",
-        "A client requested a gemini:// URL. Answer with exactly one response: a page \
-         (send_gemtext), an input prompt, a redirect, or a status.",
+        "A client requested a gemini:// URL. Answer with exactly one response - only the \
+         first is sent: a page (send_gemtext), an input prompt (send_gemini_input), a \
+         redirect, or a status. answer_with says which fits this request.",
         json!({
             "type": "send_gemtext",
             "lines": [
-                {"type": "heading1", "text": "Hello"},
-                {"type": "link", "url": "/about", "text": "About"}
+                {"type": "heading1", "text": "<page title>"},
+                {"type": "link", "url": "/<path>", "text": "<link label>"}
             ]
         }),
     )
@@ -555,6 +601,15 @@ pub static GEMINI_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
                           null when the URL has none"
                 .to_string(),
             required: false,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which single response this request takes: an input prompt, a page, \
+                          or 51, by what the instructions say about this path and whether \
+                          the visitor has answered a prompt"
+                .to_string(),
+            required: true,
         },
     ])
     .with_log_template(

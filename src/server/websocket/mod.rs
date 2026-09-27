@@ -883,6 +883,7 @@ impl WebSocketServer {
                 "path": head.path(),
                 "query": head.query(),
                 "subprotocols": head.offered_subprotocols(),
+                "answer_with": actions::handshake_answer_with(&head.offered_subprotocols()),
                 "origin": head.header("origin").unwrap_or(""),
                 "headers": head.headers_json(),
                 "client_ip": peer_addr.ip().to_string(),
@@ -1043,12 +1044,14 @@ impl WebSocketServer {
             &WEBSOCKET_CONNECTION_OPENED_EVENT,
             serde_json::json!({
                 "path": path,
+                "answer_with": actions::OPENED_ANSWER_WITH,
                 "subprotocol": ctx.subprotocol.clone().unwrap_or_default(),
                 "client_ip": peer_addr.ip().to_string(),
                 "client_port": peer_addr.port(),
             }),
         );
-        match call_llm(
+        ctx.protocol.set_speaking_first(true);
+        let opened_answer = call_llm(
             &ctx.llm_client,
             &ctx.app_state,
             ctx.server_id,
@@ -1056,8 +1059,9 @@ impl WebSocketServer {
             &opened_event,
             ctx.protocol.as_ref(),
         )
-        .await
-        {
+        .await;
+        ctx.protocol.set_speaking_first(false);
+        match opened_answer {
             Ok(result) => {
                 for msg in result.messages {
                     let _ = ctx.status_tx.send(msg);
@@ -1235,6 +1239,7 @@ impl WebSocketServer {
                         "text": text,
                         "message_bytes": text.len(),
                         "subprotocol": sub,
+                        "answer_with": actions::TEXT_MESSAGE_ANSWER_WITH,
                     }),
                 ),
                 Inbound::Binary(bytes) => {

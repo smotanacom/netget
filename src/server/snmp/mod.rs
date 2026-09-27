@@ -296,10 +296,15 @@ impl SnmpServer {
                             // Create SNMP request event. request_id and the community
                             // string are echoed into the response automatically - they are
                             // exposed here so a handler can inspect or log them.
+                            let answer_with = actions::answer_with_for_request(
+                                &parsed.request_type,
+                                &parsed.requested_oids,
+                            );
                             let event = Event::new(
                                 &SNMP_REQUEST_EVENT,
                                 serde_json::json!({
                                     "request_type": parsed.request_type,
+                                    "answer_with": answer_with,
                                     "oids": parsed.requested_oids,
                                     "community": String::from_utf8_lossy(&parsed.community).to_string(),
                                     "request_id": parsed.request_id,

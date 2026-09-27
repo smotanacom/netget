@@ -109,8 +109,25 @@ hand against their codes with `--error-format stacktrace`.
 
 | Event | Data | Actions |
 |---|---|---|
-| `bolt_authenticate` | `user_agent`, `scheme`, `principal`, `credentials_present`, `password_configured` — **never the credential** | `accept_bolt_login`, `reject_bolt_login {code?, message?}` (code must be `Neo.ClientError.Security.*`, default `…Unauthorized`), `close_connection` |
+| `bolt_authenticate` | `user_agent`, `scheme`, `principal`, `credentials_present`, `password_configured`, `answer_with` — **never the credential** | `accept_bolt_login`, `reject_bolt_login {code?, message?}` (code must be `Neo.ClientError.Security.*`, default `…Unauthorized`), `close_connection` |
 | `bolt_query` | `query`, `parameters` (JSON), `database` (when named), `mode: read\|write`, `in_transaction` | `send_bolt_records {fields, records, stats?, query_type?}`, `send_bolt_failure {code, message}`, `close_connection` |
+
+**The login decision says what it is decided on.** `bolt_authenticate`'s description and its
+`answer_with` (`actions::login_answer_with`) say the decision is about this user, this scheme and
+whether a credential was sent — before any query exists — and that the instructions' rules about
+queries apply to each query when it arrives, never to the login. Told "act as a Neo4j graph
+database that accepts any login. Reject any query that is not valid Cypher with Neo4j's syntax
+error", llama3.1:8b answered the login with `reject_bolt_login` five runs in five (real-model
+eval, seed 42): "Reject" was the instruction's operative verb, and nothing in the login event
+said no query was being decided.
+
+**`send_bolt_failure`'s example message is still `Invalid input 'RETRUN': expected 'RETURN' …`,
+and the model copies it** — for `SELECT name FROM people` it answered with that exact message.
+A placeholder (`"Invalid input '<the query's own first unparseable word>': …"`) was tried and
+was copied literally instead, angle brackets and all, 5 runs in 5, which is worse on the wire
+than a real-looking message about the wrong word. The eval case passes either way (it matches
+`invalid|syntax|expected`); a per-query hint naming the query's first word is the next thing to
+try if the message ever matters.
 
 `send_bolt_records` is validated before anything is sent: each record must have exactly one
 value per field, field names non-empty and distinct, `query_type` one of `r`/`w`/`rw`/`s`

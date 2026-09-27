@@ -40,7 +40,12 @@ same crate the server frames with. This is what the WebSocket server's `Beta` ra
 | `test_binary_payload_encoding_is_symmetric` | encode/decode are inverses for non-UTF-8 bytes; no sniffing; bad input errors instead of panicking | 0 |
 | `test_websocket_wire_protocol_against_raw_client` | the main one — see below | 1 |
 | `test_non_upgrade_request_is_refused_without_a_model_call` | 400 and 426 are answered directly, and `verify_mocks` proves the model was never consulted | 0 extra |
-| `test_websocket_subprotocol_and_rejection` | the model picks one offered subprotocol and it is echoed; a declined upgrade returns the handler's own status | 4 |
+| `test_websocket_subprotocol_and_rejection` | the model picks one offered subprotocol and it is echoed; a declined upgrade returns the handler's own status. The accept rule requires the event's `answer_with` to list the offered subprotocols, so it matches only when the hint reaches the model | 4 |
+| `answer_with_test::an_unoffered_subprotocol_is_dropped_and_the_accept_stands` | an accept naming a subprotocol the client did not offer (none offered, or others offered) still accepts, with no subprotocol | 0 |
+| `answer_with_test::an_offered_subprotocol_is_agreed` | an offered one is kept; accepting with none is always valid | 0 |
+| `answer_with_test::the_hint_says_whether_anything_was_offered` | `handshake_answer_with` says that no subprotocol is normal, lists them when there are some, and that a greeting comes after the connection opens | 0 |
+| `answer_with_test::an_empty_greeting_is_dropped_but_an_empty_reply_is_sent` | while speaking first an empty text message is not sent, a real greeting is, and an empty reply afterwards is | 0 |
+| `answer_with_test::the_opened_and_message_hints_leave_the_words_to_the_instructions` | the opened hint speaks first only when told to; the message hint's echo is the message's own text; no example on connect carries a greeting | 0 |
 | `test_websocket_with_websocat` | a real external client gets the unprompted greeting and its echo | 1 |
 | `test_websocket_handshake_backend_failure_is_tagged_fail_closed` | an unanswerable `websocket_handshake` is refused with 503, logged `decision=fail_closed_llm_error`, and never as `decision=model_reject` | 1 + one deliberately failing event |
 | `connection_bounds_test::the_handshake_past_the_cap_gets_a_503_and_the_slot_comes_back` | 256 upgrades admitted, the 257th gets 503, closing one frees one slot | 0 |

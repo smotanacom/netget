@@ -43,6 +43,10 @@ real net-snmp `GetRequest` that must still parse.
 - `test_snmp_interface_stats()`: 4 LLM calls (ifIndex, ifDescr, ifSpeed, ifOperStatus queries)
 - `test_snmp_custom_mib()`: 3 LLM calls (3 custom enterprise OID queries)
 - **Total: 10 LLM calls** (exactly at limit)
+- `answer_with_test.rs`: 0 LLM calls — pins the per-request `answer_with` sentence (each OID
+  named with its MIB-2 meaning, the exact count, no other OIDs) and that no example the model
+  reads carries a plausible description or host name. `test_snmp_basic_get`'s GET rule also
+  requires the event's `answer_with`, so it matches only when the hint reaches the model
 
 **Why At Limit?**:
 

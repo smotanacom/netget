@@ -717,6 +717,7 @@ impl ModbusServer {
             "function": request.function_name(),
             "start_address": request.start_address(),
             "quantity": request.quantity(),
+            "answer_with": actions::answer_with_for_request(request),
         });
 
         match request {

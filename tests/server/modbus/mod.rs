@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "modbus"))]
+mod answer_with_test;
+#[cfg(all(test, feature = "modbus"))]
 mod bounds_test;
 #[cfg(all(test, feature = "modbus"))]
 mod connection_bounds_test;

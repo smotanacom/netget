@@ -50,6 +50,8 @@ async fn a_whole_beanstalkd_session_against_a_mocked_model() -> E2EResult<()> {
                     .expect_calls(1)
                     .and()
                     .on_event("beanstalkd_reserve")
+                    // Matches only when the event says where the job's body comes from.
+                    .and_event_data_contains("answer_with", "word for word")
                     .respond_with_actions(serde_json::json!([{
                         "type": "reserve_beanstalkd_job",
                         "job_id": 12,
@@ -67,6 +69,9 @@ async fn a_whole_beanstalkd_session_against_a_mocked_model() -> E2EResult<()> {
                     // One rule for beanstalkd_stats that branches on scope: two rules on the
                     // same event cannot be told apart, and the first would answer both.
                     .on_event("beanstalkd_stats")
+                    // Every scope's hint names its answer: send_beanstalkd_stats for stats,
+                    // send_beanstalkd_tubes for list-tubes.
+                    .and_event_data_contains("answer_with", "send_beanstalkd_")
                     .respond_with_actions_from_event(|e| match e["scope"].as_str() {
                         Some("tubes") => serde_json::json!([{
                             "type": "send_beanstalkd_tubes",

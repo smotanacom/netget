@@ -53,10 +53,30 @@ backs them.
 
 ## What the model sees and controls
 
-**Event** `gemini_request {url, host, path, query}` — `url` as sent; `path` as it appears in the
-URL (not decoded), `/` when empty; `query` percent-decoded (only `%XX`; `+` stays a plus, since a
-Gemini query is not form encoding) and stripped of control characters other than newline and
-tab, or `null` when there is no `?`.
+**Event** `gemini_request {url, host, path, query, answer_with}` — `url` as sent; `path` as it
+appears in the URL (not decoded), `/` when empty; `query` percent-decoded (only `%XX`; `+` stays a
+plus, since a Gemini query is not form encoding) and stripped of control characters other than
+newline and tab, or `null` when there is no `?`.
+
+`answer_with` (`actions::answer_with_for_request`) says which single response this request takes.
+With no query: it names the path against the home page ("the visitor asked for /nowhere (not
+the home page, which is /)"), says exactly one action is sent, looks the path up first and gives
+the 51 as a literal action, `{"type": "send_gemini_response", "status": 51, "meta": "Not
+found"}`; then `send_gemini_input` alone when the instructions say the page asks for something
+first; otherwise a page whose words are the instructions' own, word for word. With a query: the
+visitor answered the prompt with it, so send the page that follows. Two real-model eval misses
+(llama3.1:8b, seed 42) are why: told "/guestbook asks the visitor for their name before showing
+anything", the model sent a page reading "What is your name?" and *then* `send_gemini_input` —
+and only the first is sent — five runs in five; told "serve a home page titled Welcome to the
+NetGet capsule", it sent `send_gemtext`'s example page ("Welcome", "A capsule served by
+NetGet.") first and the right page second, four runs in five. The page examples are now
+placeholders (`"<page title>"`, `"<a paragraph>"`, `/<path>`), and the descriptions say so.
+
+The path-against-home and literal-51 parts were added after a first version (the same hint
+without them) fixed those two cases and broke a third: told "only the home page exists", the
+model served the home page for /nowhere four runs in five. Measured, 5 runs each: home-page
+1/5 → 5/5, ask-for-input 0/5 → 5/5, not-found 5/5 → 1/5 with the first version and 4/5 with the
+shipped one (its miss is a 20 page titled "Page not found").
 
 | Action | Renders |
 |---|---|

@@ -24,6 +24,7 @@ use crate::state::ServerId;
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -249,6 +250,10 @@ pub struct WebSocketProtocol {
     /// Subprotocols the client offered in `Sec-WebSocket-Protocol`, used to reject an
     /// `accept_websocket` naming one the client never asked for (RFC 6455 §4.2.2 step 5.5).
     offered_subprotocols: Vec<String>,
+    /// Set while `websocket_connection_opened` is being answered. An empty text message
+    /// there is dropped: it carries nothing, and websocat reads a zero-length message as the
+    /// end of the stream, so nothing sent after it is ever shown.
+    speaking_first: AtomicBool,
 }
 
 impl Default for WebSocketProtocol {
@@ -285,6 +290,7 @@ impl WebSocketProtocol {
             out_tx: None,
             status_tx: None,
             offered_subprotocols: Vec::new(),
+            speaking_first: AtomicBool::new(false),
         }
     }
 
@@ -302,7 +308,14 @@ impl WebSocketProtocol {
             out_tx: Some(out_tx),
             status_tx: Some(status_tx),
             offered_subprotocols,
+            speaking_first: AtomicBool::new(false),
         }
+    }
+
+    /// Mark whether the event being answered is `websocket_connection_opened`, where the
+    /// server speaks first. See `speaking_first`.
+    pub fn set_speaking_first(&self, speaking_first: bool) {
+        self.speaking_first.store(speaking_first, Ordering::SeqCst);
     }
 
     fn send(&self, msg: WsOut) -> Result<()> {
@@ -337,21 +350,30 @@ impl WebSocketProtocol {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        if let Some(chosen) = &subprotocol {
-            // RFC 6455 §4.2.2: the server MUST NOT echo a subprotocol the client did not
-            // offer. Clients that check this (websocat does) fail the connection outright,
-            // so answering with an error the model can read is strictly better than sending
-            // an invalid 101.
-            if !self.offered_subprotocols.iter().any(|s| s == chosen) {
-                return Err(anyhow::anyhow!(
-                    "Cannot accept subprotocol {:?}: the client did not offer it. \
-                     Offered subprotocols: {:?}. Choose one of those, or omit 'subprotocol' \
-                     to accept without one.",
+        // RFC 6455 §4.2.2: the server MUST NOT echo a subprotocol the client did not offer,
+        // and clients that check (websocat does) fail the connection if it does. What the
+        // model decided is to accept; the subprotocol is a detail it got wrong, usually by
+        // copying one from an example. So only that part is refused: the connection opens
+        // without a subprotocol, which is a valid 101 for any client, and the log says what
+        // was dropped. Refusing the whole action instead turned every such accept into the
+        // fail-closed 503 - the network path does not re-prompt the model with the error.
+        let subprotocol = match subprotocol {
+            Some(chosen) if !self.offered_subprotocols.iter().any(|s| *s == chosen) => {
+                let message = format!(
+                    "WebSocket accept {} decision=subprotocol_dropped: {:?} was not offered \
+                     (offered: {:?}); accepting without a subprotocol",
+                    self.conn_label(),
                     chosen,
                     self.offered_subprotocols
-                ));
+                );
+                warn!("{}", message);
+                if let Some(tx) = &self.status_tx {
+                    let _ = tx.send(format!("[WARN] {}", message));
+                }
+                None
             }
-        }
+            other => other,
+        };
 
         self.log(format!(
             "WebSocket accept {} subprotocol={:?}",
@@ -403,6 +425,27 @@ impl WebSocketProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'text'. Provide the message body to send as a WebSocket text frame")?
             .to_string();
+
+        if text.is_empty() && self.speaking_first.load(Ordering::SeqCst) {
+            // Told to say nothing on connect, llama3.1:8b sends "" instead of no action. It
+            // is valid RFC 6455 and carries nothing, and websocat treats a zero-length message
+            // as end of stream (checked against a Python `websockets` server: after one, the
+            // echo that followed was never printed). A reply to a client's own empty message
+            // is not affected: this applies only while the server is speaking first.
+            let message = format!(
+                "WebSocket {} decision=empty_greeting_dropped: an empty text message on \
+                 connection open is treated as no greeting",
+                self.conn_label()
+            );
+            warn!("{}", message);
+            if let Some(tx) = &self.status_tx {
+                let _ = tx.send(format!("[WARN] {}", message));
+            }
+            return Ok(ActionResult::Custom {
+                name: "send_websocket_text".to_string(),
+                data: json!({ "bytes": 0, "dropped": true }),
+            });
+        }
 
         self.log(format!(
             "WebSocket -> text {} bytes to {}",
@@ -906,20 +949,21 @@ pub fn accept_websocket_action() -> ActionDefinition {
         description: "Complete the RFC 6455 upgrade and open the connection. Required: a \
              websocket_handshake event that is answered with neither accept_websocket nor \
              reject_websocket is refused with HTTP 503, because silence must not read as \
-             consent."
+             consent. Most clients offer no subprotocol; accept them with no 'subprotocol' \
+             field."
             .to_string(),
         parameters: vec![Parameter {
             name: "subprotocol".to_string(),
             type_hint: "string".to_string(),
             description:
-                "The one subprotocol to agree on, echoed back in Sec-WebSocket-Protocol. It \
-                 must be one of the values in the event's 'subprotocols' list — RFC 6455 \
-                 forbids naming one the client did not offer, and real clients fail the \
-                 connection if you do. Omit to accept without a subprotocol."
+                "Only when the event's 'subprotocols' list is not empty: the one of those \
+                 values to agree on, echoed back in Sec-WebSocket-Protocol. Omit it when the \
+                 list is empty. A value the client did not offer is dropped (RFC 6455 \
+                 forbids echoing it) and the connection opens without one."
                     .to_string(),
             required: false,
         }],
-        example: json!({"type": "accept_websocket", "subprotocol": "chat"}),
+        example: json!({"type": "accept_websocket"}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("WS accept subprotocol={subprotocol}")
@@ -969,7 +1013,8 @@ pub fn send_websocket_text_action() -> ActionDefinition {
         description:
             "Send a WebSocket text frame (opcode 0x1) to this connection. This is the normal \
              way to answer a client, and it is also how the server speaks first — it is valid \
-             on websocket_connection_opened, with nothing received yet."
+             on websocket_connection_opened, with nothing received yet. The text is the words \
+             your instructions give, exactly; the example's text is a placeholder, never data."
                 .to_string(),
         parameters: vec![Parameter {
             name: "text".to_string(),
@@ -980,7 +1025,7 @@ pub fn send_websocket_text_action() -> ActionDefinition {
                     .to_string(),
             required: true,
         }],
-        example: json!({"type": "send_websocket_text", "text": "{\"event\":\"welcome\"}"}),
+        example: json!({"type": "send_websocket_text", "text": "<the message, word for word>"}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> WS text: {preview(text,60)}")
@@ -1254,15 +1299,64 @@ fn open_connection_actions() -> Vec<ActionDefinition> {
     ]
 }
 
+/// The `answer_with` field of `websocket_handshake`: what this upgrade takes.
+///
+/// llama3.1:8b, told only to echo messages or to greet each client, answered websocat's
+/// upgrade - which offers no subprotocol - with `accept_websocket` naming the example's "chat"
+/// subprotocol (five runs in five), and in another case with `reject_websocket` 403 "no
+/// subprotocols offered" (five in five). Neither instruction said anything about the
+/// handshake. The request now says whether any subprotocol was offered, that none is normal,
+/// and that a refusal needs a reason from the instructions.
+pub fn handshake_answer_with(offered: &[String]) -> String {
+    let later = "This step only opens the connection: any message - a greeting, an echo, a \
+                 reply - is sent after it has opened, never here";
+    let refuse = "reject_websocket only when your instructions give a reason to refuse this \
+                  client (its path, its Origin, a missing token)";
+    if offered.is_empty() {
+        format!(
+            "this client offered no subprotocol, which is normal for most clients and never a \
+             reason to refuse. Answer exactly {{\"type\": \"accept_websocket\"}} and nothing \
+             else - unless your instructions give a reason to refuse this client (its path, \
+             its Origin, a missing token), then reject_websocket. {later}"
+        )
+    } else {
+        format!(
+            "accept_websocket, naming at most one of the subprotocols this client offered ({}) \
+             in 'subprotocol', or none. {refuse}. {later}",
+            offered.join(", ")
+        )
+    }
+}
+
+/// The `answer_with` field of `websocket_connection_opened`.
+///
+/// The event's example used to be a `{"event":"welcome"}` greeting, and with it the model
+/// spoke first on every connection: told only to echo messages, it greeted, and told to greet
+/// with "Welcome to NetGet Eval", it sent the example's `{"event":"welcome"}` instead (real-model
+/// eval, llama3.1:8b, seed 42). Speaking first is the instruction's call, and the words are its.
+/// "No action" is spelled out as `{"actions": []}` because, told to "return no action", the model
+/// sent an empty text message instead, and websocat reads a zero-length message as end of input
+/// and prints nothing after it - the echo that followed was sent and never shown.
+pub const OPENED_ANSWER_WITH: &str = "speak first only if your instructions say to greet or send \
+     something as soon as a client connects: then send_websocket_text whose text is exactly the \
+     words they give. If they say nothing about connecting - an echo server, a server that only \
+     answers - answer {\"actions\": []}: no action at all, and never an empty message, which \
+     some clients read as the end of the stream";
+
+/// The `answer_with` field of `websocket_text_message`.
+pub const TEXT_MESSAGE_ANSWER_WITH: &str = "send_websocket_text with the reply your instructions \
+     call for; to echo, its text is this message's 'text' field exactly, unchanged";
+
 /// Emitted for every well-formed upgrade request, before any 101 is written.
 /// See `WebSocketServer::handle_connection`.
 pub static WEBSOCKET_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "websocket_handshake",
         "A client asked to upgrade an HTTP request to WebSocket. Decide whether to accept, and \
-         which of the offered subprotocols to agree on. Answering with neither \
-         accept_websocket nor reject_websocket refuses the upgrade with HTTP 503.",
-        json!({"type": "accept_websocket", "subprotocol": "chat"}),
+         which of the offered subprotocols (if any) to agree on; answer_with says what this \
+         request takes. Answering with neither accept_websocket nor reject_websocket refuses \
+         the upgrade with HTTP 503.",
+        json!({"type": "accept_websocket"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -1285,6 +1379,15 @@ pub static WEBSOCKET_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             description: "Subprotocols the client offered in Sec-WebSocket-Protocol, in its \
                           order of preference. accept_websocket may name one of these and \
                           nothing else."
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "What this handshake takes: accept_websocket (naming one of the \
+                          offered subprotocols only when there are any), or reject_websocket \
+                          for a reason the instructions give."
                 .to_string(),
             required: true,
         },
@@ -1338,15 +1441,24 @@ pub static WEBSOCKET_CONNECTION_OPENED_EVENT: LazyLock<EventType> = LazyLock::ne
     EventType::new(
         "websocket_connection_opened",
         "The WebSocket connection is open and nothing has been received yet. Send a greeting, \
-         a server-hello frame or an initial snapshot now, or return no action to stay silent \
-         until the client speaks.",
-        json!({"type": "send_websocket_text", "text": "{\"event\":\"welcome\"}"}),
+         a server-hello frame or an initial snapshot now only if your instructions say to; \
+         otherwise return no action and stay silent until the client speaks. answer_with says \
+         which.",
+        json!({"type": "send_websocket_text", "text": "<the greeting your instructions give>"}),
     )
     .with_parameters(vec![
         Parameter {
             name: "path".to_string(),
             type_hint: "string".to_string(),
             description: "Request path the client connected to".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Whether to speak first: only when the instructions say to greet or \
+                          announce on connect"
+                .to_string(),
             required: true,
         },
         Parameter {
@@ -1382,13 +1494,21 @@ pub static WEBSOCKET_TEXT_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| 
         "websocket_text_message",
         "A text message arrived from the client. Answer it, push something to another \
          connection, or close.",
-        json!({"type": "send_websocket_text", "text": "pong"}),
+        json!({"type": "send_websocket_text", "text": "<the reply your instructions call for>"}),
     )
     .with_parameters(vec![
         Parameter {
             name: "text".to_string(),
             type_hint: "string".to_string(),
             description: "The complete message, already reassembled from any fragments".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "How this message is answered: the reply the instructions call for, \
+                          which for an echo is 'text' itself, unchanged"
+                .to_string(),
             required: true,
         },
         Parameter {

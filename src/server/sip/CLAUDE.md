@@ -129,7 +129,9 @@ Content-Length: 0
 
 - Queries server capabilities
 - Response includes Allow header with supported methods
-- Used for presence checking ("is this user available?")
+- Used for presence checking ("is this user available?"). RFC 3261 §11.2: the status is the one
+  an INVITE would get right now — 200 available, 486 busy / do-not-disturb, 480 offline, 603
+  decline
 
 **CANCEL**:
 
@@ -235,7 +237,11 @@ feature the field is ignored and SIP remains signaling-only.
 **Action Parameters**:
 
 - `status_code`: SIP response code (200=OK, 403=Forbidden, 486=Busy, etc.)
-- `reason_phrase`: Optional (defaults based on status code)
+- `reason_phrase`: Optional; defaults to RFC 3261 §21's phrase for the code
+  (`actions::default_reason_phrase`, a class's generic phrase for an unlisted code). This line
+  said "defaults based on status code" while the code wrote `OK` for every code, so the eval's
+  busy phone went out as `SIP/2.0 486 OK`; `e2e_test.rs`'s 486 now carries no phrase and asserts
+  `486 Busy Here` on the wire (verified by putting `OK` back)
 - `expires`: For REGISTER responses (seconds)
 - `sdp`: For successful INVITE responses
 - `rtp_audio`: Optional media to actually stream on a 200 OK INVITE (`{content, tone_hz, payload_type, duration_ms}`); honored only with the `rtp` feature, ignored otherwise
@@ -280,9 +286,16 @@ feature the field is ignored and SIP remains signaling-only.
 
 **`SIP_OPTIONS_EVENT`**:
 
-- Triggered: Client queries capabilities
-- Context: `call_id`, `from`, `to`
-- LLM decides: Return supported methods (200 OK + Allow header)
+- Triggered: Client queries capabilities or checks reachability
+- Context: `call_id`, `from`, `to`, `answer_with` (`actions::OPTIONS_ANSWER_WITH`)
+- LLM decides: the status an INVITE would get now (200 + Allow header when available, 486 when
+  busy or in do-not-disturb, 480 when offline, 603 when refusing every call)
+
+`answer_with` exists because the event used to say "answer with sip_options listing the methods
+you support" and the action's only example is a 200: told "you are a SIP phone in do-not-disturb
+mode; tell anyone who checks on you that you are busy", llama3.1:8b answered sipsak's OPTIONS
+with 200 OK five runs in five (real-model eval, seed 42). The request now names each situation's
+code. An unrecognised method is also raised as `sip_options` and carries no `answer_with`.
 
 **`SIP_CANCEL_EVENT`**:
 

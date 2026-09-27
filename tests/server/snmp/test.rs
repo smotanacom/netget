@@ -40,6 +40,12 @@ async fn test_snmp_basic_get() -> E2EResult<()> {
                     // Mock 2: SNMP GET for sysDescr (1.3.6.1.2.1.1.1.0) - DYNAMIC request_id
                     .on_event("snmp_request")
                     .and_event_data_contains("request_type", "GetRequest")
+                    // Matches only when the event carries the per-request hint, which names
+                    // each OID (these are sysDescr and sysName) and how many to return.
+                    .and_event_data_contains(
+                        "answer_with",
+                        "send_snmp_response with exactly 1 variable,",
+                    )
                     .respond_with_actions_from_event(|event_data| {
                         // Check which OID was requested and return appropriate response
                         let oids = event_data["oids"].as_array().unwrap();

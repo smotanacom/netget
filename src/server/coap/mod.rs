@@ -307,6 +307,7 @@ impl CoapServer {
 
         let method = codec::method_name(request.code).unwrap_or("GET");
         let path = request.uri_path();
+        let answer_with = actions::answer_with_for_request(method, &path);
 
         let mut event_data = serde_json::json!({
             "method": method,
@@ -314,6 +315,7 @@ impl CoapServer {
             "path_segments": request.path_segments(),
             "message_type": request.mtype.as_str(),
             "message_id": request.message_id,
+            "answer_with": answer_with,
         });
         if let Some(query) = request.uri_query() {
             event_data["query"] = serde_json::json!(query);

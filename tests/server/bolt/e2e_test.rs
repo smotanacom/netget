@@ -34,6 +34,8 @@ async fn a_mocked_model_answers_queries_over_a_raw_bolt_session() -> E2EResult<(
                 .expect_calls(1)
                 .and()
                 .on_event("bolt_authenticate")
+                // Matches only when the event says the login is not about any query.
+                .and_event_data_contains("answer_with", "No query has been sent yet")
                 .respond_with_actions_from_event(|event| {
                     // The event names the user and scheme and says a credential was sent;
                     // it never carries the credential.

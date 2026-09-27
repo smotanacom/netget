@@ -244,9 +244,12 @@ fn send_result_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_zabbix_result".to_string(),
         description: "Tell the sender how many of its values were accepted. processed + failed \
-                      must equal the number of items in the event. NetGet writes the response \
-                      zabbix_sender prints (processed: P; failed: F; total: T; seconds spent: S); \
-                      zabbix_sender exits 0 when failed is 0 and 2 otherwise."
+                      must equal the number of items in the event (the example is for a \
+                      request of 3 values; count yours). A value is processed only when your \
+                      instructions accept values for its host (and key); otherwise it failed. \
+                      NetGet writes the response zabbix_sender prints (processed: P; failed: F; \
+                      total: T; seconds spent: S); zabbix_sender exits 0 when failed is 0 and \
+                      2 otherwise."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -289,6 +292,55 @@ fn close_connection_action() -> ActionDefinition {
     }
 }
 
+/// The `answer_with` field of `zabbix_sender_data`: the hosts to check and the counts that
+/// must add up.
+///
+/// Two misses in the real-model eval (llama3.1:8b, seed 42): told "monitoring only the host
+/// web1; values for any other host cannot be stored", the model accepted a value from host
+/// mystery-box five runs in five, never comparing `items[].host` with the instruction; and
+/// told to accept everything from web1 and db1, it answered a one-value request with
+/// `processed: 2` - the example's figure - two runs in five. The request now names each host
+/// and how many values it reported, and the total the counts must reach. For a request from a
+/// single host - what zabbix_sender sends unless given a batch file - it leads with the lookup
+/// and gives both answers as literal actions: worded as a question with a total to reach, the
+/// model still accepted mystery-box five runs in five.
+pub fn answer_with_for_items<'a>(hosts: impl IntoIterator<Item = &'a str>) -> String {
+    let mut per_host: Vec<(&str, u64)> = Vec::new();
+    let mut total = 0u64;
+    for host in hosts {
+        total += 1;
+        match per_host.iter_mut().find(|(h, _)| *h == host) {
+            Some((_, n)) => *n += 1,
+            None => per_host.push((host, 1)),
+        }
+    }
+    let listed = per_host
+        .iter()
+        .map(|(host, n)| {
+            let values = if *n == 1 { "value" } else { "values" };
+            format!("{n} {values} from host \"{host}\"")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if let [(host, n)] = per_host.as_slice() {
+        // One host: the whole answer is one of two literal actions, so name both.
+        return format!(
+            "this request carries {listed}. First look in your instructions for the host \
+             \"{host}\". If they do not accept values from it - including when they name the \
+             hosts they monitor and \"{host}\" is not one of them - answer exactly \
+             {{\"type\": \"send_zabbix_result\", \"processed\": 0, \"failed\": {n}}}. \
+             Only if they accept values from \"{host}\", answer exactly {{\"type\": \
+             \"send_zabbix_result\", \"processed\": {n}, \"failed\": 0}}"
+        );
+    }
+    format!(
+        "this request carries {listed}. For each host, first look in your instructions: are \
+         values for that host accepted? Count its values as processed if they are and as \
+         failed if they are not (a host they do not name is not accepted when they name the \
+         hosts they monitor). Then send_zabbix_result where processed + failed = {total}"
+    )
+}
+
 /// A `sender data` request.
 pub static ZABBIX_SENDER_DATA_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -311,6 +363,14 @@ pub static ZABBIX_SENDER_DATA_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             name: "item_count".to_string(),
             type_hint: "number".to_string(),
             description: "How many values the request carries".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "The counts this request takes: the hosts it reports for, and that \
+                          processed + failed must add up to item_count"
+                .to_string(),
             required: true,
         },
         Parameter {

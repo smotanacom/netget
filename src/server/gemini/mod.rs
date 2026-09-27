@@ -390,6 +390,10 @@ impl Session {
                 "host": request.host,
                 "path": request.path,
                 "query": request.query,
+                "answer_with": actions::answer_with_for_request(
+                    &request.path,
+                    request.query.as_deref(),
+                ),
             }),
         );
         let result = match call_llm(

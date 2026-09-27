@@ -58,7 +58,8 @@ The single test validates:
 4. OPTIONS query → 200 OK with Allow header
 5. INVITE alice→bob → 200 OK with SDP
 6. BYE to terminate call → 200 OK
-7. INVITE bob→alice → 486 Busy Here (rejection)
+7. INVITE bob→alice → 486 Busy Here (rejection; the mock names no reason phrase, so the
+   status line proves NetGet supplies RFC 3261's)
 8. INVITE charlie→bob → 403 Forbidden (rejection)
 
 **Each answered by one mocked LLM response after initial server setup.**
@@ -209,6 +210,10 @@ fn build_sip_bye(from: &str, to: &str, server_addr: &SocketAddr, call_id: &str) 
     - Validates 200 OK response
     - Checks for Allow header with supported methods
     - Tests server capability advertisement
+    - The mock rule requires the event's `answer_with` to name 486 (Busy Here), so it matches
+      only when the per-request hint reaches the model. `answer_with_test.rs` (no LLM calls)
+      pins the hint itself: the status an INVITE would get, 200 / 486 / 480, and
+      `default_reason_phrase`
 
 ### Call Setup and Termination
 

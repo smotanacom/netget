@@ -407,7 +407,11 @@ impl Session {
                 v
             })
             .collect();
-        let mut data = serde_json::json!({"items": items_json, "item_count": total});
+        let mut data = serde_json::json!({
+            "items": items_json,
+            "item_count": total,
+            "answer_with": actions::answer_with_for_items(items.iter().map(|i| i.host.as_str())),
+        });
         if let Some(c) = clock {
             data["clock"] = c.into();
         }
