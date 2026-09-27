@@ -230,6 +230,40 @@ async fn gemini_not_found_waits_for_the_model() -> E2EResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// zabbix — zabbix_sender
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "zabbix")]
+#[tokio::test]
+async fn zabbix_accept_known_host_waits_for_the_model() -> E2EResult<()> {
+    check_case("zabbix/accept-known-host", |mock| {
+        mock.on_event("zabbix_sender_data")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_zabbix_result", "processed": 1, "failed": 0
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "zabbix")]
+#[tokio::test]
+async fn zabbix_reject_unknown_host_waits_for_the_model() -> E2EResult<()> {
+    check_case("zabbix/reject-unknown-host", |mock| {
+        mock.on_event("zabbix_sender_data")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_zabbix_result", "processed": 0, "failed": 1
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // docker — the docker CLI
 // ---------------------------------------------------------------------------
 

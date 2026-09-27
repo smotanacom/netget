@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "zabbix"))]
+mod answer_with_test;
+#[cfg(all(test, feature = "zabbix"))]
 mod common;
 #[cfg(all(test, feature = "zabbix"))]
 mod connection_bounds_test;

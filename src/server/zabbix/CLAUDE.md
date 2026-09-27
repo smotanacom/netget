@@ -32,7 +32,7 @@ bytes processed differ (a zip bomb).
 
 | Request | Answered by | Response |
 |---|---|---|
-| `{"request":"sender data","data":[{host,key,value,clock?,ns?}…],"clock"?,"ns"?}` | model → `zabbix_sender_data {items, item_count, clock?}` | `{"response":"success","info":"processed: P; failed: F; total: T; seconds spent: S"}` |
+| `{"request":"sender data","data":[{host,key,value,clock?,ns?}…],"clock"?,"ns"?}` | model → `zabbix_sender_data {items, item_count, answer_with, clock?}` | `{"response":"success","info":"processed: P; failed: F; total: T; seconds spent: S"}` |
 | the same with an empty `data` | NetGet | `processed: 0; failed: 0; total: 0` |
 | any other `request` (`active checks`, `agent data`, `zabbix.stats`, …) | NetGet | `{"response":"failed","info":"unsupported request"}` |
 | not a JSON object, no `request`, `data` not an array of `{host,key,…}` | NetGet | `failed` with a fixed `info` |
@@ -55,6 +55,24 @@ request set.
 
 The loop reads the counts back out of the rendered packet (`wire::read_result`) and requires
 `processed + failed` to equal the request's own value count. A mismatch is refused (below).
+
+`answer_with` (`actions::answer_with_for_items`) names each host in the request with how many
+values it reported ("1 value from host \"mystery-box\""). For a request from one host — what
+`zabbix_sender` sends unless given a batch file — it says to look that host up in the
+instructions first and gives both answers as literal actions, the refusal first:
+`{"type": "send_zabbix_result", "processed": 0, "failed": N}` if they do not accept values from
+it (including when they name the hosts they monitor and it is not one), `{…, "processed": N,
+"failed": 0}` if they do. For a batch from several hosts it asks the question per host and gives
+the total `processed + failed` must reach.
+
+It exists for two real-model eval misses (llama3.1:8b, seed 42): told "monitoring only the host
+web1; values for any other host cannot be stored", the model accepted a value from `mystery-box`
+five runs in five — it never compared `items[].host` with the instruction — and told to accept
+everything from web1 and db1, it answered a one-value request with `processed: 2`, the example's
+figure, two runs in five (which the mismatch rule then refused). A first version phrased as a
+question with a total to reach left both unchanged (reject 0/5, accept 3/5); the literal pair
+took both to 5/5. `send_zabbix_result`'s description says the example is for a three-value
+request.
 
 ## Failure behaviour
 
