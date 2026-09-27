@@ -32,6 +32,8 @@ async fn a_request_reaches_the_model_and_malformed_ones_never_do() -> E2EResult<
                 .on_event("gemini_request")
                 .and_event_data_contains("path", "/docs/intro")
                 .and_event_data_contains("query", "a b+c")
+                // A request carrying a query names the prompt's answer in its hint.
+                .and_event_data_contains("answer_with", "with \"a b+c\"")
                 .and_event_data_contains("host", "example.org")
                 .respond_with_actions(serde_json::json!([{
                     "type": "send_gemini_response",
