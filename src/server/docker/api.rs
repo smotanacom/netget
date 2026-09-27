@@ -517,8 +517,19 @@ pub fn render_container_list(containers: &Value) -> Result<Value, String> {
         .as_array()
         .ok_or("'containers' must be an array")?;
     let mut out = Vec::with_capacity(list.len());
+    let mut seen_short_ids: Vec<String> = Vec::with_capacity(list.len());
     for (i, c) in list.iter().enumerate() {
-        let c = container(c, i)?;
+        let mut c = container(c, i)?;
+        // Two containers never share an ID, and the CLI tells them apart by its first 12
+        // characters. A model copying one ID onto every container (llama3.1:8b copied the
+        // action example's 64-hex ID onto every container of a `ps -a`) would otherwise
+        // show two rows `docker inspect` cannot tell apart, so a repeated ID is replaced by
+        // the one derived from the container's name - what omitting it would have given.
+        let short: String = c.id.chars().take(12).collect();
+        if seen_short_ids.contains(&short) {
+            c.id = derived_id(&format!("container:{}", c.name));
+        }
+        seen_short_ids.push(c.id.chars().take(12).collect());
         out.push(json!({
             "Id": c.id,
             "Names": [format!("/{}", c.name)],

@@ -75,6 +75,32 @@ refused (each was the whole of a 0/15 eval case, `api_test.rs` pins each):
   written `Exited (<exit_code>) 10 minutes ago` / `Exited (<exit_code>)`, the daemon's form. A
   running container's wording is the model's own.
 
+**A repeated ID in one `ps` list is replaced** by the ID derived from that container's name; the
+first container keeps it. Two containers never share an ID, and llama3.1:8b copied the action
+example's 64-hex ID onto every container of a `ps -a` (9 times across the eval's two `ps`
+cases), which left two rows `docker inspect` could not tell apart. `api_test.rs` pins it
+(checked by removing the replacement).
+
+Two prompt changes were measured against the eval's docker cases and **not** shipped, because
+both runs came out worse than the baseline of ps 5/5, ps -a 5/5, inspect-missing 3/5 (5 runs each,
+seed 42):
+
+- Dropping `id` from the container example and telling the model to leave it out, together
+  with rewording the inspect `answer_with` to lead with the lookup and give the 404 as a literal
+  action (the shape that worked for coap, modbus and zabbix): ps 3/5 (the model also dropped
+  `ports`), ps -a 4/5, inspect-missing 0/5.
+- The example change alone, with the inspect hint as it is: ps 4/5, ps -a 5/5, inspect-missing
+  still 0/5 — `send_docker_version` or `send_docker_volumes` for an inspect every run. So the
+  inspect regression followed the example change, not the reworded hint; a change to one
+  action's example moved the answer to a different route.
+
+The example keeps its ID, and a repeated ID is repaired on the server side instead (above).
+`inspect-missing` is unchanged by anything shipped here, and it is noisy at this prompt: the
+committed baseline measured 3/5, and a run with this commit — whose only change the model can see
+is none at all, since the ID repair is rendering — measured 1/5. Every miss is
+`{"type": "send_docker_volumes", "volumes": [{"name": "none"}]}` answering the container inspect,
+which the server refuses as `decision=fail_closed_no_action`. It is the open docker case.
+
 Refuses, with a reason: a container with no name or image, a name Docker would refuse
 (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`), a state outside `created|running|paused|restarting|removing|
 exited|dead` (after the `stopped` alias), a port outside 1..=65535, a port type other than
