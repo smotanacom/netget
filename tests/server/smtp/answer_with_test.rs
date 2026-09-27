@@ -147,12 +147,9 @@ async fn each_command_is_told_its_answer_and_gets_exactly_one() -> E2EResult<()>
     server
         .wait_for_any(&["decision=duplicate_response_dropped"], 15)
         .await;
-    assert!(
-        server
-            .output_contains("decision=duplicate_response_dropped")
-            .await,
-        "a dropped second reply must be logged, not discarded in silence"
-    );
+    server
+        .wait_for_log("decision=duplicate_response_dropped", 30)
+        .await?;
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;

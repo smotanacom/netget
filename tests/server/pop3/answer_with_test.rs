@@ -172,15 +172,14 @@ async fn each_command_is_told_its_answer_and_retr_is_rendered_from_fields() -> E
         second, "From: bob@example.com\r\nSubject: Second\r\n\r\nHello.\r\n",
         "a +OK and the message as raw text are framed into one RETR answer"
     );
-    assert!(server.output_contains("decision=multiline_assembled").await);
+    server
+        .wait_for_log("decision=multiline_assembled", 30)
+        .await?;
 
-    assert!(
-        server
-            .output_contains("decision=duplicate_response_dropped")
-            .await,
-        "a dropped second reply must be logged, not discarded in silence"
-    );
-    assert!(server.output_contains("decision=netget_answer").await);
+    server
+        .wait_for_log("decision=duplicate_response_dropped", 30)
+        .await?;
+    server.wait_for_log("decision=netget_answer", 30).await?;
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;

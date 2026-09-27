@@ -114,12 +114,9 @@ async fn subscribe_is_told_to_publish_the_retained_message_and_connack_is_sent_o
     assert_eq!(&publish[4..4 + topic_len], b"sensors/greenhouse/temp");
     assert_eq!(&publish[4 + topic_len..], b"19.5");
 
-    assert!(
-        server
-            .output_contains("decision=duplicate_response_dropped")
-            .await,
-        "the dropped second CONNACK must be logged, not discarded in silence"
-    );
+    server
+        .wait_for_log("decision=duplicate_response_dropped", 30)
+        .await?;
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;

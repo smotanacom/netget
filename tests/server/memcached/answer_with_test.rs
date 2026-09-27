@@ -112,16 +112,12 @@ async fn gets_answer_only_requested_keys_and_each_command_gets_one_reply() -> E2
         "stats got a stale reply: the get's second answer reached the wire"
     );
 
-    assert!(
-        server
-            .output_contains("decision=unrequested_key_dropped")
-            .await
-    );
-    assert!(
-        server
-            .output_contains("decision=duplicate_response_dropped")
-            .await
-    );
+    server
+        .wait_for_log("decision=unrequested_key_dropped", 30)
+        .await?;
+    server
+        .wait_for_log("decision=duplicate_response_dropped", 30)
+        .await?;
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;

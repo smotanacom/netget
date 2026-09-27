@@ -113,13 +113,10 @@ async fn mechanics_are_netgets_and_each_command_gets_one_answer() -> E2EResult<(
         "GROUP got a stale reply: the unknown group's second answer reached the wire"
     );
 
-    assert!(
-        server
-            .output_contains("decision=duplicate_response_dropped")
-            .await,
-        "a dropped second reply must be logged, not discarded in silence"
-    );
-    assert!(server.output_contains("decision=netget_answer").await);
+    server
+        .wait_for_log("decision=duplicate_response_dropped", 30)
+        .await?;
+    server.wait_for_log("decision=netget_answer", 30).await?;
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
