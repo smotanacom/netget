@@ -84,6 +84,53 @@ grep -n "_EVENT," src/server/websocket/mod.rs   # the emit side
 call per heartbeat. They are logged at DEBUG, and they count as activity for the idle bound
 below — that is what they are for.
 
+**`websocket_handshake` carries `answer_with`** (`actions::handshake_answer_with`): whether the
+client offered any subprotocol, that none is normal and never a reason to refuse, the offered
+list when there is one, and that `reject_websocket` needs a reason from the instructions. It
+exists because, with instructions that said nothing about the handshake ("echo every message",
+"greet every client"), llama3.1:8b answered websocat's upgrade — which offers no subprotocol —
+with the example's `"subprotocol": "chat"` five runs in five, and with `reject_websocket` 403 "no
+subprotocols offered" five runs in five (real-model eval, seed 42). The action and event examples
+accept without a subprotocol. The hint also says a greeting belongs to the opened connection,
+never to the handshake: told to greet every client, the model answered the handshake with
+`show_message` and no accept, which is the fail-closed 503.
+
+**`websocket_connection_opened` and `websocket_text_message` carry `answer_with` too**
+(`actions::OPENED_ANSWER_WITH`, `actions::TEXT_MESSAGE_ANSWER_WITH`). Speaking first is the
+instruction's call: the opened event says to send something only when the instructions say to
+greet on connect, with their exact words, and otherwise to return no action. With the old
+`{"event":"welcome"}` example the model greeted on every connection — an echo server announced
+itself, which also ended the eval's echo probe before the echo arrived — and a server told to
+greet with "Welcome to NetGet Eval" sent the example's `{"event":"welcome"}` instead. The text
+message hint says an echo's text is the message's own `text`. `send_websocket_text`'s example is
+now a placeholder (`"<the message, word for word>"`).
+
+**An empty text message on connection open is dropped** (WARN `decision=empty_greeting_dropped`).
+Told to stay silent on connect, the model answers `send_websocket_text` with `"text": ""` rather
+than no action, every run, whatever the hint says. That is valid RFC 6455 and carries nothing —
+and websocat treats a zero-length message as end of stream: against a Python `websockets` server
+that sends `""` and then echoes, websocat printed nothing at all, and without the empty message
+it printed the echo. In the eval the echo was sent and never shown, 5 runs in 5. The executor
+knows it is answering `websocket_connection_opened` because `run_connection` brackets that call
+with `WebSocketProtocol::set_speaking_first`; a reply to the client's own empty message is still
+sent.
+
+Measured with the real-model eval (5 runs each, seed 42): echo 0/5 and greeting 0/5 before;
+subprotocol drop + handshake hint → echo 0/5 (an empty greeting, or the model greeting on every
+connection with the old `{"event":"welcome"}` example), greeting 0/5 (`show_message` answering
+the handshake); + opened/message hints and placeholder examples → echo 0/5, greeting 2/5 and then
+4/5 once the handshake hint gave the accept as a literal action; + the empty-greeting drop → echo
+5/5, greeting 3/5. The greeting misses are the model answering the handshake with `show_message`
+or with nothing, which is the fail-closed 503.
+
+**An accept naming a subprotocol the client did not offer is accepted without one.** RFC 6455
+§4.2.2 forbids echoing a subprotocol the client did not offer, and websocat fails the connection
+if the server does — but what it forbids is the echo, not the connection. The executor drops only
+the subprotocol, logs WARN `decision=subprotocol_dropped` naming what was dropped and what was
+offered, and the connection opens with a 101 that carries no `Sec-WebSocket-Protocol`. Refusing
+the whole action instead made every such accept the fail-closed 503, because the network path
+does not re-prompt the model with the executor's error.
+
 **Every connection costs two model calls before the first message** (`websocket_handshake`, then
 `websocket_connection_opened`). For a deterministic endpoint use script or static handlers, which
 cost none — that is how `tests/server/websocket/e2e_test.rs` runs a whole conversation on a
@@ -140,6 +187,7 @@ that deliberately said nothing and a rule that never matched were the same silen
 | Outcome | On the wire | Log |
 |---|---|---|
 | `websocket_handshake` → `accept_websocket` | 101, with the agreed subprotocol | INFO `decision=model_answer` |
+| `websocket_handshake` → `accept_websocket` naming an unoffered subprotocol | 101 with no subprotocol | WARN `decision=subprotocol_dropped`, then INFO `decision=model_answer` |
 | `websocket_handshake` → `reject_websocket` | the handler's own status (default 403) | INFO `decision=model_reject` |
 | `websocket_handshake` → neither, no action at all | **503**, fixed reason | ERROR `decision=fail_closed_no_action` |
 | `websocket_handshake` → neither, but actions ran | **503**, fixed reason | ERROR `decision=fail_closed_bad_action` |

@@ -695,6 +695,8 @@ async fn test_websocket_subprotocol_and_rejection() -> E2EResult<()> {
             // Accept /chat, agreeing the subprotocol the client offered first.
             .on_event("websocket_handshake")
             .and_event_data_contains("path", "/chat")
+            // Matches only when the event lists what this client offered.
+            .and_event_data_contains("answer_with", "(chat, superchat)")
             .respond_with_actions(serde_json::json!([
                 {"type": "accept_websocket", "subprotocol": "chat"}
             ]))
