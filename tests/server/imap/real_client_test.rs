@@ -178,8 +178,8 @@ async fn require_python_imaplib() -> E2EResult<String> {
 
 /// One `imaplib` session against one netget server.
 ///
-/// LLM calls: 1 startup + 1 greeting + 1 CAPABILITY + 1 LOGIN + SELECT/SEARCH/FETCH/LOGOUT
-/// = **8**.
+/// LLM calls: 1 startup + 1 greeting + 1 LOGIN + SELECT/SEARCH/FETCH/LOGOUT = **7**.
+/// CAPABILITY is answered by NetGet from the greeting's list and never reaches the model.
 #[tokio::test]
 async fn imaplib_completes_a_session_against_the_imap_server() -> E2EResult<()> {
     let python = require_python_imaplib().await?;
@@ -199,12 +199,13 @@ async fn imaplib_completes_a_session_against_the_imap_server() -> E2EResult<()> 
             .expect_calls(1)
             .and()
             // The greeting. `imaplib.IMAP4.__init__` blocks on this line before it sends
-            // anything at all, so a server that does not write it hangs the constructor.
+            // anything at all, so a server that does not write it hangs the constructor. It
+            // deliberately carries no [CAPABILITY ...] code, so the only place imaplib can
+            // learn the capability list is NetGet's answer to its CAPABILITY command.
             .on_event("imap_connection")
             .respond_with_actions(serde_json::json!([{
-                "type": "send_imap_greeting",
-                "hostname": "mail.example.com",
-                "capabilities": ["IMAP4rev1", "IDLE"]
+                "type": "send_imap_response",
+                "response": "* OK mail.example.com IMAP4rev1 Service Ready"
             }]))
             .expect_calls(1)
             .and()
@@ -243,17 +244,6 @@ async fn imaplib_completes_a_session_against_the_imap_server() -> E2EResult<()> 
                     .unwrap_or_default()
                     .to_ascii_uppercase();
                 match command.as_str() {
-                    // Deliberately a superset of the greeting's capability code, so an
-                    // assertion on NAMESPACE proves the CAPABILITY *command* was answered and
-                    // not merely that the banner was parsed.
-                    "CAPABILITY" => serde_json::json!([
-                        {
-                            "type": "send_imap_capability",
-                            "capabilities": ["IMAP4rev1", "IDLE", "NAMESPACE", "UIDPLUS"]
-                        },
-                        {"type": "send_imap_response", "tag": tag, "status": "OK",
-                         "message": "CAPABILITY completed"}
-                    ]),
                     "SELECT" => serde_json::json!([
                         {
                             "type": "send_imap_select",
@@ -303,7 +293,7 @@ async fn imaplib_completes_a_session_against_the_imap_server() -> E2EResult<()> 
                     ]),
                 }
             })
-            .expect_calls(5)
+            .expect_calls(4)
             .and()
     });
 
@@ -350,7 +340,7 @@ async fn imaplib_completes_a_session_against_the_imap_server() -> E2EResult<()> 
         "imaplib's welcome line is not the greeting the model wrote: {welcome:?}"
     );
 
-    // ---- The CAPABILITY *command*, not the greeting's capability code ----
+    // ---- The CAPABILITY *command*: NetGet's answer, the greeting carried no code ----
     let capabilities: Vec<String> = parsed["capabilities"]
         .as_array()
         .map(|a| {
@@ -359,16 +349,12 @@ async fn imaplib_completes_a_session_against_the_imap_server() -> E2EResult<()> 
                 .collect()
         })
         .unwrap_or_default();
-    assert!(
-        capabilities.contains(&"IMAP4REV1".to_string()),
-        "imaplib did not see IMAP4REV1 — without it __init__ raises `server not IMAP4 \
-         compliant`. It saw: {capabilities:?}"
-    );
-    assert!(
-        capabilities.contains(&"NAMESPACE".to_string()),
-        "imaplib's capabilities came from the greeting's [CAPABILITY ...] code alone; the \
-         answer to its CAPABILITY *command* (which is the only place NAMESPACE appears) did \
-         not reach it. It saw: {capabilities:?}"
+    assert_eq!(
+        capabilities,
+        vec!["IMAP4REV1".to_string()],
+        "imaplib's capabilities can only have come from NetGet's answer to its CAPABILITY \
+         command (the greeting carried no code), and that answer is IMAP4rev1 alone - without \
+         it __init__ raises `server not IMAP4 compliant`"
     );
 
     // ---- LOGIN ----

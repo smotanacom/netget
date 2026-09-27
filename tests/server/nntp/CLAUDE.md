@@ -28,6 +28,19 @@ selection, article retrieval, and article overview functionality using raw TCP c
     - XOVER command (article overview with tab-separated fields)
     - Multi-line response parsing
 
+3. **NetGet's own answers, hints, one reply** (`answer_with_test.rs`)
+    - `CAPABILITIES` and `MODE READER` answered by NetGet with no model call (no rule exists
+      for them; an event would fail the session), `MODE READER` repeating the greeting's `201`
+    - `GROUP` rules match only on the event's `group` and `answer_with` (which names `411` for
+      a missing group), so a missing hint is an unmatched event
+    - a greeting answered with two banners and an unknown group answered with two `411`s: the
+      next command must read its own reply, never the stale second one, and
+      `decision=duplicate_response_dropped` must be in the log
+    - Verified by removing the drop and the NetGet answers, each separately
+
+    `peer_inject_test.rs` and `connection_bounds_test.rs` send `HELP` as their arbitrary
+    command for a static rule to answer, since `MODE READER` never reaches a rule any more.
+
 ### LLM Call Budget
 
 **Target**: < 10 LLM calls per test suite

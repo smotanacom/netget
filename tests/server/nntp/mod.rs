@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "nntp"))]
+mod answer_with_test;
+#[cfg(all(test, feature = "nntp"))]
 mod connection_bounds_test;
 #[cfg(all(test, feature = "nntp"))]
 mod e2e_test;

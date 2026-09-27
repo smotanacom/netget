@@ -12,7 +12,7 @@ server frames with, because it frames by hand:
 | client | file | what only it covers |
 |---|---|---|
 | `async-imap` 0.11 (Rust) | `tests/server/imap/e2e_client_test.rs` | LIST, EXAMINE, STATUS, NOOP, concurrent sessions, LOGIN failure |
-| python3 stdlib `imaplib` | `tests/server/imap/real_client_test.rs` | the literal **byte** count against a multi-byte body, the `CAPABILITY` command as distinct from the greeting's capability code, and `select()`'s return value — the untagged `EXISTS` count rather than the tagged completion |
+| python3 stdlib `imaplib` | `tests/server/imap/real_client_test.rs` | the literal **byte** count against a multi-byte body, that imaplib reads NetGet's answer to its own `CAPABILITY` command (the greeting there carries no capability code, so it is the only source), and `select()`'s return value — the untagged `EXISTS` count rather than the tagged completion |
 
 Neither is `#[ignore]`d or skip-gated; the `imaplib` test **fails** when python3 is absent, and
 `imaplib` itself needs no install. One client can agree with one bug, which is why the second
@@ -116,7 +116,8 @@ mailbox_read_only: bool
       and all three can produce one.
     - `IMAP_AUTH_EVENT` - LOGIN command (special handling). Deliberately narrow:
       `send_imap_response` and `close_connection`.
-    - `IMAP_COMMAND_EVENT` - All other commands (CAPABILITY, SELECT, FETCH, etc.)
+    - `IMAP_COMMAND_EVENT` - All other commands (SELECT, FETCH, etc.). `CAPABILITY` is not
+      among them: NetGet answers it (below)
 - **Action-based responses** - LLM returns JSON actions for all protocol interactions
 - **Tagged responses** - IMAP uses command tags (A001, A002) for request/response correlation
 - **Untagged responses** - Server data (EXISTS, RECENT, FLAGS) sent before tagged completion
@@ -144,11 +145,10 @@ on an injected close. Test: `tests/server/imap/peer_inject_test.rs` (zero LLM ca
 
 The LLM controls IMAP responses through these actions:
 
-- `send_imap_greeting` - Initial `* OK` greeting with capabilities
+- `send_imap_greeting` - Initial `* OK [CAPABILITY ...]` greeting; `IMAP4rev1` is always first
 - `send_imap_response` - Tagged completion (`tag` + `status`), or one verbatim line via
   `response` (used for untagged banners)
 - `send_imap_untagged` - Untagged informational responses
-- `send_imap_capability` - CAPABILITY response
 - `send_imap_list` - LIST response with mailbox list
 - `send_imap_status` - STATUS response with mailbox info
 - `send_imap_select` - the full untagged block for SELECT/EXAMINE (EXISTS, RECENT, UIDVALIDITY,
@@ -161,6 +161,59 @@ The LLM controls IMAP responses through these actions:
 - `send_imap_expunge` - EXPUNGE notification
 - `wait_for_more` - Accumulate multi-line commands (APPEND)
 - `close_connection` - Terminate session
+
+### What NetGet answers itself, and what the model is told
+
+The real-model eval (`./run-eval.sh imap`, llama3.1:8b, seed 42) scored `imap/list-folders` and
+`imap/inbox-count` 0/5. imaplib sends `CAPABILITY` from its constructor, and the model answered
+it with a bare tagged `OK` - **twice**, so imaplib read the second as the answer to `LOGIN` and
+aborted (`unexpected tagged response`) - or with an empty `[CAPABILITY]` response code, after
+which imaplib refused the server as "not IMAP4 compliant". Where the session got as far as
+`SELECT`, the model answered it with a tagged `OK` and no `* n EXISTS`, so `select()` returned
+`[None]`.
+
+**`CAPABILITY` is answered by NetGet**, from the list the connection's greeting announced
+(`greeting_capabilities` in `mod.rs`): `* CAPABILITY <list>` then `<tag> OK CAPABILITY
+completed`, logged `decision=netget_answer`. That list is the one fact the command reports, so
+the operator still decides it - through the greeting - and the model is not asked the same
+question twice. `IMAP4rev1` is always first (`with_imap4rev1`; RFC 3501 6.1.1 requires it, and
+imaplib refuses a server without it), in the greeting and in the answer, and a greeting with no
+capability code gives `IMAP4rev1` alone. Only the argument-less command is answered: a
+`CAPABILITY` carrying arguments is malformed and goes to the model like any other line. The
+weighed alternative, a hint naming `send_imap_capability`, would have left the model answering
+a question whose answer it had already given in the greeting; `send_imap_capability` is gone
+from the vocabulary.
+
+**Every other command the verb identifies carries `answer_with`** (`imap_answer_with`), and so
+does `LOGIN`'s `imap_auth` event: `send_imap_select` with `exists` = the mailbox's message count
+for `SELECT`/`EXAMINE` (NetGet adds the tagged `OK`), `send_imap_list` for `LIST`, and so on.
+`send_imap_select`'s description says that a bare tagged `OK` is not an answer to `SELECT`.
+
+**One tagged completion, written last.** A batch's untagged data is written first and its first
+tagged completion (the line carrying the command's own tag) last, whatever order the model put
+them in - a completion *before* `send_imap_select` would otherwise end the command before its
+`EXISTS` line. Any further tagged completion - a second tagged `OK` was the common case - is
+dropped and logged `decision=duplicate_response_dropped`, and so is an untagged block
+byte-identical to one already queued (the model sent `send_imap_select` twice, and imaplib read
+two `EXISTS` counts); so is anything after `LOGIN`'s
+completion, and the greeting keeps only its first `Output`.
+
+**A tagged response always has text.** RFC 3501's `resp-text` is at least one character, and
+imaplib aborts on a bare `a1 OK` ("unexpected response") - measured on `LOGIN` in the eval - so
+`send_imap_response` without a `message` renders `completed`.
+
+What is still the model's: answering `LIST`/`SELECT` with a tagged `OK` alone and no data. A
+`send_imap_response` description saying so in as many words ("it carries no data: LIST, SELECT
+… are answered with their own data action") was measured and made it worse (`list-folders`
+1/5, `inbox-count` 1/5 - the model started writing `* LIST` lines as `send_imap_untagged` data),
+so it is not shipped.
+
+The `send_imap_response` example no longer carries `code: READ-WRITE` (the model put it on its
+`CAPABILITY` answer), and the greeting example lists `IMAP4rev1` alone, since whatever it lists
+is now what `CAPABILITY` reports.
+
+`tests/server/imap/answer_with_test.rs` pins all of it from the wire; the two drops were each
+verified by removing them and watching it fail.
 
 ### Command Parsing
 
@@ -201,7 +254,7 @@ hundred more. It now declares both halves; the constants and the reasoning live 
 | Bound | Value | Why this number |
 |---|---|---|
 | `FIRST_COMMAND_READ_TIMEOUT` | 60s | Dovecot's `login_timeout` default, which is the same idea for a connection that has got nowhere. This bound is tighter in *scope* — it ends at the first command rather than at authentication. The greeting's own model round-trip happens before the loop and is outside it. |
-| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 2100s (35 min) | **This number exists because of `IDLE`.** A client in IDLE (RFC 2177) is legitimately silent, waiting for the *server* to speak, and this server's own action examples advertise `IDLE` in their capability lists. RFC 2177 §3 requires the client to terminate and re-issue IDLE **at least every 29 minutes**, so 29 minutes is the interval this bound sits above; 35 gives the `DONE` and the re-issued `IDLE` room to cross a slow link and still count as activity. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 2100s (35 min) | **This number exists because of `IDLE`.** A client in IDLE (RFC 2177) is legitimately silent, waiting for the *server* to speak, and an operator can advertise `IDLE` through the greeting's capability list, which is also what `CAPABILITY` reports. RFC 2177 §3 requires the client to terminate and re-issue IDLE **at least every 29 minutes**, so 29 minutes is the interval this bound sits above; 35 gives the `DONE` and the re-issued `IDLE` room to cross a slow link and still count as activity. |
 | `MAX_CONNECTIONS` | 256 | Refusal: an untagged **`* BYE [UNAVAILABLE] too many connections`** — IMAP's own way of ending a session unilaterally (RFC 3501 §7.1.5) with RFC 5530's machine-readable reason, the same pair this server already uses for a failed greeting and an oversized command line. There is no tag to echo: the peer has sent nothing. |
 
 **NetGet's own IMAP client *speaks inside `connect()`*, so it is never the silent peer this
@@ -254,7 +307,7 @@ For FETCH 1, return message with From: test@example.com, Subject: Test.
     {
       "type": "send_imap_greeting",
       "hostname": "mail.example.com",
-      "capabilities": ["IMAP4rev1", "IDLE", "NAMESPACE"]
+      "capabilities": ["IMAP4rev1"]
     }
   ]
 }

@@ -227,6 +227,7 @@ impl ImapServer {
                                     app_state: state_clone.clone(),
                                     status_tx: status_clone.clone(),
                                     protocol: protocol_clone,
+                                    capabilities: DEFAULT_CAPABILITIES.to_string(),
                                 };
 
                                 // Handle IMAP session
@@ -278,6 +279,83 @@ impl ImapServer {
     }
 }
 
+/// The capability list NetGet answers `CAPABILITY` with when the greeting announced none.
+pub const DEFAULT_CAPABILITIES: &str = "IMAP4rev1";
+
+/// The capability list a greeting announced in its `[CAPABILITY ...]` response code, with
+/// `IMAP4rev1` guaranteed first; `None` when the greeting carried no such code.
+///
+/// That list is the one fact the `CAPABILITY` command reports, so NetGet answers the command
+/// from it rather than asking the model again. Asked, a small model answered `CAPABILITY` with
+/// a bare tagged `OK` - twice, so the second became the answer to `LOGIN` - or with an empty
+/// `[CAPABILITY]` code, after which imaplib refused the server as not IMAP4 compliant. The
+/// operator still decides the list: it is whatever the greeting says.
+pub fn greeting_capabilities(greeting: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(greeting);
+    let start = text.find("[CAPABILITY ")? + "[CAPABILITY ".len();
+    let end = start + text[start..].find(']')?;
+    Some(with_imap4rev1(&text[start..end]))
+}
+
+/// `list` with `IMAP4rev1` first and not repeated. RFC 3501 6.1.1: the list MUST include it,
+/// and imaplib refuses a server whose list does not.
+pub fn with_imap4rev1(list: &str) -> String {
+    let mut caps = vec![DEFAULT_CAPABILITIES.to_string()];
+    caps.extend(
+        list.split_whitespace()
+            .filter(|c| !c.eq_ignore_ascii_case(DEFAULT_CAPABILITIES))
+            .map(str::to_string),
+    );
+    caps.join(" ")
+}
+
+/// Which action answers one IMAP command, or `None` when the command's name does not say.
+///
+/// The real-model eval found a small model answering `SELECT` with a bare tagged `OK` and no
+/// `* n EXISTS`, which is the count every client reads - imaplib's `select()` returns it - and
+/// answering `CAPABILITY` with the completion of a different command. A per-request hint is
+/// followed far better than the general action list.
+pub fn imap_answer_with(tag: &str, command: &str, args: &str) -> Option<String> {
+    let mailbox = args
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches('"');
+    Some(match command.to_ascii_uppercase().as_str() {
+        "LOGIN" => format!(
+            "send_imap_response with tag {tag} and status OK to accept the login, or status NO \
+             to refuse it"
+        ),
+        "SELECT" | "EXAMINE" => format!(
+            "send_imap_select with exists = the number of messages in {mailbox} (and recent, \
+             unseen, uidnext when you know them); NetGet adds the tagged OK. If there is no \
+             mailbox {mailbox}, send_imap_response with tag {tag} and status NO"
+        ),
+        "LIST" | "LSUB" => "send_imap_list with one entry for every mailbox your instruction \
+                            names, and only those (its name and the delimiter \"/\"); NetGet \
+                            adds the tagged OK"
+            .to_string(),
+        "STATUS" => format!(
+            "send_imap_status for mailbox {mailbox} with the items the client asked for; \
+             NetGet adds the tagged OK"
+        ),
+        "FETCH" => {
+            "send_imap_fetch, one per message asked for; NetGet adds the tagged OK".to_string()
+        }
+        "SEARCH" => "send_imap_search with the matching message numbers ([] for none); \
+                     NetGet adds the tagged OK"
+            .to_string(),
+        "NOOP" | "CHECK" | "CLOSE" | "EXPUNGE" | "SUBSCRIBE" | "UNSUBSCRIBE" => {
+            format!("send_imap_response with tag {tag} and status OK")
+        }
+        "LOGOUT" => format!(
+            "send_imap_untagged with response_type BYE, then send_imap_response with tag {tag} \
+             and status OK"
+        ),
+        _ => return None,
+    })
+}
+
 #[cfg(feature = "imap")]
 struct ImapSession<R, W> {
     reader: BufReader<R>,
@@ -290,6 +368,9 @@ struct ImapSession<R, W> {
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<ImapProtocol>,
+    /// The capability list this connection's greeting announced, which is what NetGet answers
+    /// `CAPABILITY` with. [`DEFAULT_CAPABILITIES`] until a greeting names one.
+    capabilities: String,
 }
 
 #[cfg(feature = "imap")]
@@ -465,9 +546,18 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         )
         .await?;
 
+        let mut wrote_greeting = false;
+        let mut dropped_replies = 0usize;
         for action_result in result.protocol_results {
             match action_result {
+                // One greeting. Anything after it would be read as the answer to the client's
+                // first command.
+                ActionResult::Output(_) if wrote_greeting => dropped_replies += 1,
                 ActionResult::Output(data) => {
+                    wrote_greeting = true;
+                    if let Some(capabilities) = greeting_capabilities(&data) {
+                        self.capabilities = capabilities;
+                    }
                     self.send_response(&data).await?;
                 }
                 ActionResult::CloseConnection => {
@@ -476,8 +566,23 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                 _ => {}
             }
         }
+        self.log_dropped_replies("greeting", dropped_replies);
 
         Ok(())
+    }
+
+    /// Log replies a batch carried past the one the command owed, which were not written.
+    fn log_dropped_replies(&self, what: &str, dropped: usize) {
+        if dropped > 0 {
+            Log::new(Some(&self.status_tx)).warn(format!(
+                "IMAP {} on connection {} decision=duplicate_response_dropped: {} extra \
+                 repl{} not sent; the command was already complete",
+                what,
+                self.connection_id,
+                dropped,
+                if dropped == 1 { "y" } else { "ies" }
+            ));
+        }
     }
 
     async fn handle_command(&mut self, line: &str) -> Result<()> {
@@ -500,18 +605,34 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
             return self.handle_login(&tag, &args).await;
         }
 
+        // CAPABILITY is answered from the greeting's own list; see `greeting_capabilities`.
+        // It takes no arguments (RFC 3501 6.1.1), so one that carries some is not the command
+        // with the one mechanical answer and goes to the model like any other line.
+        if command.eq_ignore_ascii_case("CAPABILITY") && args.trim().is_empty() {
+            Log::new(Some(&self.status_tx)).info(format!(
+                "IMAP {} CAPABILITY on connection {} decision=netget_answer: {}",
+                tag, self.connection_id, self.capabilities
+            ));
+            let reply = format!(
+                "* CAPABILITY {}\r\n{} OK CAPABILITY completed\r\n",
+                self.capabilities, tag
+            );
+            return self.send_response(reply.as_bytes()).await;
+        }
+
         // Create event for LLM
-        let event = Event::new(
-            &IMAP_COMMAND_EVENT,
-            json!({
-                "tag": tag,
-                "command": command,
-                "args": args,
-                "session_state": format!("{:?}", session_state),
-                "authenticated_user": authenticated_user,
-                "selected_mailbox": selected_mailbox,
-            }),
-        );
+        let mut event_data = json!({
+            "tag": tag,
+            "command": command,
+            "args": args,
+            "session_state": format!("{:?}", session_state),
+            "authenticated_user": authenticated_user,
+            "selected_mailbox": selected_mailbox,
+        });
+        if let Some(answer_with) = imap_answer_with(&tag, &command, &args) {
+            event_data["answer_with"] = answer_with.into();
+        }
+        let event = Event::new(&IMAP_COMMAND_EVENT, event_data);
 
         let result = call_llm(
             &self.llm_client,
@@ -528,28 +649,48 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         // they see it. Untagged data alone leaves the client blocked forever,
         // so track what was actually written and guarantee the completion
         // below rather than trusting the model to have produced it.
-        let mut sent_tagged_completion = false;
         let mut sent_any_output = false;
         let mut deferred = false;
         // Whether the tagged completion the model itself sent said OK. A SELECT the model
         // refused must not still move the session into `Selected` (see `update_session_state`).
         let mut tagged_completion_ok = false;
 
+        let mut dropped_replies = 0usize;
+
+        // The untagged data the batch carries, and the one tagged completion. The completion
+        // ends the command, so NetGet writes it last whatever order the model put it in: a
+        // model that answered SELECT with the tagged OK *before* `send_imap_select` would
+        // otherwise end the command before its EXISTS line. A second completion - the common
+        // case was a second tagged OK - would be read by the client as the answer to its
+        // *next* command, which imaplib aborts on ("unexpected tagged response"); it is
+        // dropped.
+        let mut untagged: Vec<Vec<u8>> = Vec::new();
+        let mut completion: Option<Vec<u8>> = None;
+
         // Execute actions returned by LLM
         for action_result in result.protocol_results {
             match action_result {
                 ActionResult::Output(data) => {
-                    sent_any_output = true;
                     let text = String::from_utf8_lossy(&data);
-                    if text.lines().any(|line| {
+                    let is_tagged = text.lines().any(|line| {
                         line.trim_start()
                             .to_uppercase()
                             .starts_with(&format!("{} ", tag.to_uppercase()))
-                    }) {
-                        sent_tagged_completion = true;
+                    });
+                    if !is_tagged {
+                        // The same untagged block twice is one answer repeated, not two: a
+                        // second `* 12 EXISTS` block reads as a second mailbox state.
+                        if untagged.contains(&data) {
+                            dropped_replies += 1;
+                        } else {
+                            untagged.push(data);
+                        }
+                    } else if completion.is_none() {
                         tagged_completion_ok = tagged_ok_for(&text, &tag);
+                        completion = Some(data);
+                    } else {
+                        dropped_replies += 1;
                     }
-                    self.send_response(&data).await?;
                 }
                 ActionResult::CloseConnection => {
                     deferred = true;
@@ -576,6 +717,13 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                 _ => {}
             }
         }
+
+        for data in untagged.iter().chain(completion.iter()) {
+            sent_any_output = true;
+            self.send_response(data).await?;
+        }
+        let sent_tagged_completion = completion.is_some();
+        self.log_dropped_replies(&command.to_uppercase(), dropped_replies);
 
         // Guarantee the tagged completion. Without it the client waits out its
         // own timeout on a command the server considers finished — the single
@@ -648,6 +796,7 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                 "tag": tag,
                 "username": username,
                 "password": password,
+                "answer_with": imap_answer_with(tag, "LOGIN", args),
             }),
         );
 
@@ -663,12 +812,22 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
 
         // Check if authentication was successful by looking for OK response
         let mut auth_success = false;
+        let mut completed = false;
+        let mut dropped_replies = 0usize;
         for action_result in &result.protocol_results {
             if let ActionResult::Output(data) = action_result {
+                // Nothing after the tagged completion: it would answer the next command.
+                if completed {
+                    dropped_replies += 1;
+                    continue;
+                }
                 let response = String::from_utf8_lossy(&data);
                 if tagged_ok_for(&response, tag) {
                     auth_success = true;
                 }
+                completed = response
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some(tag));
                 self.send_response(&data).await?;
             } else if let ActionResult::CloseConnection = action_result {
                 // Authentication failed, close connection
@@ -681,6 +840,8 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                     .await;
             }
         }
+
+        self.log_dropped_replies("LOGIN", dropped_replies);
 
         // If authentication successful, update session state
         if auth_success {

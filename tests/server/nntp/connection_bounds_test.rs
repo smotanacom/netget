@@ -325,9 +325,9 @@ async fn once_a_command_has_been_answered_the_idle_bound_governs_not_the_first_b
         .await
         .expect("connect");
 
-    peer.write_all(b"MODE READER\r\n")
-        .await
-        .expect("write MODE READER");
+    // HELP, not MODE READER: NetGet answers MODE READER itself, and this test is about the
+    // static rule's answer.
+    peer.write_all(b"HELP\r\n").await.expect("write HELP");
 
     let mut reply = [0u8; 512];
     let n = tokio::time::timeout(Duration::from_secs(20), peer.read(&mut reply))

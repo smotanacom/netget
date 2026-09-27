@@ -654,24 +654,25 @@ pub fn classify(
 /// `copied_example_content` from the line the executor actually writes, for a
 /// case that names its protocol the way `--server` takes it. Both halves of that
 /// were broken at once — a case-sensitive registry lookup and a JSON parse of a
-/// Debug-formatted line — so the diagnosis never fired on any run.
+/// Debug-formatted line — so the diagnosis never fired on any run. The line
+/// copies `send_smtp_greeting`'s current example, so this follows the example.
 #[cfg(feature = "smtp")]
 #[test]
 fn copied_example_is_found_in_the_executor_debug_line() {
-    let line = r#"2026-09-26T21:18:45.444061Z DEBUG Executing action 0: Object {"type": String("send_smtp_greeting"), "hostname": String("mail.example.com"), "message": String("ESMTP Service Ready")}"#.to_string();
+    let line = r#"2026-09-26T21:18:45.444061Z DEBUG Executing action 0: Object {"type": String("send_smtp_greeting"), "hostname": String("mx.example.invalid"), "message": String("ESMTP")}"#.to_string();
     let hits = copied_example_values(
         "smtp",
         "Greet every connection with the banner NetGet Eval Mail.",
         std::slice::from_ref(&line),
     );
     assert!(
-        hits.iter().any(|h| h.contains("ESMTP Service Ready")),
-        "the example's greeting text was not recognised as copied: {hits:?}"
+        hits.iter().any(|h| h.contains("mx.example.invalid")),
+        "the example's greeting host was not recognised as copied: {hits:?}"
     );
     // A value the operator asked for is not copying.
     let hits = copied_example_values(
         "smtp",
-        "Greet with the banner ESMTP Service Ready from mail.example.com.",
+        "Greet with the banner ESMTP from mx.example.invalid.",
         &[line],
     );
     assert!(

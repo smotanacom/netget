@@ -388,26 +388,50 @@ pub static NNTP_COMMAND_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "nntp_command_received",
         "A client sent an NNTP command line, or the connection just opened (command \
-         \"GREETING\"). Answer with exactly one action, chosen by the command: a plain status \
-         line with send_nntp_response, GROUP with send_nntp_group, LIST/NEWGROUPS with \
+         \"GREETING\"). Answer with exactly one action, chosen by the command - answer_with \
+         names it for this one: a plain status line with send_nntp_response, GROUP with \
+         send_nntp_group (or 411 when there is no such group), LIST/NEWGROUPS with \
          send_nntp_list, ARTICLE/HEAD/BODY with send_nntp_article, XOVER/OVER with \
          send_nntp_overview, or any raw line with send_nntp_message. QUIT should be answered \
-         with a 205 and then close_connection.",
+         with a 205 and then close_connection. CAPABILITIES and MODE READER are answered by \
+         NetGet and never reach you.",
         json!({
             "type": "send_nntp_response",
             "code": 200,
             "text": "NetGet NNTP Service Ready"
         }),
     )
-    .with_parameters(vec![Parameter {
-        name: "command".to_string(),
-        type_hint: "string".to_string(),
-        description: "The NNTP command line the client sent, without its trailing CRLF. The \
-                      literal string \"GREETING\" instead of a command means the connection has \
-                      just opened and is waiting for the initial banner"
-            .to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "command".to_string(),
+            type_hint: "string".to_string(),
+            description: "The NNTP command line the client sent, without its trailing CRLF. The \
+                          literal string \"GREETING\" instead of a command means the connection \
+                          has just opened and is waiting for the initial banner"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which action and reply code answer this command, when its verb says"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "group".to_string(),
+            type_hint: "string".to_string(),
+            description: "GROUP only: the newsgroup the client asked for".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "article".to_string(),
+            type_hint: "string".to_string(),
+            description: "ARTICLE/HEAD/BODY only: the article number or message-id asked for"
+                .to_string(),
+            required: false,
+        },
+    ])
     // All eight sync actions can answer this event - it is the protocol's only event and covers
     // every NNTP command. Without this list `call_llm` would offer the model none of them, since
     // it builds the model's tool list from the event type rather than from get_sync_actions().
@@ -447,7 +471,7 @@ fn send_nntp_message_action() -> ActionDefinition {
         }],
         example: json!({
             "type": "send_nntp_message",
-            "message": "200 NetGet NNTP Service Ready"
+            "message": "111 20260101000000"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -460,7 +484,10 @@ fn send_nntp_message_action() -> ActionDefinition {
 fn send_nntp_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_nntp_response".to_string(),
-        description: "Send NNTP response with code and text".to_string(),
+        description: "One status line, '<code> <text>': the greeting (200/201), 411 for a \
+                      group that does not exist, 423/430 for a missing article, 205 for QUIT. \
+                      The example is a greeting; any other command takes its own code."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "code".to_string(),
@@ -477,8 +504,8 @@ fn send_nntp_response_action() -> ActionDefinition {
         ],
         example: json!({
             "type": "send_nntp_response",
-            "code": 200,
-            "text": "NetGet NNTP Service Ready"
+            "code": 201,
+            "text": "news.example.invalid ready, posting prohibited"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -536,7 +563,10 @@ fn send_nntp_article_action() -> ActionDefinition {
 fn send_nntp_list_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_nntp_list".to_string(),
-        description: "Send list of newsgroups (multi-line response)".to_string(),
+        description: "The answer to LIST (LIST ACTIVE): every group the server carries, as \
+                      a 215 block; NetGet adds the terminating '.'. The example's group is a \
+                      placeholder."
+            .to_string(),
         parameters: vec![Parameter {
             name: "groups".to_string(),
             type_hint: "array".to_string(),
@@ -560,7 +590,10 @@ fn send_nntp_list_action() -> ActionDefinition {
 fn send_nntp_group_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_nntp_group".to_string(),
-        description: "Send GROUP response with count and article range".to_string(),
+        description: "The answer to GROUP for a group that exists: '211 <count> <low> \
+                      <high> <name>'. For a group that does not exist, send_nntp_response with \
+                      code 411 instead."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "name".to_string(),

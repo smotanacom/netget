@@ -58,6 +58,18 @@ their own timeout. The server answers `SERVER_ERROR`, and the test asserts three
 - it contains no `END\r\n` either. Reporting a clean miss would be a *lie the client caches*,
   and is the caching equivalent of OAuth2's fail-open.
 
+### `answer_with_test.rs` — the real-model eval's two zeros, pinned from the wire
+
+| Step | Mocked answer | Must reach the client |
+|---|---|---|
+| `get nothing-here` | the value of `motd` (the eval's wrong answer) | `END\r\n` alone, `decision=unrequested_key_dropped` logged |
+| `get motd` | two `send_memcached_values` | the first block only |
+| `stats` | `version 1.6.21`, `curr_items 12` | those two `STAT` lines, not the get's stale second block; `decision=duplicate_response_dropped` logged |
+
+Every rule matches on the event's `answer_with`, so a missing hint is an unmatched event.
+**4 LLM calls** (startup + three events). Verified by removing the key filter and the drop, each
+separately.
+
 ## Layer 3 — a real, independent client (`real_client_test.rs`)
 
 **libmemcached 1.0.18** (`brew install libmemcached`; BSD-3, invoked as subprocesses, never

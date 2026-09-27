@@ -88,11 +88,12 @@ fn decode_value(entry: &serde_json::Value, key: &str, encoding_key: &str) -> Res
 pub static MEMCACHED_GET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "memcached_get",
-        "A client asked for one or more keys. Decide what each key holds — or that it is \
-         absent. Returning an empty values list is a cache miss.",
+        "A client asked for one or more keys. Answer each requested key your instruction gives \
+         a value; a key it does not is absent and is left out. Returning an empty values list \
+         is a cache miss. answer_with says which keys may appear.",
         json!({
             "type": "send_memcached_values",
-            "values": [{"key": "greeting", "value": "hello"}]
+            "values": [{"key": "example-key", "value": "example-value"}]
         }),
     )
     .with_parameters(vec![
@@ -102,6 +103,11 @@ pub static MEMCACHED_GET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "'get' or 'gets'; 'gets' also wants a cas_unique per value",
         ),
         p("keys", "array", "Keys requested, in order"),
+        p(
+            "answer_with",
+            "string",
+            "The action, and the only keys the answer may carry",
+        ),
     ])
     .with_actions(vec![
         send_values_action(),
@@ -209,17 +215,26 @@ pub static MEMCACHED_TOUCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static MEMCACHED_STATS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "memcached_stats",
-        "A client asked for server statistics. Invent a plausible, self-consistent set.",
+        "A client asked for server statistics. Report what your instruction says about this \
+         server - its version, how many items it holds - under memcached's stat names, and \
+         fill the rest plausibly.",
         json!({
             "type": "send_memcached_stats",
-            "stats": {"pid": "1", "uptime": "3600", "curr_items": "0"}
+            "stats": {"version": "1.6.0", "curr_items": "0", "uptime": "0"}
         }),
     )
-    .with_parameters(vec![p(
-        "argument",
-        "string",
-        "Sub-command such as 'items', 'slabs', 'sizes', or null for the general stats",
-    )])
+    .with_parameters(vec![
+        p(
+            "argument",
+            "string",
+            "Sub-command such as 'items', 'slabs', 'sizes', or null for the general stats",
+        ),
+        p(
+            "answer_with",
+            "string",
+            "The action, and which stat names carry what the instruction says",
+        ),
+    ])
     .with_actions(vec![
         send_stats_action(),
         send_error_action(),
@@ -284,8 +299,10 @@ fn send_values_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_memcached_values".to_string(),
         description: "Answer a get/gets. Each entry becomes a VALUE block; an empty list is \
-                      a cache miss (END with no values). The byte count in each VALUE header \
-                      is computed from the payload — do not supply one."
+                      a cache miss (END with no values). Only keys the client asked for may \
+                      appear - NetGet drops any other. The byte count in each VALUE header is \
+                      computed from the payload — do not supply one. The example's keys and \
+                      values are placeholders."
             .to_string(),
         parameters: vec![required(
             "values",
@@ -296,8 +313,8 @@ fn send_values_action() -> ActionDefinition {
         example: json!({
             "type": "send_memcached_values",
             "values": [
-                {"key": "greeting", "value": "hello world", "flags": 0},
-                {"key": "blob", "value": "0001ff", "value_encoding": "hex"}
+                {"key": "example-key", "value": "example-value", "flags": 0},
+                {"key": "example-blob", "value": "0001ff", "value_encoding": "hex"}
             ]
         }),
         log_template: None,
@@ -336,7 +353,9 @@ fn send_stats_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_memcached_stats".to_string(),
         description: "Answer a stats command. Each entry becomes a STAT line, terminated by \
-                      END."
+                      END. Use memcached's own stat names (version, curr_items, total_items, \
+                      bytes, uptime, pid); the example's values are placeholders for the ones \
+                      your instruction gives."
             .to_string(),
         parameters: vec![required(
             "stats",
@@ -345,7 +364,7 @@ fn send_stats_action() -> ActionDefinition {
         )],
         example: json!({
             "type": "send_memcached_stats",
-            "stats": {"pid": "1", "uptime": "3600", "curr_items": "12", "bytes": "4096"}
+            "stats": {"version": "1.6.0", "curr_items": "0", "uptime": "0"}
         }),
         log_template: None,
     }

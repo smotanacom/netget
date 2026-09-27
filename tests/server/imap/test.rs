@@ -160,44 +160,34 @@ async fn test_imap_greeting() -> E2EResult<()> {
 async fn test_imap_capability() -> E2EResult<()> {
     let prompt = "listen on port {AVAILABLE_PORT} via imap. Support IMAP4rev1, IDLE, NAMESPACE capabilities.";
 
-    let config = NetGetConfig::new(prompt)
-        .with_mock(|mock| {
-            mock
-                // Mock 1: Server startup
-                .on_instruction_containing("listen on port")
-                .and_instruction_containing("imap")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "open_server",
-                        "port": 0,
-                        "base_stack": "IMAP",
-                        "instruction": "Support IMAP4rev1, IDLE, NAMESPACE capabilities"
-                    }
-                ]))
-                .expect_calls(1)
-                .and()
-                // Mock 2: Connection greeting
-                .on_event("imap_connection")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "send_imap_response",
-                        "response": "* OK [CAPABILITY IMAP4rev1 IDLE NAMESPACE] Server Ready"
-                    }
-                ]))
-                .expect_calls(1)
-                .and()
-                // Mock 3: CAPABILITY command response
-                .on_event("imap_command")
-                .and_event_data_contains("command", "CAPABILITY")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "send_imap_response",
-                        "response": "* CAPABILITY IMAP4rev1 IDLE NAMESPACE\r\nA001 OK CAPABILITY completed"
-                    }
-                ]))
-                .expect_calls(1)
-                .and()
-        });
+    let config = NetGetConfig::new(prompt).with_mock(|mock| {
+        mock
+            // Mock 1: Server startup
+            .on_instruction_containing("listen on port")
+            .and_instruction_containing("imap")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "IMAP",
+                    "instruction": "Support IMAP4rev1, IDLE, NAMESPACE capabilities"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            // Mock 2: Connection greeting
+            .on_event("imap_connection")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "send_imap_response",
+                    "response": "* OK [CAPABILITY IMAP4rev1 IDLE NAMESPACE] Server Ready"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+        // No CAPABILITY rule: NetGet answers the command itself, repeating the list the
+        // greeting announced, so the model is asked only for the greeting.
+    });
 
     let server = start_netget_server(config).await?;
     wait_for_server_startup(&server, Duration::from_secs(10), "IMAP").await?;
@@ -221,10 +211,9 @@ async fn test_imap_capability() -> E2EResult<()> {
         .find(|l| l.starts_with("* CAPABILITY"))
         .expect("Should have CAPABILITY response");
 
-    assert!(
-        cap_line.contains("IMAP4rev1"),
-        "CAPABILITY should include IMAP4rev1, got: {}",
-        cap_line
+    assert_eq!(
+        cap_line, "* CAPABILITY IMAP4rev1 IDLE NAMESPACE",
+        "CAPABILITY repeats the greeting's list exactly"
     );
 
     // Check for tagged OK response

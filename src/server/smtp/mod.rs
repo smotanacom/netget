@@ -102,9 +102,9 @@ enum LineRead {
 ///
 /// * It stops at `MAX_LINE_BYTES` instead of growing without bound.
 /// * It decodes lossily instead of failing on invalid UTF-8. `read_line` returns
-///   `ErrorKind::InvalidData` for any non-UTF-8 byte and the session died on it — while
-///   `execute_send_smtp_ehlo` advertises `8BITMIME` by default, so the server was promising a
-///   capability its own read path could not survive. One Latin-1 byte in a message body was
+///   `ErrorKind::InvalidData` for any non-UTF-8 byte and the session died on it — while the
+///   EHLO reply advertises `8BITMIME`, so the server would be promising a capability its own
+///   read path could not survive. One Latin-1 byte in a message body was
 ///   enough. These bytes only ever become the model's event payload and a log line; nothing
 ///   here is re-emitted on the wire, so a lossy decode loses nothing a peer can observe.
 ///
@@ -144,6 +144,153 @@ where
             }
         }
     }
+}
+
+/// The extensions NetGet's own EHLO reply advertises.
+///
+/// Only what this server actually does. `8BITMIME` because the reader is 8-bit clean
+/// ([`read_line_bounded`] decodes lossily rather than failing). Nothing else: there is no
+/// STARTTLS, no AUTH, no PIPELINING, and no SIZE is enforced, and advertising any of them makes
+/// a real MTA try it and fail.
+pub const EHLO_EXTENSIONS: &[&str] = &["8BITMIME"];
+
+/// NetGet's answer to `EHLO`/`HELO`, or `None` for any other line.
+///
+/// Answered here rather than by the model because the reply has exactly one correct form - the
+/// greeting's hostname and [`EHLO_EXTENSIONS`], which are facts about this implementation, not
+/// decisions. Asked, a small model answered EHLO with the 220 greeting action (so the client
+/// read a greeting as its EHLO reply and every later reply one step late), or advertised
+/// STARTTLS copied from an example, which this server cannot do.
+pub fn ehlo_reply(command: &str, hostname: &str) -> Option<Vec<u8>> {
+    let mut parts = command.trim().splitn(2, char::is_whitespace);
+    let verb = parts.next()?.to_ascii_uppercase();
+    if verb != "EHLO" && verb != "HELO" {
+        return None;
+    }
+    let client = parts.next().map(str::trim).unwrap_or("");
+    if client.is_empty() {
+        // RFC 5321 4.1.1.1: the domain argument is required.
+        return Some(format!("501 5.5.4 Syntax: {verb} hostname\r\n").into_bytes());
+    }
+    let mut reply = String::new();
+    if verb == "HELO" {
+        reply.push_str(&format!("250 {hostname} greets {client}\r\n"));
+    } else {
+        reply.push_str(&format!("250-{hostname} greets {client}\r\n"));
+        for (i, ext) in EHLO_EXTENSIONS.iter().enumerate() {
+            let sep = if i + 1 == EHLO_EXTENSIONS.len() {
+                ' '
+            } else {
+                '-'
+            };
+            reply.push_str(&format!("250{sep}{ext}\r\n"));
+        }
+    }
+    Some(reply.into_bytes())
+}
+
+/// The hostname a 220 greeting announced (`220 <host> ...`), for the EHLO reply to repeat.
+pub fn greeting_hostname(greeting: &[u8]) -> Option<String> {
+    let line = String::from_utf8_lossy(greeting);
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "220" {
+        return None;
+    }
+    fields
+        .next()
+        .filter(|h| h.bytes().all(|b| b.is_ascii_graphic()))
+        .map(str::to_string)
+}
+
+/// The actions whose reply wins when a batch answers one SMTP line with several: the one the
+/// line's `answer_with` names when only one fits. See `ExecutionResult::chosen_reply`.
+pub fn smtp_preferred_actions(command: &str, in_data: bool) -> &'static [&'static str] {
+    const ACCEPT_OR_REFUSE: &[&str] = &["send_smtp_ok", "send_smtp_error"];
+    if in_data {
+        return if command == "." {
+            ACCEPT_OR_REFUSE
+        } else {
+            &[]
+        };
+    }
+    if command == "CONNECTION_ESTABLISHED" {
+        return &["send_smtp_greeting"];
+    }
+    let upper = command.to_ascii_uppercase();
+    if upper.starts_with("MAIL FROM:") || upper.starts_with("RCPT TO:") {
+        return ACCEPT_OR_REFUSE;
+    }
+    match upper.split_whitespace().next().unwrap_or("") {
+        "DATA" => &["send_smtp_start_data"],
+        "QUIT" => &["send_smtp_quit"],
+        "RSET" | "NOOP" => &["send_smtp_ok"],
+        _ => &[],
+    }
+}
+
+/// The event data for one SMTP line: the line itself, plus what NetGet can tell from it.
+///
+/// `answer_with` names the action (and reply code) this particular line takes. A small model
+/// reused one action for a whole session - the 220 greeting for EHLO and MAIL, a 250 for a
+/// recipient the instruction said to refuse - and it follows a per-request hint far better
+/// than a general description. For `MAIL FROM`/`RCPT TO` the address and its domain are
+/// split out, because an instruction like "refuse any other domain" is a decision about the
+/// domain. `in_data` is whether a 354 has gone out and the terminating `.` has not arrived:
+/// then the line is message text, whatever it looks like.
+pub fn smtp_command_event_data(command: &str, in_data: bool) -> serde_json::Value {
+    let mut data = serde_json::json!({ "command": command });
+    if in_data {
+        data["answer_with"] = if command == "." {
+            "send_smtp_ok (250) to accept the message, or send_smtp_error to refuse it".into()
+        } else {
+            "wait_for_more: a line of the message body gets no reply".into()
+        };
+        return data;
+    }
+    if command == "CONNECTION_ESTABLISHED" {
+        data["answer_with"] = "send_smtp_greeting, with the banner your instruction gives (if \
+                               any) as message; close_connection to refuse the connection"
+            .into();
+        return data;
+    }
+    let upper = command.to_ascii_uppercase();
+    let address = |prefix: &str| -> Option<String> {
+        let rest = command.get(prefix.len()..)?.trim();
+        let inner = rest
+            .strip_prefix('<')
+            .and_then(|r| r.split_once('>').map(|(a, _)| a))
+            .unwrap_or_else(|| rest.split_whitespace().next().unwrap_or(""));
+        Some(inner.to_string())
+    };
+    let (answer, addr) = if upper.starts_with("MAIL FROM:") {
+        (
+            "send_smtp_ok (250) to accept this sender, or send_smtp_error with code 550 to \
+             refuse it. The recipient is decided later, at RCPT TO",
+            address("MAIL FROM:"),
+        )
+    } else if upper.starts_with("RCPT TO:") {
+        (
+            "send_smtp_ok (250) to accept mail for this recipient, or send_smtp_error with \
+             code 550 to refuse it; decide from the recipient's domain",
+            address("RCPT TO:"),
+        )
+    } else {
+        let answer = match upper.split_whitespace().next().unwrap_or("") {
+            "DATA" => "send_smtp_start_data (354); the message then arrives one line per event",
+            "QUIT" => "send_smtp_quit (221), then close_connection",
+            "RSET" | "NOOP" => "send_smtp_ok (250)",
+            _ => return data,
+        };
+        (answer, None)
+    };
+    data["answer_with"] = answer.into();
+    if let Some(addr) = addr {
+        if let Some((_, domain)) = addr.rsplit_once('@') {
+            data["domain"] = domain.to_ascii_lowercase().into();
+        }
+        data["address"] = addr.into();
+    }
+    data
 }
 
 /// SMTP server that forwards mail to LLM
@@ -411,9 +558,10 @@ impl SmtpSession {
     {
         use tokio::io::AsyncWriteExt;
 
-        // Send initial greeting. `false` means the model refused the connection; close
-        // without entering the command loop.
-        if !Self::send_greeting(
+        // Send initial greeting. `None` means the model refused the connection; close
+        // without entering the command loop. Otherwise it is the hostname the greeting
+        // announced, which NetGet's own EHLO reply repeats.
+        let Some(hostname) = Self::send_greeting(
             write_half,
             connection_id,
             server_id,
@@ -423,9 +571,13 @@ impl SmtpSession {
             protocol,
         )
         .await?
-        {
+        else {
             return Ok(());
-        }
+        };
+
+        // Between a 354 and the terminating ".", every line is message text: it is never
+        // a command, whatever it looks like, and it gets no reply of its own.
+        let mut in_data = false;
 
         loop {
             let line = match read_line_bounded(&mut reader).await? {
@@ -485,12 +637,38 @@ impl SmtpSession {
             let command = line.trim();
             console_debug!(status_tx, "SMTP received: {}", command);
 
+            if !in_data {
+                if let Some(reply) = ehlo_reply(command, &hostname) {
+                    Log::new(Some(status_tx)).info(format!(
+                        "SMTP connection {} decision=netget_answer: {} answered by NetGet \
+                         (extensions: {})",
+                        connection_id,
+                        crate::utils::truncate_for_log(command, 80),
+                        EHLO_EXTENSIONS.join(" ")
+                    ));
+                    Self::write_reply(
+                        write_half,
+                        &reply,
+                        connection_id,
+                        server_id,
+                        app_state,
+                        status_tx,
+                    )
+                    .await?;
+                    continue;
+                }
+            }
+
             let event = Event::new(
                 &SMTP_COMMAND_EVENT,
-                serde_json::json!({
-                    "command": command
-                }),
+                smtp_command_event_data(command, in_data),
             );
+            let preferred = smtp_preferred_actions(command, in_data);
+            // The terminating "." ends the message whatever the answer to it is.
+            let ends_message = in_data && command == ".";
+            if ends_message {
+                in_data = false;
+            }
 
             match call_llm(
                 llm_client,
@@ -506,28 +684,35 @@ impl SmtpSession {
                     let mut should_close = false;
                     let mut wrote_reply = false;
                     let mut silence_is_deliberate = false;
+                    let mut dropped_replies = 0usize;
 
-                    for protocol_result in execution_result.protocol_results {
+                    let chosen = execution_result.chosen_reply(preferred);
+                    for (index, protocol_result) in
+                        execution_result.protocol_results.into_iter().enumerate()
+                    {
                         match protocol_result {
+                            // One command, one reply. SMTP has no pipelining here, so a second
+                            // reply is read by the client as the answer to its *next* command,
+                            // and every reply after that is off by one for the rest of the
+                            // session. Only the chosen one - the action `answer_with` names,
+                            // else the first - is written.
+                            ActionResult::Output(_) if Some(index) != chosen => {
+                                dropped_replies += 1
+                            }
                             ActionResult::Output(data) => {
                                 wrote_reply = true;
-                                let mut writer = write_half.lock().await;
-                                writer.write_all(&data).await?;
-                                writer.flush().await?;
-                                drop(writer);
-                                app_state
-                                    .update_connection_stats(
-                                        server_id,
-                                        connection_id,
-                                        None,
-                                        Some(data.len() as u64),
-                                        None,
-                                        Some(1),
-                                    )
-                                    .await;
-
-                                let response = String::from_utf8_lossy(&data);
-                                console_debug!(status_tx, "SMTP sent: {}", response.trim());
+                                if !ends_message && data.starts_with(b"354") {
+                                    in_data = true;
+                                }
+                                Self::write_reply(
+                                    write_half,
+                                    &data,
+                                    connection_id,
+                                    server_id,
+                                    app_state,
+                                    status_tx,
+                                )
+                                .await?;
                             }
                             // Do not return here: the QUIT reply is normally a 221 followed by
                             // close_connection in the same batch, and returning early would
@@ -541,6 +726,17 @@ impl SmtpSession {
                             ActionResult::WaitForMore => silence_is_deliberate = true,
                             _ => {}
                         }
+                    }
+
+                    if dropped_replies > 0 {
+                        Log::new(Some(status_tx)).warn(format!(
+                            "SMTP connection {} decision=duplicate_response_dropped: {} extra \
+                             repl{} to {:?} not sent; one command gets one reply",
+                            connection_id,
+                            dropped_replies,
+                            if dropped_replies == 1 { "y" } else { "ies" },
+                            crate::utils::truncate_for_log(command, 80)
+                        ));
                     }
 
                     if should_close {
@@ -665,12 +861,51 @@ impl SmtpSession {
         Ok(())
     }
 
+    /// Write one reply built at runtime (a model's answer, NetGet's EHLO reply) and account
+    /// for it.
+    async fn write_reply<W>(
+        write_half: &Arc<tokio::sync::Mutex<W>>,
+        reply: &[u8],
+        connection_id: crate::server::connection::ConnectionId,
+        server_id: crate::state::ServerId,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+
+        {
+            let mut writer = write_half.lock().await;
+            writer.write_all(reply).await?;
+            writer.flush().await?;
+        }
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(reply.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+        console_debug!(
+            status_tx,
+            "SMTP sent: {}",
+            String::from_utf8_lossy(reply).trim()
+        );
+        Ok(())
+    }
+
     /// Send the greeting.
     ///
-    /// Returns `Ok(false)` when the model answered the greeting event with `close_connection`
+    /// Returns `Ok(None)` when the model answered the greeting event with `close_connection`
     /// — a deliberate refusal, which is a different thing from a backend failure and must not
     /// be reported as one. `Err` is reserved for the backend actually failing, and carries the
-    /// 421 that has already been written.
+    /// 421 that has already been written. Otherwise `Ok(Some(hostname))`: the host the banner
+    /// announced, or `localhost` when it named none.
     async fn send_greeting<W>(
         write_half: &Arc<tokio::sync::Mutex<W>>,
         connection_id: crate::server::connection::ConnectionId,
@@ -679,7 +914,7 @@ impl SmtpSession {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<SmtpProtocol>,
-    ) -> Result<bool>
+    ) -> Result<Option<String>>
     where
         W: tokio::io::AsyncWrite + Unpin,
     {
@@ -687,10 +922,9 @@ impl SmtpSession {
 
         let greeting_event = Event::new(
             &SMTP_COMMAND_EVENT,
-            serde_json::json!({
-                "command": "CONNECTION_ESTABLISHED"
-            }),
+            smtp_command_event_data("CONNECTION_ESTABLISHED", false),
         );
+        let mut hostname = None;
 
         match call_llm(
             llm_client,
@@ -704,23 +938,27 @@ impl SmtpSession {
         {
             Ok(execution_result) => {
                 let mut refused = false;
-                for protocol_result in execution_result.protocol_results {
+                let mut dropped_replies = 0usize;
+                let chosen = execution_result
+                    .chosen_reply(smtp_preferred_actions("CONNECTION_ESTABLISHED", false));
+                for (index, protocol_result) in
+                    execution_result.protocol_results.into_iter().enumerate()
+                {
                     match protocol_result {
+                        // One banner. A second 220 would be read as the reply to the client's
+                        // first command, leaving every reply after it one step late.
+                        ActionResult::Output(_) if Some(index) != chosen => dropped_replies += 1,
                         ActionResult::Output(data) => {
-                            let mut writer = write_half.lock().await;
-                            writer.write_all(&data).await?;
-                            writer.flush().await?;
-                            drop(writer);
-                            app_state
-                                .update_connection_stats(
-                                    server_id,
-                                    connection_id,
-                                    None,
-                                    Some(data.len() as u64),
-                                    None,
-                                    Some(1),
-                                )
-                                .await;
+                            hostname = greeting_hostname(&data);
+                            Self::write_reply(
+                                write_half,
+                                &data,
+                                connection_id,
+                                server_id,
+                                app_state,
+                                status_tx,
+                            )
+                            .await?;
                         }
                         // `close_connection` is advertised on `smtp_command`, and the greeting
                         // *is* an `smtp_command` event, so refusing the connection is an answer
@@ -732,13 +970,22 @@ impl SmtpSession {
                         _ => {}
                     }
                 }
+                if dropped_replies > 0 {
+                    Log::new(Some(status_tx)).warn(format!(
+                        "SMTP connection {} decision=duplicate_response_dropped: {} extra \
+                         greeting repl{} not sent",
+                        connection_id,
+                        dropped_replies,
+                        if dropped_replies == 1 { "y" } else { "ies" }
+                    ));
+                }
                 if refused {
                     Log::new(Some(status_tx)).info(format!(
                         "SMTP connection {} decision=model_reject: the model refused the \
                          connection at the greeting",
                         connection_id
                     ));
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
             Err(e) => {
@@ -786,7 +1033,7 @@ impl SmtpSession {
             }
         }
 
-        Ok(true)
+        Ok(Some(hostname.unwrap_or_else(|| "localhost".to_string())))
     }
 }
 

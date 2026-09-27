@@ -498,6 +498,48 @@ pub fn encode_values(items: &[ValueItem], include_cas: bool) -> Vec<u8> {
     out
 }
 
+/// Keep only the `VALUE` blocks of a retrieval reply whose key the client asked for.
+///
+/// Returns the reply rebuilt from the kept blocks and the keys that were dropped, or `None`
+/// when `reply` is not a `VALUE ... END` block at all (an error line, say), which is left
+/// alone. A memcached server returns a value only for a key in the request (protocol.txt,
+/// "Retrieval command"), and a client relies on it: pymemcache raises `KeyError` on a key it
+/// did not ask for and discards the whole reply. A model told "every other key is missing"
+/// answered `get nothing-here` with the value of the one key it did hold; dropping that block
+/// turns the reply into what the instruction meant - a miss.
+///
+/// Only ever applied to bytes [`encode_values`] produced, so the framing is known exactly.
+pub fn retain_requested_values(reply: &[u8], keys: &[String]) -> Option<(Vec<u8>, Vec<String>)> {
+    let mut kept = Vec::with_capacity(reply.len());
+    let mut dropped = Vec::new();
+    let mut rest = reply;
+    loop {
+        if rest == b"END\r\n" {
+            kept.extend_from_slice(b"END\r\n");
+            return Some((kept, dropped));
+        }
+        let header_end = find_crlf(rest)?;
+        let header = std::str::from_utf8(&rest[..header_end]).ok()?;
+        let mut fields = header.split(' ');
+        if fields.next()? != "VALUE" {
+            return None;
+        }
+        let key = fields.next()?;
+        let _flags = fields.next()?;
+        let len: usize = fields.next()?.parse().ok()?;
+        let block_end = header_end + 2 + len + 2;
+        if rest.len() < block_end || &rest[block_end - 2..block_end] != b"\r\n" {
+            return None;
+        }
+        if keys.iter().any(|k| k == key) {
+            kept.extend_from_slice(&rest[..block_end]);
+        } else {
+            dropped.push(key.to_string());
+        }
+        rest = &rest[block_end..];
+    }
+}
+
 /// Frame a `stats` reply: `STAT <name> <value>\r\n` per entry, then `END\r\n`.
 pub fn encode_stats(entries: &[(String, String)]) -> Vec<u8> {
     let mut out = Vec::new();

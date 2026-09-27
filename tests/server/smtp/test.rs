@@ -99,15 +99,14 @@ async fn test_smtp_greeting() -> E2EResult<()> {
 async fn test_smtp_ehlo() -> E2EResult<()> {
     println!("\n=== E2E Test: SMTP EHLO Command ===");
 
-    // PROMPT: Tell the LLM to handle EHLO
-    let prompt = "listen on port {AVAILABLE_PORT} via smtp. Send greeting '220 mail.test ESMTP'. \
-        When client sends EHLO, respond with '250-mail.test' followed by '250 8BITMIME'";
+    // EHLO is answered by NetGet, not the model: its reply is the greeting's hostname and the
+    // extensions this server implements, which are facts rather than decisions. Only the
+    // greeting reaches the model, so the model sees exactly one smtp_command event.
+    let prompt = "listen on port {AVAILABLE_PORT} via smtp. Send greeting '220 mail.test ESMTP'.";
 
-    // Start the server with mocks
     let config = helpers::NetGetConfig::new(prompt).with_mock(|mock| {
         mock.on_instruction_containing("listen on port")
             .and_instruction_containing("smtp")
-            .and_instruction_containing("EHLO")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "open_server",
@@ -118,59 +117,59 @@ async fn test_smtp_ehlo() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
+            .on_event("smtp_command")
+            .and_event_data_contains("command", "CONNECTION_ESTABLISHED")
+            .respond_with_actions(serde_json::json!([
+                { "type": "send_smtp_greeting", "hostname": "mail.test", "message": "ESMTP" }
+            ]))
+            .expect_calls(1)
+            .and()
     });
 
     let server = helpers::start_netget_server(config).await?;
-    println!("Server started on port {}", server.port);
-
-    // VALIDATION: Send EHLO and verify response
     let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
-    println!("✓ TCP connected");
-
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
-    // Read greeting
-    let mut line = String::new();
-    let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await;
-    println!("Greeting: {}", line.trim());
-
-    // Send EHLO
-    println!("Sending: EHLO client.test");
-    write_half.write_all(b"EHLO client.test\r\n").await?;
-    write_half.flush().await?;
-
-    // Read EHLO response (may be multiple lines)
-    let mut received_250 = false;
-    for attempt in 1..=5 {
+    async fn read_reply_line<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> String {
         let mut line = String::new();
         match tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line)).await {
-            Ok(Ok(n)) if n > 0 => {
-                println!("SMTP response ({}): {}", attempt, line.trim());
-
-                // Check for 250 response
-                if line.starts_with("250") || line.contains("250") {
-                    received_250 = true;
-                }
-
-                // Stop if we get a final 250 line (not 250-)
-                if line.starts_with("250 ") {
-                    break;
-                }
-            }
-            _ => break,
+            Ok(Ok(n)) if n > 0 => line,
+            other => panic!("expected a reply line, got {other:?}"),
         }
     }
 
-    if received_250 {
-        println!("✓ SMTP EHLO response (250) verified");
-    } else {
-        println!("Note: Did not receive 250 response to EHLO");
-    }
+    assert_eq!(
+        read_reply_line(&mut reader).await,
+        "220 mail.test ESMTP\r\n"
+    );
 
-    // Wait for the exchange the mocks describe, rather than trusting a fixed
-    // sleep to have covered it. Under load the last event routinely lands after
-    // the sleep expires, and the test reports it as never having happened.
+    write_half.write_all(b"EHLO client.test\r\n").await?;
+    write_half.flush().await?;
+    assert_eq!(
+        read_reply_line(&mut reader).await,
+        "250-mail.test greets client.test\r\n"
+    );
+    assert_eq!(read_reply_line(&mut reader).await, "250 8BITMIME\r\n");
+
+    // HELO is the single-line form, and neither advertises what this server cannot do.
+    write_half.write_all(b"HELO client.test\r\n").await?;
+    write_half.flush().await?;
+    assert_eq!(
+        read_reply_line(&mut reader).await,
+        "250 mail.test greets client.test\r\n"
+    );
+
+    // EHLO without its argument is a syntax error, not a greeting.
+    write_half.write_all(b"EHLO\r\n").await?;
+    write_half.flush().await?;
+    assert!(read_reply_line(&mut reader).await.starts_with("501 "));
+
+    assert!(
+        server.output_contains("decision=netget_answer").await,
+        "a NetGet-answered EHLO is logged as such"
+    );
+
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
@@ -221,13 +220,8 @@ async fn test_smtp_mail_transaction() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-            .on_event("smtp_command")
-            .and_event_data_contains("command", "EHLO")
-            .respond_with_actions(serde_json::json!([
-                { "type": "send_smtp_ok", "message": "OK" }
-            ]))
-            .expect_calls(1)
-            .and()
+            // No EHLO rule: NetGet answers EHLO itself, so it never reaches the model. An
+            // EHLO event would find no rule, get the mock's 500 and fail the session.
             .on_event("smtp_command")
             .and_event_data_contains("command", "MAIL FROM")
             .respond_with_actions(serde_json::json!([
@@ -287,11 +281,13 @@ async fn test_smtp_mail_transaction() -> E2EResult<()> {
     // Read greeting
     expect_reply(&mut reader, "greeting", "220").await?;
 
-    // Send EHLO
+    // Send EHLO. The reply is NetGet's own: the greeting's hostname and the one extension
+    // this server implements, as a two-line reply.
     println!("Sending: EHLO client.test");
     write_half.write_all(b"EHLO client.test\r\n").await?;
     write_half.flush().await?;
-    expect_reply(&mut reader, "EHLO", "250").await?;
+    expect_reply(&mut reader, "EHLO", "250-mail.test greets client.test").await?;
+    expect_reply(&mut reader, "EHLO", "250 8BITMIME").await?;
 
     // Send MAIL FROM
     println!("Sending: MAIL FROM:<sender@test.com>");

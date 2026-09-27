@@ -58,8 +58,24 @@ password itself is not surfaced.
 list of client ids currently attached to this server, so the model can forward the
 message without guessing names.
 
-`mqtt_subscribe` carries `packet_id` and `topics`, an ordered list of
-`{"filter": "...", "qos": N}`.
+`mqtt_subscribe` carries `packet_id`, `topics` (an ordered list of
+`{"filter": "...", "qos": N}`) and `answer_with`, which spells out the SUBACK for this
+subscription (its packet id and one granted QoS per filter) **and** tells the model to follow
+it with an `mqtt_publish`, `retain: true`, for every matching topic its instruction gives a
+retained message or current value (`subscribe_answer_with` in `mod.rs`). A variant phrased
+"answer with two actions: …" was measured and is worse (0/5): llama3.1:8b restated the event
+data before its answer, and the reply parser took the restated `{"filter": …}` object as the
+action. The real-model eval
+(`mqtt/retained-message`, llama3.1:8b, seed 42) scored 0/5 without it: told a topic "holds the
+retained reading 19.5", the model sent the SUBACK and nothing else, and `mosquitto_sub` waited
+out its timeout. A broker that stores nothing can deliver a retained message only if the model
+publishes it, so the event has to say so.
+
+**A connection gets one CONNACK.** `execute_connack` refuses a second on the same connection
+(`MqttProtocol::connack_sent`, never cleared), logged `decision=duplicate_response_dropped`; in
+one eval run the model answered a CONNECT with two, and libmosquitto dropped the connection as
+a protocol error. `tests/server/mqtt/answer_with_test.rs` pins both; the CONNACK guard was
+verified by removing it and watching the second CONNACK reach the wire in place of the SUBACK.
 
 ### Correlation identifiers
 
@@ -117,7 +133,8 @@ client's channel instead; `"*"` fans out to every client on the server.
 ## Routing: the model does it, not the broker
 
 **There is no subscription table and no retained-message store in Rust.** After a client
-publishes, nothing is delivered automatically. The model remembers who subscribed to what
+publishes, nothing is delivered automatically, and a retained message reaches a new subscriber
+only because the subscribe event's `answer_with` asks the model to publish it. The model remembers who subscribed to what
 (server memory, or a script's own state) and issues `mqtt_publish` with `to_client_id` for
 each recipient. `connected_clients` in the publish event and the `list_mqtt_clients`
 action give it the live client ids.

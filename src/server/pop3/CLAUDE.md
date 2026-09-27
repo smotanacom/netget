@@ -51,7 +51,8 @@ The LLM controls POP3 responses through these actions:
 - `send_pop3_stat` - +OK message_count total_size (mailbox status)
 - `send_pop3_list` - +OK multiline list of message sizes
 - `send_pop3_uidl` - +OK multiline list of unique IDs
-- `send_pop3_retr` - +OK multiline email message content
+- `send_pop3_retr` - +OK multiline email message: `from`/`to`/`subject`/`date`/`body`
+  (NetGet writes the header lines) or the whole message as `content`
 - `send_pop3_top` - +OK multiline email headers and n body lines
 - `send_pop3_message` - Custom POP3 response
 - `wait_for_more` - Wait for next command
@@ -62,9 +63,59 @@ There are no async (user-triggered) actions. A `close_pop3_connection` action wa
 for a while with no matching arm in `execute_action`, so it only ever produced
 "Unknown POP3 action".
 
+### What NetGet answers itself, and what the model is told
+
+The real-model eval (`./run-eval.sh pop3`, llama3.1:8b, seed 42) scored `pop3/message-subject`
+0/5. Two things broke it, and the second hid behind the first:
+
+- The model answered `RETR` with a bare `send_pop3_ok` - one `+OK` line - so poplib waited for
+  the message and its terminating `.` until its own timeout.
+- It answered the greeting with a greeting **and** a `+OK`, so every reply after it arrived one
+  command late: `USER` read the stray `+OK`, `PASS` read `USER`'s answer, and `RETR` read
+  `PASS`'s. Even a correct `RETR` answer would have been read as the wrong command's.
+
+Three changes answer that, the smallest that remove each failure class:
+
+- **Every command carries `answer_with`** (`pop3_command_event_data` in `mod.rs`), naming the
+  action for that one command - `send_pop3_retr` with the whole message for `RETR n`,
+  `send_pop3_stat` for `STAT`, `send_pop3_list` for a whole-mailbox `LIST` - plus
+  `message_number` (and `lines` for `TOP`). `send_pop3_ok`'s own description now says which
+  commands it answers and that it never answers `RETR`/`TOP`/`STAT`.
+- **`send_pop3_retr` takes structured fields.** `from`, `to`, `subject`, `date` and `body`, and
+  NetGet writes the header lines; `content` remains for a model that writes the message whole.
+  A small model writes `"subject": "X"` far more reliably than RFC 5322 inside one string.
+  NetGet already rendered the mechanics (octet count, CRLF, byte-stuffing, the terminating
+  `.`); now it renders the headers too.
+- **One command, one reply.** One `Output` of a batch is written and the rest are logged
+  `decision=duplicate_response_dropped`: the reply of the action `answer_with` names when the
+  batch has it (`pop3_preferred_actions`), else the first. First-wins alone was measured wrong:
+  with it, `pop3/message-count` (5/5 before) fell to 0/5, because the model answers `STAT` with
+  a bare `+OK` *and then* the `STAT` line, and the second is the answer
+  (`ExecutionResult::chosen_reply`, `src/llm/actions/executor.rs`).
+
+**A `RETR`/`TOP` answered as a `+OK` and the message as raw text is framed by NetGet**
+(`assemble_multiline_answer`). With the hint in place the model's commonest wrong answer to
+`RETR` was `send_pop3_ok` followed by `send_pop3_message` carrying the message - the right
+content, split the way the wire shows it, with no terminating `.`. NetGet writes the status
+line, the byte-stuffed body and the `.` exactly as `send_pop3_retr` would, and logs
+`decision=multiline_assembled`. It applies only when the batch has no
+`send_pop3_retr`/`send_pop3_top`/`send_pop3_err` of its own and the raw text is not itself a
+status line.
+
+**`CAPA` is answered by NetGet** (`CAPA_REPLY`): `USER`, `TOP`, `UIDL`, `RESP-CODES` - the
+commands this server has actions for, and the RFC 2449 codes its own failures carry. It has one
+correct form, and it is multi-line, which no model action rendered, so a model asked for it
+could only answer a single `+OK` and leave the client waiting for a `.`. A hint could not fix
+that; answering it removes the class. Logged `decision=netget_answer`.
+
+`tests/server/pop3/answer_with_test.rs` pins all of it from the wire; the drop, the preferred
+reply, the `CAPA` answer and the `RETR` assembly were each verified by removing them and
+watching it fail.
+
 ### Multi-line bodies
 
-`send_pop3_retr` and `send_pop3_top` take plain text in `content`. NetGet normalises newlines
+`send_pop3_retr` and `send_pop3_top` take plain text in `content` (`send_pop3_retr` can
+instead take the structured fields above, from which NetGet builds that text). NetGet normalises newlines
 to CRLF, byte-stuffs any line beginning with `.` (RFC 1939 §3 - without this a message
 containing such a line is truncated at that point) and appends the terminating `.` line.
 `send_pop3_retr`'s `size` is optional; omit it and the advertised octet count is the real
@@ -197,7 +248,10 @@ For RETR 1, send email message with headers and body.
   "actions": [
     {
       "type": "send_pop3_retr",
-      "content": "From: sender@example.com\nTo: recipient@example.com\nSubject: Test Email\n\nThis is the email body."
+      "from": "sender@example.com",
+      "to": "recipient@example.com",
+      "subject": "Test Email",
+      "body": "This is the email body."
     }
   ]
 }

@@ -410,7 +410,8 @@ async fn bolt_syntax_error_waits_for_the_model() -> E2EResult<()> {
 
 /// A mail server that greets as NetGet Eval Mail, takes every sender, and takes a
 /// recipient only at example.com: one rule on `smtp_command`, branching on the
-/// command, because the greeting and every command are the same event.
+/// command, because the greeting and every command are the same event. EHLO is
+/// answered by NetGet and never reaches the model.
 #[cfg(feature = "smtp")]
 fn answer_smtp(mock: MockLlmBuilder, calls: usize) -> MockLlmBuilder {
     mock.on_event("smtp_command")
@@ -422,10 +423,6 @@ fn answer_smtp(mock: MockLlmBuilder, calls: usize) -> MockLlmBuilder {
                     "type": "send_smtp_greeting",
                     "hostname": "mail.example.com",
                     "message": "NetGet Eval Mail"
-                }])
-            } else if upper.starts_with("EHLO") {
-                serde_json::json!([{
-                    "type": "send_smtp_ehlo", "hostname": "mail.example.com", "extensions": []
                 }])
             } else if upper.starts_with("MAIL") {
                 serde_json::json!([{"type": "send_smtp_ok", "message": "Sender OK"}])
@@ -451,14 +448,14 @@ async fn smtp_named_banner_waits_for_the_model() -> E2EResult<()> {
 #[cfg(feature = "smtp")]
 #[tokio::test]
 async fn smtp_accept_local_domain_waits_for_the_model() -> E2EResult<()> {
-    // Greeting, EHLO, MAIL, RCPT.
-    check_case("smtp/accept-local-domain", |mock| answer_smtp(mock, 4)).await
+    // Greeting, MAIL, RCPT - EHLO is NetGet's own.
+    check_case("smtp/accept-local-domain", |mock| answer_smtp(mock, 3)).await
 }
 
 #[cfg(feature = "smtp")]
 #[tokio::test]
 async fn smtp_refuse_other_domain_waits_for_the_model() -> E2EResult<()> {
-    check_case("smtp/refuse-other-domain", |mock| answer_smtp(mock, 4)).await
+    check_case("smtp/refuse-other-domain", |mock| answer_smtp(mock, 3)).await
 }
 
 // ---------------------------------------------------------------------------
@@ -509,8 +506,9 @@ async fn pop3_message_subject_waits_for_the_model() -> E2EResult<()> {
 // imap — imaplib
 // ---------------------------------------------------------------------------
 
-/// Greeting, LOGIN, and one rule for `imap_command` branching on the command:
-/// imaplib issues CAPABILITY on its own before LOGIN, then the command under test.
+/// Greeting, LOGIN, and one rule for `imap_command` branching on the command.
+/// imaplib issues CAPABILITY on its own before LOGIN; NetGet answers it from the
+/// greeting's list, so the model sees only the command under test.
 #[cfg(feature = "imap")]
 fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
     mock.on_event("imap_connection")
@@ -541,11 +539,6 @@ fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
                 .unwrap_or_default()
                 .to_ascii_uppercase();
             match command.as_str() {
-                "CAPABILITY" => serde_json::json!([
-                    {"type": "send_imap_capability", "capabilities": ["IMAP4rev1"]},
-                    {"type": "send_imap_response", "tag": tag, "status": "OK",
-                     "message": "CAPABILITY completed"}
-                ]),
                 "LIST" => serde_json::json!([
                     {"type": "send_imap_list", "mailboxes": [
                         {"name": "INBOX", "delimiter": "/", "flags": []},
@@ -568,7 +561,7 @@ fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
             }
         })
         .after_delay(MODEL_LATENCY)
-        .expect_calls(2)
+        .expect_calls(1)
         .and()
 }
 
@@ -588,7 +581,8 @@ async fn imap_inbox_count_waits_for_the_model() -> E2EResult<()> {
 // nntp — nntplib
 // ---------------------------------------------------------------------------
 
-/// Greeting, CAPABILITIES (nntplib asks on connect), then the command under test.
+/// Greeting, then the command under test. nntplib sends CAPABILITIES on connect;
+/// NetGet answers it, so it never reaches the model.
 #[cfg(feature = "nntp")]
 fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
     mock.on_event("nntp_command_received")
@@ -600,11 +594,6 @@ fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
             if command == "GREETING" {
                 serde_json::json!([{
                     "type": "send_nntp_response", "code": 201, "text": "NetGet news ready"
-                }])
-            } else if command == "CAPABILITIES" {
-                serde_json::json!([{
-                    "type": "send_nntp_message",
-                    "message": "101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\n.\r\n"
                 }])
             } else if command == "GROUP COMP.LANG.EVAL" {
                 serde_json::json!([{
@@ -630,7 +619,7 @@ fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
             }
         })
         .after_delay(MODEL_LATENCY)
-        .expect_calls(3)
+        .expect_calls(2)
         .and()
 }
 

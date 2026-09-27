@@ -13,15 +13,38 @@ Tests SMTP server with raw TCP clients validating RFC 5321 command/response sequ
 
 ## LLM Call Budget
 
-- `test_smtp_greeting()`: 1 startup call (greeting on connect)
-- `test_smtp_ehlo()`: 1 startup call + 1 EHLO command
-- `test_smtp_mail_transaction()`: 1 startup call + 5 mocked `smtp_command` events (greeting on
-  connect, EHLO, MAIL FROM, RCPT TO, DATA). Every step **must** have an event mock: an
+`EHLO`/`HELO` are answered by NetGet and never reach the model, so no test mocks them; an EHLO
+rule would report zero calls.
+
+- `test_smtp_greeting()`: 1 startup call + 1 greeting
+- `test_smtp_ehlo()`: 1 startup call + 1 greeting. Asserts NetGet's EHLO/HELO replies byte for
+  byte (`250-mail.test greets client.test`, `250 8BITMIME`), and `501` for a bare `EHLO`
+- `test_smtp_mail_transaction()`: 1 startup call + 4 mocked `smtp_command` events (greeting on
+  connect, MAIL FROM, RCPT TO, DATA). Every step **must** have an event mock: an
   unmatched event returns HTTP 500 from the mock, the greeting then fails closed with a 421
   that closes the session, and every later write dies on a broken pipe.
 - `test_smtp_quit()`: 1 startup call + 1 QUIT command
 - `test_smtp_error_handling()`: 1 startup call + 1 invalid command
-- **Total: 15 LLM calls** (5 startups + 10 command calls)
+- `answer_with_test.rs`: 1 startup call + 7 events (greeting, MAIL, two RCPT, DATA, a body
+  line, `.`)
+- `llm_failure_test.rs`: the 451 case fails on `MAIL FROM`, not `EHLO`, since `EHLO` no longer
+  reaches the backend
+
+## `answer_with_test.rs` - one reply per command, and each told its answer
+
+The real-model eval's SMTP failures were one action reused for a whole session. This test pins
+the fix from the wire, with every rule matched on the event's `answer_with` / `address` /
+`domain` rather than on the raw command, so a missing hint is an unmatched event:
+
+- the greeting is answered with **two** banners and the client must read the first and then
+  NetGet's EHLO reply - not the second banner;
+- `MAIL` is answered with two replies and the next `RCPT` must read its own `550`;
+- inside `DATA`, a body line reading `EHLO …` must not be answered by NetGet and reaches the
+  model told `wait_for_more`;
+- `decision=duplicate_response_dropped` is in the log.
+
+Verified by removing the drop (RCPT reads the stale `250`) and by answering `EHLO` inside
+`DATA` (the client reads an EHLO reply where the `.`'s `250` belongs).
 
 ## Scripting Usage
 
@@ -55,10 +78,11 @@ Tests SMTP server with raw TCP clients validating RFC 5321 command/response sequ
 ## Test Cases
 
 1. **test_smtp_greeting** - Validates 220 greeting on connect
-2. **test_smtp_ehlo** - Tests EHLO command and 250 response with extensions
+2. **test_smtp_ehlo** - NetGet's own EHLO/HELO replies, byte for byte, with no model call
 3. **test_smtp_mail_transaction** - Full mail transaction (EHLO → MAIL FROM → RCPT TO → DATA)
 4. **test_smtp_quit** - Tests QUIT command and 221 response
 5. **test_smtp_error_handling** - Validates 5xx error for invalid commands
+6. **answer_with_test** - `answer_with`, one reply per command, `DATA` mode (above)
 
 ## Known Issues
 

@@ -143,6 +143,152 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 const CONNECTION_CAP_REFUSAL: &[u8] = b"-ERR [SYS/TEMP] too many connections\r\n";
 
 /// POP3 server that forwards mail retrieval to LLM
+/// NetGet's answer to `CAPA` (RFC 2449).
+///
+/// Answered here rather than by the model because it has one correct form: the commands this
+/// server has actions for (`USER`/`PASS`, `TOP`, `UIDL`) and the extended response codes its own
+/// failure replies carry (`RESP-CODES` - `[SYS/TEMP]`, `[SYS/PERM]`). It is multi-line, and no
+/// model action renders a multi-line `+OK` block other than the message and listing actions, so
+/// a model asked for it answered a single `+OK` and left the client waiting for a `.` that never
+/// came. Nothing else is advertised: no STLS, no SASL, no PIPELINING, no APOP.
+pub const CAPA_REPLY: &[u8] =
+    b"+OK Capability list follows\r\nUSER\r\nTOP\r\nUIDL\r\nRESP-CODES\r\n.\r\n";
+
+/// The actions whose reply wins when a batch answers one POP3 command with several: the one
+/// the command's `answer_with` names when only one fits. The real-model eval found the model
+/// answering `STAT` with a bare `+OK` *and then* the `STAT` line; the second is the answer.
+/// See `ExecutionResult::chosen_reply`.
+pub fn pop3_preferred_actions(command: &str) -> &'static [&'static str] {
+    if command == "CONNECTION_ESTABLISHED" {
+        return &["send_pop3_greeting"];
+    }
+    let mut words = command.split_whitespace();
+    let verb = words.next().unwrap_or("").to_ascii_uppercase();
+    let has_arg = words.next().is_some();
+    match (verb.as_str(), has_arg) {
+        ("STAT", _) => &["send_pop3_stat"],
+        ("LIST", false) => &["send_pop3_list"],
+        ("UIDL", false) => &["send_pop3_uidl"],
+        ("RETR", _) => &["send_pop3_retr", "send_pop3_err"],
+        ("TOP", _) => &["send_pop3_top", "send_pop3_err"],
+        _ => &[],
+    }
+}
+
+/// A `RETR`/`TOP` answered as a `+OK` status line and the message as raw text, framed by NetGet.
+///
+/// The real-model eval found llama3.1:8b answering `RETR` with `send_pop3_ok` followed by
+/// `send_pop3_message` carrying the message itself - the right content, split the way the wire
+/// shows it, with no terminating `.`, so the client waited for one until its timeout. That is a
+/// multi-line answer with its mechanics missing, and the mechanics are NetGet's to write: the
+/// status line, the byte-stuffed body and the `.` line, exactly as `send_pop3_retr` renders
+/// them. Returns `None` - leaving the batch alone - unless the command is `RETR`/`TOP`, the
+/// batch has no `send_pop3_retr`/`send_pop3_top`/`send_pop3_err` of its own, and a
+/// `send_pop3_message` in it is not itself a status line.
+pub fn assemble_multiline_answer(
+    command: &str,
+    result: &crate::llm::actions::executor::ExecutionResult,
+) -> Option<Vec<u8>> {
+    if command != "RETR" && command != "TOP" {
+        return None;
+    }
+    let names = &result.protocol_result_actions;
+    if names.iter().any(|n| {
+        matches!(
+            n.as_str(),
+            "send_pop3_retr" | "send_pop3_top" | "send_pop3_err"
+        )
+    }) {
+        return None;
+    }
+    let body = names
+        .iter()
+        .zip(&result.protocol_results)
+        .find_map(|(name, r)| {
+            if name != "send_pop3_message" {
+                return None;
+            }
+            let text = String::from_utf8_lossy(r.get_all_output().first()?).into_owned();
+            (!text.starts_with("+OK") && !text.starts_with("-ERR")).then_some(text)
+        })?;
+    // A terminator the model wrote itself is not message text.
+    let body = body.replace("\r\n", "\n");
+    let body = body
+        .trim_end_matches('\n')
+        .strip_suffix("\n.")
+        .unwrap_or(body.trim_end_matches('\n'));
+    let framed = actions::format_pop3_multiline_body(body);
+    Some(format!("+OK {} octets\r\n{}.\r\n", framed.len(), framed).into_bytes())
+}
+
+/// The event data for one POP3 command line: the line itself, plus what NetGet can tell from
+/// it.
+///
+/// `answer_with` names the action this particular command takes. The real-model eval found a
+/// small model answering `RETR` with a bare `send_pop3_ok` - a single `+OK` line, after which
+/// the client waits for the message body and its terminating `.` until its own timeout. A
+/// per-request hint is followed far better than the general action list. `message_number`
+/// (and `lines`, for `TOP`) are the command's arguments as numbers.
+pub fn pop3_command_event_data(command: &str) -> serde_json::Value {
+    let mut data = serde_json::json!({ "command": command });
+    if command == "CONNECTION_ESTABLISHED" {
+        data["answer_with"] = "send_pop3_greeting".into();
+        return data;
+    }
+    let mut words = command.split_whitespace();
+    let verb = words.next().unwrap_or("").to_ascii_uppercase();
+    let n: Option<u64> = words.next().and_then(|w| w.parse().ok());
+    let lines: Option<u64> = words.next().and_then(|w| w.parse().ok());
+    if let Some(n) = n {
+        data["message_number"] = n.into();
+    }
+    let answer = match (verb.as_str(), n) {
+        ("USER", _) => "send_pop3_ok to accept the user name (the password follows), or \
+                        send_pop3_err to refuse it"
+            .to_string(),
+        ("PASS", _) => {
+            "send_pop3_ok to log in, or send_pop3_err to refuse the password".to_string()
+        }
+        ("STAT", _) => "send_pop3_stat with message_count and total_size (octets) for the whole \
+                        mailbox"
+            .to_string(),
+        ("LIST", None) => "send_pop3_list with the id and size of every message".to_string(),
+        ("LIST", Some(n)) => format!(
+            "send_pop3_ok with message \"{n} <size in octets>\" for message {n}, or \
+             send_pop3_err if there is no message {n}"
+        ),
+        ("UIDL", None) => "send_pop3_uidl with the id and unique id of every message".to_string(),
+        ("UIDL", Some(n)) => format!(
+            "send_pop3_ok with message \"{n} <unique id>\" for message {n}, or send_pop3_err \
+             if there is no message {n}"
+        ),
+        ("RETR", Some(n)) => format!(
+            "send_pop3_retr with the whole of message {n}: its from, to, subject and body \
+             (NetGet writes the header lines, the octet count and the terminating '.'); \
+             send_pop3_err if there is no message {n}. Never a bare send_pop3_ok: the client \
+             waits for the message itself"
+        ),
+        ("TOP", Some(n)) => {
+            if let Some(lines) = lines {
+                data["lines"] = lines.into();
+            }
+            format!(
+                "send_pop3_top with message {n}'s headers and the first {} body lines; \
+                 send_pop3_err if there is no message {n}",
+                lines.map_or_else(|| "requested".to_string(), |l| l.to_string())
+            )
+        }
+        ("DELE", Some(n)) => format!(
+            "send_pop3_ok to mark message {n} deleted, or send_pop3_err if there is no message {n}"
+        ),
+        ("NOOP", _) | ("RSET", _) => "send_pop3_ok".to_string(),
+        ("QUIT", _) => "send_pop3_ok, then close_connection".to_string(),
+        _ => return data,
+    };
+    data["answer_with"] = answer.into();
+    data
+}
+
 pub struct Pop3Server;
 
 #[cfg(feature = "pop3")]
@@ -430,13 +576,9 @@ impl Pop3Session {
         use tokio::io::AsyncWriteExt;
 
         // Send initial greeting
-        let greeting_event = Event::new(
-            &POP3_COMMAND_EVENT,
-            serde_json::json!({
-                "command": "CONNECTION_ESTABLISHED",
-                "connection_id": connection_id.to_string(),
-            }),
-        );
+        let mut greeting_data = pop3_command_event_data("CONNECTION_ESTABLISHED");
+        greeting_data["connection_id"] = connection_id.to_string().into();
+        let greeting_event = Event::new(&POP3_COMMAND_EVENT, greeting_data);
 
         match Self::process_command(
             &greeting_event,
@@ -600,13 +742,36 @@ impl Pop3Session {
                 command
             );
 
-            let event = Event::new(
-                &POP3_COMMAND_EVENT,
-                serde_json::json!({
-                    "command": command,
-                    "connection_id": connection_id.to_string(),
-                }),
-            );
+            if verb == "CAPA" {
+                info!(
+                    "POP3 CAPA on connection {} decision=netget_answer: answered by NetGet",
+                    connection_id
+                );
+                let _ = status_tx.send(format!(
+                    "[INFO] POP3 CAPA on connection {} decision=netget_answer",
+                    connection_id
+                ));
+                {
+                    let mut writer = write_half.lock().await;
+                    writer.write_all(CAPA_REPLY).await?;
+                    writer.flush().await?;
+                }
+                app_state
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        None,
+                        Some(CAPA_REPLY.len() as u64),
+                        None,
+                        Some(1),
+                    )
+                    .await;
+                continue;
+            }
+
+            let mut event_data = pop3_command_event_data(&command);
+            event_data["connection_id"] = connection_id.to_string().into();
+            let event = Event::new(&POP3_COMMAND_EVENT, event_data);
 
             match Self::process_command(
                 &event,
@@ -720,6 +885,27 @@ impl Pop3Session {
         )
         .await?;
         let failures = llm_result.failures.len();
+        let mut llm_result = llm_result;
+        if let Some(assembled) = assemble_multiline_answer(&command, &llm_result) {
+            info!(
+                "POP3 {} on connection {} decision=multiline_assembled: a +OK status line and \
+                 the message as raw text, framed by NetGet",
+                command, connection_id
+            );
+            let _ = status_tx.send(format!(
+                "[INFO] POP3 {} on connection {} decision=multiline_assembled",
+                command, connection_id
+            ));
+            llm_result.protocol_results = vec![ActionResult::Output(assembled)];
+            llm_result.protocol_result_actions = vec!["send_pop3_retr".to_string()];
+        }
+        let chosen = llm_result.chosen_reply(pop3_preferred_actions(
+            event
+                .data
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+        ));
 
         // Execute actions. `close_connection` must still flush everything queued before it -
         // the QUIT reply is normally `send_pop3_ok` followed by `close_connection` in the same
@@ -730,14 +916,19 @@ impl Pop3Session {
         // way to tell an approval from a refusal — and they must never be conflated.
         let mut first_reply: Option<String> = None;
         let mut asked_to_close = false;
+        let mut dropped_replies = 0usize;
 
-        for action in llm_result.protocol_results {
+        for (index, action) in llm_result.protocol_results.into_iter().enumerate() {
             match action {
+                // One command, one reply. POP3 has no pipelining here, so a second reply is
+                // read as the answer to the client's *next* command, and every reply after it
+                // is one step late - a RETR then reads the previous command's `+OK` as its
+                // status line and waits for a body that is never coming. Only the chosen one -
+                // the action `answer_with` names, else the first - is written.
+                ActionResult::Output(_) if Some(index) != chosen => dropped_replies += 1,
                 ActionResult::Output(data) => {
-                    if first_reply.is_none() {
-                        first_reply =
-                            Some(String::from_utf8_lossy(&data[..data.len().min(8)]).to_string());
-                    }
+                    first_reply =
+                        Some(String::from_utf8_lossy(&data[..data.len().min(8)]).to_string());
                     let mut writer = write_half.lock().await;
                     writer.write_all(&data).await?;
                     writer.flush().await?;
@@ -771,6 +962,21 @@ impl Pop3Session {
                     // Not an action that produces POP3 output (memory updates, logging, ...)
                 }
             }
+        }
+
+        if dropped_replies > 0 {
+            tracing::warn!(
+                "POP3 {} on connection {} decision=duplicate_response_dropped: {} extra \
+                 repl{} not sent; one command gets one reply",
+                command,
+                connection_id,
+                dropped_replies,
+                if dropped_replies == 1 { "y" } else { "ies" }
+            );
+            let _ = status_tx.send(format!(
+                "[WARN] POP3 {} on connection {} decision=duplicate_response_dropped ({})",
+                command, connection_id, dropped_replies
+            ));
         }
 
         // One decision line per command, so `grep decision=` separates a granted request
