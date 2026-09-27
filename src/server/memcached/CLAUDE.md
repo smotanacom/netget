@@ -97,6 +97,38 @@ directions, and the executor really decodes hex (`decode_value`). This follows t
 so sniffing cannot work and only the sender knows what it meant. Cache values are frequently
 binary, so this matters here rather than being theoretical.
 
+### What the model is told, and what NetGet refuses to send
+
+The real-model eval (`./run-eval.sh memcached`, llama3.1:8b, seed 42) scored
+`memcached/missing-key` and `memcached/stats-version` 0/5. Told "you hold only the key motd;
+every other key is missing", the model answered `get nothing-here` with the value of `motd`
+(once with `nothing-here: ""` beside it), and pymemcache raised `KeyError` on the key it had not
+asked for. Told "version 1.6.21 with 12 items", it sent `send_memcached_stats`' example verbatim
+- `pid 1`, `uptime 3600`, `curr_items 12`, `bytes 4096` - and no `version`.
+
+- **`memcached_get` and `memcached_stats` carry `answer_with`.** The get's names the requested
+  keys as the only ones the answer may carry and says a key the cache does not hold is left
+  out; the stats' names memcached's stat names and says a version the instruction gives goes
+  in `version`.
+- **A `VALUE` block for a key the client did not request is dropped** before the reply is
+  written (`protocol::retain_requested_values`), logged `decision=unrequested_key_dropped`. A
+  memcached server returns values only for requested keys, and a client relies on it -
+  pymemcache discards the whole reply on a stranger. This is not leniency: the block can never
+  be right, and dropping it leaves the reply the instruction meant (for the eval's case, a
+  miss). It is applied only to the bytes `encode_values` produced, so the framing it parses is
+  known exactly; anything else is left untouched.
+- **One command, one reply.** One output of a batch is written and the rest are logged
+  `decision=duplicate_response_dropped`: the reply of the action the command takes when the batch
+  has it (`send_memcached_values` for a get, `send_memcached_stats` for stats, …), else the first
+  (`ExecutionResult::chosen_reply`). The text protocol has no framing between replies, so a
+  second `VALUE … END` block is read as the answer to the next command.
+- **The examples read as shape.** `send_memcached_values`' keys are `example-key` /
+  `example-blob`, and `send_memcached_stats`' example is `version 1.6.0`, `curr_items 0`,
+  `uptime 0` - harmless when copied without an instruction, and not a plausible answer to one.
+
+`tests/server/memcached/answer_with_test.rs` pins all three behaviours from the wire; the drop
+and the key filter were each verified by removing them and watching it fail.
+
 ## Failure behaviour
 
 Memcached clients block waiting for a reply, so silence hangs them until their own timeout.

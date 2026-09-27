@@ -418,11 +418,53 @@ impl MemcachedServer {
                                 }
                                 let mut bytes = Vec::new();
                                 let mut close = false;
-                                for result in &execution.protocol_results {
-                                    for out in result.get_all_output() {
-                                        bytes.extend_from_slice(&out);
+                                // One command, one reply. The text protocol has no framing
+                                // between replies, so a second one is read by the client
+                                // as the answer to its *next* command. Only the chosen one
+                                // - the action the event's answer names, else the first - is
+                                // written.
+                                let chosen =
+                                    execution.chosen_reply(Self::preferred_actions(&command));
+                                let mut replies = 0usize;
+                                for (index, result) in execution.protocol_results.iter().enumerate()
+                                {
+                                    for (n, out) in result.get_all_output().iter().enumerate() {
+                                        replies += 1;
+                                        if Some(index) == chosen && n == 0 {
+                                            bytes.extend_from_slice(out);
+                                        }
                                     }
                                     close |= result.closes_connection();
+                                }
+                                if replies > 1 {
+                                    warn!(
+                                        "Memcached {} decision=duplicate_response_dropped \
+                                         command={}: {} extra repl{} not sent",
+                                        peer_addr,
+                                        Self::command_name(&command),
+                                        replies - 1,
+                                        if replies == 2 { "y" } else { "ies" }
+                                    );
+                                    log.warn(format!(
+                                        "Memcached {} decision=duplicate_response_dropped ({})",
+                                        peer_addr,
+                                        replies - 1
+                                    ));
+                                }
+                                if let Command::Retrieval { keys, .. } = &command {
+                                    if let Some((kept, dropped)) =
+                                        protocol::retain_requested_values(&bytes, keys)
+                                    {
+                                        if !dropped.is_empty() {
+                                            log.warn(format!(
+                                                "Memcached {} decision=unrequested_key_dropped: \
+                                                 the answer carried {:?}, which the client did \
+                                                 not ask for (asked: {:?})",
+                                                peer_addr, dropped, keys
+                                            ));
+                                            bytes = kept;
+                                        }
+                                    }
                                 }
                                 if bytes.is_empty() && !close {
                                     // Nothing usable came back. Memcached clients block on a
@@ -590,6 +632,18 @@ impl MemcachedServer {
             .await;
     }
 
+    /// The actions whose reply wins when a batch answers one command with several; see
+    /// `ExecutionResult::chosen_reply`.
+    fn preferred_actions(command: &Command) -> &'static [&'static str] {
+        match command {
+            Command::Retrieval { .. } => &["send_memcached_values"],
+            Command::Stats { .. } => &["send_memcached_stats"],
+            Command::Version => &["send_memcached_version"],
+            Command::Arithmetic { .. } => &["send_memcached_number"],
+            _ => &[],
+        }
+    }
+
     fn command_name(command: &Command) -> &'static str {
         match command {
             Command::Retrieval { command, .. } => command,
@@ -612,7 +666,16 @@ impl MemcachedServer {
         match command {
             Command::Retrieval { command, keys } => Event::new(
                 &MEMCACHED_GET_EVENT,
-                serde_json::json!({ "command": command, "keys": keys }),
+                serde_json::json!({
+                    "command": command,
+                    "keys": keys,
+                    "answer_with": format!(
+                        "send_memcached_values with one entry for each of {:?} that the cache \
+                         holds, and none for a key it does not hold; an empty values list is \
+                         a miss. Never include a key that is not in that list",
+                        keys
+                    ),
+                }),
             ),
             Command::Storage {
                 command,
@@ -660,7 +723,14 @@ impl MemcachedServer {
             ),
             Command::Stats { argument } => Event::new(
                 &MEMCACHED_STATS_EVENT,
-                serde_json::json!({ "argument": argument }),
+                serde_json::json!({
+                    "argument": argument,
+                    "answer_with": "send_memcached_stats with a stats object under memcached's \
+                                    own stat names - version, curr_items, total_items, bytes, \
+                                    uptime, pid, curr_connections - holding what your \
+                                    instruction says (a version it names goes in version, an \
+                                    item count in curr_items)",
+                }),
             ),
             Command::Version => Event::new(&MEMCACHED_VERSION_EVENT, serde_json::json!({})),
             Command::FlushAll { delay, .. } => Event::new(
