@@ -99,6 +99,12 @@ pub struct ExecutionResult {
     /// Protocol-specific action results
     pub protocol_results: Vec<ActionResult>,
 
+    /// The action name that produced each entry of `protocol_results`, index for index.
+    ///
+    /// A protocol that owes exactly one reply per request uses it to pick *the* reply when a
+    /// batch carries several (see [`ExecutionResult::chosen_reply`]).
+    pub protocol_result_actions: Vec<String>,
+
     /// Raw action JSON (for protocols that need to manually process actions)
     /// This is used by protocols like mDNS and NFS that have special manual processing
     pub raw_actions: Vec<serde_json::Value>,
@@ -121,6 +127,7 @@ impl ExecutionResult {
         Self {
             messages: Vec::new(),
             protocol_results: Vec::new(),
+            protocol_result_actions: Vec::new(),
             raw_actions: Vec::new(),
             failures: Vec::new(),
         }
@@ -131,7 +138,32 @@ impl ExecutionResult {
     }
 
     pub fn add_protocol_result(&mut self, result: ActionResult) {
+        self.add_named_protocol_result(String::new(), result);
+    }
+
+    /// Record a protocol result together with the name of the action that produced it.
+    pub fn add_named_protocol_result(&mut self, action_name: String, result: ActionResult) {
         self.protocol_results.push(result);
+        self.protocol_result_actions.push(action_name);
+    }
+
+    /// Which entry of `protocol_results` is *the* reply, for a protocol that owes exactly one
+    /// per request: the first that writes bytes and was produced by an action in `preferred`,
+    /// otherwise the first that writes bytes at all. `None` when nothing writes.
+    ///
+    /// Why not simply the first: a small model often answers with a generic acknowledgement
+    /// and *then* the answer the request needed - `+OK` then the `STAT` line, measured in the
+    /// real-model eval - and the specific answer is the one the client is waiting for.
+    pub fn chosen_reply(&self, preferred: &[&str]) -> Option<usize> {
+        let writes = |i: &usize| !self.protocol_results[*i].get_all_output().is_empty();
+        (0..self.protocol_results.len())
+            .filter(writes)
+            .find(|i| {
+                self.protocol_result_actions
+                    .get(*i)
+                    .is_some_and(|name| preferred.contains(&name.as_str()))
+            })
+            .or_else(|| (0..self.protocol_results.len()).find(writes))
     }
 
     /// Record an action that could not be executed.
@@ -301,7 +333,7 @@ pub async fn execute_actions(
                         None, // No TUI output from executor (event-level logging handles TUI)
                     );
 
-                    result.add_protocol_result(action_result);
+                    result.add_named_protocol_result(action_name.clone(), action_result);
                     continue;
                 }
                 Err(e) => {
