@@ -137,6 +137,23 @@ action (SMTP and NNTP answering commands with the greeting action) or copying an
 example values (SNMP, CoAP, memcached stats), which the eval's `copied_example_content` diagnosis
 now labels; it had never fired before.
 
+**A description round (27 September 2026) acted on both measurements.** Two techniques did most
+of the work: an `answer_with` field in each event naming the answer that one request takes, and
+examples rewritten as placeholders so the model stops copying them as data. Commands with exactly
+one correct answer (SMTP EHLO, IMAP CAPABILITY, NNTP CAPABILITIES and MODE READER, POP3 CAPA) are
+now answered by NetGet itself, which removes the failure and the model call. Before and after,
+passes out of 5 per case:
+
+| Protocols | Cases at 5/5 before | Cases at 5/5 after |
+|---|---:|---:|
+| coap, modbus, snmp, sip, websocket, docker, beanstalkd, gemini, bolt, zabbix | 7 of 24 | 20 of 24 |
+| smtp, pop3, imap, nntp, memcached, mqtt | 4 of 15 | 7 of 15, and 13 of 15 at 3/5 or better |
+
+Still open: `modbus` illegal-address and `docker` inspect-missing (1/5 each) and `imap`, whose
+two cases move between 1/5 and 4/5 from run to run. Two protocol defects surfaced on the way and
+are fixed: `sip` sent every status with the reason phrase "OK", and a `websocket` accept naming
+a subprotocol the client never offered became a 503.
+
 The first measurement of the new servers is the next thing to act on: `gemini`, `bolt`,
 `beanstalkd` and `docker` scored 0/15, `zabbix` 3/10, `gearman` 7/10, and `dict`,
 `prometheus` and `vault` 10/15.
