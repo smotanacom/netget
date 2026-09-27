@@ -131,6 +131,8 @@ async fn test_coap_get_post_and_not_found_with_coap_client() -> E2EResult<()> {
             // 4. A resource the device does not have.
             .on_event("coap_request")
             .and_event_data_contains("path", "/nope")
+            // Matches only when the event carries the per-request hint that names the 4.04.
+            .and_event_data_contains("answer_with", "for a resource at /nope")
             .respond_with_actions(serde_json::json!([{
                 "type": "send_coap_response",
                 "code": "4.04"

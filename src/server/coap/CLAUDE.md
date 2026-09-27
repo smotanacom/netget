@@ -242,12 +242,34 @@ One event, `coap_request`, emitted for every well-formed GET/POST/PUT/DELETE. It
 | `content_format` | media type of the request body, when declared |
 | `accept` | media type the client asked for, when it sent an Accept option |
 | `payload` / `payload_encoding` | request body, `utf8` when all bytes are printable, otherwise `hex` |
+| `answer_with` | the answer this request takes (`actions::answer_with_for_request`): look the path up in the instructions; if they give the device nothing there, the literal `{"type": "send_coap_response", "code": "4.04"}`; if they do, the method's success code and, for a GET, the representation character for character |
+
+**Why `answer_with` exists, and why it is worded the way it is.** The code table in
+`send_coap_response`'s description did not carry a small model on its own. In the real-model
+eval (llama3.1:8b, seed 42), told "you are a greenhouse sensor whose only resource is
+/temperature", the model answered a GET of /humidity with an invented 2.05 `{"humidity": 41.2}`
+five runs in five — 41.2 was the value in the action's example. Three things were measured, one
+eval run each:
+
+- A hint naming the success case first and the 4.04 second: not-found 0/5 → 0/5 passes, but
+  3 of the 5 were now 4.04 carrying `"content_format": ""`, which the executor refused as an
+  unknown media type (fixed: an empty `content_format` reads as absent), and 2 were still an
+  invented 2.05.
+- The lookup first, the 4.04 as a literal action: not-found 4/5, and **text-resource fell from
+  5/5 to 0/5** — "the representation your instructions give for it" read as licence to reshape
+  "the text 19.5 C" into `{"temperature": 19.5}`.
+- The same, with the found case saying "exactly what they say {path} returns, character for
+  character - text stays text, never rewritten as JSON": text-resource 5/5, not-found 5/5.
+
+The action and event examples are placeholders (`"<the resource's representation>"`, text/plain)
+rather than a plausible reading, and the description says so.
 
 ### Actions
 
 - `send_coap_response { code, payload?, encoding?, content_format? }` — `code` is written
   `class.detail` (`"2.05"`, `"4.04"`, `"5.03"`); class must be 2, 4 or 5. The decoded payload
-  must be at most 1024 bytes.
+  must be at most 1024 bytes. `content_format` absent, `null` or `""` means none for an empty
+  payload and text/plain for a non-empty one; any other unrecognised media type is refused.
 - `send_coap_reset {}` — RST. For a message the device cannot make sense of at all, not for
   "not found".
 - `ignore_coap_request {}` — send nothing, modelling a sleeping or unreachable node.

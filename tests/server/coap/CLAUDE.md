@@ -51,8 +51,9 @@ rule applied to cost rather than to bytes.
 | `bounds_test::test_reserved_token_length_…` | 1 | 0 | **1** |
 | `bounds_test::test_encode_…`, `test_message_prefix_…` | 0 | 0 | **0** |
 | `llm_failure_test::…_says_which_path_it_took` | 1 | 2 (one answered 500) | **3** |
+| `answer_with_test::*` (two tests) | 0 | 0 | **0** |
 
-**Total: 17** across five files, for 11 tests. This table used to read "Total: 7" and list only
+**Total: 17** across six files, for 13 tests. This table used to read "Total: 7" and list only
 `e2e_test.rs`, which was true when that was the whole suite — derive it rather than reading it,
 because it goes stale the moment a file is added. The libcoap test uses `expect_at_least` rather
 than `expect_calls` because libcoap retransmits a CON whose ACK is slow and this server has no
@@ -122,7 +123,13 @@ variants so a broken server fails the test in ten seconds instead of hanging it.
 
 - GET → 2.05 Content with an `application/json` Content-Format, payload intact
 - POST with a body → 2.04 Changed; the request body reaches the model and returns in the answer
-- GET of an absent resource → 4.04 Not Found, and it does **not** acquire a payload
+- GET of an absent resource → 4.04 Not Found, and it does **not** acquire a payload. Its mock
+  rule also requires the event's `answer_with` to name the path, so it only matches when the
+  per-request hint reached the model
+- The `answer_with` sentence itself (`answer_with_test.rs`): the lookup first, the 4.04 as a
+  literal action, each method's success code. The wording is measured by the real-model eval
+  (`src/server/coap/CLAUDE.md`, "Why `answer_with` exists"), not by these tests — they pin it
+  so a rewording has to be a decision
 - CON → piggybacked ACK carrying the request's message id and full 8-byte token
 - NON → NON reply with a *different* message id and the same token
 - Uri-Path and Uri-Query options decoded and surfaced to the model
