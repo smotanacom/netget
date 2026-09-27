@@ -41,6 +41,7 @@ decoded PDU: register values, coil bits, function codes, exception codes, MBAP f
 | `llm_failure_test::every_fail_closed_clause_answers_0x04_and_logs_which_one_it_was` | 1 | 9 matched + unmatched | **10** counted |
 | `llm_failure_test::a_static_rule_answering_the_wrong_kind_fails_closed` | 0 | 0 | **0** |
 | `bounds_test` (six tests), `connection_bounds_test` (two), `pcap_oracle_test`, `peer_inject_test` | 0 | 0 | **0** |
+| `answer_with_test` (two tests) | 0 | 0 | **0** |
 
 Every file is under the ~10-call target. The in-process files (`bounds_test`,
 `connection_bounds_test`, `pcap_oracle_test`, `peer_inject_test`, and the second
@@ -71,7 +72,9 @@ Seven rules in the first test. Two things to know about them:
   order, so the *narrower* rule is declared first: the `register_type: input` rule precedes the
   `register_type: holding` one, and the `write_multiple_registers` rule precedes the
   `write_single_register` one. The coil-write rule matches `function` containing `coil`, which
-  no register function name does.
+  no register function name does. The input-register rule also requires the event's
+  `answer_with` to name exception 2, so it matches only when the per-request hint reaches the
+  model.
 
 - **Three rules use `respond_with_actions_from_event`.** Two derive their answer from the
   request's own `quantity` and `start_address` — the holding-register read returns
@@ -125,6 +128,10 @@ data.
 - Every declared bound from the wire, each verified by removal (`bounds_test.rs`,
   `connection_bounds_test.rs`): see the table at the top of `bounds_test.rs`
 - `mbtcp` dissects a whole session of all eight function codes and an exception cleanly
+- The `answer_with` sentence each event carries (`answer_with_test.rs`): the exact address
+  range, the value count, and exception 2 for an address the device does not have. Its wording
+  is measured by the real-model eval (`src/server/modbus/CLAUDE.md`), not by these tests; they
+  pin it so a rewording is a decision
 - Codec: spec example frames, incomplete frames reported as incomplete (not as an error),
   non-zero protocol id reported as not-Modbus, bit packing, register packing, both write-echo
   shapes, exception encoding, malformed byte counts, out-of-range addresses

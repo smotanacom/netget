@@ -103,6 +103,8 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
             //    before the holding-register rule so the narrower matcher wins.
             .on_event("modbus_read_registers")
             .and_event_data_contains("register_type", "input")
+            // Matches only when the event names the exception for a missing address.
+            .and_event_data_contains("answer_with", "\"exception_code\": 2")
             .respond_with_actions(serde_json::json!([{
                 "type": "send_modbus_exception",
                 "exception_code": 2

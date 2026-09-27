@@ -269,10 +269,38 @@ master. There is no fix to make; `close_connection` is the entire meaningful sur
 | `modbus_read_registers` | FC 3, 4 | `send_modbus_registers`, `send_modbus_exception` |
 | `modbus_write_request` | FC 5, 6, 15, 16 | `send_modbus_write_ack`, `send_modbus_exception` |
 
-Every event data payload carries `unit_id`, `function_code`, `function`, `start_address` and
-`quantity`; reads add `bit_type` (`coil` / `discrete_input`) or `register_type`
+Every event data payload carries `unit_id`, `function_code`, `function`, `start_address`,
+`quantity` and `answer_with`; reads add `bit_type` (`coil` / `discrete_input`) or `register_type`
 (`holding` / `input`) so the model knows whether it is being asked about an output it can also
 write or a read-only measurement; writes add `coil_values` or `register_values`.
+
+`answer_with` (`actions::answer_with_for_request`) names the exact addresses the request covers
+("holding registers 500 to 501"), says to check them against the instructions first, gives a
+worked comparison computed from the request itself ("one whose holding registers are 0 to 499
+has no holding register 500"), the literal exception-2 action for an address the device does not
+have, and only then the action and value count for one it does. The two read events' descriptions
+and the two read actions' descriptions say the same thing: check first, exception 2 for a missing
+address, never zeros. The hint is advice to the model and changes nothing NetGet enforces —
+decision 2's spec-determined refusals still never reach it.
+
+**This is the case the prompt did not fix, and the measurements say why.** Told "you are a PLC
+with ten holding registers at addresses 0 to 9, all zero. There is nothing at any other address",
+llama3.1:8b answers a read of 500-501 (real-model eval, seed 42, 5 runs per variant):
+
+| wording | illegal-address | holding-registers |
+|---|---|---|
+| no hint (the baseline) | 0/5 — `[0, 0]` every run | 5/5 |
+| hint, values first, exception second | 0/5 — prose instead of JSON 4 times, `[0, 0]` once | 5/5 |
+| hint, check first, exception as a literal action | 0/5 — `[0, 0]` every run | 4/5 |
+| + the computed comparison, + check-first event and action descriptions (shipped) | **1/5** | **5/5** |
+| the same as a yes/no question ("do your instructions give this device …?") | 0/5 — the action example's `[1834, 1450]` 4 times | 5/5 |
+
+In the shipped variant's four misses the model answered with **ten zeros** — the device's whole
+register map, not the two registers asked for — which the count check refuses as exception 4.
+It is not comparing 500 against 0-9 at all; it is restating the instruction. No wording tried
+got it to, and the last variant shows the cost of pushing: a longer hint and the model fell back
+on the action's example. That is a model-capability ceiling at this size, recorded rather than
+papered over; a larger model is the next thing to measure it against.
 
 There is no event for an unsupported function code, because there is nothing to decide — see
 decision 2.

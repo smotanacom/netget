@@ -479,10 +479,12 @@ fn send_modbus_bits_action() -> ActionDefinition {
         name: "send_modbus_bits".to_string(),
         description:
             "Answer a coil or discrete-input read (function code 1 or 2) with the bit values \
-             this device reports. Supply exactly 'quantity' booleans, in address order \
-             starting at 'start_address'. You decide what the device reads as - invent \
-             plausible, self-consistent state and use set_memory/append_memory to keep it \
-             consistent across requests. The response framing (transaction id, unit id, byte \
+             this device reports - only when the device has every address asked for; otherwise \
+             send_modbus_exception with exception_code 2. Supply exactly 'quantity' booleans, \
+             in address order starting at 'start_address'. Where the instructions leave a \
+             value open, you decide what the device reads as - invent plausible, \
+             self-consistent state and use set_memory/append_memory to keep it consistent \
+             across requests. The response framing (transaction id, unit id, byte \
              count, bit packing) is handled for you."
                 .to_string(),
         parameters: vec![Parameter {
@@ -511,12 +513,15 @@ fn send_modbus_registers_action() -> ActionDefinition {
         name: "send_modbus_registers".to_string(),
         description:
             "Answer a holding-register or input-register read (function code 3 or 4) with the \
-             values this device reports. Supply exactly 'quantity' whole numbers in the range \
-             0-65535, in address order starting at 'start_address'. You decide what the \
-             device reads as: this is the point of the protocol - a tank level, a motor \
-             current, a fault word. Use set_memory/append_memory so successive reads tell a \
-             consistent story. Registers are unsigned 16-bit, so encode signed values as \
-             two's complement and 32-bit values across two registers yourself."
+             values this device reports - only when the device has every register asked for; \
+             a read that reaches an address the instructions do not give it is \
+             send_modbus_exception with exception_code 2, never zeros. Supply exactly \
+             'quantity' whole numbers in the range 0-65535, in address order starting at \
+             'start_address'. Where the instructions leave a value open, you decide what the \
+             device reads as: a tank level, a motor current, a fault word. Use \
+             set_memory/append_memory so successive reads tell a consistent story. Registers \
+             are unsigned 16-bit, so encode signed values as two's complement and 32-bit \
+             values across two registers yourself."
                 .to_string(),
         parameters: vec![Parameter {
             name: "values".to_string(),
@@ -641,7 +646,80 @@ fn common_event_parameters() -> Vec<Parameter> {
             description: "How many coils or registers the request covers".to_string(),
             required: true,
         },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which answer this request takes: the values (or the write \
+                 acknowledgement) when your instructions give this device every address it \
+                 covers, exception 2 when any of them does not exist."
+                .to_string(),
+            required: true,
+        },
     ]
+}
+
+/// The `answer_with` event field: the answer this request takes, naming the exact addresses.
+///
+/// The action descriptions already say that exception 2 is "the most common refusal", and the
+/// model still did not use it: told "ten holding registers at addresses 0 to 9 ... nothing at
+/// any other address", llama3.1:8b answered a read of registers 500-501 with `[0, 0]` five
+/// times in five. A small model does not compare a start address and a quantity against a
+/// range it was given in prose; it follows a sentence that names the addresses and says what
+/// to do when they are not the device's. It leads with the check and gives the exception as the
+/// literal action: worded values-first ("send_modbus_registers with exactly 2 numbers ... only
+/// if ...; if any of those addresses is not ..., send_modbus_exception"), the same model
+/// answered with prose instead of JSON in 4 runs of 5 and with zeros in the fifth.
+pub fn answer_with_for_request(request: &codec::ModbusRequest) -> String {
+    use codec::ModbusRequest as R;
+    let start = u32::from(request.start_address());
+    let quantity = u32::from(request.quantity());
+    let (singular, plural) = match request {
+        R::ReadCoils { .. } | R::WriteSingleCoil { .. } | R::WriteMultipleCoils { .. } => {
+            ("coil", "coils")
+        }
+        R::ReadDiscreteInputs { .. } => ("discrete input", "discrete inputs"),
+        R::ReadHoldingRegisters { .. }
+        | R::WriteSingleRegister { .. }
+        | R::WriteMultipleRegisters { .. } => ("holding register", "holding registers"),
+        R::ReadInputRegisters { .. } => ("input register", "input registers"),
+    };
+    let addresses = if quantity <= 1 {
+        format!("{singular} {start}")
+    } else {
+        format!("{plural} {start} to {}", start + quantity - 1)
+    };
+    let found = match request {
+        R::ReadCoils { .. } | R::ReadDiscreteInputs { .. } => {
+            format!("send_modbus_bits with exactly {quantity} booleans, one per address, in order")
+        }
+        R::ReadHoldingRegisters { .. } | R::ReadInputRegisters { .. } => format!(
+            "send_modbus_registers with exactly {quantity} numbers, one per register, in order"
+        ),
+        _ => "send_modbus_write_ack, or send_modbus_exception with exception_code 3 when the \
+              value is one the equipment would refuse"
+            .to_string(),
+    };
+    // A worked comparison computed from this request, never from any particular instruction:
+    // a range that stops just short of the first address asked for.
+    let illustration = if start > 0 {
+        format!(
+            "one whose {plural} are 0 to {} has no {singular} {start}",
+            start - 1
+        )
+    } else {
+        format!(
+            "one whose {plural} start at {} has no {singular} 0",
+            start + quantity
+        )
+    };
+    format!(
+        "first check whether your instructions give this device {addresses}. A device has \
+         only the addresses its instructions give it - {illustration}. If any of those \
+         addresses is outside what they describe, answer exactly {{\"type\": \
+         \"send_modbus_exception\", \"exception_code\": 2}} and nothing else - never \
+         made-up values or zeros for an address the device does not have. If every one of \
+         them exists, {found}"
+    )
 }
 
 /// Read of coils (FC 1) or discrete inputs (FC 2).
@@ -659,9 +737,11 @@ pub static MODBUS_READ_BITS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 
     EventType::new(
         "modbus_read_bits",
-        "A Modbus client is reading coils (FC 1) or discrete inputs (FC 2). Decide what each \
-         bit reads as on this device and answer with exactly 'quantity' booleans, or refuse \
-         with an exception.",
+        "A Modbus client is reading coils (FC 1) or discrete inputs (FC 2). First decide \
+         whether this device has every address asked for - it has only the addresses its \
+         instructions give it. If it does not, refuse with send_modbus_exception, \
+         exception_code 2. If it does, answer with exactly 'quantity' booleans. answer_with \
+         names the addresses.",
         json!({
             "type": "send_modbus_bits",
             "values": [true, false, false, true]
@@ -699,8 +779,10 @@ pub static MODBUS_READ_REGISTERS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "modbus_read_registers",
         "A Modbus client is reading holding registers (FC 3) or input registers (FC 4). \
-         Decide what this device reports for each register and answer with exactly \
-         'quantity' numbers in 0-65535, or refuse with an exception.",
+         First decide whether this device has every register asked for - it has only the \
+         addresses its instructions give it. If it does not, refuse with \
+         send_modbus_exception, exception_code 2. If it does, answer with exactly 'quantity' \
+         numbers in 0-65535. answer_with names the addresses.",
         json!({
             "type": "send_modbus_registers",
             "values": [1834, 1450]
