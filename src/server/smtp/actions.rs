@@ -49,40 +49,6 @@ impl SmtpProtocol {
         Ok(ActionResult::Output(response.as_bytes().to_vec()))
     }
 
-    fn execute_send_smtp_ehlo(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let hostname = action
-            .get("hostname")
-            .and_then(|v| v.as_str())
-            .unwrap_or("localhost");
-
-        let extensions = action
-            .get("extensions")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-            .unwrap_or_else(|| vec!["8BITMIME", "SIZE 10240000"]);
-
-        // The last line of a multiline SMTP reply uses "250 "; every earlier line uses "250-".
-        // With no extensions the greeting line is itself the last line - emitting "250-host"
-        // and nothing after it leaves the reply unterminated and the client blocks until its
-        // own timeout, which is what `{"extensions": []}` from the model used to do.
-        let mut response = if extensions.is_empty() {
-            format!("250 {}\r\n", hostname)
-        } else {
-            format!("250-{}\r\n", hostname)
-        };
-
-        for (i, ext) in extensions.iter().enumerate() {
-            if i == extensions.len() - 1 {
-                response.push_str(&format!("250 {}\r\n", ext));
-            } else {
-                response.push_str(&format!("250-{}\r\n", ext));
-            }
-        }
-
-        debug!("SMTP sending EHLO response");
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
-    }
-
     fn execute_send_smtp_start_data(&self, _action: serde_json::Value) -> Result<ActionResult> {
         let response = "354 Start mail input; end with <CRLF>.<CRLF>\r\n";
 
@@ -199,7 +165,6 @@ impl Protocol for SmtpProtocol {
         vec![
             send_smtp_greeting_action(),
             send_smtp_ok_action(),
-            send_smtp_ehlo_action(),
             send_smtp_start_data_action(),
             send_smtp_error_action(),
             send_smtp_quit_action(),
@@ -254,15 +219,15 @@ impl Protocol for SmtpProtocol {
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
         // Deterministic SMTP state machine: standard replies for each command
-        // verb. Reads the event from stdin and switches on event_type_id.
+        // verb. Reads the event from stdin and switches on event_type_id. EHLO and
+        // HELO never reach a handler: NetGet answers them itself.
         let script = r#"import json, sys
 data = json.load(sys.stdin)
 event = data["event"]
 if data["event_type_id"] == "smtp_command":
     cmd = event.get("command", "").upper()
-    if cmd.startswith("EHLO") or cmd.startswith("HELO"):
-        actions = [{"type": "send_smtp_ehlo", "hostname": "mail.example.com",
-                    "extensions": ["8BITMIME", "SIZE 10240000"]}]
+    if cmd == "CONNECTION_ESTABLISHED":
+        actions = [{"type": "send_smtp_greeting", "hostname": "mail.example.com"}]
     elif cmd.startswith("MAIL FROM"):
         actions = [{"type": "send_smtp_ok", "message": "Sender OK"}]
     elif cmd.startswith("RCPT TO"):
@@ -387,7 +352,6 @@ impl Server for SmtpProtocol {
         match action_type {
             "send_smtp_greeting" => self.execute_send_smtp_greeting(action),
             "send_smtp_ok" => self.execute_send_smtp_ok(action),
-            "send_smtp_ehlo" => self.execute_send_smtp_ehlo(action),
             "send_smtp_start_data" => self.execute_send_smtp_start_data(action),
             "send_smtp_error" => self.execute_send_smtp_error(action),
             "send_smtp_quit" => self.execute_send_smtp_quit(action),
@@ -404,7 +368,11 @@ impl Server for SmtpProtocol {
 fn send_smtp_greeting_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_smtp_greeting".to_string(),
-        description: "Send SMTP greeting banner (220 response)".to_string(),
+        description: "The 220 banner, sent once when a client connects (the \
+                      CONNECTION_ESTABLISHED event) and never in answer to a command. The \
+                      line is '220 <hostname> <message>'. When your instruction names a \
+                      banner, that text goes in message, word for word."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "hostname".to_string(),
@@ -415,14 +383,16 @@ fn send_smtp_greeting_action() -> ActionDefinition {
             Parameter {
                 name: "message".to_string(),
                 type_hint: "string".to_string(),
-                description: "Greeting message (default: 'ESMTP Service Ready')".to_string(),
+                description: "Banner text after the hostname: the banner your instruction \
+                              gives, verbatim (default: 'ESMTP Service Ready')"
+                    .to_string(),
                 required: false,
             },
         ],
         example: json!({
             "type": "send_smtp_greeting",
-            "hostname": "mail.example.com",
-            "message": "ESMTP Service Ready"
+            "hostname": "mx.example.invalid",
+            "message": "ESMTP"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -435,7 +405,10 @@ fn send_smtp_greeting_action() -> ActionDefinition {
 fn send_smtp_ok_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_smtp_ok".to_string(),
-        description: "Send SMTP OK response (250)".to_string(),
+        description: "A 250 reply: accepts a MAIL FROM sender, a RCPT TO recipient, the \
+                      end of a message ('.'), RSET or NOOP. Never the answer to \
+                      CONNECTION_ESTABLISHED - that is send_smtp_greeting."
+            .to_string(),
         parameters: vec![Parameter {
             name: "message".to_string(),
             type_hint: "string".to_string(),
@@ -450,37 +423,6 @@ fn send_smtp_ok_action() -> ActionDefinition {
             LogTemplate::new()
                 .with_info("-> SMTP 250 {message}")
                 .with_debug("SMTP send_smtp_ok: {message}"),
-        ),
-    }
-}
-
-fn send_smtp_ehlo_action() -> ActionDefinition {
-    ActionDefinition {
-        name: "send_smtp_ehlo".to_string(),
-        description: "Send SMTP EHLO response with extensions".to_string(),
-        parameters: vec![
-            Parameter {
-                name: "hostname".to_string(),
-                type_hint: "string".to_string(),
-                description: "Server hostname (default: localhost)".to_string(),
-                required: false,
-            },
-            Parameter {
-                name: "extensions".to_string(),
-                type_hint: "array".to_string(),
-                description: "SMTP extensions (default: ['8BITMIME', 'SIZE 10240000'])".to_string(),
-                required: false,
-            },
-        ],
-        example: json!({
-            "type": "send_smtp_ehlo",
-            "hostname": "mail.example.com",
-            "extensions": ["8BITMIME", "SIZE 10240000", "STARTTLS"]
-        }),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("-> SMTP EHLO {hostname}")
-                .with_debug("SMTP send_smtp_ehlo: {hostname}, extensions={extensions_len}"),
         ),
     }
 }
@@ -504,7 +446,10 @@ fn send_smtp_start_data_action() -> ActionDefinition {
 fn send_smtp_error_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_smtp_error".to_string(),
-        description: "Send SMTP error response".to_string(),
+        description: "A 4xx/5xx refusal. 550 refuses a recipient (RCPT TO) or sender \
+                      (MAIL FROM) the instruction does not accept; 500 is an unrecognised \
+                      command."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "code".to_string(),
@@ -612,8 +557,6 @@ pub static SEND_SMTP_GREETING_ACTION: LazyLock<ActionDefinition> =
     LazyLock::new(|| send_smtp_greeting_action());
 pub static SEND_SMTP_OK_ACTION: LazyLock<ActionDefinition> =
     LazyLock::new(|| send_smtp_ok_action());
-pub static SEND_SMTP_EHLO_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| send_smtp_ehlo_action());
 pub static SEND_SMTP_START_DATA_ACTION: LazyLock<ActionDefinition> =
     LazyLock::new(|| send_smtp_start_data_action());
 pub static SEND_SMTP_ERROR_ACTION: LazyLock<ActionDefinition> =
@@ -636,24 +579,45 @@ pub static SMTP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "smtp_command",
         "SMTP command line received from client. The synthetic command \
-         'CONNECTION_ESTABLISHED' is delivered once when a client connects and must be answered \
-         with send_smtp_greeting. During DATA every line of the message body arrives as its own \
+         'CONNECTION_ESTABLISHED' is delivered once when a client connects and is answered \
+         with send_smtp_greeting; no later command is. EHLO and HELO are answered by NetGet \
+         and never reach you. Each command gets exactly one reply, and answer_with names the \
+         action for this one. During DATA every line of the message body arrives as its own \
          event, ending with a line containing only '.'",
         json!({"type": "send_smtp_ok", "message": "2.1.0 Sender OK"}),
     )
-    .with_parameters(vec![Parameter {
-        name: "command".to_string(),
-        type_hint: "string".to_string(),
-        description:
-            "The SMTP command received (e.g., 'EHLO example.com', 'MAIL FROM:<sender@example.com>'), \
-             or 'CONNECTION_ESTABLISHED' on a new connection"
+    .with_parameters(vec![
+        Parameter {
+            name: "command".to_string(),
+            type_hint: "string".to_string(),
+            description: "The SMTP command received (e.g. 'MAIL FROM:<sender@example.com>'), \
+                          or 'CONNECTION_ESTABLISHED' on a new connection"
                 .to_string(),
-        required: true,
-    }])
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which action answers this command, and with which reply code".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "address".to_string(),
+            type_hint: "string".to_string(),
+            description: "MAIL FROM / RCPT TO only: the mailbox inside the angle brackets"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "domain".to_string(),
+            type_hint: "string".to_string(),
+            description: "MAIL FROM / RCPT TO only: the part of the address after '@'".to_string(),
+            required: false,
+        },
+    ])
     .with_actions(vec![
         SEND_SMTP_GREETING_ACTION.clone(),
         SEND_SMTP_OK_ACTION.clone(),
-        SEND_SMTP_EHLO_ACTION.clone(),
         SEND_SMTP_START_DATA_ACTION.clone(),
         SEND_SMTP_ERROR_ACTION.clone(),
         SEND_SMTP_QUIT_ACTION.clone(),

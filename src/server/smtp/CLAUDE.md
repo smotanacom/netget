@@ -20,19 +20,22 @@ messages.
 
 - **Single Event Type**: `SMTP_COMMAND_EVENT` handles all SMTP commands
 - Commands are parsed line-by-line from the TCP stream
-- Each command triggers an LLM call for action-based response
+- Each command except `EHLO`/`HELO` triggers an LLM call for action-based response (see
+  "What NetGet answers itself" below)
 - Connection ID tracked for multi-connection support
 
 ### LLM Integration
 
 - **Action-based responses** - LLM returns JSON actions for all protocol interactions
 - **Greeting on connect** - Special `CONNECTION_ESTABLISHED` command triggers initial 220 greeting
-- **No state machine** - SMTP state (HELO, MAIL FROM, RCPT TO, DATA) managed implicitly by LLM
+- **One bit of state** - whether the session is inside `DATA` (a `354` has gone out and the
+  terminating `.` has not arrived). Everything else about the transaction (MAIL FROM, RCPT TO)
+  is the model's to track
 - **DATA is not accumulated** - after `send_smtp_start_data` every body line arrives as its own
   `smtp_command` event, terminated by a line containing only `.`. That is one model call per
   line of the message. Use a script or static event handler for anything that receives real
   mail; the LLM path is only practical for short messages.
-- **Protocol-aware actions** - Dedicated actions for SMTP responses (greeting, OK, EHLO, error, etc.)
+- **Protocol-aware actions** - Dedicated actions for SMTP responses (greeting, OK, error, etc.)
 
 ### Error Handling
 
@@ -84,9 +87,6 @@ The LLM controls SMTP responses through these actions:
 
 - `send_smtp_greeting` - 220 greeting banner
 - `send_smtp_ok` - 250 OK responses
-- `send_smtp_ehlo` - 250-hostname with extensions. An empty `extensions` array emits the
-  single-line form `250 hostname`; emitting `250-hostname` with nothing after it leaves the
-  reply unterminated and the client blocks until its own timeout.
 - `send_smtp_start_data` - 354 start data input
 - `send_smtp_error` - 4xx/5xx error responses
 - `send_smtp_quit` - 221 closing connection
@@ -94,6 +94,55 @@ The LLM controls SMTP responses through these actions:
 - `wait_for_more` - Send nothing and read the next line (used during DATA, where SMTP expects
   no per-line reply)
 - `close_connection` - Terminate session
+
+## What NetGet answers itself, and what the model is told
+
+The real-model eval (`./run-eval.sh smtp`, llama3.1:8b, seed 42) scored all three SMTP cases
+0/5 on its first run. Reading the runs showed one failure class, not three: the model reused
+the greeting action for every command. `EHLO` and `MAIL` were answered `220 localhost ESMTP
+Service Ready`, a greeting was answered with five greetings, and the banner the instruction
+named was replaced by the action example's `mail.example.com ESMTP Service Ready`.
+
+**`EHLO` and `HELO` are answered by NetGet** (`ehlo_reply` in `mod.rs`), never by the model.
+The reply has exactly one correct form - the greeting's hostname and the extensions this
+server implements - and both are facts about NetGet, not decisions: `250-<host> greets
+<client>` then `250 8BITMIME` (`EHLO_EXTENSIONS`), or `250 <host> greets <client>` for
+`HELO`, or `501` when the argument is missing. `8BITMIME` is the only extension because it is
+the only one this server honours (the reader is 8-bit clean). An extension list the model
+chose could advertise `STARTTLS` or `AUTH` - the `send_smtp_ehlo` example this replaced listed
+`STARTTLS` - and a real MTA would then try it and fail. The weighed alternative was a per-request hint naming `send_smtp_ehlo`; it would still
+leave the model choosing the extension list, which is the one thing it must not choose, so the
+action is gone from the vocabulary rather than hinted at. The cost is that an event handler
+can no longer see `EHLO`; nothing in the tree relied on that, and the one startup example that
+answered it has been rewritten. Logged `decision=netget_answer`.
+
+**Every other command carries `answer_with`** (`smtp_command_event_data`): the action and reply
+code for that one line - `send_smtp_greeting` for `CONNECTION_ESTABLISHED`, `send_smtp_ok (250)`
+or `send_smtp_error with code 550` for `MAIL FROM`/`RCPT TO`, `send_smtp_start_data (354)` for
+`DATA`, `send_smtp_quit` then `close_connection` for `QUIT`, `wait_for_more` for a body line and
+`send_smtp_ok`/`send_smtp_error` for the terminating `.`. `MAIL FROM`/`RCPT TO` also carry the
+`address` and its `domain`, because "refuse any other domain" is a decision about the domain.
+A command whose verb says nothing (`VRFY`, an unknown verb) carries no hint.
+
+**One command, one reply.** SMTP here has no pipelining, so a second reply is read by the
+client as the answer to its *next* command and every reply after it is one step late. One
+`Output` of a batch is written - on the greeting as on every command - and the rest are logged
+`decision=duplicate_response_dropped`. The one written is the reply of the action the line's
+`answer_with` names when the batch has it (`smtp_preferred_actions`: the greeting, `354` for
+`DATA`, `221` for `QUIT`, `send_smtp_ok`/`send_smtp_error` for `MAIL`, `RCPT` and the
+terminating `.`), else the first: a model that acknowledges and *then* answers is
+answering with the second (`ExecutionResult::chosen_reply`, `src/llm/actions/executor.rs`).
+
+**Inside `DATA`** a line is message text whatever it looks like: `EHLO` in a body is not
+answered by NetGet, and its event says `wait_for_more`. The state flips on when a reply
+beginning `354` is written and off at the `.` line.
+
+The greeting action's example is now `mx.example.invalid` / `ESMTP`: copied when the
+instruction names no banner it is a harmless default, and it no longer looks like a plausible
+answer to "greet with the banner X".
+
+`tests/server/smtp/answer_with_test.rs` pins all four from the wire; each guard was verified
+by removing it and watching the test fail.
 
 ## Connection Management
 
@@ -187,7 +236,6 @@ An idle connection now gets `421 4.4.2` and a close rather than holding a task f
 
 ```
 listen on port 25 via smtp. Send greeting '220 mail.example.com ESMTP'.
-Respond to EHLO with '250 8BITMIME'.
 Accept all MAIL FROM and RCPT TO commands with '250 OK'.
 For DATA, respond with '354 Start mail input' then '250 Message accepted'.
 ```
@@ -196,7 +244,6 @@ For DATA, respond with '354 Start mail input' then '250 Message accepted'.
 
 ```
 listen on port 465 via smtp with TLS enabled. Send greeting '220 secure.mail.example.com ESMTPS'.
-Respond to EHLO with '250 8BITMIME'.
 Accept all MAIL FROM and RCPT TO commands with '250 OK'.
 For DATA, respond with '354 Start mail input' then '250 Message accepted'.
 ```
@@ -210,20 +257,6 @@ For DATA, respond with '354 Start mail input' then '250 Message accepted'.
       "type": "send_smtp_greeting",
       "hostname": "mail.example.com",
       "message": "ESMTP Service Ready"
-    }
-  ]
-}
-```
-
-### Example LLM Response (EHLO)
-
-```json
-{
-  "actions": [
-    {
-      "type": "send_smtp_ehlo",
-      "hostname": "mail.example.com",
-      "extensions": ["8BITMIME", "SIZE 10240000"]
     }
   ]
 }

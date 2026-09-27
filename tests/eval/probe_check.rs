@@ -376,7 +376,8 @@ async fn bolt_syntax_error_waits_for_the_model() -> E2EResult<()> {
 
 /// A mail server that greets as NetGet Eval Mail, takes every sender, and takes a
 /// recipient only at example.com: one rule on `smtp_command`, branching on the
-/// command, because the greeting and every command are the same event.
+/// command, because the greeting and every command are the same event. EHLO is
+/// answered by NetGet and never reaches the model.
 #[cfg(feature = "smtp")]
 fn answer_smtp(mock: MockLlmBuilder, calls: usize) -> MockLlmBuilder {
     mock.on_event("smtp_command")
@@ -388,10 +389,6 @@ fn answer_smtp(mock: MockLlmBuilder, calls: usize) -> MockLlmBuilder {
                     "type": "send_smtp_greeting",
                     "hostname": "mail.example.com",
                     "message": "NetGet Eval Mail"
-                }])
-            } else if upper.starts_with("EHLO") {
-                serde_json::json!([{
-                    "type": "send_smtp_ehlo", "hostname": "mail.example.com", "extensions": []
                 }])
             } else if upper.starts_with("MAIL") {
                 serde_json::json!([{"type": "send_smtp_ok", "message": "Sender OK"}])
@@ -417,14 +414,14 @@ async fn smtp_named_banner_waits_for_the_model() -> E2EResult<()> {
 #[cfg(feature = "smtp")]
 #[tokio::test]
 async fn smtp_accept_local_domain_waits_for_the_model() -> E2EResult<()> {
-    // Greeting, EHLO, MAIL, RCPT.
-    check_case("smtp/accept-local-domain", |mock| answer_smtp(mock, 4)).await
+    // Greeting, MAIL, RCPT - EHLO is NetGet's own.
+    check_case("smtp/accept-local-domain", |mock| answer_smtp(mock, 3)).await
 }
 
 #[cfg(feature = "smtp")]
 #[tokio::test]
 async fn smtp_refuse_other_domain_waits_for_the_model() -> E2EResult<()> {
-    check_case("smtp/refuse-other-domain", |mock| answer_smtp(mock, 4)).await
+    check_case("smtp/refuse-other-domain", |mock| answer_smtp(mock, 3)).await
 }
 
 // ---------------------------------------------------------------------------

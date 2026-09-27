@@ -129,11 +129,14 @@ async fn test_smtp_answers_451_when_command_llm_fails() -> E2EResult<()> {
         "expected the mocked 220 greeting, got: {greeting}"
     );
 
-    write_half.write_all(b"EHLO client.example.com\r\n").await?;
+    // MAIL, not EHLO: NetGet answers EHLO itself, so it never reaches the failing backend.
+    write_half
+        .write_all(b"MAIL FROM:<sender@client.example.com>\r\n")
+        .await?;
     write_half.flush().await?;
 
     let reply = read_line(&mut reader).await?;
-    println!("SMTP EHLO reply: {}", reply.trim());
+    println!("SMTP MAIL reply: {}", reply.trim());
     assert!(
         reply.starts_with("451 "),
         "expected a 451 transient failure, got: {reply}"
