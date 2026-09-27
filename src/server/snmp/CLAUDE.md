@@ -259,7 +259,25 @@ The LLM responds to SNMP events with actions:
 - `snmp_request` - SNMP request received
     - Parameters: `request_type` (`GetRequest` / `GetNextRequest` / `GetBulkRequest` /
       `SetRequest` — note the exact spelling, it is dhcproto-style CamelCase, not `GET`), `oids`,
-      `community`, `request_id`, `version` (`v1` / `v2c`), `client_ip`
+      `answer_with`, `community`, `request_id`, `version` (`v1` / `v2c`), `client_ip`
+
+**`answer_with`** (`actions::answer_with_for_request`) names each requested OID, with its MIB-2
+meaning where it is a well-known one (`1.3.6.1.2.1.1.1.0 (sysDescr, the system description your instructions give)`,
+sysName, sysUpTime, sysContact, sysLocation, sysObjectID, sysServices, ifNumber), says how many
+variables to return and that nothing else belongs in the answer, and when to answer `noSuchName`.
+GetNext/GetBulk and Set get their own sentence. It exists because `send_snmp_response`'s example
+used to answer sysDescr with `"System Description"` and add sysName = `"hostname"`, and told
+"your system description is NetGet Eval Switch 1.0", llama3.1:8b sent both example values — both
+OIDs, to a one-OID `snmpget` — ten runs in ten (real-model eval, seed 42). The action and event
+examples now carry one enterprise OID and a value that reads as a placeholder
+(`"<the value your instructions give for this OID>"`), and the description says the example is
+never data.
+
+The sysName gloss is worded to stop rewording: with "sysName, the system's name" the model sent
+`localhost` five runs in five, and with "the name your instructions give this device" it sent
+"Eval Core" for `eval-core-01` five in five. "The device's name exactly as your instructions write
+it - a hostname, character for character, never reworded or capitalised" got 4/5 (the miss
+invented a description). Measured with the real-model eval, 5 runs each.
 
 **Request/response correlation**: the request-id, community string and version are captured
 per-request in the socket task and passed into `build_snmp_response` as plain locals — they are
@@ -300,7 +318,7 @@ need to (and cannot) set them.
     {
       "type": "send_snmp_response",
       "variables": [
-        {"oid": "1.3.6.1.2.1.1.1.0", "type": "string", "value": "System Description"},
+        {"oid": "1.3.6.1.2.1.1.1.0", "type": "string", "value": "NetGet SNMP Agent v1.0"},
         {"oid": "1.3.6.1.2.1.1.3.0", "type": "timeticks", "value": 12345},
         {"oid": "1.3.6.1.2.1.1.5.0", "type": "string", "value": "netget.local"}
       ]

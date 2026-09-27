@@ -301,7 +301,7 @@ fn send_trap_action() -> ActionDefinition {
 fn send_snmp_response_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_snmp_response".to_string(),
-        description: "Answer the request with a set of OID values. The request-id, community string and SNMP version are copied from the request being answered, so you only supply the values. Normally return one entry per OID in the event's 'oids' list, in the same order.".to_string(),
+        description: "Answer the request with a set of OID values. The request-id, community string and SNMP version are copied from the request being answered, so you only supply the values. Return exactly one entry per OID in the event's 'oids' list, in the same order, and no others; each value is the one your instructions give for that OID, word for word. The example's OID and value are placeholders for the shape, never data.".to_string(),
         parameters: vec![Parameter {
             name: "variables".to_string(),
             type_hint: "array".to_string(),
@@ -311,8 +311,7 @@ fn send_snmp_response_action() -> ActionDefinition {
         example: json!({
             "type": "send_snmp_response",
             "variables": [
-                {"oid": "1.3.6.1.2.1.1.1.0", "type": "string", "value": "System Description"},
-                {"oid": "1.3.6.1.2.1.1.5.0", "type": "string", "value": "hostname"}
+                {"oid": "1.3.6.1.4.1.99999.1.0", "type": "string", "value": "<the value your instructions give for this OID>"}
             ]
         }),
         log_template: Some(
@@ -390,7 +389,7 @@ pub static SNMP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({
             "type": "send_snmp_response",
             "variables": [
-                {"oid": "1.3.6.1.2.1.1.1.0", "type": "string", "value": "System Description"}
+                {"oid": "1.3.6.1.4.1.99999.1.0", "type": "string", "value": "<the value your instructions give for this OID>"}
             ]
         })
     )
@@ -405,6 +404,12 @@ pub static SNMP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             name: "oids".to_string(),
             type_hint: "array".to_string(),
             description: "OIDs the client asked about, in dotted decimal, in request order. Answer with one variable binding per OID in the same order".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which answer this request takes: the variables to return, each OID named with its MIB-2 name where it has one (sysDescr, sysName, ...), and when to answer noSuchName instead".to_string(),
             required: true,
         },
         Parameter {
@@ -444,6 +449,63 @@ pub static SNMP_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             .with_trace("SNMP: {json_pretty(.)}"),
     )
 });
+
+/// The MIB-2 name and meaning of the OIDs a small model is most often asked for.
+///
+/// A model that has not memorised MIB-2 does not know that 1.3.6.1.2.1.1.1.0 is "the system
+/// description" an instruction talks about, so the request names it.
+fn well_known_oid(oid: &str) -> Option<&'static str> {
+    Some(match oid.trim_start_matches('.') {
+        "1.3.6.1.2.1.1.1.0" => "sysDescr, the system description your instructions give",
+        "1.3.6.1.2.1.1.2.0" => "sysObjectID, the vendor's object identifier",
+        "1.3.6.1.2.1.1.3.0" => "sysUpTime, timeticks since start-up",
+        "1.3.6.1.2.1.1.4.0" => "sysContact, the contact person",
+        "1.3.6.1.2.1.1.5.0" => {
+            "sysName, the device's name exactly as your instructions write it - a hostname, \
+             character for character, never reworded or capitalised"
+        }
+        "1.3.6.1.2.1.1.6.0" => "sysLocation, where the system is",
+        "1.3.6.1.2.1.1.7.0" => "sysServices, an integer",
+        "1.3.6.1.2.1.2.1.0" => "ifNumber, how many interfaces",
+        _ => return None,
+    })
+}
+
+/// The `answer_with` event field: the variables this request takes, OID by OID.
+///
+/// `send_snmp_response`'s example used to carry sysDescr = "System Description" and sysName =
+/// "hostname". Told "your system description is NetGet Eval Switch 1.0", llama3.1:8b answered
+/// with those two example values - and both OIDs, so a one-OID snmpget got two varbinds - ten
+/// runs in ten. The request now names each OID it asks for, what it means, and that nothing
+/// else belongs in the answer.
+pub fn answer_with_for_request(request_type: &str, oids: &[String]) -> String {
+    let named: Vec<String> = oids
+        .iter()
+        .map(|oid| match well_known_oid(oid) {
+            Some(name) => format!("{oid} ({name})"),
+            None => oid.clone(),
+        })
+        .collect();
+    let list = named.join(", ");
+    let n = oids.len();
+    let noun = if n == 1 { "variable" } else { "variables" };
+    match request_type {
+        "GetNextRequest" | "GetBulkRequest" => format!(
+            "send_snmp_response with the OID that follows each of {list} in your agent's tree, \
+             and its value; send_snmp_error with noSuchName when nothing follows"
+        ),
+        "SetRequest" => format!(
+            "send_snmp_response echoing the {n} {noun} set on {list} when your instructions let \
+             them be written; send_snmp_error with readOnly when they do not"
+        ),
+        _ => format!(
+            "send_snmp_response with exactly {n} {noun}, in this order: {list}. Each value is \
+             the one your instructions give for it, word for word; add no other OIDs. If your \
+             instructions give no value for one of them, send_snmp_error with noSuchName and \
+             its 1-based error_index instead"
+        ),
+    }
+}
 
 pub fn get_snmp_event_types() -> Vec<EventType> {
     vec![SNMP_REQUEST_EVENT.clone()]
