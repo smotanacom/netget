@@ -87,6 +87,43 @@ Each NNTP client gets:
 - Tracked bytes sent/received, packets sent/received
 - State: Active until client disconnects or sends QUIT
 
+## What NetGet answers itself, and what the model is told
+
+The real-model eval (`./run-eval.sh nntp`, llama3.1:8b, seed 42) scored all three NNTP cases
+0/5. nntplib sends `CAPABILITIES` from its constructor, before the command a case is about, and
+the model answered it with the `200` greeting - copied from `send_nntp_response`'s example,
+`200 NetGet NNTP Service Ready` - so nntplib raised `NNTPReplyError` and the `GROUP` or `LIST`
+under test was never sent. It also answered one greeting with two, and an unknown group with
+`501` (syntax error) where RFC 3977 says `411`.
+
+**`CAPABILITIES` and `MODE READER` are answered by NetGet** (`netget_answer` in `mod.rs`),
+logged `decision=netget_answer`. Each has one correct form. `CAPABILITIES` is `101` with
+`VERSION 2`, `READER`, `LIST ACTIVE` and `OVER` - what this server has actions for
+(`send_nntp_group`/`send_nntp_article`, `send_nntp_list`'s active format, `send_nntp_overview`),
+and nothing it does not implement (`POST`, `IHAVE`, `AUTHINFO`). `MODE READER` repeats the
+greeting's own status: `200` if the greeting said `200`, otherwise `201`. A hint could not have
+fixed `CAPABILITIES`: its answer is a multi-line `101` block no action renders except the raw
+`send_nntp_message`, so answering it removes the failure class outright. The cost is that an
+event handler can no longer see either command; `tests/server/nntp/peer_inject_test.rs` and
+`connection_bounds_test.rs` used `MODE READER` as an arbitrary command for a static rule to
+answer and now use `HELP`.
+
+**Every other command the verb identifies carries `answer_with`** (`nntp_command_event_data`),
+naming the action and reply code for that one command - for `GROUP`, `send_nntp_group` if the
+group exists and `send_nntp_response` with `411` if it does not - plus `group` (GROUP) or
+`article` (ARTICLE/HEAD/BODY) split out. `send_nntp_response`'s example is now a `201` greeting
+for `news.example.invalid`, and its description names the codes other commands take.
+
+**One command, one reply.** `SessionWrite` keeps one `Output` of a batch and counts the rest,
+which are logged `decision=duplicate_response_dropped` - on the greeting as on every command.
+The one kept is the reply of the action `answer_with` names when the batch has it
+(`nntp_preferred_actions`: `send_nntp_group` for `GROUP`, `send_nntp_list` for `LIST`, …), else
+the first - a model that sends a status line and *then* the answer is answering with the
+second (`ExecutionResult::chosen_reply`).
+
+`tests/server/nntp/answer_with_test.rs` pins all of it from the wire; the drop and the
+NetGet-answered commands were each verified by removing them and watching it fail.
+
 ## LLM Integration
 
 ### Event Type
@@ -96,6 +133,8 @@ Each NNTP client gets:
 Event parameters:
 
 - `command` (string) - The NNTP command received (e.g., "GROUP comp.lang.rust")
+- `answer_with` (string, when the verb says) - the action and reply code for this command
+- `group` / `article` (string) - GROUP's newsgroup, ARTICLE/HEAD/BODY's number or message-id
 
 ### Available Actions
 

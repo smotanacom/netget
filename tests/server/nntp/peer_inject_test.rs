@@ -118,7 +118,7 @@ async fn injected_nntp_action_reaches_raw_socket_and_close_sends_eof() {
     // A command from the socket is counted as a read and answered by the static handler.
     reader
         .get_mut()
-        .write_all(b"MODE READER\r\n")
+        .write_all(b"HELP\r\n")
         .await
         .expect("write command");
     line.clear();
@@ -129,7 +129,8 @@ async fn injected_nntp_action_reaches_raw_socket_and_close_sends_eof() {
     assert_eq!(line, "200 static ready\r\n");
 
     // Counters moved in both directions: the greeting and the static reply (the generic peer
-    // task does not count injected writes), and the 13-byte command.
+    // task does not count injected writes), and the 6-byte command. (Not MODE READER: NetGet
+    // answers that itself, so it would never reach the static handler.)
     let mut counted = false;
     for _ in 0..100 {
         let server = state.get_server(server_id).await.expect("server");
@@ -138,7 +139,7 @@ async fn injected_nntp_action_reaches_raw_socket_and_close_sends_eof() {
             .values()
             .find(|c| c.id.as_u32() == conn)
             .expect("connection tracked");
-        if conn_state.bytes_sent >= 18 + 18 && conn_state.bytes_received >= 13 {
+        if conn_state.bytes_sent >= 18 + 18 && conn_state.bytes_received >= 6 {
             counted = true;
             break;
         }

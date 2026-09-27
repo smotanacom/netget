@@ -353,10 +353,11 @@ impl NntpServer {
 
         let greeting_event = Event::new(
             &NNTP_COMMAND_RECEIVED_EVENT,
-            serde_json::json!({
-                "command": "GREETING"
-            }),
+            nntp_command_event_data("GREETING"),
         );
+        // The greeting's status code (200 or 201), which MODE READER reports again. Every
+        // path that does not set it returns before the command loop.
+        let greeting_code: Option<String>;
         match call_llm(
             llm_client,
             app_state,
@@ -372,7 +373,13 @@ impl NntpServer {
                     log.info(message);
                 }
 
-                let plan = SessionWrite::collect(&execution_result.protocol_results);
+                let plan = SessionWrite::collect(&execution_result, &[]);
+                plan.log_dropped(&log, connection_id, "GREETING");
+                greeting_code = plan
+                    .outputs
+                    .first()
+                    .and_then(|data| data.get(..3))
+                    .map(|code| String::from_utf8_lossy(code).to_string());
 
                 for data in &plan.outputs {
                     Self::write_counted(
@@ -543,11 +550,27 @@ impl NntpServer {
             ));
             log.trace(format!("NNTP data (text): {:?}", line.trim()));
 
+            if let Some(reply) = netget_answer(line.trim(), greeting_code.as_deref()) {
+                log.info(format!(
+                    "NNTP {} on connection {} decision=netget_answer: answered by NetGet",
+                    crate::utils::truncate_for_log(line.trim(), 60),
+                    connection_id
+                ));
+                Self::write_counted(
+                    write_half_arc,
+                    app_state,
+                    server_id,
+                    connection_id,
+                    reply,
+                    false,
+                )
+                .await;
+                continue;
+            }
+
             let event = Event::new(
                 &NNTP_COMMAND_RECEIVED_EVENT,
-                serde_json::json!({
-                    "command": line.trim()
-                }),
+                nntp_command_event_data(line.trim()),
             );
 
             log.debug(format!("NNTP calling LLM for connection {}", connection_id));
@@ -572,7 +595,11 @@ impl NntpServer {
                         execution_result.protocol_results.len()
                     ));
 
-                    let plan = SessionWrite::collect(&execution_result.protocol_results);
+                    let plan = SessionWrite::collect(
+                        &execution_result,
+                        nntp_preferred_actions(line.trim()),
+                    );
+                    plan.log_dropped(&log, connection_id, line.trim());
 
                     // NNTP is one response line per command, so writing
                     // nothing desynchronises the client for the rest of the
@@ -680,6 +707,112 @@ impl NntpServer {
     }
 }
 
+/// NetGet's answer to `CAPABILITIES` (RFC 3977 5.2).
+///
+/// Answered here rather than by the model because it has one correct form: what this server
+/// has actions for - reading (`READER`: GROUP, ARTICLE/HEAD/BODY), `LIST ACTIVE`
+/// (`send_nntp_list` renders the active format) and `OVER` (`send_nntp_overview`). No `POST`,
+/// no `IHAVE`, no `AUTHINFO`: none is implemented. Asked, a small model answered CAPABILITIES
+/// with the 200 greeting, and nntplib - which sends CAPABILITIES from its constructor - raised
+/// before the command under test was ever sent.
+pub const CAPABILITIES_REPLY: &[u8] =
+    b"101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\nOVER\r\n.\r\n";
+
+/// NetGet's answer to `MODE READER` (RFC 3977 5.3): the greeting's own status again, which is
+/// what the command reports. `201` (posting prohibited) unless the greeting said `200`.
+pub fn mode_reader_reply(greeting_code: Option<&str>) -> &'static [u8] {
+    if greeting_code == Some("200") {
+        b"200 Reader mode, posting allowed\r\n"
+    } else {
+        b"201 Reader mode, posting prohibited\r\n"
+    }
+}
+
+/// Which of the connection-mechanics commands NetGet answers itself, if `command` is one.
+pub fn netget_answer(command: &str, greeting_code: Option<&str>) -> Option<&'static [u8]> {
+    let upper = command.trim().to_ascii_uppercase();
+    let mut words = upper.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some("CAPABILITIES"), _, None) => Some(CAPABILITIES_REPLY),
+        (Some("MODE"), Some("READER"), None) => Some(mode_reader_reply(greeting_code)),
+        _ => None,
+    }
+}
+
+/// The actions whose reply wins when a batch answers one NNTP command with several: the one
+/// the command's `answer_with` names when only one fits. See `ExecutionResult::chosen_reply`.
+pub fn nntp_preferred_actions(command: &str) -> &'static [&'static str] {
+    let mut words = command.split_whitespace();
+    let verb = words.next().unwrap_or("").to_ascii_uppercase();
+    let arg = words.next().map(str::to_ascii_uppercase);
+    match (verb.as_str(), arg.as_deref()) {
+        ("GROUP", _) => &["send_nntp_group"],
+        ("LIST", None) | ("LIST", Some("ACTIVE")) => &["send_nntp_list"],
+        ("ARTICLE" | "HEAD" | "BODY", _) => &["send_nntp_article"],
+        ("OVER" | "XOVER", _) => &["send_nntp_overview"],
+        _ => &[],
+    }
+}
+
+/// The event data for one NNTP line: the line itself, plus what NetGet can tell from it.
+///
+/// `answer_with` names the action and reply code this particular command takes. The
+/// real-model eval found a small model answering CAPABILITIES with the 200 greeting and an
+/// unknown group with `501` (syntax error) where RFC 3977 says `411`; a per-request hint is
+/// followed far better than the general description. `group` and `article` are the command's
+/// arguments, split out.
+pub fn nntp_command_event_data(command: &str) -> serde_json::Value {
+    let mut data = serde_json::json!({ "command": command });
+    if command == "GREETING" {
+        data["answer_with"] = "send_nntp_response with code 200 (posting allowed) or 201 \
+                               (posting prohibited) and the server's banner as text"
+            .into();
+        return data;
+    }
+    let mut words = command.split_whitespace();
+    let verb = words.next().unwrap_or("").to_ascii_uppercase();
+    let arg = words.next();
+    let answer = match (verb.as_str(), arg) {
+        ("GROUP", Some(group)) => {
+            data["group"] = group.into();
+            format!(
+                "send_nntp_group with name {group} and its count, low and high article numbers \
+                 if the group {group} exists; if it does not, send_nntp_response with code 411 \
+                 and text \"No such newsgroup\""
+            )
+        }
+        ("LIST", None) => "send_nntp_list with every group the server carries (name, high, \
+                           low, status \"y\")"
+            .to_string(),
+        ("LIST", Some(kind)) if kind.eq_ignore_ascii_case("ACTIVE") => {
+            "send_nntp_list with every group the server carries (name, high, low, status \"y\")"
+                .to_string()
+        }
+        ("ARTICLE" | "HEAD" | "BODY", article) => {
+            if let Some(article) = article {
+                data["article"] = article.into();
+            }
+            let code = match verb.as_str() {
+                "ARTICLE" => 220,
+                "HEAD" => 221,
+                _ => 222,
+            };
+            format!(
+                "send_nntp_article with code {code}; send_nntp_response with code 423 if there \
+                 is no such article in the group, 430 if there is no article with that \
+                 message-id, or 412 if no group has been selected"
+            )
+        }
+        ("OVER" | "XOVER", _) => "send_nntp_overview with one entry per article in the range; \
+                                   send_nntp_response with code 412 if no group has been selected"
+            .to_string(),
+        ("QUIT", _) => "send_nntp_response with code 205, then close_connection".to_string(),
+        _ => return data,
+    };
+    data["answer_with"] = answer.into();
+    data
+}
+
 /// What a batch of action results means for the wire.
 ///
 /// Collected up front so the "nothing to say" case can be recognised *before* anything is
@@ -688,8 +821,13 @@ impl NntpServer {
 /// perfectly good reply.
 #[derive(Default)]
 struct SessionWrite {
-    /// Bytes to put on the wire, in order.
+    /// The one reply to put on the wire: the one produced by the action `answer_with` names,
+    /// else the first the batch produced (`ExecutionResult::chosen_reply`). NNTP has no
+    /// pipelining here, so a second reply is read as the answer to the client's *next*
+    /// command and every reply after it is one step late.
     outputs: Vec<Vec<u8>>,
+    /// Replies the batch carried past the first, which are not written.
+    dropped: usize,
     /// The session should end after those bytes.
     close: bool,
     /// The answer contained an explicit `wait_for_more` or `close_connection`, so writing
@@ -698,22 +836,31 @@ struct SessionWrite {
 }
 
 impl SessionWrite {
-    fn collect(results: &[ActionResult]) -> Self {
+    fn collect(
+        result: &crate::llm::actions::executor::ExecutionResult,
+        preferred: &[&str],
+    ) -> Self {
+        let chosen = result.chosen_reply(preferred);
         let mut plan = Self::default();
-        plan.absorb(results);
+        for (index, action_result) in result.protocol_results.iter().enumerate() {
+            plan.absorb(std::slice::from_ref(action_result), Some(index) == chosen);
+        }
         plan
     }
 
-    fn absorb(&mut self, results: &[ActionResult]) {
+    fn absorb(&mut self, results: &[ActionResult], is_the_reply: bool) {
         for result in results {
             match result {
+                ActionResult::Output(_) if !is_the_reply || !self.outputs.is_empty() => {
+                    self.dropped += 1
+                }
                 ActionResult::Output(data) => self.outputs.push(data.clone()),
                 ActionResult::CloseConnection => {
                     self.close = true;
                     self.silence_is_deliberate = true;
                 }
                 ActionResult::WaitForMore => self.silence_is_deliberate = true,
-                ActionResult::Multiple(inner) => self.absorb(inner),
+                ActionResult::Multiple(inner) => self.absorb(inner, is_the_reply),
                 _ => {}
             }
         }
@@ -721,6 +868,19 @@ impl SessionWrite {
 
     fn wrote_nothing(&self) -> bool {
         self.outputs.is_empty()
+    }
+
+    fn log_dropped(&self, log: &Log, connection_id: ConnectionId, command: &str) {
+        if self.dropped > 0 {
+            log.warn(format!(
+                "NNTP {} on connection {} decision=duplicate_response_dropped: {} extra \
+                 repl{} not sent; one command gets one reply",
+                crate::utils::truncate_for_log(command, 60),
+                connection_id,
+                self.dropped,
+                if self.dropped == 1 { "y" } else { "ies" }
+            ));
+        }
     }
 }
 

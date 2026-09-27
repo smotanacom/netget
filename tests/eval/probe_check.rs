@@ -554,7 +554,8 @@ async fn imap_inbox_count_waits_for_the_model() -> E2EResult<()> {
 // nntp — nntplib
 // ---------------------------------------------------------------------------
 
-/// Greeting, CAPABILITIES (nntplib asks on connect), then the command under test.
+/// Greeting, then the command under test. nntplib sends CAPABILITIES on connect;
+/// NetGet answers it, so it never reaches the model.
 #[cfg(feature = "nntp")]
 fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
     mock.on_event("nntp_command_received")
@@ -566,11 +567,6 @@ fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
             if command == "GREETING" {
                 serde_json::json!([{
                     "type": "send_nntp_response", "code": 201, "text": "NetGet news ready"
-                }])
-            } else if command == "CAPABILITIES" {
-                serde_json::json!([{
-                    "type": "send_nntp_message",
-                    "message": "101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\n.\r\n"
                 }])
             } else if command == "GROUP COMP.LANG.EVAL" {
                 serde_json::json!([{
@@ -596,7 +592,7 @@ fn answer_nntp(mock: MockLlmBuilder) -> MockLlmBuilder {
             }
         })
         .after_delay(MODEL_LATENCY)
-        .expect_calls(3)
+        .expect_calls(2)
         .and()
 }
 
