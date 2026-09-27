@@ -17,7 +17,31 @@ Tests POP3 server with raw TCP clients validating RFC 1939 command/response sequ
 - `test_pop3_authentication()`: 1 startup call + 2 commands (USER, PASS)
 - `test_pop3_stat()`: 1 startup call + 3 commands (USER, PASS, STAT)
 - `test_pop3_quit()`: 1 startup call + 1 QUIT command
-- **Total: 12 LLM calls** (4 startups + 8 command calls)
+- `answer_with_test.rs`: 1 startup call + 5 events (greeting, USER, STAT, RETR 1, RETR 2). `CAPA` is answered
+  by NetGet and never reaches the model, so no test mocks it.
+- **Total: 18 LLM calls** (5 startups + 13 command calls)
+
+## `answer_with_test.rs` - each command told its answer, and given exactly one
+
+Pins, from the wire, what the real-model eval's `pop3/message-subject` (0/5) needed. Every rule
+matches on the event's `answer_with` and `message_number`, so a missing hint is an unmatched
+event:
+
+- the greeting is answered with a greeting **and** a stray `+OK`; the client must read the
+  greeting, then NetGet's `CAPA` block, then `USER`'s own `+OK` - never the stray one;
+- `CAPA` is `+OK Capability list follows` / `USER` / `TOP` / `UIDL` / `RESP-CODES` / `.`, with
+  no rule for it (an event would fail the session);
+- `RETR 1` is answered with `from`/`subject`/`body` fields; the client must read the headers
+  NetGet wrote, a byte-stuffed body line, the `.`, and an octet count equal to what was sent;
+- `STAT` is answered with a bare `+OK` and then the `STAT` line; the client must read the
+  `STAT` line, the reply of the action `answer_with` names;
+- `RETR 2` is answered with a `+OK` and the message as raw `send_pop3_message` text; the client
+  must read it framed, terminating `.` included (`decision=multiline_assembled`);
+- `decision=duplicate_response_dropped` and `decision=netget_answer` are in the log.
+
+Verified by removing the drop (the stray `+OK` precedes the `CAPA` block), the preferred reply
+(`STAT` reads the bare `+OK`), the `CAPA` answer (the session fails on an unmatched event) and
+the `RETR` assembly (the client waits for a `.` that never comes).
 
 ## Scripting Usage
 
@@ -56,6 +80,7 @@ Tests POP3 server with raw TCP clients validating RFC 1939 command/response sequ
 2. **test_pop3_authentication** - Tests USER and PASS commands with +OK responses
 3. **test_pop3_stat** - Tests STAT command for mailbox status (message count, total size)
 4. **test_pop3_quit** - Tests QUIT command and +OK response
+5. **answer_with_test** - `answer_with`, one reply per command, structured `RETR`, `CAPA` (above)
 
 ## Known Issues
 

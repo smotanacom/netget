@@ -21,7 +21,9 @@ pub static POP3_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "pop3_command",
         "POP3 command received from client (USER, PASS, STAT, LIST, RETR, DELE, QUIT, etc.). \
          The literal command 'CONNECTION_ESTABLISHED' is sent once when a client connects and \
-         must be answered with send_pop3_greeting.",
+         must be answered with send_pop3_greeting. CAPA is answered by NetGet and never reaches \
+         you. Each command gets exactly one reply, and answer_with names the action for this \
+         one.",
         json!({"type": "send_pop3_ok", "message": "command processed"}),
     )
     .with_parameters(vec![
@@ -40,6 +42,24 @@ pub static POP3_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             description: "Unique connection identifier".to_string(),
             required: true,
         },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which action answers this command".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "message_number".to_string(),
+            type_hint: "number".to_string(),
+            description: "RETR, TOP, LIST, UIDL, DELE: the message the command names".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "lines".to_string(),
+            type_hint: "number".to_string(),
+            description: "TOP only: how many body lines to send".to_string(),
+            required: false,
+        },
     ])
     .with_actions(Pop3Protocol::new().get_sync_actions())
     .with_log_template(
@@ -49,6 +69,43 @@ pub static POP3_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             .with_trace("POP3: {json_pretty(.)}"),
     )
 });
+
+/// The message a `send_pop3_retr` carries, as text: `content` verbatim when the model wrote
+/// the whole message, otherwise built from the structured fields.
+///
+/// The structured form exists because a small model asked for "the message whose subject is
+/// X" writes `"subject": "X"` far more reliably than it writes RFC 5322 header syntax inside
+/// one string. NetGet writes the header lines (`From`, `To`, `Subject`, `Date`, in that order,
+/// each only when given), the blank line, and the body.
+fn pop3_message_text(action: &serde_json::Value) -> Result<String> {
+    if let Some(content) = action.get("content").and_then(|v| v.as_str()) {
+        return Ok(content.to_string());
+    }
+    let field = |name: &str| action.get(name).and_then(|v| v.as_str());
+    let mut text = String::new();
+    for (header, name) in [
+        ("From", "from"),
+        ("To", "to"),
+        ("Subject", "subject"),
+        ("Date", "date"),
+    ] {
+        if let Some(value) = field(name) {
+            // A header value is one line; a newline in it would start a forged header.
+            let value = value.replace(['\r', '\n'], " ");
+            text.push_str(&format!("{header}: {value}\n"));
+        }
+    }
+    let body = field("body");
+    if text.is_empty() && body.is_none() {
+        anyhow::bail!(
+            "send_pop3_retr needs the message: either 'content' (headers, a blank line, the \
+             body) or the fields from, to, subject and body"
+        );
+    }
+    text.push('\n');
+    text.push_str(body.unwrap_or(""));
+    Ok(text)
+}
 
 /// Prepare LLM-supplied message text for a POP3 multi-line response body.
 ///
@@ -62,7 +119,7 @@ pub static POP3_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 ///    `\r\n` so the following `.\r\n` starts on its own line.
 ///
 /// The result always ends with `\r\n` (or is empty), so callers can append `.\r\n` directly.
-fn format_pop3_multiline_body(content: &str) -> String {
+pub fn format_pop3_multiline_body(content: &str) -> String {
     if content.is_empty() {
         return String::new();
     }
@@ -186,12 +243,9 @@ impl Pop3Protocol {
     }
 
     fn execute_send_pop3_retr(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let content = action
-            .get("content")
-            .and_then(|v| v.as_str())
-            .context("Missing 'content' parameter")?;
+        let content = pop3_message_text(&action)?;
 
-        let body = format_pop3_multiline_body(content);
+        let body = format_pop3_multiline_body(&content);
 
         // RFC 1939 treats the octet count as informational (the terminating "." is what ends
         // the response), so an LLM-supplied `size` is honoured, but omitting it yields the
@@ -299,7 +353,11 @@ impl Protocol for Pop3Protocol {
         vec![
             ActionDefinition {
                 name: "send_pop3_ok".to_string(),
-                description: "Send POP3 +OK response".to_string(),
+                description: "A single +OK line: accepts USER, PASS, DELE, NOOP, RSET, QUIT, or \
+                              answers LIST/UIDL for one message. Never the answer to RETR, TOP, \
+                              STAT or a whole-mailbox LIST - those have their own actions, and \
+                              a bare +OK leaves the client waiting for data that never comes."
+                    .to_string(),
                 parameters: vec![Parameter {
                     name: "message".to_string(),
                     type_hint: "string".to_string(),
@@ -308,7 +366,7 @@ impl Protocol for Pop3Protocol {
                 }],
                 example: json!({
                     "type": "send_pop3_ok",
-                    "message": "1 octets"
+                    "message": "user accepted"
                 }),
                 log_template: Some(
                     LogTemplate::new()
@@ -426,18 +484,51 @@ impl Protocol for Pop3Protocol {
             },
             ActionDefinition {
                 name: "send_pop3_retr".to_string(),
-                description: "Send POP3 RETR response with a full email message. NetGet adds the \
-                              terminating '.' line, converts newlines to CRLF and byte-stuffs any \
-                              line starting with '.', so supply the message as plain text."
+                description: "The answer to RETR: the whole message. Give it as from, to, \
+                              subject and body and NetGet writes the header lines, or as \
+                              content (headers, a blank line, the body). NetGet adds the octet \
+                              count and the terminating '.' line, converts newlines to CRLF and \
+                              byte-stuffs any line starting with '.'. The example's values are \
+                              placeholders; send the message your instruction describes."
                     .to_string(),
                 parameters: vec![
                     Parameter {
+                        name: "from".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Sender address (the From header)".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "to".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Recipient address (the To header)".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "subject".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "The Subject header, verbatim".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "date".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "The Date header (optional)".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "body".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Message body text".to_string(),
+                        required: false,
+                    },
+                    Parameter {
                         name: "content".to_string(),
                         type_hint: "string".to_string(),
-                        description:
-                            "Email message content: RFC 5322 headers, a blank line, then the body"
-                                .to_string(),
-                        required: true,
+                        description: "Instead of the fields above: the whole message as RFC \
+                                      5322 text - headers, a blank line, then the body"
+                            .to_string(),
+                        required: false,
                     },
                     Parameter {
                         name: "size".to_string(),
@@ -450,7 +541,10 @@ impl Protocol for Pop3Protocol {
                 ],
                 example: json!({
                     "type": "send_pop3_retr",
-                    "content": "From: sender@example.com\nTo: recipient@example.com\nSubject: Test\n\nHello"
+                    "from": "sender@example.invalid",
+                    "to": "mailbox@example.invalid",
+                    "subject": "Example subject",
+                    "body": "Example body."
                 }),
                 log_template: Some(
                     LogTemplate::new()
