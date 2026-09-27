@@ -27,9 +27,9 @@ functions; `mod.rs` is the session loop.
 | Command | Answered by | Reply |
 |---|---|---|
 | `put <pri> <delay> <ttr> <bytes>` + body | model → `beanstalkd_put {tube, priority, delay, ttr, body, body_bytes}` | `INSERTED <id>`, `BURIED <id>`, `DRAINING` |
-| `reserve`, `reserve-with-timeout <s>` | model → `beanstalkd_reserve {tubes, timeout_secs?}` | `RESERVED <id> <bytes>` + body, `DEADLINE_SOON`, or wait (see below); `TIMED_OUT` from NetGet |
+| `reserve`, `reserve-with-timeout <s>` | model → `beanstalkd_reserve {tubes, timeout_secs?, answer_with}` | `RESERVED <id> <bytes>` + body, `DEADLINE_SOON`, or wait (see below); `TIMED_OUT` from NetGet |
 | `reserve-job <id>`, `delete`, `release`, `bury`, `touch`, `kick-job`, `peek`, `peek-ready`/`-delayed`/`-buried`, `kick <bound>`, `pause-tube` | model → `beanstalkd_job_command {command, job_id?, tube, priority?, delay?, bound?}` | the command's own word, or `NOT_FOUND` |
-| `stats`, `stats-tube`, `stats-job`, `list-tubes` | model → `beanstalkd_stats {scope: server\|tube\|job\|tubes, tube?, job_id?}` | `OK <bytes>` + YAML, or `NOT_FOUND` |
+| `stats`, `stats-tube`, `stats-job`, `list-tubes` | model → `beanstalkd_stats {scope: server\|tube\|job\|tubes, tube?, job_id?, answer_with}` | `OK <bytes>` + YAML, or `NOT_FOUND` |
 | `use`, `watch`, `ignore`, `list-tube-used`, `list-tubes-watched` | NetGet, from the connection's own tube state | `USING`, `WATCHING <n>`, `NOT_IGNORED`, `OK <bytes>` + YAML list |
 | `quit` | NetGet | close |
 | wrong arity, non-digit number, bad tube name | NetGet | `BAD_FORMAT` |
@@ -58,6 +58,26 @@ events can say which tube a `put` goes to and which tubes a `reserve` draws from
 
 Job bodies reach the model as UTF-8 text (invalid bytes replaced) with `body_bytes` beside it,
 and the model gives bodies back as text; no bytes or base64 in either direction.
+
+### `answer_with`, and examples that read as placeholders
+
+Two copied examples in the real-model eval (llama3.1:8b, seed 42), both five runs in five:
+
+- Told "the images tube holds one waiting job, number 7, whose text is: resize photo.jpg to 640
+  wide", the model handed out job 7 with `reserve_beanstalkd_job`'s example body,
+  `{"image": 7, "width": 640}` — close enough to the instruction to pass for it.
+- Told "5 ready jobs and 2 buried jobs, running version 1.13", it answered `stats` with the
+  example's own four names and filed the 2 buried jobs under `current-jobs-reserved`, because
+  the example had no `current-jobs-buried` to put them in.
+
+So `beanstalkd_reserve` carries `answer_with` (`actions::reserve_answer_with`): the watched tubes,
+and that the body is the job's text as the instructions give it, word for word, or
+`wait_for_beanstalkd_job` when they give none. `beanstalkd_stats` carries
+`actions::stats_answer_with(scope)`: beanstalkd's own stat names for that scope (for `server`:
+`current-jobs-urgent/-ready/-reserved/-delayed/-buried`, `total-jobs`, `current-tubes`,
+`current-connections`, `current-workers`, `uptime`, `version`), and that each figure goes under
+the name it belongs to. The job examples' bodies are `"<the job's text, word for word>"` and the
+stats examples' figures are zeros and `"0.0"`; the descriptions say the examples are never data.
 
 ### NetGet does the framing; the model cannot
 

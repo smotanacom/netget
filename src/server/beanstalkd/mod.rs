@@ -762,10 +762,20 @@ fn event_for(
                 }),
             )
         }
-        Command::Reserve => (&*BEANSTALKD_RESERVE_EVENT, json!({"tubes": tubes.watched})),
+        Command::Reserve => (
+            &*BEANSTALKD_RESERVE_EVENT,
+            json!({
+                "tubes": tubes.watched,
+                "answer_with": actions::reserve_answer_with(&tubes.watched),
+            }),
+        ),
         Command::ReserveWithTimeout(secs) => (
             &*BEANSTALKD_RESERVE_EVENT,
-            json!({"tubes": tubes.watched, "timeout_secs": secs}),
+            json!({
+                "tubes": tubes.watched,
+                "timeout_secs": secs,
+                "answer_with": actions::reserve_answer_with(&tubes.watched),
+            }),
         ),
         Command::ReserveJob(id) => job("reserve-job", Some(*id)),
         Command::Delete(id) => job("delete", Some(*id)),
@@ -799,16 +809,30 @@ fn event_for(
             &*BEANSTALKD_JOB_COMMAND_EVENT,
             json!({"command": "pause-tube", "tube": tube, "delay": delay}),
         ),
-        Command::Stats => (&*BEANSTALKD_STATS_EVENT, json!({"scope": "server"})),
+        Command::Stats => (
+            &*BEANSTALKD_STATS_EVENT,
+            json!({"scope": "server", "answer_with": actions::stats_answer_with("server")}),
+        ),
         Command::StatsTube(tube) => (
             &*BEANSTALKD_STATS_EVENT,
-            json!({"scope": "tube", "tube": tube}),
+            json!({
+                "scope": "tube",
+                "tube": tube,
+                "answer_with": actions::stats_answer_with("tube"),
+            }),
         ),
         Command::StatsJob(id) => (
             &*BEANSTALKD_STATS_EVENT,
-            json!({"scope": "job", "job_id": id}),
+            json!({
+                "scope": "job",
+                "job_id": id,
+                "answer_with": actions::stats_answer_with("job"),
+            }),
         ),
-        Command::ListTubes => (&*BEANSTALKD_STATS_EVENT, json!({"scope": "tubes"})),
+        Command::ListTubes => (
+            &*BEANSTALKD_STATS_EVENT,
+            json!({"scope": "tubes", "answer_with": actions::stats_answer_with("tubes")}),
+        ),
         _ => return None,
     })
 }

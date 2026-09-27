@@ -1,4 +1,6 @@
 #[cfg(all(test, feature = "beanstalkd"))]
+mod answer_with_test;
+#[cfg(all(test, feature = "beanstalkd"))]
 mod common;
 #[cfg(all(test, feature = "beanstalkd"))]
 mod connection_bounds_test;
