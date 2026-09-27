@@ -599,8 +599,9 @@ involved; `spawn_with_llm_actions` records the address its own `UdpSocket` retur
 loop only logs a `recv_from` error and continues. The binary's second test, the client
 connect-refusal smoke, runs concurrently in the same process and binds ephemeral UDP sockets,
 which would explain the address being taken after RTP's socket went away, but not why the socket
-went away first. **Do not label this flaky.** Next step: make the smoke test print the RTP
-server's own log and status on this verdict, so the next occurrence says what closed the socket.
+went away first. **Do not label this flaky.** The smoke test now prints the last 40 status
+messages of any server it calls a liar or finds leaking, so the next occurrence carries RTP's own
+account of its socket; read that before theorising further.
 
 ## Archive — fixed items and recorded findings
 

@@ -185,7 +185,14 @@ struct Row {
     /// Set when the port survived `remove_server()`.
     port_leaked: bool,
     addr: Option<SocketAddr>,
+    /// The last [`STATUS_LINES_KEPT`] status messages the server itself emitted. Printed under
+    /// any row that fails the honesty check or leaks its port, so an intermittent verdict says
+    /// what the server reported rather than only what the probe saw (IMPROVEMENTS item 82).
+    status_log: Vec<String>,
 }
+
+/// How many of a server's own status messages a row keeps for its failure report.
+const STATUS_LINES_KEPT: usize = 40;
 
 /// Collapse a multi-line error into something a table cell can hold.
 fn one_line(s: &str) -> String {
@@ -328,6 +335,7 @@ async fn probe_protocol(
                 tasks: 0,
                 port_leaked: false,
                 addr: None,
+                status_log: Vec::new(),
             };
         }
     }
@@ -343,11 +351,22 @@ async fn probe_protocol(
     };
 
     let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    // Drain, so the unbounded channel does not grow and nothing blocks on a full queue.
-    let drain = tokio::spawn(async move {
-        let mut rx = status_rx;
-        while rx.recv().await.is_some() {}
-    });
+    // Drain, so the unbounded channel does not grow and nothing blocks on a full queue, keeping
+    // the most recent messages for the failure report.
+    let status_log = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let drain = {
+        let status_log = Arc::clone(&status_log);
+        tokio::spawn(async move {
+            let mut rx = status_rx;
+            while let Some(line) = rx.recv().await {
+                let mut log = status_log.lock().expect("status log");
+                if log.len() == STATUS_LINES_KEPT {
+                    log.pop_front();
+                }
+                log.push_back(line);
+            }
+        })
+    };
 
     let started = Instant::now();
 
@@ -388,6 +407,7 @@ async fn probe_protocol(
         tasks: 0,
         port_leaked: false,
         addr: None,
+        status_log: Vec::new(),
     };
 
     let server_id: Option<ServerId> = match outcome {
@@ -469,6 +489,12 @@ async fn probe_protocol(
     }
 
     drain.abort();
+    row.status_log = status_log
+        .lock()
+        .expect("status log")
+        .iter()
+        .cloned()
+        .collect();
     row
 }
 
@@ -517,6 +543,20 @@ fn render_report(rows: &[Row]) -> String {
             r.tasks,
             detail
         ));
+    }
+
+    for r in rows
+        .iter()
+        .filter(|r| r.verdict.is_failure() || r.port_leaked)
+    {
+        out.push_str(&format!(
+            "\n--- {}: the server's own last {} status message(s) ---\n",
+            r.protocol,
+            r.status_log.len()
+        ));
+        for line in &r.status_log {
+            out.push_str(&format!("  {}\n", one_line(line)));
+        }
     }
 
     let count = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count();
