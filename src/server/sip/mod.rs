@@ -461,10 +461,14 @@ impl SipServer {
                 event_type: &SIP_ACK_EVENT,
                 data: base_data,
             },
-            "OPTIONS" => Event {
-                event_type: &SIP_OPTIONS_EVENT,
-                data: base_data,
-            },
+            "OPTIONS" => {
+                let mut data = base_data;
+                data["answer_with"] = serde_json::json!(actions::OPTIONS_ANSWER_WITH);
+                Event {
+                    event_type: &SIP_OPTIONS_EVENT,
+                    data,
+                }
+            }
             "CANCEL" => Event {
                 event_type: &SIP_CANCEL_EVENT,
                 data: base_data,
@@ -505,7 +509,7 @@ impl SipServer {
         // (401, 403, 486) are unaffected because they name the field.
         let (status_code, default_reason) =
             match response_data.get("status_code").and_then(|v| v.as_u64()) {
-                Some(code) => (code as u16, "OK"),
+                Some(code) => (code as u16, actions::default_reason_phrase(code as u16)),
                 None => {
                     tracing::warn!(
                         "SIP action carried no status_code; answering 500 rather than defaulting \

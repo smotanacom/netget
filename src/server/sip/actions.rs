@@ -364,18 +364,107 @@ pub static SIP_ACK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+/// The reason phrase RFC 3261 section 21 gives a status code, used when an action names a
+/// code and no `reason_phrase`. A class's generic phrase stands in for a code the table does
+/// not list, so a 486 is never written "486 OK".
+pub fn default_reason_phrase(code: u16) -> &'static str {
+    match code {
+        100 => "Trying",
+        180 => "Ringing",
+        181 => "Call Is Being Forwarded",
+        182 => "Queued",
+        183 => "Session Progress",
+        200 => "OK",
+        202 => "Accepted",
+        300 => "Multiple Choices",
+        301 => "Moved Permanently",
+        302 => "Moved Temporarily",
+        305 => "Use Proxy",
+        380 => "Alternative Service",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        402 => "Payment Required",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
+        408 => "Request Timeout",
+        410 => "Gone",
+        413 => "Request Entity Too Large",
+        414 => "Request-URI Too Long",
+        415 => "Unsupported Media Type",
+        416 => "Unsupported URI Scheme",
+        420 => "Bad Extension",
+        421 => "Extension Required",
+        423 => "Interval Too Brief",
+        480 => "Temporarily Unavailable",
+        481 => "Call/Transaction Does Not Exist",
+        482 => "Loop Detected",
+        483 => "Too Many Hops",
+        484 => "Address Incomplete",
+        485 => "Ambiguous",
+        486 => "Busy Here",
+        487 => "Request Terminated",
+        488 => "Not Acceptable Here",
+        491 => "Request Pending",
+        493 => "Undecipherable",
+        500 => "Server Internal Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Server Time-out",
+        505 => "Version Not Supported",
+        513 => "Message Too Large",
+        600 => "Busy Everywhere",
+        603 => "Decline",
+        604 => "Does Not Exist Anywhere",
+        606 => "Not Acceptable",
+        100..=199 => "Session Progress",
+        200..=299 => "OK",
+        300..=399 => "Redirection",
+        400..=499 => "Request Failure",
+        500..=599 => "Server Failure",
+        _ => "Global Failure",
+    }
+}
+
+/// The `answer_with` field of `sip_options`.
+///
+/// The event used to say "answer with sip_options listing the methods you support", and the
+/// action's only example is a 200. Told "you are a SIP phone in do-not-disturb mode; tell
+/// anyone who checks on you that you are busy", llama3.1:8b answered sipsak's OPTIONS with 200
+/// OK five times in five. RFC 3261 section 11.2 makes the OPTIONS status the one an INVITE
+/// would get, so the request says so, with the codes that carry each situation.
+pub const OPTIONS_ANSWER_WITH: &str = "sip_options with the status an INVITE would get right \
+     now: status_code 200 if your instructions say this endpoint is available to take a call; \
+     486 (Busy Here) if they say it is busy, on another call or in do-not-disturb; 480 \
+     (Temporarily Unavailable) if they say it is offline or away; 603 (Decline) if it refuses \
+     every call";
+
 /// SIP OPTIONS event
 pub static SIP_OPTIONS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "sip_options",
-        "A client is querying this server's capabilities with OPTIONS. Answer with sip_options \
-         listing the methods you support.",
+        "A client is checking on this endpoint with OPTIONS - whether it is reachable and \
+         what it supports. RFC 3261 section 11.2: the status is the one an INVITE would get \
+         right now, so 200 only when the endpoint would take a call; answer_with says which \
+         code fits which situation.",
         json!({
             "type": "sip_options",
             "status_code": 200,
             "allow_methods": ["INVITE", "ACK", "BYE", "REGISTER", "OPTIONS"]
         }),
     )
+    .with_parameters(vec![Parameter {
+        name: "answer_with".to_string(),
+        type_hint: "string".to_string(),
+        description: "Which status this OPTIONS takes: the one an INVITE would get now - 200 \
+                      available, 486 busy or do-not-disturb, 480 offline. Present for an \
+                      OPTIONS request; absent for a method this server does not recognise"
+            .to_string(),
+        required: false,
+    }])
     .with_actions(vec![sip_options_action()])
     .with_log_template(
         LogTemplate::new()
@@ -538,13 +627,19 @@ fn sip_ack_action() -> ActionDefinition {
 fn sip_options_action() -> ActionDefinition {
     ActionDefinition {
         name: "sip_options".to_string(),
-        description: "Respond to SIP OPTIONS request".to_string(),
+        description: "Answer an OPTIONS request. Its status is the one an INVITE would get \
+                      right now (RFC 3261 section 11.2): 200 when this endpoint is available, \
+                      486 Busy Here when it is busy or in do-not-disturb, 480 Temporarily \
+                      Unavailable when it is offline, 600 Busy Everywhere or 603 Decline when \
+                      it refuses every call."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "status_code".to_string(),
                 type_hint: "number".to_string(),
-                description: "SIP status code; 200 answers the capability query. Required - an \
-                              action with no status_code is answered 500, not 200"
+                description: "SIP status code: 200 available, 486 busy / do-not-disturb, 480 \
+                              unavailable, 603 decline. Required - an action with no \
+                              status_code is answered 500, not 200"
                     .to_string(),
                 required: true,
             },

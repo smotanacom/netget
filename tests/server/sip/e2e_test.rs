@@ -141,6 +141,8 @@ ACKNOWLEDGMENT (ACK method):
                 .and()
                 // Mock 5: OPTIONS -> advertise supported methods
                 .on_event("sip_options")
+                // Matches only when the event says which status fits which situation.
+                .and_event_data_contains("answer_with", "486 (Busy Here)")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "sip_options",
@@ -159,11 +161,12 @@ ACKNOWLEDGMENT (ACK method):
                 ]))
                 .expect_calls(1)
                 .and()
-                // Mock 7: INVITE bob->alice -> busy
+                // Mock 7: INVITE bob->alice -> busy. No reason_phrase: the status line must
+                // carry RFC 3261's own phrase for the code, not "OK".
                 .on_event("sip_invite")
                 .and_event_data_contains("from", "bob")
                 .respond_with_actions(serde_json::json!([
-                    {"type": "sip_invite", "status_code": 486, "reason_phrase": "Busy Here"}
+                    {"type": "sip_invite", "status_code": 486}
                 ]))
                 .expect_calls(1)
                 .and()
@@ -279,8 +282,8 @@ ACKNOWLEDGMENT (ACK method):
     let response = sip_exchange(&client, server_addr, &invite_bob_to_alice).await?;
     println!("Response:\n{}", response);
     assert!(
-        response.contains("SIP/2.0 486") || response.contains("Busy"),
-        "Expected 486 Busy Here for bob→alice"
+        response.starts_with("SIP/2.0 486 Busy Here\r\n"),
+        "Expected 486 Busy Here (the default phrase for 486) for bob→alice"
     );
     println!("✓ bob→alice INVITE rejected as expected");
 
