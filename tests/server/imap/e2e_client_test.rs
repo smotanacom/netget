@@ -604,20 +604,15 @@ mod e2e_imap_client {
                     .and_instruction_containing("imap")
                     .respond_with_actions(serde_json::json!([{"type": "open_server", "port": 0, "base_stack": "IMAP", "instruction": "IMAP server"}]))
                     .expect_calls(1).and()
+                    // The greeting's capability code is the list; NetGet answers the
+                    // CAPABILITY command from it, so there is no CAPABILITY rule here.
                     .on_event("imap_connection")
-                    .respond_with_actions(serde_json::json!([{"type": "send_imap_response", "response": "* OK Server"}]))
+                    .respond_with_actions(serde_json::json!([{"type": "send_imap_response", "response": "* OK [CAPABILITY IMAP4rev1 IDLE NAMESPACE] Server"}]))
                     .expect_calls(1).and()
                     .on_event("imap_auth")
                     .respond_with_actions_from_event(|event_data| {
                         let tag = event_data["tag"].as_str().unwrap_or("A001");
                         serde_json::json!([{"type": "send_imap_response", "tag": tag, "status": "OK", "message": "LOGIN completed"}])
-                    })
-                    .expect_calls(1).and()
-                    .on_event("imap_command")
-                    .and_event_data_contains("command", "CAPABILITY")
-                    .respond_with_actions_from_event(|event_data| {
-                        let tag = event_data["tag"].as_str().unwrap_or("A002");
-                        serde_json::json!([{"type": "send_imap_response", "response": format!("* CAPABILITY IMAP4rev1 IDLE NAMESPACE\r\n{} OK CAPABILITY", tag)}])
                     })
                     .expect_calls(1).and()
                     .on_event("imap_command")
@@ -657,6 +652,10 @@ mod e2e_imap_client {
         assert!(
             caps.has_str("IMAP4rev1") || caps.has_str("IMAP4REV1"),
             "Server should support IMAP4rev1"
+        );
+        assert!(
+            caps.has_str("IDLE") && caps.has_str("NAMESPACE"),
+            "the CAPABILITY answer repeats the greeting's list"
         );
         println!("  [TEST] ✓ CAPABILITY command successful");
 

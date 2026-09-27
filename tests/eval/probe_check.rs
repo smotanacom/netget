@@ -472,8 +472,9 @@ async fn pop3_message_subject_waits_for_the_model() -> E2EResult<()> {
 // imap — imaplib
 // ---------------------------------------------------------------------------
 
-/// Greeting, LOGIN, and one rule for `imap_command` branching on the command:
-/// imaplib issues CAPABILITY on its own before LOGIN, then the command under test.
+/// Greeting, LOGIN, and one rule for `imap_command` branching on the command.
+/// imaplib issues CAPABILITY on its own before LOGIN; NetGet answers it from the
+/// greeting's list, so the model sees only the command under test.
 #[cfg(feature = "imap")]
 fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
     mock.on_event("imap_connection")
@@ -504,11 +505,6 @@ fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
                 .unwrap_or_default()
                 .to_ascii_uppercase();
             match command.as_str() {
-                "CAPABILITY" => serde_json::json!([
-                    {"type": "send_imap_capability", "capabilities": ["IMAP4rev1"]},
-                    {"type": "send_imap_response", "tag": tag, "status": "OK",
-                     "message": "CAPABILITY completed"}
-                ]),
                 "LIST" => serde_json::json!([
                     {"type": "send_imap_list", "mailboxes": [
                         {"name": "INBOX", "delimiter": "/", "flags": []},
@@ -531,7 +527,7 @@ fn answer_imap(mock: MockLlmBuilder) -> MockLlmBuilder {
             }
         })
         .after_delay(MODEL_LATENCY)
-        .expect_calls(2)
+        .expect_calls(1)
         .and()
 }
 

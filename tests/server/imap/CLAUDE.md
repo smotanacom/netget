@@ -9,7 +9,8 @@ third-party clients**, which are where the maturity rating actually rests:
 | file | peer | what only it covers |
 |---|---|---|
 | `e2e_client_test.rs` | `async-imap` 0.11 (Rust) | LIST, EXAMINE, STATUS, NOOP, concurrent sessions, LOGIN failure |
-| `real_client_test.rs` | python3 stdlib `imaplib` | the literal **byte** count, the `CAPABILITY` command, `select()`'s `EXISTS` return |
+| `real_client_test.rs` | python3 stdlib `imaplib` | the literal **byte** count, NetGet's answer to the `CAPABILITY` command, `select()`'s `EXISTS` return |
+| `answer_with_test.rs` | hand-written TCP | `CAPABILITY` answered by NetGet, `answer_with` on LOGIN/SELECT, nothing after a tagged completion |
 | `test.rs` | hand-written TCP | the command/response shapes, trimmed |
 
 ## `real_client_test.rs` — the second client
@@ -33,10 +34,10 @@ Three things it reaches that nothing else here does:
 - **The literal byte count.** The fetched body carries `ü`, `ß` and an em dash, so its byte
   length (146) and character length (142) differ. `imaplib` reads *exactly* `n` bytes and then
   resumes line parsing, so a `{n}` counted in characters desynchronises the connection.
-- **`CAPABILITY` the command**, not the greeting's `[CAPABILITY ...]` code. `imaplib.__init__`
-  issues a real one and refuses to proceed without `IMAP4REV1`. The mock answers the command
-  with a strict superset of the greeting (it adds `NAMESPACE`), so the assertion can tell the
-  two apart.
+- **`CAPABILITY` the command.** `imaplib.__init__` issues a real one and refuses to proceed
+  without `IMAP4REV1`. NetGet answers it from the greeting's capability list, and the greeting
+  in this test deliberately carries no `[CAPABILITY ...]` code, so the `["IMAP4REV1"]` imaplib
+  ends up with can only have come from NetGet's answer to the command.
 - **`select()`'s return value**, which is `untagged_responses.get('EXISTS', [None])` — the
   count, not the tagged line.
 
@@ -61,7 +62,8 @@ would have passed against both broken servers.
 ## LLM Call Budget
 
 - `test_imap_greeting()`: 1 startup call (greeting)
-- `test_imap_capability()`: 1 startup call + 1 CAPABILITY command
+- `test_imap_capability()`: 1 startup call + the greeting. `CAPABILITY` is answered by NetGet
+  from the greeting's list, which the test asserts exactly
 - `test_imap_login()`: 1 startup call + 1 LOGIN command
 - `test_imap_login_failure()`: 1 startup call + 1 LOGIN command
 - `test_imap_select_mailbox()`: 1 startup call + 2 commands (LOGIN, SELECT)
@@ -71,9 +73,32 @@ would have passed against both broken servers.
 - `test_imap_logout()`: 1 startup call + 1 LOGOUT command
 - `test_imap_noop()`: 1 startup call + 2 commands (LOGIN, NOOP)
 - `test_imap_status()`: 1 startup call + 2 commands (LOGIN, STATUS)
-- `imaplib_completes_a_session_against_the_imap_server()`: 1 startup + 1 greeting + 1
-  CAPABILITY + 1 LOGIN + SELECT/SEARCH/FETCH/LOGOUT = **8**
-- **Total: 40 LLM calls** (12 startups + 28 command calls)
+- `imaplib_completes_a_session_against_the_imap_server()`: 1 startup + 1 greeting + 1 LOGIN +
+  SELECT/SEARCH/FETCH/LOGOUT = **7** (`CAPABILITY` is NetGet's)
+- `capability_is_netgets_and_each_command_gets_one_answer()` (`answer_with_test.rs`): 1 startup
+  + greeting + LOGIN + SELECT = **4**
+- **Total: 42 LLM calls** (13 startups + 29 command calls)
+
+## `answer_with_test.rs`
+
+Pins what the real-model eval's two IMAP zeros needed, from the wire:
+
+- the greeting lists `IDLE` without `IMAP4rev1`; NetGet puts `IMAP4rev1` first, and answers
+  `a1 CAPABILITY` and `a4 CAPABILITY` with that list and no model call (there is no rule for it);
+- `LOGIN` and `SELECT` rules match only on `answer_with`, so a missing hint is an unmatched
+  event;
+- `LOGIN` is answered with two tagged completions, and `SELECT` with a completion *before* the
+  select block, a second completion and the block again; `SELECT` must read one block and its
+  completion last, and the next command its own answer, never the stale completion;
+- `decision=duplicate_response_dropped` and `decision=netget_answer` are in the log.
+
+A second test, `a_tagged_response_without_text_still_has_text`, drives the executor directly:
+`send_imap_response` with no `message` renders `a1 OK completed` (RFC 3501 `resp-text` is
+required; imaplib aborts on `a1 OK`). Verified by putting the empty text back.
+
+Verified by removing each drop - the `LOGIN` one and the per-command one - and watching the
+stale completion reach the next command, by writing the completion before the untagged data
+(SELECT ends before its `EXISTS`), and by removing the repeated-block drop (two `EXISTS`).
 
 ## Scripting Usage
 

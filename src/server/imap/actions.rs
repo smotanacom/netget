@@ -139,16 +139,20 @@ impl ImapProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("localhost");
 
-        let capabilities = action
-            .get("capabilities")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_else(|| "IMAP4rev1".to_string());
+        // IMAP4rev1 is always first: RFC 3501 6.1.1 requires it, and this list is also what
+        // NetGet answers the CAPABILITY command with (`super::greeting_capabilities`).
+        let capabilities = super::with_imap4rev1(
+            &action
+                .get("capabilities")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default(),
+        );
 
         debug!(
             "IMAP sending greeting: hostname={}, capabilities={}",
@@ -192,7 +196,14 @@ impl ImapProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'status' field in send_imap_response: a tagged response must say OK, NO or BAD explicitly")?;
 
-        let message = action.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        // RFC 3501 9 (`resp-text`): the text after the status is at least one character, so
+        // `a1 OK` alone is not a response - imaplib rejects it ("unexpected response") and
+        // aborts the session. A model that leaves `message` out gets a neutral text instead.
+        let message = action
+            .get("message")
+            .and_then(|v| v.as_str())
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or("completed");
 
         let code = action.get("code").and_then(|v| v.as_str());
 
@@ -203,10 +214,8 @@ impl ImapProtocol {
 
         let response = if let Some(code) = code {
             format!("{} {} [{}] {}\r\n", tag, status, code, message)
-        } else if !message.is_empty() {
-            format!("{} {} {}\r\n", tag, status, message)
         } else {
-            format!("{} {}\r\n", tag, status)
+            format!("{} {} {}\r\n", tag, status, message)
         };
 
         Ok(ActionResult::Output(response.into_bytes()))
@@ -231,24 +240,6 @@ impl ImapProtocol {
             format!("* {} {}\r\n", response_type, data)
         };
 
-        Ok(ActionResult::Output(response.into_bytes()))
-    }
-
-    fn execute_send_imap_capability(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let capabilities = action
-            .get("capabilities")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_else(|| "IMAP4rev1".to_string());
-
-        debug!("IMAP sending capability: {}", capabilities);
-
-        let response = format!("* CAPABILITY {}\r\n", capabilities);
         Ok(ActionResult::Output(response.into_bytes()))
     }
 
@@ -588,7 +579,6 @@ impl Protocol for ImapProtocol {
             send_imap_greeting_action(),
             send_imap_response_action(),
             send_imap_untagged_action(),
-            send_imap_capability_action(),
             send_imap_list_action(),
             send_imap_status_action(),
             send_imap_fetch_action(),
@@ -645,8 +635,9 @@ impl Protocol for ImapProtocol {
                  LOGOUT, asserted on what imaplib parsed. It adds three things async-imap does \
                  not reach here -- the literal BYTE count (the fetched body carries multi-byte \
                  UTF-8, so a `{n}` counted in characters desynchronises the connection), \
-                 imaplib's own CAPABILITY command as distinct from the greeting's capability \
-                 code, and select()'s return value, which is the untagged EXISTS count rather \
+                 that imaplib reads NetGet's answer to its own CAPABILITY command (the \
+                 greeting there carries no capability code, so it is the only source), and \
+                 select()'s return value, which is the untagged EXISTS count rather \
                  than the tagged completion. It FAILS rather than skips when python3 is absent, \
                  and imaplib needs no install of its own. \
                  Verified non-vacuous by breaking the server twice: `body.len()` made \
@@ -700,7 +691,7 @@ impl Protocol for ImapProtocol {
                     "handler": {
                         "type": "script",
                         "language": "python",
-                        "code": "# Handle IMAP commands\ntag = event.get('tag', 'A001')\ncmd = event.get('command', '').upper()\nif cmd == 'CAPABILITY':\n    respond([{'type': 'send_imap_capability', 'capabilities': ['IMAP4rev1']}, {'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'message': 'CAPABILITY completed'}])\nelif cmd == 'LOGIN':\n    respond([{'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'message': 'LOGIN completed'}])\nelif cmd == 'SELECT':\n    respond([{'type': 'send_imap_select', 'exists': 5, 'recent': 0}, {'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'code': 'READ-WRITE', 'message': 'SELECT completed'}])\nelse:\n    respond([{'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'message': 'Completed'}])"
+                        "code": "# Handle IMAP commands\ntag = event.get('tag', 'A001')\ncmd = event.get('command', '').upper()\nif cmd == 'LOGIN':\n    respond([{'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'message': 'LOGIN completed'}])\nelif cmd == 'SELECT':\n    respond([{'type': 'send_imap_select', 'exists': 5, 'recent': 0}, {'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'code': 'READ-WRITE', 'message': 'SELECT completed'}])\nelse:\n    respond([{'type': 'send_imap_response', 'tag': tag, 'status': 'OK', 'message': 'Completed'}])"
                     }
                 }]
             }),
@@ -757,7 +748,6 @@ impl Server for ImapProtocol {
             "send_imap_greeting" => self.execute_send_imap_greeting(action),
             "send_imap_response" => self.execute_send_imap_response(action),
             "send_imap_untagged" => self.execute_send_imap_untagged(action),
-            "send_imap_capability" => self.execute_send_imap_capability(action),
             "send_imap_list" => self.execute_send_imap_list(action),
             "send_imap_status" => self.execute_send_imap_status(action),
             "send_imap_fetch" => self.execute_send_imap_fetch(action),
@@ -799,7 +789,11 @@ impl Server for ImapProtocol {
 fn send_imap_greeting_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_imap_greeting".to_string(),
-        description: "Send IMAP server greeting with capabilities".to_string(),
+        description: "The untagged '* OK [CAPABILITY ...]' greeting, sent once when a client \
+                      connects. Its capability list is also NetGet's answer to the CAPABILITY \
+                      command, so list only what your instruction says the server supports; \
+                      IMAP4rev1 is always included."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "hostname".to_string(),
@@ -810,14 +804,15 @@ fn send_imap_greeting_action() -> ActionDefinition {
             Parameter {
                 name: "capabilities".to_string(),
                 type_hint: "array".to_string(),
-                description: "Server capabilities (default: [IMAP4rev1])".to_string(),
+                description: "Capabilities beyond IMAP4rev1, one per entry (default: none)"
+                    .to_string(),
                 required: false,
             },
         ],
         example: json!({
             "type": "send_imap_greeting",
             "hostname": "mail.example.com",
-            "capabilities": ["IMAP4rev1", "IDLE", "NAMESPACE"]
+            "capabilities": ["IMAP4rev1"]
         }),
         log_template: Some(
             LogTemplate::new()
@@ -877,8 +872,7 @@ fn send_imap_response_action() -> ActionDefinition {
             "type": "send_imap_response",
             "tag": "A001",
             "status": "OK",
-            "code": "READ-WRITE",
-            "message": "SELECT completed"
+            "message": "completed"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -920,34 +914,13 @@ fn send_imap_untagged_action() -> ActionDefinition {
     }
 }
 
-fn send_imap_capability_action() -> ActionDefinition {
-    ActionDefinition {
-        name: "send_imap_capability".to_string(),
-        description: "Send the UNTAGGED '* CAPABILITY ...' line. RFC 3501 6.1.1                       requires exactly this line in answer to a CAPABILITY command,                       with IMAP4rev1 among the capabilities listed. It does NOT                       complete the command: follow it with a send_imap_response                       carrying the client's own tag (e.g. tag 'a1' -> 'a1 OK                       CAPABILITY completed'), because a client reads until it sees                       its tag and blocks on untagged data alone."
-            .to_string(),
-        parameters: vec![Parameter {
-            name: "capabilities".to_string(),
-            type_hint: "array".to_string(),
-            description: "Capability names, one per array entry (not one space-joined                           string). IMAP4rev1 must be one of them."
-                .to_string(),
-            required: false,
-        }],
-        example: json!({
-            "type": "send_imap_capability",
-            "capabilities": ["IMAP4rev1", "IDLE", "NAMESPACE", "UIDPLUS"]
-        }),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("-> IMAP CAPABILITY")
-                .with_debug("IMAP send_imap_capability: {capabilities_len} caps"),
-        ),
-    }
-}
-
 fn send_imap_list_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_imap_list".to_string(),
-        description: "Send IMAP LIST response with mailbox list".to_string(),
+        description: "The answer to LIST: one '* LIST' line per mailbox the instruction \
+                      says exists, and no other. NetGet adds the tagged OK. The example's \
+                      mailbox names are placeholders; never send them."
+            .to_string(),
         parameters: vec![Parameter {
             name: "mailboxes".to_string(),
             type_hint: "array".to_string(),
@@ -958,12 +931,12 @@ fn send_imap_list_action() -> ActionDefinition {
             "type": "send_imap_list",
             "mailboxes": [
                 {
-                    "name": "INBOX",
+                    "name": "Example-Folder-A",
                     "delimiter": "/",
-                    "flags": ["\\HasNoChildren"]
+                    "flags": []
                 },
                 {
-                    "name": "Sent",
+                    "name": "Example-Folder-B",
                     "delimiter": "/",
                     "flags": []
                 }
@@ -1167,7 +1140,12 @@ fn send_imap_expunge_action() -> ActionDefinition {
 fn send_imap_select_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_imap_select".to_string(),
-        description: "Send IMAP SELECT/EXAMINE response with mailbox status".to_string(),
+        description: "The answer to SELECT/EXAMINE: the untagged block every client reads, \
+                      starting with '* <exists> EXISTS' - the mailbox's message count - then \
+                      RECENT, UIDVALIDITY, UIDNEXT, FLAGS and PERMANENTFLAGS. NetGet adds the \
+                      tagged OK. A bare tagged OK is not an answer to SELECT: without EXISTS the \
+                      client does not know how many messages there are."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "exists".to_string(),
@@ -1276,7 +1254,7 @@ pub static IMAP_CONNECTION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({
             "type": "send_imap_greeting",
             "hostname": "mail.example.com",
-            "capabilities": ["IMAP4rev1", "IDLE", "NAMESPACE"]
+            "capabilities": ["IMAP4rev1"]
         }),
     )
     .with_parameters(vec![])
@@ -1330,6 +1308,12 @@ pub static IMAP_AUTH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             description: "Password for authentication".to_string(),
             required: true,
         },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which action answers this LOGIN".to_string(),
+            required: false,
+        },
     ])
     .with_actions(vec![send_imap_response_action(), close_connection_action()])
     .with_log_template(
@@ -1343,10 +1327,11 @@ pub static IMAP_AUTH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static IMAP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "imap_command",
-        "IMAP command received from client (CAPABILITY, SELECT, LIST, FETCH, STORE, SEARCH, \
-         LOGOUT, ...). LOGIN is not delivered here - it raises imap_auth instead. Untagged \
-         responses come first, then exactly one tagged send_imap_response carrying the client's \
-         tag, which is what completes the command.",
+        "IMAP command received from client (SELECT, LIST, FETCH, STORE, SEARCH, LOGOUT, ...). \
+         LOGIN is not delivered here - it raises imap_auth instead - and CAPABILITY is answered \
+         by NetGet from the greeting's list. Untagged responses come first; the one tagged \
+         response carrying the client's tag completes the command, and NetGet adds it when you \
+         send only untagged data. answer_with names the action for this command.",
         json!([
             {"type": "send_imap_exists", "count": 5},
             {"type": "send_imap_response", "tag": "A002", "status": "OK", "code": "READ-WRITE", "message": "SELECT completed"}
@@ -1362,8 +1347,14 @@ pub static IMAP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "command".to_string(),
             type_hint: "string".to_string(),
-            description: "IMAP command (CAPABILITY, SELECT, LIST, FETCH, etc.)".to_string(),
+            description: "IMAP command (SELECT, LIST, FETCH, etc.)".to_string(),
             required: true,
+        },
+        Parameter {
+            name: "answer_with".to_string(),
+            type_hint: "string".to_string(),
+            description: "Which action answers this command, when its name says".to_string(),
+            required: false,
         },
         Parameter {
             name: "args".to_string(),
@@ -1399,7 +1390,6 @@ pub static IMAP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_actions(vec![
         send_imap_response_action(),
         send_imap_untagged_action(),
-        send_imap_capability_action(),
         send_imap_list_action(),
         send_imap_status_action(),
         send_imap_select_action(),
