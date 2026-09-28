@@ -61,6 +61,7 @@ features = [
     "xmlrpc",
     "zabbix",
     "gearman",
+    "nsq",
 ]
 
 # NOT here, and it is not an oversight: `usb-fido2` (and every other USB feature).
@@ -252,6 +253,13 @@ bench = false
 [[bin]]
 name = "gearman_packet"
 path = "fuzz_targets/gearman_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nsq_frame"
+path = "fuzz_targets/nsq_frame.rs"
 test = false
 doc = false
 bench = false

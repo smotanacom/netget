@@ -721,6 +721,45 @@ write("gearman_packet", "huge_declared_size", gearman(REQ, 7, declared=0xFFFFFFF
 # 65,536 NULs as a SUBMIT_JOB body: split_args splits only on the first two.
 write("gearman_packet", "nul_bomb", gearman(REQ, 7, b"\0" * 65536))
 
+# --- nsq: nsqd's TCP protocol (V2) -------------------------------------------
+def nsq_body(line, body, declared=None):
+    n = len(body) if declared is None else declared
+    return line + struct.pack(">I", n & 0xFFFFFFFF) + body
+
+
+def nsq_mpub(topic, *messages, count=None):
+    n = len(messages) if count is None else count
+    body = struct.pack(">I", n & 0xFFFFFFFF) + b"".join(
+        struct.pack(">I", len(m)) + m for m in messages)
+    return nsq_body(b"MPUB " + topic + b"\n", body)
+
+
+V2 = b"  V2"
+IDENTIFY = b'{"client_id":"fuzz","hostname":"fuzz","feature_negotiation":true,' \
+    b'"heartbeat_interval":30000,"user_agent":"go-nsq/1.1.0"}'
+# What go-nsq sends at connect, then a consumer's SUB and RDY.
+write("nsq_frame", "consumer_session", V2 + nsq_body(b"IDENTIFY\n", IDENTIFY)
+      + b"SUB orders workers#ephemeral\nRDY 200\n")
+write("nsq_frame", "pub", V2 + nsq_body(b"PUB orders\n", b"order 1 shipped"))
+write("nsq_frame", "dpub", nsq_body(b"DPUB orders 1500\n", b"later"))
+write("nsq_frame", "mpub", nsq_mpub(b"orders", b"a", b"bb", b"ccc"))
+write("nsq_frame", "fin_req_touch", b"FIN 0000000000000001\nREQ 0000000000000002 5000\n"
+      b"TOUCH 0000000000000003\nNOP\nCLS\r\n")
+write("nsq_frame", "auth", nsq_body(b"AUTH\n", b"secret"))
+# The server's frames, for parse_frame / parse_message.
+write("nsq_frame", "response_frame", struct.pack(">II", 6, 0) + b"OK")
+write("nsq_frame", "message_frame", struct.pack(">II", 4 + 26 + 5, 2)
+      + struct.pack(">qH", 1700000000000000000, 1) + b"0000000000000001" + b"hello")
+# Oversize declarations, refused from the size field alone.
+write("nsq_frame", "pub_declared_huge", nsq_body(b"PUB t\n", b"", declared=0x7FFFFFFF))
+write("nsq_frame", "pub_declared_negative", nsq_body(b"PUB t\n", b"", declared=0xFFFFFFFF))
+write("nsq_frame", "pub_one_past_the_limit", nsq_body(b"PUB t\n", b"", declared=1024 * 1024 + 1))
+write("nsq_frame", "mpub_declared_huge", nsq_body(b"MPUB t\n", b"", declared=5 * 1024 * 1024 + 1))
+write("nsq_frame", "mpub_count_bomb", nsq_mpub(b"t", b"x", count=0x7FFFFFFF))
+write("nsq_frame", "line_bomb", b"x" * 65536)
+# A JSON nesting bomb as the IDENTIFY body: serde_json's recursion limit (128) must refuse it.
+write("nsq_frame", "identify_depth_bomb", nsq_body(b"IDENTIFY\n", b"[" * 65536 + b"]" * 65536))
+
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
       (total, len(os.listdir(CORPUS))))
