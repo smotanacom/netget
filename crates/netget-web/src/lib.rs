@@ -304,6 +304,17 @@ impl NetGet {
         }
     }
 
+    /// The model NetGet names in every request and in the dashboard's status bar
+    /// (`llm: …`). The page calls it when it switches who answers; `set_models` should list
+    /// the name too, since `/model` validates against that list.
+    pub fn set_model(&self, name: &str) {
+        let state = self.inner.state.clone();
+        let name = name.to_string();
+        spawn_local(async move {
+            state.set_ollama_model(Some(name)).await;
+        });
+    }
+
     // ----- virtual network ----------------------------------------------------------------
 
     /// TCP ports with a server listening on the virtual network.
