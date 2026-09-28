@@ -283,7 +283,9 @@ impl NetGet {
     /// every action the prompt offers, with parameters and example — see
     /// `netget::llm::bridge::offered_action`) — and resolves to a JSON
     /// reply, as a string or an object: `{content?, tool_calls?: [{name, arguments}],
-    /// prompt_tokens?, completion_tokens?}` or `{error: "..."}`.
+    /// reasoning?, prompt_tokens?, completion_tokens?}` or `{error: "..."}`. `reasoning` is
+    /// the model's visible thinking; the dashboard shows it as the native backends' is shown,
+    /// and it is never parsed as part of the answer.
     pub fn set_llm_handler(&self, handler: Function) {
         *self.inner.llm_handler.borrow_mut() = Some(handler);
     }

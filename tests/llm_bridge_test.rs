@@ -84,6 +84,7 @@ async fn a_generate_request_carries_the_whole_prompt_and_its_text_answer_is_pars
                 tool_calls: vec![],
                 prompt_tokens: 3,
                 completion_tokens: 2,
+                reasoning: None,
             }))
             .expect("the client is waiting");
     });
@@ -125,6 +126,7 @@ async fn a_chat_request_with_native_tools_maps_the_hosts_tool_calls_to_actions()
                 }],
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                reasoning: None,
             }))
             .expect("the client is waiting");
     });
@@ -219,6 +221,194 @@ async fn an_empty_action_list_is_an_answer_not_a_failure() {
     // The conversation (and with it the client and the bridge sender) is gone, so the host
     // loop has ended and its count is final.
     assert_eq!(host.await.unwrap(), 1, "answered once, never retried");
+}
+
+/// Every `[REASONING] ` line waiting on a status channel, in order, each checked to be one the
+/// dashboard files as the model's reasoning (`route_status_line` is what the dashboard's own
+/// drain calls on every status line).
+fn reasoning_lines(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Vec<String> {
+    use netget::tui::chat::{route_status_line, EntryKind, Routed};
+    let mut lines = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        if let Some(rest) = line.strip_prefix("[REASONING] ") {
+            assert_eq!(
+                route_status_line(&line),
+                Routed::Chat(EntryKind::Reasoning, rest.to_string()),
+                "the dashboard does not file {line:?} as reasoning"
+            );
+            lines.push(rest.to_string());
+        }
+    }
+    lines
+}
+
+#[tokio::test]
+async fn a_reasoning_first_envelope_is_an_answer_and_its_reasoning_reaches_the_dashboard() {
+    // The page asks a model with no thinking of its own to open its envelope with a short
+    // `reasoning` string, so the reasoning streams before the actions. The parser must take
+    // that envelope as it takes `{"actions": [...]}`, in either key order.
+    for text in [
+        r#"{"reasoning": "They said hi.", "actions": [{"type": "send_tcp_data", "data": "HI"}]}"#,
+        r#"{"actions": [{"type": "send_tcp_data", "data": "HI"}], "reasoning": "They said hi."}"#,
+    ] {
+        let parsed = netget::llm::ActionResponse::from_str(text).expect("the envelope parses");
+        assert_eq!(parsed.actions.len(), 1, "{text}");
+        assert_eq!(parsed.actions[0]["type"], "send_tcp_data");
+        assert_eq!(parsed.actions[0]["data"], "HI");
+        assert!(parsed.tools.is_empty(), "{text}");
+    }
+
+    let (bridge, mut rx) = LlmBridge::new();
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5)).with_status_tx(status_tx);
+
+    // The host answers the first request with no reasoning (the control: nothing is forwarded
+    // that the host did not send) and the second with the envelope and its reasoning.
+    let host = tokio::spawn(async move {
+        let first = rx.recv().await.expect("first request");
+        first
+            .reply
+            .send(Ok(BridgeReply {
+                content: Some(
+                    r#"{"actions":[{"type":"send_tcp_data","data":"first"}]}"#.to_string(),
+                ),
+                ..Default::default()
+            }))
+            .expect("the client is waiting");
+        let second = rx.recv().await.expect("second request");
+        second
+            .reply
+            .send(Ok(BridgeReply {
+                content: Some(
+                    r#"{"reasoning":"The peer said hello, so I greet it.","actions":[{"type":"send_tcp_data","data":"HELLO BACK"}]}"#
+                        .to_string(),
+                ),
+                reasoning: Some(
+                    "The peer said hello, so I greet it.\nA greeting in capitals reads as friendly here."
+                        .to_string(),
+                ),
+                ..Default::default()
+            }))
+            .expect("the client is waiting");
+    });
+
+    let client = Arc::new(client);
+    let ask = |client: Arc<OllamaClient>| async move {
+        let mut conversation = ConversationHandler::new(
+            "system prompt under test".to_string(),
+            client,
+            "page-model".to_string(),
+            RateLimiter::new(RateLimiterConfig::default()),
+            RequestSource::Network,
+        );
+        conversation.add_user_message("hello from the peer".to_string());
+        conversation
+            .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
+            .await
+            .expect("the host's answer parses as actions")
+    };
+
+    let first = ask(client.clone()).await;
+    assert_eq!(first[0]["data"], "first");
+    assert_eq!(
+        reasoning_lines(&mut status_rx),
+        Vec::<String>::new(),
+        "reasoning was forwarded for a reply that carried none"
+    );
+
+    let second = ask(client.clone()).await;
+    host.await.unwrap();
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert_eq!(second[0]["type"], "send_tcp_data");
+    assert_eq!(second[0]["data"], "HELLO BACK");
+    assert!(
+        second[0].get("reasoning").is_none(),
+        "the reasoning leaked into the action: {second:?}"
+    );
+    assert_eq!(
+        reasoning_lines(&mut status_rx),
+        vec![
+            "The peer said hello, so I greet it.".to_string(),
+            "A greeting in capitals reads as friendly here.".to_string(),
+        ]
+    );
+}
+
+/// The browser's shape of the same thing: a server's network event is answered through the
+/// bridge with reasoning, and the reasoning arrives on the server's status channel — the one
+/// the dashboard drains — while the answer reaches the peer.
+#[cfg(feature = "tcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_network_events_reasoning_reaches_the_status_channel_the_dashboard_drains() {
+    use netget::cli::management::ServerForm;
+    use netget::state::app_state::AppState;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (bridge, mut rx) = LlmBridge::new();
+    bridge.set_models(vec!["page-model".to_string()]);
+    let state = AppState::new_with_options(false, "browser://model".to_string());
+    state.set_ollama_model(Some("page-model".to_string())).await;
+    state
+        .set_llm_client(OllamaClient::new_bridge(bridge, Duration::from_secs(30)))
+        .await;
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+    let id = ServerForm {
+        protocol: "tcp".to_string(),
+        port: Some(0),
+        instruction: Some("Answer whatever arrives.".to_string()),
+        ..Default::default()
+    }
+    .create(&state, status_tx)
+    .await
+    .expect("create tcp server");
+
+    let mut port = None;
+    for _ in 0..200 {
+        if let Some(addr) = state.get_server(id).await.and_then(|s| s.local_addr) {
+            port = Some(addr.port());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let port = port.expect("the tcp server binds a port");
+    let mut peer = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    peer.write_all(b"hello\n").await.expect("write");
+
+    let req = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        .await
+        .expect("the event reaches the bridge")
+        .expect("the bridge delivers the request");
+    req.reply
+        .send(Ok(BridgeReply {
+            content: Some(
+                json!({
+                    "reasoning": "A hello deserves one back.",
+                    "actions": [{"type": "send_tcp_data", "data": "hello yourself\n"}]
+                })
+                .to_string(),
+            ),
+            reasoning: Some("A hello deserves one back.".to_string()),
+            ..Default::default()
+        }))
+        .expect("the server is waiting");
+
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !String::from_utf8_lossy(&got).contains("hello yourself") {
+        let n = tokio::time::timeout_at(deadline, peer.read(&mut buf))
+            .await
+            .expect("the answer arrives")
+            .expect("read");
+        assert!(n > 0, "closed before the answer");
+        got.extend_from_slice(&buf[..n]);
+    }
+    // The reasoning was forwarded before the answer was executed, so it is waiting now.
+    let lines = reasoning_lines(&mut status_rx);
+    assert_eq!(lines, vec!["A hello deserves one back.".to_string()]);
+    let _ = state.remove_server(id).await;
 }
 
 /// The path that matters for the demo page: a real TCP server, a real peer, and the request
