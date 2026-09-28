@@ -14,20 +14,29 @@
 //      built-in model (the Prompt API: Gemini Nano in Chrome, Phi-4-mini in Edge) where it
 //      has one, and the WebLLM models on the GPU. Until the chosen model is ready, whoever
 //      answered before keeps answering, and at first that is the visitor, through
-//      ./composer.js.
+//      ./composer.js. While a model answers, the LLM panel shows what it writes as it
+//      writes it: a model that reasons natively (Qwen3) shows its thinking in a "Thinking…"
+//      block (./thinking.js splits it out) and then its answer; every other model shows only
+//      its answer.
 //
 // The wasm bundle is built by ./web/build.sh into site/demo/pkg/.
 
 import { mountComposer, offeredActions, entriesFromEnvelope, buildReply } from './composer.js';
+import { splitThinking } from './thinking.js';
 
 const PKG = '../demo/pkg/netget_web.js';
 const WEBLLM_URL = 'https://esm.run/@mlc-ai/web-llm@0.2.85';
 
-// WebLLM's prebuilt model ids, the name the page shows, and roughly what the download is.
+// WebLLM's prebuilt model ids, the name the page shows, and roughly what the download is
+// (the weights' total in each model's ndarray-cache.json on Hugging Face; WebLLM 0.2.85's
+// prebuilt config gives only the VRAM, which is larger: 2.0 GB for Qwen3 1.7B, 3.4 GB for
+// Qwen3 4B). `thinks`: the model reasons in a `<think>` block before it answers.
 const WEBLLM_MODELS = [
     { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', name: 'Qwen2.5 1.5B', size: '~1 GB' },
+    { id: 'Qwen3-1.7B-q4f16_1-MLC', name: 'Qwen3 1.7B', size: '~1 GB', thinks: true },
     { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', name: 'Llama 3.2 3B', size: '~2 GB' },
     { id: 'Qwen2.5-3B-Instruct-q4f16_1-MLC', name: 'Qwen2.5 3B', size: '~2 GB' },
+    { id: 'Qwen3-4B-q4f16_1-MLC', name: 'Qwen3 4B', size: '~2.3 GB', thinks: true },
     { id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC', name: 'Hermes 3 8B', size: '~5 GB' },
 ];
 
@@ -245,8 +254,9 @@ function selectedModel() { return modelById(app.selected); }
 
 function optionLabel(m) {
     if (m.kind === BUILTIN) return `${m.name} (built into ${m.where})`;
-    if (m.state === 'unsupported') return `${m.name} · WebLLM · needs WebGPU`;
-    return `${m.name} · WebLLM · ${m.cached ? 'downloaded' : m.size + ' download'}`;
+    const kind = m.thinks ? 'WebLLM · thinks' : 'WebLLM';
+    if (m.state === 'unsupported') return `${m.name} · ${kind} · needs WebGPU`;
+    return `${m.name} · ${kind} · ${m.cached ? 'downloaded' : m.size + ' download'}`;
 }
 
 function setProgress(fraction) {
@@ -574,11 +584,13 @@ function pump() {
     dispatch(app.current);
 }
 
-function finish(entry, reply) {
+// `keep`: leave the answered request on screen (a model's answer, with any thinking folded
+// away) until the next one replaces it, rather than going idle at once.
+function finish(entry, reply, { keep = false } = {}) {
     if (app.current !== entry) return;
     entry.resolve(JSON.stringify(reply));
     app.current = null;
-    renderIdle();
+    if (!keep) renderIdle();
     pump();
 }
 
@@ -639,22 +651,84 @@ function answerManually(entry, note = '') {
 
 // --- a model -------------------------------------------------------------------------------
 
+// The model's output as it is written, in fixed-height blocks that follow the newest line: for
+// a model that reasons natively a "Thinking…" block with its think text, which folds to one
+// line ("Thought for 3.2 s ▸", which opens it again) once the answer is done; then the answer.
+// A model with no thinking of its own shows the answer alone.
+function liveView(root, model) {
+    const thinks = !!model.thinks;
+    root.insertAdjacentHTML('beforeend', (thinks ? `<div class="llm-think" hidden>
+        <button type="button" class="llm-think-head" aria-expanded="true">
+          <span class="llm-think-label">Thinking…</span><span class="llm-think-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="llm-think-body"></div>
+      </div>` : '') + `<div class="llm-answer" hidden>
+        <div class="llm-answer-label">Answer</div>
+        <pre class="llm-answer-body"></pre>
+      </div>`);
+    const think = $('.llm-think', root);
+    const body = $('.llm-think-body', root);
+    const answer = $('.llm-answer', root);
+    const answerBody = $('.llm-answer-body', root);
+    const started = performance.now();
+    let text = '';
+    let thoughtMs = null;
+    const setOpen = (open) => {
+        think.classList.toggle('is-collapsed', !open);
+        $('.llm-think-head', root).setAttribute('aria-expanded', String(open));
+        $('.llm-think-caret', root).textContent = open ? '▾' : '▸';
+        if (open) body.scrollTop = body.scrollHeight;
+    };
+    if (think) $('.llm-think-head', root).addEventListener('click', () => setOpen(think.classList.contains('is-collapsed')));
+    const render = (final) => {
+        const split = splitThinking(text, { thinks, final });
+        if (think && split.thinking) {
+            think.hidden = false;
+            if (body.textContent !== split.thinking) {
+                body.textContent = split.thinking;
+                body.scrollTop = body.scrollHeight;
+            }
+        }
+        if (split.thinkingDone && thoughtMs === null) thoughtMs = performance.now() - started;
+        const shown = split.answer.trim();
+        if (shown) {
+            answer.hidden = false;
+            if (answerBody.textContent !== shown) {
+                answerBody.textContent = shown;
+                answerBody.scrollTop = answerBody.scrollHeight;
+            }
+        }
+    };
+    return {
+        // `full`: everything written so far (not a delta).
+        update(full) { text = String(full ?? ''); render(false); },
+        done() {
+            render(true);
+            if (!think) return;
+            $('.llm-think-label', root).textContent = `Thought for ${((thoughtMs ?? performance.now() - started) / 1000).toFixed(1)} s`;
+            think.classList.add('is-done');
+            setOpen(false);
+        },
+    };
+}
+
 async function answerWithModel(entry) {
     const model = app.active;
     const who = model.name;
     const { event, detail } = describe(entry.req);
     const root = $('#llm-current');
     root.innerHTML = headHtml(entry, 'the model is answering')
-        + `<div class="llm-working"><span>${escapeHtml(who)} is answering <code>${escapeHtml(event)}</code>${detail ? ` for “${escapeHtml(detail.length > 60 ? detail.slice(0, 59) + '…' : detail)}”` : ''}<span class="llm-progress-text"></span></span></div>`;
+        + `<div class="llm-working"><span>${escapeHtml(who)} is answering <code>${escapeHtml(event)}</code>${detail ? ` for “${escapeHtml(detail.length > 60 ? detail.slice(0, 59) + '…' : detail)}”` : ''}</span></div>`;
     renderQueueCount();
-    const progress = (text) => { const el = $('.llm-progress-text', root); if (el) el.textContent = text; };
+    const view = liveView(root, model);
+    const started = performance.now();
     let reply;
     const engine = model.kind === BUILTIN ? null : model.engine;
     if (engine) engine.__busy = (engine.__busy || 0) + 1;
     try {
         reply = model.kind === BUILTIN
-            ? await answerWithBuiltin(entry.req, model.session)
-            : await answerWithWebLlm(entry.req, engine, progress);
+            ? await answerWithBuiltin(entry.req, model.session, view.update)
+            : await answerWithWebLlm(entry.req, engine, model, view.update);
     } catch (e) {
         console.warn('the model could not answer; the visitor answers this one', e);
         if (app.current === entry) answerManually(entry, `${who} could not answer this one (${e && e.message || e}), so it is yours.`);
@@ -665,7 +739,12 @@ async function answerWithModel(entry) {
             if (!engine.__busy && engine.__retire) engine.unload?.();
         }
     }
-    finish(entry, reply);
+    if (app.current !== entry) return;
+    view.done();
+    $('.llm-working', root)?.remove();
+    const state = $('.llm-state', root);
+    if (state) state.textContent = `answered in ${((performance.now() - started) / 1000).toFixed(1)} s`;
+    finish(entry, reply, { keep: true });
 }
 
 // --- the built-in model (the Prompt API) --------------------------------------------------
@@ -718,7 +797,37 @@ function replyFromText(req, actions, text) {
     return built.reply;
 }
 
-async function answerWithBuiltin(req, base) {
+// The Prompt API's answer to `input`, streamed: `onText` gets everything written so far after
+// every chunk. Chrome's promptStreaming() yields deltas; early versions yielded the whole text
+// so far each time, which is recognised (a chunk that extends what came before replaces it).
+// A session without promptStreaming() answers in one piece through prompt().
+async function streamPrompt(session, input, options, onText) {
+    if (typeof session.promptStreaming !== 'function') {
+        const text = await session.prompt(input, options);
+        onText(text);
+        return text;
+    }
+    const stream = await session.promptStreaming(input, options);
+    let text = '';
+    const take = (chunk) => {
+        const piece = String(chunk ?? '');
+        text = text && piece.length >= text.length && piece.startsWith(text) ? piece : text + piece;
+        onText(text);
+    };
+    if (stream && typeof stream[Symbol.asyncIterator] === 'function') {
+        for await (const chunk of stream) take(chunk);
+    } else {
+        const reader = stream.getReader();
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            take(value);
+        }
+    }
+    return text;
+}
+
+async function answerWithBuiltin(req, base, onText) {
     if (!base) throw new Error('the model is not loaded');
     const roles = new Set(['system', 'user', 'assistant']);
     const messages = req.messages.map((m) => ({ role: roles.has(m.role) ? m.role : 'user', content: String(m.content ?? '') }));
@@ -730,13 +839,13 @@ async function answerWithBuiltin(req, base) {
     try {
         const actions = offeredActions(req);
         if (!actions.length) {
-            return { content: await session.prompt(last.content) };
+            return { content: await streamPrompt(session, last.content, undefined, onText) };
         }
-        const text = await session.prompt(last.content, {
+        const text = await streamPrompt(session, last.content, {
             responseConstraint: responseConstraint(actions),
             // The prompt already describes the envelope and every action.
             omitResponseConstraintInput: true,
-        });
+        }, onText);
         return replyFromText(req, actions, text);
     } finally {
         session.destroy?.();
@@ -775,12 +884,25 @@ function safeJson(v) {
     try { return JSON.parse(v); } catch (e) { return { raw: v }; }
 }
 
-// The reply goes back as the model wrote it; NetGet's own parser, repair and retry take it
-// from there, as they would for Ollama.
-async function answerWithWebLlm(req, engine, progress) {
+// The reply goes back as the model wrote it, less a thinking model's `<think>` block: that is
+// cut off (NetGet's own parser, repair and retry take the rest from there, as they would for
+// Ollama) and goes as the reply's `reasoning`, which the dashboard shows as it shows an Ollama
+// model's thinking. `onText` gets everything written so far after every streamed chunk.
+async function answerWithWebLlm(req, engine, model, onText) {
     const messages = req.messages.map((m) => ({ role: m.role, content: m.content }));
     const hasTools = req.tools && req.tools.length;
-    const base = { messages, temperature: 0.2, max_tokens: 1024 };
+    const thinks = !!model.thinks;
+    // Qwen's own sampling advice for thinking mode is 0.6 (greedy decoding makes it repeat
+    // itself), and its thinking comes out of max_tokens. `enable_thinking` is WebLLM 0.2.85's
+    // toggle: true (its default, stated here) lets the model think; false would prefill an
+    // empty `<think></think>` so it answers at once, which splitThinking also handles.
+    const base = thinks
+        ? { messages, temperature: 0.6, top_p: 0.95, max_tokens: 2048, extra_body: { enable_thinking: true } }
+        : { messages, temperature: 0.2, max_tokens: 1024 };
+    const asked = (text) => {
+        const split = splitThinking(text, { thinks, final: true });
+        return { split, reasoning: split.thinking || undefined };
+    };
 
     if (hasTools) {
         // Native function calling first (Hermes / Llama 3.1 builds support it); any model
@@ -790,8 +912,11 @@ async function answerWithWebLlm(req, engine, progress) {
                 tools: req.tools, tool_choice: 'auto',
             }));
             const msg = res.choices[0].message;
+            onText(msg.content || '');
+            const { split, reasoning } = asked(msg.content || '');
             return {
-                content: msg.content || null,
+                content: split.answer || null,
+                reasoning,
                 tool_calls: (msg.tool_calls || []).map((c) => ({
                     id: c.id, name: c.function.name,
                     arguments: safeJson(c.function.arguments),
@@ -813,12 +938,13 @@ async function answerWithWebLlm(req, engine, progress) {
     let usage = null;
     for await (const chunk of stream) {
         const delta = chunk.choices?.[0]?.delta?.content;
-        if (delta) { text += delta; progress(` · ${text.length} characters so far`); }
+        if (delta) { text += delta; onText(text); }
         if (chunk.usage) usage = chunk.usage;
     }
-    const reply = { content: text, prompt_tokens: usage?.prompt_tokens || 0, completion_tokens: usage?.completion_tokens || 0 };
+    const { split, reasoning } = asked(text);
+    const reply = { content: split.answer, reasoning, prompt_tokens: usage?.prompt_tokens || 0, completion_tokens: usage?.completion_tokens || 0 };
     if (hasTools) {
-        const calls = parseToolCallsFromText(text);
+        const calls = parseToolCallsFromText(split.answer);
         if (calls) { reply.tool_calls = calls; reply.content = null; }
     }
     return reply;
