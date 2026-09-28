@@ -58,6 +58,7 @@ portable-base = [
     "beanstalkd",
     "zabbix",
     "gearman",
+    "nsq",
     "gemini",
     "finger",
     "ssdp",
@@ -142,6 +143,7 @@ portable-base = [
     "kubernetes",
     "kubernetes-server",
     "prometheus",
+    "otlp",
     "docker",
     "vault",
     "bolt",
@@ -223,6 +225,7 @@ dict = []  # DICT (RFC 2229) dictionary server - hand-rolled line protocol, no e
 beanstalkd = []  # Beanstalkd work-queue server - hand-rolled text protocol, no extra deps
 zabbix = []  # Zabbix trapper (zabbix_sender) - hand-rolled ZBXD framing, serde_json only
 gearman = []  # Gearman job server - hand-rolled binary + admin protocols, no extra deps
+nsq = []  # NSQ broker (nsqd TCP protocol V2) - hand-rolled framing, serde_json only
 gopher = []  # Gopher (RFC 1436) menu/document server - hand-rolled, no extra deps
 finger = []  # Finger (RFC 1288) user information server - hand-rolled, no extra deps
 ssdp = []  # SSDP/UPnP discovery (HTTPU over UDP multicast) - hand-rolled, no extra deps
@@ -346,6 +349,7 @@ kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client 
 # HTTP stack and rustls for the optional TLS listener. Pure Rust, no system library.
 kubernetes-server = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
 prometheus = []  # Prometheus exporter (/metrics) - hyper only, exposition rendered by NetGet
+otlp = ["dep:opentelemetry-proto", "dep:prost", "dep:flate2"]  # OTLP/HTTP receiver - opentelemetry-proto message types (prost), gzip via flate2
 docker = ["urlencoding"]  # Docker Engine API (read-only) - hyper only, documents rendered by NetGet
 vault = []  # HashiCorp Vault KV v2 - hyper only, envelope rendered by NetGet; the model holds the secrets
 bolt = []  # Neo4j's Bolt protocol (graph database) - hand-written PackStream + chunking, no extra deps
@@ -461,6 +465,7 @@ dist-windows = [
     "beanstalkd",
     "zabbix",
     "gearman",
+    "nsq",
     "gemini",
     "finger",
     "ssdp",
@@ -539,6 +544,7 @@ dist-windows = [
     "kubernetes",
     "kubernetes-server",
     "prometheus",
+    "otlp",
     "docker",
     "vault",
     "bolt",
@@ -601,6 +607,7 @@ all-protocols = [
     "beanstalkd",
     "zabbix",
     "gearman",
+    "nsq",
     "gemini",
     "finger",
     "ssdp",
@@ -689,6 +696,7 @@ all-protocols = [
     "kubernetes",
     "kubernetes-server",
     "prometheus",
+    "otlp",
     "docker",
     "vault",
     "bolt",
@@ -969,6 +977,10 @@ xmlrpc = { version = "0.15", optional = true }  # XML-RPC client library
 
 # SAML client (compression for HTTP-Redirect binding)
 flate2 = { version = "1.0", optional = true }
+
+# OTLP/HTTP receiver: the OpenTelemetry project's generated protobuf message types, without
+# tonic's transport or the serde layer (JSON is walked as serde_json::Value instead)
+opentelemetry-proto = { version = "0.30", optional = true, default-features = false, features = ["gen-tonic-messages", "trace", "metrics", "logs"] }
 
 # Tor directory mirror (Tor protocol parsing and generation)
 tor-netdoc = { version = "0.36", optional = true }  # Tor network document parsing (consensus, descriptors)

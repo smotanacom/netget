@@ -343,6 +343,12 @@ pub mod gearman;
 pub use gearman::actions::GearmanProtocol;
 #[cfg(feature = "gearman")]
 pub use gearman::GearmanServer;
+#[cfg(feature = "nsq")]
+pub mod nsq;
+#[cfg(feature = "nsq")]
+pub use nsq::actions::NsqProtocol;
+#[cfg(feature = "nsq")]
+pub use nsq::NsqServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]
@@ -791,6 +797,12 @@ pub mod prometheus;
 pub use prometheus::actions::PrometheusProtocol;
 #[cfg(feature = "prometheus")]
 pub use prometheus::PrometheusServer;
+#[cfg(feature = "otlp")]
+pub mod otlp;
+#[cfg(feature = "otlp")]
+pub use otlp::actions::OtlpProtocol;
+#[cfg(feature = "otlp")]
+pub use otlp::OtlpServer;
 
 #[cfg(feature = "docker")]
 pub mod docker;

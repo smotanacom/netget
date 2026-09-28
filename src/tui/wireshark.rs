@@ -241,6 +241,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // Gearman (TCP 4730). `gearman` is Wireshark's own dissector for the binary packet
         // protocol (`tshark -G protocols` lists it; checked with `-d tcp.port==4730,gearman`).
         "gearman" => tcp("gearman"),
+        // NSQ (TCP 4150) has no dissector in this Wireshark build: `tshark -G protocols` lists
+        // nothing matching nsq. Plain TCP; its commands are text lines and "Follow TCP Stream"
+        // reads them, with the size-prefixed frames in between.
+        "nsq" => PLAIN_TCP,
         // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
@@ -262,6 +266,11 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
         | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
+        // OTLP/HTTP (TCP 4318) is HTTP to Wireshark: `tshark -G protocols` has no otlp dissector.
+        // Its `protobuf` dissector reads an application/x-protobuf body only once the
+        // OpenTelemetry .proto files are on its protobuf search path, so HTTP is what a capture
+        // shows by default; the JSON encoding reads as text.
+        "otlp" => tcp("http"),
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),

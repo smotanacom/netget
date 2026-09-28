@@ -42,6 +42,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(zabbix());
     #[cfg(feature = "gearman")]
     cases.extend(gearman());
+    #[cfg(feature = "nsq")]
+    cases.extend(nsq());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -68,6 +70,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(udp());
     #[cfg(feature = "prometheus")]
     cases.extend(prometheus());
+    #[cfg(feature = "otlp")]
+    cases.extend(otlp());
     #[cfg(feature = "docker")]
     cases.extend(docker());
     #[cfg(feature = "vault")]
@@ -548,6 +552,131 @@ fn gearman() -> Vec<EvalCase> {
              other function must fail.",
             gearman_probe("translate", "hello"),
             Expect::contains(&["Job failed"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// NSQ — the NSQ project's own go-nsq clients: to_nsq publishes each stdin line
+// and exits non-zero naming the error on a refusal; nsq_tail subscribes and
+// prints each message body it receives, exiting after -n of them.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nsq")]
+fn to_nsq_probe(topic: &str, lines: &str) -> Probe {
+    Probe::client(
+        "to_nsq",
+        &["-nsqd-tcp-address", "127.0.0.1:{PORT}", "-topic", topic],
+    )
+    .stdin(lines)
+    .until_exit()
+}
+
+#[cfg(feature = "nsq")]
+fn nsq_tail_probe(topic: &str, n: &str) -> Probe {
+    Probe::client(
+        "nsq_tail",
+        &[
+            "-nsqd-tcp-address",
+            "127.0.0.1:{PORT}",
+            "-topic",
+            topic,
+            "-n",
+            n,
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "nsq")]
+fn nsq() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "nsq/deliver-waiting-messages",
+            "nsq",
+            "You are an NSQ broker. Accept every subscription. The topic orders holds \
+             two waiting messages, in this order: order 1 shipped, then order 2 packed.",
+            nsq_tail_probe("orders", "2"),
+            Expect::contains(&["order 1 shipped", "order 2 packed"]),
+        ),
+        EvalCase::new(
+            "nsq/accept-publish",
+            "nsq",
+            "You are an NSQ broker. Accept every message published to any topic.",
+            to_nsq_probe("events", "user signed up\n"),
+            // to_nsq logs "exiting router" only on a clean stop; a refusal is fatal to it.
+            Expect::contains(&["exiting router"]).not_containing(&["E_PUB_FAILED"]),
+        ),
+        EvalCase::new(
+            "nsq/refuse-closed-topic",
+            "nsq",
+            "You are an NSQ broker. The topic archive is closed and refuses every \
+             publish. Every other topic accepts messages.",
+            to_nsq_probe("archive", "old record\n"),
+            Expect::contains(&["E_PUB_FAILED"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// OTLP/HTTP — otel-cli, an OpenTelemetry exporter that sends one span over
+// http/protobuf. With --fail it exits non-zero on any response but a success;
+// --tp-print makes it print TRACEPARENT= only once the export was accepted, and
+// a refusal prints "server returned … code".
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "otlp")]
+fn otel_cli_probe(service: &str, span: &str) -> Probe {
+    Probe::client(
+        "otel-cli",
+        &[
+            "span",
+            "--endpoint",
+            "http://127.0.0.1:{PORT}",
+            "--protocol",
+            "http/protobuf",
+            "--insecure",
+            "--service",
+            service,
+            "--name",
+            span,
+            "--timeout",
+            "60s",
+            "--fail",
+            "--verbose",
+            "--tp-print",
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "otlp")]
+fn otlp() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "otlp/accept-known-service",
+            "otlp",
+            "You are an OpenTelemetry collector. Accept all telemetry the checkout \
+             service sends.",
+            otel_cli_probe("checkout", "charge card"),
+            Expect::contains(&["TRACEPARENT="]),
+        ),
+        EvalCase::new(
+            "otlp/refuse-unknown-service",
+            "otlp",
+            "You are an OpenTelemetry collector that only takes data from the checkout \
+             service. Refuse telemetry from every other service; it is not allowed to \
+             send here.",
+            otel_cli_probe("inventory", "count stock"),
+            Expect::contains(&["server returned"]).not_containing(&["TRACEPARENT="]),
+        ),
+        EvalCase::new(
+            "otlp/refuse-debug-spans",
+            "otlp",
+            "You are an OpenTelemetry collector. Accept all traces, except that spans \
+             named debug-probe are invalid data and must be refused.",
+            otel_cli_probe("checkout", "debug-probe"),
+            Expect::contains(&["server returned"]).not_containing(&["TRACEPARENT="]),
         ),
     ]
 }

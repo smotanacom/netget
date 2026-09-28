@@ -931,6 +931,102 @@ async fn websocket_greeting_waits_for_the_model() -> E2EResult<()> {
 }
 
 // ---------------------------------------------------------------------------
+// nsq — nsq_tail and to_nsq
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nsq")]
+#[tokio::test]
+async fn nsq_deliver_waiting_messages_waits_for_the_model() -> E2EResult<()> {
+    check_case("nsq/deliver-waiting-messages", |mock| {
+        mock.on_event("nsq_subscribe")
+            .respond_with_actions(serde_json::json!([{"type": "send_nsq_ok"}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+            .on_event("nsq_ready")
+            .respond_with_actions(serde_json::json!([{
+                "type": "deliver_nsq_messages",
+                "messages": [{"body": "order 1 shipped"}, {"body": "order 2 packed"}]
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+            // nsq_tail exits from inside its handler for the last message, so whether its
+            // FINs reach the server is a race; answered with nothing either way.
+            .on_event("nsq_finish")
+            .respond_with_actions(serde_json::json!([]))
+            .expect_at_most(2)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "nsq")]
+#[tokio::test]
+async fn nsq_accept_publish_waits_for_the_model() -> E2EResult<()> {
+    check_case("nsq/accept-publish", |mock| {
+        mock.on_event("nsq_publish")
+            .respond_with_actions(serde_json::json!([{"type": "send_nsq_ok"}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "nsq")]
+#[tokio::test]
+async fn nsq_refuse_closed_topic_waits_for_the_model() -> E2EResult<()> {
+    check_case("nsq/refuse-closed-topic", |mock| {
+        mock.on_event("nsq_publish")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_nsq_error", "code": "E_PUB_FAILED", "message": "topic is closed"
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// otlp — otel-cli
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "otlp")]
+fn answer_otlp(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("otlp_export")
+        .respond_with_actions_from_event(|event| {
+            if event["service_name"] == "checkout" && event["span_names"][0] != "debug-probe" {
+                serde_json::json!([{"type": "accept_otlp"}])
+            } else {
+                serde_json::json!([{"type": "reject_otlp", "code": 403, "message": "refused"}])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "otlp")]
+#[tokio::test]
+async fn otlp_accept_known_service_waits_for_the_model() -> E2EResult<()> {
+    check_case("otlp/accept-known-service", answer_otlp).await
+}
+
+#[cfg(feature = "otlp")]
+#[tokio::test]
+async fn otlp_refuse_unknown_service_waits_for_the_model() -> E2EResult<()> {
+    check_case("otlp/refuse-unknown-service", answer_otlp).await
+}
+
+#[cfg(feature = "otlp")]
+#[tokio::test]
+async fn otlp_refuse_debug_spans_waits_for_the_model() -> E2EResult<()> {
+    check_case("otlp/refuse-debug-spans", answer_otlp).await
+}
+
+// ---------------------------------------------------------------------------
 // nostr — nak
 // ---------------------------------------------------------------------------
 

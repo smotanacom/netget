@@ -364,6 +364,8 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "beanstalkd",
         "zabbix",
         "gearman",
+        "nsq",
+        "otlp",
     ];
 
     let servers = tcp_servers();
