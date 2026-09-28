@@ -42,6 +42,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(zabbix());
     #[cfg(feature = "gearman")]
     cases.extend(gearman());
+    #[cfg(feature = "nsq")]
+    cases.extend(nsq());
     #[cfg(feature = "finger")]
     cases.extend(finger());
     #[cfg(feature = "redis")]
@@ -68,6 +70,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(udp());
     #[cfg(feature = "prometheus")]
     cases.extend(prometheus());
+    #[cfg(feature = "otlp")]
+    cases.extend(otlp());
     #[cfg(feature = "docker")]
     cases.extend(docker());
     #[cfg(feature = "vault")]
@@ -96,6 +100,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(sip());
     #[cfg(feature = "websocket")]
     cases.extend(websocket());
+    #[cfg(feature = "nostr")]
+    cases.extend(nostr());
     cases
 }
 
@@ -546,6 +552,131 @@ fn gearman() -> Vec<EvalCase> {
              other function must fail.",
             gearman_probe("translate", "hello"),
             Expect::contains(&["Job failed"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// NSQ — the NSQ project's own go-nsq clients: to_nsq publishes each stdin line
+// and exits non-zero naming the error on a refusal; nsq_tail subscribes and
+// prints each message body it receives, exiting after -n of them.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nsq")]
+fn to_nsq_probe(topic: &str, lines: &str) -> Probe {
+    Probe::client(
+        "to_nsq",
+        &["-nsqd-tcp-address", "127.0.0.1:{PORT}", "-topic", topic],
+    )
+    .stdin(lines)
+    .until_exit()
+}
+
+#[cfg(feature = "nsq")]
+fn nsq_tail_probe(topic: &str, n: &str) -> Probe {
+    Probe::client(
+        "nsq_tail",
+        &[
+            "-nsqd-tcp-address",
+            "127.0.0.1:{PORT}",
+            "-topic",
+            topic,
+            "-n",
+            n,
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "nsq")]
+fn nsq() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "nsq/deliver-waiting-messages",
+            "nsq",
+            "You are an NSQ broker. Accept every subscription. The topic orders holds \
+             two waiting messages, in this order: order 1 shipped, then order 2 packed.",
+            nsq_tail_probe("orders", "2"),
+            Expect::contains(&["order 1 shipped", "order 2 packed"]),
+        ),
+        EvalCase::new(
+            "nsq/accept-publish",
+            "nsq",
+            "You are an NSQ broker. Accept every message published to any topic.",
+            to_nsq_probe("events", "user signed up\n"),
+            // to_nsq logs "exiting router" only on a clean stop; a refusal is fatal to it.
+            Expect::contains(&["exiting router"]).not_containing(&["E_PUB_FAILED"]),
+        ),
+        EvalCase::new(
+            "nsq/refuse-closed-topic",
+            "nsq",
+            "You are an NSQ broker. The topic archive is closed and refuses every \
+             publish. Every other topic accepts messages.",
+            to_nsq_probe("archive", "old record\n"),
+            Expect::contains(&["E_PUB_FAILED"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// OTLP/HTTP — otel-cli, an OpenTelemetry exporter that sends one span over
+// http/protobuf. With --fail it exits non-zero on any response but a success;
+// --tp-print makes it print TRACEPARENT= only once the export was accepted, and
+// a refusal prints "server returned … code".
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "otlp")]
+fn otel_cli_probe(service: &str, span: &str) -> Probe {
+    Probe::client(
+        "otel-cli",
+        &[
+            "span",
+            "--endpoint",
+            "http://127.0.0.1:{PORT}",
+            "--protocol",
+            "http/protobuf",
+            "--insecure",
+            "--service",
+            service,
+            "--name",
+            span,
+            "--timeout",
+            "60s",
+            "--fail",
+            "--verbose",
+            "--tp-print",
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "otlp")]
+fn otlp() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "otlp/accept-known-service",
+            "otlp",
+            "You are an OpenTelemetry collector. Accept all telemetry the checkout \
+             service sends.",
+            otel_cli_probe("checkout", "charge card"),
+            Expect::contains(&["TRACEPARENT="]),
+        ),
+        EvalCase::new(
+            "otlp/refuse-unknown-service",
+            "otlp",
+            "You are an OpenTelemetry collector that only takes data from the checkout \
+             service. Refuse telemetry from every other service; it is not allowed to \
+             send here.",
+            otel_cli_probe("inventory", "count stock"),
+            Expect::contains(&["server returned"]).not_containing(&["TRACEPARENT="]),
+        ),
+        EvalCase::new(
+            "otlp/refuse-debug-spans",
+            "otlp",
+            "You are an OpenTelemetry collector. Accept all traces, except that spans \
+             named debug-probe are invalid data and must be refused.",
+            otel_cli_probe("checkout", "debug-probe"),
+            Expect::contains(&["server returned"]).not_containing(&["TRACEPARENT="]),
         ),
     ]
 }
@@ -1862,6 +1993,63 @@ fn websocket() -> Vec<EvalCase> {
              connects.",
             websocat_probe(None),
             Expect::contains(&["Welcome to NetGet Eval"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Nostr — nak, fiatjaf's Go client (go-nostr). `nak req` prints each event it
+// received and verified, then exits at EOSE; `nak event` signs with the key
+// given, publishes and prints "success" or the relay's refusal. nak prints
+// "connecting to ..." on stderr before the exchange, so completion is its exit.
+// ---------------------------------------------------------------------------
+
+/// The key the eval's notes are signed with. Any valid secp256k1 secret works;
+/// this one is fixed so a run is reproducible.
+#[cfg(feature = "nostr")]
+const NOSTR_EVAL_KEY: &str = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a";
+
+#[cfg(feature = "nostr")]
+fn nak_publish(content: &str) -> Probe {
+    Probe::client(
+        "nak",
+        &[
+            "event",
+            "--sec",
+            NOSTR_EVAL_KEY,
+            "-c",
+            content,
+            "ws://127.0.0.1:{PORT}",
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "nostr")]
+fn nostr() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "nostr/serve-notes",
+            "nostr",
+            "When someone subscribes to short text notes, give them two notes: \
+             Stalker is a masterpiece, and Solaris is slower but worth it.",
+            Probe::client("nak", &["req", "-k", "1", "ws://127.0.0.1:{PORT}"]).until_exit(),
+            Expect::contains(&["Stalker is a masterpiece", "Solaris is slower but worth it"]),
+        ),
+        EvalCase::new(
+            "nostr/refuse-adverts",
+            "nostr",
+            "Take notes from anyone, but refuse any note that advertises something for \
+             sale, telling the author that adverts are not allowed.",
+            nak_publish("Buy cheap watches now, 50% off"),
+            Expect::contains(&["adverts are not allowed"]).not_containing(&["success"]),
+        ),
+        EvalCase::new(
+            "nostr/accept-film-note",
+            "nostr",
+            "This relay is for notes about films. Accept them.",
+            nak_publish("Stalker is a masterpiece of slow cinema"),
+            Expect::contains(&["success"]),
         ),
     ]
 }

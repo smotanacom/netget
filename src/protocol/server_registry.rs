@@ -183,6 +183,9 @@ impl ServerRegistry {
         #[cfg(feature = "gearman")]
         self.register(Arc::new(crate::server::GearmanProtocol::new()));
 
+        #[cfg(feature = "nsq")]
+        self.register(Arc::new(crate::server::NsqProtocol::new()));
+
         #[cfg(feature = "gopher")]
         self.register(Arc::new(crate::server::GopherProtocol::new()));
 
@@ -396,6 +399,9 @@ impl ServerRegistry {
         #[cfg(feature = "prometheus")]
         self.register(Arc::new(crate::server::PrometheusProtocol::new()));
 
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(crate::server::OtlpProtocol::new()));
+
         #[cfg(feature = "docker")]
         self.register(Arc::new(crate::server::DockerProtocol::new()));
 
@@ -476,6 +482,8 @@ impl ServerRegistry {
 
         #[cfg(feature = "bitcoin")]
         self.register(Arc::new(crate::server::BitcoinProtocol::new()));
+        #[cfg(feature = "nostr")]
+        self.register(Arc::new(crate::server::NostrProtocol::new()));
 
         #[cfg(feature = "mcp")]
         self.register(Arc::new(crate::server::McpProtocol::new()));
@@ -1213,6 +1221,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Beanstalkd", "beanstalkd"),
     ("Zabbix", "zabbix"),
     ("Gearman", "gearman"),
+    ("NSQ", "nsq"),
     ("Gemini", "gemini"),
     ("Finger", "finger"),
     ("SSDP", "ssdp"),
@@ -1258,6 +1267,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("OCI-Registry", "oci-registry"),
     ("Kubernetes", "kubernetes-server"),
     ("Prometheus", "prometheus"),
+    ("OTLP", "otlp"),
     ("Docker", "docker"),
     ("Vault", "vault"),
     ("Bolt", "bolt"),
@@ -1281,6 +1291,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("ISIS", "isis"),
     ("RIP", "rip"),
     ("Bitcoin P2P", "bitcoin"),
+    ("Nostr", "nostr"),
     ("MCP", "mcp"),
     ("OpenAI", "openai"),
     ("Ollama", "ollama"),

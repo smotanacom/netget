@@ -1,366 +1,65 @@
-# SMB Protocol E2E Tests
-
-## Test Overview
-
-Tests SMB2 file server using manually constructed SMB2 binary packets over TCP. Validates that NetGet can handle SMB
-protocol operations with LLM-controlled authentication and file operations.
-
-**Protocol**: SMB 2.1 (dialect 0x0210)
-**Test Scope**: SMB2 Negotiate, Session Setup, connection handling, authentication
-**Test Type**: Black-box, prompt-driven
-
-## Test Strategy
-
-### Manual SMB2 Packet Construction
-
-Tests manually build SMB2 binary protocol packets:
-
-- **Negotiate Protocol** - Offer SMB 2.1 dialect
-- **Session Setup** - Guest authentication
-- Parse responses for SMB2 signature and status codes
-
-**Why manual?** No Rust SMB2 client library exists for testing.
-
-### Consolidated Approach
-
-Tests organized by SMB2 operation type:
-
-1. **Negotiate Protocol** - Protocol version negotiation
-2. **Session Setup** - Guest authentication flow
-3. **Concurrent Connections** - Multiple simultaneous clients
-4. **Server Responsiveness** - Verify server responds to SMB traffic
-5. **Correct Stack** - Verify SMB stack initialization
-6. **LLM-Controlled Auth** - Authentication via LLM actions
-7. **Connection Tracking** - Verify UI connection tracking
-
-Each test starts one server with specific behavior.
-
-## LLM Call Budget
-
-**Total Budget**: **14 LLM calls** (7 servers × 2 operations average)
-
-### Breakdown by Test
-
-1. **test_smb_negotiate**: 1 server startup + 1 negotiate = **2 LLM calls**
-    - Prompt: Accept all guest connections
-    - Request: SMB2 Negotiate
-
-2. **test_smb_session_setup**: 1 server startup + 2 operations = **3 LLM calls**
-    - Prompt: Allow guest authentication
-    - Requests: Negotiate + Session Setup
-
-3. **test_smb_concurrent_connections**: 1 server startup + 3 clients = **4 LLM calls**
-    - Prompt: Handle multiple concurrent connections
-    - Requests: 3 concurrent Negotiate operations
-
-4. **test_smb_server_responsiveness**: 1 server startup + 1 negotiate = **2 LLM calls**
-    - Prompt: Respond to all SMB2 requests
-    - Request: Negotiate
-
-5. **test_smb_correct_stack**: 1 server startup = **1 LLM call**
-    - Prompt: Start SMB server via smb
-    - No operations (just verify stack)
-
-6. **test_smb_auth_llm_controlled**: 1 server startup + 2 operations = **3 LLM calls**
-    - Prompt: Allow user 'alice', deny others
-    - Requests: Negotiate + Session Setup (guest)
-
-7. **test_smb_connection_tracking**: 1 server startup + 1 negotiate = **2 LLM calls**
-    - Prompt: Start SMB server
-    - Request: Negotiate
-    - Check output for connection tracking
-
-**Note**: Connection tracking test doesn't count additional LLM calls (checks output only).
-
-**CRITICAL**: No scripting mode - each SMB operation requires LLM call.
-
-## Scripting Usage
-
-**Scripting Mode**: ❌ **NOT USED**
-
-SMB2 operations currently require LLM call per request. Action-based responses used.
-
-**Future Enhancement**: Implement scripting for SMB2 operations:
-
-- Script handles Negotiate (fixed dialect response)
-- Script handles Session Setup (deterministic guest auth)
-- Script handles basic file operations (fixed responses)
-- Reduce per-request LLM calls to zero
-
-## Client Library
-
-**TCP Client**: `std::net::TcpStream`
-
-- Used for raw TCP communication
-- Manual SMB2 packet construction
-- No SMB library dependency
-
-**Manual SMB2 Encoding**: Tests build packets manually:
-
-- NetBIOS Session Service header (4 bytes)
-- SMB2 header (64 bytes)
-- Command-specific body (variable length)
-
-**Packet Builders**:
-
-- `build_smb2_negotiate()` - Negotiate Protocol request
-- `build_smb2_session_setup()` - Session Setup request (guest)
-- `parse_smb2_status()` - Extract status code from response
-
-**Why manual?** No Rust SMB2 client library exists for testing.
-
-## Expected Runtime
-
-**Model**: qwen3-coder:30b
-**Total Runtime**: ~70 seconds for full test suite
-
-### Per-Test Breakdown
-
-- **test_smb_negotiate**: ~10s (startup + 1 negotiate)
-- **test_smb_session_setup**: ~15s (startup + negotiate + session setup)
-- **test_smb_concurrent_connections**: ~15s (startup + 3 concurrent negotiates)
-- **test_smb_server_responsiveness**: ~10s (startup + 1 negotiate)
-- **test_smb_correct_stack**: ~5s (startup only, no operations)
-- **test_smb_auth_llm_controlled**: ~15s (startup + negotiate + session setup)
-- **test_smb_connection_tracking**: ~10s (startup + negotiate + output check)
-
-**Factors**:
-
-- No scripting = LLM call per SMB operation
-- SMB2 binary parsing adds minimal overhead
-- TCP transport is fast (milliseconds)
-
-## Failure Rate
-
-**Failure Rate**: **Medium** (~10-15%)
-
-### Common Failure Modes
-
-1. **LLM doesn't return expected auth action** - Missing smb_auth_success (5%)
-2. **Malformed SMB2 response** - Invalid packet structure (3%)
-3. **Timeout on LLM call** - Ollama overload (~5%)
-4. **Connection tracking not in output** - Race condition (~2%)
-
-### Known Flaky Tests
-
-- **test_smb_session_setup** - Sometimes LLM doesn't return guest auth success (10%)
-- **test_smb_auth_llm_controlled** - LLM may allow/deny unpredictably (5%)
-- **test_smb_connection_tracking** - Output capture timing issues (2%)
-
-### Mitigation
-
-- Clear prompts specifying exact auth behavior
-- 5-second timeouts on TCP operations
-- Tests accept multiple valid SMB status codes (0x00000000, 0xC0000016)
-- Graceful degradation on output validation
-
-## Test Cases
-
-### 1. SMB2 Negotiate Protocol
-
-**Purpose**: Validate SMB version negotiation
-
-**Test Flow**:
-
-1. Start SMB server accepting guest connections
-2. Send SMB2 Negotiate request (dialect 0x0210)
-3. Parse response for SMB2 signature (0xFE 'S' 'M' 'B')
-4. Validate status code (0x00000000 = success)
-
-**Expected Result**:
-
-- Valid SMB2 header in response
-- Status 0x00000000 (success)
-
-### 2. SMB2 Session Setup (Guest Authentication)
-
-**Purpose**: Validate guest authentication flow
-
-**Test Flow**:
-
-1. Start SMB server allowing guest auth
-2. Send Negotiate request
-3. Send Session Setup request (guest, no credentials)
-4. Validate status code (0x00000000 success or 0xC0000016 more processing)
-
-**Expected Result**:
-
-- Session established (status 0x00000000 or 0xC0000016)
-
-### 3. Multiple Concurrent Connections
-
-**Purpose**: Validate server handles concurrent clients
-
-**Test Flow**:
-
-1. Start SMB server
-2. Spawn 3 concurrent client tasks
-3. Each sends Negotiate request
-4. Verify all receive valid SMB2 responses
-
-**Expected Result**:
-
-- All 3 clients receive SMB2 responses
-- No connection refused errors
-
-### 4. Server Responsiveness
-
-**Purpose**: Validate server responds to SMB traffic
-
-**Test Flow**:
-
-1. Start SMB server
-2. Connect via TCP
-3. Send Negotiate request
-4. Verify response received (even if not perfect SMB2)
-
-**Expected Result**:
-
-- Server sends response data
-- No immediate connection close
-
-### 5. Correct Stack
-
-**Purpose**: Verify SMB stack initialization
-
-**Test Flow**:
-
-1. Start server with "via smb" in prompt
-2. Verify server.stack contains "SMB"
-
-**Expected Result**:
-
-- Stack name is "SMB" (or "IP>TCP>SMB")
-
-### 6. LLM-Controlled Authentication
-
-**Purpose**: Validate LLM controls authentication decisions
-
-**Test Flow**:
-
-1. Start SMB server with auth rules (allow "alice", deny others)
-2. Send guest Session Setup
-3. Check if LLM allowed or denied
-
-**Expected Result**:
-
-- LLM processes auth request
-- Status reflects LLM decision (success or denied)
-
-**Note**: Guest username may not be "alice", so test is best-effort.
-
-### 7. Connection Tracking
-
-**Purpose**: Verify connections tracked in UI output
-
-**Test Flow**:
-
-1. Start SMB server
-2. Establish connection and send Negotiate
-3. Check server output for connection tracking indicators
-
-**Expected Result**:
-
-- Output contains "SMB connection", "connection from", or "bytes"
-- Connection lifecycle visible in logs
-
-## The declared inbound bound (`inbound_limit_test.rs`)
-
-In-process, on `tests/helpers/inbound_limit.rs`: a mock model that approves the
-SESSION_SETUP and answers everything else with no actions, counting calls. After a NEGOTIATE
-(whose `MaxWriteSize` must equal `MAX_WRITE_SIZE`) and an approved SESSION_SETUP:
-
-- a WRITE of exactly `MAX_WRITE_SIZE` bytes reaches the model and is not refused as too large;
-- a WRITE header declaring `MAX_WRITE_SIZE + 1` is answered `STATUS_INVALID_PARAMETER`, the
-  connection closes, and the model is called zero times;
-- a fresh connection's SESSION_SETUP still reaches the model.
-
-Verified by removal twice: without the `length > MAX_WRITE_SIZE` check the over-size WRITE
-is never answered (the server waits for its payload); without `close_after_reply` the
-connection stays open after the refusal.
-
-## Known Issues
-
-### Manual SMB2 Implementation
-
-- Protocol complexity high (64-byte headers, binary encoding)
-- Tests may not cover all SMB2 edge cases
-- Real Windows clients may behave differently
-
-### LLM Authentication Unpredictability
-
-- LLM may interpret auth prompts differently
-- Guest authentication may be allowed or denied unpredictably
-- Tests use best-effort validation (accept multiple outcomes)
-
-**Workaround**: Tests accept both success and "more processing" status codes.
-
-### No File Operation Tests
-
-- Tests only validate Negotiate and Session Setup
-- No Tree Connect, Create, Read, Write, Close operations
-- File operations not validated
-
-**Future**: Add tests for full SMB2 file operation sequence.
-
-### Connection Tracking Race Condition
-
-- Output capture may miss connection tracking messages
-- Tests check for presence but don't fail if missing
-
-**Workaround**: Non-critical validation, informational only.
-
-## Running Tests
-
-```bash
-# Build release binary with all features
-./cargo-isolated.sh build --release --all-features
-
-# Run SMB E2E tests
-./cargo-isolated.sh test --features smb --test server::smb::e2e_test
-
-# Run specific test
-./cargo-isolated.sh test --features smb --test server::smb::e2e_test test_smb_negotiate
-```
-
-**IMPORTANT**: Always build release binary before running tests.
-
-## Future Enhancements
-
-### Scripting Mode
-
-- Add scripting support for SMB2 operations
-- Reduce LLM calls from 14 to 7 (startups only)
-- Generate Python/JS handlers for Negotiate, Session Setup
-
-### Full File Operation Tests
-
-- Add Tree Connect → Create → Read → Write → Close sequence
-- Test directory listings (Query Directory)
-- Test file attributes (Query Info)
-- Validate LLM-controlled file content
-
-### Real SMB Client Testing
-
-- Test with smbclient (Linux)
-- Test with Windows Explorer (SMB mounting)
-- Validate full SMB2 protocol compliance
-
-### Authentication Variants
-
-- Test NTLM authentication (if implemented)
-- Test user authentication (not guest)
-- Test authentication denial scenarios
-
-### Error Handling Tests
-
-- Test invalid SMB2 packets
-- Test unsupported commands
-- Test malformed requests
-
-## References
-
-- [MS-SMB2: Server Message Block Protocol](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2)
-- [Wireshark SMB2 Wiki](https://wiki.wireshark.org/SMB2)
-- [Samba SMB Implementation](https://www.samba.org/)
-- [smbclient Linux tool](https://www.samba.org/samba/docs/current/man-html/smbclient.1.html)
+# SMB Protocol Tests
+
+**Protocol**: SMB2, dialects 2.0.2 and 2.1, over Direct TCP (MS-SMB2 2.1)
+**Model**: always mocked (`.with_mock`, `wait_for_mocks`, `verify_mocks`), except
+`inbound_limit_test.rs` and `peer_inject_test.rs`, which run in-process and count calls
+**Run**: `./cargo-isolated.sh test --no-default-features --features smb --test server -- smb:: --test-threads=100`
+
+Every request a test sends is framed with the 4-byte Direct TCP header — a zero byte and a
+24-bit length — exactly as a real client frames it on port 445, and every response is read as
+one such frame. `wire_util.rs` holds the framing (`nbss`, `read_frame_sync`, `read_frame`) and
+a full set of request builders written from MS-SMB2, not from `src/server/smb/wire.rs`, so the
+tests that use them check the server against the specification rather than against itself.
+
+## The suites
+
+| File | What it proves |
+|---|---|
+| `real_client_test.rs` | **Two real clients.** Samba's `smbclient` logs in anonymously (SPNEGO/NTLMSSP, two legs), runs `ls` and `get` of a 70 000-byte binary file; the listing, the size, the modified time, the "blocks available" line and the exact bytes are asserted, and the session, recorded through a relay, must read clean in the pcap oracle. The Python `smbprotocol` library logs in as a named guest over bare NTLMSSP, lists the share and reads the same file. Both **fail, naming the install command, when the client is absent.** |
+| `header_layout_test.rs` | Every response builder in `server::smb::wire` puts each header field at its MS-SMB2 2.2.1.2 offset (MessageId at 24) and round-trips through the request parser; compound chains align `NextCommand`. A raw session covering every implemented command, a different MessageId on each request, is checked reply by reply and run through the pcap oracle. A WRITE before any session is refused and its payload consumed, so the NEGOTIATE after it is answered. |
+| `inbound_limit_test.rs` | `MaxWriteSize` is advertised; a WRITE of exactly `MAX_WRITE_SIZE` reaches the model; `MAX_WRITE_SIZE + 1` in a whole frame is refused `STATUS_INVALID_PARAMETER` before the model and the connection stays in step; a frame announcing `MAX_MESSAGE_BYTES + 1` is refused after its header and the connection closes; a fresh connection is still served. |
+| `e2e_test.rs` | NEGOTIATE, guest SESSION_SETUP allowed and denied (`STATUS_ACCESS_DENIED`), concurrency, a binary READ decoded from base64, literal text without `encoding`, a directory handle's attribute and its refused READ, WRITE refused without `smb_write_file` and accepted with it, CREATE before any session refused without a model call, and the action-routing and payload-codec unit checks. |
+| `llm_failure_test.rs` | A CREATE and a READ whose model call fails get an SMB2 ERROR (`STATUS_INTERNAL_ERROR`) correlated to their own MessageId, TreeId and SessionId, and the connection survives to answer a CLOSE. |
+| `e2e_llm_test.rs` | Prompt-shaped scenarios with a mocked model; the auth ones assert the wire status. |
+| `peer_inject_test.rs` | The dashboard's peer handle: an injected wire verb writes nothing (a reply needs a request to correlate with), `close_connection` disconnects, and the session's own exit path releases the handle and counts the bytes it read. Zero model calls. |
+
+## Mock expectations worth knowing
+
+- **One rule per event, branching on the event** where a test opens more than one path:
+  `create` rules use `respond_with_actions_from_event` to answer `/` (the share root) with
+  `smb_create_directory` and a file with `smb_create_file`. Two rules on `create` would have
+  the first answer both.
+- **smbclient's `get` asks `query_info`; smbprotocol never does.** smbprotocol reads exactly
+  the EndOfFile of the CREATE response, so its mock gives `smb_create_file` a `size` and
+  expects zero `query_info` calls; smbclient's mock gives none and expects one.
+- **smbclient is run with `-U % -N`.** With `-N` alone it first logs in as the Unix user
+  running the test with an empty password, is refused (no mock rule), and falls back to
+  anonymous — two SESSION_SETUP exchanges whose first depends on the machine.
+- **A READ is answered with the whole file each time**; the server slices the requested
+  range. A read at or past the end is `STATUS_END_OF_FILE` and still costs a model call.
+- **The session gate is upstream of the model.** A refused request must cost no call, and the
+  tests say so with `expect_calls(0)` rather than by omitting the rule.
+
+## Handshake the raw tests use
+
+NEGOTIATE (MessageId 0), a one-step guest SESSION_SETUP with an empty security buffer
+(allocates session 1), TREE_CONNECT to `\\127.0.0.1\share` (allocates tree 1), then file
+operations addressed to tree 1 of session 1. A WRITE's data starts at `DataOffset` 112 — the
+first byte of the StructureSize-49 body's buffer — with no padding byte before it.
+
+## Requirements
+
+- `smbclient` — `brew install samba` (macOS) or `apt-get install -y smbclient`.
+- `smbprotocol` — `python3 -m pip install smbprotocol`.
+- `tshark` — the pcap oracle fails, rather than skips, without it.
+
+`registry-audit` in `.github/workflows/ci.yml` installs all three and runs
+`smb::real_client_test` in its real-client evidence loop. `smb` is not in the blocking `test`
+job's feature set.
+
+## Known gaps
+
+- Neither real client exercises WRITE; the raw-packet suites do.
+- No test drives SMB's own read deadlines or connection cap; the shared ratchets
+  (`tcp_server_bounds_ratchet_test.rs`, `accept_bounded_test.rs`) hold them.
+- No fuzz target covers the request, compound or NTLMSSP parsers.

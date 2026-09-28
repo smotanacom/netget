@@ -57,6 +57,7 @@ jobs:
         run: |
           for bin in curl dig whois redis-cli psql mysql ldapsearch ipptool nc ftp \
                      dict promtool docker vault cypher-shell zabbix_sender gearman gearadmin \
+                     to_nsq nsq_tail otel-cli telemetrygen \
                      mosquitto_sub mosquitto_pub coap-client snmpget sipsak websocat; do
             if command -v "$bin" >/dev/null 2>&1; then
               echo "present: $bin"

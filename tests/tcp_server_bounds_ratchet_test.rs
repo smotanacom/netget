@@ -355,6 +355,7 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "dict",
         "gemini",
         "bolt",
+        "nostr",
         // Programme 4 new HTTP-layered servers, each with a connection_bounds_test.rs driving
         // the shared tests/helpers/http_bounds.rs checks.
         "prometheus",
@@ -363,6 +364,8 @@ fn the_protocols_these_sweeps_covered_have_both_bounds() {
         "beanstalkd",
         "zabbix",
         "gearman",
+        "nsq",
+        "otlp",
     ];
 
     let servers = tcp_servers();

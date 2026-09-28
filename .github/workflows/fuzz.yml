@@ -73,6 +73,7 @@ jobs:
           - svn_tuple
           - xmlrpc_value
           - packstream_message
+          - nsq_frame
     steps:
       - uses: actions/checkout@v4
 

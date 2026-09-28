@@ -174,8 +174,12 @@ pub mod nfc;
 pub mod nfs;
 #[cfg(feature = "nntp")]
 pub mod nntp;
+#[cfg(feature = "nostr")]
+pub mod nostr;
 #[cfg(feature = "npm")]
 pub mod npm;
+#[cfg(feature = "nsq")]
+pub mod nsq;
 #[cfg(feature = "ntp")]
 pub mod ntp;
 #[cfg(feature = "oauth2")]
@@ -194,6 +198,8 @@ pub mod openid;
 pub mod openvpn;
 #[cfg(feature = "ospf")]
 pub mod ospf;
+#[cfg(feature = "otlp")]
+pub mod otlp;
 #[cfg(feature = "pop3")]
 pub mod pop3;
 #[cfg(feature = "postgresql")]

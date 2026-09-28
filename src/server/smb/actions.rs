@@ -77,36 +77,50 @@ impl Protocol for SmbProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta on two independent clients, each driving a whole session in
+            // tests/server/smb/real_client_test.rs, both hard-failing when absent. See
+            // "Maturity" in src/server/smb/CLAUDE.md for what the rating does not cover.
+            .state(DevelopmentState::Beta)
             .well_known_port(445)
-            // A WRITE's Length is the only peer-chosen size this server buffers; it is refused
-            // against the negotiated MaxWriteSize before allocation. Tested in
-            // tests/server/smb/inbound_limit_test.rs.
-            .max_inbound_bytes(crate::server::smb::MAX_WRITE_SIZE as usize)
-            .implementation("Manual SMB2 protocol (0x0210 dialect)")
+            // The Direct TCP frame length is the one peer-chosen size this server allocates
+            // for; a frame over MAX_MESSAGE_BYTES is refused after its 64-byte header, and a
+            // WRITE over the negotiated MaxWriteSize inside a legal frame is refused before the
+            // model. Both tested in tests/server/smb/inbound_limit_test.rs.
+            .max_inbound_bytes(crate::server::smb::MAX_MESSAGE_BYTES)
+            .implementation(
+                "Hand-written SMB2 (dialects 0x0202 and 0x0210) over Direct TCP (MS-SMB2 2.1), \
+                 with compound requests. SESSION_SETUP walks SPNEGO/NTLMSSP so real clients \
+                 finish the login; no password is verified and no session is signed.",
+            )
             .llm_control(
-                "Authentication (allow/deny), directory listings, file metadata, file content on \
-                 read, file-vs-directory on create, and write authorisation. File payloads carry \
-                 an explicit `encoding` field (utf8/base64/hex) in both directions, so binary \
-                 content survives a read and a written binary payload is shown to the model \
-                 losslessly.",
+                "Authentication (allow/deny, on the user name the NTLMSSP AUTHENTICATE carries), \
+                 directory listings, file metadata, file content on read, file-vs-directory on \
+                 create, and write authorisation. File payloads carry an explicit `encoding` \
+                 field (utf8/base64/hex) in both directions, so binary content survives a read \
+                 and a written binary payload is shown to the model losslessly.",
             )
             .e2e_testing(
-                "Raw SMB2 packets over TCP against a mocked LLM \
-                 (tests/server/smb/e2e_test.rs). Verified at wire level: NEGOTIATE, \
-                 SESSION_SETUP allow and deny, a full NEGOTIATE -> SESSION_SETUP -> \
-                 TREE_CONNECT -> CREATE -> READ flow in which a non-UTF-8 byte string sent \
-                 as base64 comes back byte-for-byte in the READ response body, the \
-                 FILE_ATTRIBUTE_DIRECTORY bit set by smb_create_directory, and WRITE \
-                 answering STATUS_ACCESS_DENIED when the model does not return \
-                 smb_write_file. NOT verified against smbclient or Windows Explorer - no \
-                 real SMB client has ever been run against this server.",
+                "Two independent real clients against a mocked model \
+                 (tests/server/smb/real_client_test.rs): Samba's smbclient 4.24 logs in \
+                 anonymously over SPNEGO/NTLMSSP, runs `ls` (QUERY_DIRECTORY to \
+                 STATUS_NO_MORE_FILES, and the FileFsFullSizeInformation behind 'blocks \
+                 available') and `get` of a 70 000-byte binary file whose bytes are asserted \
+                 exactly; the Python smbprotocol library logs in as a named guest over bare \
+                 NTLMSSP, lists the share and reads the same file. Both fail rather than skip \
+                 when absent. The smbclient session is recorded and read clean by Wireshark's \
+                 nbss/smb2 dissectors (pcap oracle), as is a raw session covering every \
+                 implemented command in header_layout_test.rs. Raw-packet suites pin the \
+                 encoding, fail-closed and LLM-failure paths (e2e_test.rs, \
+                 llm_failure_test.rs) and both inbound bounds (inbound_limit_test.rs). Not \
+                 verified against Windows Explorer, mount_smbfs or mount.cifs.",
             )
             .notes(
-                "SMB 2.1 only, guest auth only, no signing/encryption, no SET_INFO (so no \
-                 delete/rename), timestamps are zero, and tree/session IDs in responses are \
-                 hardcoded rather than echoed. Adjacent operations share no state beyond the \
-                 file-handle table: the model is the filesystem.",
+                "SMB 2.0.2/2.1 only; no SMB 3.x, signing, encryption, oplocks, leases, durable \
+                 handles, DFS or named pipes (IPC$ connects, every open on it is refused). \
+                 Sessions are guest or null: NTLMSSP is walked, never verified. No SET_INFO (so \
+                 no delete/rename), no LOCK, no CHANGE_NOTIFY, no IOCTL. The volume size is a \
+                 fixed report, not a measurement. Adjacent operations share no state beyond the \
+                 per-connection session, tree and handle tables: the model is the filesystem.",
             )
             .build()
     }
@@ -602,15 +616,29 @@ fn smb_create_file_action() -> ActionDefinition {
                       STATUS_ACCESS_DENIED, because silence must not become consent for an \
                       admission decision."
             .to_string(),
-        parameters: vec![Parameter {
-            name: "path".to_string(),
-            type_hint: "string".to_string(),
-            description: "File path being opened or created".to_string(),
-            required: true,
-        }],
+        parameters: vec![
+            Parameter {
+                name: "path".to_string(),
+                type_hint: "string".to_string(),
+                description: "File path being opened or created".to_string(),
+                required: true,
+            },
+            Parameter {
+                name: "size".to_string(),
+                type_hint: "number".to_string(),
+                description: "The file's size in bytes, reported to the client as the open \
+                              handle's end of file. Give it whenever the file has content: \
+                              some clients read exactly this many bytes and never ask again, \
+                              so an open without it reads as an empty file. Omit only for a \
+                              file that is empty or being created."
+                    .to_string(),
+                required: false,
+            },
+        ],
         example: json!({
             "type": "smb_create_file",
-            "path": "/documents/newfile.txt"
+            "path": "/documents/report.txt",
+            "size": 1024
         }),
         log_template: Some(
             LogTemplate::new()

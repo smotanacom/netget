@@ -241,10 +241,19 @@ pub fn wire_for(protocol: &str) -> Wire {
         // Gearman (TCP 4730). `gearman` is Wireshark's own dissector for the binary packet
         // protocol (`tshark -G protocols` lists it; checked with `-d tcp.port==4730,gearman`).
         "gearman" => tcp("gearman"),
+        // NSQ (TCP 4150) has no dissector in this Wireshark build: `tshark -G protocols` lists
+        // nothing matching nsq. Plain TCP; its commands are text lines and "Follow TCP Stream"
+        // reads them, with the size-prefixed frames in between.
+        "nsq" => PLAIN_TCP,
         // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
         "gemini" => tcp("tls"),
+        // Nostr relay: NIP-01 JSON in WebSocket text frames after an HTTP/1.1 upgrade. There is
+        // no nostr dissector in this Wireshark build (`tshark -G protocols` lists none); decoded
+        // as `http`, the 101 hands the stream to Wireshark's own `websocket` dissector, whose
+        // payload it reads as JSON — checked with `-d tcp.port==N,http -Y websocket`.
+        "nostr" => with_display(tcp("http"), "websocket"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
@@ -257,6 +266,11 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
         | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
+        // OTLP/HTTP (TCP 4318) is HTTP to Wireshark: `tshark -G protocols` has no otlp dissector.
+        // Its `protobuf` dissector reads an application/x-protobuf body only once the
+        // OpenTelemetry .proto files are on its protobuf search path, so HTTP is what a capture
+        // shows by default; the JSON encoding reads as text.
+        "otlp" => tcp("http"),
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
@@ -296,9 +310,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),
         "rdp" => with_display(tcp("tpkt"), "rdp"),
-        // This server writes no NetBIOS session-service header, so a `nbss` decode-as has
-        // nothing to key on and never resolves. Point at smb2 directly until framing exists.
-        "smb" => with_display(tcp("smb2"), "smb2 || smb"),
+        // SMB2 over TCP rides in the Direct TCP transport header, which Wireshark decodes as
+        // `nbss`; `smb2` has no `tcp.port` entry of its own, so it cannot be the decode-as.
+        "smb" => with_display(tcp("nbss"), "smb2 || smb"),
         "nfs" => with_display(tcp("rpc"), "nfs"),
         "modbus" => tcp("mbtcp"),
         // IPP is an HTTP payload; Wireshark reaches it through the http

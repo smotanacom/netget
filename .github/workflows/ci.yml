@@ -81,14 +81,14 @@ env:
   # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
-    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman ssdp llmnr
+    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman nsq ssdp llmnr
     netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
     mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
     smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
-    jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
+    jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin nostr mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server prometheus docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus otlp docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:
@@ -347,8 +347,13 @@ jobs:
       #   ignition-gemini   - gemini (a Python library, so pip rather than apt; see the
       #                       step after this one)
       #   greenstalk        - beanstalkd (a Python client library, pip; same step)
+      #   nostr-sdk         - nostr (rust-nostr's Python bindings, pip; its own step)
       #   zabbix-sender     - zabbix (the Zabbix project's zabbix_sender)
       #   gearman-tools     - gearman (the gearmand project's gearman and gearadmin)
+      #   (nsq release)     - nsq (to_nsq and nsq_tail; no distro packages them - see the
+      #                       step that unpacks the release tarball)
+      #   (otel-cli .deb,   - otlp (otel-cli from its release .deb; telemetrygen through
+      #    telemetrygen)      `go install`, with the Go toolchain set up for it - see below)
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
@@ -366,6 +371,8 @@ jobs:
       #   python3-pip       - pypi, and oci_registry's script handler
       #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
       #   sipsak            - sip
+      #   smbclient         - smb (Samba's smbclient; NetGet's SMB server links no SMB library)
+      #   smbprotocol       - smb (a Python client library, pip; its own step below)
       #   ldap-utils        - ldap (OpenLDAP ldapsearch, deliberately NOT the ldap3 crate)
       #   openssh-client    - ssh (OpenSSH, deliberately NOT libssh2, which found nothing
       #                       here for months while OpenSSH disconnected on a duplicate
@@ -374,8 +381,9 @@ jobs:
       #   tor               - tor_relay
       #   wakeonlan         - wol
       #
-      # Installed by their own steps below rather than apt: the vault CLI (vault), and
-      # cypher-shell (bolt; Neo4j's release zip, run on the runner image's own Java 21).
+      # Installed by their own steps below rather than apt: the vault CLI (vault),
+      # cypher-shell (bolt; Neo4j's release zip, run on the runner image's own Java 21), and
+      # nak (nostr; fiatjaf's release binary - no distro packages it).
       #
       # And the third-party SERVERS the client real-server tests drive
       # (tests/client/<p>/real_server_test.rs, spawned by tests/helpers/real_server.rs on a
@@ -450,7 +458,7 @@ jobs:
             aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
-            postgresql-client python3-pip redis-tools sipsak \
+            postgresql-client python3-pip redis-tools sipsak smbclient \
             subversion tor wakeonlan zabbix-sender gearman-tools \
             mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached \
             freeradius
@@ -494,6 +502,35 @@ jobs:
             fi
           done
 
+      # nsq::real_client_test drives to_nsq and nsq_tail, the NSQ project's own go-nsq clients.
+      # No distro packages them; the release tarball carries static binaries under bin/, which
+      # --strip-components=1 puts in /usr/local/bin where the test's require_tool looks first.
+      - name: Install the NSQ clients (to_nsq, nsq_tail)
+        continue-on-error: true
+        run: |
+          curl -fsSL https://github.com/nsqio/nsq/releases/download/v1.3.0/nsq-1.3.0.linux-amd64.go1.21.5.tar.gz \
+            | sudo tar -xz -C /usr/local --strip-components=1
+          command -v to_nsq nsq_tail
+
+      # otlp::real_client_test drives two OpenTelemetry exporters: otel-cli (its release .deb)
+      # and the Collector project's telemetrygen, which is only published as a Go module. The
+      # Go setup step exists for it; the version is pinned so the evidence is reproducible.
+      - uses: actions/setup-go@v5
+        continue-on-error: true
+        with:
+          go-version: stable
+          cache: false
+      - name: Install the OTLP clients (otel-cli, telemetrygen)
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/otel-cli.deb \
+            https://github.com/equinix-labs/otel-cli/releases/download/v0.4.5/otel-cli_0.4.5_linux_amd64.deb
+          sudo dpkg -i /tmp/otel-cli.deb
+          GOBIN="$HOME/go-tools" go install \
+            github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@v0.161.0
+          sudo install -m 0755 "$HOME/go-tools/telemetrygen" /usr/local/bin/telemetrygen
+          command -v otel-cli telemetrygen
+
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
       # packages it, so it comes from PyPI into the python3 the test spawns; the import check
@@ -504,11 +541,26 @@ jobs:
           python3 -m pip install --user ignition-gemini==1.0.0
           python3 -c "import ignition; print('ignition', ignition.__version__)"
 
+      # nostr::real_client_test drives two clients: nak (fiatjaf's Go client, the release
+      # binary - no distro packages it) and rust-nostr's Python bindings (nostr-sdk, PyPI).
+      # Both checks make a failed install surface here rather than as nostr's evidence
+      # silently absent. The test also runs the pcap oracle (http + websocket dissectors).
+      - name: Install the Nostr clients (nak, nostr-sdk)
+        continue-on-error: true
+        run: |
+          set -eux
+          sudo curl -fsSL -o /usr/local/bin/nak \
+            https://github.com/fiatjaf/nak/releases/download/v0.20.7/nak-v0.20.7-linux-amd64
+          sudo chmod +x /usr/local/bin/nak
+          nak --version
+          python3 -m pip install --user nostr-sdk==0.45.1
+          python3 -c "import nostr_sdk; print('nostr-sdk imported')"
+
       # gemini::real_client_test also runs the pcap oracle over the TLS it recorded, and the
       # oracle FAILS rather than skips without tshark. jammy's tshark 3.6 has the `tls`
       # dissector that check needs; only the Test job's redis case needs >= 4.0 (`resp`).
       # The preseed answers the capture-permission prompt that would otherwise hang the job.
-      - name: install tshark 4.x (the pcap oracle in the Gemini and Zabbix evidence)
+      - name: install tshark 4.x (the pcap oracle in the Gemini, Zabbix and SMB evidence)
         continue-on-error: true
         run: |
           # jammy's own tshark is 3.6, which has no `zabbix` dissector (zabbix's evidence runs
@@ -529,6 +581,15 @@ jobs:
         run: |
           python3 -m pip install --user greenstalk==2.1.1
           python3 -c "import greenstalk; print('greenstalk', greenstalk.__version__)"
+
+      # smb::real_client_test's second client is `smbprotocol`, a Python SMB2 implementation
+      # (Direct TCP framing, NTLMSSP through pyspnego, its own response parsing). PyPI only,
+      # like ignition; the import check names a failed install here.
+      - name: Install the SMB client library (smbprotocol)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user 'smbprotocol==1.17.*'
+          python3 -c "import smbprotocol, smbclient; print('smbprotocol ok')"
 
       # client/modbus::real_server_test runs a pymodbus 3.15 device (its own framer and
       # datastore, in Python; NetGet's Modbus client frames with NetGet's codec) and reads what
@@ -921,7 +982,7 @@ jobs:
             bolt::real_client_test \
             coap::real_client_test dict::real_client_test dns::dig_test dns::kdig_test \
             gemini::real_client_test beanstalkd::real_client_test zabbix::real_client_test \
-            gearman::real_client_test \
+            gearman::real_client_test nsq::real_client_test nostr::real_client_test \
             docker::real_client_test doh::real_client_test dot::real_client_test dynamo::real_client_test \
             etcd::real_client_test git::e2e_test gopher::e2e_test grpc::real_client_test \
             hls::curl_test http::real_client_test imap::real_client_test \
@@ -932,9 +993,10 @@ jobs:
             mercurial::real_client_test mysql::real_client_test npm::e2e_test \
             oci_registry::e2e_test ollama::real_client_test openvpn:: \
             postgresql::real_client_test \
-            prometheus::real_client_test \
+            prometheus::real_client_test otlp::real_client_test \
             pypi::e2e_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
+            smb::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \
             svn::real_client_test \
             torrent_tracker::real_client_test vault::real_client_test webdav::real_client_test \
