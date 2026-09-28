@@ -366,6 +366,8 @@ jobs:
       #   python3-pip       - pypi, and oci_registry's script handler
       #   redis-tools       - redis (redis-cli; the C client, deliberately NOT redis-rs)
       #   sipsak            - sip
+      #   smbclient         - smb (Samba's smbclient; NetGet's SMB server links no SMB library)
+      #   smbprotocol       - smb (a Python client library, pip; its own step below)
       #   ldap-utils        - ldap (OpenLDAP ldapsearch, deliberately NOT the ldap3 crate)
       #   openssh-client    - ssh (OpenSSH, deliberately NOT libssh2, which found nothing
       #                       here for months while OpenSSH disconnected on a duplicate
@@ -451,7 +453,7 @@ jobs:
             aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
-            postgresql-client python3-pip redis-tools sipsak \
+            postgresql-client python3-pip redis-tools sipsak smbclient \
             subversion tor wakeonlan zabbix-sender gearman-tools \
             mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached \
             freeradius
@@ -524,7 +526,7 @@ jobs:
       # oracle FAILS rather than skips without tshark. jammy's tshark 3.6 has the `tls`
       # dissector that check needs; only the Test job's redis case needs >= 4.0 (`resp`).
       # The preseed answers the capture-permission prompt that would otherwise hang the job.
-      - name: install tshark 4.x (the pcap oracle in the Gemini and Zabbix evidence)
+      - name: install tshark 4.x (the pcap oracle in the Gemini, Zabbix and SMB evidence)
         continue-on-error: true
         run: |
           # jammy's own tshark is 3.6, which has no `zabbix` dissector (zabbix's evidence runs
@@ -545,6 +547,15 @@ jobs:
         run: |
           python3 -m pip install --user greenstalk==2.1.1
           python3 -c "import greenstalk; print('greenstalk', greenstalk.__version__)"
+
+      # smb::real_client_test's second client is `smbprotocol`, a Python SMB2 implementation
+      # (Direct TCP framing, NTLMSSP through pyspnego, its own response parsing). PyPI only,
+      # like ignition; the import check names a failed install here.
+      - name: Install the SMB client library (smbprotocol)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --user 'smbprotocol==1.17.*'
+          python3 -c "import smbprotocol, smbclient; print('smbprotocol ok')"
 
       # client/modbus::real_server_test runs a pymodbus 3.15 device (its own framer and
       # datastore, in Python; NetGet's Modbus client frames with NetGet's codec) and reads what
@@ -951,6 +962,7 @@ jobs:
             prometheus::real_client_test \
             pypi::e2e_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
+            smb::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \
             svn::real_client_test \
             torrent_tracker::real_client_test vault::real_client_test webdav::real_client_test \

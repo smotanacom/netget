@@ -17,8 +17,9 @@
 
 #![cfg(all(test, feature = "smb"))]
 
+use super::wire_util::{nbss, read_frame_sync, tree_connect};
 use crate::server::helpers::{start_netget_server, E2EResult};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -44,7 +45,7 @@ fn build_smb2_header(command: u16, message_id: u64) -> Vec<u8> {
     packet
 }
 
-/// SMB2 NEGOTIATE request (MS-SMB2 2.2.3), direct TCP - no NetBIOS wrapper.
+/// SMB2 NEGOTIATE request (MS-SMB2 2.2.3), framed for Direct TCP.
 fn build_smb2_negotiate() -> Vec<u8> {
     let mut packet = build_smb2_header(0x0000, 0);
     packet.extend_from_slice(&[36, 0]); // StructureSize
@@ -55,7 +56,7 @@ fn build_smb2_negotiate() -> Vec<u8> {
     packet.extend_from_slice(&[0; 16]); // ClientGuid
     packet.extend_from_slice(&[0; 8]); // NegotiateContextOffset/Count
     packet.extend_from_slice(&[0x10, 0x02]); // Dialect SMB 2.1
-    packet
+    nbss(packet)
 }
 
 /// SMB2 SESSION_SETUP request (MS-SMB2 2.2.5), guest - empty security buffer.
@@ -69,7 +70,7 @@ fn build_smb2_session_setup() -> Vec<u8> {
     packet.extend_from_slice(&[88, 0]); // SecurityBufferOffset
     packet.extend_from_slice(&[0, 0]); // SecurityBufferLength
     packet.extend_from_slice(&[0; 8]); // PreviousSessionId
-    packet
+    nbss(packet)
 }
 
 /// SMB2 CREATE request (MS-SMB2 2.2.13). The UTF-16LE name sits at absolute offset 120,
@@ -95,7 +96,7 @@ fn build_smb2_create(message_id: u64, path: &str) -> Vec<u8> {
     packet.extend_from_slice(&[0; 4]); // CreateContextsLength
     assert_eq!(packet.len(), 120, "name buffer must start at absolute 120");
     packet.extend_from_slice(&name_utf16);
-    packet
+    nbss(packet)
 }
 
 /// SMB2 READ request (MS-SMB2 2.2.19), 49-byte body.
@@ -114,7 +115,7 @@ fn build_smb2_read(message_id: u64, file_id: &[u8], length: u32) -> Vec<u8> {
     packet.extend_from_slice(&[0; 2]); // ReadChannelInfoLength
     packet.push(0); // Buffer
     assert_eq!(packet.len(), 64 + 49);
-    packet
+    nbss(packet)
 }
 
 /// SMB2 CLOSE request (MS-SMB2 2.2.15), 24-byte body. Handled without an LLM call, so it
@@ -126,14 +127,12 @@ fn build_smb2_close(message_id: u64, file_id: &[u8]) -> Vec<u8> {
     packet.extend_from_slice(&[0; 4]); // Reserved
     packet.extend_from_slice(file_id); // FileId
     assert_eq!(packet.len(), 64 + 24);
-    packet
+    nbss(packet)
 }
 
+/// One response: a Direct TCP frame, unwrapped.
 fn read_smb2_response(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    let mut buf = vec![0u8; 65536];
-    let n = stream.read(&mut buf)?;
-    buf.truncate(n);
-    Ok(buf)
+    read_frame_sync(stream)
 }
 
 fn parse_smb2_status(response: &[u8]) -> Option<u32> {
@@ -210,7 +209,8 @@ fn expect_smb2_error(response: &[u8], command: u16, status: u32, message_id: u64
     );
 }
 
-/// NEGOTIATE + SESSION_SETUP, so the connection is ready for file operations.
+/// NEGOTIATE + SESSION_SETUP + TREE_CONNECT, so the connection is ready for file operations
+/// on tree 1 of session 1, which is what every request above addresses.
 fn smb_handshake(stream: &mut TcpStream) -> E2EResult<()> {
     stream.write_all(&build_smb2_negotiate())?;
     stream.flush()?;
@@ -223,6 +223,15 @@ fn smb_handshake(stream: &mut TcpStream) -> E2EResult<()> {
         parse_smb2_status(&response),
         Some(0),
         "SESSION_SETUP must succeed for the rest of the flow"
+    );
+
+    stream.write_all(&nbss(tree_connect(2, 1, "\\\\127.0.0.1\\share")))?;
+    stream.flush()?;
+    let response = read_smb2_response(stream)?;
+    assert_eq!(
+        parse_smb2_status(&response),
+        Some(0),
+        "TREE_CONNECT must succeed"
     );
     Ok(())
 }

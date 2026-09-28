@@ -1,21 +1,23 @@
 //! E2E tests for SMB server
 //!
 //! These tests spawn the NetGet binary and test SMB2 protocol operations
-//! using raw TCP socket communication to send SMB2 packets.
+//! using raw TCP socket communication to send SMB2 packets, each framed with the Direct TCP
+//! transport header (MS-SMB2 2.1) a real client writes on port 445.
 
 #![cfg(all(test, feature = "smb"))]
 
 use crate::server::helpers::{start_netget_server, E2EResult};
 
-use std::io::{Read, Write};
+use super::wire_util::{nbss, read_frame_into, read_frame_sync, tree_connect};
+use std::io::Write;
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// Helper: Build SMB2 Negotiate Protocol Request (Direct TCP, no NetBIOS)
+/// Helper: Build SMB2 Negotiate Protocol Request (Direct TCP framing added by `nbss`)
 fn build_smb2_negotiate() -> Vec<u8> {
     let mut packet = Vec::new();
 
-    // SMB2 Header (64 bytes) - Direct TCP mode, no NetBIOS wrapper
+    // SMB2 Header (64 bytes); `nbss` adds the transport header
     packet.extend_from_slice(b"\xFESMB"); // Protocol ID
     packet.extend_from_slice(&[64, 0]); // Header length = 64
     packet.extend_from_slice(&[0; 2]); // Credit charge
@@ -40,14 +42,14 @@ fn build_smb2_negotiate() -> Vec<u8> {
     packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // Negotiation context offset/count
     packet.extend_from_slice(&[0x10, 0x02]); // SMB 2.1 dialect (0x0210)
 
-    packet
+    nbss(packet)
 }
 
-/// Helper: Build SMB2 Session Setup Request (Direct TCP, no NetBIOS)
+/// Helper: Build SMB2 Session Setup Request (Direct TCP framing added by `nbss`)
 fn build_smb2_session_setup() -> Vec<u8> {
     let mut packet = Vec::new();
 
-    // SMB2 Header (64 bytes) - Direct TCP mode, no NetBIOS wrapper
+    // SMB2 Header (64 bytes); `nbss` adds the transport header
     packet.extend_from_slice(b"\xFESMB");
     packet.extend_from_slice(&[64, 0]); // Header length
     packet.extend_from_slice(&[0; 2]); // Credit charge
@@ -72,10 +74,10 @@ fn build_smb2_session_setup() -> Vec<u8> {
     packet.extend_from_slice(&[0, 0]); // Security buffer length = 0 (guest)
     packet.extend_from_slice(&[0; 8]); // Previous session ID
 
-    packet
+    nbss(packet)
 }
 
-/// Helper: Parse SMB2 response and extract status (Direct TCP, no NetBIOS)
+/// Helper: Parse SMB2 response and extract status (Direct TCP framing added by `nbss`)
 fn parse_smb2_status(response: &[u8]) -> Option<u32> {
     if response.len() < 64 {
         return None;
@@ -141,7 +143,7 @@ async fn test_smb_negotiate() -> E2EResult<()> {
 
     // Read response
     let mut response = vec![0u8; 2048];
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     response.truncate(n);
 
     println!("  [TEST] Received {} bytes", n);
@@ -220,7 +222,7 @@ async fn test_smb_session_setup() -> E2EResult<()> {
     stream.flush()?;
 
     let mut response = vec![0u8; 2048];
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     println!("  [TEST] Negotiate response: {} bytes", n);
 
     // Send SMB2 Session Setup
@@ -231,7 +233,7 @@ async fn test_smb_session_setup() -> E2EResult<()> {
 
     response.clear();
     response.resize(2048, 0);
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     response.truncate(n);
 
     println!("  [TEST] Session Setup response: {} bytes", n);
@@ -321,7 +323,7 @@ async fn test_smb_concurrent_connections() -> E2EResult<()> {
 
             // Read response
             let mut response = vec![0u8; 2048];
-            let n = stream.read(&mut response).expect("Failed to read");
+            let n = read_frame_into(&mut stream, &mut response).expect("Failed to read");
 
             // Verify response
             assert!(n >= 64, "Client {}: Response too short", i);
@@ -401,7 +403,7 @@ async fn test_smb_server_responsiveness() -> E2EResult<()> {
 
                     // Try to read response
                     let mut response = vec![0u8; 2048];
-                    match stream.read(&mut response) {
+                    match read_frame_into(&mut stream, &mut response) {
                         Ok(n) if n > 0 => {
                             println!("  [TEST] ✓ Received {} bytes response", n);
 
@@ -542,7 +544,7 @@ async fn test_smb_auth_llm_controlled() -> E2EResult<()> {
     stream.flush()?;
 
     let mut response = vec![0u8; 2048];
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     println!("  [TEST] Negotiate response: {} bytes", n);
 
     // Verify SMB2 response (Direct TCP, 64-byte minimum)
@@ -556,7 +558,7 @@ async fn test_smb_auth_llm_controlled() -> E2EResult<()> {
 
     response.clear();
     response.resize(2048, 0);
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     response.truncate(n);
 
     println!("  [TEST] Session Setup response: {} bytes", n);
@@ -623,7 +625,7 @@ async fn test_smb_connection_tracking() -> E2EResult<()> {
     stream.flush()?;
 
     let mut response = vec![0u8; 2048];
-    let _ = stream.read(&mut response)?;
+    let _ = read_frame_into(&mut stream, &mut response)?;
 
     // Give time for connection to be tracked
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -668,7 +670,7 @@ async fn test_smb_connection_tracking() -> E2EResult<()> {
 // file's contents and every test still passed.
 // ============================================================================
 
-/// Helper: Build an SMB2 TREE_CONNECT-free CREATE request for `path`.
+/// Helper: Build an SMB2 CREATE request for `path` on tree 1 of session 1.
 ///
 /// MS-SMB2 2.2.13. The name is UTF-16LE in the buffer at absolute offset 120, which is
 /// what NameOffset advertises - the server must locate it through NameOffset/NameLength.
@@ -704,7 +706,9 @@ fn build_smb2_create(message_id: u64, path: &str) -> Vec<u8> {
     packet.extend_from_slice(&[0x80, 0, 0, 0]); // FileAttributes = NORMAL
     packet.extend_from_slice(&[0x07, 0, 0, 0]); // ShareAccess
     packet.extend_from_slice(&[0x01, 0, 0, 0]); // CreateDisposition = FILE_OPEN
-    packet.extend_from_slice(&[0x40, 0, 0, 0]); // CreateOptions
+                                                // CreateOptions: neither FILE_DIRECTORY_FILE nor FILE_NON_DIRECTORY_FILE, so the model's
+                                                // answer alone decides which the handle is.
+    packet.extend_from_slice(&[0, 0, 0, 0]);
     packet.extend_from_slice(&120u16.to_le_bytes()); // NameOffset (from header start)
     packet.extend_from_slice(&(name_utf16.len() as u16).to_le_bytes()); // NameLength
     packet.extend_from_slice(&[0; 4]); // CreateContextsOffset
@@ -712,7 +716,7 @@ fn build_smb2_create(message_id: u64, path: &str) -> Vec<u8> {
     assert_eq!(packet.len(), 120, "name buffer must start at absolute 120");
     packet.extend_from_slice(&name_utf16);
 
-    packet
+    nbss(packet)
 }
 
 /// Helper: Build an SMB2 READ request for `file_id` (MS-SMB2 2.2.19, body is 49 bytes).
@@ -747,10 +751,10 @@ fn build_smb2_read(message_id: u64, file_id: &[u8], length: u32) -> Vec<u8> {
     packet.push(0); // Buffer
     assert_eq!(packet.len(), 64 + 49);
 
-    packet
+    nbss(packet)
 }
 
-/// Helper: Build an SMB2 WRITE request (MS-SMB2 2.2.21, 49-byte body then the data).
+/// Helper: Build an SMB2 WRITE request (MS-SMB2 2.2.21: 48 fixed bytes, then the data).
 fn build_smb2_write(message_id: u64, file_id: &[u8], data: &[u8]) -> Vec<u8> {
     let mut packet = Vec::new();
 
@@ -778,22 +782,17 @@ fn build_smb2_write(message_id: u64, file_id: &[u8], data: &[u8]) -> Vec<u8> {
     packet.extend_from_slice(&[0; 2]); // WriteChannelInfoOffset
     packet.extend_from_slice(&[0; 2]); // WriteChannelInfoLength
     packet.extend_from_slice(&[0; 4]); // Flags
-    packet.push(0); // Buffer padding byte
-    assert_eq!(packet.len(), 64 + 49);
+                                       // StructureSize 49 counts the first byte of Buffer, which is the first byte of data:
+                                       // DataOffset 112 points here, so no padding byte goes between.
+    assert_eq!(packet.len(), 64 + 48);
 
     packet.extend_from_slice(data);
-    packet
+    nbss(packet)
 }
 
-/// Read exactly one SMB2 response message off the socket.
-///
-/// The server writes one response per request, so a single read suffices; loop until at
-/// least a full header has arrived so a split TCP segment does not fail the test.
+/// Read exactly one SMB2 response message off the socket: one Direct TCP frame, unwrapped.
 fn read_smb2_response(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    let mut buf = vec![0u8; 65536];
-    let n = stream.read(&mut buf)?;
-    buf.truncate(n);
-    Ok(buf)
+    read_frame_sync(stream)
 }
 
 /// Extract the 16-byte FileId from a CREATE response.
@@ -846,7 +845,8 @@ fn read_response_payload(response: &[u8]) -> Vec<u8> {
     response[data_offset..data_offset + data_length].to_vec()
 }
 
-/// Drive NEGOTIATE + SESSION_SETUP so the connection is ready for file operations.
+/// Drive NEGOTIATE + SESSION_SETUP + TREE_CONNECT so the connection is ready for file
+/// operations on tree 1 of session 1, which is what the request builders above address.
 fn smb_handshake(stream: &mut TcpStream) -> E2EResult<()> {
     stream.write_all(&build_smb2_negotiate())?;
     stream.flush()?;
@@ -859,6 +859,20 @@ fn smb_handshake(stream: &mut TcpStream) -> E2EResult<()> {
         parse_smb2_status(&response),
         Some(0),
         "SESSION_SETUP must succeed for the rest of the flow"
+    );
+
+    stream.write_all(&nbss(tree_connect(2, 1, "\\\\127.0.0.1\\share")))?;
+    stream.flush()?;
+    let response = read_smb2_response(stream)?;
+    assert_eq!(
+        parse_smb2_status(&response),
+        Some(0),
+        "TREE_CONNECT must succeed"
+    );
+    assert_eq!(
+        u32::from_le_bytes([response[36], response[37], response[38], response[39]]),
+        1,
+        "the first tree on the connection is tree 1"
     );
     Ok(())
 }
@@ -969,7 +983,7 @@ async fn test_smb_read_binary_content_is_decoded() -> E2EResult<()> {
 }
 
 /// Test: text content still works without an `encoding` field, and a directory handle
-/// carries FILE_ATTRIBUTE_DIRECTORY.
+/// carries FILE_ATTRIBUTE_DIRECTORY and cannot be READ.
 ///
 /// `utf8` is the default precisely so that every pre-existing prompt keeps working; a
 /// string that happens to look like base64 must be delivered literally when unmarked.
@@ -991,18 +1005,27 @@ async fn test_smb_default_encoding_is_literal_text() -> E2EResult<()> {
             ]))
             .expect_at_least(1)
             .and()
+            // One rule for both opens, branching on the path: /documents is a directory,
+            // the file inside it is a file.
             .on_event("smb_operation")
             .and_event_data_contains("operation", "create")
-            .respond_with_actions(serde_json::json!([
-                {"type": "smb_create_directory", "path": "/documents"}
-            ]))
-            .expect_calls(1)
+            .respond_with_actions_from_event(|event| {
+                let path = event["path"].as_str().unwrap_or_default().to_string();
+                if path == "/documents" {
+                    serde_json::json!([{"type": "smb_create_directory", "path": path}])
+                } else {
+                    serde_json::json!([{"type": "smb_create_file", "path": path}])
+                }
+            })
+            .expect_calls(2)
             .and()
             .on_event("smb_operation")
             .and_event_data_contains("operation", "read")
+            .and_event_data_contains("path", "/documents/b64.txt")
             .respond_with_actions(serde_json::json!([
-                {"type": "smb_read_file", "path": "/documents", "content": AMBIGUOUS}
+                {"type": "smb_read_file", "path": "/documents/b64.txt", "content": AMBIGUOUS}
             ]))
+            // Exactly one: the READ of the directory handle is refused without asking.
             .expect_calls(1)
             .and()
             .on_any()
@@ -1022,7 +1045,7 @@ async fn test_smb_default_encoding_is_literal_text() -> E2EResult<()> {
 
     smb_handshake(&mut stream)?;
 
-    stream.write_all(&build_smb2_create(2, "/documents"))?;
+    stream.write_all(&build_smb2_create(3, "/documents"))?;
     stream.flush()?;
     let create_response = read_smb2_response(&mut stream)?;
     assert_eq!(
@@ -1030,9 +1053,25 @@ async fn test_smb_default_encoding_is_literal_text() -> E2EResult<()> {
         0x10,
         "smb_create_directory must set FILE_ATTRIBUTE_DIRECTORY (0x10) in the CREATE response"
     );
+    let dir_id = create_response_file_id(&create_response);
+
+    // MS-SMB2 3.3.5.12: a READ on a directory fails with STATUS_INVALID_DEVICE_REQUEST.
+    stream.write_all(&build_smb2_read(4, &dir_id, 4096))?;
+    stream.flush()?;
+    let refused = read_smb2_response(&mut stream)?;
+    assert_eq!(
+        parse_smb2_status(&refused),
+        Some(0xC000_0010),
+        "READ on a directory handle must answer STATUS_INVALID_DEVICE_REQUEST"
+    );
+
+    stream.write_all(&build_smb2_create(5, "/documents/b64.txt"))?;
+    stream.flush()?;
+    let create_response = read_smb2_response(&mut stream)?;
+    assert_eq!(parse_smb2_status(&create_response), Some(0));
     let file_id = create_response_file_id(&create_response);
 
-    stream.write_all(&build_smb2_read(3, &file_id, 4096))?;
+    stream.write_all(&build_smb2_read(6, &file_id, 4096))?;
     stream.flush()?;
     let read_response = read_smb2_response(&mut stream)?;
 
