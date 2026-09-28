@@ -138,7 +138,14 @@ Nothing needs a click:
   WebLLM runtime (esm.run) is only imported once a WebLLM model is selected.
 - The built-in model gets a fresh session per request (NetGet sends the whole context each
   time) and `promptStreaming()` with a `responseConstraint`: a JSON Schema of `{"actions":
-  [...]}` whose items are the offered non-tool actions, `type` pinned to each name. Chrome's
+  [...]}` whose items are the offered non-tool actions, `type` pinned to each name, listed
+  **first**, and exactly that action's parameters after it (`additionalProperties: false`).
+  The order is load-bearing: a constrained decoder writes properties in schema order, so with
+  `type` listed after the parameters a model that begins with `"type"` (as every example in
+  the prompt does) could only reach the actions with no required parameter. Gemini Nano,
+  llama3.1:8b and qwen2.5:1.5b all answered a typed "hello" with `send_telnet_prompt` and
+  `"> "` that way, Nano under a half-written key (`"prompt__"`, `"promptłe"`) that the missing
+  `additionalProperties: false` let through. Chrome's
   stream yields deltas; early versions yielded the whole text so far each time, and a chunk
   that extends what came before is taken as that. A session without `promptStreaming()` is
   asked through `prompt()`. Its text goes through the composer's own

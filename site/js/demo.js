@@ -752,14 +752,26 @@ async function answerWithModel(entry) {
 class UnusableAnswer extends Error {}
 
 // A JSON Schema that only NetGet's action envelope satisfies: `{"actions": [...]}` where each
-// item is one of the offered actions, `type` pinned to its name. Tools are left out: they
-// make a small model wander, and nothing a tool returns is needed to answer a Telnet line.
+// item is one of the offered actions, `type` pinned to its name, with exactly that action's
+// parameters and nothing else. Tools are left out: they make a small model wander, and
+// nothing a tool returns is needed to answer a Telnet line.
+//
+// `type` is the FIRST property, and that is load-bearing. Constrained decoders (Chrome's, and
+// llama.cpp's that Ollama uses) emit an object's properties in the order the schema lists
+// them, so the first key decides which branch of the `anyOf` is still open. Every example in
+// the prompt starts with "type"; with `type` listed after the parameters, writing it first
+// was possible only for the actions with no required parameter (send_telnet_prompt,
+// wait_for_more, close_connection), so a model that wanted to answer "hello" was left with
+// send_telnet_prompt, and Gemini Nano, llama3.1:8b, qwen2.5:1.5b and gemma3:1b all sent it.
+// `additionalProperties: false` is what keeps a key the model half-writes ("prompt셉") out.
 function responseConstraint(actions) {
     const items = actions.filter((a) => !a.tool).map((a) => {
         const schema = a.schema && typeof a.schema === 'object' ? a.schema : {};
-        const properties = Object.assign({}, schema.properties || {}, { type: { type: 'string', enum: [a.name] } });
-        const required = ['type', ...(Array.isArray(schema.required) ? schema.required.filter((r) => r !== 'type') : [])];
-        return { type: 'object', properties, required };
+        const params = Object.assign({}, schema.properties || {});
+        delete params.type;
+        const properties = Object.assign({ type: { type: 'string', enum: [a.name] } }, params);
+        const required = ['type', ...(Array.isArray(schema.required) ? schema.required.filter((r) => r !== 'type' && r in params) : [])];
+        return { type: 'object', properties, required, additionalProperties: false };
     });
     return {
         type: 'object',

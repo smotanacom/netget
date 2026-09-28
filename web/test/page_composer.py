@@ -604,6 +604,19 @@ def run_chrome_available(browser, origin):
     assert "send_telnet_line" in names and "wait_for_more" in names, names
     assert not any(n in names for n in ("web_search", "read_file")), f"tools were offered to the built-in model: {names}"
     assert last.get("omitResponseConstraintInput") is True, last
+    # Each action's schema lists `type` first and exactly the action's parameters: a decoder
+    # writes properties in schema order, so `type` after the parameters left only the actions
+    # without a required parameter open to a model that writes "type" first, and a missing
+    # `additionalProperties: false` let it write a key no action has.
+    items = last["responseConstraint"]["properties"]["actions"]["items"]["anyOf"]
+    for item in items:
+        assert list(item["properties"])[0] == "type", item
+        assert item["additionalProperties"] is False, item
+    by_name = {item["properties"]["type"]["enum"][0]: item for item in items}
+    assert list(by_name["send_telnet_line"]["properties"]) == ["type", "line"], by_name["send_telnet_line"]
+    assert by_name["send_telnet_line"]["required"] == ["type", "line"], by_name["send_telnet_line"]
+    assert list(by_name["send_telnet_prompt"]["properties"]) == ["type", "prompt"], by_name["send_telnet_prompt"]
+    assert by_name["send_telnet_prompt"]["required"] == ["type"], by_name["send_telnet_prompt"]
 
     # An answer that does not parse: that request goes to the composer, with the reason.
     type_line(page, "garble")
