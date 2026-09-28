@@ -47,7 +47,7 @@
             <h2>How it works</h2>
 
             <div class="diagram">
-                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port; the network sends requests; netget answers via a static response, an external script runtime, or an external LLM">
+                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port for any protocol; clients on the network send requests; netget speaks the protocol and gets each answer from a static response, a script runtime, or an LLM">
                     <defs>
                         <marker id="arw" markerWidth="8" markerHeight="8" viewBox="0 0 10 10" refX="8" refY="5" orient="auto-start-reverse">
                             <path d="M0,0 L10,5 L0,10 z" class="arw"/>
@@ -68,7 +68,7 @@
                     <rect class="box dashed client" x="20" y="330" width="200" height="62" rx="10"/>
                     <text class="icon" x="36" y="370">🌐</text>
                     <text class="t client-t" x="68" y="357">the network</text>
-                    <text class="s" x="68" y="375">curl · browser · dig</text>
+                    <text class="s" x="68" y="375">telnet · dig · redis-cli</text>
 
                     <!-- netget process -->
                     <rect class="ngbox" x="350" y="40" width="270" height="380" rx="14"/>
@@ -81,8 +81,8 @@
 
                     <!-- port on the process boundary -->
                     <circle class="port" cx="350" cy="361" r="28"/>
-                    <text class="mc" x="350" y="358" text-anchor="middle">:8080</text>
-                    <text class="xs" x="350" y="374" text-anchor="middle">HTTP</text>
+                    <text class="mc" x="350" y="358" text-anchor="middle">:port</text>
+                    <text class="xs" x="350" y="374" text-anchor="middle">TCP/UDP</text>
                     <circle class="pulse-dot" cx="314" cy="404" r="4"/>
                     <text class="lst" x="324" y="408">LISTENING</text>
 
@@ -95,14 +95,14 @@
                     <rect class="box model" x="710" y="330" width="210" height="62" rx="10"/>
                     <text class="icon" x="722" y="370">✨</text>
                     <text class="t model-t" x="752" y="357">LLM</text>
-                    <text class="s" x="752" y="375">Ollama · any OpenAI API</text>
+                    <text class="s" x="752" y="375">local or hosted · or you</text>
 
                     <!-- arrows -->
                     <path class="ln" d="M220,81 C280,81 305,90 344,98"/>
-                    <text class="m" x="284" y="66" text-anchor="middle">“http server on 8080”</text>
+                    <text class="m" x="284" y="66" text-anchor="middle">“SMTP on 2525”</text>
 
                     <path class="ln" d="M220,171 C280,171 305,160 344,150"/>
-                    <text class="m" x="284" y="140" text-anchor="middle">start_server(...)</text>
+                    <text class="m" x="284" y="140" text-anchor="middle">start_server(dns)</text>
 
                     <path class="ln" d="M220,361 L314,361"/>
                     <text class="m" x="268" y="351" text-anchor="middle">request</text>
@@ -119,9 +119,11 @@
             </div>
 
             <p class="caption">
-                Real sockets, real wire formats. NetGet handles the bytes, the handler writes the content.
-                Below, the same three run in this tab: <span class="mark mark-client">the network</span> is a client machine,
-                <span class="mark mark-netget">netget</span> is the dashboard, <span class="mark mark-model">LLM</span> is a model you pick — or you.
+                Real sockets, real wire formats. NetGet speaks the protocol, whichever one it is, and the handler writes only
+                the content: a Telnet banner, an SMTP reply, a DNS answer, a Redis value.
+                Below, the same three run in this tab: <span class="mark mark-client">Telnet</span> is a client machine,
+                <span class="mark mark-netget">netget</span> is the dashboard, <span class="mark mark-model">LLM</span> is the model:
+                Chrome's built-in one or a WebLLM model on your GPU, and you until one is ready.
             </p>
         </section>
 
