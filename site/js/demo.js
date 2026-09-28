@@ -45,12 +45,25 @@ const SERVER_AFTER_MS = 1000;   // after NetGet boots, open the Telnet server
 const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
 
 // Short, and answerable in one line by a small model or by a person filling in a form.
+//
+// The banner is its own rule, on the one event it is for, and not part of the instruction:
+// every model request carries the instruction and a single event with no record of what was
+// said before it, so an instruction that opened with "when a visitor connects, send a banner
+// that asks for their name; after that, answer every line" had a model answering a typed
+// "hello" decide whether the banner was still owed, and llama3.1:8b and qwen2.5:1.5b sent it
+// again nearly every time. A `llm` event handler adds its instruction to that event's prompt
+// alone (web/README.md has the measurements).
 const TELNET_INSTRUCTION = 'You are the NetGet BBS, a tiny retro bulletin board reached over '
-    + 'Telnet. When a visitor connects, send a short welcome banner (two lines at most) that '
-    + 'ends by asking for their name. After that, answer every line they type with one or two '
-    + 'short, friendly lines: greet them by name, chat, tell a one-line joke when asked, or run '
-    + 'a very small text adventure if they type "play". Plain text only, under 200 characters '
-    + 'per reply.';
+    + 'Telnet. Answer every line a visitor types with one or two short, friendly lines: greet '
+    + 'them by name, chat, tell a one-line joke when asked, or run a very small text adventure '
+    + 'if they type "play". Plain text only, under 200 characters per reply.';
+const TELNET_EVENT_HANDLERS = [{
+    event_pattern: 'telnet_connection_opened',
+    handler: {
+        type: 'llm',
+        instruction: 'Send a short welcome banner (two lines at most) that ends by asking for their name.',
+    },
+}];
 
 // Options for the Prompt API: English text in, English text out.
 const LM_OPTIONS = {
@@ -1104,6 +1117,7 @@ function wireTelnet() {
 function startTelnetServer(attempt = 0) {
     app.netget.start_server(JSON.stringify({
         protocol: 'telnet', port: TELNET_PORT, instruction: TELNET_INSTRUCTION,
+        event_handlers: TELNET_EVENT_HANDLERS,
     }), (json) => {
         const r = JSON.parse(json);
         if (r.error) {

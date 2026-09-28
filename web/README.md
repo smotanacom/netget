@@ -92,8 +92,16 @@ one they stack as Telnet, dashboard, model, with the steps above and the notes b
 Nothing needs a click:
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
-  2323 with a short BBS instruction, so it is a normal instance on the dashboard; about a
-  second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
+  2323 with a short BBS instruction and one `llm` rule on `telnet_connection_opened` that
+  asks for the welcome banner, so it is a normal instance on the dashboard (`rules 1`). The
+  banner is a rule rather than a sentence in the instruction because every request carries
+  the instruction and one event with nothing said before it: "when a visitor connects, send a
+  banner asking for their name; after that, answer every line" had llama3.1:8b answer every
+  typed line (`hello`, `hi there`, `what is this place?`, `play`) with the banner again, 20
+  times in 20, and naming the events inside the instruction barely changed that (16 in 20).
+  With the rule it answers `hello` and `hi there` with a greeting of its own (such as
+  `Hello, how are you?`) 10 times in 10, and Gemini Nano with `Hi there!` / `Hello there!`.
+  About a second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
   a `$ ` prompt, `telnet localhost 2323` typed out so that it finishes as the client connects,
   then telnet(1)'s own `Trying 127.0.0.1...` / `Connected to localhost.` / `Escape character
   is '^]'.`; when the server hangs up, `Connection closed by foreign host.` and the prompt
