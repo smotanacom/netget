@@ -988,3 +988,40 @@ async fn nsq_refuse_closed_topic_waits_for_the_model() -> E2EResult<()> {
     })
     .await
 }
+
+// ---------------------------------------------------------------------------
+// otlp — otel-cli
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "otlp")]
+fn answer_otlp(mock: MockLlmBuilder) -> MockLlmBuilder {
+    mock.on_event("otlp_export")
+        .respond_with_actions_from_event(|event| {
+            if event["service_name"] == "checkout" && event["span_names"][0] != "debug-probe" {
+                serde_json::json!([{"type": "accept_otlp"}])
+            } else {
+                serde_json::json!([{"type": "reject_otlp", "code": 403, "message": "refused"}])
+            }
+        })
+        .after_delay(MODEL_LATENCY)
+        .expect_calls(1)
+        .and()
+}
+
+#[cfg(feature = "otlp")]
+#[tokio::test]
+async fn otlp_accept_known_service_waits_for_the_model() -> E2EResult<()> {
+    check_case("otlp/accept-known-service", answer_otlp).await
+}
+
+#[cfg(feature = "otlp")]
+#[tokio::test]
+async fn otlp_refuse_unknown_service_waits_for_the_model() -> E2EResult<()> {
+    check_case("otlp/refuse-unknown-service", answer_otlp).await
+}
+
+#[cfg(feature = "otlp")]
+#[tokio::test]
+async fn otlp_refuse_debug_spans_waits_for_the_model() -> E2EResult<()> {
+    check_case("otlp/refuse-debug-spans", answer_otlp).await
+}

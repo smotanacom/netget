@@ -88,7 +88,7 @@ env:
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
     jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server prometheus docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus otlp docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:
@@ -350,6 +350,8 @@ jobs:
       #   gearman-tools     - gearman (the gearmand project's gearman and gearadmin)
       #   (nsq release)     - nsq (to_nsq and nsq_tail; no distro packages them - see the
       #                       step that unpacks the release tarball)
+      #   (otel-cli .deb,   - otlp (otel-cli from its release .deb; telemetrygen through
+      #    telemetrygen)      `go install`, with the Go toolchain set up for it - see below)
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
@@ -504,6 +506,25 @@ jobs:
           curl -fsSL https://github.com/nsqio/nsq/releases/download/v1.3.0/nsq-1.3.0.linux-amd64.go1.21.5.tar.gz \
             | sudo tar -xz -C /usr/local --strip-components=1
           command -v to_nsq nsq_tail
+
+      # otlp::real_client_test drives two OpenTelemetry exporters: otel-cli (its release .deb)
+      # and the Collector project's telemetrygen, which is only published as a Go module. The
+      # Go setup step exists for it; the version is pinned so the evidence is reproducible.
+      - uses: actions/setup-go@v5
+        continue-on-error: true
+        with:
+          go-version: stable
+          cache: false
+      - name: Install the OTLP clients (otel-cli, telemetrygen)
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/otel-cli.deb \
+            https://github.com/equinix-labs/otel-cli/releases/download/v0.4.5/otel-cli_0.4.5_linux_amd64.deb
+          sudo dpkg -i /tmp/otel-cli.deb
+          GOBIN="$HOME/go-tools" go install \
+            github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@v0.161.0
+          sudo install -m 0755 "$HOME/go-tools/telemetrygen" /usr/local/bin/telemetrygen
+          command -v otel-cli telemetrygen
 
       # gemini::real_client_test drives `ignition`, a Python Gemini client library (TLS through
       # CPython's ssl/OpenSSL, trust-on-first-use pinning, its own response parser). No distro
@@ -943,7 +964,7 @@ jobs:
             mercurial::real_client_test mysql::real_client_test npm::e2e_test \
             oci_registry::e2e_test ollama::real_client_test openvpn:: \
             postgresql::real_client_test \
-            prometheus::real_client_test \
+            prometheus::real_client_test otlp::real_client_test \
             pypi::e2e_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \

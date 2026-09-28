@@ -70,6 +70,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(udp());
     #[cfg(feature = "prometheus")]
     cases.extend(prometheus());
+    #[cfg(feature = "otlp")]
+    cases.extend(otlp());
     #[cfg(feature = "docker")]
     cases.extend(docker());
     #[cfg(feature = "vault")]
@@ -610,6 +612,69 @@ fn nsq() -> Vec<EvalCase> {
              publish. Every other topic accepts messages.",
             to_nsq_probe("archive", "old record\n"),
             Expect::contains(&["E_PUB_FAILED"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// OTLP/HTTP — otel-cli, an OpenTelemetry exporter that sends one span over
+// http/protobuf. With --fail it exits non-zero on any response but a success;
+// --tp-print makes it print TRACEPARENT= only once the export was accepted, and
+// a refusal prints "server returned … code".
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "otlp")]
+fn otel_cli_probe(service: &str, span: &str) -> Probe {
+    Probe::client(
+        "otel-cli",
+        &[
+            "span",
+            "--endpoint",
+            "http://127.0.0.1:{PORT}",
+            "--protocol",
+            "http/protobuf",
+            "--insecure",
+            "--service",
+            service,
+            "--name",
+            span,
+            "--timeout",
+            "60s",
+            "--fail",
+            "--verbose",
+            "--tp-print",
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "otlp")]
+fn otlp() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "otlp/accept-known-service",
+            "otlp",
+            "You are an OpenTelemetry collector. Accept all telemetry the checkout \
+             service sends.",
+            otel_cli_probe("checkout", "charge card"),
+            Expect::contains(&["TRACEPARENT="]),
+        ),
+        EvalCase::new(
+            "otlp/refuse-unknown-service",
+            "otlp",
+            "You are an OpenTelemetry collector that only takes data from the checkout \
+             service. Refuse telemetry from every other service; it is not allowed to \
+             send here.",
+            otel_cli_probe("inventory", "count stock"),
+            Expect::contains(&["server returned"]).not_containing(&["TRACEPARENT="]),
+        ),
+        EvalCase::new(
+            "otlp/refuse-debug-spans",
+            "otlp",
+            "You are an OpenTelemetry collector. Accept all traces, except that spans \
+             named debug-probe are invalid data and must be refused.",
+            otel_cli_probe("checkout", "debug-probe"),
+            Expect::contains(&["server returned"]).not_containing(&["TRACEPARENT="]),
         ),
     ]
 }

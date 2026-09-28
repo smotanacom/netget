@@ -43,7 +43,7 @@ NC=$'\033[0m'
 ALL_PROTOCOLS=(
     http dns whois gopher finger dict gemini beanstalkd zabbix gearman nsq redis postgresql mysql
     ldap ipp syslog ntp telnet tcp ftp udp
-    prometheus docker vault bolt
+    prometheus otlp docker vault bolt
     smtp pop3 imap nntp memcached mqtt coap modbus snmp sip websocket
 )
 
