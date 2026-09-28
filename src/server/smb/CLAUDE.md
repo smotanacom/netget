@@ -2,23 +2,30 @@
 
 ## Overview
 
-SMB2 (Server Message Block version 2) file server implementing a subset of MS-SMB2 protocol. Provides Windows-compatible
-file sharing where the LLM controls the virtual filesystem, authentication, and file operations.
+SMB2 (Server Message Block version 2) file server implementing a subset of MS-SMB2. Real
+clients — Samba's `smbclient` and the Python `smbprotocol` library — complete whole sessions
+against it; the LLM controls the virtual filesystem, authentication, and file operations.
 
-**Protocol**: SMB 2.1 (dialect 0x0210)
-**Transport**: raw SMB2 over TCP, with **no NetBIOS session-service framing**. This is not
-"direct TCP (445) or NetBIOS over TCP (139)" as this line used to claim: every real client on
-either port prefixes each message with the 4-byte NBSS header (`00` + a 24-bit length), and
-this server reads 64 bytes and requires `\xFESMB` at offset 0. A real `smbclient` therefore
-hands it `00 00 00 xx`, the signature check fails, and the connection closes with no reply.
-The tests speak the same unframed dialect the server does, which is why nothing caught it.
+**Protocol**: SMB 2.1 (dialect 0x0210), or 2.0.2 (0x0202) if that is all the client offers.
+**Transport**: Direct TCP (MS-SMB2 2.1): every message, or compound chain of messages, is
+preceded by a zero byte and a 24-bit big-endian length, and every reply is framed the same
+way. That frame is the only thing that says where a request ends — the SMB2 header carries no
+length — so the server reads each request whole before deciding anything about it. An RFC 1002
+session request (a client that dialled 139) gets a positive session response; keep-alives are
+ignored; anything else as the first byte closes the connection.
 **Port**: 445 (standard), configurable
-**Status**: Experimental
+**Status**: Beta (see "Maturity" at the end)
 **Startup parameters**: none declared, none read.
+
+**Code layout**: `wire.rs` owns every byte — the transport frame, the one function that lays
+out a response header (`ResponseHeader::encode`), every response body and every information
+class — as pure functions. `auth.rs` owns the SPNEGO/NTLMSSP tokens. `mod.rs` owns the
+connection, the per-connection state and the model.
 
 ## Library Choices
 
-- **Manual SMB2 implementation** - No library used
+- **Manual SMB2 implementation** - No library used (the `smb-msg` crate the `smb` feature
+  pulls in is referenced by no code)
     - SMB2 binary protocol parsing and response generation
     - Custom packet builders for Negotiate, Session Setup, Tree Connect, etc.
     - Direct control over all protocol aspects
@@ -35,26 +42,33 @@ The tests speak the same unframed dialect the server does, which is why nothing 
 
 ### Simplified SMB2 Dialect
 
-Implements minimal SMB 2.1 subset:
+Implements an SMB 2.0.2/2.1 subset:
 
-- **Negotiate Protocol** - Offer SMB 2.1 dialect (0x0210)
-- **Session Setup** - Guest authentication only
-- **Tree Connect** - accepted unconditionally, with **no LLM call and no share check**, and
-  the arm does not consume the request body, so the next header read finds the leftover
-  bytes and drops the connection. No test sends TREE_CONNECT. Treat it as unimplemented.
-- **Create** - Open/create files and directories
-- **Read/Write** - File content operations
-- **Close** - Close file handles
-- **Query Info** - File attributes
-- **Query Directory** - Directory listings
+- **Negotiate** - picks 0x0210 if offered, else 0x0202, else STATUS_NOT_SUPPORTED. Offers
+  SPNEGO with NTLMSSP as its only mechanism, signing enabled but not required, no
+  capabilities (no DFS, leasing or multi-credit). `MaxWriteSize` is `MAX_WRITE_SIZE`.
+- **Session Setup** - see "Authentication" below.
+- **Tree Connect** - parses the UNC path and allocates a tree id bound to the session. Every
+  share name is accepted with **no LLM call**: the share is only a name for the root of the
+  tree the model invents, and admission was decided at SESSION_SETUP. `IPC$` connects as a
+  pipe share and every CREATE on it is refused (no named pipes).
+- **Create** - open/create files and directories; the model decides (below).
+- **Read/Write** - file content operations.
+- **Close** - close file handles; an unknown handle is STATUS_FILE_CLOSED.
+- **Query Info** - file and file-system information classes.
+- **Query Directory** - directory listings, across as many calls as the buffer needs.
+- **Logoff, Tree Disconnect, Echo, Flush** - answered. **Cancel** gets no answer (MS-SMB2
+  3.3.5.16). **IOCTL** is STATUS_INVALID_DEVICE_REQUEST (no FSCTL is implemented).
+- **Compound requests** - split on `NextCommand`; `RELATED_OPERATIONS` inherits the session,
+  tree and "the handle just opened" (FileId all ones); replies chained with 8-byte alignment.
 
 **Not implemented**:
 
-- SMB 3.x features (encryption, multichannel, etc.)
-- NTLM authentication (only guest)
-- Opportunistic locks (oplocks)
-- Durable handles
-- Compound requests
+- SMB 3.x features (encryption, multichannel, secure negotiate, etc.)
+- Signing (no session key exists to sign with)
+- Opportunistic locks, leases, durable handles
+- SET_INFO (so no delete or rename), LOCK, CHANGE_NOTIFY, DFS, named pipes
+- SMB1: an `\xFFSMB` negotiate is logged and the connection closed
 
 ### LLM-Controlled Filesystem
 
@@ -64,29 +78,48 @@ Similar to NFS, LLM controls entire filesystem:
 - **File operations** - LLM provides file content, attributes
 - **Directory structure** - LLM defines folders and files
 
-### Guest-Only Authentication
+### Authentication
 
-Current implementation uses guest authentication:
+A real client sends two SESSION_SETUPs (`auth.rs`):
 
-- No password verification
-- LLM can accept or deny based on username
-- Session IDs allocated per connection
+1. SPNEGO `negTokenInit` wrapping an NTLMSSP NEGOTIATE. The server allocates a session id and
+   answers an NTLMSSP CHALLENGE with `STATUS_MORE_PROCESSING_REQUIRED`, **without asking the
+   model** — nothing has been said about who is logging in yet.
+2. SPNEGO `negTokenResp` wrapping an NTLMSSP AUTHENTICATE naming the user. This is what the
+   model decides on: `smb_operation` with `operation: "session_setup"`, `username`, `domain`,
+   and `auth_type` — `"anonymous"` (empty user, empty NT response) or `"ntlm"`, which also
+   carries `password_verified: false`.
+
+A bare NTLMSSP token (no SPNEGO, as smbprotocol sends with `auth_protocol="ntlm"`) is answered
+bare. A SESSION_SETUP with an **empty** security buffer is a one-step guest login decided the
+same way (`auth_type: "guest"`), which is what the raw-packet tests use. A security buffer
+with no NTLMSSP token at all (Kerberos only) is refused STATUS_LOGON_FAILURE,
+`decision=fail_closed_unsupported_mechanism`.
+
+**This authenticates nothing.** No password is checked and no session key is derived, so
+every granted session is flagged `IS_GUEST` — or `IS_NULL` for an anonymous login — which is
+also what tells a client there is nothing to sign with. The NTLMSSP exchange exists because
+no real client finishes SESSION_SETUP without it; `auth.rs` says so in its first paragraph.
 
 ### File Handle Management
 
 Server maintains file handle state:
 
-- 16-byte GUID per file handle (generated with timestamp)
-- HashMap of handles → file paths
-- Handles tracked per connection
+- 16-byte FileId per open, derived from a per-connection counter
+- HashMap of handles → path, tree id, attributes, the size once the model has given it, and
+  any directory enumeration in progress
+- A handle is only found through the tree it was opened on
 
 ### Binary Protocol Handling
 
-Manual SMB2 packet parsing:
+Manual SMB2 packet parsing (`wire.rs`):
 
-- 64-byte SMB2 header parsing
-- Command extraction (offset 12-13, little-endian u16)
-- Response builders for each command type
+- `RequestHeader::parse` reads the 64-byte header; `ResponseHeader::for_request` echoes the
+  request's MessageId, CreditCharge, TreeId and SessionId, carries `RELATED_OPERATIONS`,
+  sets `SERVER_TO_REDIR` and grants credits (the request's `CreditRequest`, 1..=64)
+- `ResponseHeader::encode` is **the only code that lays a header out**; every body builder
+  takes a `ResponseHeader`. The offsets are named constants beside it (MS-SMB2 2.2.1.2)
+- Every body builder is a pure function; `tests/server/smb/header_layout_test.rs` calls each
 
 ## Connection Management
 
@@ -108,10 +141,9 @@ Connections tracked in ServerInstance state:
   `ProtocolConnectionInfo::Smb { authenticated, username, session_id, open_files }` variant;
   no such variant exists (`ProtocolConnectionInfo` is a generic JSON wrapper), the connection
   is registered with `ProtocolConnectionInfo::empty()`, and the update site is a `TODO`.
-- Stats: bytes_sent, bytes_received, packets_sent, packets_received. One SMB2 message is read
-  in two places — the 64-byte header in the session loop, the body the header implies inside
-  `handle_smb2_command` — and only the header used to be counted, so a 64 KiB WRITE showed as
-  64 bytes received. `SmbReader` accumulates both and the loop flushes them.
+- Stats: bytes_sent, bytes_received, packets_sent, packets_received. One message is read in
+  two reads — the 4-byte transport header, then the frame it announces — and `SmbReader`
+  counts both, flushed once per frame, so a 64 KiB WRITE shows as 64 KiB received.
 - Status updated on connection close
 
 ### Dashboard injection (peer handle)
@@ -152,10 +184,11 @@ releases the handle, with zero LLM calls.
 
 `SmbConnectionState` maintains:
 
-- **Sessions**: HashMap<session_id, SmbSession>
-- **Trees**: HashMap<tree_id, SmbTreeConnect>
-- **Files**: HashMap<file_handle, SmbFileHandle>
-- Next session ID, next tree ID generators
+- **Sessions**: HashMap<session_id, SmbSession> — a session exists from the first NTLMSSP leg
+  and is `authenticated` only once the model admitted it
+- **Trees**: HashMap<tree_id, SmbTreeConnect> — bound to the session that connected it
+- **Files**: HashMap<file_id, SmbFileHandle>
+- Next session, tree and file-index counters
 
 ### Concurrency
 
@@ -179,8 +212,8 @@ Minimal global state:
 Per-connection state in `Arc<Mutex<SmbConnectionState>>`:
 
 - Sessions: Maps session_id → username, authenticated flag
-- Trees: Maps tree_id → share name
-- Files: Maps file_id (GUID) → path, is_directory
+- Trees: Maps tree_id → session, share name, pipe or disk
+- Files: Maps file_id → path, tree, attributes, size, pending directory entries
 
 ### Filesystem State
 
@@ -194,42 +227,40 @@ LLM maintains filesystem via instructions:
 
 ### Simplified SMB2 Implementation
 
-- **SMB 2.1 only** - No SMB 3.x features
-- **Guest auth only** - No NTLM, Kerberos, or secure authentication
-- **No encryption** - Plain text protocol (no SMB3 encryption)
-- **No signing** - Packets not cryptographically signed
-- **No oplocks** - No opportunistic locking for performance
+- **SMB 2.0.2 / 2.1 only** - No SMB 3.x features
+- **Guest and anonymous sessions only** - NTLMSSP is walked, never verified; no Kerberos
+- **No encryption, no signing** - there is no session key
+- **No oplocks or leases**
 
 ### Protocol Simplifications
 
-- Fixed tree IDs and session IDs (not from request)
-- Minimal header fields populated
-- Timestamps often zero
-- File attributes simplified
-- **Several response builders lay the 64-byte header out wrongly.** The SESSION_SETUP,
-  TREE_CONNECT, CREATE, CLOSE, READ, WRITE, QUERY_INFO and QUERY_DIRECTORY success builders
-  put the echoed MessageId at offset 20 (NextCommand's slot) instead of 24. `build_error_response` is the reference layout, with
-  the offsets written beside each field; `build_negotiate_response` follows it. A real client
-  correlating replies by MessageId would reject the others.
+- Timestamps are the model's `modified_time` where it gives one (directory entries,
+  `smb_get_file_info`), otherwise zero
+- File attributes are NORMAL or DIRECTORY
+- The volume (FileFsSize/FullSize/Volume/Attribute/Device/SectorSize information) is a fixed
+  report — 1 GiB, half free, 4 KiB clusters, "NTFS" — because there is no disk to measure
 
-### Inbound size bound
+### Inbound size bounds
 
-There is no transport length prefix (see Transport above), so every read is a fixed-size
-header or body except one: a WRITE's `Length`, a peer-chosen u32 that sizes the buffer the
-data is read into. `MAX_WRITE_SIZE` (1 MiB) bounds it and is the declared
-`max_inbound_bytes`. It is also what NEGOTIATE advertises as `MaxWriteSize`, from the same
-constant, so a client never sends a write the server will refuse.
+The Direct TCP header announces a message's length before any of it is read, so the frame
+length is the one peer-chosen size this server allocates for. `MAX_MESSAGE_BYTES`
+(`MAX_WRITE_SIZE` + 64 KiB) bounds it and is the declared `max_inbound_bytes`. A frame
+announcing more is refused after reading only its 64-byte SMB2 header — enough to answer
+`STATUS_INVALID_PARAMETER` to the right MessageId — logged
+`decision=fail_closed_message_too_large`, and the connection closes, because the rest of the
+frame is unread and reading on would parse it as the next message.
 
-A WRITE longer than that is refused **before** the buffer is allocated with
-`STATUS_INVALID_PARAMETER` — MS-SMB2 3.3.5.13's answer for a WRITE over the negotiated
-`MaxWriteSize` — logged `decision=fail_closed_write_too_large`, and the connection then closes
-(`SmbConnectionState::close_after_reply`): the payload behind the header is unread and cannot
-be skipped, and reading on would parse attacker-chosen bytes as the next SMB2 header.
-`tests/server/smb/inbound_limit_test.rs` drives it from the wire.
+Inside a legal frame, a WRITE whose `Length` exceeds `MAX_WRITE_SIZE` (1 MiB, advertised as
+`MaxWriteSize` from the same constant) is refused `STATUS_INVALID_PARAMETER` before the model
+— MS-SMB2 3.3.5.13 — logged `decision=fail_closed_write_too_large`. The frame was read whole,
+so the connection stays in step. A `Length` that runs past the end of the frame is
+`STATUS_INVALID_PARAMETER` too. `tests/server/smb/inbound_limit_test.rs` drives both bounds
+from the wire, and both were verified by removal.
 
-A WRITE that arrives before a session is refused `STATUS_USER_SESSION_DELETED` without its
-body being read at all, so it allocates nothing, but its data is then read as the next header
-and the connection desyncs and closes on the signature check.
+Because every request is read whole, a refused request never leaves bytes in the stream: a
+WRITE that arrives before any session is refused `STATUS_USER_SESSION_DELETED` with its payload
+consumed, and the next message on the connection is parsed as a message
+(`header_layout_test.rs::a_write_before_any_session_is_refused_and_the_stream_stays_in_step`).
 
 ### LLM Performance
 
@@ -241,13 +272,12 @@ and the connection desyncs and closes on the signature check.
 
 ### Testing Limitations
 
-- Real SMB clients (Windows, smbclient) have strict requirements
-- Clients expect full SMB2 compliance
-- Some clients probe for SMB1 (not supported)
-- **Testing uses raw TCP sockets, not real SMB clients.** `metadata().e2e_testing` used to
-  claim "smbclient / Windows Explorer"; neither has ever been run against this server, and
-  the claim now says so.
-- The tests use `#[tokio::test(flavor = "multi_thread")]`. They must: the mocked Ollama
+- Two real clients complete sessions (`tests/server/smb/real_client_test.rs`): Samba's
+  `smbclient` and Python's `smbprotocol`. Windows Explorer, macOS `mount_smbfs` and Linux
+  `mount.cifs` have not been run against it; the kernel clients in particular negotiate
+  SMB 3.x first and may refuse a server that offers only 2.x
+- Some clients probe with an SMB1 negotiate (not supported: the connection closes)
+- The raw-packet tests use `#[tokio::test(flavor = "multi_thread")]`. They must: the mocked Ollama
   server runs in-process on the test's runtime, and the blocking `std::net::TcpStream`
   reads these tests do would otherwise block the single-threaded runtime, so the mock
   could never answer and every test needing an LLM call timed out.
@@ -286,12 +316,20 @@ declared set and the event's action list drift apart again.
 
 | `operation` | Expected action | Effect on the wire |
 |---|---|---|
-| `session_setup` | `smb_auth_success` / `smb_auth_deny` | STATUS_SUCCESS with a session id, or STATUS_ACCESS_DENIED (`0xC0000022`) |
-| `create` | `smb_create_file` / `smb_create_directory` | FILE_ATTRIBUTE_NORMAL (0x80) or FILE_ATTRIBUTE_DIRECTORY (0x10) in the CREATE response, and the handle is recorded as one or the other; **neither action ⇒ STATUS_ACCESS_DENIED and no handle** |
-| `read` | `smb_read_file` | the decoded `content` becomes the READ response body; **absent action ⇒ STATUS_ACCESS_DENIED** |
+| `session_setup` | `smb_auth_success` / `smb_auth_deny` | STATUS_SUCCESS with a guest or null session, or STATUS_ACCESS_DENIED (`0xC0000022`) and the session forgotten |
+| `create` | `smb_create_file` / `smb_create_directory` | FILE_ATTRIBUTE_NORMAL (0x80) or FILE_ATTRIBUTE_DIRECTORY (0x10) in the CREATE response, and the handle is recorded as one or the other; `smb_create_file`'s optional `size` becomes EndOfFile. **Neither action ⇒ STATUS_ACCESS_DENIED and no handle.** A directory where the client's CreateOptions demanded a non-directory (or the reverse) is STATUS_FILE_IS_A_DIRECTORY / STATUS_NOT_A_DIRECTORY |
+| `read` | `smb_read_file` | the decoded `content` is the whole file; the READ response carries the requested range, and a read at or past its end is STATUS_END_OF_FILE; **absent action ⇒ STATUS_ACCESS_DENIED**. A READ on a directory handle is STATUS_INVALID_DEVICE_REQUEST without asking |
 | `write` | `smb_write_file` | STATUS_SUCCESS with `bytes_written`; **absent action ⇒ STATUS_ACCESS_DENIED** |
-| `query_info` | `smb_get_file_info` | `size` in the QUERY_INFO response; **absent action ⇒ STATUS_ACCESS_DENIED** |
-| `query_directory` | `smb_list_directory` | the `files` array becomes the directory listing; **absent action ⇒ STATUS_ACCESS_DENIED** |
+| `query_info` | `smb_get_file_info` | `size` (and `modified_time`) in the file information classes that need a size (Standard, All, NetworkOpen, Stream), asked once per handle; **absent action ⇒ STATUS_ACCESS_DENIED**. Asked only for a file handle whose size is not yet known — a directory, a `size` from CREATE, or a class that needs no size is answered from the handle |
+| `query_directory` | `smb_list_directory` | the `files` array (plus `.` and `..`), filtered by the client's search pattern, becomes the listing, handed out across as many calls as the client's buffer needs and then STATUS_NO_MORE_FILES; **absent action ⇒ STATUS_ACCESS_DENIED** |
+
+The `create` event also carries `disposition` (`open`, `create`, `open_if`, …) and
+`directory_requested`; `query_directory` carries `pattern`. Paths are `/`-rooted at the share
+and `/`-separated whatever the client sent; an empty CREATE name is the share root, `/`.
+
+**Give `smb_create_file` a `size` whenever the file has content.** smbprotocol reads exactly
+the CREATE response's EndOfFile and never asks again, so without it a file reads as empty.
+smbclient asks through QUERY_INFO, so it works either way.
 
 **`smb_delete_file` / `smb_delete_directory` do not exist.** SMB2 has no DELETE command:
 a client deletes by opening the file and issuing SET_INFO with
@@ -338,8 +376,10 @@ decorative rather than binding:
   one response. A peer could open a socket and send CREATE or READ as its first bytes — no
   NEGOTIATE, no SESSION_SETUP, no admission event — and be served; a peer whose login had
   just been denied could send CREATE on the same connection and be served identically.
-  Everything but NEGOTIATE and SESSION_SETUP now answers `STATUS_USER_SESSION_DELETED`
-  (`0xC0000203`) until a session exists, logged `decision=fail_closed_no_session`.
+  Everything but NEGOTIATE, SESSION_SETUP, ECHO and CANCEL answers
+  `STATUS_USER_SESSION_DELETED` (`0xC0000203`) unless the header's SessionId names a session
+  the model admitted, logged `decision=fail_closed_no_session`; a command addressed to a
+  share also needs a TreeId that session connected (STATUS_NETWORK_NAME_DELETED otherwise).
   `test_smb_file_operation_without_a_session_is_refused` pins it, and pins that the model is
   not consulted about the refused operation either.
 
@@ -407,7 +447,8 @@ All four were found by writing the first test that asserts response *bytes* rath
 - **WRITE `Length` read from the wrong offset.** MS-SMB2 2.2.21 puts it at body offset 4;
   the code read offset 0, which is `StructureSize`+`DataOffset` (0x00700031 for a
   well-formed request) — so the first WRITE blocked in `read_exact` waiting for 7 MB that
-  never arrived. The length is now also capped at 8 MiB before allocating.
+  never arrived. The data is now located through `DataOffset` inside the frame, and the
+  length is capped at `MAX_WRITE_SIZE` (see "Inbound size bounds").
 - **CREATE file name located by a hardcoded offset.** `parse_smb2_path` indexed the
   body-relative slice at 120, which is the *absolute* offset of the name buffer, so for a
   well-formed request it read 64 bytes past the name and every CREATE resolved to
@@ -441,11 +482,13 @@ payload (STATUS_DATA_ERROR on a read), which is the point: an outage must never 
 decision, and a `query_directory` failure must not be answered with an empty listing that
 reads as "the directory is empty".
 
-`build_error_response` echoes the request's **MessageId, TreeId and SessionId**. A client
-correlates replies to outstanding requests by MessageId, so an error carrying the wrong one
-is discarded and the client is back to waiting out its timeout. It also lays the 64-byte
-header out per MS-SMB2 2.2.1.2; it previously wrote MessageId at offset 20 (omitting
-NextCommand) and hardcoded TreeId/SessionId to 1.
+Every reply echoes the request's **MessageId, TreeId and SessionId**, because every header is
+built by `ResponseHeader::for_request` + `encode`. A client correlates replies to outstanding
+requests by MessageId, so a reply carrying the wrong one is discarded and the client is back
+to waiting out its timeout — which is exactly what eight builders did while each laid its own
+header out and put the MessageId at offset 20. `header_layout_test.rs` calls every builder and
+checks every field's offset; moving the MessageId back to 20 fails it, fails the pcap oracle
+("Malformed Packet" on every reply after NEGOTIATE), and fails smbclient at session setup.
 
 The connection is *not* torn down: the error ends the operation, not the session, and a
 following CLOSE is still answered. `tests/server/smb/llm_failure_test.rs` asserts all of
@@ -498,12 +541,11 @@ Start an SMB file server on port 445. Only allow user "alice" to authenticate.
 Deny all other users.
 ```
 
-> **This example does not work as written.** `parse_smb2_username` reads the SESSION_SETUP
-> body from `body.iter().take(200).skip(24)` while the caller reads exactly 24 bytes into a
-> fixed `[u8; 24]`, so the iterator is always empty and the username is always `"guest"`.
-> Per-user policy is therefore unimplementable today, and `smb_auth_success.username` is
-> declared `required: true` and then ignored by the executor. Fixing it means parsing the
-> real NTLMSSP security buffer.
+> The user name is the one the client's NTLMSSP AUTHENTICATE carries (`smbclient -U alice`),
+> so a per-user policy works — as a policy about names. **No password is verified**
+> (`password_verified: false` in the event), so it admits anyone who types `alice`; the
+> session is a guest session either way. A one-step SESSION_SETUP with an empty security
+> buffer always reports `"guest"`.
 
 **LLM Response (alice):**
 
@@ -645,7 +687,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 |---|---|---|
 | `FIRST_MESSAGE_READ_TIMEOUT` | 30s | SMB2 is client-speaks-first: NEGOTIATE is the first message, and `smbclient`, the Windows redirector and `mount -t cifs` all send it inside the connect path. |
 | `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | Not a number invented here: it is Windows' `autodisconnect` default — the interval after which a server disconnects an idle SMB session. A mounted share with no I/O is genuinely idle for long stretches and must not be torn down for it. |
-| `BODY_READ_TIMEOUT` | 30s | A different claim, and much shorter: the peer has said "this many bytes are coming" and the server has already allocated for them. Every announced-body read now goes through `read_body_exact` / `read_body`; each was an unbounded `read_exact` before. |
+| `BODY_READ_TIMEOUT` | 30s | A different claim, and much shorter: the peer's transport header has said "this many bytes are coming" and the server has already allocated for them. Every read of an announced frame goes through `read_body_exact`. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, as a real SMB server does. Every SMB2 response echoes the request's MessageId, TreeId and SessionId, and a refused peer has sent no request to echo. Samba past `max smbd processes` and Windows past its connection limit both close without a message. |
 
 **NetGet's own SMB client is *lazy*, so it is never the silent peer this bound closes:**
@@ -662,3 +704,26 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+## Maturity: Beta, and what it rests on
+
+**Beta since September 2026**, on the bar in the root `CLAUDE.md`: two independent
+third-party clients complete a real session, in tests that fail rather than skip when the
+client is absent (`tests/server/smb/real_client_test.rs`).
+
+| Client | What it drives | What it checks that nothing else does |
+|---|---|---|
+| Samba `smbclient` 4.24 (C) | anonymous SPNEGO/NTLMSSP login, TREE_CONNECT, `ls` (QUERY_DIRECTORY to NO_MORE_FILES, FileFsFullSizeInformation), `get` of a 70 000-byte binary file (CREATE, QUERY_INFO FileAllInformation, READ, CLOSE), TREE_DISCONNECT, LOGOFF | MessageId correlation on every reply, credits, the NTLMSSP CHALLENGE's shape, directory-entry chaining, the byte-exact file |
+| `smbprotocol` 1.17 (Python) | named-guest bare-NTLMSSP login, listdir, open+read of the same file | that a client which trusts CREATE's EndOfFile reads the whole file |
+
+The smbclient session is recorded through a relay and read clean by Wireshark's `nbss`/`smb2`
+dissectors (the pcap oracle); so is a raw session exercising every implemented command
+(`header_layout_test.rs`). Both inbound bounds have a test that was verified by removal.
+
+**Not Stable, and what is missing for it:** no fuzz target exists for the request parsers or
+the NTLMSSP parser (condition 3); `FIRST_MESSAGE_READ_TIMEOUT`, `IDLE_BETWEEN_MESSAGES_TIMEOUT`,
+`BODY_READ_TIMEOUT` and `MAX_CONNECTIONS` are held by the shared ratchets but have no SMB test
+of their own (condition 4). **What the rating covers is the surface the server implements** —
+SMB 2.0.2/2.1, guest and null sessions, the commands above — which is a small subset of
+MS-SMB2. Neither client exercises WRITE; the raw-packet suites do. Windows, macOS and Linux
+kernel clients have not been run against it.
