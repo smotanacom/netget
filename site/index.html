@@ -47,7 +47,7 @@
             <h2>How it works</h2>
 
             <div class="diagram">
-                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port; the network sends requests; netget answers via a static response, an external script runtime, or an external LLM">
+                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port for any protocol; clients on the network send requests; netget speaks the protocol and gets each answer from a static response, a script runtime, or an LLM">
                     <defs>
                         <marker id="arw" markerWidth="8" markerHeight="8" viewBox="0 0 10 10" refX="8" refY="5" orient="auto-start-reverse">
                             <path d="M0,0 L10,5 L0,10 z" class="arw"/>
@@ -68,7 +68,7 @@
                     <rect class="box dashed client" x="20" y="330" width="200" height="62" rx="10"/>
                     <text class="icon" x="36" y="370">🌐</text>
                     <text class="t client-t" x="68" y="357">the network</text>
-                    <text class="s" x="68" y="375">curl · browser · dig</text>
+                    <text class="s" x="68" y="375">telnet · dig · redis-cli</text>
 
                     <!-- netget process -->
                     <rect class="ngbox" x="350" y="40" width="270" height="380" rx="14"/>
@@ -81,8 +81,8 @@
 
                     <!-- port on the process boundary -->
                     <circle class="port" cx="350" cy="361" r="28"/>
-                    <text class="mc" x="350" y="358" text-anchor="middle">:8080</text>
-                    <text class="xs" x="350" y="374" text-anchor="middle">HTTP</text>
+                    <text class="mc" x="350" y="358" text-anchor="middle">:port</text>
+                    <text class="xs" x="350" y="374" text-anchor="middle">TCP/UDP</text>
                     <circle class="pulse-dot" cx="314" cy="404" r="4"/>
                     <text class="lst" x="324" y="408">LISTENING</text>
 
@@ -95,14 +95,14 @@
                     <rect class="box model" x="710" y="330" width="210" height="62" rx="10"/>
                     <text class="icon" x="722" y="370">✨</text>
                     <text class="t model-t" x="752" y="357">LLM</text>
-                    <text class="s" x="752" y="375">Ollama · any OpenAI API</text>
+                    <text class="s" x="752" y="375">local or hosted · or you</text>
 
                     <!-- arrows -->
                     <path class="ln" d="M220,81 C280,81 305,90 344,98"/>
-                    <text class="m" x="284" y="66" text-anchor="middle">“http server on 8080”</text>
+                    <text class="m" x="284" y="66" text-anchor="middle">“SMTP on 2525”</text>
 
                     <path class="ln" d="M220,171 C280,171 305,160 344,150"/>
-                    <text class="m" x="284" y="140" text-anchor="middle">start_server(...)</text>
+                    <text class="m" x="284" y="140" text-anchor="middle">start_server(dns)</text>
 
                     <path class="ln" d="M220,361 L314,361"/>
                     <text class="m" x="268" y="351" text-anchor="middle">request</text>
@@ -119,142 +119,73 @@
             </div>
 
             <p class="caption">
-                Real sockets, real wire formats. NetGet handles the bytes, the handler writes the content.
-                Below, the same three run in this tab: <span class="mark mark-client">the network</span> is a client machine,
-                <span class="mark mark-netget">netget</span> is the dashboard, <span class="mark mark-model">LLM</span> is a model you pick — or you.
+                Real sockets, real wire formats. NetGet speaks the protocol, whichever one it is, and the handler writes only
+                the content: a Telnet banner, an SMTP reply, a DNS answer, a Redis value.
+                Below, the same three run in this tab: <span class="mark mark-client">Telnet</span> is a client machine,
+                <span class="mark mark-netget">netget</span> is the dashboard, <span class="mark mark-model">LLM</span> is the model:
+                Chrome's built-in one or a WebLLM model on your GPU, and you until one is ready.
             </p>
         </section>
 
     <section class="demo" id="demo">
         <div class="demo-banner" id="demo-banner">Loading NetGet…</div>
 
-        <!-- Machine 1: NetGet -->
-        <div class="machine machine-netget">
-            <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· the process, in your tab</span><span class="spacer"></span><span class="model-badge is-you" id="dash-model">model: you</span></div>
-            <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
-            <div class="machine-base">
-                <div class="base-row">
-                    <span class="base-key">quick start</span>
-                    <span id="quick-starts" class="server-list"></span>
-                </div>
-                <div class="base-row">
-                    <span class="base-key">listening</span>
-                    <span id="server-list" class="server-list"><span class="muted">nothing yet</span></span>
-                </div>
-                <div class="base-row keys">
-                    <span class="base-key">keys</span>
-                    <span><kbd>a</kbd> new server or client · <kbd>Tab</kbd> switch column · <kbd>↑</kbd><kbd>↓</kbd> walk rows · <kbd>Enter</kbd> act · <kbd>F1</kbd> everything · the box at the bottom right talks to the model in plain English</span>
+        <div class="demo-grid">
+            <!-- Machine 1: the Telnet client -->
+            <div class="machine machine-client" id="machine-telnet">
+                <div class="machine-label"><span class="machine-dot"></span> Telnet <span class="muted">· a client on the virtual network</span><span class="spacer"></span><span class="conn-badge" id="telnet-state">not connected</span></div>
+                <div class="screen screen-client"><div class="term-host"><div id="telnet-term"></div></div></div>
+            </div>
+
+            <ol class="demo-steps" id="demo-steps" aria-live="polite">
+                <li id="step-server">NetGet opens a Telnet server on port <span class="telnet-port">2323</span>.</li>
+                <li id="step-client">The Telnet client connects to it.</li>
+                <li id="step-model">Everything the server says comes from the model: <b id="step-model-who">you</b>, in the LLM panel below<span id="step-model-until">, until a model is ready</span>.</li>
+                <li id="step-type">Type in the Telnet terminal.</li>
+            </ol>
+
+            <div class="cable cable-client"><span class="cable-line"></span><span class="cable-tag">request</span></div>
+
+            <!-- Machine 2: NetGet -->
+            <div class="machine machine-netget">
+                <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· WASM demo in your tab</span><span class="spacer"></span><span class="model-badge is-you" id="dash-model">model: you</span></div>
+                <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
+                <div class="machine-base">
+                    <div class="base-row">
+                        <span class="base-key">listening</span>
+                        <span id="server-list" class="server-list"><span class="muted">nothing yet</span></span>
+                    </div>
+                    <div class="base-row keys">
+                        <span class="base-key">keys</span>
+                        <span><kbd>a</kbd> new server or client · <kbd>Tab</kbd> switch column · <kbd>↑</kbd><kbd>↓</kbd> walk rows · <kbd>Enter</kbd> act · <kbd>F1</kbd> everything · the box at the bottom right talks to the model in plain English</span>
+                    </div>
                 </div>
             </div>
-        </div>
 
-        <div class="cables">
-            <div class="cable cable-client"><span class="cable-line"></span><span class="cable-tag">request</span></div>
             <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
-        </div>
 
-        <div class="machines-row">
-            <!-- Machine 2: the client -->
-            <div class="machine machine-client">
-                <div class="machine-label"><span class="machine-dot"></span> the network <span class="muted">· a client on the virtual network</span></div>
-                <div class="tabs" id="client-tabs">
-                    <button data-tab="telnet" class="is-active">Telnet</button>
-                    <button data-tab="browser">Browser</button>
-                    <button data-tab="raw">Raw TCP</button>
-                    <button data-tab="udp">Raw UDP</button>
-                </div>
-                <div class="screen screen-client">
-                    <div data-panel="telnet">
-                        <div class="row">
-                            <label>port <input type="text" class="port" id="telnet-port" value="2323"></label>
-                            <button class="btn btn-primary" id="telnet-connect">Connect</button>
-                            <label><input type="checkbox" id="telnet-echo" checked> local echo</label>
-                        </div>
-                        <div class="term-host"><div id="telnet-term"></div></div>
-                    </div>
-                    <div data-panel="browser" hidden>
-                        <div class="browser-window" id="browser-window">
-                            <div class="browser-chrome">
-                                <input type="text" id="browser-url" value="http://localhost:8080/" spellcheck="false">
-                                <button class="btn btn-primary" id="browser-go">Go</button>
-                            </div>
-                            <iframe id="browser-frame" sandbox="" title="Response" hidden></iframe>
-                            <pre id="browser-pre">Start an HTTP server on the NetGet machine, then press Go.</pre>
-                            <details class="browser-meta">
-                                <summary id="browser-status">no response yet</summary>
-                                <pre id="browser-headers"></pre>
-                            </details>
-                        </div>
-                    </div>
-                    <div data-panel="raw" hidden>
-                        <div class="row">
-                            <label>port <input type="text" class="port" id="raw-port" value="7000"></label>
-                            <button class="btn btn-primary" id="raw-connect">Connect</button>
-                            <button class="btn" id="raw-close">Close</button>
-                        </div>
-                        <div class="raw-log" id="raw-log"></div>
-                        <div class="row">
-                            <input type="text" id="raw-input" class="grow" placeholder="text to send" spellcheck="false">
-                            <label><input type="checkbox" id="raw-newline" checked> + newline</label>
-                            <button class="btn btn-primary" id="raw-send">Send</button>
-                        </div>
-                    </div>
-                    <div data-panel="udp" hidden>
-                        <div class="row">
-                            <label>to port <input type="text" class="port" id="udp-port" value="5555"></label>
-                            <span class="muted">one datagram per Send; replies arrive below</span>
-                        </div>
-                        <div class="raw-log" id="udp-log"></div>
-                        <div class="row">
-                            <input type="text" id="udp-input" class="grow" placeholder="datagram payload" spellcheck="false">
-                            <label><input type="checkbox" id="udp-hex"> hex</label>
-                            <button class="btn btn-primary" id="udp-send">Send</button>
-                        </div>
-                    </div>
-                </div>
+            <div class="demo-notes">
+                <div><strong>Nothing leaves this tab.</strong> The Telnet server listens on a loopback that exists only inside the WebAssembly instance, and the client connects to it through the same call a real socket would make. Chrome's built-in model runs on your device; a WebLLM model is downloaded once from Hugging Face and then runs on your GPU. Nothing else is fetched.</div>
+                <div><strong>Same code as the CLI.</strong> The dashboard, the Telnet server and the LLM prompting are the native NetGet crate compiled for <code>wasm32</code>. The only substitutions are underneath: the executor, the clock, the sockets, and where the model's answer comes from.</div>
+                <div><strong>You can be the model.</strong> Until a model is ready, every request NetGet makes opens a form here, built from the actions it offers, and your answer is what the server puts on the wire. The full prompt is one click away.</div>
             </div>
 
             <!-- Machine 3: the model -->
             <div class="machine machine-model">
                 <div class="machine-label"><span class="machine-dot"></span> LLM <span class="spacer"></span><span class="model-badge is-you" id="model-badge">model: you</span></div>
-                <div class="llm-modes">
-                    <div class="llm-mode">
-                        <input type="radio" name="llm-mode" value="manual" id="mode-manual" checked>
-                        <label for="mode-manual">You are the model</label>
-                        <span class="status">Each request NetGet makes appears below with its full prompt; you type the answer.</span>
+                <div class="llm-source" id="llm-source">
+                    <div class="llm-source-row">
+                        <span class="llm-source-name" id="llm-source-name">Looking for a model this browser can run…</span>
+                        <select id="webllm-model" hidden aria-label="WebLLM model"></select>
+                        <button class="btn btn-primary" id="llm-load" hidden>Download</button>
                     </div>
-                    <div class="llm-mode">
-                        <input type="radio" name="llm-mode" value="webllm" id="mode-webllm">
-                        <label for="mode-webllm">WebLLM, on your GPU</label>
-                        <span class="llm-mode-body">
-                            <select id="webllm-model"></select>
-                            <button class="btn" id="webllm-load">Load model</button>
-                        </span>
-                        <span class="status" id="webllm-status">Downloads the model once (WebGPU required) and caches it in the browser.</span>
-                    </div>
-                    <div class="llm-mode">
-                        <input type="radio" name="llm-mode" value="ollama" id="mode-ollama">
-                        <label for="mode-ollama">Your local Ollama</label>
-                        <span class="llm-mode-body">
-                            <input type="text" id="ollama-url" value="http://localhost:11434" spellcheck="false">
-                            <select id="ollama-model" disabled><option>model</option></select>
-                            <button class="btn" id="ollama-connect">Connect</button>
-                        </span>
-                        <span class="status" id="ollama-status">Needs <code>OLLAMA_ORIGINS=https://netget.net ollama serve</code>.</span>
-                    </div>
+                    <div class="llm-progress" id="llm-progress" hidden><span id="llm-progress-bar"></span></div>
+                    <div class="llm-status" id="llm-status"></div>
                 </div>
-                <div class="screen screen-model">
-                    <div class="llm-transcript" id="llm-transcript">
-                        <div class="llm-empty" id="llm-empty">No requests yet. Start a server on the NetGet machine and connect a client to it: the first packet that needs an answer lands here, prompt and all.</div>
-                    </div>
+                <div class="screen screen-model" id="llm-current">
+                    <div class="llm-idle">Nothing to answer yet.</div>
                 </div>
             </div>
-        </div>
-
-        <div class="demo-notes">
-            <div><strong>Nothing leaves this tab.</strong> The servers listen on a loopback that exists only inside the WebAssembly instance; the clients connect to it through the same call a real socket would make. No network requests are made unless you load a model or point it at your own Ollama.</div>
-            <div><strong>Same code as the CLI.</strong> The dashboard, the protocol servers and the LLM prompting are the native NetGet crate compiled for <code>wasm32</code>. The only substitutions are underneath: the executor, the clock, the sockets, and where the model's answer comes from.</div>
-            <div><strong>You can be the model.</strong> With no model loaded, every request shows the exact prompt NetGet would send, and your reply is what the server puts on the wire. It is the clearest way to see what NetGet asks of a model.</div>
         </div>
     </section>
 
@@ -300,28 +231,28 @@
                 <code>--features tcp,http,dns</code>. The <b class="in-web">highlighted</b> ones are compiled into the demo above.
             </p>
             <div class="proto-table">
-                <div class="proto-row"><span class="proto-cat">transport</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">tcp</b> <b class="in-web" title="runs in the browser demo above">udp</b> <b class="in-web" title="runs in the browser demo above">tftp</b> quic <b class="in-web" title="runs in the browser demo above">tls</b> socket_file named_pipe pty stdio</span></div>
-                <div class="proto-row"><span class="proto-cat">link &amp; raw</span><span class="proto-list">datalink arp icmp igmp ndp rawip tuntap can lldp cdp stp eapol vrrp <b class="in-web" title="runs in the browser demo above">hsrp</b> <b class="in-web" title="runs in the browser demo above">wol</b></span></div>
-                <div class="proto-row"><span class="proto-cat">web</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">http</b> <b class="in-web" title="runs in the browser demo above">http2</b> http3 websocket proxy http_proxy socks5 <b class="in-web" title="runs in the browser demo above">openapi</b> <b class="in-web" title="runs in the browser demo above">rss</b> <b class="in-web" title="runs in the browser demo above">coap</b></span></div>
-                <div class="proto-row"><span class="proto-cat">naming &amp; time</span><span class="proto-list">dns dot doh mdns llmnr <b class="in-web" title="runs in the browser demo above">netbios-ns</b> <b class="in-web" title="runs in the browser demo above">ssdp</b> <b class="in-web" title="runs in the browser demo above">dhcp</b> <b class="in-web" title="runs in the browser demo above">dhcpv6</b> <b class="in-web" title="runs in the browser demo above">bootp</b> ntp <b class="in-web" title="runs in the browser demo above">whois</b></span></div>
-                <div class="proto-row"><span class="proto-cat">remote access</span><span class="proto-list">ssh ssh-agent <b class="in-web" title="runs in the browser demo above">telnet</b> <b class="in-web" title="runs in the browser demo above">vnc</b> <b class="in-web" title="runs in the browser demo above">rdp</b> <b class="in-web" title="runs in the browser demo above">reverse-shell</b></span></div>
-                <div class="proto-row"><span class="proto-cat">mail, news &amp; chat</span><span class="proto-list">smtp imap <b class="in-web" title="runs in the browser demo above">pop3</b> <b class="in-web" title="runs in the browser demo above">nntp</b> irc xmpp</span></div>
-                <div class="proto-row"><span class="proto-cat">media &amp; voice</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">sip</b> <b class="in-web" title="runs in the browser demo above">rtp</b> <b class="in-web" title="runs in the browser demo above">rtsp</b> <b class="in-web" title="runs in the browser demo above">hls</b> webrtc stun turn</span></div>
-                <div class="proto-row"><span class="proto-cat">queues</span><span class="proto-list">mqtt amqp <b class="in-web" title="runs in the browser demo above">kafka</b> <b class="in-web" title="runs in the browser demo above">nats</b> <b class="in-web" title="runs in the browser demo above">stomp</b> sqs zookeeper beanstalkd gearman nsq</span></div>
-                <div class="proto-row"><span class="proto-cat">databases</span><span class="proto-list">mysql postgresql mssql <b class="in-web" title="runs in the browser demo above">db2</b> <b class="in-web" title="runs in the browser demo above">snowflake</b> redis <b class="in-web" title="runs in the browser demo above">memcached</b> mongodb <b class="in-web" title="runs in the browser demo above">mongodb-server</b> couchdb cassandra <b class="in-web" title="runs in the browser demo above">elasticsearch</b> dynamo dynamodb etcd bolt</span></div>
-                <div class="proto-row"><span class="proto-cat">files &amp; storage</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">ftp</b> s3 nfs <b class="in-web" title="runs in the browser demo above">smb</b> smb-client webdav ipp <b class="in-web" title="runs in the browser demo above">oci-registry</b></span></div>
-                <div class="proto-row"><span class="proto-cat">auth</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">oauth2</b> <b class="in-web" title="runs in the browser demo above">openid</b> <b class="in-web" title="runs in the browser demo above">openidconnect</b> <b class="in-web" title="runs in the browser demo above">saml</b> <b class="in-web" title="runs in the browser demo above">saml-idp</b> <b class="in-web" title="runs in the browser demo above">saml-sp</b> ldap <b class="in-web" title="runs in the browser demo above">radius</b> vault</span></div>
-                <div class="proto-row"><span class="proto-cat">rpc &amp; agents</span><span class="proto-list">grpc <b class="in-web" title="runs in the browser demo above">jsonrpc</b> xmlrpc mcp <b class="in-web" title="runs in the browser demo above">modbus</b></span></div>
-                <div class="proto-row"><span class="proto-cat">clusters</span><span class="proto-list">kubernetes <b class="in-web" title="runs in the browser demo above">kubernetes-server</b> <b class="in-web" title="runs in the browser demo above">spark</b> <b class="in-web" title="runs in the browser demo above">yarn</b> <b class="in-web" title="runs in the browser demo above">dc</b> docker</span></div>
+                <div class="proto-row"><span class="proto-cat">transport</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">tcp</b> <b class="in-web" title="compiled into the demo above">udp</b> <b class="in-web" title="compiled into the demo above">tftp</b> quic <b class="in-web" title="compiled into the demo above">tls</b> socket_file named_pipe pty stdio</span></div>
+                <div class="proto-row"><span class="proto-cat">link &amp; raw</span><span class="proto-list">datalink arp icmp igmp ndp rawip tuntap can lldp cdp stp eapol vrrp <b class="in-web" title="compiled into the demo above">hsrp</b> <b class="in-web" title="compiled into the demo above">wol</b></span></div>
+                <div class="proto-row"><span class="proto-cat">web</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">http</b> <b class="in-web" title="compiled into the demo above">http2</b> http3 websocket proxy http_proxy socks5 <b class="in-web" title="compiled into the demo above">openapi</b> <b class="in-web" title="compiled into the demo above">rss</b> <b class="in-web" title="compiled into the demo above">coap</b></span></div>
+                <div class="proto-row"><span class="proto-cat">naming &amp; time</span><span class="proto-list">dns dot doh mdns llmnr <b class="in-web" title="compiled into the demo above">netbios-ns</b> <b class="in-web" title="compiled into the demo above">ssdp</b> <b class="in-web" title="compiled into the demo above">dhcp</b> <b class="in-web" title="compiled into the demo above">dhcpv6</b> <b class="in-web" title="compiled into the demo above">bootp</b> ntp <b class="in-web" title="compiled into the demo above">whois</b></span></div>
+                <div class="proto-row"><span class="proto-cat">remote access</span><span class="proto-list">ssh ssh-agent <b class="in-web" title="compiled into the demo above">telnet</b> <b class="in-web" title="compiled into the demo above">vnc</b> <b class="in-web" title="compiled into the demo above">rdp</b> <b class="in-web" title="compiled into the demo above">reverse-shell</b></span></div>
+                <div class="proto-row"><span class="proto-cat">mail, news &amp; chat</span><span class="proto-list">smtp imap <b class="in-web" title="compiled into the demo above">pop3</b> <b class="in-web" title="compiled into the demo above">nntp</b> irc xmpp</span></div>
+                <div class="proto-row"><span class="proto-cat">media &amp; voice</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">sip</b> <b class="in-web" title="compiled into the demo above">rtp</b> <b class="in-web" title="compiled into the demo above">rtsp</b> <b class="in-web" title="compiled into the demo above">hls</b> webrtc stun turn</span></div>
+                <div class="proto-row"><span class="proto-cat">queues</span><span class="proto-list">mqtt amqp <b class="in-web" title="compiled into the demo above">kafka</b> <b class="in-web" title="compiled into the demo above">nats</b> <b class="in-web" title="compiled into the demo above">stomp</b> sqs zookeeper beanstalkd gearman nsq</span></div>
+                <div class="proto-row"><span class="proto-cat">databases</span><span class="proto-list">mysql postgresql mssql <b class="in-web" title="compiled into the demo above">db2</b> <b class="in-web" title="compiled into the demo above">snowflake</b> redis <b class="in-web" title="compiled into the demo above">memcached</b> mongodb <b class="in-web" title="compiled into the demo above">mongodb-server</b> couchdb cassandra <b class="in-web" title="compiled into the demo above">elasticsearch</b> dynamo dynamodb etcd bolt</span></div>
+                <div class="proto-row"><span class="proto-cat">files &amp; storage</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">ftp</b> s3 nfs <b class="in-web" title="compiled into the demo above">smb</b> smb-client webdav ipp <b class="in-web" title="compiled into the demo above">oci-registry</b></span></div>
+                <div class="proto-row"><span class="proto-cat">auth</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">oauth2</b> <b class="in-web" title="compiled into the demo above">openid</b> <b class="in-web" title="compiled into the demo above">openidconnect</b> <b class="in-web" title="compiled into the demo above">saml</b> <b class="in-web" title="compiled into the demo above">saml-idp</b> <b class="in-web" title="compiled into the demo above">saml-sp</b> ldap <b class="in-web" title="compiled into the demo above">radius</b> vault</span></div>
+                <div class="proto-row"><span class="proto-cat">rpc &amp; agents</span><span class="proto-list">grpc <b class="in-web" title="compiled into the demo above">jsonrpc</b> xmlrpc mcp <b class="in-web" title="compiled into the demo above">modbus</b></span></div>
+                <div class="proto-row"><span class="proto-cat">clusters</span><span class="proto-list">kubernetes <b class="in-web" title="compiled into the demo above">kubernetes-server</b> <b class="in-web" title="compiled into the demo above">spark</b> <b class="in-web" title="compiled into the demo above">yarn</b> <b class="in-web" title="compiled into the demo above">dc</b> docker</span></div>
                 <div class="proto-row"><span class="proto-cat">vpn &amp; tunnels</span><span class="proto-list">wireguard openvpn ipsec tor</span></div>
-                <div class="proto-row"><span class="proto-cat">routing &amp; telecom</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">bgp</b> ospf isis rip m3ua <b class="in-web" title="runs in the browser demo above">gtp</b></span></div>
-                <div class="proto-row"><span class="proto-cat">vcs &amp; packages</span><span class="proto-list">git <b class="in-web" title="runs in the browser demo above">mercurial</b> <b class="in-web" title="runs in the browser demo above">svn</b> <b class="in-web" title="runs in the browser demo above">npm</b> <b class="in-web" title="runs in the browser demo above">pypi</b> <b class="in-web" title="runs in the browser demo above">maven</b></span></div>
-                <div class="proto-row"><span class="proto-cat">p2p</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">bitcoin</b> <b class="in-web" title="runs in the browser demo above">torrent-tracker</b> <b class="in-web" title="runs in the browser demo above">torrent-dht</b> <b class="in-web" title="runs in the browser demo above">torrent-peer</b> nostr</span></div>
-                <div class="proto-row"><span class="proto-cat">classic internet</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">finger</b> <b class="in-web" title="runs in the browser demo above">gopher</b> <b class="in-web" title="runs in the browser demo above">ident</b> dict gemini</span></div>
-                <div class="proto-row"><span class="proto-cat">observability</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">snmp</b> <b class="in-web" title="runs in the browser demo above">syslog</b> prometheus zabbix otlp</span></div>
+                <div class="proto-row"><span class="proto-cat">routing &amp; telecom</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">bgp</b> ospf isis rip m3ua <b class="in-web" title="compiled into the demo above">gtp</b></span></div>
+                <div class="proto-row"><span class="proto-cat">vcs &amp; packages</span><span class="proto-list">git <b class="in-web" title="compiled into the demo above">mercurial</b> <b class="in-web" title="compiled into the demo above">svn</b> <b class="in-web" title="compiled into the demo above">npm</b> <b class="in-web" title="compiled into the demo above">pypi</b> <b class="in-web" title="compiled into the demo above">maven</b></span></div>
+                <div class="proto-row"><span class="proto-cat">p2p</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">bitcoin</b> <b class="in-web" title="compiled into the demo above">torrent-tracker</b> <b class="in-web" title="compiled into the demo above">torrent-dht</b> <b class="in-web" title="compiled into the demo above">torrent-peer</b> nostr</span></div>
+                <div class="proto-row"><span class="proto-cat">classic internet</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">finger</b> <b class="in-web" title="compiled into the demo above">gopher</b> <b class="in-web" title="compiled into the demo above">ident</b> dict gemini</span></div>
+                <div class="proto-row"><span class="proto-cat">observability</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">snmp</b> <b class="in-web" title="compiled into the demo above">syslog</b> prometheus zabbix otlp</span></div>
                 <div class="proto-row"><span class="proto-cat">usb</span><span class="proto-list">usb usb-keyboard usb-mouse usb-serial usb-msc usb-fido2 usb-smartcard</span></div>
                 <div class="proto-row"><span class="proto-cat">bluetooth &amp; nfc</span><span class="proto-list">bluetooth-ble bluetooth-ble-client bluetooth-ble-beacon bluetooth-ble-battery bluetooth-ble-heart-rate bluetooth-ble-thermometer bluetooth-ble-environmental bluetooth-ble-weight-scale bluetooth-ble-cycling bluetooth-ble-running bluetooth-ble-proximity bluetooth-ble-keyboard bluetooth-ble-mouse bluetooth-ble-gamepad bluetooth-ble-presenter bluetooth-ble-remote bluetooth-ble-data-stream bluetooth-ble-file-transfer nfc nfc-client</span></div>
-                <div class="proto-row"><span class="proto-cat">llm backends</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">ollama</b> openai</span></div>
+                <div class="proto-row"><span class="proto-cat">llm backends</span><span class="proto-list"><b class="in-web" title="compiled into the demo above">ollama</b> openai</span></div>
             </div>
             <p class="caption">Most protocols run as server and client. Maturity varies — see the README for status. This list is generated from Cargo.toml and a test keeps it current.</p>
         </section>

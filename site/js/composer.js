@@ -192,9 +192,11 @@ let uid = 0;
 
 /**
  * Render the composer into `root` and resolve through `onSend(reply)` / `onRefuse()`.
- * Falls back to a plain JSON editor when the request offers no actions.
+ * Falls back to a plain JSON editor when the request offers no actions. `autofocus: false`
+ * leaves the focus where it is (the page keeps it in its Telnet terminal); focusing never
+ * scrolls the page.
  */
-export function mountComposer(root, req, { onSend, onRefuse }) {
+export function mountComposer(root, req, { onSend, onRefuse, autofocus = true }) {
     const actions = offeredActions(req);
     const id = 'cmp' + (++uid);
     const state = {
@@ -235,7 +237,15 @@ export function mountComposer(root, req, { onSend, onRefuse }) {
         return built.ok ? JSON.stringify(built.envelope, null, 2) : null;
     }
 
+    // The raw editor grows with its text instead of scrolling.
+    function fitRaw() {
+        if (rawEl.hidden) return;
+        rawInput.style.height = 'auto';
+        rawInput.style.height = rawInput.scrollHeight + 2 + 'px';
+    }
+
     function validateRaw() {
+        fitRaw();
         const text = rawInput.value;
         if (!text.trim()) {
             rawInput.removeAttribute('aria-invalid');
@@ -273,6 +283,7 @@ export function mountComposer(root, req, { onSend, onRefuse }) {
         state.tab = tab;
         formEl.hidden = tab !== 'form';
         rawEl.hidden = tab !== 'raw';
+        fitRaw();
         for (const b of root.querySelectorAll('[role=tab]')) {
             const on = b.dataset.tab === tab;
             b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -458,10 +469,10 @@ export function mountComposer(root, req, { onSend, onRefuse }) {
     if (actions.length) {
         renderForm();
         showTab('form');
-        formEl.querySelector('.cmp-picker')?.focus();
+        if (autofocus) formEl.querySelector('.cmp-picker')?.focus({ preventScroll: true });
     } else {
         formEl.hidden = true;
         rawInput.placeholder = '{"actions": [ ... ]}';
-        rawInput.focus();
+        if (autofocus) rawInput.focus({ preventScroll: true });
     }
 }

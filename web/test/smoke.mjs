@@ -167,6 +167,10 @@ try {
     // The dashboard should have repainted with the server card by now.
     await waitFor(() => /tcp/i.test(screen.slice(-20000)), 'the tcp card on screen');
 
+    // The page switches who answers with set_model: the next request names that model.
+    netget.set_models(JSON.stringify(['smoke-test', 'smoke-switched']));
+    netget.set_model('smoke-switched');
+
     netget.close(conn);
 
     // The composer: answer a fresh TCP request with its default, example-prefilled action.
@@ -179,6 +183,7 @@ try {
     if (!c.actions.length) fail('the request offers no actions: ' + JSON.stringify(Object.keys(c.req)));
     if (!c.actions.some((a) => a.example && typeof a.example === 'object' && Object.keys(a.example).length)) fail('no offered action carries an example');
     if (!c.actions.every((a) => Array.isArray(a.parameters))) fail('an offered action has no parameter list');
+    if (c.req.model !== 'smoke-switched') fail('set_model did not reach the request: model is ' + JSON.stringify(c.req.model));
     if (c.entry.name !== 'send_tcp_data') fail('the composer would preselect ' + c.entry.name + ', not send_tcp_data; offered: ' + c.actions.map((a) => a.name).join(', '));
     if (!c.built.ok) fail('the composer could not build a reply from the example: ' + JSON.stringify(c.built.errors));
     const sent = buildAction(c.entry).value;
