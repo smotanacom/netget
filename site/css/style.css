@@ -142,68 +142,6 @@ code { font-family: var(--mono); }
     margin: 1.25rem 0 2rem;
 }
 
-/* ---------- terminal ---------- */
-.term {
-    background: var(--term-bg);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    text-align: left;
-    margin: 1.25rem 0;
-    box-shadow: var(--shadow);
-}
-
-.term-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    background: var(--panel-2);
-    border-bottom: 1px solid var(--border);
-    padding: 0.55rem 0.9rem;
-}
-
-.dot { width: 11px; height: 11px; border-radius: 50%; }
-.dot.r { background: var(--red); }
-.dot.y { background: var(--yellow); }
-.dot.g { background: var(--green); }
-
-.term-title {
-    margin-left: 0.4rem;
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 0.8rem;
-}
-
-.term-body {
-    font-family: var(--mono);
-    font-size: 0.86rem;
-    color: var(--text);
-    padding: 1rem 1.1rem;
-}
-
-.term-hero .term-body { height: 10.75em; overflow: hidden; }
-
-.line { margin-bottom: 0.3rem; white-space: nowrap; overflow-x: auto; }
-.line.out { color: var(--muted); }
-
-.prompt { color: var(--green); }
-
-.tag-info { color: var(--cyan); }
-.tag-req  { color: var(--yellow); }
-.tag-llm  { color: var(--green); }
-
-.caret {
-    display: inline-block;
-    width: 0.55em;
-    height: 1.1em;
-    background: var(--green);
-    vertical-align: text-bottom;
-    margin-left: 2px;
-    animation: blink 1s step-end infinite;
-}
-
-@keyframes blink { 50% { opacity: 0; } }
-
 /* ---------- sections ---------- */
 .section { padding: 2.5rem 0; }
 
@@ -400,5 +338,5 @@ code { font-family: var(--mono); }
 
 /* ---------- motion ---------- */
 @media (prefers-reduced-motion: reduce) {
-    .caret, .pulse-dot { animation: none; }
+    .pulse-dot, .llm-working::before { animation: none; }
 }
