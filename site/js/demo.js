@@ -161,13 +161,6 @@ function escapeHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function step(id, done, html) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.classList.toggle('is-done', done);
-    if (html !== undefined) el.innerHTML = html;
-}
-
 // ---------------------------------------------------------------------------------------
 // Dashboard terminal: keys from the DOM, mouse from xterm's SGR reports, bytes back in.
 // ---------------------------------------------------------------------------------------
@@ -220,13 +213,11 @@ function answererName() {
     return app.active ? app.active.name : 'you';
 }
 
-// Tell every place that names the answerer: the step list, and NetGet itself
-// (the dashboard's status bar and the `model` of every request).
+// Tell every place that names the answerer: the LLM machine (`data-answerer`), and NetGet
+// itself (the dashboard's status bar and the `model` of every request).
 function renderWho() {
-    const who = $('#step-model-who');
-    if (who) who.textContent = answererName();
-    const until = $('#step-model-until');
-    if (until) until.hidden = !!app.active || !app.models.some((m) => m.state !== 'unsupported');
+    const machine = $('.machine-model');
+    if (machine) machine.dataset.answerer = answererName();
     if (app.netget) {
         const name = answererName();
         app.netget.set_models(JSON.stringify([name]));
@@ -1067,13 +1058,11 @@ function telnetConnect() {
         showPrompt();
         if (t.conn === id) t.conn = null;
         setTelnetState('closed', false);
-        step('step-client', false);
         if (!app.current) renderIdle();
     });
     t.conn = id;
     t.term.write('Connected to localhost.\r\nEscape character is \'^]\'.\r\n');
     setTelnetState(`connected to :${TELNET_PORT}`, true);
-    step('step-client', true, `The Telnet client is connected to <code>127.0.0.1:${TELNET_PORT}</code>.`);
     if (!app.current) renderIdle();
 }
 
@@ -1123,10 +1112,11 @@ function startTelnetServer(attempt = 0) {
         if (r.error) {
             // The dashboard hands over its status channel a moment after it boots.
             if (/not running yet/.test(r.error) && attempt < 40) { setTimeout(() => startTelnetServer(attempt + 1), 250); return; }
-            step('step-server', false, `Could not open the Telnet server: ${escapeHtml(r.error)}`);
+            const banner = $('#demo-banner');
+            banner.hidden = false;
+            banner.textContent = `Could not open the Telnet server: ${r.error}`;
             return;
         }
-        step('step-server', true, `NetGet opened a Telnet server on port <code>${TELNET_PORT}</code> (#${r.id} in the dashboard).`);
         refreshServers();
     });
 }

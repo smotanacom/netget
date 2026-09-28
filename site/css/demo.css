@@ -1,11 +1,10 @@
 /* The live demo: three machines — a Telnet client, NetGet, the model — and what joins them.
  *
  * Desktop: Telnet (left half) and the model (right half) side by side and the same height,
- * NetGet below them at full width, and the step list and the notes as two columns under
- * NetGet. Narrow screens stack everything: steps, Telnet, NetGet, the model, notes. Nothing in
- * the demo scrolls inside itself: the dashboard has a fixed height that xterm.js fits, the
- * model panel grows with what it shows, and the Telnet terminal fills whatever height the
- * model panel gives the row (never less than its own floor). */
+ * NetGet below them at full width. Narrow screens stack them: Telnet, NetGet, the model.
+ * Nothing in the demo scrolls inside itself: the dashboard has a fixed height that xterm.js
+ * fits, the model panel grows with what it shows, and the Telnet terminal fills whatever
+ * height the model panel gives the row (never less than its own floor). */
 
 .hero-demo { padding-bottom: 0.5rem; }
 
@@ -29,7 +28,7 @@
 .muted { color: var(--text); opacity: 0.55; }
 .spacer { flex: 1; }
 
-/* ---- the three marks, shared by the diagram and the machines ---------------------- */
+/* ---- the diagram, in the machines' colours --------------------------------------------- */
 
 .section-how { max-width: 780px; margin: 0 auto; padding: 0.5rem 1.25rem 1rem; }
 
@@ -37,18 +36,6 @@
 .dg .client-t { fill: var(--cyan); }
 .dg .box.model { stroke: var(--yellow); stroke-width: 2; }
 .dg .model-t { fill: var(--yellow); }
-
-.mark {
-    font-family: var(--mono);
-    font-size: 0.85em;
-    padding: 0.05em 0.45em;
-    border-radius: 6px;
-    border: 1.5px solid currentColor;
-    white-space: nowrap;
-}
-.mark-client { color: var(--cyan); border-style: dashed; }
-.mark-netget { color: var(--green); }
-.mark-model { color: var(--yellow); }
 
 /* ---- layout --------------------------------------------------------------------------- */
 
@@ -58,8 +45,7 @@
     grid-template-areas:
         "telnet model"
         "cable1 cable2"
-        "netget netget"
-        "steps  notes";
+        "netget netget";
     column-gap: 1.25rem;
     align-items: start;
 }
@@ -68,17 +54,15 @@
 .machine-client, .machine-model { align-self: stretch; display: flex; flex-direction: column; }
 
 .machine-client { grid-area: telnet; }
-.demo-steps { grid-area: steps; }
 .cable-client { grid-area: cable1; }
 .machine-netget { grid-area: netget; }
 .cable-model { grid-area: cable2; }
-.demo-notes { grid-area: notes; }
 .machine-model { grid-area: model; }
 
 @media (max-width: 900px) {
     .demo-grid {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-areas: "steps" "telnet" "cable1" "netget" "cable2" "model" "notes";
+        grid-template-areas: "telnet" "cable1" "netget" "cable2" "model";
     }
 }
 
@@ -201,51 +185,6 @@
     border-radius: 4px;
     padding: 0 0.3rem;
     color: var(--text);
-}
-
-/* ---- what is happening, under NetGet (above everything on a narrow screen) ------------- */
-
-.demo-steps {
-    list-style: none;
-    counter-reset: step;
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    padding: 0.4rem 0.2rem;
-    margin: 1.4rem 0 0;
-    font-size: 0.92rem;
-    color: var(--muted);
-}
-
-.demo-steps li {
-    counter-increment: step;
-    position: relative;
-    padding-left: 1.9rem;
-}
-
-.demo-steps li::before {
-    content: counter(step);
-    position: absolute;
-    left: 0;
-    top: 0.15em;
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    width: 1.3rem;
-    height: 1.3rem;
-    line-height: 1.2rem;
-    text-align: center;
-    border-radius: 50%;
-    border: 1px solid var(--border);
-    color: var(--muted);
-}
-
-.demo-steps li.is-done { color: var(--text); }
-.demo-steps li.is-done::before { content: "✓"; border-color: var(--green); color: var(--green); }
-.demo-steps b { color: var(--yellow); font-weight: 600; }
-.demo-steps code { font-family: var(--mono); font-size: 0.85em; }
-
-@media (max-width: 900px) {
-    .demo-steps { margin: 0 0 0.8rem; font-size: 0.88rem; }
 }
 
 /* ---- the cables: Telnet and the model, each down to NetGet (on a narrow screen, NetGet
@@ -469,21 +408,3 @@
     .cmp-desc { grid-column: 1; }
 }
 
-/* ---- notes ---------------------------------------------------------------------------- */
-
-.demo-notes {
-    display: flex;
-    flex-direction: column;
-    gap: 0.9rem;
-    margin-top: 1.4rem;
-    padding: 0.4rem 0.2rem;
-    font-size: 0.88rem;
-    color: var(--muted);
-}
-
-.demo-notes strong { color: var(--text); display: block; margin-bottom: 0.2rem; }
-.demo-notes code { font-family: var(--mono); font-size: 0.8rem; }
-
-@media (max-width: 900px) {
-    .demo-notes { margin-top: 1.2rem; }
-}
