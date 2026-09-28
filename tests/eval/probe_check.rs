@@ -1025,3 +1025,55 @@ async fn otlp_refuse_unknown_service_waits_for_the_model() -> E2EResult<()> {
 async fn otlp_refuse_debug_spans_waits_for_the_model() -> E2EResult<()> {
     check_case("otlp/refuse-debug-spans", answer_otlp).await
 }
+
+// ---------------------------------------------------------------------------
+// nostr — nak
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nostr")]
+#[tokio::test]
+async fn nostr_serve_notes_waits_for_the_model() -> E2EResult<()> {
+    check_case("nostr/serve-notes", |mock| {
+        mock.on_event("nostr_req")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_nostr_events",
+                "events": [
+                    {"kind": 1, "content": "Stalker is a masterpiece"},
+                    {"kind": 1, "content": "Solaris is slower but worth it"}
+                ]
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "nostr")]
+#[tokio::test]
+async fn nostr_refuse_adverts_waits_for_the_model() -> E2EResult<()> {
+    check_case("nostr/refuse-adverts", |mock| {
+        mock.on_event("nostr_event")
+            .respond_with_actions(serde_json::json!([{
+                "type": "reject_nostr_event",
+                "reason": "blocked: adverts are not allowed"
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "nostr")]
+#[tokio::test]
+async fn nostr_accept_film_note_waits_for_the_model() -> E2EResult<()> {
+    check_case("nostr/accept-film-note", |mock| {
+        mock.on_event("nostr_event")
+            .respond_with_actions(serde_json::json!([{"type": "accept_nostr_event"}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}

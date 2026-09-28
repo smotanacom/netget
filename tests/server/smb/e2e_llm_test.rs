@@ -7,15 +7,16 @@
 
 use crate::server::helpers::{start_netget_server, E2EResult, NetGetConfig};
 
-use std::io::{Read, Write};
+use super::wire_util::{nbss, read_frame_into};
+use std::io::Write;
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// Helper: Build SMB2 Negotiate Protocol Request (Direct TCP, no NetBIOS)
+/// Helper: Build SMB2 Negotiate Protocol Request (Direct TCP framing added by `nbss`)
 fn build_smb2_negotiate() -> Vec<u8> {
     let mut packet = Vec::new();
 
-    // SMB2 Header (64 bytes) - Direct TCP mode, no NetBIOS wrapper
+    // SMB2 Header (64 bytes); `nbss` adds the transport header
     packet.extend_from_slice(b"\xFESMB"); // Protocol ID
     packet.extend_from_slice(&[64, 0]); // Header length = 64
     packet.extend_from_slice(&[0; 2]); // Credit charge
@@ -40,14 +41,14 @@ fn build_smb2_negotiate() -> Vec<u8> {
     packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // Context offset/count
     packet.extend_from_slice(&[0x10, 0x02]); // SMB 2.1 dialect (0x0210)
 
-    packet
+    nbss(packet)
 }
 
-/// Helper: Build SMB2 Session Setup Request (Direct TCP, no NetBIOS)
+/// Helper: Build SMB2 Session Setup Request (Direct TCP framing added by `nbss`)
 fn build_smb2_session_setup() -> Vec<u8> {
     let mut packet = Vec::new();
 
-    // SMB2 Header (64 bytes) - Direct TCP mode, no NetBIOS wrapper
+    // SMB2 Header (64 bytes); `nbss` adds the transport header
     packet.extend_from_slice(b"\xFESMB");
     packet.extend_from_slice(&[64, 0]); // Header length
     packet.extend_from_slice(&[0; 2]); // Credit charge
@@ -72,10 +73,10 @@ fn build_smb2_session_setup() -> Vec<u8> {
     packet.extend_from_slice(&[0, 0]); // Security buffer length = 0 (guest)
     packet.extend_from_slice(&[0; 8]); // Previous session ID
 
-    packet
+    nbss(packet)
 }
 
-/// Helper: Parse SMB2 response status (Direct TCP, no NetBIOS)
+/// Helper: Parse SMB2 response status (Direct TCP framing added by `nbss`)
 fn parse_smb2_status(response: &[u8]) -> Option<u32> {
     if response.len() < 64 {
         return None;
@@ -136,7 +137,7 @@ async fn test_smb_llm_allows_guest_auth() -> E2EResult<()> {
     stream.flush()?;
 
     let mut response = vec![0u8; 2048];
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     println!("  [TEST] Negotiate response: {} bytes", n);
     assert!(n >= 64, "Negotiate response too short");
 
@@ -147,7 +148,7 @@ async fn test_smb_llm_allows_guest_auth() -> E2EResult<()> {
 
     response.clear();
     response.resize(2048, 0);
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     response.truncate(n);
 
     println!("  [TEST] Session Setup response: {} bytes", n);
@@ -231,7 +232,7 @@ async fn test_smb_llm_denies_user() -> E2EResult<()> {
     stream.flush()?;
 
     let mut response = vec![0u8; 2048];
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     println!("  [TEST] Negotiate response: {} bytes", n);
 
     // Session Setup - LLM should deny guest based on prompt
@@ -241,7 +242,7 @@ async fn test_smb_llm_denies_user() -> E2EResult<()> {
 
     response.clear();
     response.resize(2048, 0);
-    let n = stream.read(&mut response)?;
+    let n = read_frame_into(&mut stream, &mut response)?;
     response.truncate(n);
 
     println!("  [TEST] Session Setup response: {} bytes", n);
@@ -479,7 +480,7 @@ async fn test_smb_llm_connection_tracking() -> E2EResult<()> {
     stream.flush()?;
 
     let mut response = vec![0u8; 2048];
-    let _ = stream.read(&mut response);
+    let _ = read_frame_into(&mut stream, &mut response);
 
     // Give LLM time to process connection
     tokio::time::sleep(Duration::from_millis(500)).await;

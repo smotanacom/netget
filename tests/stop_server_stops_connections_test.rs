@@ -378,6 +378,14 @@ async fn stopping_a_gemini_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("Gemini", b"").await;
 }
 
+/// A Nostr peer that has sent half an HTTP request head is held by a task waiting on the rest
+/// for up to 30 seconds; the stop must end it rather than that deadline.
+#[cfg(feature = "nostr")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_nostr_relay_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Nostr", b"GET / HTTP/1.1\r\nHost: localhost\r\n").await;
+}
+
 /// An HTTP connection with a request in flight must not survive the stop.
 ///
 /// The task here is hyper's `serve_connection`, not a read loop netget wrote, so this is the

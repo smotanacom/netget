@@ -100,6 +100,8 @@ pub fn all_cases() -> Vec<EvalCase> {
     cases.extend(sip());
     #[cfg(feature = "websocket")]
     cases.extend(websocket());
+    #[cfg(feature = "nostr")]
+    cases.extend(nostr());
     cases
 }
 
@@ -1991,6 +1993,63 @@ fn websocket() -> Vec<EvalCase> {
              connects.",
             websocat_probe(None),
             Expect::contains(&["Welcome to NetGet Eval"]),
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Nostr — nak, fiatjaf's Go client (go-nostr). `nak req` prints each event it
+// received and verified, then exits at EOSE; `nak event` signs with the key
+// given, publishes and prints "success" or the relay's refusal. nak prints
+// "connecting to ..." on stderr before the exchange, so completion is its exit.
+// ---------------------------------------------------------------------------
+
+/// The key the eval's notes are signed with. Any valid secp256k1 secret works;
+/// this one is fixed so a run is reproducible.
+#[cfg(feature = "nostr")]
+const NOSTR_EVAL_KEY: &str = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a";
+
+#[cfg(feature = "nostr")]
+fn nak_publish(content: &str) -> Probe {
+    Probe::client(
+        "nak",
+        &[
+            "event",
+            "--sec",
+            NOSTR_EVAL_KEY,
+            "-c",
+            content,
+            "ws://127.0.0.1:{PORT}",
+        ],
+    )
+    .until_exit()
+}
+
+#[cfg(feature = "nostr")]
+fn nostr() -> Vec<EvalCase> {
+    vec![
+        EvalCase::new(
+            "nostr/serve-notes",
+            "nostr",
+            "When someone subscribes to short text notes, give them two notes: \
+             Stalker is a masterpiece, and Solaris is slower but worth it.",
+            Probe::client("nak", &["req", "-k", "1", "ws://127.0.0.1:{PORT}"]).until_exit(),
+            Expect::contains(&["Stalker is a masterpiece", "Solaris is slower but worth it"]),
+        ),
+        EvalCase::new(
+            "nostr/refuse-adverts",
+            "nostr",
+            "Take notes from anyone, but refuse any note that advertises something for \
+             sale, telling the author that adverts are not allowed.",
+            nak_publish("Buy cheap watches now, 50% off"),
+            Expect::contains(&["adverts are not allowed"]).not_containing(&["success"]),
+        ),
+        EvalCase::new(
+            "nostr/accept-film-note",
+            "nostr",
+            "This relay is for notes about films. Accept them.",
+            nak_publish("Stalker is a masterpiece of slow cinema"),
+            Expect::contains(&["success"]),
         ),
     ]
 }

@@ -132,9 +132,16 @@ PYTHON_STDLIB_PROTOCOL_MODULES = (
 # Gemini server is rustls plus hand-written framing. `greenstalk` (pip `greenstalk`) splits
 # beanstalkd reply lines, reads RESERVED/FOUND/OK payloads by their byte count and parses the
 # YAML reports itself; NetGet's Beanstalkd server is hand-written and uses no beanstalk library.
+# `nostr_sdk` (pip `nostr-sdk`) is rust-nostr's bindings: its own NIP-01 messages, filters,
+# event ids and signature checks; NetGet's relay uses no Nostr library.
+# `smbprotocol` (pip `smbprotocol`) frames SMB2 over Direct TCP, runs NTLMSSP through pyspnego
+# and parses every response itself; NetGet's SMB server is hand-written and links no SMB
+# library.
 PYTHON_THIRD_PARTY_PROTOCOL_CLIENTS = (
     "ignition",
     "greenstalk",
+    "nostr_sdk",
+    "smbprotocol",
 )
 
 # The same exception on the other side of the wire: a Python library that is a protocol

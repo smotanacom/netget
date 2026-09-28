@@ -32,6 +32,9 @@ bson = "3.0"
 # `Message::from_vec` inline. See fuzz_targets/dns_message.rs.
 hickory-proto = "0.24"
 
+# The Nostr target checks that every refusal NetGet renders is itself JSON.
+serde_json = "1"
+
 [dependencies.netget]
 path = ".."
 default-features = false
@@ -62,6 +65,7 @@ features = [
     "zabbix",
     "gearman",
     "nsq",
+    "nostr",
 ]
 
 # NOT here, and it is not an oversight: `usb-fido2` (and every other USB feature).
@@ -267,6 +271,13 @@ bench = false
 [[bin]]
 name = "packstream_message"
 path = "fuzz_targets/packstream_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nostr_message"
+path = "fuzz_targets/nostr_message.rs"
 test = false
 doc = false
 bench = false

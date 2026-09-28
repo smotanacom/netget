@@ -760,6 +760,45 @@ write("nsq_frame", "line_bomb", b"x" * 65536)
 # A JSON nesting bomb as the IDENTIFY body: serde_json's recursion limit (128) must refuse it.
 write("nsq_frame", "identify_depth_bomb", nsq_body(b"IDENTIFY\n", b"[" * 65536 + b"]" * 65536))
 
+
+# --- nostr: NIP-01 client messages, as a relay reads them -------------------
+# The EVENTs were signed by nak 0.20.7 (go-nostr); the second carries every escape class,
+# including the C0 controls the three id serialisations in use disagree about.
+NAK_EVENT = (
+    b'{"kind":1,"id":"4601ba921e79b93ee9610fc66536bcab72e34da88d62bf03c662440682a45033",'
+    b'"pubkey":"17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917",'
+    b'"created_at":1700000000,"tags":[],"content":"hello","sig":"5faead673a8e534c473d951da9726ce7'
+    b'263b38c4d77c525eeb7e6ad06b48a0000edda8f74706fdb3ed88c826925a21e028f2ad558633d815e60ac4c40384'
+    b'00ee"}')
+NAK_CONTESTED = (
+    b'{"kind":1,"id":"ede3685aa62627e9a0246c0709c4167017ced5cb79b663245cab1b17afc05955",'
+    b'"pubkey":"17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917",'
+    b'"created_at":1700000001,"tags":[["t","nostr"],["e","5c83da77af1dec6d7289834998ad7aafbd9e2191'
+    b'396d75ec3cc27f5a77226f36"]],"content":"line1\\nline2 \\"quoted\\" back\\\\slash\\ttab\\rcr'
+    b'\\u0008bs\\u000cfeed\\u0001ctl\\u001fus \xe2\x9c\x93 \xf0\x9f\x98\x80 \\u2028 / end",'
+    b'"sig":"580226f6414004a05ae24b7c0d0c7e5f1f83333b81556f7c836d51bae94aa30a175ed6a24f7c7d53dddd'
+    b'bf3e17ed4ef57d6d64838ec111e77e54a1a40f38170c"}')
+write("nostr_message", "event_nak", b'["EVENT",' + NAK_EVENT + b']')
+write("nostr_message", "event_contested_escapes", b'["EVENT",' + NAK_CONTESTED + b']')
+write("nostr_message", "event_tampered",
+      b'["EVENT",' + NAK_EVENT.replace(b'"hello"', b'"hellO"') + b']')
+write("nostr_message", "req", b'["REQ","sub1",{"kinds":[1],"limit":10}]')
+write("nostr_message", "req_tags_and_times",
+      b'["REQ","s",{"#t":["film"],"since":1,"until":2000000000},'
+      b'{"authors":["17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917"],'
+      b'"search":"x"}]')
+write("nostr_message", "close", b'["CLOSE","sub1"]')
+write("nostr_message", "count_unsupported", b'["COUNT","c",{}]')
+write("nostr_message", "too_many_filters", b'["REQ","s"' + b',{}' * 11 + b']')
+write("nostr_message", "long_subscription_id", b'["REQ","' + b's' * 65 + b'",{}]')
+# serde_json's recursion limit (128) is the depth guard; this is ~65 000 levels, inside the
+# 128 KiB message bound.
+write("nostr_message", "depth_bomb", b'["REQ","s",' + b'[' * 65000 + b']' * 65000 + b']')
+# The largest message the framing admits, as a REQ whose ids list fills it.
+ids = b','.join([b'"' + b'0' * 64 + b'"'] * 1900)
+body = b'["REQ","s",{"ids":[' + ids + b']}]'
+write("nostr_message", "at_message_bound", body + b' ' * (131072 - len(body)))
+
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
       (total, len(os.listdir(CORPUS))))

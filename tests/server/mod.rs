@@ -174,6 +174,8 @@ pub mod nfc;
 pub mod nfs;
 #[cfg(feature = "nntp")]
 pub mod nntp;
+#[cfg(feature = "nostr")]
+pub mod nostr;
 #[cfg(feature = "npm")]
 pub mod npm;
 #[cfg(feature = "nsq")]

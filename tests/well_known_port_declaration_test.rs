@@ -154,6 +154,11 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("sqs", "the SQS API is served over HTTPS 443, which this plain-HTTP mock does not speak"),
     ("webdav", "WebDAV is an HTTP extension (RFC 4918) and uses HTTP's port"),
     ("websocket", "RFC 6455 upgrades an HTTP connection and uses HTTP's port; there is no WebSocket port"),
+    (
+        "nostr",
+        "relays are ws(s):// URLs on HTTP's ports; no specification assigns one, and the relays \
+         disagree (strfry.conf port = 7777, nostr-rs-relay config.toml port = 8080)",
+    ),
     ("webrtc_signaling", "the signalling channel is an ad-hoc JSON relay over WebSocket; no port of its own"),
     ("xmlrpc", "XML-RPC is a POST body over plain HTTP; no port of its own"),
     (

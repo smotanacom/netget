@@ -225,10 +225,12 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (57 protocols as of 26 September 2026:
+- **Beta** — human-reviewed, works against real clients (59 protocols as of 27 September 2026:
   49 plus nine new servers that each arrived Beta on a real client — `dict`, `gemini`,
   `prometheus`, `docker`, `vault`, `beanstalkd`, `zabbix`, `gearman`, `bolt` — less `modbus`,
-  which went to Stable; re-derive, the count drifts every pass —
+  which went to Stable, plus `smb`, on smbclient and smbprotocol once its SMB2 headers,
+  Direct TCP framing and NTLMSSP were rebuilt to the spec, and `nostr`, a new relay that
+  arrived Beta on nak and rust-nostr's `nostr-sdk`; re-derive, the count drifts every pass —
   `python3 scripts/beta_evidence_table.py --check` prints it).
 
   **Do not read the rest of this section as the list. Generate it:**

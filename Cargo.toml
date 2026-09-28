@@ -127,6 +127,7 @@ portable-base = [
     # isis moved to android-termux wrapper (needs libpcap)
     "rip",
     "bitcoin",
+    "nostr",
     "mcp",
     "grpc",
     "xmlrpc",
@@ -317,6 +318,7 @@ ospf = ["udp"]  # OSPF (IP proto 89, raw sockets, needs root/CAP_NET_RAW). The u
 isis = ["dep:pcap"]  # IS-IS routing protocol (Intermediate System to Intermediate System) - sniffs L2 frames via libpcap
 rip = []  # RIP (Routing Information Protocol) v2 - distance-vector routing
 bitcoin = ["dep:bitcoin"]  # Bitcoin P2P protocol server (LLM-controlled, not a real full node)
+nostr = ["dep:tokio-tungstenite", "dep:secp256k1", "dep:sha2"]  # Nostr relay (NIP-01 over WebSocket, NIP-11) - secp256k1 is the 0.29 bitcoin already links
 mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 over HTTP/SSE)
 grpc = ["dep:tonic", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # gRPC server with dynamic schema support
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
@@ -526,6 +528,7 @@ dist-windows = [
     # isis excluded: needs libpcap (not present on Windows runners)
     "rip",
     "bitcoin",
+    "nostr",
     "mcp",
     "grpc",
     "xmlrpc",
@@ -677,6 +680,7 @@ all-protocols = [
     "isis",
     "rip",
     "bitcoin",
+    "nostr",
     "mcp",
     "grpc",
     "xmlrpc",
@@ -937,6 +941,10 @@ netgauze-bgp-pkt = { version = "0.7", optional = true, features = ["serde", "cod
 
 # Bitcoin P2P protocol (blockchain P2P network)
 bitcoin = { version = "0.32", optional = true }
+
+# Nostr relay: BIP-340 Schnorr verification and signing. The same 0.29 that `bitcoin` links,
+# so the tree carries one secp256k1, not two curve libraries.
+secp256k1 = { version = "0.29", optional = true }
 
 # WireGuard VPN server (full implementation with LLM control)
 defguard_wireguard_rs = { version = "0.7", optional = true, features = ["serde"] }

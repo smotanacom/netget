@@ -908,6 +908,12 @@ pub mod bitcoin;
 pub use bitcoin::actions::BitcoinProtocol;
 #[cfg(feature = "bitcoin")]
 pub use bitcoin::BitcoinServer;
+#[cfg(feature = "nostr")]
+pub mod nostr;
+#[cfg(feature = "nostr")]
+pub use nostr::actions::NostrProtocol;
+#[cfg(feature = "nostr")]
+pub use nostr::NostrServer;
 
 #[cfg(feature = "mcp")]
 pub mod mcp;
