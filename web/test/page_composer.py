@@ -6,7 +6,7 @@
 Serves site/ (or SITE_DIR) from 127.0.0.1 and opens the page in headless Chromium
 (Playwright) eight times. Nothing is clicked before the assertions that say so. In every run the
 model select sits in the LLM machine's header and no badge names a model; who answers is read
-from the steps above the machines (`#step-model-who`).
+from the step list (`#step-model-who`).
 
 1. WebGPU but no built-in model. The select lists only the six WebLLM models, each with its
    download size (and "thinks" for Qwen3), the default selected, one button naming the
@@ -20,7 +20,10 @@ from the steps above the machines (`#step-model-who`).
    `Connection closed by foreign host.` and a bare `$ ` prompt, and Enter there types the
    command again and reconnects. With a request open and again idle, no element of the demo
    has a scrollbar and neither a machine nor a screen overflows, at 1280x800, 1440x900,
-   1920x1080 and 390x844.
+   1920x1080 and 390x844. At the three wide sizes the LLM machine is right of the Telnet
+   machine, level with it and the same height, both above NetGet, with the steps and the
+   notes side by side below NetGet; at 390x844 the order down the page is steps, Telnet,
+   NetGet, LLM, notes.
 2. Neither a built-in model nor WebGPU: the WebLLM models are listed disabled, the visitor is
    the model, and the WebLLM runtime is never loaded.
 3. A stub `LanguageModel` whose availability() is "available". The select lists "Gemini Nano
@@ -91,7 +94,7 @@ window.Terminal = class {
   loadAddon() {}
   open(el) {
     el.classList.add('xterm');
-    el.style.position = 'relative';
+    if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
     this.textarea = document.createElement('textarea');
     this.textarea.className = 'xterm-helper-textarea';
     this.textarea.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;opacity:0;padding:0;border:0';
@@ -400,19 +403,53 @@ def wait_for_autostart(page):
     return server, client
 
 
+# Where the machines and the two text blocks are, as [left, top, right, bottom].
+LAYOUT = r"""
+() => Object.fromEntries(Object.entries({
+  telnet: '#machine-telnet', model: '.machine-model', netget: '.machine-netget',
+  steps: '#demo-steps', notes: '.demo-notes',
+}).map(([k, sel]) => { const r = document.querySelector(sel).getBoundingClientRect(); return [k, [r.left, r.top, r.right, r.bottom]]; }))
+"""
+
+
+def layout_problems(page, w):
+    """Wide: Telnet and the LLM side by side, level and the same height, NetGet under both,
+    steps and notes side by side under NetGet. Narrow: steps, Telnet, NetGet, LLM, notes."""
+    b = page.evaluate(LAYOUT)
+    L, T, R, B = 0, 1, 2, 3
+    bad = []
+    def need(ok, what):
+        if not ok:
+            bad.append(f"{what}: " + ", ".join(f"{k} {[round(v) for v in b[k]]}" for k in b))
+    if w > 900:
+        need(b["model"][L] >= b["telnet"][R], "the LLM machine is not right of Telnet")
+        need(abs(b["model"][T] - b["telnet"][T]) <= 1, "the LLM machine is not level with Telnet")
+        need(abs((b["model"][B] - b["model"][T]) - (b["telnet"][B] - b["telnet"][T])) <= 1,
+             "the LLM and Telnet machines differ in height")
+        need(b["model"][B] <= b["netget"][T] and b["telnet"][B] <= b["netget"][T], "NetGet is not below both")
+        need(b["netget"][L] <= b["telnet"][L] + 1 and b["netget"][R] >= b["model"][R] - 1, "NetGet is not full width")
+        need(b["steps"][T] >= b["netget"][B] and b["notes"][T] >= b["netget"][B], "the steps and notes are not below NetGet")
+        need(b["notes"][L] >= b["steps"][R], "the notes are not beside the steps")
+    else:
+        need(b["steps"][B] <= b["telnet"][T] <= b["telnet"][B] <= b["netget"][T] <= b["netget"][B]
+             <= b["model"][T] <= b["model"][B] <= b["notes"][T],
+             "the narrow order is not steps, Telnet, NetGet, LLM, notes")
+    return bad
+
+
 def check_no_scrollbars(page, label):
     problems = []
     for w, h in SIZES:
         page.set_viewport_size({"width": w, "height": h})
         page.wait_for_timeout(400)
-        for p in page.evaluate(SCROLL_CHECK):
+        for p in page.evaluate(SCROLL_CHECK) + layout_problems(page, w):
             problems.append(f"{w}x{h} ({label}): {p}")
         if SCREENSHOT_DIR:
             page.locator("#demo").screenshot(path=os.path.join(SCREENSHOT_DIR, f"demo-{label}-{w}x{h}.png"))
             page.evaluate("document.querySelector('#machine-telnet').scrollIntoView({block: 'start'})")
             page.screenshot(path=os.path.join(SCREENSHOT_DIR, f"viewport-{label}-{w}x{h}.png"))
     page.set_viewport_size({"width": 1280, "height": 800})
-    assert not problems, "scrollbars or overflow in the demo:\n  " + "\n  ".join(problems)
+    assert not problems, "scrollbars, overflow or layout in the demo:\n  " + "\n  ".join(problems)
 
 
 # Chrome for Testing and Chrome itself expose the real Prompt API on a secure origin
@@ -567,6 +604,19 @@ def run_chrome_available(browser, origin):
     assert "send_telnet_line" in names and "wait_for_more" in names, names
     assert not any(n in names for n in ("web_search", "read_file")), f"tools were offered to the built-in model: {names}"
     assert last.get("omitResponseConstraintInput") is True, last
+    # Each action's schema lists `type` first and exactly the action's parameters: a decoder
+    # writes properties in schema order, so `type` after the parameters left only the actions
+    # without a required parameter open to a model that writes "type" first, and a missing
+    # `additionalProperties: false` let it write a key no action has.
+    items = last["responseConstraint"]["properties"]["actions"]["items"]["anyOf"]
+    for item in items:
+        assert list(item["properties"])[0] == "type", item
+        assert item["additionalProperties"] is False, item
+    by_name = {item["properties"]["type"]["enum"][0]: item for item in items}
+    assert list(by_name["send_telnet_line"]["properties"]) == ["type", "line"], by_name["send_telnet_line"]
+    assert by_name["send_telnet_line"]["required"] == ["type", "line"], by_name["send_telnet_line"]
+    assert list(by_name["send_telnet_prompt"]["properties"]) == ["type", "prompt"], by_name["send_telnet_prompt"]
+    assert by_name["send_telnet_prompt"]["required"] == ["type"], by_name["send_telnet_prompt"]
 
     # An answer that does not parse: that request goes to the composer, with the reason.
     type_line(page, "garble")
@@ -856,7 +906,7 @@ def main():
     print(f"ok: with no clicks the Telnet server opened {server_s:.1f}s and the client connected "
           f"{client_s:.1f}s after the bundle was ready; the terminal read as a telnet session; you "
           "answered through the composer and the answers reached the Telnet terminal; a hang-up "
-          "printed telnet's line and Enter at the prompt reconnected; no scrollbars at "
+          "printed telnet's line and Enter at the prompt reconnected; the machines laid out and no scrollbars at "
           + ", ".join(f"{w}x{h}" for w, h in SIZES))
     print("ok: a stub LanguageModel ('available') loaded by itself and answered with no composer, "
           "constrained to the offered actions; an unparseable answer fell back to the composer")

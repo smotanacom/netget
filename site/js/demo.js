@@ -45,12 +45,25 @@ const SERVER_AFTER_MS = 1000;   // after NetGet boots, open the Telnet server
 const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
 
 // Short, and answerable in one line by a small model or by a person filling in a form.
+//
+// The banner is its own rule, on the one event it is for, and not part of the instruction:
+// every model request carries the instruction and a single event with no record of what was
+// said before it, so an instruction that opened with "when a visitor connects, send a banner
+// that asks for their name; after that, answer every line" had a model answering a typed
+// "hello" decide whether the banner was still owed, and llama3.1:8b and qwen2.5:1.5b sent it
+// again nearly every time. A `llm` event handler adds its instruction to that event's prompt
+// alone (web/README.md has the measurements).
 const TELNET_INSTRUCTION = 'You are the NetGet BBS, a tiny retro bulletin board reached over '
-    + 'Telnet. When a visitor connects, send a short welcome banner (two lines at most) that '
-    + 'ends by asking for their name. After that, answer every line they type with one or two '
-    + 'short, friendly lines: greet them by name, chat, tell a one-line joke when asked, or run '
-    + 'a very small text adventure if they type "play". Plain text only, under 200 characters '
-    + 'per reply.';
+    + 'Telnet. Answer every line a visitor types with one or two short, friendly lines: greet '
+    + 'them by name, chat, tell a one-line joke when asked, or run a very small text adventure '
+    + 'if they type "play". Plain text only, under 200 characters per reply.';
+const TELNET_EVENT_HANDLERS = [{
+    event_pattern: 'telnet_connection_opened',
+    handler: {
+        type: 'llm',
+        instruction: 'Send a short welcome banner (two lines at most) that ends by asking for their name.',
+    },
+}];
 
 // Options for the Prompt API: English text in, English text out.
 const LM_OPTIONS = {
@@ -207,7 +220,7 @@ function answererName() {
     return app.active ? app.active.name : 'you';
 }
 
-// Tell every place that names the answerer: the steps above the machines, and NetGet itself
+// Tell every place that names the answerer: the step list, and NetGet itself
 // (the dashboard's status bar and the `model` of every request).
 function renderWho() {
     const who = $('#step-model-who');
@@ -752,14 +765,26 @@ async function answerWithModel(entry) {
 class UnusableAnswer extends Error {}
 
 // A JSON Schema that only NetGet's action envelope satisfies: `{"actions": [...]}` where each
-// item is one of the offered actions, `type` pinned to its name. Tools are left out: they
-// make a small model wander, and nothing a tool returns is needed to answer a Telnet line.
+// item is one of the offered actions, `type` pinned to its name, with exactly that action's
+// parameters and nothing else. Tools are left out: they make a small model wander, and
+// nothing a tool returns is needed to answer a Telnet line.
+//
+// `type` is the FIRST property, and that is load-bearing. Constrained decoders (Chrome's, and
+// llama.cpp's that Ollama uses) emit an object's properties in the order the schema lists
+// them, so the first key decides which branch of the `anyOf` is still open. Every example in
+// the prompt starts with "type"; with `type` listed after the parameters, writing it first
+// was possible only for the actions with no required parameter (send_telnet_prompt,
+// wait_for_more, close_connection), so a model that wanted to answer "hello" was left with
+// send_telnet_prompt, and Gemini Nano, llama3.1:8b, qwen2.5:1.5b and gemma3:1b all sent it.
+// `additionalProperties: false` is what keeps a key the model half-writes ("prompt셉") out.
 function responseConstraint(actions) {
     const items = actions.filter((a) => !a.tool).map((a) => {
         const schema = a.schema && typeof a.schema === 'object' ? a.schema : {};
-        const properties = Object.assign({}, schema.properties || {}, { type: { type: 'string', enum: [a.name] } });
-        const required = ['type', ...(Array.isArray(schema.required) ? schema.required.filter((r) => r !== 'type') : [])];
-        return { type: 'object', properties, required };
+        const params = Object.assign({}, schema.properties || {});
+        delete params.type;
+        const properties = Object.assign({ type: { type: 'string', enum: [a.name] } }, params);
+        const required = ['type', ...(Array.isArray(schema.required) ? schema.required.filter((r) => r !== 'type' && r in params) : [])];
+        return { type: 'object', properties, required, additionalProperties: false };
     });
     return {
         type: 'object',
@@ -1092,6 +1117,7 @@ function wireTelnet() {
 function startTelnetServer(attempt = 0) {
     app.netget.start_server(JSON.stringify({
         protocol: 'telnet', port: TELNET_PORT, instruction: TELNET_INSTRUCTION,
+        event_handlers: TELNET_EVENT_HANDLERS,
     }), (json) => {
         const r = JSON.parse(json);
         if (r.error) {

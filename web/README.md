@@ -84,12 +84,24 @@ Two things the script handles that are easy to lose an hour to:
   `udp_close(id)` — a UDP one. `listening_ports()`, `bound_udp_ports()` and `servers(cb)`
   describe what is there.
 
-`site/js/demo.js` is the page, and the demo on it is Telnet only: three machines, a Telnet
-client above the dashboard and the model below it. Nothing needs a click:
+`site/js/demo.js` is the page, and the demo on it is Telnet only: three machines. On a wide
+screen the Telnet client and the model sit side by side, the same height (the Telnet terminal
+fills whatever the model panel makes the row, and never holds it open), with the dashboard
+below them at full width and the step list and notes as two columns under that; on a narrow
+one they stack as Telnet, dashboard, model, with the steps above and the notes below.
+Nothing needs a click:
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
-  2323 with a short BBS instruction, so it is a normal instance on the dashboard; about a
-  second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
+  2323 with a short BBS instruction and one `llm` rule on `telnet_connection_opened` that
+  asks for the welcome banner, so it is a normal instance on the dashboard (`rules 1`). The
+  banner is a rule rather than a sentence in the instruction because every request carries
+  the instruction and one event with nothing said before it: "when a visitor connects, send a
+  banner asking for their name; after that, answer every line" had llama3.1:8b answer every
+  typed line (`hello`, `hi there`, `what is this place?`, `play`) with the banner again, 20
+  times in 20, and naming the events inside the instruction barely changed that (16 in 20).
+  With the rule it answers `hello` and `hi there` with a greeting of its own (such as
+  `Hello, how are you?`) 10 times in 10, and Gemini Nano with `Hi there!` / `Hello there!`.
+  About a second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
   a `$ ` prompt, `telnet localhost 2323` typed out so that it finishes as the client connects,
   then telnet(1)'s own `Trying 127.0.0.1...` / `Connected to localhost.` / `Escape character
   is '^]'.`; when the server hangs up, `Connection closed by foreign host.` and the prompt
@@ -134,7 +146,14 @@ client above the dashboard and the model below it. Nothing needs a click:
   WebLLM runtime (esm.run) is only imported once a WebLLM model is selected.
 - The built-in model gets a fresh session per request (NetGet sends the whole context each
   time) and `promptStreaming()` with a `responseConstraint`: a JSON Schema of `{"actions":
-  [...]}` whose items are the offered non-tool actions, `type` pinned to each name. Chrome's
+  [...]}` whose items are the offered non-tool actions, `type` pinned to each name, listed
+  **first**, and exactly that action's parameters after it (`additionalProperties: false`).
+  The order is load-bearing: a constrained decoder writes properties in schema order, so with
+  `type` listed after the parameters a model that begins with `"type"` (as every example in
+  the prompt does) could only reach the actions with no required parameter. Gemini Nano,
+  llama3.1:8b and qwen2.5:1.5b all answered a typed "hello" with `send_telnet_prompt` and
+  `"> "` that way, Nano under a half-written key (`"prompt__"`, `"promptłe"`) that the missing
+  `additionalProperties: false` let through. Chrome's
   stream yields deltas; early versions yielded the whole text so far each time, and a chunk
   that extends what came before is taken as that. A session without `promptStreaming()` is
   asked through `prompt()`. Its text goes through the composer's own

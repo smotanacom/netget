@@ -131,22 +131,34 @@
         <div class="demo-banner" id="demo-banner">Loading NetGet…</div>
 
         <div class="demo-grid">
-            <!-- Machine 1: the Telnet client -->
+            <!-- The Telnet client -->
             <div class="machine machine-client" id="machine-telnet">
                 <div class="machine-label"><span class="machine-dot"></span> Telnet <span class="muted">· a client on the virtual network</span><span class="spacer"></span><span class="conn-badge" id="telnet-state">not connected</span></div>
                 <div class="screen screen-client"><div class="term-host"><div id="telnet-term"></div></div></div>
             </div>
 
-            <ol class="demo-steps" id="demo-steps" aria-live="polite">
-                <li id="step-server">NetGet opens a Telnet server on port <span class="telnet-port">2323</span>.</li>
-                <li id="step-client">The Telnet client connects to it.</li>
-                <li id="step-model">Everything the server says comes from the model: <b id="step-model-who">you</b>, in the LLM panel below<span id="step-model-until">, until a model is ready</span>.</li>
-                <li id="step-type">Type in the Telnet terminal.</li>
-            </ol>
+            <!-- The model: beside the Telnet client on a wide screen -->
+            <div class="machine machine-model">
+                <div class="machine-label llm-header">
+                    <span class="machine-dot"></span> LLM
+                    <select id="model-select" aria-label="Model"><option>Looking for a model this browser can run…</option></select>
+                    <button class="btn btn-primary" id="llm-load" hidden>Download</button>
+                </div>
+                <div class="llm-source" id="llm-source">
+                    <div class="llm-progress" id="llm-progress" hidden><span id="llm-progress-bar"></span></div>
+                    <div class="llm-status" id="llm-status"></div>
+                </div>
+                <div class="screen screen-model" id="llm-current">
+                    <div class="llm-idle">Nothing to answer yet.</div>
+                </div>
+            </div>
 
+            <!-- Both cables run down to NetGet (on a narrow screen: Telnet, NetGet, the model) -->
             <div class="cable cable-client"><span class="cable-line"></span><span class="cable-tag">request</span></div>
 
-            <!-- Machine 2: NetGet -->
+            <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
+
+            <!-- NetGet, under both -->
             <div class="machine machine-netget">
                 <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· WASM demo in your tab</span></div>
                 <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
@@ -162,28 +174,18 @@
                 </div>
             </div>
 
-            <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
+            <!-- Under NetGet on a wide screen; above the machines on a narrow one -->
+            <ol class="demo-steps" id="demo-steps" aria-live="polite">
+                <li id="step-server">NetGet opens a Telnet server on port <span class="telnet-port">2323</span>.</li>
+                <li id="step-client">The Telnet client connects to it.</li>
+                <li id="step-model">Everything the server says comes from the model: <b id="step-model-who">you</b>, in the LLM panel<span id="step-model-until">, until a model is ready</span>.</li>
+                <li id="step-type">Type in the Telnet terminal.</li>
+            </ol>
 
             <div class="demo-notes">
                 <div><strong>Nothing leaves this tab.</strong> The Telnet server listens on a loopback that exists only inside the WebAssembly instance, and the client connects to it through the same call a real socket would make. The browser's built-in model (Gemini Nano in Chrome, Phi-4-mini in Edge) runs on your device; a WebLLM model is downloaded once from Hugging Face and then runs on your GPU. Nothing else is fetched.</div>
                 <div><strong>Same code as the CLI.</strong> The dashboard, the Telnet server and the LLM prompting are the native NetGet crate compiled for <code>wasm32</code>. The only substitutions are underneath: the executor, the clock, the sockets, and where the model's answer comes from.</div>
-                <div><strong>You can be the model.</strong> Until a model is ready, every request NetGet makes opens a form here, built from the actions it offers, and your answer is what the server puts on the wire. The full prompt is one click away.</div>
-            </div>
-
-            <!-- Machine 3: the model -->
-            <div class="machine machine-model">
-                <div class="machine-label llm-header">
-                    <span class="machine-dot"></span> LLM
-                    <select id="model-select" aria-label="Model"><option>Looking for a model this browser can run…</option></select>
-                    <button class="btn btn-primary" id="llm-load" hidden>Download</button>
-                </div>
-                <div class="llm-source" id="llm-source">
-                    <div class="llm-progress" id="llm-progress" hidden><span id="llm-progress-bar"></span></div>
-                    <div class="llm-status" id="llm-status"></div>
-                </div>
-                <div class="screen screen-model" id="llm-current">
-                    <div class="llm-idle">Nothing to answer yet.</div>
-                </div>
+                <div><strong>You can be the model.</strong> Until a model is ready, every request NetGet makes opens a form in the LLM panel, built from the actions it offers, and your answer is what the server puts on the wire. The full prompt is one click away.</div>
             </div>
         </div>
     </section>
