@@ -353,6 +353,41 @@
 .llm-working code { font-family: var(--mono); font-size: 0.78rem; color: var(--cyan); }
 .llm-note { padding: 0 0.6rem 0.5rem; color: var(--yellow); font-size: 0.78rem; }
 
+/* What the model writes while it answers (liveView in js/demo.js): its reasoning, then the
+   answer. Both blocks have a fixed height and follow the newest line, so the panel does not
+   grow with the text; they scroll (wheel, touch) without showing a scrollbar. */
+.llm-think, .llm-answer { margin: 0 0.6rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.llm-think[hidden], .llm-answer[hidden] { display: none; }
+.llm-think-head {
+    display: flex; gap: 0.4rem; align-items: baseline; width: 100%;
+    font: inherit; font-size: 0.78rem; text-align: left; color: var(--muted);
+    background: none; border: 0; padding: 0.3rem 0.6rem; cursor: pointer;
+}
+.llm-think-head:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; border-radius: 8px; }
+.llm-think:not(.is-done) .llm-think-label { color: var(--text); animation: thinkpulse 1.6s ease-in-out infinite; }
+.llm-think-caret { margin-left: auto; }
+/* Heights are whole lines (line-height 1.3): four of thinking, three of answer. */
+.llm-think-body, .llm-answer-body {
+    box-sizing: content-box;
+    margin: 0;
+    padding: 0.35rem 0.6rem 0.4rem;
+    height: 5.2em;
+    overflow-y: auto;
+    scrollbar-width: none;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+    border-top: 1px dashed var(--border);
+}
+.llm-think-body::-webkit-scrollbar, .llm-answer-body::-webkit-scrollbar { display: none; }
+.llm-think-body { color: var(--muted); font-size: 0.78rem; font-style: italic; }
+.llm-think.is-collapsed .llm-think-body { display: none; }
+.llm-answer-label { padding: 0.3rem 0.6rem; color: var(--muted); font-size: 0.78rem; }
+.llm-answer-body { height: 3.9em; font-family: var(--mono); font-size: 0.72rem; color: var(--text); }
+
+@keyframes thinkpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .llm-think:not(.is-done) .llm-think-label { animation: none; } }
+
 .llm-prompt { margin: 0 0.6rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; }
 .llm-prompt summary { cursor: pointer; padding: 0.3rem 0.6rem; color: var(--muted); font-size: 0.78rem; }
 .llm-prompt pre {

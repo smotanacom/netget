@@ -78,10 +78,18 @@ pub struct BridgeToolCall {
 /// The host's answer.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BridgeReply {
+    /// The answer: the action envelope, or plain text. Only this is parsed.
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<BridgeToolCall>,
+    /// The reasoning a model that thinks natively wrote before this answer — the demo page
+    /// sends Qwen3's `<think>` block here and the text after it as `content`. It is never
+    /// parsed as part of the answer. It reaches the status channel as `[REASONING]` lines,
+    /// exactly as an Ollama `thinking` stream or an OpenAI `reasoning`/`reasoning_content`
+    /// stream does, so the dashboard shows it the same way.
+    #[serde(default, alias = "reasoning_content", alias = "thinking")]
+    pub reasoning: Option<String>,
     #[serde(default)]
     pub prompt_tokens: u64,
     #[serde(default)]

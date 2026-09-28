@@ -22,6 +22,12 @@
 // dashboard's `[ send ]`) comes back `Executed` with its status, a non-200 is reported as a
 // status, and `https://` is refused with the reason.
 //
+// The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
+// thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
+// site/js/thinking.js — the page's split of a streamed answer into the "Thinking…" block and
+// the answer — is checked at each point of a `<think>` stream, and a model that does not think
+// is checked to have nothing split out of its text.
+//
 // The peer for those exchanges is NetGet's HLS server, not its HTTP server, and the reason is
 // worth knowing before changing it: hyper's HTTP/1 *server* cannot answer on wasm32 at all.
 // `proto::h1::dispatch::poll_inner` calls `T::update_date()` on its very first poll, which
@@ -36,6 +42,7 @@
 import { readFileSync } from 'node:fs';
 import init, { NetGet } from '../../site/demo/pkg/netget_web.js';
 import { offeredActions, defaultActionIndex, newEntry, buildReply, buildAction } from '../../site/js/composer.js';
+import { splitThinking } from '../../site/js/thinking.js';
 
 const wasm = readFileSync(new URL('../../site/demo/pkg/netget_web_bg.wasm', import.meta.url));
 await init({ module_or_path: wasm });
@@ -72,6 +79,32 @@ function waitFor(pred, what, ms = 15000) {
 }
 
 const PORT = 7000;
+const SMOKE_REASONING = 'smokethought: the peer wants its line shouted back';  // a <think> block's text
+
+// site/js/thinking.js, at each point of a stream.
+function checkThinkingSplit() {
+    const same = (got, want, what) => {
+        if (JSON.stringify(got) !== JSON.stringify(want)) fail(`thinking.js: ${what}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+    };
+    const pick = (s) => ({ thinking: s.thinking, answer: s.answer, done: s.thinkingDone });
+    const answer = '{"actions":[{"type":"send_telnet_line","line":"hi"}]}';
+    const think = '<think>\nThey said hi.\nGreet them.\n</think>\n\n' + answer;
+    same(pick(splitThinking('<thi', { thinks: true })), { thinking: '', answer: '', done: false }, 'a think tag opening');
+    same(pick(splitThinking(think.slice(0, 22), { thinks: true })), { thinking: 'They said hi.', answer: '', done: false }, 'mid-thought');
+    same(splitThinking(think.slice(0, think.indexOf('</think>') + 4), { thinks: true }).thinking, 'They said hi.\nGreet them.', 'a closing tag half written');
+    same(pick(splitThinking(think.slice(0, think.indexOf('</think>') + 12), { thinks: true })), { thinking: 'They said hi.\nGreet them.', answer: '{"', done: true }, 'the answer begun');
+    same(pick(splitThinking(think, { thinks: true, final: true })), { thinking: 'They said hi.\nGreet them.', answer, done: true }, 'the whole answer');
+    // A template that opened the block in the prompt: only the closing tag is written.
+    same(splitThinking('Hmm.\n</think>\n{"actions":[]}', { thinks: true, final: true }).answer, '{"actions":[]}', 'no opening tag');
+    same(splitThinking('Hmm, still', { thinks: true }).thinking, 'Hmm, still', 'a thinking model before its closing tag');
+    // Thinking switched off (`enable_thinking: false` prefills an empty block), or skipped.
+    same(pick(splitThinking('<think>\n\n</think>\n\n' + answer, { thinks: true, final: true })), { thinking: '', answer, done: true }, 'an empty think block');
+    same(splitThinking(answer.slice(0, 9), { thinks: true }).answer, answer.slice(0, 9), 'a thinking model answering directly');
+    same(splitThinking('plain words', { thinks: true, final: true }).answer, 'plain words', 'unterminated, untagged text at the end is the answer');
+    same(pick(splitThinking('<think>out of tokens', { thinks: true, final: true })), { thinking: 'out of tokens', answer: '', done: true }, 'a think block that never closed');
+    // A model that does not think: nothing is split out, whatever the text holds.
+    same(pick(splitThinking(think.slice(0, 30))), { thinking: '', answer: think.slice(0, 30), done: true }, 'a model that does not think');
+}
 
 const netget = new NetGet({
     cols: 120,
@@ -127,14 +160,17 @@ const netget = new NetGet({
         // Answer in the vocabulary of whichever server asked: TCP echoes uppercased, UDP
         // reverses.
         const isUdp = req.messages.some((m) => m.content.includes('send_udp_response'));
-        const reply = isUdp
-            ? { actions: [{ type: 'send_udp_response', data: [...text.trim()].reverse().join(''), encoding: 'text' }] }
-            : { actions: [{ type: 'send_tcp_data', data: text.toUpperCase() }] };
-        return JSON.stringify({ content: JSON.stringify(reply), prompt_tokens: 10, completion_tokens: 5 });
+        if (isUdp) {
+            const reply = { actions: [{ type: 'send_udp_response', data: [...text.trim()].reverse().join(''), encoding: 'text' }] };
+            return JSON.stringify({ content: JSON.stringify(reply), prompt_tokens: 10, completion_tokens: 5 });
+        }
+        const reply = { actions: [{ type: 'send_tcp_data', data: text.toUpperCase() }] };
+        return JSON.stringify({ content: JSON.stringify(reply), reasoning: SMOKE_REASONING, prompt_tokens: 10, completion_tokens: 5 });
     },
 });
 
 try {
+    checkThinkingSplit();
     await waitFor(() => screen.length > 500, 'the dashboard to paint');
     if (!/\x1b\[\d+;\d+H/.test(screen)) fail('output has no cursor-positioning sequences; not a rendered frame');
 
@@ -163,6 +199,8 @@ try {
     if (!req.messages.some((m) => m.content.includes('hello netget'))) fail('the prompt does not carry the received bytes');
 
     await waitFor(() => received.join('').includes('HELLO NETGET'), 'the echoed bytes', 20000);
+    // The reply's thinking reached the dashboard (its stream column).
+    await waitFor(() => screen.includes('smokethought'), 'the model thinking on the dashboard', 10000);
 
     // The dashboard should have repainted with the server card by now.
     await waitFor(() => /tcp/i.test(screen.slice(-20000)), 'the tcp card on screen');
@@ -271,6 +309,7 @@ try {
     if (httpResponses[1].status_code !== 404 || !String(httpResponses[1].body).includes('no such segment')) fail('the 404 did not reach the client intact: ' + JSON.stringify(httpResponses[1]));
 
     console.log('ok: dashboard painted, tcp, udp, http and hls servers started, virtual connections round-tripped through the model bridge');
+    console.log('    thinking: a reply\'s reasoning reached the dashboard; thinking.js split <think> streams and left other models\' text whole');
     console.log('    composer: ' + composed[0].actions.length + ' actions offered, default ' + composed[0].entry.name + ', example bytes ' + JSON.stringify(composerReceived.join('')) + ' reached the peer');
     console.log('    http: [ + http client ] connected client #' + viaButton.id + ' to :' + HTTP_PORT + '; client #' + httpClient.id + ' read ' + first.status_code + ' (' + String(first.body).length + ' byte playlist) and, via [ send ], ' + detail.split('-> ')[1] + '; https refused');
     console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);

@@ -56,8 +56,11 @@ Two things the script handles that are easy to lose an hour to:
   (`llm: …`); `set_models(json)` sets what `/model` lists and should include it.
 - `set_llm_handler(fn)` — `fn(requestJson) -> Promise<replyJson | object>`. A request is
   `{id, kind: "generate" | "chat", model, messages: [{role, content}], tools: [...],
-  actions: [...]}`. A reply is `{content?, tool_calls?: [{name, arguments}],
-  prompt_tokens?, completion_tokens?}` or `{error}`.
+  actions: [...]}`. A reply is `{content?, tool_calls?: [{name, arguments}], reasoning?,
+  prompt_tokens?, completion_tokens?}` or `{error}`. `reasoning` is the thinking a model that
+  reasons natively wrote before its answer (the page sends Qwen3's `<think>` block); NetGet
+  never parses it, and forwards it to the status channel as `[REASONING]` lines, so the
+  dashboard's stream shows it (`∴ …`) exactly as it shows an Ollama model's `thinking`.
 
   `actions` is every action the prompt offers, as data: `{name, description, tool, generic,
   parameters: [{name, type, description, required, choices?}], example, schema}`
@@ -95,13 +98,25 @@ client above the dashboard and the model below it. Nothing needs a click:
   sends it whole on Enter. The connection's `telnet_connection_opened` is the first model
   request, so the greeting is the first thing anyone answers.
 - Requests are answered one at a time and only the current one is on screen: the composer
-  (below) while the visitor is the model, a one-line status while a model answers.
+  (below) while the visitor is the model, and what the model writes while a model answers.
+  Its output streams into the LLM panel as it is generated (Prompt API `promptStreaming`,
+  WebLLM's `stream: true` deltas), in fixed-height blocks that follow the newest line and
+  scroll without a scrollbar, so the panel does not grow. A model that reasons natively
+  (`thinks: true` in `WEBLLM_MODELS`: Qwen3 1.7B and 4B) gets a "Thinking…" block with its
+  `<think>` text, then the answer; once answered the block folds to "Thought for N s ▸" and
+  opens again on a click. Every other model (Gemini Nano, Qwen2.5, Llama 3.2, Hermes) shows
+  its answer alone: it is not asked to explain itself, because a prompted explanation is not
+  reasoning and would be mislabelled as such. `site/js/thinking.js` does the split. A model's
+  answered request stays on screen, marked "answered in N s", until the next request
+  replaces it; one the visitor answered goes idle at once.
 - The model control is one `<select>` in the LLM machine's header. Where
   `LanguageModel.availability()` answers `available`, `downloadable` or `downloading`, its
   first option is the browser's built-in model, by name: "Gemini Nano (built into Chrome)",
   or "Phi-4-mini (built into Edge)" when the user agent says Edge (the API does not name its
   model; Edge's flag-gated Aion-1.0-Instruct cannot be told apart). Then the WebLLM models
-  (`WEBLLM_MODELS`), each with its download size, or "downloaded" once WebLLM's
+  (`WEBLLM_MODELS`), each with its download size (the weights in the model's
+  `ndarray-cache.json`; WebLLM's prebuilt config gives only VRAM) and "thinks" for Qwen3, or
+  "downloaded" once WebLLM's
   `hasModelInCache` says so; without WebGPU they are listed disabled and the visitor is the
   model. The default is the built-in model, else the first WebLLM model; a choice made in the
   select is kept in `localStorage` (`netget-demo-model`) and restored on the next visit.
@@ -118,11 +133,22 @@ client above the dashboard and the model below it. Nothing needs a click:
   unloaded; the built-in model's session is kept, so switching back to it is immediate. The
   WebLLM runtime (esm.run) is only imported once a WebLLM model is selected.
 - The built-in model gets a fresh session per request (NetGet sends the whole context each
-  time) and `prompt()` with a `responseConstraint`: a JSON Schema of `{"actions": [...]}`
-  whose items are the offered non-tool actions, `type` pinned to each name. Its text goes
-  through the composer's own `entriesFromEnvelope`/`buildReply`, so an answer is accepted only
-  if the composer could have built it; anything else sends that one request to the composer,
-  with the reason. WebLLM's text goes back as written, to NetGet's own parser and repair.
+  time) and `promptStreaming()` with a `responseConstraint`: a JSON Schema of `{"actions":
+  [...]}` whose items are the offered non-tool actions, `type` pinned to each name. Chrome's
+  stream yields deltas; early versions yielded the whole text so far each time, and a chunk
+  that extends what came before is taken as that. A session without `promptStreaming()` is
+  asked through `prompt()`. Its text goes through the composer's own
+  `entriesFromEnvelope`/`buildReply`, so an answer is accepted only if the composer could have
+  built it; anything else sends that one request to the composer, with the reason. WebLLM's
+  text goes back as written, to NetGet's own parser and repair, less a thinking model's
+  `<think>` block, which goes as the reply's `reasoning` (a block with no `<think>` in sight,
+  because the template opened it in the prompt, ends at `</think>`; one that never closes has
+  no answer, and NetGet's retry takes it from there). Qwen3 is asked with
+  `extra_body: {enable_thinking: true}` (WebLLM 0.2.85's toggle; `false` would prefill an empty
+  think block), temperature 0.6 and top_p 0.95 (Qwen's own advice for thinking; greedy
+  decoding makes it repeat itself), and `max_tokens` 2048, since its thinking is spent from the
+  same budget. Its prebuilt context window is 4096 tokens; WebLLM refuses a prompt longer than
+  that and stops generating at it.
 
 The page never starts an HTTP-family server (see below for why they cannot answer here). The
 dashboard's picker still lists every compiled protocol, so a visitor can.
@@ -146,7 +172,15 @@ unparseable answer) and when it is `downloadable` (waits for the first keypress)
 driven against a fake WebLLM module the test serves in place of the esm.run import: an
 uncached model shows its sized download button and downloads nothing unasked, switching back
 re-uses the built-in session, a cached model loads with no click, and the choice survives a
-reload. Headless Chromium has no built-in model, so the stubs are the evidence for that path;
+reload. Streaming is driven the same way: a stub whose `promptStreaming()` holds after two
+chunks shows the partial answer in the panel before the Telnet terminal has it and never a
+Thinking block (its second stream yields cumulative chunks, and the answer is the same), and
+the fake WebLLM's Qwen3 streams a `<think>` block, held before `</think>`, which shows in the
+Thinking block with no answer yet, folds to "Thought for N s" once answered, opens on a click,
+and never reaches the Telnet terminal (with the real xterm.js the test reads it in the
+dashboard's stream too). `smoke.mjs` checks `site/js/thinking.js` at each point of a `<think>`
+stream and that a reply's `reasoning` reaches the dashboard.
+Headless Chromium has no built-in model, so the stubs are the evidence for that path;
 with Chrome itself the test also checks the real `availability()` is detected and no download
 starts unasked. xterm.js is stubbed unless `XTERM_DIR` points at the real files; every other
 non-local request is answered by the test. `SITE_DIR` serves another layout of the page

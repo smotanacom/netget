@@ -4,13 +4,13 @@
     ./web/build.sh && python3 web/test/page_composer.py
 
 Serves site/ (or SITE_DIR) from 127.0.0.1 and opens the page in headless Chromium
-(Playwright) six times. Nothing is clicked before the assertions that say so. In every run the
+(Playwright) eight times. Nothing is clicked before the assertions that say so. In every run the
 model select sits in the LLM machine's header and no badge names a model; who answers is read
 from the steps above the machines (`#step-model-who`).
 
-1. WebGPU but no built-in model. The select lists only the four WebLLM models, each with its
-   download size, the default selected, one button naming the download, and nothing is
-   downloaded. The Telnet server opens by itself and the Telnet terminal reads as a shell:
+1. WebGPU but no built-in model. The select lists only the six WebLLM models, each with its
+   download size (and "thinks" for Qwen3), the default selected, one button naming the
+   download, and nothing is downloaded. The Telnet server opens by itself and the Telnet terminal reads as a shell:
    `$ telnet localhost 2323`, then telnet's own `Trying 127.0.0.1...`, `Connected to
    localhost.`, `Escape character is '^]'.`. The connection's first request lands in the LLM
    panel as the "you are the model" composer, prefilled from the example of the protocol's
@@ -27,17 +27,26 @@ from the steps above the machines (`#step-model-who`).
    (built into Chrome)" first; the page loads it without being asked, and it answers every
    request with no composer; its prompt() receives a responseConstraint naming the offered
    actions. An answer that does not parse falls back to the composer for that one request.
-4. Switching, with that stub and WebGPU: choosing an uncached WebLLM model shows one button
+4. A stub whose promptStreaming() holds after two chunks: the partial answer is in the LLM
+   panel while the Telnet terminal has nothing, and no Thinking block ever appears (Gemini
+   Nano does not think); released, the answer reaches Telnet. Its next stream yields the whole
+   text so far each time and gives the same answer. The constraint asks for `actions` alone.
+5. The fake WebLLM's Qwen3, held inside its `<think>` block: the Thinking block shows the
+   thinking and no answer exists yet; released, it folds to "Thought for N s", opens and closes
+   on a click, the answer reaches Telnet and the thinking never does (with the real xterm.js,
+   the dashboard's stream shows it). The request asked for enable_thinking and 2048 tokens.
+   Screenshots of both, mid-stream and done, at 1440x900 and 390x844 when SCREENSHOT_DIR is set.
+6. Switching, with the stub of 3 and WebGPU: choosing an uncached WebLLM model shows one button
    naming its size and downloads nothing, while Gemini Nano keeps answering; the click
    downloads it (the status counts the percentage) and it takes over; choosing Gemini Nano
    again re-uses its session (no create()) and unloads the WebLLM engine; choosing the WebLLM
    model again loads it from the cache with no click; and after a reload the choice is still
    selected (localStorage) and loads by itself.
-5. A stub whose availability() is "downloadable" and whose create() refuses without a user
+7. A stub whose availability() is "downloadable" and whose create() refuses without a user
    activation, as Chrome's does. The page shows "Download Gemini Nano" and does not start
    the download until the visitor's first keypress in the Telnet terminal; the stub then
    reports progress, and the model takes over the request the visitor had not touched.
-6. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
+8. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
 
 Headless Chromium has no built-in model, so the stubs are the only evidence this test can
 give for the Prompt API path; they pin the page's side of it (availability, create with a
@@ -161,8 +170,13 @@ const cached = () => new Set(JSON.parse(localStorage.getItem(KEY) || '[]'));
 const log = window.__webllm = window.__webllm || { imports: 0, cacheQueries: [], creates: [], unloads: [], prompts: [] };
 log.imports += 1;
 export async function hasModelInCache(id) { log.cacheQueries.push(id); return cached().has(id); }
+// Qwen3 thinks: its stream is a `<think>` block and then the answer. While
+// `window.__webllmHold` is true it stops inside the block, before `</think>`, until the test
+// calls `window.__webllmRelease()`.
+const THINK_PIECES = ['<think>\nThe visitor', ' just connected (zeta7). A BBS greets first,', ' then asks for a name.\nKeep it to two lines.\n', '</think>\n\n'];
 export async function CreateMLCEngine(id, opts) {
   log.creates.push(id);
+  log.requests = log.requests || [];
   const fresh = !cached().has(id);
   for (let p = 0.25; p <= 1; p += 0.25) {
     await new Promise((r) => setTimeout(r, fresh ? 200 : 20));
@@ -178,13 +192,72 @@ export async function CreateMLCEngine(id, opts) {
   return {
     chat: { completions: { async create(req) {
       log.prompts.push(id);
+      log.requests.push({ id, stream: !!req.stream, max_tokens: req.max_tokens, temperature: req.temperature, extra_body: req.extra_body || null });
       const content = answer(req.messages);
       if (!req.stream) return { choices: [{ message: { content, tool_calls: [] } }], usage: {} };
-      return (async function* () { yield { choices: [{ delta: { content } }] }; yield { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }; })();
+      if (!id.startsWith('Qwen3')) {
+        return (async function* () { yield { choices: [{ delta: { content } }] }; yield { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }; })();
+      }
+      const pieces = [...THINK_PIECES, content.slice(0, 25), content.slice(25)];
+      return (async function* () {
+        for (let i = 0; i < pieces.length; i += 1) {
+          if (i === 3 && window.__webllmHold) await new Promise((r) => { window.__webllmRelease = r; });
+          await new Promise((r) => setTimeout(r, 40));
+          yield { choices: [{ delta: { content: pieces[i] } }] };
+        }
+        yield { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+      })();
     } } },
     async unload() { log.unloads.push(id); },
   };
 }
+"""
+
+# The Prompt API streaming, as Chrome's promptStreaming() does: a ReadableStream of deltas. Every
+# second stream yields the whole text so far each time instead, as early versions did; the page
+# must end up with the same answer either way. The first stream stops after two chunks while
+# `window.__lmHold` is true, until the test calls `window.__lmRelease()`.
+STREAMING_LANGUAGE_MODEL_STUB = r"""
+(() => {
+  const log = window.__lm = { prompts: [], streams: 0, creates: 0 };
+  window.__lmHold = true;
+  const pieces = (text) => {
+    const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
+    let msg = '';
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim()).message || ''; } catch (e) {}
+    if (event === 'telnet_connection_opened') {
+      return ['{"actions":[{"type":"send_telnet_line",', '"line":"Hello from the ', 'streaming stub. Your name?"}', ']}'];
+    }
+    return ['{"actions":[{"type":', '"send_telnet_line","line":', '"stream heard: ' + msg + '"}]}'];
+  };
+  const session = () => ({
+    async prompt() { throw new Error('the page should stream'); },
+    promptStreaming(text, options) {
+      log.prompts.push({ text, options });
+      const parts = pieces(text);
+      const cumulative = log.streams % 2 === 1;
+      log.streams += 1;
+      let i = 0;
+      let sent = '';
+      return new ReadableStream({
+        async pull(controller) {
+          if (i === 2 && window.__lmHold) await new Promise((r) => { window.__lmRelease = r; });
+          await new Promise((r) => setTimeout(r, 40));
+          if (i >= parts.length) { controller.close(); return; }
+          sent += parts[i];
+          controller.enqueue(cumulative ? sent : parts[i]);
+          i += 1;
+        },
+      });
+    },
+    async clone() { return session(); },
+    destroy() {},
+  });
+  self.LanguageModel = {
+    async availability() { return 'available'; },
+    async create() { log.creates += 1; return session(); },
+  };
+})();
 """
 
 # WebGPU present, as far as the page's check (`navigator.gpu`) goes.
@@ -193,8 +266,10 @@ NO_GPU = "Object.defineProperty(Navigator.prototype, 'gpu', { configurable: true
 
 WEBLLM_LABELS = [
     "Qwen2.5 1.5B · WebLLM · ~1 GB download",
+    "Qwen3 1.7B · WebLLM · thinks · ~1 GB download",
     "Llama 3.2 3B · WebLLM · ~2 GB download",
     "Qwen2.5 3B · WebLLM · ~2 GB download",
+    "Qwen3 4B · WebLLM · thinks · ~2.3 GB download",
     "Hermes 3 8B · WebLLM · ~5 GB download",
 ]
 
@@ -571,6 +646,134 @@ def run_switching(browser, origin):
     page.close()
 
 
+def panel_text(page):
+    return page.locator("#llm-current").inner_text()
+
+
+def shoot(page, name):
+    """The LLM machine, and the whole demo, at 1440x900 and 390x844."""
+    if not SCREENSHOT_DIR:
+        return
+    for w, h in ((1440, 900), (390, 844)):
+        page.set_viewport_size({"width": w, "height": h})
+        page.wait_for_timeout(300)
+        page.locator(".machine-model").screenshot(path=os.path.join(SCREENSHOT_DIR, f"{name}-llm-{w}x{h}.png"))
+        page.locator("#demo").screenshot(path=os.path.join(SCREENSHOT_DIR, f"{name}-demo-{w}x{h}.png"))
+    page.set_viewport_size({"width": 1280, "height": 800})
+
+
+def run_streaming_builtin(browser, origin):
+    """The Prompt API streams: the answer shows in the panel while it is being written, before
+    the Telnet terminal has it; Gemini Nano does not think, so no Thinking block ever shows."""
+    page, errors = open_page(browser, origin, init_script=STREAMING_LANGUAGE_MODEL_STUB)
+    page.evaluate("""() => { window.__thinkSeen = 0;
+        new MutationObserver(() => { const t = document.querySelector('#llm-current .llm-think');
+            if ((t && !t.hidden) || /Thinking|Thought for/.test(document.querySelector('#llm-current').textContent)) window.__thinkSeen += 1; })
+          .observe(document.querySelector('#llm-current'), { childList: true, subtree: true, characterData: true, attributes: true }); }""")
+    wait_for_autostart(page)
+    expect_who(page, "Gemini Nano")
+    llm = page.locator("#llm-current")
+
+    # Mid-stream: two chunks of the greeting are on screen, the rest is not written yet, and
+    # nothing has reached the Telnet terminal.
+    answer = llm.locator(".llm-answer-body")
+    expect(answer).to_contain_text('"line":"Hello from the', timeout=30_000)
+    assert "streaming stub" not in answer.inner_text(), answer.inner_text()
+    expect(llm.locator(".llm-state")).to_have_text("the model is answering")
+    expect(llm.locator(".llm-think")).to_be_hidden()
+    assert "Hello from the" not in telnet_text(page)
+    check_no_scrollbars(page, "nano-streaming")
+    shoot(page, "nano-mid")
+
+    page.evaluate("window.__lmHold = false; window.__lmRelease()")
+    expect_telnet(page, "Hello from the streaming stub. Your name?")
+    expect(llm.locator(".llm-state")).to_have_text(re.compile(r"^answered in \d+\.\d s$"))
+    expect(answer).to_contain_text("streaming stub. Your name?")
+    expect(llm.locator(".llm-think")).to_be_hidden()
+    check_no_scrollbars(page, "nano-answered")
+    shoot(page, "nano-done")
+
+    # The second stream yields the whole text so far each time: the same answer comes out.
+    type_line(page, "Ada")
+    expect_telnet(page, "stream heard: Ada")
+    type_line(page, "Grace")
+    expect_telnet(page, "stream heard: Grace")
+    assert page.evaluate("window.__lm.streams") >= 3
+    assert page.evaluate("window.__thinkSeen") == 0, "a Thinking block appeared for a model that does not think"
+
+    # The constraint is the plain action envelope: no property the prompt does not describe.
+    import json as _json
+    constraint = page.evaluate("window.__lm.prompts[window.__lm.prompts.length - 1].options.responseConstraint")
+    assert constraint["required"] == ["actions"], constraint
+    assert "reasoning" not in _json.dumps(constraint), constraint
+    assert not errors, f"page errors: {errors}"
+    page.close()
+
+
+def run_webllm_thinking(browser, origin):
+    """Qwen3 thinks: its `<think>` text shows in the Thinking block while it is written, before
+    any answer; once the answer is done the block folds to "Thought for N s" and opens again on
+    a click; the answer reaches the Telnet terminal and the thinking never does."""
+    page, errors = open_page(browser, origin, init_script=NO_LANGUAGE_MODEL + GPU_STUB)
+    wait_for_autostart(page)
+    llm = page.locator("#llm-current")
+    # The visitor has the greeting until the model is ready; the model then takes it over.
+    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+    sel = page.locator("#model-select")
+    sel.select_option("Qwen3-1.7B-q4f16_1-MLC")
+    btn = page.locator("#llm-load")
+    expect(btn).to_have_text("Download Qwen3 1.7B · ~1 GB", timeout=10_000)
+    page.evaluate("window.__webllmHold = true")
+    btn.click()
+    expect_who(page, "Qwen3 1.7B", timeout=15_000)
+
+    # Mid-thought: the Thinking block shows the think text, no answer yet, nothing on Telnet.
+    think = llm.locator(".llm-think")
+    body = llm.locator(".llm-think-body")
+    expect(think).to_be_visible(timeout=15_000)
+    expect(body).to_contain_text("then asks for a name.")
+    expect(llm.locator(".llm-think-label")).to_have_text("Thinking…")
+    assert "<think>" not in body.inner_text(), body.inner_text()
+    expect(llm.locator(".llm-answer")).to_be_hidden()
+    assert "Hello" not in telnet_text(page)
+    req = page.evaluate("window.__webllm.requests[window.__webllm.requests.length - 1]")
+    assert req["stream"] and req["extra_body"] == {"enable_thinking": True} and req["max_tokens"] == 2048, req
+    check_no_scrollbars(page, "qwen3-thinking")
+    shoot(page, "qwen3-mid")
+
+    page.evaluate("window.__webllmHold = false; window.__webllmRelease()")
+    expect_telnet(page, "webllm Qwen3-1.7B-q4f16_1-MLC heard:")
+    expect(llm.locator(".llm-think-label")).to_have_text(re.compile(r"^Thought for \d+\.\d s$"))
+    expect(think).to_have_class(re.compile(r"\bis-collapsed\b"))
+    expect(body).to_be_hidden()
+    expect(llm.locator(".llm-think-head")).to_have_attribute("aria-expanded", "false")
+    expect(llm.locator(".llm-answer-body")).to_contain_text('"send_telnet_line"')
+    assert "</think>" not in llm.locator(".llm-answer-body").inner_text()
+    check_no_scrollbars(page, "qwen3-thought")
+    shoot(page, "qwen3-done")
+
+    llm.locator(".llm-think-head").click()
+    expect(body).to_be_visible()
+    expect(body).to_contain_text("zeta7")
+    expect(llm.locator(".llm-think-head")).to_have_attribute("aria-expanded", "true")
+    llm.locator(".llm-think-head").click()
+    expect(body).to_be_hidden()
+
+    # A typed line: thought about, answered, and only the answer reaches the terminal.
+    type_line(page, "Ada")
+    expect_telnet(page, "webllm Qwen3-1.7B-q4f16_1-MLC heard: Ada")
+    assert "zeta7" not in telnet_text(page) and "think>" not in telnet_text(page), telnet_text(page)
+    # With the real xterm.js the dashboard renders into the DOM: its stream shows the thinking.
+    if XTERM_DIR:
+        page.locator("#dash-term").scroll_into_view_if_needed()
+        deadline = time.time() + 15
+        while "zeta7" not in page.locator("#dash-term .xterm-rows").inner_text() and time.time() < deadline:
+            time.sleep(0.2)
+        assert "zeta7" in page.locator("#dash-term .xterm-rows").inner_text(), "the thinking never reached the dashboard"
+    assert not errors, f"page errors: {errors}"
+    page.close()
+
+
 def run_chrome_downloadable(browser, origin):
     page, errors = open_page(browser, origin, init_script=LANGUAGE_MODEL_STUB % {"mode": "downloadable"})
     wait_for_autostart(page)
@@ -641,6 +844,8 @@ def main():
         server_s, client_s = run_you_are_the_model(browser, origin)
         run_no_model_at_all(browser, origin)
         run_chrome_available(browser, origin)
+        run_streaming_builtin(browser, origin)
+        run_webllm_thinking(browser, origin)
         run_switching(browser, origin)
         run_chrome_downloadable(browser, origin)
         real = run_real_prompt_api(browser, origin)
@@ -655,6 +860,11 @@ def main():
           + ", ".join(f"{w}x{h}" for w, h in SIZES))
     print("ok: a stub LanguageModel ('available') loaded by itself and answered with no composer, "
           "constrained to the offered actions; an unparseable answer fell back to the composer")
+    print("ok: a streaming LanguageModel's answer showed in the panel before it reached Telnet, with no "
+          "Thinking block, whether its chunks were deltas or the whole text so far")
+    print("ok: Qwen3's <think> text showed in the Thinking block before any answer, folded to 'Thought "
+          "for N s' once answered and opened on a click; only the answer reached Telnet"
+          + ("; the dashboard showed the thinking" if XTERM_DIR else ""))
     print("ok: with neither a built-in model nor WebGPU the WebLLM models were listed disabled")
     print("ok: switching from Gemini Nano to an uncached WebLLM model showed its sized download "
           "button and downloaded nothing until clicked; back to Gemini Nano re-used its session; "

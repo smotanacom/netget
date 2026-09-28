@@ -1276,6 +1276,26 @@ impl OllamaClient {
         Log::new(self.status_tx.as_ref())
     }
 
+    /// Forward the reasoning a bridge host sent with its answer (`BridgeReply::reasoning`)
+    /// the way a streamed Ollama `thinking` or OpenAI `reasoning` is forwarded: as
+    /// `[REASONING]` lines on the status channel, plus the file-only summary and payload.
+    /// The host has already shown it live on its own side; here it arrives whole, with the
+    /// answer, because the bridge carries one reply per request.
+    fn forward_host_reasoning(&self, reasoning: Option<&str>) {
+        let Some(reasoning) = reasoning.filter(|r| !r.trim().is_empty()) else {
+            return;
+        };
+        let mut fwd = ReasoningForwarder::new(self.status_tx.as_ref());
+        fwd.push(reasoning);
+        fwd.flush();
+        let log = self.log();
+        log.debug(format!(
+            "LLM reasoning: {} chars from the host",
+            reasoning.len()
+        ));
+        log.payload("Full LLM reasoning", reasoning, usize::MAX);
+    }
+
     /// Read an Ollama HTTP response body — NDJSON stream or single object — into a
     /// [`StreamAccumulation`], forwarding reasoning deltas to this client's status
     /// channel as each line arrives.
@@ -1783,6 +1803,7 @@ impl OllamaClient {
                     offered,
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
+                self.forward_host_reasoning(reply.reasoning.as_deref());
                 let usage = TokenUsage {
                     prompt_tokens: reply.prompt_tokens,
                     completion_tokens: reply.completion_tokens,
@@ -1955,6 +1976,7 @@ impl OllamaClient {
                     &request.offered_actions,
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
+                self.forward_host_reasoning(reply.reasoning.as_deref());
                 let tool_calls = reply
                     .tool_calls
                     .into_iter()
