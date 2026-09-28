@@ -12,12 +12,13 @@
 //   3. The model. NetGet hands every LLM request to this page as JSON (the full prompt and
 //      every action it offers). The visitor picks the model in one select: the browser's
 //      built-in model (the Prompt API: Gemini Nano in Chrome, Phi-4-mini in Edge) where it
-//      has one, and the WebLLM models on the GPU. Until the chosen model is ready, whoever
-//      answered before keeps answering, and at first that is the visitor, through
-//      ./composer.js. While a model answers, the LLM panel shows what it writes as it
-//      writes it: a model that reasons natively (Qwen3) shows its thinking in a "Thinking…"
-//      block (./thinking.js splits it out) and then its answer; every other model shows only
-//      its answer.
+//      has one, and the WebLLM models on the GPU, or "You are the model": the visitor
+//      answers through ./composer.js. While the chosen model loads, requests wait for it
+//      (for two minutes at most, then the visitor has them); while it needs a click to
+//      download, the visitor answers. While a model answers, the LLM panel shows what it
+//      writes as it writes it: a model that reasons natively (Qwen3) shows its thinking in a
+//      "Thinking…" block (./thinking.js splits it out) and then its answer; every other
+//      model shows only its answer.
 //
 // The wasm bundle is built by ./web/build.sh into site/demo/pkg/.
 
@@ -206,49 +207,73 @@ function wireDashboardInput(term, netget) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Who answers: the model the visitor picked once it is ready, the visitor until then.
+// Who answers. The select names it: a model, or "You are the model". A request goes to the
+// model answering now if there is one; otherwise, while the selected model is on its way
+// (being looked for, started, loaded from the cache, or downloading once the visitor asked),
+// it waits for that model; otherwise the visitor answers it.
 // ---------------------------------------------------------------------------------------
 
+// How long a request waits for a model that is still loading before the visitor gets it.
+//
+// NetGet waits for the page's answer to a request for LLM_TIMEOUT (900 s, in
+// crates/netget-web/src/lib.rs) and then fails it closed; for the Telnet connect event that
+// means no banner at all (the server logs `decision=connect_event_failed` and moves on). And
+// NetGet hands the page one request at a time (its rate limiter has a single permit), so a
+// second network request waits behind this one for at most 300 s (the limiter's queue
+// timeout) before it fails. Two minutes is well inside both, and leaves the visitor the rest.
+// A model that becomes ready later still takes the request over if the visitor has not
+// started on it.
+const MODEL_WAIT_MS = 120_000;
+
+// { to: 'model', model } | { to: 'wait', model } | { to: 'you' }
+function route() {
+    if (app.selected === YOU) return { to: 'you' };
+    if (app.active) return { to: 'model', model: app.active };
+    const m = selectedModel();
+    if (m && (m.state === 'loading' || m.state === 'checking' || m.state === 'loadable')) return { to: 'wait', model: m };
+    return { to: 'you' };
+}
+
 function answererName() {
-    return app.active ? app.active.name : 'you';
+    const r = route();
+    return r.to === 'you' ? 'you' : r.model.name;
 }
 
 // Tell every place that names the answerer: the LLM machine (`data-answerer`), and NetGet
 // itself (the dashboard's status bar and the `model` of every request).
 function renderWho() {
+    const name = answererName();
     const machine = $('.machine-model');
-    if (machine) machine.dataset.answerer = answererName();
-    if (app.netget) {
-        const name = answererName();
+    if (machine) machine.dataset.answerer = name;
+    if (app.netget && app.told !== name) {
+        app.told = name;
         app.netget.set_models(JSON.stringify([name]));
         if (typeof app.netget.set_model === 'function') app.netget.set_model(name);
     }
 }
 
-// A model is ready and selected: it answers from now on, starting with anything still
-// waiting that the visitor has not begun to answer. A WebLLM model it replaces is unloaded
-// (GPU memory is the scarce thing); the built-in model's session is kept, it costs nothing.
+// A model is ready and selected: it answers from now on (renderControl hands it the request
+// on screen if that is waiting for it, or if the visitor has not begun to answer it). Any
+// other WebLLM model still loaded is unloaded (GPU memory is the scarce thing); the built-in
+// model's session is kept, it costs nothing.
 function activate(m) {
-    const prev = app.active;
     app.active = m;
-    if (prev && prev !== m && prev.kind === 'webllm') retireWebLlm(prev);
-    renderWho();
-    renderControl();
-    const cur = app.current;
-    if (cur && cur.manual && !cur.touched) {
-        cur.manual = false;
-        dispatch(cur);
+    for (const other of app.models) {
+        if (other !== m && other.kind === 'webllm' && other.state === 'ready') retireWebLlm(other);
     }
+    renderControl();
 }
 
 // ---------------------------------------------------------------------------------------
 // The model control: one select in the LLM header. The browser's built-in model first where
-// it has one, then the WebLLM models. Choosing one that is already on this device switches
-// to it; one that needs a download shows the one button that starts it.
+// it has one, then the WebLLM models, then "You are the model". Choosing a model that is
+// already on this device switches to it; one that needs a download shows the one button that
+// starts it.
 // ---------------------------------------------------------------------------------------
 
 const MODEL_KEY = 'netget-demo-model';
 const BUILTIN = 'builtin';
+const YOU = 'you';
 
 // Model states: 'checking' (is it already downloaded?), 'loadable' (on this device, loads
 // without a click), 'needs-click' (a download the visitor has to ask for), 'loading',
@@ -270,8 +295,19 @@ function setProgress(fraction) {
     $('#llm-progress-bar').style.width = Math.round(Math.max(0, Math.min(1, fraction)) * 100) + '%';
 }
 
-// The select, the button and the status line, from the selected model's state.
+function percent(m) {
+    return m.state === 'loading' && typeof m.progress === 'number' ? ` ${Math.round(m.progress * 100)}%` : '';
+}
+
+// The select, the button and the status line, from the selected model's state; then who
+// answers, and the request on screen routed again.
 function renderControl() {
+    paintControl();
+    renderWho();
+    reroute();
+}
+
+function paintControl() {
     const sel = $('#model-select');
     for (const opt of sel.options) {
         const m = modelById(opt.value);
@@ -280,19 +316,26 @@ function renderControl() {
     if (app.selected && sel.value !== app.selected) sel.value = app.selected;
     const btn = $('#llm-load');
     const status = $('#llm-status');
-    const m = selectedModel();
     btn.hidden = true;
     btn.disabled = false;
     setProgress(null);
-    if (!m) {
-        // Nothing selectable: no built-in model and no WebGPU.
-        status.innerHTML = 'This browser has neither a built-in model nor WebGPU (Chrome or Edge on a desktop, or Safari 26, have one of them), so <b>you</b> are the model: each request opens a form below.';
+    const you = 'each request opens a form below.';
+    if (app.selected === YOU) {
+        const loaded = app.models.find((m) => m.state === 'ready');
+        status.innerHTML = !app.models.some((m) => m.state !== 'unsupported')
+            ? `This browser has neither a built-in model nor WebGPU (Chrome or Edge on a desktop, or Safari 26, have one of them), so <b>you</b> are the model: ${you}`
+            : `<b>You</b> are the model: ${you}`
+              + (loaded ? ` ${escapeHtml(loaded.name)} stays loaded; choose it above to hand requests back.` : '');
         return;
     }
+    const m = selectedModel();
+    if (!m) { status.innerHTML = `<b>You</b> are the model: ${you}`; return; }
     const name = escapeHtml(m.name);
-    const until = app.active && app.active !== m
-        ? `${escapeHtml(app.active.name)} keeps answering until it is ready.`
-        : 'Until it is ready, <b>you</b> are the model: each request opens a form below.';
+    const other = app.active && app.active !== m ? escapeHtml(app.active.name) : null;
+    // While it is on its way, requests wait for it (unless another model is answering).
+    const waits = other ? `${other} keeps answering until it is ready.` : 'Requests wait for it.';
+    // While it needs the visitor, the visitor (or the model answering now) answers.
+    const until = other ? `${other} keeps answering until it is ready.` : `Until it is ready, <b>you</b> are the model: ${you}`;
     const where = m.kind === BUILTIN ? 'on this device' : 'on your GPU';
     switch (m.state) {
     case 'ready':
@@ -301,12 +344,12 @@ function renderControl() {
     case 'loading': {
         const known = typeof m.progress === 'number';
         setProgress(known ? m.progress : null);
-        status.innerHTML = `${m.verb} ${name}${known ? ` ${Math.round(m.progress * 100)}%.` : '…'} ${until}`;
+        status.innerHTML = `${m.verb} ${name}${known ? percent(m) + '.' : '…'} ${waits}`;
         break;
     }
     case 'checking':
     case 'loadable':
-        status.innerHTML = `Looking for ${name} on this device… ${until}`;
+        status.innerHTML = `Looking for ${name} on this device… ${waits}`;
         break;
     case 'needs-click':
         btn.hidden = false;
@@ -331,8 +374,15 @@ function renderControl() {
 }
 
 // Switch to `id`: at once if it is loaded, by itself if it is on this device, otherwise the
-// button says what the download is. Whoever answers now keeps answering until then.
+// button says what the download is. A model answering now keeps answering until then;
+// "You are the model" takes over at once, and leaves any loaded model loaded.
 function choose(id) {
+    if (id === YOU) {
+        app.selected = YOU;
+        app.active = null;
+        renderControl();
+        return;
+    }
     const m = modelById(id);
     if (!m || m.state === 'unsupported') return;
     app.selected = id;
@@ -387,7 +437,8 @@ async function setupModelControl() {
         app.models.push(Object.assign({ kind: 'webllm', cached: false, state: gpu ? 'checking' : 'unsupported' }, w));
     }
     const sel = $('#model-select');
-    sel.innerHTML = app.models.map((m) => `<option value="${m.id}"${m.state === 'unsupported' ? ' disabled' : ''}>${escapeHtml(optionLabel(m))}</option>`).join('');
+    sel.innerHTML = app.models.map((m) => `<option value="${m.id}"${m.state === 'unsupported' ? ' disabled' : ''}>${escapeHtml(optionLabel(m))}</option>`).join('')
+        + `<option value="${YOU}">You are the model</option>`;
     sel.onchange = () => {
         try { localStorage.setItem(MODEL_KEY, sel.value); } catch (e) { /* storage refused */ }
         choose(sel.value);
@@ -409,13 +460,11 @@ async function setupModelControl() {
     let saved = null;
     try { saved = localStorage.getItem(MODEL_KEY); } catch (e) { /* storage refused */ }
     const usable = app.models.filter((m) => m.state !== 'unsupported');
-    const initial = usable.find((m) => m.id === saved) || usable[0] || null;
-    if (!initial) { renderControl(); renderWho(); return; }
-    choose(initial.id);
+    const initial = saved === YOU ? YOU : (usable.find((m) => m.id === saved) || usable[0] || { id: YOU }).id;
+    choose(initial);
     const builtin = modelById(BUILTIN);
     // Already downloading elsewhere: it may not need the activation at all.
     if (builtin && builtin.availability === 'downloading' && app.selected === BUILTIN) loadBuiltin(builtin, { quiet: true });
-    renderWho();
 }
 
 // --- the built-in model (the Prompt API) --------------------------------------------------
@@ -577,7 +626,9 @@ function describe(req) {
 function handleLlmRequest(json) {
     const req = JSON.parse(json);
     return new Promise((resolve) => {
-        app.queue.push({ req, resolve, touched: false, manual: false, started: performance.now() });
+        // mode: 'waiting' (for a model that is loading), 'manual' (the visitor has it) or
+        // 'model' (a model is answering it).
+        app.queue.push({ req, resolve, mode: null, touched: false, started: performance.now() });
         pump();
     });
 }
@@ -592,6 +643,7 @@ function pump() {
 // away) until the next one replaces it, rather than going idle at once.
 function finish(entry, reply, { keep = false } = {}) {
     if (app.current !== entry) return;
+    clearTimeout(entry.timer);
     entry.resolve(JSON.stringify(reply));
     app.current = null;
     if (!keep) renderIdle();
@@ -599,8 +651,43 @@ function finish(entry, reply, { keep = false } = {}) {
 }
 
 function dispatch(entry) {
-    if (!app.active) answerManually(entry);
-    else answerWithModel(entry);
+    const r = route();
+    if (r.to === 'model') answerWithModel(entry);
+    else if (r.to === 'wait' && waitLeft(entry) > 0) renderWaiting(entry, r.model);
+    else answerManually(entry);
+}
+
+function waitLeft(entry) {
+    return MODEL_WAIT_MS - (performance.now() - entry.started);
+}
+
+// Route the request on screen again after something changed (a model became ready or failed,
+// the selection moved, a download started). One a model is answering stays with it. One that
+// is waiting goes wherever route() now says. One the visitor has not begun to answer goes to
+// a model that is ready, or back to waiting for one that is loading, unless a model already
+// failed on it or it already waited its full time.
+function reroute() {
+    const cur = app.current;
+    if (!cur || cur.mode === 'model') return;
+    const r = route();
+    if (cur.mode === 'waiting') {
+        if (r.to === 'model') answerWithModel(cur);
+        else if (r.to === 'wait' && r.model === cur.waitFor) updateWaiting(cur);
+        else if (r.to === 'wait' && waitLeft(cur) > 0) renderWaiting(cur, r.model);
+        else answerManually(cur, leftBy(cur.waitFor));
+        return;
+    }
+    if (cur.mode !== 'manual' || cur.touched || cur.modelFailed) return;
+    if (r.to === 'model') answerWithModel(cur);
+    else if (r.to === 'wait' && !cur.waitedOut && waitLeft(cur) > 0) renderWaiting(cur, r.model);
+}
+
+// Why a request that waited for `m` is the visitor's now.
+function leftBy(m) {
+    if (app.selected === YOU || !m) return '';
+    if (m.state === 'failed') return `${m.name} could not be loaded (${m.error || 'unknown error'}), so this one is yours.`;
+    if (m.state === 'needs-click') return `${m.name} needs a download first, so this one is yours.`;
+    return '';
 }
 
 function renderIdle() {
@@ -633,10 +720,44 @@ function promptHtml(req) {
       </details>`;
 }
 
+// --- waiting for a model that is loading ------------------------------------------------------
+
+function renderWaiting(entry, m) {
+    entry.mode = 'waiting';
+    entry.waitFor = m;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => waitedOut(entry), Math.max(0, waitLeft(entry)));
+    const root = $('#llm-current');
+    root.innerHTML = headHtml(entry, `waiting for ${m.name}`)
+        + '<div class="llm-waiting"><span class="llm-waiting-text"></span></div>'
+        + promptHtml(entry.req);
+    renderQueueCount();
+    updateWaiting(entry);
+}
+
+function updateWaiting(entry) {
+    const el = $('#llm-current .llm-waiting-text');
+    if (!el || app.current !== entry) return;
+    const m = entry.waitFor;
+    el.textContent = `Waiting for ${m.name} to load…${percent(m)} It answers this request as soon as it is ready; `
+        + `if that takes more than ${MODEL_WAIT_MS / 60000} minutes, this one is yours.`;
+}
+
+// The model is still not ready: the visitor gets the request, while NetGet still has most of
+// its wait left (see MODEL_WAIT_MS). The model takes it back if it is ready before they start.
+function waitedOut(entry) {
+    if (app.current !== entry || entry.mode !== 'waiting') return;
+    entry.waitedOut = true;
+    const m = entry.waitFor;
+    answerManually(entry, `${m.name} is still loading after ${MODEL_WAIT_MS / 60000} minutes, so this one is yours `
+        + `unless it is ready before you start; it answers the next request once it is.`);
+}
+
 // --- you are the model -------------------------------------------------------------------
 
 function answerManually(entry, note = '') {
-    entry.manual = true;
+    entry.mode = 'manual';
+    clearTimeout(entry.timer);
     const root = $('#llm-current');
     root.innerHTML = headHtml(entry, 'waiting for you')
         + (note ? `<div class="llm-note">${escapeHtml(note)}</div>` : '')
@@ -717,6 +838,8 @@ function liveView(root, model) {
 }
 
 async function answerWithModel(entry) {
+    entry.mode = 'model';
+    clearTimeout(entry.timer);
     const model = app.active;
     const who = model.name;
     const { event, detail } = describe(entry.req);
@@ -735,7 +858,10 @@ async function answerWithModel(entry) {
             : await answerWithWebLlm(entry.req, engine, model, view.update);
     } catch (e) {
         console.warn('the model could not answer; the visitor answers this one', e);
-        if (app.current === entry) answerManually(entry, `${who} could not answer this one (${e && e.message || e}), so it is yours.`);
+        if (app.current === entry) {
+            entry.modelFailed = true;
+            answerManually(entry, `${who} could not answer this one (${e && e.message || e}), so it is yours.`);
+        }
         return;
     } finally {
         if (engine) {

@@ -300,6 +300,9 @@
 .llm-working { display: flex; gap: 0.55rem; align-items: baseline; padding: 0 0.6rem 0.5rem; color: var(--text); overflow-wrap: anywhere; }
 .llm-working::before { content: ""; flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--green); animation: dotpulse 1.2s ease-out infinite; align-self: center; }
 .llm-working code { font-family: var(--mono); font-size: 0.78rem; color: var(--cyan); }
+/* A request waiting for a model that is still loading (renderWaiting in js/demo.js). */
+.llm-waiting { display: flex; gap: 0.55rem; align-items: baseline; padding: 0 0.6rem 0.5rem; color: var(--text); overflow-wrap: anywhere; }
+.llm-waiting::before { content: ""; flex: none; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--yellow); animation: dotpulse 1.2s ease-out infinite; align-self: center; }
 .llm-note { padding: 0 0.6rem 0.5rem; color: var(--yellow); font-size: 0.78rem; }
 
 /* What the model writes while it answers (liveView in js/demo.js): its reasoning, then the
