@@ -181,6 +181,7 @@ impl Protocol for VaultProtocol {
             // LLM failure: 503 + Retry-After (overloaded) or 500, each as Vault's
             // {"errors": [category]} - the CLI prints it after "Error making API request".
             .answers_on_failure()
+            .request_only("The Vault API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

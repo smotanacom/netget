@@ -85,6 +85,7 @@ fn populated() -> RailSnapshot {
         task_count: 0,
         uptime_secs: 133,
         client_counterpart: Some("HTTP".into()),
+        request_only: None,
         intercepts: vec![InterceptView {
             id: 4,
             owner: InterceptOwner::Server(ServerId::new(1)),
@@ -112,6 +113,7 @@ fn populated() -> RailSnapshot {
         task_count: 0,
         uptime_secs: 3,
         client_counterpart: Some("DNS".into()),
+        request_only: None,
         intercepts: Vec::new(),
     };
     let client = ClientRow {
@@ -453,4 +455,56 @@ fn the_picker_says_why_a_privileged_well_known_port_is_not_used() {
         text.contains("well-known port 53 needs root"),
         "the dns entry must say it cannot take 53 and why"
     );
+}
+
+/// The `[ send message ]` under a live peer whose protocol registered no peer handle: still
+/// there, disabled, and saying *why* — which depends on the protocol. HTTP declares
+/// `request_only`, so it gives the protocol's own reason and no "yet"; a protocol that could
+/// message a peer but has no path for it here says it is not implemented yet.
+#[cfg(feature = "http")]
+#[test]
+fn a_peer_that_cannot_be_messaged_says_why_in_the_protocols_own_terms() {
+    use netget::tui::cards::NO_PEER_HANDLE_REASON;
+
+    let http_reason = netget::protocol::server_registry::registry()
+        .request_only_reason("HTTP")
+        .expect("HTTP declares request_only in its metadata");
+    assert!(
+        http_reason.contains("only answers requests") && !http_reason.contains("yet"),
+        "{http_reason}"
+    );
+    assert_eq!(
+        netget::protocol::server_registry::registry().request_only_reason("TCP"),
+        None,
+        "TCP can message a peer; it declares nothing"
+    );
+
+    let send_reason = |request_only: Option<String>| {
+        let mut snap = populated();
+        snap.servers[0].request_only = request_only;
+        let mut app = app();
+        app.absorb_snapshot(snap);
+        app.focus = Focus::Cards;
+        let text = dump(&frame(&mut app, 120, 60));
+        assert!(
+            text.contains("[ send message"),
+            "the button stays on screen:\n{text}"
+        );
+        let rows = app.rows();
+        let button = rows
+            .iter()
+            .flat_map(|r| r.buttons.iter())
+            .find(|b| b.action == InstanceAction::MessagePeer(7))
+            .expect("the peer's send button");
+        assert!(!button.enabled);
+        button
+            .why_disabled
+            .clone()
+            .expect("a disabled button says why")
+    };
+
+    assert_eq!(send_reason(Some(http_reason.to_string())), http_reason);
+    let other = send_reason(None);
+    assert_eq!(other, NO_PEER_HANDLE_REASON);
+    assert!(other.contains("not implemented here yet"), "{other}");
 }

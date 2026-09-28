@@ -344,6 +344,9 @@ impl Protocol for WebDavProtocol {
                  authentication, no TLS, no PROPPATCH dead-property storage.",
             )
             .max_inbound_bytes(crate::server::webdav::MAX_REQUEST_BODY)
+            .request_only(
+                "WebDAV is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

@@ -215,6 +215,13 @@ impl CardState {
 /// How many children a list shows before "… N more".
 pub const CHILD_LIMIT: usize = 5;
 
+/// What a live peer's disabled `[ send message ]` says when its protocol registered no peer
+/// handle and does not declare [`crate::protocol::metadata::ProtocolMetadataV2::request_only`]:
+/// the protocol could message a peer, NetGet just has no path for it yet. A request-only
+/// protocol says its own reason instead, because for it there is no "yet".
+pub const NO_PEER_HANDLE_REASON: &str =
+    "not implemented here yet: this protocol has no way to message a peer from the dashboard";
+
 /// What Enter does on a row's label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activate {
@@ -900,7 +907,9 @@ fn server_rows(
                         Button::off(
                             InstanceAction::MessagePeer(conn.id),
                             "send message",
-                            "this protocol cannot message a peer from here yet",
+                            row.request_only
+                                .clone()
+                                .unwrap_or_else(|| NO_PEER_HANDLE_REASON.to_string()),
                         )
                     });
                     rows.push(send);

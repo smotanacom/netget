@@ -79,6 +79,9 @@ impl Protocol for MavenProtocol {
                  and any client other than mvn (Gradle and sbt are unproven)",
             )
             .max_inbound_bytes(crate::server::maven::MAX_REQUEST_BODY_BYTES)
+            .request_only(
+                "Maven is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

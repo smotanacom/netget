@@ -333,3 +333,42 @@ async fn send_to_peer_and_disconnect_peer_reach_the_peer() {
 
     client.cancel().await.expect("shutdown");
 }
+
+/// `send_to_peer` on a server whose protocol only answers requests says so in the protocol's
+/// own terms, rather than suggesting a peer handle might turn up.
+#[cfg(feature = "http")]
+#[tokio::test]
+async fn send_to_peer_on_a_request_only_protocol_names_the_protocols_reason() {
+    let (client, _state) = connect().await;
+    let started = call(
+        &client,
+        "start_server",
+        serde_json::json!({
+            "protocol": "http", "port": 0,
+            "event_handlers": [
+                {"event_pattern": "*", "handler": {"type": "static", "actions": []}}
+            ]
+        }),
+    )
+    .await;
+    let text = text_of(&started);
+    assert_ne!(started.is_error, Some(true), "start_server failed: {text}");
+    let server_id = number_after(&text, "Server #");
+
+    let refused = call(
+        &client,
+        "send_to_peer",
+        serde_json::json!({
+            "server_id": server_id, "connection_id": 1,
+            "action": {"type": "send_http_response", "status": 200, "body": "hi"}
+        }),
+    )
+    .await;
+    let refused_text = text_of(&refused);
+    assert_eq!(refused.is_error, Some(true), "{refused_text}");
+    let reason = netget::protocol::server_registry::registry()
+        .request_only_reason("HTTP")
+        .expect("HTTP declares request_only");
+    assert!(refused_text.contains(reason), "{refused_text}");
+    assert!(!refused_text.contains("peer handle"), "{refused_text}");
+}

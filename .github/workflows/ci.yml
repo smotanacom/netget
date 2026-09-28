@@ -242,6 +242,7 @@ jobs:
             --test narrowing_cast_drift_test \
             --test no_protocol_is_hidden_from_the_model_test \
             --test recursive_decoder_depth_test \
+            --test request_only_declaration_test \
             --test startup_param_drift_test \
             --test tcp_server_bounds_ratchet_test \
             --test real_client_evidence_is_run_test \

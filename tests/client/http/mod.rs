@@ -4,3 +4,5 @@ mod command_channel_test;
 mod e2e_test;
 #[cfg(all(test, feature = "http"))]
 mod real_server_test;
+#[cfg(all(test, feature = "http", feature = "tcp"))]
+mod transport_test;

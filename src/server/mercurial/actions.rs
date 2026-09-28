@@ -149,6 +149,7 @@ impl Protocol for MercurialProtocol {
                  `lookup` and `hg clone` needs `known`, and neither is implemented.",
             )
             .max_inbound_bytes(crate::server::mercurial::MAX_REQUEST_BODY_BYTES)
+            .request_only("Mercurial is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

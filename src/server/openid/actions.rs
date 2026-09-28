@@ -172,6 +172,7 @@ impl Protocol for OpenIdProtocol {
                  relying parties, not to authenticate anyone.",
             )
             .max_inbound_bytes(crate::server::openid::MAX_REQUEST_BYTES)
+            .request_only("OpenID Connect is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

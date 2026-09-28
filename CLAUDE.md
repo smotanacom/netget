@@ -1548,8 +1548,9 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   the circuit breaker deliberately ignores the bridge, since a slow person is not an outage.
   `tests/llm_bridge_test.rs` pins the mapping natively (including a real TCP server's event
   offering its actions with examples); `web/test/smoke.mjs` drives the real bundle under Node
-  (dashboard paints, `start_server`, connect, model round-trip, bytes back, and the
-  composer's default reply accepted) and CI's `wasm-web` job runs both.
+  (dashboard paints, `start_server`, connect, model round-trip, bytes back, the
+  composer's default reply accepted, and the `http` client — `[ + http client ]` and a
+  model-driven exchange with `[ send ]`) and CI's `wasm-web` job runs both.
   `web/test/page_composer.py` drives the page in headless Chromium and is run by hand.
 - **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any
   `Stream` of crossterm events); the web crate's backend emits ANSI into xterm.js and its

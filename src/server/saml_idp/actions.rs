@@ -72,6 +72,9 @@ impl Protocol for SamlIdpProtocol {
                  signed assertions will reject these.",
             )
             .max_inbound_bytes(crate::server::saml_idp::MAX_REQUEST_BYTES)
+            .request_only(
+                "SAML is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

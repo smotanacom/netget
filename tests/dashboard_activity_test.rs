@@ -31,6 +31,7 @@ fn server(id: u32, status: ServerStatus) -> ServerRow {
         task_count: 0,
         uptime_secs: 0,
         client_counterpart: None,
+        request_only: None,
         intercepts: Vec::new(),
     }
 }

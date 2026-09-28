@@ -73,6 +73,9 @@ impl Protocol for SamlSpProtocol {
                  cookie is the bare user id with no server-side session store.",
             )
             .max_inbound_bytes(crate::server::saml_sp::MAX_REQUEST_BYTES)
+            .request_only(
+                "SAML is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

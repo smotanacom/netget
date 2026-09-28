@@ -155,6 +155,7 @@ impl Protocol for OpenAiProtocol {
             )
             .notes("OpenAI-compatible API with LLM-driven responses")
             .max_inbound_bytes(crate::server::openai::MAX_REQUEST_BODY_BYTES)
+            .request_only("The OpenAI API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

@@ -647,6 +647,9 @@ impl Protocol for CouchDbProtocol {
                  is refused with 413. No attachment content action and no Mango queries",
             )
             .max_inbound_bytes(crate::server::couchdb::MAX_REQUEST_BODY_BYTES)
+            .request_only(
+                "CouchDB is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
 

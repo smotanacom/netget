@@ -182,8 +182,11 @@ connection task and coming back as an executor error.
 - **`send_to_peer {server_id, connection_id, action, timeout_secs?}`** — checked against the
   server protocol's sync ∪ async actions; needs a peer handle (`server/peer_support.rs`),
   which `server_status` now reports per connection alongside the connection ids a caller
-  needs. **`disconnect_peer`** sends the protocol's own `close_connection` through the same
-  handle and refuses on a protocol that declares none.
+  needs. A protocol declaring `ProtocolMetadataV2::request_only` (HTTP and the protocols on
+  plain HTTP request/response) is refused up front with its own reason — it can only answer a
+  request, so there is nothing to send unprompted — and `server_status` says so above its
+  connections. **`disconnect_peer`** sends the protocol's own `close_connection` through the
+  same handle and refuses on a protocol that declares none.
 - **`list_intercepts`** — every request parked by a `manual` handler: id, owner and
   connection, event type and data, the actions it may be answered with (`name(param*, …)`),
   and seconds until it fails closed (`PendingIntercept::timeout_secs`, recorded at park time).

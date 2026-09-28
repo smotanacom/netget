@@ -462,6 +462,7 @@ impl Protocol for OllamaProtocol {
                  cannot make that call either).",
             )
             .max_inbound_bytes(crate::server::ollama::MAX_REQUEST_BODY_BYTES)
+            .request_only("The Ollama API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

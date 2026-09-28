@@ -116,6 +116,9 @@ impl Protocol for RssProtocol {
                  evidence. Not proven: conditional GET / If-Modified-Since, feed \
                  autodiscovery, Atom.",
             )
+            .request_only(
+                "RSS is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
 

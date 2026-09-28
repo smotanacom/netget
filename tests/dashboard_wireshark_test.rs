@@ -262,6 +262,7 @@ fn the_button_is_a_wireshark_action_on_servers_and_clients() {
         task_count: 0,
         uptime_secs: 0,
         client_counterpart: None,
+        request_only: None,
         intercepts: Vec::new(),
     };
     // Every card's button grid carries it.

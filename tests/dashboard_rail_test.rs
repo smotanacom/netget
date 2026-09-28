@@ -81,6 +81,7 @@ fn server(conns: Vec<ConnRow>, requests: Vec<AccessLogEntry>) -> ServerRow {
         task_count: 0,
         uptime_secs: 133,
         client_counterpart: Some("TCP".into()),
+        request_only: None,
         intercepts: Vec::new(),
     }
 }
@@ -502,7 +503,7 @@ fn peers_carry_their_buttons_and_unfold_into_their_requests() {
         .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, Some(2))))
         .unwrap();
     assert!(peer2.buttons.iter().all(|b| !b.enabled));
-    // The "cannot message" reason lives on the send row now, not on the peer row — the peer
+    // The "not implemented here yet" reason lives on the send row now, not on the peer row — the peer
     // row's own button is `[ disconnect ]`. Asserting it where it actually is keeps the real
     // guarantee: a peer whose protocol registered no handle still SHOWS the affordance, and
     // says why it is dead, rather than hiding it.
@@ -519,7 +520,7 @@ fn peers_carry_their_buttons_and_unfold_into_their_requests() {
         .why_disabled
         .as_deref()
         .unwrap_or("")
-        .contains("cannot message"));
+        .contains("not implemented here yet"));
 
     // A closed peer has no buttons; the connectionless bucket collects the rest.
     let peer3 = card

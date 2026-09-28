@@ -152,6 +152,7 @@ impl Protocol for OtlpProtocol {
             // LLM failure: 503 + Retry-After when the backend is saturated, 500 otherwise, each
             // with a fixed google.rpc.Status message. Never an invented 200.
             .answers_on_failure()
+            .request_only("OTLP/HTTP is request/response; a receiver cannot send an exporter anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

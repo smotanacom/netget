@@ -74,6 +74,7 @@ impl Protocol for OAuth2Protocol {
                  honeypots, never for guarding anything real.",
             )
             .max_inbound_bytes(crate::server::oauth2::MAX_REQUEST_BYTES)
+            .request_only("OAuth 2.0 is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

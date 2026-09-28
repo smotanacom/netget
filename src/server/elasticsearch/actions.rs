@@ -473,6 +473,7 @@ impl Protocol for ElasticsearchProtocol {
                  larger one is refused with 413 before any model call",
             )
             .max_inbound_bytes(crate::server::elasticsearch::MAX_REQUEST_BODY_BYTES)
+            .request_only("Elasticsearch is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

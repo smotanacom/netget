@@ -73,7 +73,12 @@ The dashboard is built around driving instances yourself. Three mechanisms carry
 - **Send section / message a peer**: a client's own verbs as rows (Enter opens the composer
   on that verb's parameters); a server's live peer carries `[ message ]` and
   `[ disconnect ]` on its own row where the protocol registered a peer handle
-  (`server/peer_support.rs`). Without a handle the buttons stay, disabled, and say why.
+  (`server/peer_support.rs`). Without a handle the buttons stay, disabled, and say why:
+  a protocol declaring `ProtocolMetadataV2::request_only` (HTTP and the protocols on plain
+  HTTP request/response) gives its own reason — it can only answer a request, so there is no
+  "yet" — and every other protocol says messaging a peer is not implemented here yet
+  (`cards::NO_PEER_HANDLE_REASON`). `tests/request_only_declaration_test.rs` keeps the
+  declaration off any protocol that registers a handle.
 
 Instances created here default to `*` → manual (see `modal/form.rs`), so the first thing you
 see after starting a server and poking it with `curl` is `⚠ … waiting for YOUR answer`, in

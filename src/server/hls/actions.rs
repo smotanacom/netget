@@ -75,6 +75,7 @@ impl Protocol for HlsProtocol {
                  supply hex-encoded (e.g. a real .ts). Text segment bodies are for structural tests, \
                  not playback.",
             )
+            .request_only("HLS is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

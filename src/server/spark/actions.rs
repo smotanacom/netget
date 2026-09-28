@@ -332,6 +332,7 @@ impl Protocol for SparkProtocol {
                     array.",
             )
             .max_inbound_bytes(crate::server::spark::MAX_REQUEST_BYTES)
+            .request_only("The Spark REST API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

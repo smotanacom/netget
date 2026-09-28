@@ -1057,6 +1057,15 @@ impl ServerRegistry {
         self.get(protocol_name).map(|p| p.metadata())
     }
 
+    /// Why a server of this protocol can only answer its peers, when the protocol declares
+    /// that — see [`ProtocolMetadataV2::request_only`]. `None` for anything else, including a
+    /// protocol this build does not compile.
+    pub fn request_only_reason(&self, protocol_name: &str) -> Option<&'static str> {
+        self.resolve(protocol_name)
+            .ok()
+            .and_then(|p| p.metadata().request_only)
+    }
+
     /// Get all registered protocols with their metadata
     pub fn all_protocols(&self) -> Vec<(String, Arc<dyn Server>)> {
         self.protocols

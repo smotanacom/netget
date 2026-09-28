@@ -456,6 +456,7 @@ impl Protocol for YarnProtocol {
                     returns 503/500 RemoteException, never an empty-but-200 cluster.",
             )
             .max_inbound_bytes(crate::server::yarn::MAX_REQUEST_BODY_BYTES)
+            .request_only("The YARN REST API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

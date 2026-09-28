@@ -68,6 +68,7 @@ impl Protocol for JsonRpcProtocol {
                  limiting, and non-POST gets an Invalid Request body rather than 405.",
             )
             .max_inbound_bytes(crate::server::jsonrpc::MAX_REQUEST_BODY_BYTES)
+            .request_only("JSON-RPC over HTTP is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

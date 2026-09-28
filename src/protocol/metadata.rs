@@ -387,6 +387,20 @@ pub struct ProtocolMetadataV2 {
     /// The transport [`Self::well_known_port`] is registered for. Meaningless when that is
     /// `None`; the builder's default is TCP.
     pub well_known_transport: PortTransport,
+
+    /// Why this server can only ever *answer* a peer, when that is a property of the protocol
+    /// itself: every message it may send is the reply to one the peer sent first (HTTP/1.1 and
+    /// the protocols carried on plain HTTP request/response). `None` claims nothing.
+    ///
+    /// It is what the dashboard says on a peer's disabled `[ send message ]`, and what the MCP
+    /// `send_to_peer` error gives as the reason, instead of "not implemented here yet" — for
+    /// these protocols there is no "yet". A protocol that registers a peer handle
+    /// (`server/peer_support.rs`) can message a peer unprompted, so it must not declare this;
+    /// `tests/request_only_declaration_test.rs` holds that from source.
+    ///
+    /// Write the reason as the sentence a person reads: "HTTP only answers requests; a server
+    /// cannot send a peer anything unprompted".
+    pub request_only: Option<&'static str>,
 }
 
 impl ProtocolMetadataV2 {
@@ -424,6 +438,7 @@ pub struct ProtocolMetadataV2Builder {
     max_inbound_bytes: Option<usize>,
     well_known_port: Option<u16>,
     well_known_transport: PortTransport,
+    request_only: Option<&'static str>,
 }
 
 impl Default for ProtocolMetadataV2Builder {
@@ -446,6 +461,7 @@ impl ProtocolMetadataV2Builder {
             max_inbound_bytes: None,
             well_known_port: None,
             well_known_transport: PortTransport::Tcp,
+            request_only: None,
         }
     }
 
@@ -540,6 +556,13 @@ impl ProtocolMetadataV2Builder {
         self
     }
 
+    /// Declare that the protocol only answers requests, with the reason a person reads — see
+    /// [`ProtocolMetadataV2::request_only`].
+    pub const fn request_only(mut self, reason: &'static str) -> Self {
+        self.request_only = Some(reason);
+        self
+    }
+
     pub const fn build(self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2 {
             state: self.state,
@@ -553,6 +576,7 @@ impl ProtocolMetadataV2Builder {
             max_inbound_bytes: self.max_inbound_bytes,
             well_known_port: self.well_known_port,
             well_known_transport: self.well_known_transport,
+            request_only: self.request_only,
         }
     }
 }

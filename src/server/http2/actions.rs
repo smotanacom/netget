@@ -107,6 +107,7 @@ impl Protocol for Http2Protocol {
                  pick HTTP/2 over TLS on its own - clients must select h2 explicitly or use h2c",
             )
             .max_inbound_bytes(crate::server::http_common::MAX_REQUEST_BODY_BYTES)
+            .request_only("HTTP/2 only answers requests; every response and push rides a stream the peer opened")
             .build()
     }
     fn description(&self) -> &'static str {

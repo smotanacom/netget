@@ -78,6 +78,28 @@ pub struct NetGet {
     inner: Rc<Inner>,
 }
 
+/// How long `send_to_client` waits for a client to take and report one injected action. An
+/// HTTP request is awaited inside it, and the transport's own deadline is 30 seconds.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+
+fn reply_json(callback: &Function, value: serde_json::Value) {
+    let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&value.to_string()));
+}
+
+impl NetGet {
+    /// The dashboard's status channel, or `None` after telling `callback` it is not up yet.
+    fn status_tx_or_report(&self, callback: &Function) -> Option<mpsc::UnboundedSender<String>> {
+        let tx = self.inner.status_tx.borrow().clone();
+        if tx.is_none() {
+            reply_json(
+                callback,
+                serde_json::json!({ "error": "the dashboard is not running yet" }),
+            );
+        }
+        tx
+    }
+}
+
 fn opt_str(options: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(options, &JsValue::from_str(key))
         .ok()
@@ -368,6 +390,165 @@ impl NetGet {
                 Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
             };
             let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&result.to_string()));
+        });
+    }
+
+    /// Connect a client to one of NetGet's own servers exactly as the dashboard's
+    /// `[ + <proto> client ]` button does (`tui::actions::client_form_for_server` and the form's
+    /// own apply, so the client gets the dashboard's default routing). `callback` receives
+    /// `{"id": n, "protocol": "HTTP", "remote_addr": "127.0.0.1:8080"}` or `{"error": "..."}`.
+    pub fn connect_client_to_server(&self, server_id: u32, callback: Function) {
+        let Some(status_tx) = self.status_tx_or_report(&callback) else {
+            return;
+        };
+        let state = self.inner.state.clone();
+        spawn_local(async move {
+            let result = async {
+                let id = netget::state::ServerId::new(server_id);
+                let server = state
+                    .get_server(id)
+                    .await
+                    .ok_or_else(|| format!("no server #{server_id}"))?;
+                let local = server.local_addr.map(|a| a.to_string());
+                let model = netget::tui::actions::client_form_for_server(
+                    id,
+                    &server.protocol_name,
+                    local.as_deref(),
+                    server.port,
+                )?;
+                if let Some(missing) = model.missing_required() {
+                    return Err(format!("{} needs {missing}", model.protocol));
+                }
+                let llm = state
+                    .get_llm_client()
+                    .await
+                    .ok_or_else(|| "the model bridge is not ready yet".to_string())?;
+                let before: Vec<u32> = state
+                    .get_all_clients()
+                    .await
+                    .iter()
+                    .map(|c| c.id.as_u32())
+                    .collect();
+                model
+                    .apply(&state, llm, &status_tx)
+                    .await
+                    .map_err(|e| format!("{e:#}"))?;
+                let created = state
+                    .get_all_clients()
+                    .await
+                    .into_iter()
+                    .find(|c| !before.contains(&c.id.as_u32()))
+                    .ok_or_else(|| "the client was created and is already gone".to_string())?;
+                Ok(serde_json::json!({
+                    "id": created.id.as_u32(),
+                    "protocol": created.protocol_name,
+                    "remote_addr": created.remote_addr,
+                }))
+            }
+            .await;
+            let result = result.unwrap_or_else(|e: String| serde_json::json!({ "error": e }));
+            let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&result.to_string()));
+        });
+    }
+
+    /// Start a client the way the dashboard's form and MCP `start_client` do — through
+    /// `cli::management::ClientForm`. `json`: `{"protocol":"http","remote_addr":
+    /// "127.0.0.1:8080","instruction":"...","event_handlers":[...]}`. `callback` receives
+    /// `{"id": n}` or `{"error": "..."}`.
+    pub fn start_client(&self, json: &str, callback: Function) {
+        #[derive(serde::Deserialize)]
+        struct Req {
+            protocol: String,
+            remote_addr: String,
+            #[serde(default)]
+            instruction: Option<String>,
+            #[serde(default)]
+            event_handlers: Option<Vec<serde_json::Value>>,
+        }
+        let req = match serde_json::from_str::<Req>(json) {
+            Ok(r) => r,
+            Err(e) => {
+                reply_json(&callback, serde_json::json!({ "error": e.to_string() }));
+                return;
+            }
+        };
+        let Some(status_tx) = self.status_tx_or_report(&callback) else {
+            return;
+        };
+        let state = self.inner.state.clone();
+        spawn_local(async move {
+            let Some(llm) = state.get_llm_client().await else {
+                reply_json(
+                    &callback,
+                    serde_json::json!({ "error": "the model bridge is not ready yet" }),
+                );
+                return;
+            };
+            let form = netget::cli::management::ClientForm {
+                protocol: req.protocol,
+                remote_addr: Some(req.remote_addr),
+                instruction: req.instruction,
+                event_handlers: req.event_handlers,
+                ..Default::default()
+            };
+            let result = match form.create(&state, llm, status_tx).await {
+                Ok(id) => serde_json::json!({ "id": id.as_u32() }),
+                Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
+            };
+            reply_json(&callback, result);
+        });
+    }
+
+    /// Put one of a client's actions on the wire now — the dashboard's `[ send ]`
+    /// (`AppState::send_to_client`). `json` is the action, `{"type":"send_http_request",...}`.
+    /// `callback` receives the `ClientSendOutcome` as serde writes it — `{"Executed":
+    /// {"detail":"http_request GET / -> 200 (5 byte body)"}}`, `{"Sent":{"bytes_sent":n}}`,
+    /// `{"Rejected":{"error":"..."}}`, `"Disconnected"` — or `{"error": "..."}`.
+    pub fn send_to_client(&self, client_id: u32, json: &str, callback: Function) {
+        let action = match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(a) => a,
+            Err(e) => {
+                reply_json(&callback, serde_json::json!({ "error": e.to_string() }));
+                return;
+            }
+        };
+        let state = self.inner.state.clone();
+        spawn_local(async move {
+            let result = match state
+                .send_to_client(
+                    netget::state::ClientId::new(client_id),
+                    action,
+                    SEND_TIMEOUT,
+                )
+                .await
+            {
+                Ok(outcome) => serde_json::to_value(outcome)
+                    .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() })),
+                Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
+            };
+            reply_json(&callback, result);
+        });
+    }
+
+    /// The clients NetGet has, as a JSON array of `{id, protocol, remote_addr, status}`,
+    /// delivered to `callback`.
+    pub fn clients(&self, callback: Function) {
+        let state = self.inner.state.clone();
+        spawn_local(async move {
+            let rows: Vec<serde_json::Value> = state
+                .get_all_clients()
+                .await
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id.as_u32(),
+                        "protocol": c.protocol_name,
+                        "remote_addr": c.remote_addr,
+                        "status": format!("{:?}", c.status),
+                    })
+                })
+                .collect();
+            reply_json(&callback, serde_json::Value::Array(rows));
         });
     }
 
