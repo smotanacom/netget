@@ -87,9 +87,9 @@ Two things the script handles that are easy to lose an hour to:
 `site/js/demo.js` is the page, and the demo on it is Telnet only: three machines. On a wide
 screen the Telnet client and the model sit side by side, the same height (the Telnet terminal
 fills whatever the model panel makes the row, and never holds it open), with the dashboard
-below them at full width and the step list and notes as two columns under that; on a narrow
-one they stack as Telnet, dashboard, model, with the steps above and the notes below.
-Nothing needs a click:
+below them at full width; on a narrow one they stack as Telnet, dashboard, model. The page
+around them carries no step list or notes: the machines are the explanation. Nothing needs a
+click:
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
   2323 with a short BBS instruction and one `llm` rule on `telnet_connection_opened` that
@@ -129,21 +129,46 @@ Nothing needs a click:
   (`WEBLLM_MODELS`), each with its download size (the weights in the model's
   `ndarray-cache.json`; WebLLM's prebuilt config gives only VRAM) and "thinks" for Qwen3, or
   "downloaded" once WebLLM's
-  `hasModelInCache` says so; without WebGPU they are listed disabled and the visitor is the
-  model. The default is the built-in model, else the first WebLLM model; a choice made in the
-  select is kept in `localStorage` (`netget-demo-model`) and restored on the next visit.
+  `hasModelInCache` says so; without WebGPU they are listed disabled. The last option is
+  "You are the model": chosen, the visitor answers every request even with a model loaded
+  (which stays loaded, so choosing it again is immediate). The default is the built-in model,
+  else the first WebLLM model, else "You are the model"; a choice made in the select,
+  including that one, is kept in `localStorage` (`netget-demo-model`) and restored on the
+  next visit.
   Choosing a model that is on this device (the built-in model `available`, or a cached WebLLM
   model) loads it and switches with no click; one that needs a download shows one button
   naming it and its size. The built-in model's download also starts on the visitor's first
   `pointerdown` or `keydown` anywhere on the page but the select (Chrome requires a user
   activation for it, and `create()` is called synchronously inside that handler so the
-  activation counts), with `monitor`'s `downloadprogress` as the bar. Until the chosen model
-  is ready, whoever answered before keeps answering — at first the visitor — and the status
-  line under the select says which, and how far the download is. On the switch the page calls
-  `set_model` with the model's name, updates the steps, and hands the model the current
-  request if the visitor has not started answering it. A WebLLM model that stops answering is
-  unloaded; the built-in model's session is kept, so switching back to it is immediate. The
-  WebLLM runtime (esm.run) is only imported once a WebLLM model is selected.
+  activation counts), with `monitor`'s `downloadprogress` as the bar.
+
+  Who answers a request (`route()` in `demo.js`): the model answering now, if there is one;
+  otherwise, while the selected model is **on its way** — being looked for in the cache,
+  starting (`LanguageModel.create()`), loading from the cache, or downloading once the
+  visitor asked — the request **waits for it**, shown in the LLM panel as "waiting for Gemini
+  Nano" / "Waiting for Gemini Nano to load… 40%", and goes to it the moment it is ready;
+  otherwise (a model that needs a click to download, one that failed, or "You are the model")
+  the visitor answers. This is what keeps the page-load race from landing on the visitor: the
+  Telnet client connects about two seconds after NetGet boots, usually while the built-in
+  model's session is still being created or a cached WebLLM model is still loading, and its
+  connect request now waits for that model. If the load fails, a request that waited goes to
+  the composer with the reason. A model already answering keeps answering while another
+  loads. The status line under the select says which of these applies.
+
+  The wait is bounded on the page, deliberately below NetGet's own bounds. NetGet waits for
+  the page's answer to one request for `LLM_TIMEOUT` (900 s, `crates/netget-web/src/lib.rs`)
+  and then fails it closed — for the connect event that means no banner, silently
+  (`decision=connect_event_failed`) — and it hands the page one request at a time (the rate
+  limiter's single permit), so a second network request waits behind the first for at most
+  the limiter's queue timeout (300 s) and then fails. So a request waits for a loading model
+  for `MODEL_WAIT_MS` (two minutes) and then goes to the visitor, with a note saying so. A model
+  that becomes ready later still takes over any request the visitor has not started on, as it
+  does when a download the visitor asked for finishes.
+
+  On a switch the page calls `set_model` with the name of whoever answers. A WebLLM model
+  that stops answering because another model took over is unloaded; the built-in model's
+  session is kept, so switching back to it is immediate. The WebLLM runtime (esm.run) is only
+  imported once a WebLLM model is selected.
 - The built-in model gets a fresh session per request (NetGet sends the whole context each
   time) and `promptStreaming()` with a `responseConstraint`: a JSON Schema of `{"actions":
   [...]}` whose items are the offered non-tool actions, `type` pinned to each name, listed
@@ -184,10 +209,16 @@ without `actions` gets the raw editor alone. The top half of the file is DOM-fre
 page itself in headless Chromium: the Telnet server and client come up with no clicks, the
 visitor answers through the composer and the answers reach the Telnet terminal, no element of
 the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, the terminal reads as
-a telnet session through a hang-up and a reconnect, and a stub `LanguageModel` proves the
-Prompt API path both when the model is `available` (named first in the select, loads by
-itself, answers with no composer, constrained to the offered actions, falls back on an
-unparseable answer) and when it is `downloadable` (waits for the first keypress). Switching is
+a telnet session through a hang-up and a reconnect, the removed explanatory text stays
+removed, and a stub `LanguageModel` proves the Prompt API path both when the model is
+`available` (named first in the select, loads by itself, answers with no composer,
+constrained to the offered actions, falls back on an unparseable answer) and when it is
+`downloadable` (waits for the first keypress). A stub whose `create()` the test holds for
+seconds while the Telnet client connects proves the queue: the connect request shows as
+waiting for the model, the composer never appears, and the model answers once `create()`
+resolves; with `create()` failing instead, that request goes to the composer. "You are the
+model" chosen with the stub loaded sends the next request to the composer, choosing the
+model again hands requests back with no new session, and the choice survives a reload. Switching is
 driven against a fake WebLLM module the test serves in place of the esm.run import: an
 uncached model shows its sized download button and downloads nothing unasked, switching back
 re-uses the built-in session, a cached model loads with no click, and the choice survives a

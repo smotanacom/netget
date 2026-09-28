@@ -1545,8 +1545,9 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model,
   and `actions`: every action the prompt offers, with parameters, schema and example — and
   the page answers it with Chrome's built-in model (the Prompt API, constrained to the
-  offered actions), a WebLLM model, or — until one of those is loaded — the visitor, who
-  answers through `site/js/composer.js`: pick an offered action, edit fields prefilled from
+  offered actions), a WebLLM model, or the visitor ("You are the model" in the select, or a
+  model that needs a download click; a request waits for a model that is loading, at most
+  two minutes, rather than going to the visitor), who answers through `site/js/composer.js`: pick an offered action, edit fields prefilled from
   its example, send (Raw JSON stays one tab away). The demo itself is Telnet only and starts
   by itself (server, then client); `web/README.md` has the page's behaviour. Network events carry no native `tools`, so `actions`
   is the only structured list they have; the Ollama/OpenAI wire never carries it. The

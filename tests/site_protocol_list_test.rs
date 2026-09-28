@@ -8,6 +8,10 @@
 //!
 //! To update the page, edit the table by hand: put the new feature in the row it belongs to.
 //! This test says what is missing.
+//!
+//! The same number is the headline: every "<N> network protocols" / "<N> protocol features"
+//! on the page and in the README must be exactly the count of protocol features, and a
+//! rounded-down "150+" is a failure that names the line to fix.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -111,26 +115,72 @@ fn every_protocol_feature_is_on_the_landing_page_and_nothing_else_is() {
     );
 }
 
+/// Every protocol-count claim in `text`: a number, with or without a `+`, followed by
+/// "protocol…" or "network protocol…". Returns (1-based line, the claim as written, the
+/// number, whether it carried a `+`).
+fn count_claims(text: &str) -> Vec<(usize, String, usize, bool)> {
+    let mut claims = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        for (j, word) in words.iter().enumerate() {
+            // A tag or an attribute can sit right before the number (`>179`, `"179`).
+            let word = word.rsplit(['>', '"', '(']).next().unwrap_or(word);
+            let (digits, plus) = match word.strip_suffix('+') {
+                Some(d) => (d, true),
+                None => (word, false),
+            };
+            let Ok(n) = digits.parse::<usize>() else {
+                continue;
+            };
+            let next = words.get(j + 1).copied().unwrap_or("");
+            let after = words.get(j + 2).copied().unwrap_or("");
+            let names_protocols = next.starts_with("protocol")
+                || (next == "network" && after.starts_with("protocol"));
+            if names_protocols {
+                let claim = if next == "network" {
+                    format!("{word} {next} {after}")
+                } else {
+                    format!("{word} {next}")
+                };
+                claims.push((i + 1, claim, n, plus));
+            }
+        }
+    }
+    claims
+}
+
+/// The headline count is stated in four places — the page's meta description, its
+/// og:description, its hero and its Protocols section, and the README's opening sentence —
+/// and each must be the exact number of protocol features, not a rounded-down "150+".
 #[test]
-fn the_headline_count_is_not_an_overclaim() {
-    let page = fs::read_to_string("site/index.html").expect("site/index.html");
+fn every_headline_count_is_the_exact_number() {
     let n = protocol_features().len();
-    // The hero says "150+"; it must stay at or below the real number.
-    let claim = page
-        .split("behind ")
-        .filter_map(|s| {
-            s.split_once('+')
-                .map(|(num, _)| num.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .next()
-        .expect("the hero claims a count like \"150+\"");
+    let mut problems = Vec::new();
+    let mut seen = 0;
+    for file in ["site/index.html", "README.md"] {
+        let text = fs::read_to_string(file).expect(file);
+        let claims = count_claims(&text);
+        assert!(
+            !claims.is_empty(),
+            "{file} states no protocol count at all; the scan in this test has gone blind"
+        );
+        for (line, claim, count, plus) in claims {
+            seen += 1;
+            if plus || count != n {
+                problems.push(format!(
+                    "  {file}:{line}: \"{claim}\" — write the exact count, {n} (the protocol \
+                     features in Cargo.toml), with no \"+\""
+                ));
+            }
+        }
+    }
     assert!(
-        claim <= n,
-        "the page claims {claim}+ protocols but Cargo.toml has {n} protocol features"
+        seen >= 5,
+        "expected the count in at least five places (meta, og, hero, Protocols section, README), found {seen}"
     );
     assert!(
-        page.contains(&format!("{n} protocol features")),
-        "the Protocols section should state the exact count ({n} protocol features)"
+        problems.is_empty(),
+        "a protocol count on the site or in the README is not the exact number ({n}):\n{}",
+        problems.join("\n")
     );
 }
