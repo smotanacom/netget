@@ -245,6 +245,11 @@ pub fn wire_for(protocol: &str) -> Wire {
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
         "gemini" => tcp("tls"),
+        // Nostr relay: NIP-01 JSON in WebSocket text frames after an HTTP/1.1 upgrade. There is
+        // no nostr dissector in this Wireshark build (`tshark -G protocols` lists none); decoded
+        // as `http`, the 101 hands the stream to Wireshark's own `websocket` dissector, whose
+        // payload it reads as JSON — checked with `-d tcp.port==N,http -Y websocket`.
+        "nostr" => with_display(tcp("http"), "websocket"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
