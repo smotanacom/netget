@@ -134,8 +134,9 @@ the NSQ project's own `to_nsq` and `nsq_tail` (go-nsq; not linked; the server us
 library): each stdin line is one PUB the handler accepted, a refusal makes `to_nsq` exit non-zero
 naming `E_PUB_FAILED`, `nsq_tail` prints exactly the bodies delivered, and a mocked model carries
 `to_nsq`'s lines to `nsq_tail`. It fails, never skips, without the binaries; CI's
-`registry-audit` unpacks the release tarball and runs it. The `nsq_frame` fuzz target exists with
-oversize and JSON-depth-bomb seeds. Promoted after the whole suite (35 tests, with `otlp`'s 24
+`registry-audit` unpacks the release tarball and runs it. The `nsq_frame` fuzz target has oversize
+and JSON-depth-bomb seeds and ran 180 s clean (75,018 executions; without AddressSanitizer, whose
+runtime deadlocks at start-up on this macOS). Promoted after the whole suite (35 tests, with `otlp`'s 24
 alongside) passed three consecutive runs at `--test-threads=100` and
 `scripts/beta_evidence_table.py --check` stayed green with `to_nsq` and `nsq_tail` as the peers.
 
