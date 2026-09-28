@@ -176,6 +176,8 @@ pub mod nfs;
 pub mod nntp;
 #[cfg(feature = "npm")]
 pub mod npm;
+#[cfg(feature = "nsq")]
+pub mod nsq;
 #[cfg(feature = "ntp")]
 pub mod ntp;
 #[cfg(feature = "oauth2")]

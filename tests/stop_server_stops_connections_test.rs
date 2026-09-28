@@ -340,6 +340,14 @@ async fn stopping_a_gearman_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("Gearman", b"").await;
 }
 
+/// An NSQ client that has sent the V2 magic and no command is held by a task waiting for its
+/// first command for two heartbeat intervals (60 seconds by default).
+#[cfg(feature = "nsq")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_an_nsq_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("NSQ", b"  V2").await;
+}
+
 /// A Bolt client that has sent the magic and not yet its version proposals is held by a task
 /// waiting on the rest of the 20-byte handshake for up to 30 seconds; the stop must end it
 /// rather than that deadline.

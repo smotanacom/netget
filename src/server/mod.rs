@@ -343,6 +343,12 @@ pub mod gearman;
 pub use gearman::actions::GearmanProtocol;
 #[cfg(feature = "gearman")]
 pub use gearman::GearmanServer;
+#[cfg(feature = "nsq")]
+pub mod nsq;
+#[cfg(feature = "nsq")]
+pub use nsq::actions::NsqProtocol;
+#[cfg(feature = "nsq")]
+pub use nsq::NsqServer;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "gopher")]

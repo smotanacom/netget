@@ -241,6 +241,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // Gearman (TCP 4730). `gearman` is Wireshark's own dissector for the binary packet
         // protocol (`tshark -G protocols` lists it; checked with `-d tcp.port==4730,gearman`).
         "gearman" => tcp("gearman"),
+        // NSQ (TCP 4150) has no dissector in this Wireshark build: `tshark -G protocols` lists
+        // nothing matching nsq. Plain TCP; its commands are text lines and "Follow TCP Stream"
+        // reads them, with the size-prefixed frames in between.
+        "nsq" => PLAIN_TCP,
         // Gemini (TCP 1965) runs entirely inside TLS and this Wireshark build has no gemini
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
