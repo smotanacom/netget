@@ -67,21 +67,21 @@ echo "version: $version (staged in $stage)"
 set -x
 
 # 1. The versioned assets, immutable. Uploaded before index.html points at them.
-aws s3 sync "$stage/v/$version" "s3://$BUCKET/v/$version/" "${DRYRUN[@]}" \
+aws s3 sync "$stage/v/$version" "s3://$BUCKET/v/$version/" ${DRYRUN[@]+"${DRYRUN[@]}"} \
   --exclude 'demo/pkg/netget_web_bg.wasm' \
   --cache-control "public, max-age=31536000, immutable"
 # The AWS CLI guesses content types from the extension and does not know .wasm;
 # without application/wasm the browser falls back to a slower, non-streaming compile.
 aws s3 cp "$stage/v/$version/demo/pkg/netget_web_bg.wasm" \
-  "s3://$BUCKET/v/$version/demo/pkg/netget_web_bg.wasm" "${DRYRUN[@]}" \
+  "s3://$BUCKET/v/$version/demo/pkg/netget_web_bg.wasm" ${DRYRUN[@]+"${DRYRUN[@]}"} \
   --content-type application/wasm --cache-control "public, max-age=31536000, immutable"
 
 # 2. The unversioned files. --delete also removes the fixed-URL css/, js/ and demo/
 #    earlier deploys published; v/ is managed below.
-aws s3 sync "$stage" "s3://$BUCKET/" --delete "${DRYRUN[@]}" \
+aws s3 sync "$stage" "s3://$BUCKET/" --delete ${DRYRUN[@]+"${DRYRUN[@]}"} \
   --exclude 'v/*' --exclude 'index.html' \
   --cache-control "max-age=86400"
-aws s3 cp "$stage/index.html" "s3://$BUCKET/index.html" "${DRYRUN[@]}" \
+aws s3 cp "$stage/index.html" "s3://$BUCKET/index.html" ${DRYRUN[@]+"${DRYRUN[@]}"} \
   --cache-control "no-cache"
 
 set +x
@@ -93,7 +93,7 @@ old_versions=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix v/ \
   | sort -r | awk '{split($2, p, "/"); print p[2]}' | grep -vx "$version" \
   | tail -n +"$KEEP_VERSIONS" || true)
 for old in $old_versions; do
-  aws s3 rm "s3://$BUCKET/v/$old/" --recursive "${DRYRUN[@]}"
+  aws s3 rm "s3://$BUCKET/v/$old/" --recursive ${DRYRUN[@]+"${DRYRUN[@]}"}
 done
 
 if [ ${#DRYRUN[@]} -eq 0 ]; then
