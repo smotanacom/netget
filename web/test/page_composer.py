@@ -3,30 +3,48 @@
 
     ./web/build.sh && python3 web/test/page_composer.py
 
-Serves site/ from 127.0.0.1 and opens the page in headless Chromium (Playwright) three times.
-Nothing is clicked before the assertions that say so.
+Serves site/ (or SITE_DIR) from 127.0.0.1 and opens the page in headless Chromium
+(Playwright) six times. Nothing is clicked before the assertions that say so. In every run the
+model select sits in the LLM machine's header and no badge names a model; who answers is read
+from the steps above the machines (`#step-model-who`).
 
-1. No built-in model (the common browser). The Telnet server opens by itself and the Telnet
-   client connects by itself. The connection's first request (`telnet_connection_opened`)
-   lands in the LLM panel as the "you are the model" composer, prefilled from the example of
-   the protocol's first action; the test edits it, sends, and reads the banner in the Telnet
-   terminal. A typed line is echoed locally and its request is answered through the
-   composer too; a third is answered with "Answer with nothing". Only the current request is
-   ever on screen. With a request open and again idle, no element of the demo has a
-   scrollbar and neither a machine nor a screen overflows, at 1280x800, 1440x900, 1920x1080
-   and 390x844.
-2. A stub `LanguageModel` global whose availability() is "available". The page loads it
-   without being asked, switches the badges to it, and it answers every request with no
-   composer; its prompt() receives a responseConstraint naming the offered actions. An
-   answer that does not parse falls back to the composer for that one request.
-3. A stub whose availability() is "downloadable" and whose create() refuses without a user
-   activation, as Chrome's does. The page shows the download button and does not start the
-   download until the visitor's first keypress in the Telnet terminal; the stub then
+1. WebGPU but no built-in model. The select lists only the four WebLLM models, each with its
+   download size, the default selected, one button naming the download, and nothing is
+   downloaded. The Telnet server opens by itself and the Telnet terminal reads as a shell:
+   `$ telnet localhost 2323`, then telnet's own `Trying 127.0.0.1...`, `Connected to
+   localhost.`, `Escape character is '^]'.`. The connection's first request lands in the LLM
+   panel as the "you are the model" composer, prefilled from the example of the protocol's
+   first action; the test edits it, sends, and reads the banner in the Telnet terminal. A
+   typed line is echoed locally and answered through the composer; a third is answered with
+   "Answer with nothing"; a fourth with `close_connection`, after which the terminal prints
+   `Connection closed by foreign host.` and a bare `$ ` prompt, and Enter there types the
+   command again and reconnects. With a request open and again idle, no element of the demo
+   has a scrollbar and neither a machine nor a screen overflows, at 1280x800, 1440x900,
+   1920x1080 and 390x844.
+2. Neither a built-in model nor WebGPU: the WebLLM models are listed disabled, the visitor is
+   the model, and the WebLLM runtime is never loaded.
+3. A stub `LanguageModel` whose availability() is "available". The select lists "Gemini Nano
+   (built into Chrome)" first; the page loads it without being asked, and it answers every
+   request with no composer; its prompt() receives a responseConstraint naming the offered
+   actions. An answer that does not parse falls back to the composer for that one request.
+4. Switching, with that stub and WebGPU: choosing an uncached WebLLM model shows one button
+   naming its size and downloads nothing, while Gemini Nano keeps answering; the click
+   downloads it (the status counts the percentage) and it takes over; choosing Gemini Nano
+   again re-uses its session (no create()) and unloads the WebLLM engine; choosing the WebLLM
+   model again loads it from the cache with no click; and after a reload the choice is still
+   selected (localStorage) and loads by itself.
+5. A stub whose availability() is "downloadable" and whose create() refuses without a user
+   activation, as Chrome's does. The page shows "Download Gemini Nano" and does not start
+   the download until the visitor's first keypress in the Telnet terminal; the stub then
    reports progress, and the model takes over the request the visitor had not touched.
+6. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
 
 Headless Chromium has no built-in model, so the stubs are the only evidence this test can
-give for the Chrome path; they pin the page's side of the Prompt API (availability, create
-with a monitor, the activation rule, prompt with a responseConstraint), not Chrome's.
+give for the Prompt API path; they pin the page's side of it (availability, create with a
+monitor, the activation rule, prompt with a responseConstraint), not Chrome's. WebLLM is
+likewise a fake: the test answers the page's `import()` of the esm.run URL with a small ES
+module exposing `hasModelInCache` and `CreateMLCEngine` (its "cache" is localStorage), so the
+page carries no test hook; `navigator.gpu` is stubbed where WebGPU is wanted.
 
 Hermetic by default: every request that is not to the local server is answered by the test.
 xterm.js (a CDN script on the page) is replaced by a stub that keeps the DOM the test reads —
@@ -50,7 +68,9 @@ import time
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SITE = os.path.join(ROOT, "site")
+# SITE_DIR serves another layout of the same page, e.g. deploy.sh's staged copy, where css/,
+# js/ and demo/ live under v/<hash>/. Everything this test reads goes through SITE.
+SITE = os.environ.get("SITE_DIR") or os.path.join(ROOT, "site")
 XTERM_DIR = os.environ.get("XTERM_DIR")
 SCREENSHOT_DIR = os.environ.get("SCREENSHOT_DIR")
 
@@ -132,6 +152,52 @@ LANGUAGE_MODEL_STUB = r"""
 })();
 """
 
+# WebLLM, as the ES module the page imports from esm.run: the test serves this in its place
+# (see open_page), so no production hook is involved. What is "in the browser cache" lives in
+# localStorage, so it survives a reload like the real cache. `window.__webllm` is the log.
+FAKE_WEBLLM = r"""
+const KEY = '__fake_webllm_cache';
+const cached = () => new Set(JSON.parse(localStorage.getItem(KEY) || '[]'));
+const log = window.__webllm = window.__webllm || { imports: 0, cacheQueries: [], creates: [], unloads: [], prompts: [] };
+log.imports += 1;
+export async function hasModelInCache(id) { log.cacheQueries.push(id); return cached().has(id); }
+export async function CreateMLCEngine(id, opts) {
+  log.creates.push(id);
+  const fresh = !cached().has(id);
+  for (let p = 0.25; p <= 1; p += 0.25) {
+    await new Promise((r) => setTimeout(r, fresh ? 200 : 20));
+    opts && opts.initProgressCallback && opts.initProgressCallback({ progress: p, text: 'Fetching param cache' });
+  }
+  const set = cached(); set.add(id); localStorage.setItem(KEY, JSON.stringify([...set]));
+  const answer = (messages) => {
+    const text = messages.map((m) => m.content).join('\n');
+    let msg = '';
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim()).message || ''; } catch (e) {}
+    return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: `webllm ${id} heard: ${msg}` }] });
+  };
+  return {
+    chat: { completions: { async create(req) {
+      log.prompts.push(id);
+      const content = answer(req.messages);
+      if (!req.stream) return { choices: [{ message: { content, tool_calls: [] } }], usage: {} };
+      return (async function* () { yield { choices: [{ delta: { content } }] }; yield { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }; })();
+    } } },
+    async unload() { log.unloads.push(id); },
+  };
+}
+"""
+
+# WebGPU present, as far as the page's check (`navigator.gpu`) goes.
+GPU_STUB = "Object.defineProperty(Navigator.prototype, 'gpu', { configurable: true, get() { return {}; } });"
+NO_GPU = "Object.defineProperty(Navigator.prototype, 'gpu', { configurable: true, get() { return undefined; } });"
+
+WEBLLM_LABELS = [
+    "Qwen2.5 1.5B · WebLLM · ~1 GB download",
+    "Llama 3.2 3B · WebLLM · ~2 GB download",
+    "Qwen2.5 3B · WebLLM · ~2 GB download",
+    "Hermes 3 8B · WebLLM · ~5 GB download",
+]
+
 # Every demo element that shows a scrollbar or overflows; [] is the pass.
 SCROLL_CHECK = r"""
 () => {
@@ -210,6 +276,9 @@ def open_page(browser, origin, size=(1280, 800), init_script=None):
             if url.endswith(".js"):
                 return r.fulfill(status=200, content_type="text/javascript", body=XTERM_STUB)
             return r.fulfill(status=200, content_type="text/css", body="")
+        if url.startswith("https://esm.run/@mlc-ai/web-llm"):
+            return r.fulfill(status=200, content_type="text/javascript", body=FAKE_WEBLLM,
+                             headers={"Access-Control-Allow-Origin": "*"})
         if SCREENSHOT_DIR and ("fonts.googleapis.com" in url or "fonts.gstatic.com" in url):
             return r.continue_()
         if url.endswith(".css"):
@@ -277,18 +346,38 @@ def check_no_scrollbars(page, label):
 NO_LANGUAGE_MODEL = "delete self.LanguageModel;"
 
 
+def model_labels(page):
+    return [t.strip() for t in page.locator("#model-select option").all_text_contents()]
+
+
+def check_model_header(page):
+    """The model select sits in the LLM machine's header, and no badge names a model."""
+    expect(page.locator(".machine-model .machine-label #model-select")).to_have_count(1)
+    expect(page.locator(".model-badge, #model-badge, #dash-model")).to_have_count(0)
+
+
+def expect_who(page, name, timeout=10_000):
+    expect(page.locator("#step-model-who")).to_have_text(name, timeout=timeout)
+
+
 def run_you_are_the_model(browser, origin):
-    page, errors = open_page(browser, origin, init_script=NO_LANGUAGE_MODEL)
+    # WebGPU but no built-in model: the select lists only the WebLLM models, the default one
+    # selected, and nothing downloads until the visitor asks.
+    page, errors = open_page(browser, origin, init_script=NO_LANGUAGE_MODEL + GPU_STUB)
     server_s, client_s = wait_for_autostart(page)
 
-    # No model: the control offers WebLLM with the default preselected, or says there is none.
-    expect(page.locator("#model-badge")).to_have_text("model: you")
-    expect(page.locator("#dash-model")).to_have_text("model: you")
-    if page.evaluate("!!navigator.gpu"):
-        expect(page.locator("#webllm-model")).to_have_value("Qwen2.5-1.5B-Instruct-q4f16_1-MLC")
-        expect(page.locator("#llm-load")).to_have_text("Download ~1 GB")
-    else:
-        expect(page.locator("#llm-source-name")).to_have_text("No model runs in this browser")
+    # The Telnet terminal is a shell session: the command, then telnet(1)'s own lines.
+    for line in ("$ telnet localhost 2323", "Trying 127.0.0.1...", "Connected to localhost.", "Escape character is '^]'."):
+        expect_telnet(page, line)
+    assert "by itself in a moment" not in telnet_text(page)
+
+    check_model_header(page)
+    expect(page.locator("#model-select")).to_have_value("Qwen2.5-1.5B-Instruct-q4f16_1-MLC")
+    assert model_labels(page) == WEBLLM_LABELS, model_labels(page)
+    expect(page.locator("#llm-load")).to_have_text("Download Qwen2.5 1.5B · ~1 GB", timeout=10_000)
+    expect(page.locator("#llm-status")).to_contain_text("Needs a click to download")
+    expect(page.locator("#llm-status")).to_contain_text("you")
+    expect_who(page, "you")
     assert page.evaluate("typeof window.__lm") == "undefined"
 
     # The connection's greeting request is the composer, prefilled from the example.
@@ -331,10 +420,52 @@ def run_you_are_the_model(browser, origin):
     expect(llm.locator(".llm-idle")).to_be_visible(timeout=10_000)
     expect(page.locator("#telnet-state")).to_have_text("connected to :2323")
 
+    # The server hangs up: telnet's own line, and the shell prompt again. Enter at the prompt
+    # types the command again and reconnects.
+    type_line(page, "bye")
+    expect(llm.locator(".llm-meta")).to_have_text("“bye”", timeout=30_000)
+    llm.locator("select.cmp-picker").select_option("close_connection")
+    llm.get_by_role("button", name="Send reply").click()
+    expect_telnet(page, "Connection closed by foreign host.")
+    expect(page.locator("#telnet-state")).to_have_text("closed", timeout=10_000)
+    after = telnet_text(page).split("Connection closed by foreign host.")[-1]
+    assert after.strip() == "$", f"no bare shell prompt after the hang-up: {after!r}"
+    page.locator("#telnet-term .xterm-helper-textarea").focus()
+    page.keyboard.press("Enter")
+    expect(page.locator("#telnet-state")).to_have_text("connected to :2323", timeout=15_000)
+    expect_telnet(page, "Escape character is '^]'.")
+    after = telnet_text(page).split("Connection closed by foreign host.")[-1]
+    for line in ("$ telnet localhost 2323", "Trying 127.0.0.1...", "Connected to localhost.", "Escape character is '^]'."):
+        assert line in after, f"{line!r} missing from the reconnect: {after!r}"
+    expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
+    llm.get_by_role("button", name="Answer with nothing").click()
+    expect(llm.locator(".llm-idle")).to_be_visible(timeout=10_000)
+
+    # Nothing was downloaded or loaded without a click; the runtime was asked what it has.
+    log = page.evaluate("window.__webllm")
+    assert log and log["creates"] == [], log
+    assert "Qwen2.5-1.5B-Instruct-q4f16_1-MLC" in log["cacheQueries"], log
+
     check_no_scrollbars(page, "idle")
     assert not errors, f"page errors: {errors}"
     page.close()
     return server_s, client_s
+
+
+def run_no_model_at_all(browser, origin):
+    """Neither a built-in model nor WebGPU: the models are listed, disabled, and the visitor
+    is the model."""
+    page, errors = open_page(browser, origin, init_script=NO_LANGUAGE_MODEL + NO_GPU)
+    wait_for_autostart(page)
+    check_model_header(page)
+    assert model_labels(page) == [l.replace("download", "").rsplit(" · ", 1)[0] + " · needs WebGPU" for l in WEBLLM_LABELS], model_labels(page)
+    assert page.locator("#model-select option:not([disabled])").count() == 0
+    expect(page.locator("#llm-status")).to_contain_text("neither a built-in model nor WebGPU")
+    expect(page.locator("#llm-load")).to_be_hidden()
+    expect_who(page, "you")
+    assert page.evaluate("typeof window.__webllm") == "undefined", "the WebLLM runtime was loaded without WebGPU"
+    assert not errors, f"page errors: {errors}"
+    page.close()
 
 
 def run_chrome_available(browser, origin):
@@ -343,10 +474,12 @@ def run_chrome_available(browser, origin):
     page.evaluate("""() => { window.__composerSeen = 0;
         new MutationObserver(() => { if (document.querySelector('#llm-current .cmp-picker')) window.__composerSeen += 1; })
           .observe(document.querySelector('#llm-current'), { childList: true, subtree: true }); }""")
-    expect(page.locator("#model-badge")).to_have_text("model: Chrome built-in", timeout=10_000)
-    expect(page.locator("#dash-model")).to_have_text("model: Chrome built-in")
-    expect(page.locator("#llm-source-name")).to_have_text("Chrome's built-in model")
+    check_model_header(page)
+    expect_who(page, "Gemini Nano")
+    expect(page.locator("#model-select")).to_have_value("builtin")
+    assert model_labels(page)[0] == "Gemini Nano (built into Chrome)", model_labels(page)
     expect(page.locator("#llm-load")).to_be_hidden()
+    expect(page.locator("#llm-status")).to_contain_text("Ready: Gemini Nano")
     expect_telnet(page, "Hello from the stub model. Your name?")
     type_line(page, "Grace")
     expect_telnet(page, "stub model heard: Grace")
@@ -363,7 +496,7 @@ def run_chrome_available(browser, origin):
     # An answer that does not parse: that request goes to the composer, with the reason.
     type_line(page, "garble")
     llm = page.locator("#llm-current")
-    expect(llm.locator(".llm-note")).to_contain_text("could not answer this one", timeout=15_000)
+    expect(llm.locator(".llm-note")).to_contain_text("Gemini Nano could not answer this one", timeout=15_000)
     expect(llm.locator("select.cmp-picker")).to_have_value("send_telnet_message")
     llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill("the person answered\n")
     llm.get_by_role("button", name="Send reply").click()
@@ -375,18 +508,83 @@ def run_chrome_available(browser, origin):
     page.close()
 
 
+def run_switching(browser, origin):
+    """The built-in model answers; the visitor switches to a WebLLM model, which needs a
+    download, then back, then to the WebLLM model again, which is cached by then; the choice
+    survives a reload."""
+    page, errors = open_page(browser, origin, init_script=LANGUAGE_MODEL_STUB % {"mode": "available"} + GPU_STUB)
+    wait_for_autostart(page)
+    check_model_header(page)
+    sel = page.locator("#model-select")
+    btn = page.locator("#llm-load")
+    assert model_labels(page) == ["Gemini Nano (built into Chrome)"] + WEBLLM_LABELS, model_labels(page)
+    expect(sel).to_have_value("builtin")
+    expect_who(page, "Gemini Nano")
+    expect_telnet(page, "Hello from the stub model. Your name?")
+
+    # A WebLLM model that is not downloaded: one button naming the size, and no download.
+    sel.select_option("Qwen2.5-3B-Instruct-q4f16_1-MLC")
+    expect(btn).to_have_text("Download Qwen2.5 3B · ~2 GB", timeout=10_000)
+    expect(btn).to_be_visible()
+    expect(page.locator("#llm-status")).to_contain_text("Gemini Nano keeps answering")
+    page.wait_for_timeout(1000)
+    assert page.evaluate("window.__webllm.creates") == [], page.evaluate("window.__webllm")
+    expect_who(page, "Gemini Nano")
+    type_line(page, "still there?")
+    expect_telnet(page, "stub model heard: still there?")
+    check_no_scrollbars(page, "switching")
+
+    # The click downloads it, the status counts up, and it takes over.
+    btn.click()
+    expect(page.locator("#llm-status")).to_contain_text(re.compile(r"Downloading Qwen2\.5 3B \d+%"), timeout=5_000)
+    expect_who(page, "Qwen2.5 3B", timeout=15_000)
+    expect(btn).to_be_hidden()
+    expect(page.locator("#llm-status")).to_contain_text("Ready: Qwen2.5 3B")
+    type_line(page, "hello qwen")
+    expect_telnet(page, "webllm Qwen2.5-3B-Instruct-q4f16_1-MLC heard: hello qwen")
+    expect(sel.locator("option[value='Qwen2.5-3B-Instruct-q4f16_1-MLC']")).to_have_text("Qwen2.5 3B · WebLLM · downloaded")
+
+    # Back to the built-in model: its session is re-used (no create()), and the WebLLM
+    # engine is unloaded.
+    creates_before = page.evaluate("window.__lm.creates")
+    sel.select_option("builtin")
+    expect_who(page, "Gemini Nano")
+    assert page.evaluate("window.__lm.creates") == creates_before, "switching back created a new built-in session"
+    expect(btn).to_be_hidden()
+    assert page.evaluate("window.__webllm.unloads") == ["Qwen2.5-3B-Instruct-q4f16_1-MLC"], page.evaluate("window.__webllm")
+    type_line(page, "back again")
+    expect_telnet(page, "stub model heard: back again")
+
+    # The WebLLM model again: it is in the cache now, so it loads with no click.
+    sel.select_option("Qwen2.5-3B-Instruct-q4f16_1-MLC")
+    expect_who(page, "Qwen2.5 3B", timeout=15_000)
+    assert page.evaluate("window.__webllm.creates") == ["Qwen2.5-3B-Instruct-q4f16_1-MLC"] * 2
+    expect(btn).to_be_hidden()
+    assert not errors, f"page errors: {errors}"
+
+    # The choice is remembered: after a reload it is selected, and loads by itself.
+    page.reload()
+    wait_for_autostart(page)
+    expect(sel).to_have_value("Qwen2.5-3B-Instruct-q4f16_1-MLC")
+    expect_who(page, "Qwen2.5 3B", timeout=15_000)
+    expect_telnet(page, "webllm Qwen2.5-3B-Instruct-q4f16_1-MLC heard:")
+    page.close()
+
+
 def run_chrome_downloadable(browser, origin):
     page, errors = open_page(browser, origin, init_script=LANGUAGE_MODEL_STUB % {"mode": "downloadable"})
     wait_for_autostart(page)
+    check_model_header(page)
     btn = page.locator("#llm-load")
     expect(btn).to_be_visible()
-    expect(btn).to_have_text("Download Chrome's model")
+    expect(btn).to_have_text("Download Gemini Nano")
+    assert model_labels(page)[0] == "Gemini Nano (built into Chrome)", model_labels(page)
     expect(page.locator("#llm-status")).to_contain_text("first click or keypress")
     # No interaction yet: no download, and the visitor is the model.
     llm = page.locator("#llm-current")
     expect(llm.locator(".llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
     expect(llm.locator("select.cmp-picker")).to_be_visible()
-    expect(page.locator("#model-badge")).to_have_text("model: you")
+    expect_who(page, "you")
     assert page.evaluate("window.__lm.downloaded") is False
     assert True not in page.evaluate("window.__lm.activeAtCreate"), "create() was called with an activation nobody gave"
     check_no_scrollbars(page, "downloadable")
@@ -396,7 +594,8 @@ def run_chrome_downloadable(browser, origin):
     page.locator("#telnet-term .xterm-helper-textarea").focus()
     page.keyboard.type("x")
     expect(page.locator("#llm-progress")).to_be_visible(timeout=5_000)
-    expect(page.locator("#model-badge")).to_have_text("model: Chrome built-in", timeout=10_000)
+    expect(page.locator("#llm-status")).to_contain_text(re.compile(r"Downloading Gemini Nano \d+%"))
+    expect_who(page, "Gemini Nano")
     assert True in page.evaluate("window.__lm.activeAtCreate")
     expect(btn).to_be_hidden()
     expect_telnet(page, "Hello from the stub model. Your name?")
@@ -414,10 +613,10 @@ def run_real_prompt_api(browser, origin):
     availability = page.evaluate(
         "async () => self.LanguageModel ? await LanguageModel.availability().catch((e) => 'error: ' + e) : null")
     if availability in ("downloadable", "downloading"):
-        expect(page.locator("#llm-source-name")).to_have_text("Chrome's built-in model")
+        assert model_labels(page)[0] == "Gemini Nano (built into Chrome)", model_labels(page)
         expect(page.locator("#llm-load")).to_be_visible()
         expect(page.locator("#llm-status")).to_contain_text("first click or keypress")
-        expect(page.locator("#model-badge")).to_have_text("model: you")
+        expect_who(page, "you")
         expect(page.locator("#llm-current .llm-kind")).to_have_text("telnet_connection_opened", timeout=30_000)
     assert not errors, f"page errors: {errors}"
     page.close()
@@ -425,8 +624,8 @@ def run_real_prompt_api(browser, origin):
 
 
 def main():
-    if not os.path.exists(os.path.join(SITE, "demo", "pkg", "netget_web_bg.wasm")):
-        sys.exit("site/demo/pkg is missing: run ./web/build.sh first")
+    if not any("netget_web_bg.wasm" in files for _, _, files in os.walk(SITE)):
+        sys.exit(f"no netget_web_bg.wasm under {SITE}: run ./web/build.sh first")
     if SCREENSHOT_DIR:
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
@@ -440,7 +639,9 @@ def main():
         browser = launch(p)
         version = browser.version
         server_s, client_s = run_you_are_the_model(browser, origin)
+        run_no_model_at_all(browser, origin)
         run_chrome_available(browser, origin)
+        run_switching(browser, origin)
         run_chrome_downloadable(browser, origin)
         real = run_real_prompt_api(browser, origin)
         browser.close()
@@ -448,11 +649,16 @@ def main():
     server.shutdown()
     print(f"browser: {version}; xterm: {'real, from ' + XTERM_DIR if XTERM_DIR else 'stub'}")
     print(f"ok: with no clicks the Telnet server opened {server_s:.1f}s and the client connected "
-          f"{client_s:.1f}s after the bundle was ready; you answered through the composer and the "
-          "answers reached the Telnet terminal; no scrollbars at "
+          f"{client_s:.1f}s after the bundle was ready; the terminal read as a telnet session; you "
+          "answered through the composer and the answers reached the Telnet terminal; a hang-up "
+          "printed telnet's line and Enter at the prompt reconnected; no scrollbars at "
           + ", ".join(f"{w}x{h}" for w, h in SIZES))
     print("ok: a stub LanguageModel ('available') loaded by itself and answered with no composer, "
           "constrained to the offered actions; an unparseable answer fell back to the composer")
+    print("ok: with neither a built-in model nor WebGPU the WebLLM models were listed disabled")
+    print("ok: switching from Gemini Nano to an uncached WebLLM model showed its sized download "
+          "button and downloaded nothing until clicked; back to Gemini Nano re-used its session; "
+          "the WebLLM model again loaded from the cache with no click; the choice survived a reload")
     print("ok: a stub LanguageModel ('downloadable') waited for the first keypress, showed the "
           "button and progress, then took over the untouched request")
     print(f"real Prompt API in this browser: availability() = {real!r}"

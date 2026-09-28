@@ -123,7 +123,7 @@
                 the content: a Telnet banner, an SMTP reply, a DNS answer, a Redis value.
                 Below, the same three run in this tab: <span class="mark mark-client">Telnet</span> is a client machine,
                 <span class="mark mark-netget">netget</span> is the dashboard, <span class="mark mark-model">LLM</span> is the model:
-                Chrome's built-in one or a WebLLM model on your GPU, and you until one is ready.
+                the one you pick: the browser's built-in model (Gemini Nano in Chrome) or a WebLLM model on your GPU, and you until it is ready.
             </p>
         </section>
 
@@ -148,7 +148,7 @@
 
             <!-- Machine 2: NetGet -->
             <div class="machine machine-netget">
-                <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· WASM demo in your tab</span><span class="spacer"></span><span class="model-badge is-you" id="dash-model">model: you</span></div>
+                <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· WASM demo in your tab</span></div>
                 <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
                 <div class="machine-base">
                     <div class="base-row">
@@ -165,20 +165,19 @@
             <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
 
             <div class="demo-notes">
-                <div><strong>Nothing leaves this tab.</strong> The Telnet server listens on a loopback that exists only inside the WebAssembly instance, and the client connects to it through the same call a real socket would make. Chrome's built-in model runs on your device; a WebLLM model is downloaded once from Hugging Face and then runs on your GPU. Nothing else is fetched.</div>
+                <div><strong>Nothing leaves this tab.</strong> The Telnet server listens on a loopback that exists only inside the WebAssembly instance, and the client connects to it through the same call a real socket would make. The browser's built-in model (Gemini Nano in Chrome, Phi-4-mini in Edge) runs on your device; a WebLLM model is downloaded once from Hugging Face and then runs on your GPU. Nothing else is fetched.</div>
                 <div><strong>Same code as the CLI.</strong> The dashboard, the Telnet server and the LLM prompting are the native NetGet crate compiled for <code>wasm32</code>. The only substitutions are underneath: the executor, the clock, the sockets, and where the model's answer comes from.</div>
                 <div><strong>You can be the model.</strong> Until a model is ready, every request NetGet makes opens a form here, built from the actions it offers, and your answer is what the server puts on the wire. The full prompt is one click away.</div>
             </div>
 
             <!-- Machine 3: the model -->
             <div class="machine machine-model">
-                <div class="machine-label"><span class="machine-dot"></span> LLM <span class="spacer"></span><span class="model-badge is-you" id="model-badge">model: you</span></div>
+                <div class="machine-label llm-header">
+                    <span class="machine-dot"></span> LLM
+                    <select id="model-select" aria-label="Model"><option>Looking for a model this browser can run…</option></select>
+                    <button class="btn btn-primary" id="llm-load" hidden>Download</button>
+                </div>
                 <div class="llm-source" id="llm-source">
-                    <div class="llm-source-row">
-                        <span class="llm-source-name" id="llm-source-name">Looking for a model this browser can run…</span>
-                        <select id="webllm-model" hidden aria-label="WebLLM model"></select>
-                        <button class="btn btn-primary" id="llm-load" hidden>Download</button>
-                    </div>
                     <div class="llm-progress" id="llm-progress" hidden><span id="llm-progress-bar"></span></div>
                     <div class="llm-status" id="llm-status"></div>
                 </div>

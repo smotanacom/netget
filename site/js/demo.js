@@ -10,10 +10,11 @@
 //      through NetGet.connect(port) — a real TcpStream::connect on the virtual network. It
 //      edits a line locally and echoes what you type, as telnet(1) does in line mode.
 //   3. The model. NetGet hands every LLM request to this page as JSON (the full prompt and
-//      every action it offers). Until a model is ready, the visitor answers it through
-//      ./composer.js. The model is Chrome's built-in one (the Prompt API) where the browser
-//      has it, otherwise a WebLLM model on the GPU; the page switches to it by itself as soon
-//      as it is loaded.
+//      every action it offers). The visitor picks the model in one select: the browser's
+//      built-in model (the Prompt API: Gemini Nano in Chrome, Phi-4-mini in Edge) where it
+//      has one, and the WebLLM models on the GPU. Until the chosen model is ready, whoever
+//      answered before keeps answering, and at first that is the visitor, through
+//      ./composer.js.
 //
 // The wasm bundle is built by ./web/build.sh into site/demo/pkg/.
 
@@ -22,11 +23,12 @@ import { mountComposer, offeredActions, entriesFromEnvelope, buildReply } from '
 const PKG = '../demo/pkg/netget_web.js';
 const WEBLLM_URL = 'https://esm.run/@mlc-ai/web-llm@0.2.85';
 
+// WebLLM's prebuilt model ids, the name the page shows, and roughly what the download is.
 const WEBLLM_MODELS = [
-    ['Qwen2.5-1.5B-Instruct-q4f16_1-MLC', 'Qwen2.5 1.5B', '~1 GB'],
-    ['Llama-3.2-3B-Instruct-q4f16_1-MLC', 'Llama 3.2 3B · better JSON', '~2 GB'],
-    ['Qwen2.5-3B-Instruct-q4f16_1-MLC', 'Qwen2.5 3B', '~2 GB'],
-    ['Hermes-3-Llama-3.1-8B-q4f16_1-MLC', 'Hermes 3 8B · tool calling', '~5 GB'],
+    { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC', name: 'Qwen2.5 1.5B', size: '~1 GB' },
+    { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', name: 'Llama 3.2 3B', size: '~2 GB' },
+    { id: 'Qwen2.5-3B-Instruct-q4f16_1-MLC', name: 'Qwen2.5 3B', size: '~2 GB' },
+    { id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC', name: 'Hermes 3 8B', size: '~5 GB' },
 ];
 
 const TELNET_PORT = 2323;
@@ -54,12 +56,11 @@ const dec = new TextDecoder();
 const app = {
     netget: null,
     dash: null,           // xterm for the dashboard
-    telnet: { term: null, conn: null, line: '', serverUp: false },
-    // Who answers: 'you' until a model is ready, then 'chrome' or 'webllm'.
-    answerer: 'you',
-    offer: null,          // what the model control offers: 'chrome' | 'webllm' | null
-    chrome: { session: null, creating: null, label: "Chrome's built-in model", badge: 'Chrome built-in' },
-    webllm: { module: null, engine: null, model: null, loading: false },
+    telnet: { term: null, conn: null, line: '', serverUp: false, typing: false },
+    models: [],           // what the select lists, each with its own state
+    selected: null,       // the id the select shows
+    active: null,         // the model answering, or null: the visitor answers
+    webllm: { module: null, importing: null, checking: null },
     queue: [],            // model requests not yet being answered
     current: null,        // the one being answered
 };
@@ -190,40 +191,36 @@ function wireDashboardInput(term, netget) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Who answers, and the badges that say so.
+// Who answers: the model the visitor picked once it is ready, the visitor until then.
 // ---------------------------------------------------------------------------------------
 
 function answererName() {
-    if (app.answerer === 'chrome') return app.chrome.badge;
-    if (app.answerer === 'webllm') return 'WebLLM · ' + app.webllm.model.replace(/-q4f16_1-MLC$/, '');
-    return 'you';
+    return app.active ? app.active.name : 'you';
 }
 
-function renderBadges() {
-    const text = 'model: ' + answererName();
-    const cls = app.answerer === 'you' ? 'is-you' : 'is-model';
-    for (const el of [$('#model-badge'), $('#dash-model')]) {
-        if (!el) continue;
-        el.textContent = text;
-        el.className = 'model-badge ' + cls;
-    }
+// Tell every place that names the answerer: the steps above the machines, and NetGet itself
+// (the dashboard's status bar and the `model` of every request).
+function renderWho() {
     const who = $('#step-model-who');
-    if (who) who.textContent = app.answerer === 'you' ? 'you' : answererName();
+    if (who) who.textContent = answererName();
     const until = $('#step-model-until');
-    if (until) until.hidden = app.answerer !== 'you' || !app.offer;
+    if (until) until.hidden = !!app.active || !app.models.some((m) => m.state !== 'unsupported');
     if (app.netget) {
-        const id = app.answerer === 'webllm' ? app.webllm.model
-            : app.answerer === 'chrome' ? 'chrome-built-in' : 'you';
-        app.netget.set_models(JSON.stringify([id]));
-        if (typeof app.netget.set_model === 'function') app.netget.set_model(id);
+        const name = answererName();
+        app.netget.set_models(JSON.stringify([name]));
+        if (typeof app.netget.set_model === 'function') app.netget.set_model(name);
     }
 }
 
-// A model finished loading: it answers from now on, starting with anything still waiting
-// that the visitor has not begun to answer.
-function modelReady(kind) {
-    app.answerer = kind;
-    renderBadges();
+// A model is ready and selected: it answers from now on, starting with anything still
+// waiting that the visitor has not begun to answer. A WebLLM model it replaces is unloaded
+// (GPU memory is the scarce thing); the built-in model's session is kept, it costs nothing.
+function activate(m) {
+    const prev = app.active;
+    app.active = m;
+    if (prev && prev !== m && prev.kind === 'webllm') retireWebLlm(prev);
+    renderWho();
+    renderControl();
     const cur = app.current;
     if (cur && cur.manual && !cur.touched) {
         cur.manual = false;
@@ -232,19 +229,116 @@ function modelReady(kind) {
 }
 
 // ---------------------------------------------------------------------------------------
-// The model control: Chrome's built-in model where the browser has one, WebLLM otherwise.
+// The model control: one select in the LLM header. The browser's built-in model first where
+// it has one, then the WebLLM models. Choosing one that is already on this device switches
+// to it; one that needs a download shows the one button that starts it.
 // ---------------------------------------------------------------------------------------
 
-function setStatus(html) { $('#llm-status').innerHTML = html; }
+const MODEL_KEY = 'netget-demo-model';
+const BUILTIN = 'builtin';
+
+// Model states: 'checking' (is it already downloaded?), 'loadable' (on this device, loads
+// without a click), 'needs-click' (a download the visitor has to ask for), 'loading',
+// 'ready', 'failed', 'unsupported' (this browser cannot run it).
+function modelById(id) { return app.models.find((m) => m.id === id) || null; }
+function selectedModel() { return modelById(app.selected); }
+
+function optionLabel(m) {
+    if (m.kind === BUILTIN) return `${m.name} (built into ${m.where})`;
+    if (m.state === 'unsupported') return `${m.name} · WebLLM · needs WebGPU`;
+    return `${m.name} · WebLLM · ${m.cached ? 'downloaded' : m.size + ' download'}`;
+}
 
 function setProgress(fraction) {
     const bar = $('#llm-progress');
-    if (fraction === null) { bar.hidden = true; return; }
+    if (fraction === null || fraction === undefined) { bar.hidden = true; return; }
     bar.hidden = false;
     $('#llm-progress-bar').style.width = Math.round(Math.max(0, Math.min(1, fraction)) * 100) + '%';
 }
 
-const UNTIL = 'Until it is ready, <b>you</b> are the model: each request opens a form below.';
+// The select, the button and the status line, from the selected model's state.
+function renderControl() {
+    const sel = $('#model-select');
+    for (const opt of sel.options) {
+        const m = modelById(opt.value);
+        if (m) opt.textContent = optionLabel(m);
+    }
+    if (app.selected && sel.value !== app.selected) sel.value = app.selected;
+    const btn = $('#llm-load');
+    const status = $('#llm-status');
+    const m = selectedModel();
+    btn.hidden = true;
+    btn.disabled = false;
+    setProgress(null);
+    if (!m) {
+        // Nothing selectable: no built-in model and no WebGPU.
+        status.innerHTML = 'This browser has neither a built-in model nor WebGPU (Chrome or Edge on a desktop, or Safari 26, have one of them), so <b>you</b> are the model: each request opens a form below.';
+        return;
+    }
+    const name = escapeHtml(m.name);
+    const until = app.active && app.active !== m
+        ? `${escapeHtml(app.active.name)} keeps answering until it is ready.`
+        : 'Until it is ready, <b>you</b> are the model: each request opens a form below.';
+    const where = m.kind === BUILTIN ? 'on this device' : 'on your GPU';
+    switch (m.state) {
+    case 'ready':
+        status.innerHTML = `Ready: ${name} runs ${where} and answers every request.`;
+        break;
+    case 'loading': {
+        const known = typeof m.progress === 'number';
+        setProgress(known ? m.progress : null);
+        status.innerHTML = `${m.verb} ${name}${known ? ` ${Math.round(m.progress * 100)}%.` : '…'} ${until}`;
+        break;
+    }
+    case 'checking':
+    case 'loadable':
+        status.innerHTML = `Looking for ${name} on this device… ${until}`;
+        break;
+    case 'needs-click':
+        btn.hidden = false;
+        if (m.kind === BUILTIN) {
+            btn.textContent = `Download ${m.name}`;
+            status.innerHTML = (m.note ? escapeHtml(m.note) + ' '
+                : m.availability === 'downloading' ? `${m.where} is downloading it; it starts on your first click or keypress on this page. `
+                : `Needs a download, once, by ${m.where}: it starts on your first click or keypress on this page. `) + until;
+        } else {
+            btn.textContent = `Download ${m.name} · ${m.size}`;
+            status.innerHTML = `Needs a click to download (${m.size}, once, from Hugging Face; then cached by your browser). ${until}`;
+        }
+        break;
+    case 'failed':
+        btn.hidden = false;
+        btn.textContent = 'Try again';
+        status.innerHTML = `Could not load ${name} (${escapeHtml(m.error || 'unknown error')}). ${until}`;
+        break;
+    default:
+        status.innerHTML = until;
+    }
+}
+
+// Switch to `id`: at once if it is loaded, by itself if it is on this device, otherwise the
+// button says what the download is. Whoever answers now keeps answering until then.
+function choose(id) {
+    const m = modelById(id);
+    if (!m || m.state === 'unsupported') return;
+    app.selected = id;
+    if (m.state === 'ready') activate(m);
+    else if (m.state === 'loadable') loadModel(m);
+    else if (m.state === 'checking') {
+        checkWebLlmCache().then(() => {
+            if (app.selected === m.id && m.state === 'loadable') loadModel(m);
+            else renderControl();
+        });
+    }
+    renderControl();
+}
+
+// Must be called synchronously from a gesture handler for a download of the built-in model:
+// `create()` checks the activation when it is called, not when it resolves.
+function loadModel(m, opts) {
+    if (m.kind === BUILTIN) loadBuiltin(m, opts);
+    else loadWebLlm(m);
+}
 
 async function chromeAvailability() {
     if (!('LanguageModel' in self) || typeof self.LanguageModel.availability !== 'function') return 'unavailable';
@@ -255,62 +349,73 @@ async function chromeAvailability() {
     }
 }
 
-async function setupModelControl() {
-    const availability = await chromeAvailability();
-    if (/Edg\//.test(navigator.userAgent)) {
-        app.chrome.label = "Edge's built-in model";
-        app.chrome.badge = 'Edge built-in';
-    }
-    if (availability === 'available' || availability === 'downloadable' || availability === 'downloading') {
-        setupChrome(availability);
-    } else {
-        setupWebLlm();
-    }
-    renderBadges();
+// Which model the Prompt API runs is not something the API says. Chrome's is Gemini Nano;
+// Edge's is Phi-4-mini (Aion-1.0-Instruct behind an Edge flag, which a page cannot see).
+function builtinModel(availability) {
+    const edge = /\bEdg\//.test(navigator.userAgent);
+    return {
+        id: BUILTIN, kind: BUILTIN,
+        name: edge ? 'Phi-4-mini' : 'Gemini Nano',
+        where: edge ? 'Edge' : 'Chrome',
+        availability,
+        state: availability === 'available' ? 'loadable' : 'needs-click',
+    };
 }
 
-function setupChrome(availability) {
-    app.offer = 'chrome';
-    $('#llm-source-name').textContent = app.chrome.label;
-    const btn = $('#llm-load');
-    btn.textContent = 'Download ' + app.chrome.label.replace(/'s built-in model$/, "'s model");
-    btn.onclick = () => createChromeSession();
-    if (availability === 'available') {
-        btn.hidden = true;
-        setStatus('Loading it now; it runs on this device. ' + UNTIL);
-        createChromeSession();
-        return;
+async function setupModelControl() {
+    const availability = await chromeAvailability();
+    const gpu = !!navigator.gpu;
+    app.models = [];
+    if (availability === 'available' || availability === 'downloadable' || availability === 'downloading') {
+        app.models.push(builtinModel(availability));
     }
-    // A download needs a user activation. The visitor's first click or keypress anywhere on
-    // the page is one, so the download starts then; the button is the explicit way.
-    btn.hidden = false;
-    setStatus((availability === 'downloading' ? 'The browser is downloading it. ' : 'The browser downloads it once, then it runs on this device. ')
-        + 'The download starts on your first click or keypress on this page. ' + UNTIL);
-    const onGesture = () => {
-        if (app.chrome.session || app.chrome.creating) return;
-        createChromeSession();
+    for (const w of WEBLLM_MODELS) {
+        app.models.push(Object.assign({ kind: 'webllm', cached: false, state: gpu ? 'checking' : 'unsupported' }, w));
+    }
+    const sel = $('#model-select');
+    sel.innerHTML = app.models.map((m) => `<option value="${m.id}"${m.state === 'unsupported' ? ' disabled' : ''}>${escapeHtml(optionLabel(m))}</option>`).join('');
+    sel.onchange = () => {
+        try { localStorage.setItem(MODEL_KEY, sel.value); } catch (e) { /* storage refused */ }
+        choose(sel.value);
+    };
+    $('#llm-load').onclick = () => { const m = selectedModel(); if (m) loadModel(m); };
+
+    // The built-in model's download starts on the visitor's first click or keypress anywhere
+    // on the page (Chrome requires a user activation for it), except on the select itself,
+    // which is how a visitor says they want a different model.
+    const onGesture = (ev) => {
+        const m = selectedModel();
+        if (!m || m.kind !== BUILTIN || m.state !== 'needs-click') return;
+        if (ev.target && ev.target.closest && ev.target.closest('#model-select')) return;
+        loadBuiltin(m);
     };
     document.addEventListener('pointerdown', onGesture, { capture: true });
     document.addEventListener('keydown', onGesture, { capture: true });
-    app.chrome.stopWaiting = () => {
-        document.removeEventListener('pointerdown', onGesture, { capture: true });
-        document.removeEventListener('keydown', onGesture, { capture: true });
-    };
+
+    let saved = null;
+    try { saved = localStorage.getItem(MODEL_KEY); } catch (e) { /* storage refused */ }
+    const usable = app.models.filter((m) => m.state !== 'unsupported');
+    const initial = usable.find((m) => m.id === saved) || usable[0] || null;
+    if (!initial) { renderControl(); renderWho(); return; }
+    choose(initial.id);
+    const builtin = modelById(BUILTIN);
     // Already downloading elsewhere: it may not need the activation at all.
-    if (availability === 'downloading') createChromeSession({ quiet: true });
+    if (builtin && builtin.availability === 'downloading' && app.selected === BUILTIN) loadBuiltin(builtin, { quiet: true });
+    renderWho();
 }
 
-// Must be called synchronously from the gesture handler: `create()` checks the activation
-// when it is called, not when it resolves.
-function createChromeSession({ quiet = false } = {}) {
-    if (app.chrome.session) return;
-    if (app.chrome.creating) return;
-    const btn = $('#llm-load');
-    let options = Object.assign({}, LM_OPTIONS, {
-        monitor(m) {
-            m.addEventListener('downloadprogress', (e) => {
-                setProgress(e.loaded);
-                setStatus(`Downloading ${app.chrome.label}: ${Math.round(e.loaded * 100)}%. ` + UNTIL);
+// --- the built-in model (the Prompt API) --------------------------------------------------
+
+function loadBuiltin(m, { quiet = false } = {}) {
+    if (m.session || m.creating) return;
+    const before = m.state;
+    const options = Object.assign({}, LM_OPTIONS, {
+        monitor(mon) {
+            mon.addEventListener('downloadprogress', (e) => {
+                m.state = 'loading';
+                m.verb = 'Downloading';
+                m.progress = e.loaded;
+                if (app.selected === m.id) renderControl();
             });
         },
     });
@@ -320,86 +425,115 @@ function createChromeSession({ quiet = false } = {}) {
     } catch (e) {
         pending = Promise.reject(e);
     }
-    app.chrome.creating = pending;
-    if (!quiet) { btn.disabled = true; setStatus(`Starting ${app.chrome.label}… ` + UNTIL); }
+    m.creating = pending;
+    if (!quiet) {
+        m.state = 'loading';
+        m.verb = before === 'loadable' ? 'Starting' : 'Downloading';
+        m.progress = null;
+        m.note = null;
+        renderControl();
+    }
     pending.then((session) => {
-        app.chrome.session = session;
-        app.chrome.creating = null;
-        app.chrome.stopWaiting?.();
-        btn.hidden = true;
-        setProgress(null);
-        setStatus('Ready. It runs on this device and answers every request now.');
-        modelReady('chrome');
+        m.creating = null;
+        m.session = session;
+        m.availability = 'available';
+        m.state = 'ready';
+        if (app.selected === m.id) activate(m);
+        else renderControl();
     }, (e) => {
-        app.chrome.creating = null;
-        btn.disabled = false;
-        if (quiet) return;
+        m.creating = null;
+        if (quiet) { m.state = before; renderControl(); return; }
         console.warn('LanguageModel.create failed', e);
-        setProgress(null);
         if (e && e.name === 'NotAllowedError') {
-            setStatus('The browser wants a click before it downloads the model: press the button. ' + UNTIL);
+            m.state = 'needs-click';
+            m.note = 'The browser wants a click before it downloads the model: press the button.';
         } else {
-            setStatus('Could not start it (' + escapeHtml(e && e.message || e) + '). ' + UNTIL);
+            m.state = 'failed';
+            m.error = String(e && e.message || e);
         }
+        renderControl();
     });
 }
 
-function setupWebLlm() {
-    app.offer = 'webllm';
-    $('#llm-source-name').textContent = 'WebLLM, on your GPU';
-    const sel = $('#webllm-model');
-    const btn = $('#llm-load');
-    if (!navigator.gpu) {
-        app.offer = null;
-        $('#llm-source-name').textContent = 'No model runs in this browser';
-        setStatus('It has neither a built-in model nor WebGPU (Chrome or Edge on a desktop, or Safari 18+, have one of them), so <b>you</b> are the model: each request opens a form below.');
-        return;
+// --- loading a WebLLM model ---------------------------------------------------------------
+
+function webllmModule() {
+    if (app.webllm.module) return Promise.resolve(app.webllm.module);
+    if (!app.webllm.importing) {
+        app.webllm.importing = import(WEBLLM_URL).then((mod) => {
+            app.webllm.module = mod;
+            return mod;
+        }, (e) => {
+            app.webllm.importing = null;
+            throw e;
+        });
     }
-    sel.innerHTML = WEBLLM_MODELS.map(([id, label, size]) => `<option value="${id}">${escapeHtml(label)} · ${size}</option>`).join('');
-    sel.hidden = false;
-    const label = () => {
-        const m = WEBLLM_MODELS.find(([id]) => id === sel.value);
-        btn.textContent = 'Download ' + m[2];
-    };
-    sel.onchange = label;
-    label();
-    btn.hidden = false;
-    btn.onclick = loadWebLlm;
-    setStatus('Downloaded once from Hugging Face, then cached by the browser. ' + UNTIL);
+    return app.webllm.importing;
 }
 
-async function loadWebLlm() {
-    const btn = $('#llm-load');
-    const sel = $('#webllm-model');
-    btn.disabled = true;
-    sel.disabled = true;
-    app.webllm.loading = true;
+// Which WebLLM models this browser already has (WebLLM's own `hasModelInCache`). Loading the
+// runtime is the price of asking, so it is only asked once a WebLLM model is selected.
+function checkWebLlmCache() {
+    if (!app.webllm.checking) {
+        app.webllm.checking = (async () => {
+            let mod = null;
+            try { mod = await webllmModule(); } catch (e) { console.warn('WebLLM runtime did not load', e); }
+            await Promise.all(app.models.filter((m) => m.kind === 'webllm').map(async (m) => {
+                let cached = false;
+                if (mod && typeof mod.hasModelInCache === 'function') {
+                    try { cached = await mod.hasModelInCache(m.id); } catch (e) { cached = false; }
+                }
+                m.cached = !!cached;
+                if (m.state === 'checking') m.state = m.cached ? 'loadable' : 'needs-click';
+            }));
+            // A runtime that failed to load is asked again by the next download.
+            if (!mod) app.webllm.checking = null;
+        })();
+    }
+    return app.webllm.checking;
+}
+
+async function loadWebLlm(m) {
+    if (m.state === 'loading') return;
+    m.state = 'loading';
+    m.verb = m.cached ? 'Loading' : 'Downloading';
+    m.progress = 0;
+    renderControl();
     try {
-        setStatus('Loading the WebLLM runtime… ' + UNTIL);
-        setProgress(0);
-        if (!app.webllm.module) app.webllm.module = await import(WEBLLM_URL);
-        const model = sel.value;
-        const engine = await app.webllm.module.CreateMLCEngine(model, {
+        const mod = await webllmModule();
+        const engine = await mod.CreateMLCEngine(m.id, {
             initProgressCallback: (p) => {
-                if (typeof p.progress === 'number') setProgress(p.progress);
-                setStatus(escapeHtml(p.text) + ' ' + UNTIL);
+                if (typeof p.progress === 'number') m.progress = p.progress;
+                if (app.selected === m.id) renderControl();
             },
         });
-        app.webllm.engine = engine;
-        app.webllm.model = model;
-        btn.hidden = true;
-        setProgress(null);
-        setStatus('Ready, and cached in your browser for next time. It answers every request now.');
-        modelReady('webllm');
+        m.cached = true;
+        if (app.selected === m.id) {
+            m.engine = engine;
+            m.state = 'ready';
+            activate(m);
+        } else {
+            // Chosen and then left: it is cached now, and loads by itself if chosen again.
+            engine.unload?.();
+            m.state = 'loadable';
+            renderControl();
+        }
     } catch (e) {
         console.error(e);
-        setProgress(null);
-        setStatus('Could not load the model: ' + escapeHtml(e && e.message || e) + '. ' + UNTIL);
-        btn.disabled = false;
-        sel.disabled = false;
-    } finally {
-        app.webllm.loading = false;
+        m.state = 'failed';
+        m.error = String(e && e.message || e);
+        renderControl();
     }
+}
+
+// Unload a WebLLM engine that no longer answers, once the request it may be in finishes.
+function retireWebLlm(m) {
+    const engine = m.engine;
+    m.engine = null;
+    m.state = 'loadable';
+    if (!engine) return;
+    if (engine.__busy) engine.__retire = true;
+    else engine.unload?.();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -449,7 +583,7 @@ function finish(entry, reply) {
 }
 
 function dispatch(entry) {
-    if (app.answerer === 'you') answerManually(entry);
+    if (!app.active) answerManually(entry);
     else answerWithModel(entry);
 }
 
@@ -506,7 +640,8 @@ function answerManually(entry, note = '') {
 // --- a model -------------------------------------------------------------------------------
 
 async function answerWithModel(entry) {
-    const who = answererName();
+    const model = app.active;
+    const who = model.name;
     const { event, detail } = describe(entry.req);
     const root = $('#llm-current');
     root.innerHTML = headHtml(entry, 'the model is answering')
@@ -514,19 +649,26 @@ async function answerWithModel(entry) {
     renderQueueCount();
     const progress = (text) => { const el = $('.llm-progress-text', root); if (el) el.textContent = text; };
     let reply;
+    const engine = model.kind === BUILTIN ? null : model.engine;
+    if (engine) engine.__busy = (engine.__busy || 0) + 1;
     try {
-        reply = app.answerer === 'chrome'
-            ? await answerWithChrome(entry.req)
-            : await answerWithWebLlm(entry.req, progress);
+        reply = model.kind === BUILTIN
+            ? await answerWithBuiltin(entry.req, model.session)
+            : await answerWithWebLlm(entry.req, engine, progress);
     } catch (e) {
         console.warn('the model could not answer; the visitor answers this one', e);
         if (app.current === entry) answerManually(entry, `${who} could not answer this one (${e && e.message || e}), so it is yours.`);
         return;
+    } finally {
+        if (engine) {
+            engine.__busy -= 1;
+            if (!engine.__busy && engine.__retire) engine.unload?.();
+        }
     }
     finish(entry, reply);
 }
 
-// --- Chrome's built-in model (the Prompt API) --------------------------------------------
+// --- the built-in model (the Prompt API) --------------------------------------------------
 
 class UnusableAnswer extends Error {}
 
@@ -576,8 +718,7 @@ function replyFromText(req, actions, text) {
     return built.reply;
 }
 
-async function answerWithChrome(req) {
-    const base = app.chrome.session;
+async function answerWithBuiltin(req, base) {
     if (!base) throw new Error('the model is not loaded');
     const roles = new Set(['system', 'user', 'assistant']);
     const messages = req.messages.map((m) => ({ role: roles.has(m.role) ? m.role : 'user', content: String(m.content ?? '') }));
@@ -636,8 +777,7 @@ function safeJson(v) {
 
 // The reply goes back as the model wrote it; NetGet's own parser, repair and retry take it
 // from there, as they would for Ollama.
-async function answerWithWebLlm(req, progress) {
-    const engine = app.webllm.engine;
+async function answerWithWebLlm(req, engine, progress) {
     const messages = req.messages.map((m) => ({ role: m.role, content: m.content }));
     const hasTools = req.tools && req.tools.length;
     const base = { messages, temperature: 0.2, max_tokens: 1024 };
@@ -726,34 +866,73 @@ function setTelnetState(text, up) {
     el.classList.toggle('is-up', !!up);
 }
 
+// The terminal is a shell session: a prompt, the telnet command, telnet(1)'s own lines, the
+// session, and the prompt again when the server hangs up. Enter at the prompt runs the
+// command again.
+const TELNET_COMMAND = `telnet localhost ${TELNET_PORT}`;
+const PROMPT = '$ ';
+const TYPE_MS = 40;             // per character of the command, as if typed
+
+function showPrompt() {
+    app.telnet.term.write(PROMPT);
+}
+
+// Type the command at the prompt, a character at a time; resolves after its Enter.
+function typeCommand(msPerChar = TYPE_MS) {
+    const t = app.telnet;
+    t.typing = true;
+    return new Promise((resolve) => {
+        let i = 0;
+        const tick = () => {
+            if (i < TELNET_COMMAND.length) {
+                t.term.write(TELNET_COMMAND[i]);
+                i += 1;
+                setTimeout(tick, msPerChar);
+                return;
+            }
+            t.term.write('\r\n');
+            t.typing = false;
+            resolve();
+        };
+        tick();
+    });
+}
+
 function telnetConnect() {
     const t = app.telnet;
     if (t.conn !== null) { app.netget.close(t.conn); t.conn = null; }
     t.line = '';
-    t.term.write(`\r\nTrying 127.0.0.1:${TELNET_PORT}…\r\n`);
+    t.term.write('Trying 127.0.0.1...\r\n');
     const id = app.netget.connect(TELNET_PORT, (bytes) => {
         const { data, replies } = telnetFilter(bytes);
         if (replies.length && t.conn === id) app.netget.send(id, replies);
         if (data.length) t.term.write(dec.decode(data).replace(/(?<!\r)\n/g, '\r\n'));
     }, (reason) => {
-        t.term.write(reason ? `\r\n[could not connect: ${reason}]\r\n` : '\r\n[connection closed by the server; press Enter to reconnect]\r\n');
+        // Start on a fresh line, as telnet(1) does, without leaving an empty one.
+        const nl = t.term.buffer?.active?.cursorX ? '\r\n' : '';
+        t.term.write(nl + (reason
+            ? `telnet: connect to address 127.0.0.1: ${reason}\r\ntelnet: Unable to connect to remote host\r\n`
+            : 'Connection closed by foreign host.\r\n'));
+        showPrompt();
         if (t.conn === id) t.conn = null;
         setTelnetState('closed', false);
         step('step-client', false);
         if (!app.current) renderIdle();
     });
     t.conn = id;
-    t.term.write(`Connected to 127.0.0.1:${TELNET_PORT}.\r\n`);
+    t.term.write('Connected to localhost.\r\nEscape character is \'^]\'.\r\n');
     setTelnetState(`connected to :${TELNET_PORT}`, true);
     step('step-client', true, `The Telnet client is connected to <code>127.0.0.1:${TELNET_PORT}</code>.`);
     if (!app.current) renderIdle();
 }
 
-// telnet(1) in line mode: the line is edited and echoed here, and sent whole on Enter.
+// telnet(1) in line mode: the line is edited and echoed here, and sent whole on Enter. At
+// the shell prompt, Enter runs the telnet command again.
 function telnetInput(d) {
     const t = app.telnet;
+    if (t.typing) return;
     if (t.conn === null) {
-        if ((d === '\r' || d === '\n') && t.serverUp) telnetConnect();
+        if ((d === '\r' || d === '\n') && t.serverUp) typeCommand(TYPE_MS / 2).then(telnetConnect);
         return;
     }
     for (const ch of d.replace(/\x1b\[[0-9;]*[A-Za-z~]|\x1bO./g, '')) {
@@ -776,7 +955,7 @@ function telnetInput(d) {
 function wireTelnet() {
     const term = makeTerm($('#telnet-term'), { cursorBlink: true, scrollback: 500 });
     app.telnet.term = term;
-    term.write('Telnet client. It connects to NetGet by itself in a moment.\r\n');
+    showPrompt();
     term.onData(telnetInput);
 }
 
@@ -802,7 +981,11 @@ function startTelnetServer(attempt = 0) {
 
 function whenListening(port, then, deadline = performance.now() + 15000) {
     if (app.netget.listening_ports().includes(port)) { app.telnet.serverUp = true; then(); return; }
-    if (performance.now() > deadline) { app.telnet.term.write('\r\n[the Telnet server did not come up]\r\n'); return; }
+    if (performance.now() > deadline) {
+        app.telnet.term.write('Trying 127.0.0.1...\r\ntelnet: connect to address 127.0.0.1: Connection refused\r\ntelnet: Unable to connect to remote host\r\n');
+        showPrompt();
+        return;
+    }
     setTimeout(() => whenListening(port, then, deadline), 100);
 }
 
@@ -865,13 +1048,17 @@ async function main() {
     app.netget = netget;
     wireDashboardInput(term, netget);
     await control;
-    renderBadges();
+    renderWho();
 
     setTimeout(() => startTelnetServer(), SERVER_AFTER_MS);
-    setTimeout(() => whenListening(TELNET_PORT, () => {
+    // The command is typed so that it finishes as the client is due to connect.
+    const typed = new Promise((resolve) => setTimeout(
+        () => typeCommand().then(resolve),
+        Math.max(0, CLIENT_AFTER_MS - TELNET_COMMAND.length * TYPE_MS - 100)));
+    setTimeout(() => whenListening(TELNET_PORT, () => typed.then(() => {
         telnetConnect();
         focusTerm(app.telnet.term);
-    }), CLIENT_AFTER_MS);
+    })), CLIENT_AFTER_MS);
 
     setInterval(refreshServers, 2000);
     refreshServers();
