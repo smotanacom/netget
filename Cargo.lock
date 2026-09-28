@@ -8226,6 +8226,7 @@ dependencies = [
  "rustls-pki-types",
  "schemars 1.1.0",
  "scylla",
+ "secp256k1",
  "serde",
  "serde_bencode",
  "serde_cbor",
