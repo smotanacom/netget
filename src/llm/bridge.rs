@@ -1,9 +1,9 @@
 //! An LLM backend that asks the host to answer.
 //!
 //! The browser build has no HTTP client it could point at Ollama and no model of its own;
-//! what it has is a page. The page may run a model in-browser (WebLLM over WebGPU), forward
-//! to a local Ollama the user opened up to it, or show the request to the person at the
-//! keyboard and let *them* be the model. NetGet does not need to know which: every request
+//! what it has is a page. The page may run a model in-browser (the browser's built-in model,
+//! or WebLLM over WebGPU), or show the request to the person at the keyboard and let *them*
+//! be the model. NetGet does not need to know which: every request
 //! `OllamaClient` would have sent over HTTP becomes a [`BridgeRequest`] on a channel, and
 //! whoever drains the channel answers it with a [`BridgeReply`].
 //!

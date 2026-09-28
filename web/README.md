@@ -11,7 +11,7 @@ directory holds the build script and the headless tests; the code is in `crates/
 | Executor (`tokio::spawn`, timers) | tokio runtime | the JS event loop — `crates/netget-tokio-wasm` |
 | Sockets (`tokio::net`) | the kernel | a virtual loopback in the same crate: TCP `bind` claims a port in a table and `connect` hands the listener an in-memory duplex; UDP `bind` claims a port and `send_to` delivers a datagram to the socket bound on that port |
 | Terminal | crossterm on a tty | xterm.js; `crates/netget-web/src/backend.rs` emits ANSI, keys arrive as DOM `KeyboardEvent`s, `crates/netget-crossterm-wasm` supplies crossterm's *types* |
-| LLM | Ollama / OpenAI over HTTP | `LlmBackend::Bridge` (`src/llm/bridge.rs`): every request goes to the page as JSON; the page answers with WebLLM, a local Ollama, or the visitor typing |
+| LLM | Ollama / OpenAI over HTTP | `LlmBackend::Bridge` (`src/llm/bridge.rs`): every request goes to the page as JSON; the page answers with Chrome's built-in model (the Prompt API), a WebLLM model, or the visitor through a form |
 | Clocks | std | `performance.now()` / `Date.now()` via `crate::utils::clock` |
 
 The protocol servers are compiled **unchanged**. On
@@ -52,6 +52,8 @@ Two things the script handles that are easy to lose an hour to:
 `new NetGet({cols, rows, onOutput, onLlm, model, theme})` boots everything. Then:
 
 - `key(json)`, `mouse(json)`, `text(str)`, `resize(cols, rows)` — terminal input.
+- `set_model(name)` — the model named in every request and in the dashboard's status bar
+  (`llm: …`); `set_models(json)` sets what `/model` lists and should include it.
 - `set_llm_handler(fn)` — `fn(requestJson) -> Promise<replyJson | object>`. A request is
   `{id, kind: "generate" | "chat", model, messages: [{role, content}], tools: [...],
   actions: [...]}`. A reply is `{content?, tool_calls?: [{name, arguments}],
@@ -79,9 +81,35 @@ Two things the script handles that are easy to lose an hour to:
   `udp_close(id)` — a UDP one. `listening_ports()`, `bound_udp_ports()` and `servers(cb)`
   describe what is there.
 
-`site/js/demo.js` is the page: the dashboard terminal, a Telnet terminal (with the IAC
-negotiation a plain client does), a browser that speaks HTTP/1.1 over `connect()`, a raw
-socket, and the model panel with its three modes.
+`site/js/demo.js` is the page, and the demo on it is Telnet only: three machines, a Telnet
+client above the dashboard and the model below it. Nothing needs a click:
+
+- About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
+  2323 with a short BBS instruction, so it is a normal instance on the dashboard; about a
+  second later the Telnet terminal `connect()`s to it. The terminal is a line-mode client:
+  it edits and echoes the line locally (always; it refuses every option the server offers)
+  and sends it whole on Enter. The connection's `telnet_connection_opened` is the first model
+  request, so the greeting is the first thing anyone answers.
+- Requests are answered one at a time and only the current one is on screen: the composer
+  (below) while the visitor is the model, a one-line status while a model answers.
+- The model control offers one model. Where `LanguageModel.availability()` answers
+  `available`, `downloadable` or `downloading` it is the browser's built-in model: loaded at
+  once when `available`; otherwise the download is started by the visitor's first
+  `pointerdown` or `keydown` anywhere on the page (Chrome requires a user activation for it,
+  and `create()` is called synchronously inside that handler so the activation counts), or by
+  the button, with `monitor`'s `downloadprogress` as the bar. Elsewhere it is WebLLM, the
+  default model preselected, downloaded (from Hugging Face) on one click. Until either is
+  ready the visitor is the model; when it is, the page switches by itself (`set_model`, the
+  badges) and hands it the current request if the visitor has not started answering it.
+- Chrome's model gets a fresh session per request (NetGet sends the whole context each
+  time) and `prompt()` with a `responseConstraint`: a JSON Schema of `{"actions": [...]}`
+  whose items are the offered non-tool actions, `type` pinned to each name. Its text goes
+  through the composer's own `entriesFromEnvelope`/`buildReply`, so an answer is accepted only
+  if the composer could have built it; anything else sends that one request to the composer,
+  with the reason. WebLLM's text goes back as written, to NetGet's own parser and repair.
+
+The page never starts an HTTP-family server (see below for why they cannot answer here). The
+dashboard's picker still lists every compiled protocol, so a visitor can.
 
 When the visitor is the model, `site/js/composer.js` turns `actions` into a form, after the
 dashboard's intercept composer: a picker of the offered actions (the protocol's own first
@@ -92,7 +120,16 @@ tab that mirrors the form and is sent verbatim when used. Its reply is the JSON 
 `content`, or `tool_calls` for a chat request whose entries are all native tools. A request
 without `actions` gets the raw editor alone. The top half of the file is DOM-free so
 `smoke.mjs` builds the same default reply under Node; `web/test/page_composer.py` drives the
-page itself, with xterm.js stubbed and every non-local request answered by the test.
+page itself in headless Chromium: the Telnet server and client come up with no clicks, the
+visitor answers through the composer and the answers reach the Telnet terminal, no element of
+the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, and a stub
+`LanguageModel` proves the Chrome path both when the model is `available` (loads by itself,
+answers with no composer, constrained to the offered actions, falls back on an unparseable
+answer) and when it is `downloadable` (waits for the first keypress). Headless Chromium has
+no built-in model, so the stubs are the evidence for that path; with Chrome itself the test
+also checks the real `availability()` is detected and no download starts unasked. xterm.js is
+stubbed unless `XTERM_DIR` points at the real files; every other non-local request is
+answered by the test.
 
 ## Which protocols are in the browser build
 
