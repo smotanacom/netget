@@ -5,7 +5,7 @@ HTTP GET. The model is the relay's policy and its archive — it decides which p
 are taken and which events answer a subscription. NetGet owns everything NIP-01 makes
 mechanical: ids, signatures, filters, framing, subscription bookkeeping.
 
-**State**: Experimental (see Maturity). **Privilege**: `None`. **Well-known port**: none — see
+**State**: Beta (see Maturity). **Privilege**: `None`. **Well-known port**: none — see
 below. **Stack**: `ETH>IP>TCP>HTTP>WS>NOSTR`. **Feature**: `nostr` (`tokio-tungstenite`,
 `secp256k1`, `sha2`).
 
@@ -204,12 +204,22 @@ oracle in `real_client_test.rs` asserts both directions dissect as `websocket`.
 
 ## Maturity
 
-**Experimental**, deliberately, though the evidence for Beta exists: two independent clients
-(nak, Go/go-nostr; rust-nostr via `nostr-sdk`) complete real sessions in tests that fail when
-either is absent, and the pcap oracle reads the traffic clean. It stays Experimental until that
-evidence has been observed three runs in a row at `--test-threads=100` and reviewed by a human,
-per the Beta rule.
+**Beta**, on two independent clients completing real sessions:
 
-Known limits a reviewer should weigh: the model's events are authored by the relay key (above);
+- **nak** 0.20.7 (Go; go-nostr and coder/websocket — nothing shared with this server's framing,
+  JSON or crypto) publishes and reads the `OK`, reads a rejection's reason, subscribes and
+  receives exactly the events the filters allow while verifying every id and signature itself,
+  streams a live event published by another nak, and reads NIP-11.
+- **rust-nostr** 0.45.1 through `nostr-sdk` (its own NIP-01 types, filters and signature
+  checks) publishes and fetches.
+
+Both tests fail rather than skip when the client is absent; the suite passed three runs in a
+row at `--test-threads=100`, and `scripts/beta_evidence_table.py --check` is green with nostr's
+peers read as `nak` and `python3 nostr_sdk`. The pcap oracle reads a recorded nak session clean
+and dissected as `websocket` both ways.
+
+What the rating covers is the surface above — NIP-01 and NIP-11 — not NIPs this relay does not
+implement. Known limits a user should weigh: the model's events are authored by the relay key;
 nothing is stored, so a client that publishes and then queries sees only what the model chooses
-to supply; NIP-42 and NIP-45 are absent.
+to supply; NIP-42 and NIP-45 are absent. rust-nostr's WebSocket layer is tungstenite, like the
+server's, so it is protocol evidence only; nak carries the framing evidence.

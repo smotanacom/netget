@@ -164,7 +164,7 @@ impl Protocol for NostrProtocol {
         // nostr-rs-relay config.toml `port = 8080`). See NO_WELL_KNOWN_PORT in
         // tests/well_known_port_declaration_test.rs.
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "Hand-written HTTP head and RFC 6455 upgrade, tokio-tungstenite framing; NIP-01 \
@@ -182,7 +182,8 @@ impl Protocol for NostrProtocol {
                  nak req receives the model's events and verifies their signatures itself, nak \
                  relay reads the NIP-11 document. A second client, rust-nostr's Python \
                  bindings (pip nostr-sdk), publishes and subscribes through its own NIP-01 \
-                 implementation. Both fail, never skip, when absent.",
+                 implementation. Both fail, never skip, when absent. The pcap oracle reads a \
+                 recorded nak session as http then websocket in both directions.",
             )
             .notes(
                 "NIP-01 (EVENT, REQ, CLOSE in; EVENT, OK, EOSE, CLOSED, NOTICE out) and NIP-11 \
