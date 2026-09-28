@@ -173,8 +173,9 @@ async fn injected_close_disconnects_an_smb_peer_that_has_said_nothing() {
 }
 
 /// The session's *own* exit path must release the handle too — not just the injected-close
-/// shortcut in `peer_support`. A 64-byte frame with a wrong signature is the cheapest way to
-/// make the read loop break, and it also pins the received-byte counter.
+/// shortcut in `peer_support`. A well-framed 64-byte message with a wrong signature is the
+/// cheapest way to make the read loop break, and it also pins the received-byte counter: the
+/// 4-byte transport header and the 64-byte message are both counted.
 #[tokio::test]
 async fn the_session_releases_its_peer_handle_when_the_peer_desyncs() {
     let state = new_state().await;
@@ -187,12 +188,12 @@ async fn the_session_releases_its_peer_handle_when_the_peer_desyncs() {
         .expect("connect");
     let conn = wait_for_peer_handle(&state, server_id).await;
 
-    // 64 bytes so `read_exact` completes and is counted, with a signature that is not
-    // `\xFESMB` so the loop breaks straight afterwards.
+    // A Direct TCP frame announcing 64 bytes, then 64 bytes whose signature is not
+    // `\xFESMB`, so both reads complete and are counted and the loop breaks straight after.
     stream
-        .write_all(&[0x41u8; 64])
+        .write_all(&super::wire_util::nbss(vec![0x41u8; 64]))
         .await
-        .expect("write a bogus SMB2 header");
+        .expect("write a bogus SMB2 message");
     stream.flush().await.expect("flush");
 
     let mut buf = [0u8; 16];
@@ -211,7 +212,8 @@ async fn the_session_releases_its_peer_handle_when_the_peer_desyncs() {
         .find(|c| c.id.as_u32() == conn)
         .expect("connection still tracked after it closed");
     assert_eq!(
-        conn_state.bytes_received, 64,
-        "the header read must be counted"
+        conn_state.bytes_received,
+        4 + 64,
+        "the transport header and the message must both be counted"
     );
 }

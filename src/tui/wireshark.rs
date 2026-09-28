@@ -296,9 +296,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),
         "rdp" => with_display(tcp("tpkt"), "rdp"),
-        // This server writes no NetBIOS session-service header, so a `nbss` decode-as has
-        // nothing to key on and never resolves. Point at smb2 directly until framing exists.
-        "smb" => with_display(tcp("smb2"), "smb2 || smb"),
+        // SMB2 over TCP rides in the Direct TCP transport header, which Wireshark decodes as
+        // `nbss`; `smb2` has no `tcp.port` entry of its own, so it cannot be the decode-as.
+        "smb" => with_display(tcp("nbss"), "smb2 || smb"),
         "nfs" => with_display(tcp("rpc"), "nfs"),
         "modbus" => tcp("mbtcp"),
         // IPP is an HTTP payload; Wireshark reaches it through the http

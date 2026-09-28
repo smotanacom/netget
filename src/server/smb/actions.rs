@@ -602,15 +602,29 @@ fn smb_create_file_action() -> ActionDefinition {
                       STATUS_ACCESS_DENIED, because silence must not become consent for an \
                       admission decision."
             .to_string(),
-        parameters: vec![Parameter {
-            name: "path".to_string(),
-            type_hint: "string".to_string(),
-            description: "File path being opened or created".to_string(),
-            required: true,
-        }],
+        parameters: vec![
+            Parameter {
+                name: "path".to_string(),
+                type_hint: "string".to_string(),
+                description: "File path being opened or created".to_string(),
+                required: true,
+            },
+            Parameter {
+                name: "size".to_string(),
+                type_hint: "number".to_string(),
+                description: "The file's size in bytes, reported to the client as the open \
+                              handle's end of file. Give it whenever the file has content: \
+                              some clients read exactly this many bytes and never ask again, \
+                              so an open without it reads as an empty file. Omit only for a \
+                              file that is empty or being created."
+                    .to_string(),
+                required: false,
+            },
+        ],
         example: json!({
             "type": "smb_create_file",
-            "path": "/documents/newfile.txt"
+            "path": "/documents/report.txt",
+            "size": 1024
         }),
         log_template: Some(
             LogTemplate::new()

@@ -1,12 +1,18 @@
 //! SMB/CIFS server implementation
 //!
-//! Provides an SMB2 file server where the LLM controls the virtual filesystem.
-//! Uses guest-only authentication (no password required).
+//! Provides an SMB2 file server where the LLM controls the virtual filesystem. Sessions are
+//! guest or anonymous: the NTLMSSP exchange is walked so a real client finishes SESSION_SETUP,
+//! but no password is checked (see `auth.rs`).
+//!
+//! `wire.rs` owns every byte layout; this file owns the connection, the per-connection state
+//! and the model.
 
 pub mod actions;
+pub mod auth;
+pub mod wire;
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -27,8 +33,8 @@ use crate::state::ServerId;
 
 use crate::logging::emit::Log;
 use actions::SMB_OPERATION_EVENT;
+use wire::{command, status, FileMeta, RequestHeader, ResponseHeader, HEADER_LEN};
 
-// NTSTATUS codes used in SMB2 response headers (MS-ERREF 2.3.1).
 /// How long to wait for a peer's first SMB2 message after it has connected.
 ///
 /// SMB2 is client-speaks-first: NEGOTIATE is the first message and the server says nothing
@@ -46,11 +52,12 @@ const FIRST_MESSAGE_READ_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// choice a real deployment cannot be surprised by.
 const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
-/// How long a peer may stall part-way through a message body it has already announced.
+/// How long a peer may stall part-way through a message it has already announced.
 ///
 /// Separate from the two above, and much shorter, because it is a different claim: the peer has
-/// said "this many bytes are coming" and the server has already allocated for them. Nothing
-/// legitimate takes half a minute to finish delivering a body whose header has landed.
+/// said "this many bytes are coming" in the transport header and the server has already
+/// allocated for them. Nothing legitimate takes half a minute to finish delivering a message
+/// whose length has landed.
 const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Concurrent connections this server admits.
@@ -66,73 +73,90 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 const CONNECTION_CAP_REFUSAL: &[u8] = b"";
 
 /// The largest WRITE this server accepts, advertised as `MaxWriteSize` in the NEGOTIATE
-/// response, and this server's declared `max_inbound_bytes`.
-///
-/// There is no transport length prefix here (see `CLAUDE.md`: raw SMB2, no NBSS header), so
-/// every read is a fixed-size header or body except one: a WRITE's `Length`, a peer-chosen u32
-/// that sizes the buffer its data is read into. MS-SMB2 3.3.5.13 says a WRITE longer than the
-/// negotiated `MaxWriteSize` MUST fail with `STATUS_INVALID_PARAMETER`, and that is what happens
-/// — before the buffer is allocated, followed by a close, because the data behind the header
-/// cannot be skipped without reading it and would otherwise be parsed as the next message.
+/// response. MS-SMB2 3.3.5.13: a WRITE longer than the negotiated `MaxWriteSize` MUST fail with
+/// `STATUS_INVALID_PARAMETER`, and it does, before the model is asked.
 pub const MAX_WRITE_SIZE: u32 = 1024 * 1024;
 
-const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
-/// The command is not one this server implements. Better than silence: a peer given no reply
-/// at all waits out its own timeout with the connection already desynced.
-const STATUS_NOT_SUPPORTED: u32 = 0xC000_00BB;
-/// The request body was too short to carry the fields the command requires.
-const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-/// No session has been established on this connection, or the one that was has gone. Sent in
-/// reply to any file operation that arrives before a successful SESSION_SETUP.
-const STATUS_USER_SESSION_DELETED: u32 = 0xC000_0203;
-const STATUS_DATA_ERROR: u32 = 0xC000_003E;
-/// "Insufficient system resources exist to complete the API." The closest NTSTATUS to
-/// "retryable", used when the LLM failure was capacity exhaustion rather than a fault.
-const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
-/// "An internal error occurred." Used for every other LLM failure.
-const STATUS_INTERNAL_ERROR: u32 = 0xC000_00E5;
+/// The largest SMB2 message (one Direct TCP frame) this server reads, and its declared
+/// `max_inbound_bytes`.
+///
+/// The transport header announces the whole message's length before any of it is read, so this
+/// is the one number that bounds what a peer can make the server allocate: `MAX_WRITE_SIZE` of
+/// data plus 64 KiB for the header, the WRITE's fixed body and anything compounded with it. A
+/// frame announcing more is refused after reading only its 64-byte SMB2 header — enough to
+/// answer `STATUS_INVALID_PARAMETER` to the right MessageId — and the connection then closes,
+/// because the rest of the frame is unread and reading on would parse it as the next message.
+pub const MAX_MESSAGE_BYTES: usize = MAX_WRITE_SIZE as usize + 64 * 1024;
 
-// File attributes in the CREATE response (MS-SMB2 2.2.14 / MS-FSCC 2.6).
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+/// What READ will return in one response, advertised as `MaxReadSize`.
+const MAX_READ_SIZE: u32 = 1024 * 1024;
+
+/// A fixed server GUID. Clients key cached connection state on it; one per process is enough.
+const SERVER_GUID: [u8; 16] = [
+    0x4e, 0x65, 0x74, 0x47, 0x65, 0x74, 0x53, 0x4d, 0x42, 0x32, 0x2d, 0x73, 0x72, 0x76, 0x01, 0x00,
+];
+
+/// `STATUS_NOT_A_DIRECTORY`: the client asked for a directory and the model said file.
+const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
+/// `STATUS_FILE_IS_A_DIRECTORY`: the client asked for a non-directory and the model said dir.
+const STATUS_FILE_IS_A_DIRECTORY: u32 = 0xC000_00BA;
+/// `STATUS_INFO_LENGTH_MISMATCH`: the client's output buffer cannot hold the answer.
+const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
+
+// CREATE request fields (MS-SMB2 2.2.13).
+const FILE_CREATE: u32 = 0x0000_0002;
+const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+
+// QUERY_DIRECTORY request flags (MS-SMB2 2.2.33).
+const RESTART_SCANS: u8 = 0x01;
+const RETURN_SINGLE_ENTRY: u8 = 0x02;
+const REOPEN: u8 = 0x10;
+
+/// The dialects this server speaks, best first.
+const DIALECT_SMB_2_1: u16 = 0x0210;
+const DIALECT_SMB_2_0_2: u16 = 0x0202;
 
 /// SMB server that provides LLM-controlled file system
 pub struct SmbServer;
 
-/// SMB2 session state
+/// An SMB2 session. It exists from the first SESSION_SETUP of an NTLMSSP exchange, and becomes
+/// `authenticated` only when the model has admitted the user.
 #[derive(Debug, Clone)]
 struct SmbSession {
-    session_id: u64,
     username: String,
-    _authenticated: bool,
+    authenticated: bool,
 }
 
 /// SMB2 tree connection state
 #[derive(Debug, Clone)]
 struct SmbTreeConnect {
-    _tree_id: u32,
-    _share_name: String,
+    session_id: u64,
+    share_name: String,
+    is_pipe: bool,
 }
 
-/// SMB2 file handle state
+/// An open file or directory.
 #[derive(Debug, Clone)]
 struct SmbFileHandle {
-    _file_id: Vec<u8>, // 16-byte GUID
     path: String,
-    _is_directory: bool,
+    tree_id: u32,
+    meta: FileMeta,
+    /// Whether `meta.size` came from the model, so a later QUERY_INFO on the same handle need
+    /// not ask again.
+    size_known: bool,
+    /// An enumeration in progress on a directory handle: the entries not yet returned.
+    listing: Option<VecDeque<(String, FileMeta)>>,
 }
 
 /// Per-connection SMB state
 struct SmbConnectionState {
     sessions: HashMap<u64, SmbSession>,
     trees: HashMap<u32, SmbTreeConnect>,
-    files: HashMap<Vec<u8>, SmbFileHandle>,
+    files: HashMap<[u8; 16], SmbFileHandle>,
     next_session_id: u64,
     next_tree_id: u32,
-    /// Set by a command whose request left unread bytes on the stream that cannot be skipped —
-    /// an over-size WRITE. The session loop sends that command's response and then closes,
-    /// rather than reading the leftover payload as the next SMB2 header.
-    close_after_reply: bool,
+    next_file_index: u64,
 }
 
 impl SmbConnectionState {
@@ -143,10 +167,50 @@ impl SmbConnectionState {
             files: HashMap::new(),
             next_session_id: 1,
             next_tree_id: 1,
-            close_after_reply: false,
+            next_file_index: 1,
         }
     }
+
+    fn has_authenticated_session(&self) -> bool {
+        self.sessions.values().any(|s| s.authenticated)
+    }
+
+    fn allocate_session(&mut self, username: String, authenticated: bool) -> u64 {
+        let sid = self.next_session_id;
+        self.next_session_id += 1;
+        self.sessions.insert(
+            sid,
+            SmbSession {
+                username,
+                authenticated,
+            },
+        );
+        sid
+    }
 }
+
+/// Everything a command handler needs besides the request itself.
+struct Ctx<'a> {
+    llm_client: &'a OllamaClient,
+    app_state: &'a Arc<AppState>,
+    server_id: ServerId,
+    connection_id: ConnectionId,
+    protocol: &'a Arc<SmbProtocol>,
+    state: &'a Mutex<SmbConnectionState>,
+    status_tx: &'a mpsc::UnboundedSender<String>,
+}
+
+/// What earlier requests in the same compound chain established, for a request flagged
+/// `RELATED_OPERATIONS` (MS-SMB2 3.3.5.2.7.2).
+#[derive(Debug, Default, Clone, Copy)]
+struct Chain {
+    session_id: u64,
+    tree_id: u32,
+    file_id: Option<[u8; 16]>,
+}
+
+/// A FileId of all ones in a related request means "the handle the chain just opened".
+const RELATED_FILE_ID: [u8; 16] = [0xFF; 16];
 
 impl SmbServer {
     /// Spawn SMB server with integrated LLM actions
@@ -329,20 +393,19 @@ impl SmbServer {
             status_tx.clone(),
         );
 
-        Self::run_smb_session(
-            &mut reader,
-            &write_half,
-            peer_addr,
-            &llm_client,
-            &app_state,
+        let ctx_state = Mutex::new(SmbConnectionState::new());
+        let ctx = Ctx {
+            llm_client: &llm_client,
+            app_state: &app_state,
             server_id,
-            &protocol,
             connection_id,
-            &status_tx,
-        )
-        .await;
+            protocol: &protocol,
+            state: &ctx_state,
+            status_tx: &status_tx,
+        };
+        Self::run_smb_session(&mut reader, &write_half, peer_addr, &ctx).await;
 
-        // Every exit path — EOF, an idle timeout, a read or write error, a refused command —
+        // Every exit path — EOF, an idle timeout, a read or write error, a refused frame —
         // lands here. Dropping the handle also ends the peer command task, which releases its
         // clone of the write half; the explicit shutdown makes the FIN immediate rather than
         // waiting on it.
@@ -364,966 +427,1473 @@ impl SmbServer {
 
     /// The read/dispatch/reply loop. Every exit is a `break`, so the caller's teardown always
     /// runs; writes go through the shared `write_half` and are counted there.
+    ///
+    /// **Transport.** SMB2 over TCP is framed (MS-SMB2 2.1): each message, or compound chain of
+    /// messages, is preceded by a byte of zero and a 24-bit big-endian length. The SMB2 header
+    /// itself carries no length, so this frame is the only thing that says where one request
+    /// ends — every request is read whole before anything is decided about it, which is what
+    /// keeps the stream in step when a request is refused.
     #[cfg(feature = "smb")]
-    #[allow(clippy::too_many_arguments)]
     async fn run_smb_session<R, W>(
         reader: &mut SmbReader<R>,
         write_half: &Arc<Mutex<W>>,
         peer_addr: SocketAddr,
-        llm_client: &OllamaClient,
-        app_state: &Arc<AppState>,
-        server_id: ServerId,
-        protocol: &Arc<SmbProtocol>,
-        connection_id: ConnectionId,
-        status_tx: &mpsc::UnboundedSender<String>,
+        ctx: &Ctx<'_>,
     ) where
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
     {
-        let state = Arc::new(Mutex::new(SmbConnectionState::new()));
-
-        // SMB2 protocol handling loop
         loop {
-            // Read SMB2 message
-            // SMB2 header is 64 bytes minimum
-            let mut header_buf = vec![0u8; 64];
-
             // The deadline wraps this read and nothing else. The LLM round-trip that decides a
             // login or answers a request, and a `manual` rule parking either for a human
             // (`src/state/intercepts.rs`, 300s by default), all happen below once a whole
             // message has been read — outside every deadline by construction. What is bounded
             // is a peer holding the connection while sending nothing.
-            let header_timeout = if state.lock().await.sessions.is_empty() {
-                FIRST_MESSAGE_READ_TIMEOUT
-            } else {
+            let header_timeout = if ctx.state.lock().await.has_authenticated_session() {
                 IDLE_BETWEEN_MESSAGES_TIMEOUT
+            } else {
+                FIRST_MESSAGE_READ_TIMEOUT
             };
-            let header_read = match tokio::time::timeout(
-                header_timeout,
-                reader.read_exact_counted(&mut header_buf),
-            )
-            .await
+            let mut transport = [0u8; 4];
+            match tokio::time::timeout(header_timeout, reader.read_exact_counted(&mut transport))
+                .await
             {
-                Ok(read) => read,
                 Err(_) => {
-                    Log::new(Some(status_tx)).info(format!(
+                    Log::new(Some(ctx.status_tx)).info(format!(
                         "SMB peer {} sent nothing for {}s; closing idle connection",
                         peer_addr,
                         header_timeout.as_secs()
                     ));
                     break;
                 }
-            };
-
-            match header_read {
-                Ok(_) => {
-                    // Update connection stats for received data. The counters live on
-                    // `SmbReader` because a message is read in two places — the header here,
-                    // the body inside `handle_smb2_command` — and only the header used to be
-                    // counted, so a 64 KiB WRITE showed as 64 bytes received.
-                    flush_read_stats(reader, app_state, server_id, connection_id).await;
-
-                    // Parse SMB2 header
-                    if &header_buf[0..4] != b"\xFESMB" {
-                        Log::new(Some(status_tx))
-                            .warn(format!("Invalid SMB2 signature from {}", peer_addr));
-                        break;
-                    }
-
-                    // Extract command from header (offset 12-13, little-endian)
-                    let command = u16::from_le_bytes([header_buf[12], header_buf[13]]);
-                    debug!("SMB2 command 0x{:04x} from {}", command, peer_addr);
-
-                    // Handle SMB2 command
-                    let response = match Self::handle_smb2_command(
-                        command,
-                        &header_buf,
-                        reader,
-                        llm_client,
-                        app_state,
-                        server_id,
-                        connection_id,
-                        protocol,
-                        &state,
-                        status_tx,
-                    )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            error!("handle_smb2_command error for 0x{:04x}: {}", command, e);
-                            break;
-                        }
-                    };
-
-                    // The body the command handler consumed is counted here, after it has
-                    // returned — the header flush above saw only the 64 header bytes.
-                    flush_read_stats(reader, app_state, server_id, connection_id).await;
-
-                    // Send response
-                    if let Some(response_data) = response {
-                        match write_counted(
-                            write_half,
-                            &response_data,
-                            app_state,
-                            server_id,
-                            connection_id,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                trace!(
-                                    "SMB2 response sent to {}, {} bytes",
-                                    peer_addr,
-                                    response_data.len()
-                                );
-                            }
-                            Err(e) => {
-                                error!("Failed to send response for 0x{:04x}: {}", command, e);
-                                break;
-                            }
-                        }
-                    }
-
-                    if state.lock().await.close_after_reply {
-                        debug!(
-                            "SMB closing {} after refusing a request whose payload is unread",
-                            peer_addr
-                        );
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    Log::new(Some(status_tx))
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    Log::new(Some(ctx.status_tx))
                         .info(format!("SMB client {} disconnected", peer_addr));
                     break;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     error!("SMB read error from {}: {}", peer_addr, e);
+                    break;
+                }
+                Ok(Ok(_)) => {}
+            }
+            flush_read_stats(reader, ctx.app_state, ctx.server_id, ctx.connection_id).await;
+
+            let (kind, len) = wire::parse_frame_header(transport);
+            match kind {
+                wire::NBSS_SESSION_MESSAGE => {}
+                wire::NBSS_KEEPALIVE => continue,
+                wire::NBSS_SESSION_REQUEST if len <= 256 => {
+                    // A client that dialled port 139 names the called and calling NetBIOS
+                    // names first. Any name is this server's; say yes and carry on.
+                    let mut names = vec![0u8; len];
+                    if read_body_exact(reader, &mut names).await.is_err() {
+                        break;
+                    }
+                    let positive = [wire::NBSS_POSITIVE_RESPONSE, 0, 0, 0];
+                    if write_counted(write_half, &positive, ctx).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                _ => {
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "SMB peer {} sent {:02x?}, which is not a Direct TCP session message \
+                         (MS-SMB2 2.1: 0x00 and a 24-bit length); closing",
+                        peer_addr, transport
+                    ));
+                    break;
+                }
+            }
+
+            if len < HEADER_LEN {
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "SMB peer {} framed a {}-byte message, shorter than an SMB2 header; closing",
+                    peer_addr, len
+                ));
+                break;
+            }
+
+            if len > MAX_MESSAGE_BYTES {
+                // Refused before the frame is allocated. Only the SMB2 header is read, so the
+                // refusal can name the request it refuses; the rest is unread, so the stream
+                // is out of step and the connection closes after the reply.
+                let mut header = [0u8; HEADER_LEN];
+                if read_body_exact(reader, &mut header).await.is_ok() {
+                    if let Some(req) = RequestHeader::parse(&header) {
+                        Log::new(Some(ctx.status_tx)).warn(format!(
+                            "SMB2 command 0x{:04x} in a {} byte frame refused \
+                             (decision=fail_closed_message_too_large, limit {}); replying \
+                             STATUS_INVALID_PARAMETER and closing",
+                            req.command, len, MAX_MESSAGE_BYTES
+                        ));
+                        let reply = wire::error_response(&ResponseHeader::for_request(
+                            &req,
+                            status::INVALID_PARAMETER,
+                        ));
+                        let _ = write_counted(write_half, &wire::frame(&reply), ctx).await;
+                    }
+                }
+                flush_read_stats(reader, ctx.app_state, ctx.server_id, ctx.connection_id).await;
+                break;
+            }
+
+            let mut message = vec![0u8; len];
+            if let Err(e) = read_body_exact(reader, &mut message).await {
+                debug!(
+                    "SMB peer {} did not deliver its announced frame: {}",
+                    peer_addr, e
+                );
+                break;
+            }
+            flush_read_stats(reader, ctx.app_state, ctx.server_id, ctx.connection_id).await;
+
+            let responses = match Self::process_frame(&message, peer_addr, ctx).await {
+                Some(responses) => responses,
+                None => break,
+            };
+            if responses.is_empty() {
+                continue;
+            }
+            let framed = wire::frame(&wire::chain(responses));
+            match write_counted(write_half, &framed, ctx).await {
+                Ok(()) => trace!(
+                    "SMB2 response sent to {}, {} bytes",
+                    peer_addr,
+                    framed.len()
+                ),
+                Err(e) => {
+                    error!("Failed to send SMB2 response to {}: {}", peer_addr, e);
                     break;
                 }
             }
         }
     }
 
-    /// Handle SMB2 command
+    /// Answer every request in one frame. A frame carries one request, or a compound chain
+    /// linked by `NextCommand` (MS-SMB2 3.3.5.2.7); the responses are chained the same way.
+    ///
+    /// `None` means the frame is not SMB2 at all and the connection should close.
     #[cfg(feature = "smb")]
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_smb2_command<R>(
-        command: u16,
-        _header: &[u8],
-        _stream: &mut SmbReader<R>,
-        _llm_client: &OllamaClient,
-        _app_state: &Arc<AppState>,
-        _server_id: ServerId,
-        _connection_id: ConnectionId,
-        _protocol: &Arc<SmbProtocol>,
-        _state: &Arc<Mutex<SmbConnectionState>>,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<Option<Vec<u8>>>
-    where
-        R: tokio::io::AsyncRead + Unpin,
-    {
-        // SMB2 command codes
-        const SMB2_NEGOTIATE: u16 = 0x0000;
-        const SMB2_SESSION_SETUP: u16 = 0x0001;
-        const SMB2_TREE_CONNECT: u16 = 0x0003;
-        const SMB2_CREATE: u16 = 0x0005;
-        const SMB2_CLOSE: u16 = 0x0006;
-        const SMB2_READ: u16 = 0x0008;
-        const SMB2_WRITE: u16 = 0x0009;
-        const SMB2_QUERY_INFO: u16 = 0x0010;
-        const SMB2_QUERY_DIRECTORY: u16 = 0x000E;
+    async fn process_frame(
+        frame: &[u8],
+        peer_addr: SocketAddr,
+        ctx: &Ctx<'_>,
+    ) -> Option<Vec<Vec<u8>>> {
+        let mut responses = Vec::new();
+        let mut chain = Chain::default();
+        let mut offset = 0usize;
 
-        // Nothing but the two handshake commands may be served on a connection that has not
-        // completed a SESSION_SETUP the model approved.
+        loop {
+            let rest = &frame[offset..];
+            let Some(mut req) = RequestHeader::parse(rest) else {
+                if offset == 0 {
+                    let what = if rest.starts_with(b"\xFFSMB") {
+                        "an SMB1 message; this server speaks SMB2 only"
+                    } else {
+                        "not an SMB2 message"
+                    };
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "Invalid SMB2 signature from {} ({})",
+                        peer_addr, what
+                    ));
+                    return None;
+                }
+                warn!(
+                    "SMB2 compound chain from {} ends in a malformed request",
+                    peer_addr
+                );
+                break;
+            };
+
+            let next = req.next_command as usize;
+            let chained = next != 0;
+            if chained && (next < HEADER_LEN || next > rest.len() || !next.is_multiple_of(8)) {
+                warn!(
+                    "SMB2 NextCommand {} from {} does not point at a request; refusing",
+                    next, peer_addr
+                );
+                responses.push(wire::error_response(&ResponseHeader::for_request(
+                    &req,
+                    status::INVALID_PARAMETER,
+                )));
+                break;
+            }
+            let message = if chained { &rest[..next] } else { rest };
+
+            if req.is_related() && offset > 0 {
+                req.session_id = chain.session_id;
+                req.tree_id = chain.tree_id;
+            }
+            chain.session_id = req.session_id;
+            chain.tree_id = req.tree_id;
+
+            debug!("SMB2 command 0x{:04x} from {}", req.command, peer_addr);
+            match Self::handle_request(&req, message, &mut chain, ctx).await {
+                Ok(Some(response)) => responses.push(response),
+                Ok(None) => {}
+                Err(e) => {
+                    error!("SMB2 command 0x{:04x} failed: {}", req.command, e);
+                    responses.push(wire::error_response(&ResponseHeader::for_request(
+                        &req,
+                        status::INTERNAL_ERROR,
+                    )));
+                }
+            }
+
+            if !chained {
+                break;
+            }
+            offset += next;
+        }
+        Some(responses)
+    }
+
+    /// Answer one SMB2 request. `message` is the request's header and body, and nothing past
+    /// it. `Ok(None)` is the one command that gets no response (CANCEL).
+    #[cfg(feature = "smb")]
+    async fn handle_request(
+        req: &RequestHeader,
+        message: &[u8],
+        chain: &mut Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let body = &message[HEADER_LEN..];
+        let error = |code: u32| -> Result<Option<Vec<u8>>> {
+            Ok(Some(wire::error_response(&ResponseHeader::for_request(
+                req, code,
+            ))))
+        };
+
+        // Nothing but the handshake may be served on a session the model has not admitted.
         //
-        // `SmbConnectionState.sessions` was written by the successful auth path and then read
-        // by nothing except a log line, so the authentication decision governed exactly one
-        // response. A peer could open a socket and send CREATE or READ straight away — no
-        // NEGOTIATE, no SESSION_SETUP — and be served; a peer whose login the model had just
-        // *denied* could send CREATE on the same connection and be served. The model's answer
-        // has to gate the operations, or asking it was decorative.
-        const SMB2_TREE_DISCONNECT: u16 = 0x0004;
-        const SMB2_LOGOFF: u16 = 0x0002;
-        let handshake = matches!(command, SMB2_NEGOTIATE | SMB2_SESSION_SETUP);
-        if !handshake {
-            let authenticated = { !_state.lock().await.sessions.is_empty() };
-            if !authenticated {
-                Log::new(Some(status_tx)).warn(format!(
-                    "SMB2 command 0x{:04x} refused (decision=fail_closed_no_session): no \
-                     authenticated session on this connection; replying \
+        // `SmbConnectionState.sessions` was once written by the successful auth path and read
+        // by nothing but a log line, so the authentication decision governed exactly one
+        // response: a peer could open a socket and send CREATE or READ straight away, and a
+        // peer whose login the model had just *denied* could send CREATE on the same
+        // connection and be served. The SessionId in the header has to name a session the
+        // model admitted, or asking the model was decorative.
+        let exempt = matches!(
+            req.command,
+            command::NEGOTIATE | command::SESSION_SETUP | command::ECHO | command::CANCEL
+        );
+        if !exempt {
+            let admitted = ctx
+                .state
+                .lock()
+                .await
+                .sessions
+                .get(&req.session_id)
+                .is_some_and(|s| s.authenticated);
+            if !admitted {
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "SMB2 command 0x{:04x} refused (decision=fail_closed_no_session): session \
+                     {} is not an authenticated session on this connection; replying \
                      STATUS_USER_SESSION_DELETED",
-                    command
+                    req.command, req.session_id
                 ));
-                // TREE_DISCONNECT and LOGOFF are named only so this reads as a deliberate
-                // list rather than an accident; they are refused too, since neither can
-                // apply without a session to apply to.
-                let _ = (SMB2_TREE_DISCONNECT, SMB2_LOGOFF);
-                return Ok(Some(Self::build_error_response(
-                    _header,
-                    command,
-                    STATUS_USER_SESSION_DELETED,
-                )?));
+                return error(status::USER_SESSION_DELETED);
             }
         }
 
-        match command {
-            SMB2_NEGOTIATE => {
-                Log::new(Some(status_tx)).debug("SMB2 NEGOTIATE request - offering SMB 2.1");
-
-                // Consume NEGOTIATE request body from the stream
-                // NEGOTIATE request body is 36 bytes (structure) + 2 bytes (dialect) = 38 bytes total
-                // We read exactly 38 bytes to prevent consuming part of the next message
-                let mut body_buf = [0u8; 38];
-                match read_body_exact(_stream, &mut body_buf).await {
-                    Ok(_) => {
-                        debug!("NEGOTIATE body: 38 bytes consumed");
-                    }
-                    Err(e) => {
-                        // ERROR: If we can't read the body, the stream is now out of sync!
-                        // This will cause the next header read to fail
-                        warn!("Error reading NEGOTIATE body: {}", e);
-                        return Err(e.into());
-                    }
-                }
-
-                // Build SMB2 Negotiate Response
-                // For simplicity, we'll offer SMB 2.1 dialect (0x0210)
-                let response = Self::build_negotiate_response(_header)?;
-                Ok(Some(response))
-            }
-            SMB2_SESSION_SETUP => {
-                debug!("SMB2 SESSION_SETUP request");
-
-                // Read SESSION_SETUP request body (exactly 24 bytes for guest auth)
-                let mut body_buf = [0u8; 24];
-                if let Err(e) = read_body_exact(_stream, &mut body_buf).await {
-                    warn!(
-                        "Error reading SESSION_SETUP body: {} - continuing anyway",
-                        e
-                    );
-                }
-                let bytes_read = body_buf.len();
-
-                // Try to extract username from security blob (simplified)
-                // In real SMB2, this would be in the NTLMSSP blob
-                // For simplicity, we'll check for a text username or use "guest"
-                let username = Self::parse_smb2_username(&body_buf[..bytes_read])
-                    .unwrap_or_else(|| "guest".to_string());
-
-                Log::new(Some(status_tx))
-                    .info(format!("SMB2 SESSION_SETUP for user: {}", username));
-
-                // Consult LLM to check if this user should be authenticated
-                let actions = match Self::consult_llm(
-                    _llm_client,
-                    _app_state,
-                    _server_id,
-                    _protocol,
-                    "session_setup",
-                    serde_json::json!({
-                        "username": username,
-                        "auth_type": if username == "guest" { "guest" } else { "password" }
-                    }),
-                    status_tx,
-                )
+        // Commands addressed to a share need a tree the same session connected.
+        let needs_tree = !matches!(
+            req.command,
+            command::NEGOTIATE
+                | command::SESSION_SETUP
+                | command::LOGOFF
+                | command::TREE_CONNECT
+                | command::ECHO
+                | command::CANCEL
+        );
+        if needs_tree {
+            let connected = ctx
+                .state
+                .lock()
                 .await
-                {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        Log::new(Some(status_tx)).warn(format!(
-                            "LLM error during SMB authentication for user {} \
-                             (decision=fail_closed_llm_error) - denying auth: {}",
-                            username, e
-                        ));
-
-                        // Send AUTH_DENIED response instead of closing connection
-                        let response = Self::build_auth_denied_response(_header)?;
-                        return Ok(Some(response));
-                    }
-                };
-
-                // Check if LLM allowed the authentication
-                // `smb_auth_success` only. There used to be an `|| == Some("allow_auth")`
-                // arm here for a name no `ActionDefinition` produces, that appears in neither
-                // `get_sync_actions()` nor the event's action list, and that
-                // `smb_declared_actions_are_all_routed` explicitly excludes — a second,
-                // undocumented way to authenticate that no legitimate answer would ever use.
-                let auth_allowed = actions
-                    .iter()
-                    .any(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_auth_success"));
-
-                if !auth_allowed {
-                    // Kept apart in the log because the wire cannot carry the difference:
-                    // both answers refuse the login, but only one of them is a decision.
-                    // This is the same split CREATE and READ already log, and it matters
-                    // most here — an operator reading "authentication denied" needs to know
-                    // whether the model denied it or whether the model said nothing.
-                    let decision = if actions.is_empty() {
-                        "fail_closed_no_action"
-                    } else {
-                        "model_reject"
-                    };
-                    Log::new(Some(status_tx)).warn(format!(
-                        "SMB authentication denied for user {} (decision={}); replying \
-                         STATUS_ACCESS_DENIED",
-                        username, decision
-                    ));
-
-                    // Return ACCESS_DENIED response
-                    let response = Self::build_auth_denied_response(_header)?;
-                    return Ok(Some(response));
-                }
-
-                Log::new(Some(status_tx)).info(format!(
-                    "SMB authentication successful for user: {}",
-                    username
+                .trees
+                .get(&req.tree_id)
+                .is_some_and(|t| t.session_id == req.session_id);
+            if !connected {
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "SMB2 command 0x{:04x} refused: tree {} is not connected on session {}; \
+                     replying STATUS_NETWORK_NAME_DELETED",
+                    req.command, req.tree_id, req.session_id
                 ));
+                return error(status::NETWORK_NAME_DELETED);
+            }
+        }
 
-                // Build successful session setup response
-                let response =
-                    Self::build_session_setup_response_with_user(_header, _state, username.clone())
-                        .await?;
-
-                // Get the session info from state to update connection tracking
-                let (session_id, _auth_username) = {
-                    let s = _state.lock().await;
-                    if let Some(session) = s.sessions.values().last() {
-                        (Some(session.session_id), Some(session.username.clone()))
-                    } else {
-                        (None, None)
-                    }
-                };
-
-                // TODO: Update connection tracking with authentication info
-                // Note: update_connection_protocol_info method doesn't exist yet
-                if let Some(sid) = session_id {
-                    // Future: add method to update SMB connection state
-                    // For now, connection is tracked with initial protocol info
-                    let _ = status_tx.send("__UPDATE_UI__".to_string());
-
-                    info!(
-                        "SMB session {} established for connection {}",
-                        sid, _connection_id
+        match req.command {
+            command::NEGOTIATE => Self::negotiate(req, body, ctx),
+            command::SESSION_SETUP => Self::session_setup(req, message, ctx).await,
+            command::LOGOFF => {
+                let mut s = ctx.state.lock().await;
+                if let Some(session) = s.sessions.remove(&req.session_id) {
+                    debug!(
+                        "SMB2 LOGOFF: session {} ({:?})",
+                        req.session_id, session.username
                     );
                 }
-
-                Ok(Some(response))
+                s.trees.retain(|_, t| t.session_id != req.session_id);
+                Ok(Some(wire::empty_response(&ResponseHeader::for_request(
+                    req,
+                    status::SUCCESS,
+                ))))
             }
-            SMB2_TREE_CONNECT => {
-                Log::new(Some(status_tx)).debug("SMB2 TREE_CONNECT request - accepting share");
-
-                // For simplicity, accept any tree connect with share name "share"
-                let response =
-                    Self::build_tree_connect_response(_header, _state, "share".to_string()).await?;
-                Ok(Some(response))
+            command::TREE_CONNECT => Self::tree_connect(req, message, ctx).await,
+            command::TREE_DISCONNECT => {
+                let mut s = ctx.state.lock().await;
+                s.trees.remove(&req.tree_id);
+                s.files.retain(|_, f| f.tree_id != req.tree_id);
+                Ok(Some(wire::empty_response(&ResponseHeader::for_request(
+                    req,
+                    status::SUCCESS,
+                ))))
             }
-            SMB2_CREATE => {
-                debug!("SMB2 CREATE request");
-
-                // Read CREATE request body (variable length)
-                // Structure size is at offset 0-1 of body (should be 57)
-                let mut body_buf = vec![0u8; 512]; // Sufficient for most paths
-                let bytes_read = read_body(_stream, &mut body_buf).await?;
-
-                // Extract file path from request (simplified parsing)
-                // Path is UTF-16LE encoded starting at offset 120 in the CREATE request
-                let path = Self::parse_smb2_path(&body_buf[..bytes_read])
-                    .unwrap_or_else(|| "/unknown".to_string());
-
-                Log::new(Some(status_tx)).info(format!("SMB2 CREATE request for: {}", path));
-
-                // Consult LLM to check if file exists and get info. An LLM failure must
-                // answer in SMB2, not drop the connection: a client that gets no reply
-                // hangs until its own timeout with no way to tell an outage from a
-                // black hole.
-                let actions = match Self::consult_llm(
-                    _llm_client,
-                    _app_state,
-                    _server_id,
-                    _protocol,
-                    "create",
-                    serde_json::json!({
-                        "path": path,
-                        "operation": "open_or_create"
-                    }),
-                    status_tx,
-                )
-                .await
-                {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        return Ok(Some(Self::llm_failure_response(
-                            _header,
-                            SMB2_CREATE,
-                            "CREATE",
-                            &path,
-                            &e,
-                            status_tx,
-                        )?));
-                    }
-                };
-
-                // Opening a handle is an access decision, so it takes an affirmative answer.
-                // The model's vocabulary for CREATE is exactly `smb_create_file` and
-                // `smb_create_directory` (see the prompt in actions.rs); which one it picks
-                // also reaches the wire, because FILE_ATTRIBUTE_DIRECTORY in the CREATE
-                // response is what makes a client issue QUERY_DIRECTORY instead of READ.
-                //
-                // Neither action present used to mean "regular file", so an answer carrying
-                // no create action at all — a model that refused, a static handler with an
-                // empty list, an unparseable reply that still deserialised — handed the peer
-                // STATUS_SUCCESS and a live file handle. That is the fail-open shape: silence
-                // became consent for an admission decision. Refuse instead.
-                let action_type = |a: &serde_json::Value| {
-                    a.get("type").and_then(|t| t.as_str()).map(String::from)
-                };
-                let is_directory = actions
-                    .iter()
-                    .any(|a| action_type(a).as_deref() == Some("smb_create_directory"));
-                let is_file = actions
-                    .iter()
-                    .any(|a| action_type(a).as_deref() == Some("smb_create_file"));
-                if !is_directory && !is_file {
-                    // Kept apart in the log because the wire cannot carry the difference:
-                    // both answers deny the handle, but only one of them is a decision.
-                    let decision = if actions.is_empty() {
-                        "fail_closed_no_action"
-                    } else {
-                        "model_reject"
-                    };
-                    Log::new(Some(status_tx)).warn(format!(
-                        "SMB2 CREATE refused for {} (decision={}): no smb_create_file or \
-                         smb_create_directory in the answer; replying STATUS_ACCESS_DENIED",
-                        path, decision
-                    ));
-                    let response =
-                        Self::build_error_response(_header, SMB2_CREATE, STATUS_ACCESS_DENIED)?;
-                    return Ok(Some(response));
+            command::CREATE => Self::create(req, message, chain, ctx).await,
+            command::CLOSE => Self::close(req, body, chain, ctx).await,
+            command::FLUSH => {
+                if body.len() < 24 {
+                    return error(status::INVALID_PARAMETER);
                 }
-
-                // Generate file handle (16-byte GUID)
-                let file_id = Self::generate_file_handle();
-
-                // Store file handle in state
-                {
-                    let mut s = _state.lock().await;
-                    s.files.insert(
-                        file_id.clone(),
-                        SmbFileHandle {
-                            _file_id: file_id.clone(),
-                            path: path.clone(),
-                            _is_directory: is_directory,
-                        },
-                    );
+                if Self::handle(ctx, req, &body[8..24], chain).await.is_none() {
+                    return error(status::FILE_CLOSED);
                 }
+                Ok(Some(wire::empty_response(&ResponseHeader::for_request(
+                    req,
+                    status::SUCCESS,
+                ))))
+            }
+            command::READ => Self::read(req, body, chain, ctx).await,
+            command::WRITE => Self::write(req, message, chain, ctx).await,
+            command::QUERY_INFO => Self::query_info(req, body, chain, ctx).await,
+            command::QUERY_DIRECTORY => Self::query_directory(req, message, chain, ctx).await,
+            command::ECHO => Ok(Some(wire::empty_response(&ResponseHeader::for_request(
+                req,
+                status::SUCCESS,
+            )))),
+            // MS-SMB2 3.3.5.16: a CANCEL is never answered.
+            command::CANCEL => Ok(None),
+            command::IOCTL => {
+                // No FSCTL is implemented: no DFS referrals, no pipe transceive, and
+                // VALIDATE_NEGOTIATE_INFO belongs to SMB 3.x, which this server does not offer.
+                debug!("SMB2 IOCTL refused: no FSCTL is implemented");
+                error(status::INVALID_DEVICE_REQUEST)
+            }
+            other => {
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "Unsupported SMB2 command 0x{:04x}; replying STATUS_NOT_SUPPORTED",
+                    other
+                ));
+                error(status::NOT_SUPPORTED)
+            }
+        }
+    }
 
-                debug!(
-                    "SMB2 CREATE: allocated {} handle for {}",
-                    if is_directory { "directory" } else { "file" },
-                    path
+    /// NEGOTIATE (MS-SMB2 3.3.5.4). Picks SMB 2.1 if offered, else 2.0.2, and offers SPNEGO
+    /// with NTLMSSP as the only mechanism.
+    fn negotiate(req: &RequestHeader, body: &[u8], ctx: &Ctx<'_>) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        if body.len() < 36 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let count = wire::le16(body, 2) as usize;
+        let Some(list) = body.get(36..36 + 2 * count) else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        };
+        let offered: Vec<u16> = list
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let Some(dialect) = [DIALECT_SMB_2_1, DIALECT_SMB_2_0_2]
+            .into_iter()
+            .find(|d| offered.contains(d))
+        else {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 NEGOTIATE offered no dialect this server speaks ({:04x?}); it speaks \
+                 0x0210 and 0x0202",
+                offered
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::NOT_SUPPORTED),
+            )));
+        };
+        Log::new(Some(ctx.status_tx)).debug(format!(
+            "SMB2 NEGOTIATE: choosing dialect 0x{:04x}",
+            dialect
+        ));
+
+        let params = wire::NegotiateParams {
+            dialect,
+            server_guid: SERVER_GUID,
+            // No DFS, no leasing, no multi-credit: none is implemented, and each one is a
+            // promise a client acts on.
+            capabilities: 0,
+            max_transact_size: MAX_READ_SIZE,
+            max_read_size: MAX_READ_SIZE,
+            // The bound the WRITE arm enforces, so a client never sends a write it will refuse.
+            max_write_size: MAX_WRITE_SIZE,
+            system_time: filetime_now(),
+            security_blob: auth::negotiate_blob(),
+        };
+        Ok(Some(wire::negotiate_response(&hdr, &params)))
+    }
+
+    /// SESSION_SETUP (MS-SMB2 3.3.5.5).
+    ///
+    /// A real client sends two: an NTLMSSP NEGOTIATE, answered with a CHALLENGE and
+    /// `STATUS_MORE_PROCESSING_REQUIRED` without asking anyone, then an AUTHENTICATE naming the
+    /// user, which is what the model decides on. A SESSION_SETUP with an empty security buffer
+    /// is a one-step guest login, decided the same way.
+    #[cfg(feature = "smb")]
+    async fn session_setup(
+        req: &RequestHeader,
+        message: &[u8],
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        let body = &message[HEADER_LEN..];
+        if body.len() < 24 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let blob_offset = wire::le16(body, 12) as usize;
+        let blob_len = wire::le16(body, 14) as usize;
+        let blob = if blob_len == 0 {
+            &[][..]
+        } else {
+            match message.get(blob_offset..blob_offset + blob_len) {
+                Some(blob) => blob,
+                None => {
+                    return Ok(Some(wire::error_response(
+                        &hdr.with_status(status::INVALID_PARAMETER),
+                    )))
+                }
+            }
+        };
+
+        if blob.is_empty() {
+            return Self::decide_login(
+                req,
+                None,
+                "guest",
+                "",
+                "guest",
+                false,
+                auth::Wrapping::Raw,
+                ctx,
+            )
+            .await;
+        }
+
+        let Some((token, wrapping)) = auth::find_ntlmssp(blob) else {
+            Log::new(Some(ctx.status_tx)).warn(
+                "SMB2 SESSION_SETUP refused (decision=fail_closed_unsupported_mechanism): the \
+                 security buffer carries no NTLMSSP token, and NTLMSSP is the only mechanism \
+                 this server offers; replying STATUS_LOGON_FAILURE",
+            );
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::LOGON_FAILURE),
+            )));
+        };
+
+        match auth::message_type(token) {
+            Some(auth::NTLMSSP_NEGOTIATE) => {
+                let session_id = ctx
+                    .state
+                    .lock()
+                    .await
+                    .allocate_session(String::new(), false);
+                let challenge = auth::challenge(
+                    auth::negotiate_flags(token),
+                    server_challenge(),
+                    filetime_now(),
                 );
-                let response = Self::build_create_response(_header, &file_id, is_directory)?;
-                Ok(Some(response))
+                debug!(
+                    "SMB2 SESSION_SETUP: NTLMSSP NEGOTIATE on new session {}; sending CHALLENGE",
+                    session_id
+                );
+                let hdr = hdr
+                    .with_status(status::MORE_PROCESSING_REQUIRED)
+                    .with_session_id(session_id);
+                Ok(Some(wire::session_setup_response(
+                    &hdr,
+                    0,
+                    &auth::wrap_challenge(&challenge, wrapping),
+                )))
             }
-            SMB2_CLOSE => {
-                debug!("SMB2 CLOSE request");
-
-                // Read CLOSE request body
-                let mut body_buf = vec![0u8; 24]; // CLOSE body is 24 bytes
-                read_body_exact(_stream, &mut body_buf).await?;
-
-                // Extract file ID (16 bytes at offset 8)
-                let file_id = body_buf[8..24].to_vec();
-
-                // Remove file handle from state
-                let path = {
-                    let mut s = _state.lock().await;
-                    s.files.remove(&file_id).map(|h| h.path)
-                };
-
-                if let Some(path) = path {
-                    Log::new(Some(status_tx)).info(format!("SMB2 CLOSE: {}", path));
-                } else {
-                    Log::new(Some(status_tx)).warn("SMB2 CLOSE: unknown file handle");
+            Some(auth::NTLMSSP_AUTHENTICATE) => {
+                let pending = ctx
+                    .state
+                    .lock()
+                    .await
+                    .sessions
+                    .get(&req.session_id)
+                    .is_some_and(|s| !s.authenticated);
+                if !pending {
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "SMB2 SESSION_SETUP: NTLMSSP AUTHENTICATE for session {}, which has no \
+                         exchange in progress; replying STATUS_USER_SESSION_DELETED",
+                        req.session_id
+                    ));
+                    return Ok(Some(wire::error_response(
+                        &hdr.with_status(status::USER_SESSION_DELETED),
+                    )));
                 }
-
-                let response = Self::build_close_response(_header)?;
-                Ok(Some(response))
-            }
-            SMB2_READ => {
-                debug!("SMB2 READ request");
-
-                // Read READ request body (49 bytes)
-                let mut body_buf = vec![0u8; 49];
-                read_body_exact(_stream, &mut body_buf).await?;
-
-                // Extract file ID (16 bytes at offset 16)
-                let file_id = body_buf[16..32].to_vec();
-
-                // Extract read offset and length
-                let offset = u64::from_le_bytes(body_buf[8..16].try_into().unwrap());
-                let length = u32::from_le_bytes(body_buf[4..8].try_into().unwrap());
-
-                // Look up file path from handle
-                let path = {
-                    let s = _state.lock().await;
-                    s.files.get(&file_id).map(|h| h.path.clone())
+                let Some(who) = auth::parse_authenticate(token) else {
+                    ctx.state.lock().await.sessions.remove(&req.session_id);
+                    return Ok(Some(wire::error_response(
+                        &hdr.with_status(status::INVALID_PARAMETER),
+                    )));
                 };
-
-                let path = path.unwrap_or_else(|| "/unknown".to_string());
-                Log::new(Some(status_tx)).info(format!(
-                    "SMB2 READ: {} (offset={}, length={})",
-                    path, offset, length
-                ));
-
-                // Consult LLM for file content. On an LLM failure the READ is refused
-                // with an NTSTATUS rather than answered with invented content.
-                let actions = match Self::consult_llm(
-                    _llm_client,
-                    _app_state,
-                    _server_id,
-                    _protocol,
-                    "read",
-                    serde_json::json!({
-                        "path": path,
-                        "offset": offset,
-                        "length": length
-                    }),
-                    status_tx,
+                let auth_type = if who.anonymous { "anonymous" } else { "ntlm" };
+                Self::decide_login(
+                    req,
+                    Some(req.session_id),
+                    &who.user,
+                    &who.domain,
+                    auth_type,
+                    who.anonymous,
+                    wrapping,
+                    ctx,
                 )
                 .await
-                {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        return Ok(Some(Self::llm_failure_response(
-                            _header, SMB2_READ, "READ", &path, &e, status_tx,
-                        )?));
-                    }
-                };
+            }
+            _ => Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            ))),
+        }
+    }
 
-                // Extract file content from the LLM response, honouring the action's
-                // `encoding` field. Decoding is explicit: `content` is only base64 or hex
-                // when the action says so, because "SGVsbG8=" is simultaneously valid text
-                // and valid base64 and only the sender knows which it means.
-                let read_action = actions
-                    .iter()
-                    .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_read_file"));
+    /// Ask the model whether `username` may log in, and answer the SESSION_SETUP accordingly.
+    /// `pending` is the session an NTLMSSP exchange already allocated; `None` allocates one.
+    #[cfg(feature = "smb")]
+    #[allow(clippy::too_many_arguments)]
+    async fn decide_login(
+        req: &RequestHeader,
+        pending: Option<u64>,
+        username: &str,
+        domain: &str,
+        auth_type: &str,
+        anonymous: bool,
+        wrapping: auth::Wrapping,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        Log::new(Some(ctx.status_tx)).info(format!(
+            "SMB2 SESSION_SETUP for user: {:?} ({})",
+            username, auth_type
+        ));
 
-                let content = match read_action {
-                    Some(action) => {
-                        let payload = action
-                            .get("content")
-                            .and_then(|c| c.as_str())
-                            .unwrap_or_default();
-                        let encoding = action.get("encoding").and_then(|e| e.as_str());
-                        match crate::server::smb::actions::decode_smb_payload(payload, encoding) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                // Refuse rather than putting the undecodable string on the
-                                // wire, which is exactly the failure this field exists to
-                                // prevent.
-                                Log::new(Some(status_tx)).warn(format!(
-                                    "SMB read: {} - refusing with STATUS_DATA_ERROR",
-                                    e
-                                ));
-                                let response = Self::build_error_response(
-                                    _header,
-                                    SMB2_READ,
-                                    STATUS_DATA_ERROR,
-                                )?;
-                                return Ok(Some(response));
-                            }
-                        }
+        let mut params = serde_json::json!({
+            "username": username,
+            "auth_type": auth_type,
+        });
+        if !domain.is_empty() {
+            params["domain"] = serde_json::json!(domain);
+        }
+        if auth_type == "ntlm" {
+            // Said to the model in as many words: nothing checked the password.
+            params["password_verified"] = serde_json::json!(false);
+        }
+
+        let actions = match Self::consult_llm(ctx, "session_setup", params).await {
+            Ok(actions) => actions,
+            Err(e) => {
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "LLM error during SMB authentication for user {:?} \
+                     (decision=fail_closed_llm_error) - denying auth: {}",
+                    username, e
+                ));
+                return Self::deny_login(req, pending, ctx).await;
+            }
+        };
+
+        // `smb_auth_success` only: the model's affirmative answer is the one way in.
+        let auth_allowed = actions
+            .iter()
+            .any(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_auth_success"));
+
+        if !auth_allowed {
+            // Kept apart in the log because the wire cannot carry the difference: both answers
+            // refuse the login, but only one of them is a decision.
+            let decision = if actions.is_empty() {
+                "fail_closed_no_action"
+            } else {
+                "model_reject"
+            };
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB authentication denied for user {:?} (decision={}); replying \
+                 STATUS_ACCESS_DENIED",
+                username, decision
+            ));
+            return Self::deny_login(req, pending, ctx).await;
+        }
+
+        let session_id = {
+            let mut s = ctx.state.lock().await;
+            match pending {
+                Some(sid) => {
+                    if let Some(session) = s.sessions.get_mut(&sid) {
+                        session.username = username.to_string();
+                        session.authenticated = true;
                     }
+                    sid
+                }
+                None => s.allocate_session(username.to_string(), true),
+            }
+        };
+        Log::new(Some(ctx.status_tx)).info(format!(
+            "SMB authentication successful for user: {:?} (session {})",
+            username, session_id
+        ));
+        let _ = ctx.status_tx.send("__UPDATE_UI__".to_string());
+
+        // Nothing verified the password, so no session is anything but a guest (or, for an
+        // anonymous login, a null) session — which is also what tells the client there is no
+        // key to sign with.
+        let flags = if anonymous {
+            wire::SESSION_FLAG_IS_NULL
+        } else {
+            wire::SESSION_FLAG_IS_GUEST
+        };
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS).with_session_id(session_id);
+        Ok(Some(wire::session_setup_response(
+            &hdr,
+            flags,
+            &auth::accept_completed(wrapping),
+        )))
+    }
+
+    /// Refuse a login: forget the session the exchange allocated and answer ACCESS_DENIED.
+    async fn deny_login(
+        req: &RequestHeader,
+        pending: Option<u64>,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        if let Some(sid) = pending {
+            ctx.state.lock().await.sessions.remove(&sid);
+        }
+        let hdr = ResponseHeader::for_request(req, status::ACCESS_DENIED);
+        Ok(Some(wire::session_setup_response(&hdr, 0, &[])))
+    }
+
+    /// TREE_CONNECT (MS-SMB2 3.3.5.7). Every share name is accepted without asking the model:
+    /// the share is only a name for the root of the tree the model invents, and admission was
+    /// decided at SESSION_SETUP. `IPC$` connects as a pipe share, and every operation on it is
+    /// refused, because no named pipe is implemented.
+    #[cfg(feature = "smb")]
+    async fn tree_connect(
+        req: &RequestHeader,
+        message: &[u8],
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        let body = &message[HEADER_LEN..];
+        if body.len() < 8 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let path_offset = wire::le16(body, 4) as usize;
+        let path_len = wire::le16(body, 6) as usize;
+        let Some(path) = message
+            .get(path_offset..path_offset + path_len)
+            .and_then(wire::from_utf16le)
+        else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        };
+        let share = path.rsplit('\\').next().unwrap_or("").to_string();
+        let is_pipe = share.eq_ignore_ascii_case("IPC$");
+
+        let tree_id = {
+            let mut s = ctx.state.lock().await;
+            let tid = s.next_tree_id;
+            s.next_tree_id += 1;
+            s.trees.insert(
+                tid,
+                SmbTreeConnect {
+                    session_id: req.session_id,
+                    share_name: share.clone(),
+                    is_pipe,
+                },
+            );
+            tid
+        };
+        Log::new(Some(ctx.status_tx)).info(format!(
+            "SMB2 TREE_CONNECT {} -> tree {} ({})",
+            path,
+            tree_id,
+            if is_pipe { "pipe" } else { "disk" }
+        ));
+        let share_type = if is_pipe {
+            wire::SHARE_TYPE_PIPE
+        } else {
+            wire::SHARE_TYPE_DISK
+        };
+        Ok(Some(wire::tree_connect_response(
+            &hdr.with_tree_id(tree_id),
+            share_type,
+            0x001F_01FF,
+        )))
+    }
+
+    /// Resolve a FileId from a request body, following a related compound's "the handle just
+    /// opened". Returns the FileId and a copy of the handle.
+    async fn handle(
+        ctx: &Ctx<'_>,
+        req: &RequestHeader,
+        raw: &[u8],
+        chain: &Chain,
+    ) -> Option<([u8; 16], SmbFileHandle)> {
+        let mut file_id: [u8; 16] = raw.try_into().ok()?;
+        if req.is_related() && file_id == RELATED_FILE_ID {
+            file_id = chain.file_id?;
+        }
+        let s = ctx.state.lock().await;
+        let handle = s.files.get(&file_id)?;
+        (handle.tree_id == req.tree_id).then(|| (file_id, handle.clone()))
+    }
+
+    /// CREATE (MS-SMB2 3.3.5.9): the model decides whether the path opens, and as what.
+    #[cfg(feature = "smb")]
+    async fn create(
+        req: &RequestHeader,
+        message: &[u8],
+        chain: &mut Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        let body = &message[HEADER_LEN..];
+        if body.len() < 56 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let is_pipe = ctx
+            .state
+            .lock()
+            .await
+            .trees
+            .get(&req.tree_id)
+            .is_some_and(|t| t.is_pipe);
+        if is_pipe {
+            debug!("SMB2 CREATE on a pipe share refused: no named pipe is implemented");
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::NOT_SUPPORTED),
+            )));
+        }
+
+        let disposition = wire::le32(body, 36);
+        let options = wire::le32(body, 40);
+        let Some(path) = parse_create_path(message) else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        };
+
+        Log::new(Some(ctx.status_tx)).info(format!("SMB2 CREATE request for: {}", path));
+
+        let actions = match Self::consult_llm(
+            ctx,
+            "create",
+            serde_json::json!({
+                "path": path,
+                "disposition": disposition_name(disposition),
+                "directory_requested": options & FILE_DIRECTORY_FILE != 0,
+            }),
+        )
+        .await
+        {
+            Ok(actions) => actions,
+            Err(e) => {
+                return Ok(Some(Self::llm_failure_response(
+                    req, "CREATE", &path, &e, ctx,
+                )))
+            }
+        };
+
+        // Opening a handle is an access decision, so it takes an affirmative answer. Which of
+        // the two the model picks reaches the wire as FILE_ATTRIBUTE_DIRECTORY, which is what
+        // makes a client issue QUERY_DIRECTORY instead of READ. Neither present is a refusal:
+        // silence must not become consent for an admission decision.
+        let action_type =
+            |a: &serde_json::Value| a.get("type").and_then(|t| t.as_str()).map(String::from);
+        let dir_action = actions
+            .iter()
+            .find(|a| action_type(a).as_deref() == Some("smb_create_directory"));
+        let file_action = actions
+            .iter()
+            .find(|a| action_type(a).as_deref() == Some("smb_create_file"));
+        let is_directory = dir_action.is_some();
+        if dir_action.is_none() && file_action.is_none() {
+            let decision = if actions.is_empty() {
+                "fail_closed_no_action"
+            } else {
+                "model_reject"
+            };
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 CREATE refused for {} (decision={}): no smb_create_file or \
+                 smb_create_directory in the answer; replying STATUS_ACCESS_DENIED",
+                path, decision
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::ACCESS_DENIED),
+            )));
+        }
+        if is_directory && options & FILE_NON_DIRECTORY_FILE != 0 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(STATUS_FILE_IS_A_DIRECTORY),
+            )));
+        }
+        if !is_directory && options & FILE_DIRECTORY_FILE != 0 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(STATUS_NOT_A_DIRECTORY),
+            )));
+        }
+
+        // The size the open reports as EndOfFile. A client may trust it and read no further
+        // (smbprotocol does), so without it the file reads as empty until a QUERY_INFO asks.
+        let declared_size = file_action
+            .filter(|_| !is_directory)
+            .and_then(|a| a.get("size"))
+            .and_then(|v| v.as_u64());
+        let (file_id, meta) = {
+            let mut s = ctx.state.lock().await;
+            let index = s.next_file_index;
+            s.next_file_index += 1;
+            let file_id = file_id_for(index);
+            let meta = FileMeta {
+                is_directory,
+                size: declared_size.unwrap_or(0),
+                time: 0,
+                file_index: index,
+            };
+            s.files.insert(
+                file_id,
+                SmbFileHandle {
+                    path: path.clone(),
+                    tree_id: req.tree_id,
+                    meta,
+                    size_known: is_directory || declared_size.is_some(),
+                    listing: None,
+                },
+            );
+            (file_id, meta)
+        };
+        chain.file_id = Some(file_id);
+
+        debug!(
+            "SMB2 CREATE: allocated {} handle for {}",
+            if is_directory { "directory" } else { "file" },
+            path
+        );
+        let create_action = if disposition == FILE_CREATE {
+            wire::FILE_CREATED
+        } else {
+            wire::FILE_OPENED
+        };
+        Ok(Some(wire::create_response(
+            &hdr,
+            &file_id,
+            &meta,
+            create_action,
+        )))
+    }
+
+    /// CLOSE (MS-SMB2 3.3.5.10).
+    async fn close(
+        req: &RequestHeader,
+        body: &[u8],
+        chain: &Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        if body.len() < 24 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let flags = wire::le16(body, 2);
+        let Some((file_id, handle)) = Self::handle(ctx, req, &body[8..24], chain).await else {
+            Log::new(Some(ctx.status_tx)).warn("SMB2 CLOSE: unknown file handle");
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::FILE_CLOSED),
+            )));
+        };
+        ctx.state.lock().await.files.remove(&file_id);
+        Log::new(Some(ctx.status_tx)).info(format!("SMB2 CLOSE: {}", handle.path));
+        let meta = (flags & wire::CLOSE_FLAG_POSTQUERY_ATTRIB != 0).then_some(&handle.meta);
+        Ok(Some(wire::close_response(&hdr, meta)))
+    }
+
+    /// READ (MS-SMB2 3.3.5.12): the model supplies the whole file; the server answers the
+    /// range the client asked for.
+    #[cfg(feature = "smb")]
+    async fn read(
+        req: &RequestHeader,
+        body: &[u8],
+        chain: &Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        if body.len() < 48 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let length = wire::le32(body, 4).min(MAX_READ_SIZE);
+        let offset = wire::le64(body, 8);
+        let Some((_, handle)) = Self::handle(ctx, req, &body[16..32], chain).await else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::FILE_CLOSED),
+            )));
+        };
+        let path = handle.path;
+        if handle.meta.is_directory {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_DEVICE_REQUEST),
+            )));
+        }
+        Log::new(Some(ctx.status_tx)).info(format!(
+            "SMB2 READ: {} (offset={}, length={})",
+            path, offset, length
+        ));
+
+        // On an LLM failure the READ is refused with an NTSTATUS rather than answered with
+        // invented content.
+        let actions = match Self::consult_llm(
+            ctx,
+            "read",
+            serde_json::json!({ "path": path, "offset": offset, "length": length }),
+        )
+        .await
+        {
+            Ok(actions) => actions,
+            Err(e) => {
+                return Ok(Some(Self::llm_failure_response(
+                    req, "READ", &path, &e, ctx,
+                )))
+            }
+        };
+
+        // `content` is only base64 or hex when the action says so, because "SGVsbG8=" is
+        // simultaneously valid text and valid base64 and only the sender knows which it means.
+        let Some(action) = actions
+            .iter()
+            .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_read_file"))
+        else {
+            // A READ answered with no `smb_read_file` is refused. Answering STATUS_SUCCESS with
+            // placeholder bytes would tell the client those bytes are the file.
+            let decision = if actions.is_empty() {
+                "fail_closed_no_action"
+            } else {
+                "model_reject"
+            };
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 READ refused for {} (decision={}): no smb_read_file in the answer; \
+                 replying STATUS_ACCESS_DENIED",
+                path, decision
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::ACCESS_DENIED),
+            )));
+        };
+        let payload = action
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or_default();
+        let encoding = action.get("encoding").and_then(|e| e.as_str());
+        let content = match actions::decode_smb_payload(payload, encoding) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                // Refuse rather than putting the undecodable string on the wire.
+                Log::new(Some(ctx.status_tx))
+                    .warn(format!("SMB read: {} - refusing with STATUS_DATA_ERROR", e));
+                return Ok(Some(wire::error_response(
+                    &hdr.with_status(status::DATA_ERROR),
+                )));
+            }
+        };
+
+        // MS-SMB2 3.3.5.12: a read starting at or past the end of the file is END_OF_FILE.
+        let len = content.len() as u64;
+        if offset >= len && !(offset == 0 && length == 0) {
+            debug!(
+                "SMB2 READ at {} of a {} byte file: END_OF_FILE",
+                offset, len
+            );
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::END_OF_FILE),
+            )));
+        }
+        let start = offset as usize;
+        let end = (offset.saturating_add(length as u64)).min(len) as usize;
+        let data = &content[start..end];
+        debug!("SMB2 READ: returning {} bytes of {}", data.len(), path);
+        Ok(Some(wire::read_response(&hdr, data)))
+    }
+
+    /// WRITE (MS-SMB2 3.3.5.13): the model authorises the write; nothing is stored.
+    #[cfg(feature = "smb")]
+    async fn write(
+        req: &RequestHeader,
+        message: &[u8],
+        chain: &Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        let body = &message[HEADER_LEN..];
+        if body.len() < 48 {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        // MS-SMB2 2.2.21: StructureSize(2) DataOffset(2) Length(4) Offset(8) FileId(16).
+        let data_offset = wire::le16(body, 2) as usize;
+        let length = wire::le32(body, 4);
+        let offset = wire::le64(body, 8);
+
+        if length > MAX_WRITE_SIZE {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 WRITE: refusing {} byte write (MaxWriteSize {}) \
+                 decision=fail_closed_write_too_large",
+                length, MAX_WRITE_SIZE
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let Some(data) = message.get(data_offset..data_offset + length as usize) else {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 WRITE declares {} bytes at offset {} of a {} byte message; replying \
+                 STATUS_INVALID_PARAMETER",
+                length,
+                data_offset,
+                message.len()
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        };
+
+        let Some((_, handle)) = Self::handle(ctx, req, &body[16..32], chain).await else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::FILE_CLOSED),
+            )));
+        };
+        let path = handle.path;
+        Log::new(Some(ctx.status_tx)).info(format!(
+            "SMB2 WRITE: {} (offset={}, length={})",
+            path, offset, length
+        ));
+
+        // Printable payloads stay readable; anything else is base64, and `encoding` says which,
+        // matching what smb_read_file accepts so the model can hand the same bytes back.
+        let (content, data_encoding) = actions::encode_smb_payload(data);
+
+        // The write is refused unless the model returns smb_write_file: an LLM outage or a
+        // model that says nothing must not read as an approval.
+        let actions = match Self::consult_llm(
+            ctx,
+            "write",
+            serde_json::json!({
+                "path": path,
+                "offset": offset,
+                "data": content,
+                "encoding": data_encoding
+            }),
+        )
+        .await
+        {
+            Ok(actions) => actions,
+            Err(e) => {
+                return Ok(Some(Self::llm_failure_response(
+                    req, "WRITE", &path, &e, ctx,
+                )))
+            }
+        };
+
+        let Some(write_action) = actions
+            .iter()
+            .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_write_file"))
+        else {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 WRITE: no smb_write_file action for {} - refusing with \
+                 STATUS_ACCESS_DENIED",
+                path
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::ACCESS_DENIED),
+            )));
+        };
+
+        // The model may report a short write; clamp to what the client actually sent.
+        let bytes_written = write_action
+            .get("bytes_written")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(length as u64) as u32)
+            .unwrap_or(length);
+        debug!(
+            "SMB2 WRITE: accepted {} of {} bytes to {}",
+            bytes_written, length, path
+        );
+        Ok(Some(wire::write_response(&hdr, bytes_written)))
+    }
+
+    /// QUERY_INFO (MS-SMB2 3.3.5.20). File-system classes and every class that does not need
+    /// the file's size are answered from the handle; the size is the model's.
+    #[cfg(feature = "smb")]
+    async fn query_info(
+        req: &RequestHeader,
+        body: &[u8],
+        chain: &Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        // MS-SMB2 2.2.37: StructureSize(2) InfoType(1) FileInfoClass(1) OutputBufferLength(4)
+        // InputBufferOffset(2) Reserved(2) InputBufferLength(4) AdditionalInformation(4)
+        // Flags(4) FileId(16).
+        if body.len() < 40 {
+            warn!("SMB2 QUERY_INFO: invalid request size");
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let info_type = body[2];
+        let class = body[3];
+        let output_len = wire::le32(body, 4) as usize;
+        let Some((file_id, handle)) = Self::handle(ctx, req, &body[24..40], chain).await else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::FILE_CLOSED),
+            )));
+        };
+        let path = handle.path.clone();
+
+        let buffer = match info_type {
+            wire::INFO_FILESYSTEM => {
+                let share = ctx
+                    .state
+                    .lock()
+                    .await
+                    .trees
+                    .get(&req.tree_id)
+                    .map(|t| t.share_name.clone())
+                    .unwrap_or_default();
+                match wire::fs_info(class, &share, 0) {
+                    Some(buffer) => buffer,
                     None => {
-                        // No `smb_read_file` in the answer. Returning STATUS_SUCCESS with the
-                        // literal bytes "File not found or empty" told the client the read
-                        // succeeded and that those 23 bytes are the file's contents — a
-                        // successful read of fabricated data, and indistinguishable from a
-                        // file that genuinely holds that text. Refuse instead; the client can
-                        // tell a refusal from content.
-                        let decision = if actions.is_empty() {
-                            "fail_closed_no_action"
-                        } else {
-                            "model_reject"
-                        };
-                        Log::new(Some(status_tx)).warn(format!(
-                            "SMB2 READ refused for {} (decision={}): no smb_read_file in the \
-                             answer; replying STATUS_ACCESS_DENIED",
-                            path, decision
-                        ));
-                        let response =
-                            Self::build_error_response(_header, SMB2_READ, STATUS_ACCESS_DENIED)?;
-                        return Ok(Some(response));
+                        return Ok(Some(wire::error_response(
+                            &hdr.with_status(status::INVALID_INFO_CLASS),
+                        )))
                     }
-                };
-
-                debug!("SMB2 READ: returning {} bytes for {}", content.len(), path);
-                let response = Self::build_read_response(_header, &content)?;
-                Ok(Some(response))
-            }
-            SMB2_WRITE => {
-                debug!("SMB2 WRITE request");
-
-                // Read WRITE request body (49 bytes + data)
-                let mut body_buf = vec![0u8; 49];
-                read_body_exact(_stream, &mut body_buf).await?;
-
-                // Extract file ID (16 bytes at offset 16)
-                let file_id = body_buf[16..32].to_vec();
-
-                // Extract write offset and length.
-                //
-                // MS-SMB2 2.2.21: StructureSize(2) DataOffset(2) Length(4) Offset(8)
-                // FileId(16) ... so Length lives at body offset 4, not 0. Reading it from
-                // 0 picked up StructureSize+DataOffset (0x00700031 for a well-formed
-                // request) and then blocked in read_exact waiting for 7 MB that never
-                // arrived, hanging the connection on the first WRITE.
-                let length = u32::from_le_bytes(body_buf[4..8].try_into().unwrap());
-                let offset = u64::from_le_bytes(body_buf[8..16].try_into().unwrap());
-
-                // `length` is attacker-controlled and sizes the buffer below, so it is refused
-                // against the negotiated MaxWriteSize before anything is allocated — MS-SMB2
-                // 3.3.5.13's STATUS_INVALID_PARAMETER. The data behind the header is unread
-                // and cannot be skipped, so the connection closes after the reply.
-                if length > MAX_WRITE_SIZE {
-                    Log::new(Some(status_tx)).warn(format!(
-                        "SMB2 WRITE: refusing {} byte write (MaxWriteSize {}) \
-                         decision=fail_closed_write_too_large; closing after the reply",
-                        length, MAX_WRITE_SIZE
-                    ));
-                    _state.lock().await.close_after_reply = true;
-                    let response =
-                        Self::build_error_response(_header, SMB2_WRITE, STATUS_INVALID_PARAMETER)?;
-                    return Ok(Some(response));
                 }
-
-                // Read data to write (variable length)
-                let mut data = vec![0u8; length as usize];
-                read_body_exact(_stream, &mut data).await?;
-
-                // Look up file path from handle
-                let path = {
-                    let s = _state.lock().await;
-                    s.files.get(&file_id).map(|h| h.path.clone())
-                };
-
-                let path = path.unwrap_or_else(|| "/unknown".to_string());
-                Log::new(Some(status_tx)).info(format!(
-                    "SMB2 WRITE: {} (offset={}, length={})",
-                    path, offset, length
-                ));
-
-                // Render the written bytes for the model. Printable payloads stay readable;
-                // anything else is base64 rather than `from_utf8_lossy`, which silently
-                // replaced every non-UTF-8 byte with U+FFFD and made the round trip
-                // impossible. `encoding` says which of the two the model is looking at, and
-                // matches what smb_read_file accepts, so the model can hand the same bytes
-                // back on a later read.
-                let (content, data_encoding) =
-                    crate::server::smb::actions::encode_smb_payload(&data);
-
-                // Consult the LLM. The write is refused unless the model returns
-                // smb_write_file: an LLM outage or a model that says nothing must not read
-                // as an approval. An outage is reported as its own NTSTATUS so it stays
-                // distinguishable from the model's explicit denial (ACCESS_DENIED).
-                let actions = match Self::consult_llm(
-                    _llm_client,
-                    _app_state,
-                    _server_id,
-                    _protocol,
-                    "write",
-                    serde_json::json!({
-                        "path": path,
-                        "offset": offset,
-                        "data": content,
-                        "encoding": data_encoding
-                    }),
-                    status_tx,
-                )
-                .await
-                {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        return Ok(Some(Self::llm_failure_response(
-                            _header, SMB2_WRITE, "WRITE", &path, &e, status_tx,
-                        )?));
-                    }
-                };
-
-                let write_action = actions
-                    .iter()
-                    .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_write_file"));
-
-                let Some(write_action) = write_action else {
-                    Log::new(Some(status_tx)).warn(format!(
-                        "SMB2 WRITE: no smb_write_file action for {} - refusing with \
-                         STATUS_ACCESS_DENIED",
-                        path
-                    ));
-                    let response =
-                        Self::build_error_response(_header, SMB2_WRITE, STATUS_ACCESS_DENIED)?;
-                    return Ok(Some(response));
-                };
-
-                // The model may report a short write; clamp to what the client actually sent.
-                let bytes_written = write_action
-                    .get("bytes_written")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.min(length as u64) as u32)
-                    .unwrap_or(length);
-
-                debug!(
-                    "SMB2 WRITE: accepted {} of {} bytes to {}",
-                    bytes_written, length, path
-                );
-                let response = Self::build_write_response(_header, bytes_written)?;
-                Ok(Some(response))
             }
-            SMB2_QUERY_INFO => {
-                debug!("SMB2 QUERY_INFO request");
-
-                // Read QUERY_INFO request body (variable length)
-                let mut body_buf = vec![0u8; 256];
-                let bytes_read = read_body(_stream, &mut body_buf).await?;
-
-                // Extract file ID (16 bytes at offset 16)
-                if bytes_read >= 32 {
-                    let file_id = body_buf[16..32].to_vec();
-
-                    // Look up file path
-                    let path = {
-                        let s = _state.lock().await;
-                        s.files.get(&file_id).map(|h| h.path.clone())
-                    };
-
-                    let path = path.unwrap_or_else(|| "/unknown".to_string());
-                    Log::new(Some(status_tx)).info(format!("SMB2 QUERY_INFO: {}", path));
-
-                    // Consult LLM for file info. On an LLM failure the client is told the
-                    // query failed rather than being handed the 4096-byte default as if
-                    // the model had answered.
+            wire::INFO_FILE => {
+                let mut meta = handle.meta;
+                if wire::file_class_needs_size(class) && !handle.size_known {
+                    Log::new(Some(ctx.status_tx)).info(format!("SMB2 QUERY_INFO: {}", path));
                     let actions = match Self::consult_llm(
-                        _llm_client,
-                        _app_state,
-                        _server_id,
-                        _protocol,
+                        ctx,
                         "query_info",
-                        serde_json::json!({
-                            "path": path
-                        }),
-                        status_tx,
+                        serde_json::json!({ "path": path }),
                     )
                     .await
                     {
                         Ok(actions) => actions,
                         Err(e) => {
                             return Ok(Some(Self::llm_failure_response(
-                                _header,
-                                SMB2_QUERY_INFO,
+                                req,
                                 "QUERY_INFO",
                                 &path,
                                 &e,
-                                status_tx,
-                            )?));
+                                ctx,
+                            )))
                         }
                     };
-
-                    // An answer carrying no `smb_get_file_info` used to fall through to a
-                    // hardcoded 4096, so STATUS_SUCCESS and a fabricated stat were the reply
-                    // to a model that had refused, to an empty static handler, and to a reply
-                    // that deserialised but said nothing. The comment above already promised
-                    // the 4096 default would not be handed out "as if the model had answered"
-                    // — that held only for an LLM *error*, not for model silence. CREATE,
-                    // READ and WRITE all refuse here; QUERY_INFO now does too.
-                    let size = actions
-                        .iter()
-                        .find(|a| {
-                            a.get("type").and_then(|t| t.as_str()) == Some("smb_get_file_info")
-                        })
-                        .and_then(|a| a.get("size"))
-                        .and_then(|s| s.as_u64());
-
-                    let Some(size) = size else {
+                    // No `smb_get_file_info` with a size is a refusal, not a zero-byte file.
+                    let info = actions.iter().find(|a| {
+                        a.get("type").and_then(|t| t.as_str()) == Some("smb_get_file_info")
+                    });
+                    let Some(size) = info.and_then(|a| a.get("size")).and_then(|s| s.as_u64())
+                    else {
                         let decision = if actions.is_empty() {
                             "fail_closed_no_action"
                         } else {
                             "model_reject"
                         };
-                        Log::new(Some(status_tx)).warn(format!(
-                            "SMB2 QUERY_INFO refused for {} (decision={}): no smb_get_file_info \
-                             with a size in the answer; replying STATUS_ACCESS_DENIED",
+                        Log::new(Some(ctx.status_tx)).warn(format!(
+                            "SMB2 QUERY_INFO refused for {} (decision={}): no \
+                             smb_get_file_info with a size in the answer; replying \
+                             STATUS_ACCESS_DENIED",
                             path, decision
                         ));
-                        return Ok(Some(Self::build_error_response(
-                            _header,
-                            SMB2_QUERY_INFO,
-                            STATUS_ACCESS_DENIED,
-                        )?));
+                        return Ok(Some(wire::error_response(
+                            &hdr.with_status(status::ACCESS_DENIED),
+                        )));
                     };
-
-                    let response = Self::build_query_info_response(_header, size)?;
-                    Ok(Some(response))
-                } else {
-                    // Writing nothing left the peer to wait out its own timeout, and the
-                    // unread body had already desynced the stream. Say so instead.
-                    warn!("SMB2 QUERY_INFO: invalid request size");
-                    Ok(Some(Self::build_error_response(
-                        _header,
-                        SMB2_QUERY_INFO,
-                        STATUS_INVALID_PARAMETER,
-                    )?))
-                }
-            }
-            SMB2_QUERY_DIRECTORY => {
-                debug!("SMB2 QUERY_DIRECTORY request");
-
-                // Read QUERY_DIRECTORY request body (variable length)
-                let mut body_buf = vec![0u8; 512];
-                let bytes_read = read_body(_stream, &mut body_buf).await?;
-
-                // Extract file ID (directory handle, 16 bytes at offset 8)
-                if bytes_read >= 24 {
-                    let file_id = body_buf[8..24].to_vec();
-
-                    // Look up directory path
-                    let path = {
-                        let s = _state.lock().await;
-                        s.files.get(&file_id).map(|h| h.path.clone())
-                    };
-
-                    let path = path.unwrap_or_else(|| "/".to_string());
-                    Log::new(Some(status_tx)).info(format!("SMB2 QUERY_DIRECTORY: {}", path));
-
-                    // Consult LLM for directory listing. On an LLM failure the client is
-                    // told the enumeration failed rather than being handed an empty
-                    // listing, which reads as "the directory is empty".
-                    let actions = match Self::consult_llm(
-                        _llm_client,
-                        _app_state,
-                        _server_id,
-                        _protocol,
-                        "query_directory",
-                        serde_json::json!({
-                            "path": path
-                        }),
-                        status_tx,
-                    )
-                    .await
+                    meta.size = size;
+                    if let Some(time) = info
+                        .and_then(|a| a.get("modified_time"))
+                        .and_then(|t| t.as_str())
+                        .and_then(parse_time)
                     {
-                        Ok(actions) => actions,
-                        Err(e) => {
-                            return Ok(Some(Self::llm_failure_response(
-                                _header,
-                                SMB2_QUERY_DIRECTORY,
-                                "QUERY_DIRECTORY",
-                                &path,
-                                &e,
-                                status_tx,
-                            )?));
-                        }
-                    };
-
-                    // Same fail-open as QUERY_INFO had: no `smb_list_directory` in the
-                    // answer became `unwrap_or_default()`, and an empty listing plus
-                    // STATUS_SUCCESS reads to the client as "the directory is empty" — a
-                    // positive assertion the model never made. The comment above already
-                    // said an empty listing must not be handed out; that held only for an
-                    // LLM error. A genuinely empty directory is still expressible: the model
-                    // sends `smb_list_directory` with an empty `files` array, which is a
-                    // decision rather than a silence.
-                    let files = actions
-                        .iter()
-                        .find(|a| {
-                            a.get("type").and_then(|t| t.as_str()) == Some("smb_list_directory")
-                        })
-                        .and_then(|a| a.get("files"))
-                        .and_then(|f| f.as_array())
-                        .cloned();
-
-                    let Some(files) = files else {
-                        let decision = if actions.is_empty() {
-                            "fail_closed_no_action"
-                        } else {
-                            "model_reject"
-                        };
-                        Log::new(Some(status_tx)).warn(format!(
-                            "SMB2 QUERY_DIRECTORY refused for {} (decision={}): no \
-                             smb_list_directory in the answer; replying STATUS_ACCESS_DENIED",
-                            path, decision
-                        ));
-                        return Ok(Some(Self::build_error_response(
-                            _header,
-                            SMB2_QUERY_DIRECTORY,
-                            STATUS_ACCESS_DENIED,
-                        )?));
-                    };
-
-                    debug!("SMB2 QUERY_DIRECTORY: returning {} files", files.len());
-                    let response = Self::build_query_directory_response(_header, &files)?;
-                    Ok(Some(response))
-                } else {
-                    warn!("SMB2 QUERY_DIRECTORY: invalid request size");
-                    Ok(Some(Self::build_error_response(
-                        _header,
-                        SMB2_QUERY_DIRECTORY,
-                        STATUS_INVALID_PARAMETER,
-                    )?))
+                        meta.time = time;
+                    }
+                    if let Some(h) = ctx.state.lock().await.files.get_mut(&file_id) {
+                        h.meta = meta;
+                        h.size_known = true;
+                    }
+                }
+                match wire::file_info(class, &meta) {
+                    Some(buffer) => buffer,
+                    None => {
+                        return Ok(Some(wire::error_response(
+                            &hdr.with_status(status::INVALID_INFO_CLASS),
+                        )))
+                    }
                 }
             }
             _ => {
-                // Answering `Ok(None)` wrote nothing, so the peer waited out its own timeout
-                // while the unread request body sat in the stream and desynced every
-                // subsequent header read. STATUS_NOT_SUPPORTED is the honest answer and it
-                // at least lets the client move on.
-                Log::new(Some(status_tx)).warn(format!(
-                    "Unknown SMB2 command 0x{:04x}; replying STATUS_NOT_SUPPORTED",
-                    command
+                // Security descriptors and quotas: neither exists here.
+                return Ok(Some(wire::error_response(
+                    &hdr.with_status(status::NOT_SUPPORTED),
+                )));
+            }
+        };
+
+        if buffer.len() > output_len {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(STATUS_INFO_LENGTH_MISMATCH),
+            )));
+        }
+        Ok(Some(wire::query_info_response(&hdr, &buffer)))
+    }
+
+    /// QUERY_DIRECTORY (MS-SMB2 3.3.5.18). The first call of an enumeration asks the model for
+    /// the listing; the entries are handed out across as many calls as the client's buffer
+    /// needs, and the call after the last entry answers `STATUS_NO_MORE_FILES`.
+    #[cfg(feature = "smb")]
+    async fn query_directory(
+        req: &RequestHeader,
+        message: &[u8],
+        chain: &Chain,
+        ctx: &Ctx<'_>,
+    ) -> Result<Option<Vec<u8>>> {
+        let hdr = ResponseHeader::for_request(req, status::SUCCESS);
+        let body = &message[HEADER_LEN..];
+        // MS-SMB2 2.2.33: StructureSize(2) FileInformationClass(1) Flags(1) FileIndex(4)
+        // FileId(16) FileNameOffset(2) FileNameLength(2) OutputBufferLength(4).
+        if body.len() < 32 {
+            warn!("SMB2 QUERY_DIRECTORY: invalid request size");
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let class = body[2];
+        let flags = body[3];
+        let name_offset = wire::le16(body, 24) as usize;
+        let name_len = wire::le16(body, 26) as usize;
+        let output_len = wire::le32(body, 28) as usize;
+        let pattern = if name_len == 0 {
+            "*".to_string()
+        } else {
+            match message
+                .get(name_offset..name_offset + name_len)
+                .and_then(wire::from_utf16le)
+            {
+                Some(p) => p,
+                None => {
+                    return Ok(Some(wire::error_response(
+                        &hdr.with_status(status::INVALID_PARAMETER),
+                    )))
+                }
+            }
+        };
+        if !wire::directory_class_supported(class) {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_INFO_CLASS),
+            )));
+        }
+        let Some((file_id, handle)) = Self::handle(ctx, req, &body[8..24], chain).await else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::FILE_CLOSED),
+            )));
+        };
+        if !handle.meta.is_directory {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let path = handle.path.clone();
+
+        let restart = flags & (RESTART_SCANS | REOPEN) != 0 || handle.listing.is_none();
+        if restart {
+            Log::new(Some(ctx.status_tx))
+                .info(format!("SMB2 QUERY_DIRECTORY: {} ({})", path, pattern));
+            let actions = match Self::consult_llm(
+                ctx,
+                "query_directory",
+                serde_json::json!({ "path": path, "pattern": pattern }),
+            )
+            .await
+            {
+                Ok(actions) => actions,
+                Err(e) => {
+                    return Ok(Some(Self::llm_failure_response(
+                        req,
+                        "QUERY_DIRECTORY",
+                        &path,
+                        &e,
+                        ctx,
+                    )))
+                }
+            };
+
+            // No `smb_list_directory` is a refusal: an empty listing with STATUS_SUCCESS reads
+            // to the client as "the directory is empty", a positive assertion the model never
+            // made. An empty `files` array is how the model says the directory is empty.
+            let Some(files) = actions
+                .iter()
+                .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_list_directory"))
+                .and_then(|a| a.get("files"))
+                .and_then(|f| f.as_array())
+                .cloned()
+            else {
+                let decision = if actions.is_empty() {
+                    "fail_closed_no_action"
+                } else {
+                    "model_reject"
+                };
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "SMB2 QUERY_DIRECTORY refused for {} (decision={}): no smb_list_directory \
+                     in the answer; replying STATUS_ACCESS_DENIED",
+                    path, decision
                 ));
-                Ok(Some(Self::build_error_response(
-                    _header,
-                    command,
-                    STATUS_NOT_SUPPORTED,
-                )?))
+                return Ok(Some(wire::error_response(
+                    &hdr.with_status(status::ACCESS_DENIED),
+                )));
+            };
+
+            let mut entries = VecDeque::new();
+            let mut s = ctx.state.lock().await;
+            let mut next_index = || {
+                let i = s.next_file_index;
+                s.next_file_index += 1;
+                i
+            };
+            for dot in [".", ".."] {
+                if wildcard_match(&pattern, dot) {
+                    let meta = FileMeta {
+                        is_directory: true,
+                        file_index: next_index(),
+                        ..FileMeta::default()
+                    };
+                    entries.push_back((dot.to_string(), meta));
+                }
+            }
+            for file in &files {
+                let Some(name) = file.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                // A listing names children, not paths.
+                let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                if name.is_empty() || name == "." || name == ".." || !wildcard_match(&pattern, name)
+                {
+                    continue;
+                }
+                let meta = FileMeta {
+                    is_directory: file
+                        .get("is_directory")
+                        .and_then(|d| d.as_bool())
+                        .unwrap_or(false),
+                    size: file.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+                    time: file
+                        .get("modified_time")
+                        .and_then(|t| t.as_str())
+                        .and_then(parse_time)
+                        .unwrap_or(0),
+                    file_index: next_index(),
+                };
+                entries.push_back((name.to_string(), meta));
+            }
+            debug!(
+                "SMB2 QUERY_DIRECTORY: {} entries for {}",
+                entries.len(),
+                path
+            );
+            if let Some(h) = s.files.get_mut(&file_id) {
+                h.listing = Some(entries);
             }
         }
+
+        // Hand out as many pending entries as fit.
+        let mut s = ctx.state.lock().await;
+        let Some(pending) = s.files.get_mut(&file_id).and_then(|h| h.listing.as_mut()) else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::FILE_CLOSED),
+            )));
+        };
+        if pending.is_empty() {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::NO_MORE_FILES),
+            )));
+        }
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        let mut used = 0usize;
+        while let Some((name, meta)) = pending.front() {
+            let entry = wire::directory_entry(class, name, meta);
+            // Every entry already in `out` gets padded once this one follows it.
+            let cost = used + entry.len();
+            if cost > output_len {
+                break;
+            }
+            used += wire::padded_len(&entry);
+            out.push(entry);
+            pending.pop_front();
+            if flags & RETURN_SINGLE_ENTRY != 0 {
+                break;
+            }
+        }
+        if out.is_empty() {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(STATUS_INFO_LENGTH_MISMATCH),
+            )));
+        }
+        Ok(Some(wire::query_directory_response(
+            &hdr,
+            &wire::join_directory_entries(&out),
+        )))
     }
 
     /// Consult the LLM for SMB file system operations
     #[cfg(feature = "smb")]
     async fn consult_llm(
-        llm_client: &OllamaClient,
-        app_state: &Arc<AppState>,
-        server_id: ServerId,
-        protocol: &Arc<SmbProtocol>,
+        ctx: &Ctx<'_>,
         operation: &str,
         params: serde_json::Value,
-        status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<Vec<serde_json::Value>> {
-        Log::new(Some(status_tx)).debug(format!(
+        Log::new(Some(ctx.status_tx)).debug(format!(
             "Consulting LLM for SMB {} operation: {:?}",
             operation, params
         ));
 
-        // Create SMB operation event
-        // Extract path from params if available, otherwise use empty string
-        let path = params.get("path").and_then(|p| p.as_str()).unwrap_or("");
-
         let mut event_data = serde_json::json!({
             "operation": operation,
         });
-
-        // Add path if it's not empty
-        if !path.is_empty() {
-            event_data["path"] = serde_json::json!(path);
-        }
-
-        // Add all params as additional fields for the LLM context
         if let Some(obj) = params.as_object() {
             for (key, value) in obj {
-                if key != "operation" && key != "path" {
+                if key == "path" && value.as_str().is_some_and(str::is_empty) {
+                    continue;
+                }
+                if key != "operation" {
                     event_data[key] = value.clone();
                 }
             }
@@ -1331,22 +1901,20 @@ impl SmbServer {
 
         let event = Event::new(&SMB_OPERATION_EVENT, event_data);
 
-        Log::new(Some(status_tx)).trace(format!("Calling LLM for SMB {} operation", operation));
+        Log::new(Some(ctx.status_tx)).trace(format!("Calling LLM for SMB {} operation", operation));
 
-        // Call LLM with Event-based approach
         let execution_result = call_llm(
-            llm_client,
-            app_state,
-            server_id,
+            ctx.llm_client,
+            ctx.app_state,
+            ctx.server_id,
             None, // SMB doesn't use connection-specific context yet
             &event,
-            protocol.as_ref(),
+            ctx.protocol.as_ref(),
         )
         .await?;
 
-        // Display messages from LLM
         for message in &execution_result.messages {
-            Log::new(Some(status_tx)).info(format!("{}", message));
+            Log::new(Some(ctx.status_tx)).info(message.to_string());
         }
 
         debug!(
@@ -1355,614 +1923,36 @@ impl SmbServer {
             operation
         );
 
-        // Return raw actions for manual processing
         Ok(execution_result.raw_actions)
-    }
-
-    /// Build SMB2 Negotiate Response
-    /// Simplified implementation - offers SMB 2.1 dialect (0x0210)
-    #[cfg(feature = "smb")]
-    fn build_negotiate_response(request_header: &[u8]) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header (64 bytes)
-        response.extend_from_slice(b"\xFESMB"); // Protocol ID
-        response.extend_from_slice(&[64, 0]); // Structure size (64 bytes)
-        response.extend_from_slice(&[0, 0]); // Credit charge
-        response.extend_from_slice(&[0, 0, 0, 0]); // Status (STATUS_SUCCESS)
-        response.extend_from_slice(&[0x00, 0x00]); // Command (NEGOTIATE)
-        response.extend_from_slice(&[1, 0]); // Credit (grant 1 credit)
-        response.extend_from_slice(&[0, 0, 0, 0]); // Flags
-        response.extend_from_slice(&[0, 0, 0, 0]); // 20 NextCommand (not compounded)
-        response.extend_from_slice(&request_header[24..32]); // 24 MessageId (echoed)
-        response.extend_from_slice(&[0; 4]); // 32 Reserved (process ID)
-        response.extend_from_slice(&[0; 4]); // 36 TreeId
-        response.extend_from_slice(&[0; 8]); // 40 SessionId
-        response.extend_from_slice(&[0; 16]); // 48 Signature
-        debug_assert_eq!(response.len(), 64, "SMB2 header must be 64 bytes");
-
-        // SMB2 Negotiate Response body
-        response.extend_from_slice(&[65, 0]); // Structure size (65 bytes)
-        response.extend_from_slice(&[0, 0]); // Security mode
-        response.extend_from_slice(&[0x10, 0x02]); // Dialect revision (SMB 2.1 = 0x0210)
-        response.extend_from_slice(&[0, 0]); // Negotiate context count
-
-        // Server GUID (16 bytes) - fixed for simplicity
-        response.extend_from_slice(&[
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB,
-            0xCD, 0xEF,
-        ]);
-
-        response.extend_from_slice(&[0x07, 0x00, 0x00, 0x00]); // Capabilities (DFS)
-        response.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // Max transaction size
-        response.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // Max read size
-                                                               // Max write size: the bound the WRITE arm enforces, so a client never sends a write
-                                                               // this server will refuse.
-        response.extend_from_slice(&MAX_WRITE_SIZE.to_le_bytes());
-
-        // System time (current time in Windows FILETIME format)
-        let now = crate::utils::clock::SystemTime::now()
-            .duration_since(crate::utils::clock::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        let filetime = (now / 100) + 116444736000000000; // Convert to FILETIME
-        response.extend_from_slice(&filetime.to_le_bytes());
-
-        response.extend_from_slice(&filetime.to_le_bytes()); // Server start time (same)
-        response.extend_from_slice(&[0; 2]); // Security buffer offset (0 = no security)
-        response.extend_from_slice(&[0; 2]); // Security buffer length
-
-        response.extend_from_slice(&[0; 4]); // Negotiate context offset
-
-        Ok(response)
-    }
-
-    /// Build SMB2 Tree Connect Response
-    /// Accepts all tree connects
-    #[cfg(feature = "smb")]
-    async fn build_tree_connect_response(
-        request_header: &[u8],
-        state: &Arc<Mutex<SmbConnectionState>>,
-        share_name: String,
-    ) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // Allocate tree ID
-        let tree_id = {
-            // `.lock().await`, never `blocking_lock()`: this runs inside the connection
-            // task, and tokio's Mutex::blocking_lock panics when called from a runtime
-            // thread. See the note on build_session_setup_response_with_user.
-            let mut s = state.lock().await;
-            let tid = s.next_tree_id;
-            s.next_tree_id += 1;
-
-            s.trees.insert(
-                tid,
-                SmbTreeConnect {
-                    _tree_id: tid,
-                    _share_name: share_name,
-                },
-            );
-            tid
-        };
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x03, 0x00]); // Command (TREE_CONNECT)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&tree_id.to_le_bytes()); // Tree ID
-        response.extend_from_slice(&[0; 8]); // Session ID (should copy from request)
-        response.extend_from_slice(&[0; 16]); // Signature
-
-        // Tree Connect Response body
-        response.extend_from_slice(&[16, 0]); // Structure size
-        response.extend_from_slice(&[1]); // Share type (disk)
-        response.extend_from_slice(&[0]); // Reserved
-        response.extend_from_slice(&[0; 4]); // Share flags
-        response.extend_from_slice(&[0; 4]); // Capabilities
-        response.extend_from_slice(&[0x01, 0xF0, 0x1F, 0x00]); // Max access rights
-
-        Ok(response)
-    }
-
-    /// Parse SMB2 file path from CREATE request
-    /// Simplified parser - looks for UTF-16LE encoded path
-    #[cfg(feature = "smb")]
-    fn parse_smb2_path(body: &[u8]) -> Option<String> {
-        // MS-SMB2 2.2.13, CREATE request body (`body` starts after the 64-byte header):
-        //   44..46  NameOffset  - offset of the name from the start of the SMB2 *header*
-        //   46..48  NameLength  - length of the name in bytes
-        //   56..    Buffer      - where NameOffset normally points (64 + 56 = 120)
-        //
-        // The name must be located through those two fields. This used to index the
-        // body-relative slice at 120, which is the *absolute* offset of the buffer: for a
-        // well-formed request from a real client that lands 64 bytes past the name, so
-        // every CREATE resolved to "/unknown" and every subsequent READ/WRITE on the
-        // handle carried the wrong path to the model.
-        const FIXED_BODY_LEN: usize = 56;
-        const HEADER_LEN: usize = 64;
-
-        if body.len() < FIXED_BODY_LEN {
-            return None;
-        }
-
-        let name_offset = u16::from_le_bytes([body[44], body[45]]) as usize;
-        let name_length = u16::from_le_bytes([body[46], body[47]]) as usize;
-
-        // Convert the header-relative offset to one within `body`, defaulting to the
-        // start of the buffer when the client left NameOffset zero.
-        let start = if name_offset >= HEADER_LEN {
-            name_offset - HEADER_LEN
-        } else {
-            FIXED_BODY_LEN
-        };
-
-        if name_length == 0 || name_length % 2 != 0 {
-            return None;
-        }
-        let end = start.checked_add(name_length)?;
-        if end > body.len() {
-            return None;
-        }
-
-        let utf16_chars: Vec<u16> = body[start..end]
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-            // A name is not null-terminated on the wire, but tolerate a client that
-            // includes the terminator in NameLength.
-            .take_while(|&c| c != 0)
-            .collect();
-
-        String::from_utf16(&utf16_chars).ok()
-    }
-
-    /// Generate a 16-byte file handle (GUID)
-    #[cfg(feature = "smb")]
-    fn generate_file_handle() -> Vec<u8> {
-        use crate::utils::clock::SystemTime;
-
-        // Simple file handle generation using timestamp + random-ish data
-        let now = SystemTime::now()
-            .duration_since(crate::utils::clock::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        let mut handle = Vec::with_capacity(16);
-        handle.extend_from_slice(&now.to_le_bytes());
-        handle.extend_from_slice(&(now.wrapping_mul(0x123456789ABCDEF)).to_le_bytes());
-        handle
-    }
-
-    /// Build SMB2 CREATE Response
-    #[cfg(feature = "smb")]
-    fn build_create_response(
-        request_header: &[u8],
-        file_id: &[u8],
-        is_directory: bool,
-    ) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x05, 0x00]); // Command (CREATE)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags (response)
-
-        // Copy message ID from request
-        response.extend_from_slice(&request_header[24..32]);
-
-        // Copy tree ID and session ID from request (should parse properly)
-        response.extend_from_slice(&[0; 8]); // Reserved
-        response.extend_from_slice(&[1, 0, 0, 0]); // Tree ID
-        response.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // Session ID
-        response.extend_from_slice(&[0; 16]); // Signature
-
-        // CREATE Response body (89 bytes)
-        response.extend_from_slice(&[89, 0]); // Structure size
-        response.extend_from_slice(&[0]); // Oplock level (none)
-        response.extend_from_slice(&[0]); // Flags
-        response.extend_from_slice(&[0, 0, 0, 0]); // Create action (file opened)
-
-        // Timestamps (all zeros for simplicity)
-        response.extend_from_slice(&[0; 8]); // Creation time
-        response.extend_from_slice(&[0; 8]); // Last access time
-        response.extend_from_slice(&[0; 8]); // Last write time
-        response.extend_from_slice(&[0; 8]); // Change time
-
-        response.extend_from_slice(&[0; 8]); // Allocation size
-        response.extend_from_slice(&[0, 0x10, 0, 0, 0, 0, 0, 0]); // End of file (4096 bytes)
-
-        // File attributes (MS-SMB2 2.2.14): FILE_ATTRIBUTE_DIRECTORY (0x10) or
-        // FILE_ATTRIBUTE_NORMAL (0x80). This is the field a client reads to decide
-        // whether to follow up with QUERY_DIRECTORY or READ.
-        let file_attributes: u32 = if is_directory {
-            FILE_ATTRIBUTE_DIRECTORY
-        } else {
-            FILE_ATTRIBUTE_NORMAL
-        };
-        response.extend_from_slice(&file_attributes.to_le_bytes());
-
-        response.extend_from_slice(&[0; 4]); // Reserved
-
-        // File ID (16 bytes - our handle)
-        response.extend_from_slice(file_id);
-
-        response.extend_from_slice(&[0; 4]); // Create contexts offset
-        response.extend_from_slice(&[0; 4]); // Create contexts length
-        response.push(0); // Buffer - StructureSize 89 counts one byte of it
-
-        Ok(response)
-    }
-
-    /// Build SMB2 CLOSE Response
-    #[cfg(feature = "smb")]
-    fn build_close_response(request_header: &[u8]) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x06, 0x00]); // Command (CLOSE)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&[1, 0, 0, 0]); // Tree ID
-        response.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // Session ID
-        response.extend_from_slice(&[0; 16]);
-
-        // CLOSE Response body (60 bytes)
-        response.extend_from_slice(&[60, 0]); // Structure size
-        response.extend_from_slice(&[0, 0]); // Flags
-        response.extend_from_slice(&[0; 4]); // Reserved
-
-        // Timestamps (all zeros)
-        response.extend_from_slice(&[0; 8]); // Creation time
-        response.extend_from_slice(&[0; 8]); // Last access
-        response.extend_from_slice(&[0; 8]); // Last write
-        response.extend_from_slice(&[0; 8]); // Change time
-
-        response.extend_from_slice(&[0; 8]); // Allocation size
-        response.extend_from_slice(&[0; 8]); // End of file
-        response.extend_from_slice(&[0; 4]); // File attributes
-
-        Ok(response)
-    }
-
-    /// Build SMB2 READ Response
-    #[cfg(feature = "smb")]
-    fn build_read_response(request_header: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x08, 0x00]); // Command (READ)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&[1, 0, 0, 0]); // Tree ID
-        response.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // Session ID
-        response.extend_from_slice(&[0; 16]);
-
-        // READ Response body (MS-SMB2 2.2.20): StructureSize(2) DataOffset(1)
-        // Reserved(1) DataLength(4) DataRemaining(4) Reserved2(4) = 16 bytes, then
-        // the payload. DataOffset is measured from the start of the SMB2 header, so
-        // 64 + 16 = 80 = 0x50.
-        //
-        // This used to write four extra Reserved bytes after DataOffset, putting the
-        // payload at 84 while still advertising 80 - so a client reading at the offset
-        // the server itself declared got four bytes of zero padding followed by a
-        // truncated file.
-        response.extend_from_slice(&[17, 0]); // StructureSize
-        response.push(0x50); // DataOffset (1 byte)
-        response.push(0); // Reserved
-        let data_len = data.len() as u32;
-        response.extend_from_slice(&data_len.to_le_bytes()); // DataLength
-        response.extend_from_slice(&[0; 4]); // DataRemaining
-        response.extend_from_slice(&[0; 4]); // Reserved2
-        debug_assert_eq!(response.len(), 80, "READ payload must start at DataOffset");
-
-        // Data (variable length)
-        response.extend_from_slice(data);
-
-        Ok(response)
-    }
-
-    /// Build SMB2 WRITE Response
-    #[cfg(feature = "smb")]
-    fn build_write_response(request_header: &[u8], bytes_written: u32) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x09, 0x00]); // Command (WRITE)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&[1, 0, 0, 0]); // Tree ID
-        response.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // Session ID
-        response.extend_from_slice(&[0; 16]);
-
-        // WRITE Response body (17 bytes)
-        response.extend_from_slice(&[17, 0]); // Structure size
-        response.extend_from_slice(&[0, 0]); // Reserved
-        response.extend_from_slice(&bytes_written.to_le_bytes()); // Count (bytes written)
-        response.extend_from_slice(&[0; 4]); // Remaining
-        response.extend_from_slice(&[0, 0]); // Write channel info offset
-        response.extend_from_slice(&[0, 0]); // Write channel info length
-        response.push(0); // Buffer - StructureSize 17 counts one byte of it
-
-        Ok(response)
-    }
-
-    /// Build SMB2 QUERY_INFO Response
-    #[cfg(feature = "smb")]
-    fn build_query_info_response(request_header: &[u8], file_size: u64) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x10, 0x00]); // Command (QUERY_INFO)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&[1, 0, 0, 0]); // Tree ID
-        response.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // Session ID
-        response.extend_from_slice(&[0; 16]);
-
-        // QUERY_INFO Response body (9 bytes + data)
-        response.extend_from_slice(&[9, 0]); // Structure size
-        response.extend_from_slice(&[0x48, 0]); // Output buffer offset (72 bytes from start)
-        let info_size = 96u32; // FILE_ALL_INFORMATION size
-        response.extend_from_slice(&info_size.to_le_bytes()); // Output buffer length
-
-        // FILE_ALL_INFORMATION structure (simplified)
-        // Creation time, access time, write time, change time (all zeros)
-        response.extend_from_slice(&[0; 32]);
-        // File attributes (normal file)
-        response.extend_from_slice(&[0x80, 0, 0, 0]);
-        // Reserved
-        response.extend_from_slice(&[0; 4]);
-        // Allocation size
-        response.extend_from_slice(&file_size.to_le_bytes());
-        // End of file (actual size)
-        response.extend_from_slice(&file_size.to_le_bytes());
-        // Number of links
-        response.extend_from_slice(&[1, 0, 0, 0]);
-        // Delete pending
-        response.extend_from_slice(&[0]);
-        // Is directory
-        response.extend_from_slice(&[0]);
-        // Reserved
-        response.extend_from_slice(&[0; 2]);
-        // File name length and name (empty for now)
-        response.extend_from_slice(&[0; 44]); // Padding to reach 96 bytes
-
-        Ok(response)
-    }
-
-    /// Build SMB2 QUERY_DIRECTORY Response
-    #[cfg(feature = "smb")]
-    fn build_query_directory_response(
-        request_header: &[u8],
-        files: &[serde_json::Value],
-    ) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x0E, 0x00]); // Command (QUERY_DIRECTORY)
-        response.extend_from_slice(&[1, 0]);
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&[1, 0, 0, 0]); // Tree ID
-        response.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // Session ID
-        response.extend_from_slice(&[0; 16]);
-
-        // Build directory entries (simplified - just returns file names)
-        let mut entries = Vec::new();
-
-        for file in files {
-            let name = file
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("unknown.txt");
-            let size = file.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
-            let is_dir = file
-                .get("is_directory")
-                .and_then(|d| d.as_bool())
-                .unwrap_or(false);
-
-            // FILE_DIRECTORY_INFORMATION entry
-            let mut entry = Vec::new();
-            entry.extend_from_slice(&[0; 4]); // Next entry offset (0 = last)
-            entry.extend_from_slice(&[0; 4]); // File index
-            entry.extend_from_slice(&[0; 32]); // Timestamps
-            entry.extend_from_slice(&size.to_le_bytes()); // End of file
-            entry.extend_from_slice(&size.to_le_bytes()); // Allocation size
-
-            // File attributes
-            let attrs = if is_dir { 0x10u32 } else { 0x80u32 };
-            entry.extend_from_slice(&attrs.to_le_bytes());
-
-            // File name (UTF-16LE)
-            let name_utf16: Vec<u16> = name.encode_utf16().collect();
-            let name_bytes = (name_utf16.len() * 2) as u32;
-            entry.extend_from_slice(&name_bytes.to_le_bytes());
-
-            // Convert UTF-16 to bytes
-            for ch in name_utf16 {
-                entry.extend_from_slice(&ch.to_le_bytes());
-            }
-
-            entries.extend_from_slice(&entry);
-        }
-
-        // QUERY_DIRECTORY Response body (9 bytes + entries)
-        response.extend_from_slice(&[9, 0]); // Structure size
-        response.extend_from_slice(&[0x48, 0]); // Output buffer offset
-        let entries_len = entries.len() as u32;
-        response.extend_from_slice(&entries_len.to_le_bytes()); // Output buffer length
-
-        // Directory entries
-        response.extend_from_slice(&entries);
-
-        Ok(response)
-    }
-
-    /// Parse username from SMB2 SESSION_SETUP request (simplified)
-    /// In real SMB2, username is in NTLMSSP blob. This is a simplified version.
-    #[cfg(feature = "smb")]
-    fn parse_smb2_username(body: &[u8]) -> Option<String> {
-        // Look for printable ASCII username in the body
-        // This is a simplified approach - real SMB2 would parse NTLMSSP
-        if body.len() < 24 {
-            return None;
-        }
-
-        // Try to find ASCII username (basic heuristic)
-        let mut username_bytes = Vec::new();
-        for &b in body.iter().take(body.len().min(200)).skip(24) {
-            if (32..=126).contains(&b) {
-                username_bytes.push(b);
-            } else if !username_bytes.is_empty() {
-                break;
-            }
-        }
-
-        if username_bytes.len() >= 3 {
-            String::from_utf8(username_bytes).ok()
-        } else {
-            None
-        }
-    }
-
-    /// Build an SMB2 ERROR Response (MS-SMB2 2.2.2) for an arbitrary command.
-    ///
-    /// The header carries the failing `status`; the body is the 9-byte error body with an
-    /// empty error-data buffer, which is what a client parses when the status is a failure.
-    /// Used to refuse an operation outright rather than answering STATUS_SUCCESS with
-    /// whatever the LLM did or did not say - a refusal must be distinguishable from silence.
-    ///
-    /// The MessageId, TreeId and SessionId are echoed from the request. A client matches a
-    /// reply to its outstanding request by MessageId, so an error carrying the wrong one is
-    /// as good as no error at all.
-    #[cfg(feature = "smb")]
-    fn build_error_response(request_header: &[u8], command: u16, status: u32) -> Result<Vec<u8>> {
-        // MS-SMB2 2.2.1.2 (SYNC header) field offsets:
-        //   0 ProtocolId(4)  4 StructureSize(2)  6 CreditCharge(2)  8 Status(4)
-        //  12 Command(2)    14 CreditResponse(2) 16 Flags(4)       20 NextCommand(4)
-        //  24 MessageId(8)  32 Reserved(4)       36 TreeId(4)      40 SessionId(8)
-        //  48 Signature(16)
-        const HEADER_LEN: usize = 64;
-        if request_header.len() < HEADER_LEN {
-            return Err(anyhow::anyhow!(
-                "SMB2 request header too short to answer: {} bytes",
-                request_header.len()
-            ));
-        }
-
-        let mut response = Vec::with_capacity(HEADER_LEN + 9);
-
-        response.extend_from_slice(b"\xFESMB"); // 0  ProtocolId
-        response.extend_from_slice(&[64, 0]); // 4  StructureSize (always 64)
-        response.extend_from_slice(&[0, 0]); // 6  CreditCharge
-        response.extend_from_slice(&status.to_le_bytes()); // 8  NTSTATUS
-        response.extend_from_slice(&command.to_le_bytes()); // 12 Command
-        response.extend_from_slice(&[1, 0]); // 14 CreditResponse
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // 16 Flags (SERVER_TO_REDIR)
-        response.extend_from_slice(&[0; 4]); // 20 NextCommand (not compounded)
-        response.extend_from_slice(&request_header[24..32]); // 24 MessageId (echoed)
-        response.extend_from_slice(&[0; 4]); // 32 Reserved
-        response.extend_from_slice(&request_header[36..40]); // 36 TreeId (echoed)
-        response.extend_from_slice(&request_header[40..48]); // 40 SessionId (echoed)
-        response.extend_from_slice(&[0; 16]); // 48 Signature (unsigned)
-        debug_assert_eq!(response.len(), HEADER_LEN, "SMB2 header must be 64 bytes");
-
-        // SMB2 ERROR Response body
-        response.extend_from_slice(&[9, 0]); // Structure size (9)
-        response.extend_from_slice(&[0, 0]); // ErrorContextCount + Reserved
-        response.extend_from_slice(&[0; 4]); // ByteCount = 0
-        response.push(0); // ErrorData (one padding byte when ByteCount is 0)
-
-        Ok(response)
     }
 
     /// Refuse an operation because the LLM call failed, in SMB2's own vocabulary.
     ///
     /// Fail closed: the request is answered with an NTSTATUS failure, never with
-    /// STATUS_SUCCESS and invented content, and never with silence. Before this existed,
-    /// five of the six `consult_llm` call sites propagated the error with `?`, which broke
-    /// the connection loop - the client saw a dead socket and waited out its own timeout.
+    /// STATUS_SUCCESS and invented content, and never with silence.
     ///
     /// `STATUS_INSUFFICIENT_RESOURCES` (0xC000009A) is used when
     /// `crate::llm::is_overload_error` identifies capacity exhaustion, because it is the
     /// closest NTSTATUS to "retryable"; every other failure is `STATUS_INTERNAL_ERROR`
     /// (0xC00000E5). Both stay distinguishable from the model's own refusal
     /// (STATUS_ACCESS_DENIED) and from an undecodable payload (STATUS_DATA_ERROR).
-    #[cfg(feature = "smb")]
     fn llm_failure_response(
-        request_header: &[u8],
-        command: u16,
+        req: &RequestHeader,
         operation: &str,
         path: &str,
         err: &anyhow::Error,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<Vec<u8>> {
+        ctx: &Ctx<'_>,
+    ) -> Vec<u8> {
         let overloaded = crate::llm::is_overload_error(err);
-        let status = if overloaded {
-            STATUS_INSUFFICIENT_RESOURCES
+        let code = if overloaded {
+            status::INSUFFICIENT_RESOURCES
         } else {
-            STATUS_INTERNAL_ERROR
+            status::INTERNAL_ERROR
         };
 
-        Log::new(Some(status_tx)).warn(format!(
-            "SMB {} {}: LLM {} - refusing with NTSTATUS 0x{:08X}: {}",
+        Log::new(Some(ctx.status_tx)).warn(format!(
+            "SMB {} {}: LLM {} (decision=fail_closed_llm_error) - refusing with NTSTATUS \
+             0x{:08X}: {}",
             operation,
             path,
             if overloaded {
@@ -1970,126 +1960,106 @@ impl SmbServer {
             } else {
                 "backend failure"
             },
-            status,
+            code,
             err
         ));
 
-        Self::build_error_response(request_header, command, status)
+        wire::error_response(&ResponseHeader::for_request(req, code))
     }
+}
 
-    /// Build the SMB2 SESSION_SETUP response that refuses a login.
-    ///
-    /// **This used to send `0xC0000016`, which is not ACCESS_DENIED.** `0xC0000016` is
-    /// `STATUS_MORE_PROCESSING_REQUIRED` — the status a server sends *mid*-SPNEGO to say
-    /// "keep going", i.e. an intermediate success. A real client receiving it does not treat
-    /// the login as refused; it sends another SESSION_SETUP. So both denial paths — the
-    /// model's own `smb_auth_deny` and the fail-closed branch taken when the LLM call errors
-    /// — reduced on the wire to "continue negotiating", and neither actually denied anything.
-    /// The constant was three lines from `STATUS_ACCESS_DENIED` (`0xC0000022`), which the
-    /// same file already defines and which the CREATE/READ/WRITE refusals already use; only
-    /// the comment claimed the two were the same value.
-    #[cfg(feature = "smb")]
-    fn build_auth_denied_response(request_header: &[u8]) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
+/// The path a CREATE names (MS-SMB2 2.2.13), as `/`-separated and rooted at the share.
+///
+/// The name is located through `NameOffset`/`NameLength`, which are measured from the start of
+/// the SMB2 header. It is relative to the share and uses `\`; an empty name is the share root.
+fn parse_create_path(message: &[u8]) -> Option<String> {
+    let body = message.get(HEADER_LEN..)?;
+    let name_offset = wire::le16(body, 44) as usize;
+    let name_len = wire::le16(body, 46) as usize;
+    let name = if name_len == 0 {
+        String::new()
+    } else {
+        wire::from_utf16le(message.get(name_offset..name_offset.checked_add(name_len)?)?)?
+    };
+    let trimmed = name.replace('\\', "/");
+    let trimmed = trimmed.trim_matches('/');
+    Some(format!("/{}", trimmed))
+}
 
-        // SMB2 Header with ACCESS_DENIED status
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]); // Header length
-        response.extend_from_slice(&[0, 0]); // Credit charge
-        response.extend_from_slice(&STATUS_ACCESS_DENIED.to_le_bytes()); // 0xC0000022
-        response.extend_from_slice(&[0x01, 0x00]); // Command (SESSION_SETUP)
-        response.extend_from_slice(&[0, 0]); // Credits
-
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags (response)
-
-        // Copy message ID from request
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]); // Reserved
-        response.extend_from_slice(&[0; 4]); // Tree ID
-        response.extend_from_slice(&[0; 8]); // Session ID (0 = denied)
-        response.extend_from_slice(&[0; 16]); // Signature
-
-        // Minimal Session Setup Response body (9 bytes for error)
-        response.extend_from_slice(&[9, 0]); // Structure size
-        response.extend_from_slice(&[0; 2]); // Session flags
-        response.extend_from_slice(&[0; 2]); // Security buffer offset
-        response.extend_from_slice(&[0; 2]); // Security buffer length
-        response.extend_from_slice(&[0]); // Padding
-
-        Ok(response)
+fn disposition_name(disposition: u32) -> &'static str {
+    match disposition {
+        0 => "supersede",
+        1 => "open",
+        2 => "create",
+        3 => "open_if",
+        4 => "overwrite",
+        5 => "overwrite_if",
+        _ => "unknown",
     }
+}
 
-    /// Build SESSION_SETUP response with specific username
-    #[cfg(feature = "smb")]
-    ///
-    /// Takes the state lock with `.lock().await`. It used to call
-    /// `tokio::sync::Mutex::blocking_lock()`, which **panics** when called from a runtime
-    /// thread - so every SESSION_SETUP killed its connection task the moment the LLM
-    /// approved the login. The panic is swallowed by `tokio::spawn`, so the server stayed
-    /// in Running, the access log showed the auth succeeding, and the client simply hung
-    /// until its own timeout. TREE_CONNECT had the identical bug.
-    async fn build_session_setup_response_with_user(
-        request_header: &[u8],
-        state: &Arc<Mutex<SmbConnectionState>>,
-        username: String,
-    ) -> Result<Vec<u8>> {
-        let mut response = Vec::new();
+/// A FileId for the `index`th open: persistent and volatile halves derived from one counter.
+fn file_id_for(index: u64) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&index.to_le_bytes());
+    id[8..].copy_from_slice(&(index ^ 0x4E47_5342_0000_0000).to_le_bytes());
+    id
+}
 
-        // Allocate session ID
-        let session_id = {
-            let mut s = state.lock().await;
-            let sid = s.next_session_id;
-            s.next_session_id += 1;
-
-            // Create session with specified username
-            s.sessions.insert(
-                sid,
-                SmbSession {
-                    session_id: sid,
-                    username: username.clone(),
-                    _authenticated: true,
-                },
-            );
-            sid
-        };
-
-        // SMB2 Header
-        response.extend_from_slice(b"\xFESMB");
-        response.extend_from_slice(&[64, 0]);
-        response.extend_from_slice(&[0, 0]);
-        response.extend_from_slice(&[0, 0, 0, 0]); // STATUS_SUCCESS
-        response.extend_from_slice(&[0x01, 0x00]); // Command (SESSION_SETUP)
-        response.extend_from_slice(&[1, 0]);
-
-        response.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // Flags (response)
-
-        // Copy message ID
-        response.extend_from_slice(&request_header[24..32]);
-
-        response.extend_from_slice(&[0; 8]);
-        response.extend_from_slice(&[0; 4]);
-        response.extend_from_slice(&session_id.to_le_bytes()); // Session ID
-        response.extend_from_slice(&[0; 16]); // Signature
-
-        // Session Setup Response body
-        response.extend_from_slice(&[9, 0]); // Structure size
-        response.extend_from_slice(&[0x01, 0x00]); // Session flags (logged in)
-        response.extend_from_slice(&[0; 2]); // Security buffer offset
-        response.extend_from_slice(&[0; 2]); // Security buffer length
-        response.extend_from_slice(&[0]); // Padding
-
-        Ok(response)
+/// Case-insensitive match of an SMB search pattern with `*` and `?`.
+fn wildcard_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.to_lowercase().chars().collect();
+    let n: Vec<char> = name.to_lowercase().chars().collect();
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let (mut star, mut mark) = (None::<usize>, 0usize);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
     }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// An RFC 3339 timestamp as a FILETIME.
+fn parse_time(s: &str) -> Option<u64> {
+    let t = chrono::DateTime::parse_from_rfc3339(s).ok()?;
+    Some(wire::filetime_from_unix(
+        t.timestamp(),
+        t.timestamp_subsec_nanos(),
+    ))
+}
+
+fn filetime_now() -> u64 {
+    let now = crate::utils::clock::SystemTime::now()
+        .duration_since(crate::utils::clock::UNIX_EPOCH)
+        .unwrap_or_default();
+    wire::filetime_from_unix(now.as_secs() as i64, now.subsec_nanos())
+}
+
+/// The NTLMSSP server challenge. Nothing is ever verified against it, so it needs to vary, not
+/// to be secret.
+fn server_challenge() -> [u8; 8] {
+    let t = filetime_now();
+    (t ^ t.rotate_left(29) ^ 0x9E37_79B9_7F4A_7C15).to_le_bytes()
 }
 
 /// The connection's read half plus the counters the dashboard's `↓` column reads.
 ///
-/// One SMB2 message is read in two places — the 64-byte header in the session loop, the body
-/// the header implies inside `handle_smb2_command` — and only the header was ever counted, so
-/// a 64 KiB WRITE showed up as 64 bytes received. Reads accumulate here and the session loop
-/// flushes them to `AppState`; keeping the counters on the reader is what lets the body sites
-/// stay unchanged.
+/// Reads accumulate here and the session loop flushes them to `AppState` once per frame.
 struct SmbReader<R> {
     inner: R,
     /// Bytes read since the last flush.
@@ -2111,16 +2081,6 @@ impl<R: tokio::io::AsyncRead + Unpin> SmbReader<R> {
     /// firing) has already lost whatever it consumed, so there is nothing honest to count.
     async fn read_exact_counted(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let result = self.inner.read_exact(buf).await;
-        if let Ok(n) = result {
-            self.pending_bytes += n as u64;
-            self.pending_reads += 1;
-        }
-        result
-    }
-
-    /// `read`, counting the bytes on success.
-    async fn read_counted(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let result = self.inner.read(buf).await;
         if let Ok(n) = result {
             self.pending_bytes += n as u64;
             self.pending_reads += 1;
@@ -2160,15 +2120,13 @@ async fn flush_read_stats<R: tokio::io::AsyncRead + Unpin>(
         .await;
 }
 
-/// Write one response to the peer and count it. The guard is dropped before the stats update
-/// so nothing awaits `AppState` while holding the write half — the peer command task needs the
+/// Write one frame to the peer and count it. The guard is dropped before the stats update so
+/// nothing awaits `AppState` while holding the write half — the peer command task needs the
 /// same lock to inject a message or a disconnect.
 async fn write_counted<W>(
     write_half: &Arc<Mutex<W>>,
     data: &[u8],
-    app_state: &AppState,
-    server_id: ServerId,
-    connection_id: ConnectionId,
+    ctx: &Ctx<'_>,
 ) -> std::io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -2178,10 +2136,10 @@ where
         writer.write_all(data).await?;
         writer.flush().await?;
     }
-    app_state
+    ctx.app_state
         .update_connection_stats(
-            server_id,
-            connection_id,
+            ctx.server_id,
+            ctx.connection_id,
             None,
             Some(data.len() as u64),
             None,
@@ -2191,13 +2149,8 @@ where
     Ok(())
 }
 
-/// Read exactly `buf.len()` bytes of a body the peer has already announced, bounded by
+/// Read exactly `buf.len()` bytes of a message the peer has already announced, bounded by
 /// [`BODY_READ_TIMEOUT`].
-///
-/// Every call site had an unbounded `read_exact`, so a peer that sent a valid SMB2 header
-/// declaring a large body and then stopped held the connection, the task and the buffer it had
-/// chosen the size of, indefinitely. The timeout is a read error rather than a special case so
-/// the existing `?` paths close the connection exactly as they already do for a truncated body.
 async fn read_body_exact<R: tokio::io::AsyncRead + Unpin>(
     stream: &mut SmbReader<R>,
     buf: &mut [u8],
@@ -2206,22 +2159,7 @@ async fn read_body_exact<R: tokio::io::AsyncRead + Unpin>(
         Ok(read) => read.map(|_| ()),
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            "peer stalled part-way through an announced SMB2 body",
-        )),
-    }
-}
-
-/// As [`read_body_exact`], for the sites that take whatever has arrived rather than a fixed
-/// count.
-async fn read_body<R: tokio::io::AsyncRead + Unpin>(
-    stream: &mut SmbReader<R>,
-    buf: &mut [u8],
-) -> std::io::Result<usize> {
-    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read_counted(buf)).await {
-        Ok(read) => read,
-        Err(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "peer stalled part-way through an announced SMB2 body",
+            "peer stalled part-way through an announced SMB2 message",
         )),
     }
 }
