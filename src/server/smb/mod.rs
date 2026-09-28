@@ -736,6 +736,9 @@ impl SmbServer {
                     );
                 }
                 s.trees.retain(|_, t| t.session_id != req.session_id);
+                // Handles on the trees just dropped can never be reached again.
+                let trees: std::collections::HashSet<u32> = s.trees.keys().copied().collect();
+                s.files.retain(|_, f| trees.contains(&f.tree_id));
                 Ok(Some(wire::empty_response(&ResponseHeader::for_request(
                     req,
                     status::SUCCESS,
