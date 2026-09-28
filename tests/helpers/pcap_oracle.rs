@@ -837,16 +837,23 @@ impl PcapOracle {
                     self.port,
                 );
 
+                // IPv4's Total Length is 16 bits, so a run of more than ~64 KiB in one
+                // direction cannot be one segment: its length field wraps and tshark sees a
+                // truncated packet followed by bytes it "never captured". Split long runs the
+                // way a real stack would; tshark reassembles them.
+                const MAX_SEGMENT_PAYLOAD: usize = 32 * 1024;
                 for (dir, bytes) in &merged {
-                    emit(
-                        *dir,
-                        PSH_ACK,
-                        bytes,
-                        &mut seq,
-                        &mut frames,
-                        Some(*dir),
-                        self.port,
-                    );
+                    for segment in bytes.chunks(MAX_SEGMENT_PAYLOAD) {
+                        emit(
+                            *dir,
+                            PSH_ACK,
+                            segment,
+                            &mut seq,
+                            &mut frames,
+                            Some(*dir),
+                            self.port,
+                        );
+                    }
                 }
 
                 if self.close_stream {
