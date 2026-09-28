@@ -1,5 +1,12 @@
-//! HTTP client implementation
+//! HTTP client implementation.
+//!
+//! Natively every request goes through reqwest (TLS, HTTP/2, a pooled client per host). In the
+//! browser build it goes through [`transport`], hyper 1's HTTP/1.1 client over the page's
+//! virtual loopback — reqwest's wasm backend is the browser's `fetch`, which is not `Send` and
+//! cannot reach NetGet's in-page servers. Everything above the round trip — the command
+//! channel, the model's answers, the follow-up chain — is the same code on both.
 pub mod actions;
+pub mod transport;
 
 pub use actions::HttpClientProtocol;
 
@@ -33,6 +40,7 @@ const REMOVAL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// Split out of [`HttpClient::make_request`] so the injected-command loop can await
 /// the network round-trip - and report a truthful outcome - without also awaiting the
 /// LLM call the response event triggers.
+#[derive(Debug, Clone)]
 pub struct HttpExchange {
     pub status_code: u16,
     pub status_text: String,
@@ -98,6 +106,7 @@ impl HttpClient {
     ///
     /// Protocol versions are negotiated via ALPN during the handshake, so one client
     /// serves both HTTP/1.1 and HTTP/2.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn http_client(base_url: &str) -> Result<reqwest::Client> {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
@@ -166,7 +175,12 @@ impl HttpClient {
         // time and immediately discarded, while every request built another one. It is
         // warmed *after* `base_url` exists, because the cache is keyed by host — warming
         // an unrelated entry would leave the first real request paying the build cost.
+        #[cfg(not(target_arch = "wasm32"))]
         Self::http_client(&base_url).await?;
+        // The browser transport has no TLS; say so at connect time rather than on the first
+        // request, so the dashboard's form shows why instead of a client that never works.
+        #[cfg(target_arch = "wasm32")]
+        transport::parse_http_url(&base_url)?;
 
         // `default_headers` is declared in `get_startup_parameters()` as "headers included
         // in all requests". It was never read, so setting it changed nothing. It is stored
@@ -589,20 +603,6 @@ impl HttpClient {
             client_id, method, url
         );
 
-        // Keyed on the *request* URL, not the base: `path` may be an absolute URL
-        // pointing at a different host, and that host needs its own resolver override.
-        let http_client = Self::http_client(&url).await?;
-
-        let mut request = match method.to_uppercase().as_str() {
-            "GET" => http_client.get(&url),
-            "POST" => http_client.post(&url),
-            "PUT" => http_client.put(&url),
-            "DELETE" => http_client.delete(&url),
-            "HEAD" => http_client.head(&url),
-            "PATCH" => http_client.patch(&url),
-            _ => return Err(anyhow::anyhow!("Unsupported HTTP method: {}", method)),
-        };
-
         // Startup defaults merged *underneath* the request's own headers. Merged into one
         // map before anything is applied, because `RequestBuilder::header` appends: setting
         // the same name twice would put both values on the wire instead of overriding.
@@ -617,52 +617,104 @@ impl HttpClient {
                 merged.insert(key.to_ascii_lowercase(), value);
             }
         }
-        for (key, value) in merged {
-            if let Some(val_str) = value.as_str() {
-                request = request.header(&key, val_str);
-            }
-        }
+        let merged: Vec<(String, String)> = merged
+            .into_iter()
+            .filter_map(|(key, value)| value.as_str().map(|v| (key, v.to_string())))
+            .collect();
 
-        // Add body
-        if let Some(body_str) = body {
-            request = request.body(body_str);
-        }
-
-        // Make request
-        match request.send().await {
-            Ok(response) => {
-                let status = response.status();
-                let status_code = status.as_u16();
-
-                // Get headers
-                let mut resp_headers = serde_json::Map::new();
-                for (name, value) in response.headers() {
-                    if let Ok(val_str) = value.to_str() {
-                        resp_headers.insert(name.to_string(), serde_json::json!(val_str));
-                    }
-                }
-
-                // Get body
-                let body_text = response.text().await.unwrap_or_default();
-
+        let result = Self::round_trip(&method, &url, merged, body).await;
+        match result {
+            Ok(exchange) => {
                 info!(
-                    "HTTP client {} received response: {} ({})",
-                    client_id, status_code, status
+                    "HTTP client {} received response: {}",
+                    client_id, exchange.status_text
                 );
-
-                Ok(HttpExchange {
-                    status_code,
-                    status_text: status.to_string(),
-                    headers: resp_headers,
-                    body: body_text,
-                })
+                Ok(exchange)
             }
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("HTTP client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
+    }
+
+    /// The network round trip through reqwest: the native transport.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn round_trip(
+        method: &str,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: Option<String>,
+    ) -> Result<HttpExchange> {
+        // Keyed on the *request* URL, not the base: `path` may be an absolute URL
+        // pointing at a different host, and that host needs its own resolver override.
+        let http_client = Self::http_client(url).await?;
+
+        let mut request = match method.to_uppercase().as_str() {
+            "GET" => http_client.get(url),
+            "POST" => http_client.post(url),
+            "PUT" => http_client.put(url),
+            "DELETE" => http_client.delete(url),
+            "HEAD" => http_client.head(url),
+            "PATCH" => http_client.patch(url),
+            _ => return Err(anyhow::anyhow!("Unsupported HTTP method: {}", method)),
+        };
+        for (key, value) in headers {
+            request = request.header(&key, value);
+        }
+        if let Some(body_str) = body {
+            request = request.body(body_str);
+        }
+
+        let mut response = request.send().await?;
+        let status = response.status();
+        let mut resp_headers = serde_json::Map::new();
+        for (name, value) in response.headers() {
+            if let Ok(val_str) = value.to_str() {
+                resp_headers.insert(name.to_string(), serde_json::json!(val_str));
+            }
+        }
+        // Read chunk by chunk against the same bound the browser transport enforces, so a
+        // server that streams without end is refused rather than buffered until the process
+        // dies.
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > transport::MAX_RESPONSE_BODY_BYTES {
+                anyhow::bail!(
+                    "response body exceeds the {}-byte limit; refused",
+                    transport::MAX_RESPONSE_BODY_BYTES
+                );
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        Ok(HttpExchange {
+            status_code: status.as_u16(),
+            status_text: status.to_string(),
+            headers: resp_headers,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        })
+    }
+
+    /// The network round trip in the browser: hyper's HTTP/1.1 client over the page's
+    /// virtual loopback, see [`transport`].
+    #[cfg(target_arch = "wasm32")]
+    async fn round_trip(
+        method: &str,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: Option<String>,
+    ) -> Result<HttpExchange> {
+        transport::fetch(
+            method,
+            url,
+            &headers,
+            body,
+            transport::REQUEST_TIMEOUT,
+            transport::MAX_RESPONSE_BODY_BYTES,
+        )
+        .await
     }
 
     /// How many exchanges deep this client keeps following the model's answers. Each

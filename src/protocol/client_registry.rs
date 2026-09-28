@@ -113,7 +113,7 @@ impl ClientRegistry {
         #[cfg(feature = "grpc")]
         self.register(Arc::new(crate::client::grpc::GrpcClientProtocol::new()));
 
-        #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+        #[cfg(feature = "http")]
         {
             tracing::debug!("ClientRegistry: Registering HTTP client protocol");
             self.register(Arc::new(crate::client::http::HttpClientProtocol::new()));

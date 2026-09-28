@@ -224,7 +224,10 @@ impl Protocol for HttpClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Beta)
-            .implementation("reqwest HTTP/HTTPS client library (HTTP/1.1, HTTP/2 via rustls)")
+            .implementation(
+                "reqwest HTTP/HTTPS client library (HTTP/1.1, HTTP/2 via rustls); in the browser \
+                 build hyper's HTTP/1.1 client over the virtual loopback (plain http:// only)",
+            )
             .llm_control("Full control over requests (method, path, headers, body)")
             .e2e_testing(
                 "tests/client/http/real_server_test.rs, 5 LLM calls, against nginx (C, its own \
@@ -237,9 +240,11 @@ impl Protocol for HttpClientProtocol {
                  skipping it.",
             )
             .notes(
-                "Validated against nginx over plain HTTP/1.1. HTTPS, HTTP/2, redirects, \
-                 compressed or chunked bodies are not exercised against a real server, and a \
-                 response body is read whole with no size cap.",
+                "Validated against nginx over plain HTTP/1.1. HTTPS, HTTP/2, redirects and \
+                 compressed bodies are not exercised against a real server. A response body is \
+                 read whole up to 8 MiB and refused past it. The browser transport \
+                 (transport.rs) is exercised against NetGet's own servers only, chunked \
+                 responses included.",
             )
             .build()
     }

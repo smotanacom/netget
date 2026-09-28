@@ -9,6 +9,21 @@ control over method, path, headers, and body, and interpret responses.
 
 ### Library Choice
 
+Two transports under one client; everything above the round trip (`perform_request`'s URL and
+header merge, the command channel, `notify_response`'s follow-up chain) is shared.
+
+- **Native: reqwest** (below).
+- **Browser build (wasm32): `transport.rs`** — hyper 1's `client::conn::http1` over the
+  target's `tokio::net::TcpStream`, which in the browser is `crates/netget-tokio-wasm`'s
+  virtual loopback. reqwest's wasm backend is the browser's `fetch`: not `Send` (the `Client`
+  trait requires it) and unable to reach NetGet's in-page servers. hyper's client role never
+  reads the clock, unlike its server role, so it runs on wasm32 unchanged. One connection per
+  request; the whole exchange bounded by `REQUEST_TIMEOUT` (30 s) and the body by
+  `MAX_RESPONSE_BODY_BYTES` (8 MiB) through `http_body_util::Limited`. `https://` is refused at
+  connect with `HTTPS_UNSUPPORTED` — there is no TLS on this path, and nothing on the page's
+  network holds a certificate a client could verify. No redirects, pooling or compression.
+  It compiles on both targets so `tests/client/http/transport_test.rs` can drive it natively.
+
 - **reqwest** - Modern async HTTP client for Rust
 - Supports HTTP/1.1, HTTP/2, and HTTPS (TLS via rustls)
 - Automatic protocol negotiation via ALPN during TLS handshake
@@ -193,10 +208,11 @@ status_tx.send("[CLIENT] HTTP request sent");                          // → TU
 
 ## Limitations
 
-- **No Streaming** - Full response buffered in memory, with **no size cap**: a server
-  that streams without end grows the buffer until the process dies. (The HTTP/3 client
-  bounds this at 8 MiB; this one does not, because `reqwest::Response::text()` gives no
-  incremental hook without rewriting the read as a stream.)
+- **No Streaming** - Full response buffered in memory, up to `MAX_RESPONSE_BODY_BYTES`
+  (8 MiB, the HTTP/3 client's number) on both transports: reqwest's body is read with
+  `Response::chunk()` and refused the moment it would pass the bound, the browser transport
+  uses `Limited`. A body over the bound fails the request rather than reaching the model
+  truncated. The body is decoded as UTF-8, lossily.
 - **No File Uploads** - Body is text/JSON only
 - **No Cookie Jar** - Each request independent
 - **No Custom TLS Config** - rustls is selected explicitly (`use_rustls_tls`), but there
@@ -303,4 +319,6 @@ Rated against the four-condition client bar in the root `CLAUDE.md`, on the evid
 4. **Acts on the model's answer, asserted on the wire** — nginx's own access log holds the request lines, header, user agent and body length the model chose. Verified by mutation: dropping
    the actions the model returned makes the test fail.
 
-Not covered by that evidence: HTTPS, HTTP/2, redirects, compressed or chunked bodies, and bodies larger than memory (the body is read whole, uncapped).
+Not covered by that evidence: HTTPS, HTTP/2, redirects, compressed bodies, and the browser
+transport, which is proven against NetGet's own servers only (`transport_test.rs` natively,
+`web/test/smoke.mjs` in the bundle against the HLS server) — a chunked response among them.
