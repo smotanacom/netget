@@ -179,7 +179,7 @@ impl WireError {
         }
     }
 
-    pub fn frame(&self) -> Vec<u8> {
+    pub fn to_frame(&self) -> Vec<u8> {
         error_frame(self.code, &self.message)
     }
 }
@@ -543,7 +543,7 @@ pub fn encode_command(command: &Command) -> Vec<u8> {
 }
 
 /// A frame: its type and data.
-pub fn frame(frame_type: u32, data: &[u8]) -> Vec<u8> {
+pub fn encode_frame(frame_type: u32, data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + data.len());
     out.extend_from_slice(&((data.len() + 4) as u32).to_be_bytes());
     out.extend_from_slice(&frame_type.to_be_bytes());
@@ -552,7 +552,7 @@ pub fn frame(frame_type: u32, data: &[u8]) -> Vec<u8> {
 }
 
 pub fn response_frame(data: &[u8]) -> Vec<u8> {
-    frame(FRAME_RESPONSE, data)
+    encode_frame(FRAME_RESPONSE, data)
 }
 
 /// `E_CODE description`, the description reduced to one line of printable text.
@@ -563,7 +563,7 @@ pub fn error_frame(code: &str, message: &str) -> Vec<u8> {
     } else {
         format!("{code} {}", message.trim())
     };
-    frame(FRAME_ERROR, text.as_bytes())
+    encode_frame(FRAME_ERROR, text.as_bytes())
 }
 
 /// A message frame: timestamp (ns since the epoch), attempts, the 16-byte id, the body.
@@ -578,7 +578,7 @@ pub fn message_frame(
     data.extend_from_slice(&attempts.to_be_bytes());
     data.extend_from_slice(id);
     data.extend_from_slice(body);
-    frame(FRAME_MESSAGE, &data)
+    encode_frame(FRAME_MESSAGE, &data)
 }
 
 /// A message id NetGet generates: 16 lower-case hex digits, as nsqd's GUIDs are.

@@ -444,7 +444,7 @@ impl Session {
                         e.message,
                         e.decision()
                     ));
-                    let _ = self.write(writer, &e.frame()).await;
+                    let _ = self.write(writer, &e.to_frame()).await;
                     Step::Close
                 }
                 Wake::Command(Ok((command, used))) => {
@@ -490,7 +490,7 @@ impl Session {
                             "NSQ IDENTIFY from {} refused: {} decision=fail_closed_bad_identify",
                             self.peer_addr, e.message
                         ));
-                        let _ = self.write(writer, &e.frame()).await;
+                        let _ = self.write(writer, &e.to_frame()).await;
                         return Step::Close;
                     }
                 };
