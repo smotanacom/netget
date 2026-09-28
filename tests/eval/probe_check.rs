@@ -929,3 +929,62 @@ async fn websocket_greeting_waits_for_the_model() -> E2EResult<()> {
     })
     .await
 }
+
+// ---------------------------------------------------------------------------
+// nsq — nsq_tail and to_nsq
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "nsq")]
+#[tokio::test]
+async fn nsq_deliver_waiting_messages_waits_for_the_model() -> E2EResult<()> {
+    check_case("nsq/deliver-waiting-messages", |mock| {
+        mock.on_event("nsq_subscribe")
+            .respond_with_actions(serde_json::json!([{"type": "send_nsq_ok"}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+            .on_event("nsq_ready")
+            .respond_with_actions(serde_json::json!([{
+                "type": "deliver_nsq_messages",
+                "messages": [{"body": "order 1 shipped"}, {"body": "order 2 packed"}]
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+            // nsq_tail exits from inside its handler for the last message, so whether its
+            // FINs reach the server is a race; answered with nothing either way.
+            .on_event("nsq_finish")
+            .respond_with_actions(serde_json::json!([]))
+            .expect_at_most(2)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "nsq")]
+#[tokio::test]
+async fn nsq_accept_publish_waits_for_the_model() -> E2EResult<()> {
+    check_case("nsq/accept-publish", |mock| {
+        mock.on_event("nsq_publish")
+            .respond_with_actions(serde_json::json!([{"type": "send_nsq_ok"}]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
+
+#[cfg(feature = "nsq")]
+#[tokio::test]
+async fn nsq_refuse_closed_topic_waits_for_the_model() -> E2EResult<()> {
+    check_case("nsq/refuse-closed-topic", |mock| {
+        mock.on_event("nsq_publish")
+            .respond_with_actions(serde_json::json!([{
+                "type": "send_nsq_error", "code": "E_PUB_FAILED", "message": "topic is closed"
+            }]))
+            .after_delay(MODEL_LATENCY)
+            .expect_calls(1)
+            .and()
+    })
+    .await
+}
