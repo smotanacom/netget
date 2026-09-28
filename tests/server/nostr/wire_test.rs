@@ -334,11 +334,11 @@ fn client_messages_parse_and_mechanical_refusals_are_answered() {
     let at_limit = "é".repeat(wire::MAX_SUBSCRIPTION_ID_CHARS);
     assert!(parse_client_message(&format!(r#"["REQ","{at_limit}",{{}}]"#)).is_ok());
 
-    let filters = vec!["{}"; wire::MAX_FILTERS + 1].join(",");
+    let filters = ["{}"; wire::MAX_FILTERS + 1].join(",");
     let r = refusal(&format!(r#"["REQ","s",{filters}]"#));
     assert_eq!(r.decision, "fail_closed_too_many_filters");
     assert_eq!(frame(&r)[0], "CLOSED");
-    let filters = vec!["{}"; wire::MAX_FILTERS].join(",");
+    let filters = ["{}"; wire::MAX_FILTERS].join(",");
     assert!(parse_client_message(&format!(r#"["REQ","s",{filters}]"#)).is_ok());
     assert_eq!(refusal(r#"["REQ","s"]"#).decision, "fail_closed_bad_filter");
 }

@@ -595,12 +595,12 @@ impl Filter {
     /// values within one condition ORed). `limit` is not a condition; see [`select_events`].
     pub fn matches(&self, event: &Event) -> bool {
         if let Some(ids) = &self.ids {
-            if !ids.iter().any(|i| *i == event.id) {
+            if !ids.contains(&event.id) {
                 return false;
             }
         }
         if let Some(authors) = &self.authors {
-            if !authors.iter().any(|a| *a == event.pubkey) {
+            if !authors.contains(&event.pubkey) {
                 return false;
             }
         }
