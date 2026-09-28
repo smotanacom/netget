@@ -165,7 +165,11 @@ impl Protocol for NsqProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta on evidence: tests/server/nsq/real_client_test.rs drives the NSQ project's
+            // own to_nsq and nsq_tail (go-nsq) and hard-fails when they are absent. Not Stable:
+            // both are one implementation (go-nsq), there is no pcap oracle (Wireshark has no
+            // NSQ dissector), and in-flight timeouts are not implemented.
+            .state(DevelopmentState::Beta)
             .well_known_port(4150)
             // 4150 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)

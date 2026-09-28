@@ -4,7 +4,7 @@ The receiver side of the OpenTelemetry Protocol over HTTP (OTLP 1.x, "OTLP/HTTP"
 the receiver's judgement: from a summary of each export it decides to accept it, accept part of
 it, or refuse it. NetGet reads and decodes the payload, and encodes every response.
 
-**State**: Experimental (see Maturity). **Privilege**: `None` — the well-known port is 4318.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 4318.
 **Stack**: `ETH>IP>TCP>HTTP>OTLP`. **Feature**: `otlp` (`opentelemetry-proto`, `prost`, `flate2`).
 
 ## Library choice
@@ -99,12 +99,15 @@ dissector reads the bodies only with the OpenTelemetry `.proto` files on its sea
 
 ## Maturity
 
-Experimental. The evidence for Beta is in place: `tests/server/otlp/real_client_test.rs` drives
+Beta. Evidence: `tests/server/otlp/real_client_test.rs` drives
 `otel-cli` (equinix-labs' Go OTLP client over the OpenTelemetry Go protobuf bindings) and the
 Collector project's `telemetrygen` (the OpenTelemetry Go SDK's OTLP/HTTP exporters) — two
 independent exporters, neither linked by NetGet — and fails, never skips, without them. `otel-cli
 --fail` exits by our status code, so its exit is a reading of the response; `telemetrygen` reports
-a refusal. CI's `registry-audit` installs both.
+a refusal. CI's `registry-audit` installs both. Promoted after the whole suite (24 tests, with
+`nsq`'s 35 alongside) passed three consecutive runs at `--test-threads=100` and
+`scripts/beta_evidence_table.py --check` stayed green with `otel-cli` and `telemetrygen` as the
+peers.
 
 Not covered: OTLP/gRPC (port 4317), TLS, profiles, and the JSON encoding from a third-party
 exporter (both clients send protobuf; the JSON path is covered by NetGet's own tests only).

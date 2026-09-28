@@ -5,7 +5,7 @@ or refuses each publish and subscription, and it decides which messages a subscr
 NetGet writes every byte of framing, assigns message ids and timestamps, and holds deliveries to
 the client's RDY count.
 
-**State**: Experimental (see Maturity). **Privilege**: `None` — the well-known port is 4150.
+**State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 4150.
 **Stack**: `ETH>IP>TCP>NSQ`. **Feature**: `nsq` (no dependencies beyond serde_json).
 
 ## Library choice
@@ -129,13 +129,15 @@ table maps `nsq` to plain TCP; "Follow TCP Stream" shows the command lines.
 
 ## Maturity
 
-Experimental. The evidence for Beta is in place — `tests/server/nsq/real_client_test.rs` drives
+Beta. Evidence: `tests/server/nsq/real_client_test.rs` drives
 the NSQ project's own `to_nsq` and `nsq_tail` (go-nsq; not linked; the server uses no NSQ
 library): each stdin line is one PUB the handler accepted, a refusal makes `to_nsq` exit non-zero
 naming `E_PUB_FAILED`, `nsq_tail` prints exactly the bodies delivered, and a mocked model carries
 `to_nsq`'s lines to `nsq_tail`. It fails, never skips, without the binaries; CI's
 `registry-audit` unpacks the release tarball and runs it. The `nsq_frame` fuzz target exists with
-oversize and JSON-depth-bomb seeds.
+oversize and JSON-depth-bomb seeds. Promoted after the whole suite (35 tests, with `otlp`'s 24
+alongside) passed three consecutive runs at `--test-threads=100` and
+`scripts/beta_evidence_table.py --check` stayed green with `to_nsq` and `nsq_tail` as the peers.
 
 What Stable would need: a second independent client (pynsq, or nsqio/go-nsq's own `nsq_to_file`
 counts as the same library), a pcap oracle (Wireshark has no dissector), in-flight timeouts.

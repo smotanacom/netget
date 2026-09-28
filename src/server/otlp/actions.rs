@@ -104,7 +104,11 @@ impl Protocol for OtlpProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta on evidence: tests/server/otlp/real_client_test.rs drives otel-cli and the
+            // Collector project's telemetrygen - two independent OTLP/HTTP exporters - and both
+            // hard-fail when absent. Not Stable: no fuzz target, no pcap oracle, and no
+            // third-party exporter sends the JSON encoding.
+            .state(DevelopmentState::Beta)
             .well_known_port(4318)
             // 4318 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
