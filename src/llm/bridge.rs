@@ -83,11 +83,11 @@ pub struct BridgeReply {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<BridgeToolCall>,
-    /// The model's visible reasoning for this answer, if it showed any: a thinking model's
-    /// `<think>` block, or the `reasoning` string a non-thinking model was asked to put first
-    /// in its envelope. It is never parsed as part of the answer. It reaches the status
-    /// channel as `[REASONING]` lines, exactly as an Ollama `thinking` stream or an OpenAI
-    /// `reasoning`/`reasoning_content` stream does, so the dashboard shows it the same way.
+    /// The reasoning a model that thinks natively wrote before this answer — the demo page
+    /// sends Qwen3's `<think>` block here and the text after it as `content`. It is never
+    /// parsed as part of the answer. It reaches the status channel as `[REASONING]` lines,
+    /// exactly as an Ollama `thinking` stream or an OpenAI `reasoning`/`reasoning_content`
+    /// stream does, so the dashboard shows it the same way.
     #[serde(default, alias = "reasoning_content", alias = "thinking")]
     pub reasoning: Option<String>,
     #[serde(default)]

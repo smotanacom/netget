@@ -242,28 +242,17 @@ fn reasoning_lines(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Vec
     lines
 }
 
+/// The page sends a thinking model's `<think>` text as the reply's `reasoning`, and the answer
+/// that followed it as `content`. The reasoning reaches the dashboard's stream; only the
+/// content is parsed.
 #[tokio::test]
-async fn a_reasoning_first_envelope_is_an_answer_and_its_reasoning_reaches_the_dashboard() {
-    // The page asks a model with no thinking of its own to open its envelope with a short
-    // `reasoning` string, so the reasoning streams before the actions. The parser must take
-    // that envelope as it takes `{"actions": [...]}`, in either key order.
-    for text in [
-        r#"{"reasoning": "They said hi.", "actions": [{"type": "send_tcp_data", "data": "HI"}]}"#,
-        r#"{"actions": [{"type": "send_tcp_data", "data": "HI"}], "reasoning": "They said hi."}"#,
-    ] {
-        let parsed = netget::llm::ActionResponse::from_str(text).expect("the envelope parses");
-        assert_eq!(parsed.actions.len(), 1, "{text}");
-        assert_eq!(parsed.actions[0]["type"], "send_tcp_data");
-        assert_eq!(parsed.actions[0]["data"], "HI");
-        assert!(parsed.tools.is_empty(), "{text}");
-    }
-
+async fn a_hosts_reasoning_reaches_the_dashboard_and_only_its_content_is_parsed() {
     let (bridge, mut rx) = LlmBridge::new();
     let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
     let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5)).with_status_tx(status_tx);
 
     // The host answers the first request with no reasoning (the control: nothing is forwarded
-    // that the host did not send) and the second with the envelope and its reasoning.
+    // that the host did not send) and the second with an answer and the thinking behind it.
     let host = tokio::spawn(async move {
         let first = rx.recv().await.expect("first request");
         first
@@ -280,8 +269,7 @@ async fn a_reasoning_first_envelope_is_an_answer_and_its_reasoning_reaches_the_d
             .reply
             .send(Ok(BridgeReply {
                 content: Some(
-                    r#"{"reasoning":"The peer said hello, so I greet it.","actions":[{"type":"send_tcp_data","data":"HELLO BACK"}]}"#
-                        .to_string(),
+                    r#"{"actions":[{"type":"send_tcp_data","data":"HELLO BACK"}]}"#.to_string(),
                 ),
                 reasoning: Some(
                     "The peer said hello, so I greet it.\nA greeting in capitals reads as friendly here."
@@ -383,11 +371,8 @@ async fn a_network_events_reasoning_reaches_the_status_channel_the_dashboard_dra
     req.reply
         .send(Ok(BridgeReply {
             content: Some(
-                json!({
-                    "reasoning": "A hello deserves one back.",
-                    "actions": [{"type": "send_tcp_data", "data": "hello yourself\n"}]
-                })
-                .to_string(),
+                json!({"actions": [{"type": "send_tcp_data", "data": "hello yourself\n"}]})
+                    .to_string(),
             ),
             reasoning: Some("A hello deserves one back.".to_string()),
             ..Default::default()
