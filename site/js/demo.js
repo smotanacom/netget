@@ -1,64 +1,51 @@
 // NetGet in the browser: the live demo on the landing page.
 //
-// Three things run here, and none of them is a mock of NetGet:
+// Three machines run here, and none of them is a mock of NetGet:
 //
 //   1. NetGet itself, compiled to WebAssembly (crates/netget-web). Its dashboard renders
-//      into an xterm.js terminal; its TCP/Telnet/HTTP servers listen on a virtual network
-//      that lives inside the wasm instance.
-//   2. Clients for those servers, on the same page: a Telnet terminal, a "browser" that
-//      speaks raw HTTP/1.1, and a netcat-style raw socket. They connect through
-//      NetGet.connect(port), which is a real TcpStream::connect on that virtual network.
-//   3. The model. NetGet hands every LLM request to this page as JSON (the full prompt,
-//      the tools, everything). The page answers with WebLLM (a model running on your GPU
-//      via WebGPU), a local Ollama you opened up to it, or — the default — you, typing.
+//      into an xterm.js terminal; its servers listen on a virtual network that lives inside
+//      the wasm instance. About a second after it boots, this page opens a Telnet server in
+//      it through the same `start_server` call the dashboard's own form uses.
+//   2. A Telnet client on the same page, which connects to that server a second later
+//      through NetGet.connect(port) — a real TcpStream::connect on the virtual network. It
+//      edits a line locally and echoes what you type, as telnet(1) does in line mode.
+//   3. The model. NetGet hands every LLM request to this page as JSON (the full prompt and
+//      every action it offers). Until a model is ready, the visitor answers it through
+//      ./composer.js. The model is Chrome's built-in one (the Prompt API) where the browser
+//      has it, otherwise a WebLLM model on the GPU; the page switches to it by itself as soon
+//      as it is loaded.
 //
-// The wasm bundle is built by ./web/build.sh into site/demo/pkg/. When you are the model,
-// ./composer.js turns the actions NetGet offers into a form.
+// The wasm bundle is built by ./web/build.sh into site/demo/pkg/.
 
-import { mountComposer, offeredActions } from './composer.js';
+import { mountComposer, offeredActions, entriesFromEnvelope, buildReply } from './composer.js';
 
 const PKG = '../demo/pkg/netget_web.js';
 const WEBLLM_URL = 'https://esm.run/@mlc-ai/web-llm@0.2.85';
 
 const WEBLLM_MODELS = [
-    ['Qwen2.5-1.5B-Instruct-q4f16_1-MLC', 'Qwen2.5 1.5B · ~1 GB · fast'],
-    ['Llama-3.2-3B-Instruct-q4f16_1-MLC', 'Llama 3.2 3B · ~2 GB · better JSON'],
-    ['Qwen2.5-3B-Instruct-q4f16_1-MLC', 'Qwen2.5 3B · ~2 GB'],
-    ['Hermes-3-Llama-3.1-8B-q4f16_1-MLC', 'Hermes 3 8B · ~5 GB · tool calling'],
+    ['Qwen2.5-1.5B-Instruct-q4f16_1-MLC', 'Qwen2.5 1.5B', '~1 GB'],
+    ['Llama-3.2-3B-Instruct-q4f16_1-MLC', 'Llama 3.2 3B · better JSON', '~2 GB'],
+    ['Qwen2.5-3B-Instruct-q4f16_1-MLC', 'Qwen2.5 3B', '~2 GB'],
+    ['Hermes-3-Llama-3.1-8B-q4f16_1-MLC', 'Hermes 3 8B · tool calling', '~5 GB'],
 ];
 
-const QUICK_STARTS = [
-    {
-        label: 'Telnet server on 2323',
-        protocol: 'telnet', port: 2323,
-        instruction: 'You are a friendly BBS-style Telnet server for the NetGet project. Greet '
-            + 'each visitor with a short banner, then answer whatever they type in one or two '
-            + 'lines. Keep every reply under 200 characters.',
-        client: 'telnet',
-    },
-    {
-        label: 'HTTP server on 8080',
-        protocol: 'http', port: 8080,
-        instruction: 'You are a tiny website about the NetGet project. Serve a short HTML page '
-            + 'for any path, with a heading and one paragraph that mentions the path that was '
-            + 'requested. Answer /api/* paths with a small JSON object instead.',
-        client: 'browser',
-    },
-    {
-        label: 'TCP echo on 7000',
-        protocol: 'tcp', port: 7000,
-        instruction: 'Echo every line the client sends back to it, uppercased, followed by a '
-            + 'newline. Say nothing else.',
-        client: 'raw',
-    },
-    {
-        label: 'UDP on 5555',
-        protocol: 'udp', port: 5555,
-        instruction: 'For every datagram, reply with one datagram: the received text reversed. '
-            + 'Say nothing else.',
-        client: 'udp',
-    },
-];
+const TELNET_PORT = 2323;
+const SERVER_AFTER_MS = 1000;   // after NetGet boots, open the Telnet server
+const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
+
+// Short, and answerable in one line by a small model or by a person filling in a form.
+const TELNET_INSTRUCTION = 'You are the NetGet BBS, a tiny retro bulletin board reached over '
+    + 'Telnet. When a visitor connects, send a short welcome banner (two lines at most) that '
+    + 'ends by asking for their name. After that, answer every line they type with one or two '
+    + 'short, friendly lines: greet them by name, chat, tell a one-line joke when asked, or run '
+    + 'a very small text adventure if they type "play". Plain text only, under 200 characters '
+    + 'per reply.';
+
+// Options for the Prompt API: English text in, English text out.
+const LM_OPTIONS = {
+    expectedInputs: [{ type: 'text', languages: ['en'] }],
+    expectedOutputs: [{ type: 'text', languages: ['en'] }],
+};
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const enc = new TextEncoder();
@@ -67,15 +54,14 @@ const dec = new TextDecoder();
 const app = {
     netget: null,
     dash: null,           // xterm for the dashboard
-    mode: 'manual',       // 'manual' | 'webllm' | 'ollama'
-    webllm: { module: null, engine: null, model: null, status: 'idle' },
-    ollama: { url: 'http://localhost:11434', model: '' },
-    pendingManual: new Map(),
-    requestCount: 0,
-    telnet: { term: null, conn: null, localEcho: true, port: 2323 },
-    raw: { conn: null, port: 7000 },
-    udp: { sock: null, port: 5555 },
-    browser: { port: 8080 },
+    telnet: { term: null, conn: null, line: '', serverUp: false },
+    // Who answers: 'you' until a model is ready, then 'chrome' or 'webllm'.
+    answerer: 'you',
+    offer: null,          // what the model control offers: 'chrome' | 'webllm' | null
+    chrome: { session: null, creating: null, label: "Chrome's built-in model", badge: 'Chrome built-in' },
+    webllm: { module: null, engine: null, model: null, loading: false },
+    queue: [],            // model requests not yet being answered
+    current: null,        // the one being answered
 };
 
 function pageTheme() {
@@ -91,7 +77,10 @@ function xtermTheme() {
         : { background: '#ffffff', foreground: '#1a2231', cursor: '#0369a1', selectionBackground: '#cfe3f5' };
 }
 
-function makeTerm(el, opts = {}) {
+// A terminal that fills its host element and refits whenever the host changes size. With
+// `minCols`, the font shrinks (not below 6px) until that many columns fit: the dashboard
+// needs 80, and a phone is narrower than 80 columns of 13px text.
+function makeTerm(el, opts = {}, onFit = () => {}, { minCols = 0 } = {}) {
     const term = new window.Terminal(Object.assign({
         cursorBlink: false,
         fontFamily: "'JetBrains Mono', ui-monospace, monospace",
@@ -104,8 +93,56 @@ function makeTerm(el, opts = {}) {
     const fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(el);
-    fit.fit();
-    return { term, fit };
+    let last = '';
+    const refit = () => {
+        try { fit.fit(); } catch (e) { return; }
+        if (minCols && term.cols) {
+            const now = term.options.fontSize;
+            const want = Math.max(6, Math.min(13, Math.floor((now * term.cols / minCols) * 2) / 2));
+            if (want !== now) {
+                term.options.fontSize = want;
+                requestAnimationFrame(refit);
+                return;
+            }
+        }
+        const size = term.cols + 'x' + term.rows;
+        if (size !== last) { last = size; onFit(term.cols, term.rows); }
+    };
+    refit();
+    new ResizeObserver(refit).observe(el);
+    // A webfont arriving changes the cell size without changing the element's size, and
+    // xterm.js picks the new cell up on a later render. So after every render, if the rows no
+    // longer fill the element exactly, fit again (a fit that changes nothing renders nothing).
+    let queued = false;
+    term.onRender?.(() => {
+        if (queued) return;
+        const screen = el.querySelector('.xterm-screen');
+        if (!screen || !term.rows) return;
+        const row = screen.offsetHeight / term.rows;
+        const spare = el.clientHeight - screen.offsetHeight;
+        if (spare < 0 || spare >= row) {
+            queued = true;
+            requestAnimationFrame(() => { queued = false; refit(); });
+        }
+    });
+    return term;
+}
+
+// Focus a terminal without scrolling the page to it.
+function focusTerm(term) {
+    if (term.textarea) term.textarea.focus({ preventScroll: true });
+    else term.focus();
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function step(id, done, html) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('is-done', done);
+    if (html !== undefined) el.innerHTML = html;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -153,141 +190,419 @@ function wireDashboardInput(term, netget) {
 }
 
 // ---------------------------------------------------------------------------------------
-// The model panel.
+// Who answers, and the badges that say so.
 // ---------------------------------------------------------------------------------------
 
-function setModeBadge() {
-    const badge = $('#model-badge');
-    const dash = $('#dash-model');
-    let text, cls;
-    if (app.mode === 'webllm' && app.webllm.engine) {
-        text = 'model: WebLLM · ' + app.webllm.model.replace(/-q4f16_1-MLC$/, '');
-        cls = 'is-webllm';
-    } else if (app.mode === 'ollama') {
-        text = 'model: Ollama · ' + (app.ollama.model || '?');
-        cls = 'is-ollama';
-    } else {
-        text = 'model: you';
-        cls = 'is-you';
-    }
-    for (const el of [badge, dash]) {
+function answererName() {
+    if (app.answerer === 'chrome') return app.chrome.badge;
+    if (app.answerer === 'webllm') return 'WebLLM · ' + app.webllm.model.replace(/-q4f16_1-MLC$/, '');
+    return 'you';
+}
+
+function renderBadges() {
+    const text = 'model: ' + answererName();
+    const cls = app.answerer === 'you' ? 'is-you' : 'is-model';
+    for (const el of [$('#model-badge'), $('#dash-model')]) {
         if (!el) continue;
         el.textContent = text;
         el.className = 'model-badge ' + cls;
     }
+    const who = $('#step-model-who');
+    if (who) who.textContent = app.answerer === 'you' ? 'you' : answererName();
+    const until = $('#step-model-until');
+    if (until) until.hidden = app.answerer !== 'you' || !app.offer;
     if (app.netget) {
-        const name = app.mode === 'webllm' && app.webllm.model ? app.webllm.model
-            : app.mode === 'ollama' ? app.ollama.model || 'ollama' : 'you';
-        app.netget.set_models(JSON.stringify([name]));
+        const id = app.answerer === 'webllm' ? app.webllm.model
+            : app.answerer === 'chrome' ? 'chrome-built-in' : 'you';
+        app.netget.set_models(JSON.stringify([id]));
+        if (typeof app.netget.set_model === 'function') app.netget.set_model(id);
     }
 }
 
-function setMode(mode) {
-    if (mode === 'webllm' && !app.webllm.engine) mode = 'manual';
-    app.mode = mode;
-    for (const r of document.querySelectorAll('input[name=llm-mode]')) r.checked = r.value === mode;
-    setModeBadge();
+// A model finished loading: it answers from now on, starting with anything still waiting
+// that the visitor has not begun to answer.
+function modelReady(kind) {
+    app.answerer = kind;
+    renderBadges();
+    const cur = app.current;
+    if (cur && cur.manual && !cur.touched) {
+        cur.manual = false;
+        dispatch(cur);
+    }
 }
 
-function escapeHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// ---------------------------------------------------------------------------------------
+// The model control: Chrome's built-in model where the browser has one, WebLLM otherwise.
+// ---------------------------------------------------------------------------------------
+
+function setStatus(html) { $('#llm-status').innerHTML = html; }
+
+function setProgress(fraction) {
+    const bar = $('#llm-progress');
+    if (fraction === null) { bar.hidden = true; return; }
+    bar.hidden = false;
+    $('#llm-progress-bar').style.width = Math.round(Math.max(0, Math.min(1, fraction)) * 100) + '%';
 }
 
-function pretty(v) {
-    try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
-}
+const UNTIL = 'Until it is ready, <b>you</b> are the model: each request opens a form below.';
 
-function addRequestCard(req) {
-    const list = $('#llm-transcript');
-    $('#llm-empty')?.remove();
-    const card = document.createElement('article');
-    card.className = 'llm-card is-pending';
-    const started = performance.now();
-    const toolNames = (req.tools || []).map((t) => t.function?.name || t.name).filter(Boolean);
-    card.innerHTML = `
-      <header class="llm-card-head">
-        <span class="llm-id">#${req.id}</span>
-        <span class="llm-kind">${escapeHtml(req.kind)}</span>
-        <span class="llm-meta">${req.messages.length} message${req.messages.length === 1 ? '' : 's'}${offeredActions(req).length ? ' · ' + offeredActions(req).length + ' actions offered' : ''}${toolNames.length ? ' · ' + toolNames.length + ' tools' : ''}</span>
-        <span class="llm-status">waiting for the model…</span>
-      </header>
-      <details class="llm-section"${app.mode === 'manual' && offeredActions(req).length ? '' : ' open'}>
-        <summary>Prompt (what NetGet sends)</summary>
-        <div class="llm-messages">
-          ${req.messages.map((m) => `<div class="llm-msg llm-role-${escapeHtml(m.role)}"><span class="llm-role">${escapeHtml(m.role)}</span><pre>${escapeHtml(m.content)}</pre></div>`).join('')}
-        </div>
-      </details>
-      ${toolNames.length ? `<details class="llm-section"><summary>Tools (${toolNames.length}): ${escapeHtml(toolNames.join(', '))}</summary><pre>${escapeHtml(pretty(req.tools))}</pre></details>` : ''}
-      <div class="llm-reply"></div>
-    `;
-    list.prepend(card);
-    const statusEl = $('.llm-status', card);
-    const replyEl = $('.llm-reply', card);
-    return {
-        el: card,
-        setStatus(text) { statusEl.textContent = text; },
-        stream(text) {
-            card.classList.add('is-streaming');
-            let pre = $('pre.llm-stream', replyEl);
-            if (!pre) {
-                replyEl.innerHTML = '<div class="llm-reply-label">Reply (streaming)</div><pre class="llm-stream"></pre>';
-                pre = $('pre.llm-stream', replyEl);
-            }
-            pre.textContent = text;
-        },
-        showReply(reply) {
-            const ms = Math.round(performance.now() - started);
-            card.classList.remove('is-pending', 'is-streaming');
-            card.classList.add('is-done');
-            statusEl.textContent = `answered in ${(ms / 1000).toFixed(1)}s`;
-            const parts = [];
-            if (reply.content) parts.push(`<div class="llm-reply-label">Reply</div><pre>${escapeHtml(reply.content)}</pre>`);
-            if (reply.tool_calls && reply.tool_calls.length) parts.push(`<div class="llm-reply-label">Tool calls</div><pre>${escapeHtml(pretty(reply.tool_calls))}</pre>`);
-            if (!parts.length) parts.push('<div class="llm-reply-label">Reply</div><pre class="llm-dim">(empty)</pre>');
-            replyEl.innerHTML = parts.join('');
-        },
-        showError(err) {
-            card.classList.remove('is-pending', 'is-streaming');
-            card.classList.add('is-error');
-            statusEl.textContent = 'failed';
-            replyEl.innerHTML = `<div class="llm-reply-label">Error</div><pre>${escapeHtml(err && err.message || err)}</pre>`;
-        },
-        form(html) { replyEl.innerHTML = html; return replyEl; },
-    };
-}
-
-async function handleLlmRequest(json) {
-    const req = JSON.parse(json);
-    app.requestCount += 1;
-    const card = addRequestCard(req);
+async function chromeAvailability() {
+    if (!('LanguageModel' in self) || typeof self.LanguageModel.availability !== 'function') return 'unavailable';
     try {
-        let reply;
-        if (app.mode === 'webllm' && app.webllm.engine) reply = await answerWithWebLlm(req, card);
-        else if (app.mode === 'ollama') reply = await answerWithOllama(req, card);
-        else reply = await answerManually(req, card);
-        card.showReply(reply);
-        return JSON.stringify(reply);
+        return await self.LanguageModel.availability(LM_OPTIONS);
     } catch (e) {
-        card.showError(e);
-        return JSON.stringify({ error: String(e && e.message || e) });
+        try { return await self.LanguageModel.availability(); } catch (e2) { return 'unavailable'; }
     }
 }
 
-// --- you are the model ---------------------------------------------------------------
+async function setupModelControl() {
+    const availability = await chromeAvailability();
+    if (/Edg\//.test(navigator.userAgent)) {
+        app.chrome.label = "Edge's built-in model";
+        app.chrome.badge = 'Edge built-in';
+    }
+    if (availability === 'available' || availability === 'downloadable' || availability === 'downloading') {
+        setupChrome(availability);
+    } else {
+        setupWebLlm();
+    }
+    renderBadges();
+}
 
-function answerManually(req, card) {
-    card.setStatus('waiting for YOU');
-    card.el.classList.add('is-manual');
-    const root = card.form('');
-    return new Promise((resolve, reject) => {
-        mountComposer(root, req, {
-            onSend: resolve,
-            onRefuse: () => reject(new Error('refused by the person at the keyboard')),
-        });
+function setupChrome(availability) {
+    app.offer = 'chrome';
+    $('#llm-source-name').textContent = app.chrome.label;
+    const btn = $('#llm-load');
+    btn.textContent = 'Download ' + app.chrome.label.replace(/'s built-in model$/, "'s model");
+    btn.onclick = () => createChromeSession();
+    if (availability === 'available') {
+        btn.hidden = true;
+        setStatus('Loading it now; it runs on this device. ' + UNTIL);
+        createChromeSession();
+        return;
+    }
+    // A download needs a user activation. The visitor's first click or keypress anywhere on
+    // the page is one, so the download starts then; the button is the explicit way.
+    btn.hidden = false;
+    setStatus((availability === 'downloading' ? 'The browser is downloading it. ' : 'The browser downloads it once, then it runs on this device. ')
+        + 'The download starts on your first click or keypress on this page. ' + UNTIL);
+    const onGesture = () => {
+        if (app.chrome.session || app.chrome.creating) return;
+        createChromeSession();
+    };
+    document.addEventListener('pointerdown', onGesture, { capture: true });
+    document.addEventListener('keydown', onGesture, { capture: true });
+    app.chrome.stopWaiting = () => {
+        document.removeEventListener('pointerdown', onGesture, { capture: true });
+        document.removeEventListener('keydown', onGesture, { capture: true });
+    };
+    // Already downloading elsewhere: it may not need the activation at all.
+    if (availability === 'downloading') createChromeSession({ quiet: true });
+}
+
+// Must be called synchronously from the gesture handler: `create()` checks the activation
+// when it is called, not when it resolves.
+function createChromeSession({ quiet = false } = {}) {
+    if (app.chrome.session) return;
+    if (app.chrome.creating) return;
+    const btn = $('#llm-load');
+    let options = Object.assign({}, LM_OPTIONS, {
+        monitor(m) {
+            m.addEventListener('downloadprogress', (e) => {
+                setProgress(e.loaded);
+                setStatus(`Downloading ${app.chrome.label}: ${Math.round(e.loaded * 100)}%. ` + UNTIL);
+            });
+        },
+    });
+    let pending;
+    try {
+        pending = self.LanguageModel.create(options);
+    } catch (e) {
+        pending = Promise.reject(e);
+    }
+    app.chrome.creating = pending;
+    if (!quiet) { btn.disabled = true; setStatus(`Starting ${app.chrome.label}… ` + UNTIL); }
+    pending.then((session) => {
+        app.chrome.session = session;
+        app.chrome.creating = null;
+        app.chrome.stopWaiting?.();
+        btn.hidden = true;
+        setProgress(null);
+        setStatus('Ready. It runs on this device and answers every request now.');
+        modelReady('chrome');
+    }, (e) => {
+        app.chrome.creating = null;
+        btn.disabled = false;
+        if (quiet) return;
+        console.warn('LanguageModel.create failed', e);
+        setProgress(null);
+        if (e && e.name === 'NotAllowedError') {
+            setStatus('The browser wants a click before it downloads the model: press the button. ' + UNTIL);
+        } else {
+            setStatus('Could not start it (' + escapeHtml(e && e.message || e) + '). ' + UNTIL);
+        }
     });
 }
 
-// --- WebLLM ----------------------------------------------------------------------------
+function setupWebLlm() {
+    app.offer = 'webllm';
+    $('#llm-source-name').textContent = 'WebLLM, on your GPU';
+    const sel = $('#webllm-model');
+    const btn = $('#llm-load');
+    if (!navigator.gpu) {
+        app.offer = null;
+        $('#llm-source-name').textContent = 'No model runs in this browser';
+        setStatus('It has neither a built-in model nor WebGPU (Chrome or Edge on a desktop, or Safari 18+, have one of them), so <b>you</b> are the model: each request opens a form below.');
+        return;
+    }
+    sel.innerHTML = WEBLLM_MODELS.map(([id, label, size]) => `<option value="${id}">${escapeHtml(label)} · ${size}</option>`).join('');
+    sel.hidden = false;
+    const label = () => {
+        const m = WEBLLM_MODELS.find(([id]) => id === sel.value);
+        btn.textContent = 'Download ' + m[2];
+    };
+    sel.onchange = label;
+    label();
+    btn.hidden = false;
+    btn.onclick = loadWebLlm;
+    setStatus('Downloaded once from Hugging Face, then cached by the browser. ' + UNTIL);
+}
+
+async function loadWebLlm() {
+    const btn = $('#llm-load');
+    const sel = $('#webllm-model');
+    btn.disabled = true;
+    sel.disabled = true;
+    app.webllm.loading = true;
+    try {
+        setStatus('Loading the WebLLM runtime… ' + UNTIL);
+        setProgress(0);
+        if (!app.webllm.module) app.webllm.module = await import(WEBLLM_URL);
+        const model = sel.value;
+        const engine = await app.webllm.module.CreateMLCEngine(model, {
+            initProgressCallback: (p) => {
+                if (typeof p.progress === 'number') setProgress(p.progress);
+                setStatus(escapeHtml(p.text) + ' ' + UNTIL);
+            },
+        });
+        app.webllm.engine = engine;
+        app.webllm.model = model;
+        btn.hidden = true;
+        setProgress(null);
+        setStatus('Ready, and cached in your browser for next time. It answers every request now.');
+        modelReady('webllm');
+    } catch (e) {
+        console.error(e);
+        setProgress(null);
+        setStatus('Could not load the model: ' + escapeHtml(e && e.message || e) + '. ' + UNTIL);
+        btn.disabled = false;
+        sel.disabled = false;
+    } finally {
+        app.webllm.loading = false;
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Requests: one at a time, and only the current one is on screen.
+// ---------------------------------------------------------------------------------------
+
+// What a request is about, for a one-line summary: the event id and the line received.
+function describe(req) {
+    const text = req.messages.map((m) => m.content).join('\n');
+    const event = (text.match(/Event ID: ([\w.:-]+)/) || [])[1] || null;
+    let detail = '';
+    const at = text.lastIndexOf('Context data:');
+    if (at >= 0) {
+        try {
+            const ctx = JSON.parse(text.slice(at + 'Context data:'.length).trim());
+            const v = ctx.message ?? ctx.data ?? ctx.line ?? ctx.text;
+            if (typeof v === 'string') detail = v;
+        } catch (e) { /* not a JSON object */ }
+    }
+    if (!event && req.kind === 'chat') {
+        const user = [...req.messages].reverse().find((m) => m.role === 'user');
+        if (user) detail = user.content.split('\n')[0];
+    }
+    return { event: event || (req.kind === 'chat' ? 'chat' : req.kind), detail };
+}
+
+function handleLlmRequest(json) {
+    const req = JSON.parse(json);
+    return new Promise((resolve) => {
+        app.queue.push({ req, resolve, touched: false, manual: false, started: performance.now() });
+        pump();
+    });
+}
+
+function pump() {
+    if (app.current || !app.queue.length) { renderQueueCount(); return; }
+    app.current = app.queue.shift();
+    dispatch(app.current);
+}
+
+function finish(entry, reply) {
+    if (app.current !== entry) return;
+    entry.resolve(JSON.stringify(reply));
+    app.current = null;
+    renderIdle();
+    pump();
+}
+
+function dispatch(entry) {
+    if (app.answerer === 'you') answerManually(entry);
+    else answerWithModel(entry);
+}
+
+function renderIdle() {
+    $('#llm-current').innerHTML = `<div class="llm-idle">Nothing to answer right now. ${app.telnet.conn === null
+        ? 'When the Telnet server needs to say something, the request lands here.'
+        : 'Type a line in the Telnet terminal: whatever the server says back is decided here.'}</div>`;
+}
+
+function renderQueueCount() {
+    const el = $('#llm-current .llm-queue');
+    if (el) el.textContent = app.queue.length ? `+${app.queue.length} more waiting` : '';
+}
+
+function headHtml(entry, state) {
+    const { event, detail } = describe(entry.req);
+    return `<div class="llm-head">
+        <span class="llm-id">#${entry.req.id}</span>
+        <span class="llm-kind">${escapeHtml(event)}</span>
+        ${detail ? `<span class="llm-meta">“${escapeHtml(detail.length > 80 ? detail.slice(0, 79) + '…' : detail)}”</span>` : ''}
+        <span class="llm-state">${escapeHtml(state)}</span>
+        <span class="llm-queue"></span>
+      </div>`;
+}
+
+function promptHtml(req) {
+    const n = offeredActions(req).length;
+    return `<details class="llm-prompt">
+        <summary>The prompt NetGet sent · ${req.messages.length} message${req.messages.length === 1 ? '' : 's'}${n ? ` · ${n} actions offered` : ''}</summary>
+        ${req.messages.map((m) => `<span class="llm-role">${escapeHtml(m.role)}</span><pre>${escapeHtml(m.content)}</pre>`).join('')}
+      </details>`;
+}
+
+// --- you are the model -------------------------------------------------------------------
+
+function answerManually(entry, note = '') {
+    entry.manual = true;
+    const root = $('#llm-current');
+    root.innerHTML = headHtml(entry, 'waiting for you')
+        + (note ? `<div class="llm-note">${escapeHtml(note)}</div>` : '')
+        + promptHtml(entry.req)
+        + '<div class="llm-composer"></div>';
+    renderQueueCount();
+    const touch = () => { entry.touched = true; };
+    const composerRoot = $('.llm-composer', root);
+    for (const type of ['input', 'change', 'click']) composerRoot.addEventListener(type, touch);
+    mountComposer(composerRoot, entry.req, {
+        autofocus: false,
+        onSend: (reply) => { finish(entry, reply); if (app.telnet.term) focusTerm(app.telnet.term); },
+        onRefuse: () => { finish(entry, { error: 'refused by the person at the keyboard' }); },
+    });
+}
+
+// --- a model -------------------------------------------------------------------------------
+
+async function answerWithModel(entry) {
+    const who = answererName();
+    const { event, detail } = describe(entry.req);
+    const root = $('#llm-current');
+    root.innerHTML = headHtml(entry, 'the model is answering')
+        + `<div class="llm-working"><span>${escapeHtml(who)} is answering <code>${escapeHtml(event)}</code>${detail ? ` for “${escapeHtml(detail.length > 60 ? detail.slice(0, 59) + '…' : detail)}”` : ''}<span class="llm-progress-text"></span></span></div>`;
+    renderQueueCount();
+    const progress = (text) => { const el = $('.llm-progress-text', root); if (el) el.textContent = text; };
+    let reply;
+    try {
+        reply = app.answerer === 'chrome'
+            ? await answerWithChrome(entry.req)
+            : await answerWithWebLlm(entry.req, progress);
+    } catch (e) {
+        console.warn('the model could not answer; the visitor answers this one', e);
+        if (app.current === entry) answerManually(entry, `${who} could not answer this one (${e && e.message || e}), so it is yours.`);
+        return;
+    }
+    finish(entry, reply);
+}
+
+// --- Chrome's built-in model (the Prompt API) --------------------------------------------
+
+class UnusableAnswer extends Error {}
+
+// A JSON Schema that only NetGet's action envelope satisfies: `{"actions": [...]}` where each
+// item is one of the offered actions, `type` pinned to its name. Tools are left out: they
+// make a small model wander, and nothing a tool returns is needed to answer a Telnet line.
+function responseConstraint(actions) {
+    const items = actions.filter((a) => !a.tool).map((a) => {
+        const schema = a.schema && typeof a.schema === 'object' ? a.schema : {};
+        const properties = Object.assign({}, schema.properties || {}, { type: { type: 'string', enum: [a.name] } });
+        const required = ['type', ...(Array.isArray(schema.required) ? schema.required.filter((r) => r !== 'type') : [])];
+        return { type: 'object', properties, required };
+    });
+    return {
+        type: 'object',
+        properties: { actions: { type: 'array', items: items.length === 1 ? items[0] : { anyOf: items } } },
+        required: ['actions'],
+    };
+}
+
+// The model's text as the reply the composer would have built for the same actions, or an
+// UnusableAnswer. Going through the composer's own model is the validation: every action
+// must be one offered, every field must build.
+function replyFromText(req, actions, text) {
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch (e) {
+        const m = String(text).match(/\{[\s\S]*\}/);
+        if (!m) throw new UnusableAnswer('it did not answer with JSON');
+        try { parsed = JSON.parse(m[0]); } catch (e2) { throw new UnusableAnswer('it did not answer with JSON'); }
+    }
+    if (Array.isArray(parsed)) parsed = { actions: parsed };
+    if (!parsed || !Array.isArray(parsed.actions)) throw new UnusableAnswer('its answer has no "actions" list');
+    const envelope = { actions: [] };
+    const tools = [];
+    for (const item of [...parsed.actions, ...(Array.isArray(parsed.tools) ? parsed.tools : [])]) {
+        const action = item && actions.find((a) => a.name === item.type);
+        if (!action) throw new UnusableAnswer(`it chose an action that was not offered (${item && item.type})`);
+        (action.tool ? tools : envelope.actions).push(item);
+    }
+    if (tools.length) envelope.tools = tools;
+    const entries = entriesFromEnvelope(actions, envelope);
+    if (!entries) throw new UnusableAnswer('its answer does not fit the offered actions');
+    const built = buildReply(req, actions, entries);
+    if (!built.ok) throw new UnusableAnswer('its answer is missing ' + built.errors.map((e) => e.field).join(', '));
+    return built.reply;
+}
+
+async function answerWithChrome(req) {
+    const base = app.chrome.session;
+    if (!base) throw new Error('the model is not loaded');
+    const roles = new Set(['system', 'user', 'assistant']);
+    const messages = req.messages.map((m) => ({ role: roles.has(m.role) ? m.role : 'user', content: String(m.content ?? '') }));
+    const last = messages.pop() || { role: 'user', content: '' };
+    // A fresh conversation per request: NetGet sends the whole context every time.
+    const session = messages.length || typeof base.clone !== 'function'
+        ? await self.LanguageModel.create(Object.assign({}, LM_OPTIONS, messages.length ? { initialPrompts: messages } : {}))
+        : await base.clone();
+    try {
+        const actions = offeredActions(req);
+        if (!actions.length) {
+            return { content: await session.prompt(last.content) };
+        }
+        const text = await session.prompt(last.content, {
+            responseConstraint: responseConstraint(actions),
+            // The prompt already describes the envelope and every action.
+            omitResponseConstraintInput: true,
+        });
+        return replyFromText(req, actions, text);
+    } finally {
+        session.destroy?.();
+    }
+}
+
+// --- WebLLM ----------------------------------------------------------------------------------
 
 function toolsAsPrompt(tools) {
     const lines = tools.map((t) => {
@@ -314,9 +629,15 @@ function parseToolCallsFromText(text) {
     return null;
 }
 
-async function answerWithWebLlm(req, card) {
+function safeJson(v) {
+    if (typeof v !== 'string') return v ?? {};
+    try { return JSON.parse(v); } catch (e) { return { raw: v }; }
+}
+
+// The reply goes back as the model wrote it; NetGet's own parser, repair and retry take it
+// from there, as they would for Ollama.
+async function answerWithWebLlm(req, progress) {
     const engine = app.webllm.engine;
-    card.setStatus('WebLLM is thinking…');
     const messages = req.messages.map((m) => ({ role: m.role, content: m.content }));
     const hasTools = req.tools && req.tools.length;
     const base = { messages, temperature: 0.2, max_tokens: 1024 };
@@ -352,7 +673,7 @@ async function answerWithWebLlm(req, card) {
     let usage = null;
     for await (const chunk of stream) {
         const delta = chunk.choices?.[0]?.delta?.content;
-        if (delta) { text += delta; card.stream(text); }
+        if (delta) { text += delta; progress(` · ${text.length} characters so far`); }
         if (chunk.usage) usage = chunk.usage;
     }
     const reply = { content: text, prompt_tokens: usage?.prompt_tokens || 0, completion_tokens: usage?.completion_tokens || 0 };
@@ -363,102 +684,14 @@ async function answerWithWebLlm(req, card) {
     return reply;
 }
 
-function safeJson(v) {
-    if (typeof v !== 'string') return v ?? {};
-    try { return JSON.parse(v); } catch (e) { return { raw: v }; }
-}
-
-async function loadWebLlm() {
-    const btn = $('#webllm-load');
-    const status = $('#webllm-status');
-    const select = $('#webllm-model');
-    if (!navigator.gpu) {
-        status.textContent = 'This browser has no WebGPU. Chrome or Edge on a desktop, or Safari 18+, can run models locally.';
-        return;
-    }
-    btn.disabled = true;
-    select.disabled = true;
-    app.webllm.status = 'loading';
-    try {
-        status.textContent = 'Loading the WebLLM runtime…';
-        if (!app.webllm.module) app.webllm.module = await import(WEBLLM_URL);
-        const model = select.value;
-        const engine = await app.webllm.module.CreateMLCEngine(model, {
-            initProgressCallback: (p) => { status.textContent = p.text; },
-        });
-        app.webllm.engine = engine;
-        app.webllm.model = model;
-        app.webllm.status = 'ready';
-        status.textContent = 'Ready. The model is cached in your browser for next time.';
-        setMode('webllm');
-    } catch (e) {
-        console.error(e);
-        status.textContent = 'Could not load the model: ' + (e && e.message || e);
-        app.webllm.status = 'error';
-        btn.disabled = false;
-        select.disabled = false;
-    }
-}
-
-// --- local Ollama ------------------------------------------------------------------------
-
-async function answerWithOllama(req, card) {
-    card.setStatus('asking Ollama at ' + app.ollama.url + '…');
-    const body = {
-        model: app.ollama.model,
-        messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
-        stream: false,
-        options: { temperature: 0.2 },
-    };
-    if (req.tools && req.tools.length) body.tools = req.tools;
-    const res = await fetch(app.ollama.url.replace(/\/$/, '') + '/api/chat', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error('Ollama answered HTTP ' + res.status + ': ' + (await res.text()).slice(0, 300));
-    const v = await res.json();
-    const msg = v.message || {};
-    return {
-        content: msg.content || null,
-        tool_calls: (msg.tool_calls || []).map((c, i) => ({
-            id: 'ollama-' + i, name: c.function?.name, arguments: c.function?.arguments ?? {},
-        })),
-        prompt_tokens: v.prompt_eval_count || 0,
-        completion_tokens: v.eval_count || 0,
-    };
-}
-
-async function connectOllama() {
-    const status = $('#ollama-status');
-    const url = $('#ollama-url').value.trim().replace(/\/$/, '');
-    app.ollama.url = url;
-    status.textContent = 'Checking ' + url + '…';
-    try {
-        const res = await fetch(url + '/api/tags');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const v = await res.json();
-        const names = (v.models || []).map((m) => m.name);
-        if (!names.length) throw new Error('no models pulled');
-        const sel = $('#ollama-model');
-        sel.innerHTML = names.map((n) => `<option>${escapeHtml(n)}</option>`).join('');
-        sel.disabled = false;
-        app.ollama.model = names[0];
-        sel.onchange = () => { app.ollama.model = sel.value; setModeBadge(); };
-        status.textContent = names.length + ' models. ';
-        setMode('ollama');
-    } catch (e) {
-        status.innerHTML = 'Cannot reach it (' + escapeHtml(e.message || e) + '). Start Ollama with '
-            + '<code>OLLAMA_ORIGINS=https://netget.net ollama serve</code> so this page may call it.';
-    }
-}
-
 // ---------------------------------------------------------------------------------------
-// Clients: Telnet, a browser, raw TCP. All are NetGet.connect() on the virtual network.
+// The Telnet client: NetGet.connect() on the virtual network, line mode with local echo.
 // ---------------------------------------------------------------------------------------
 
-const IAC = 255, DONT = 254, DO = 253, WONT = 252, WILL = 251, SB = 250, SE = 240, OPT_ECHO = 1;
+const IAC = 255, DONT = 254, DO = 253, WONT = 252, WILL = 251, SB = 250, SE = 240;
 
-// Answer negotiation the way a plain terminal would (refuse everything but ECHO from the
-// server) and strip the commands from the byte stream.
+// Refuse every option, as a plain line-mode client does (echo included: this client always
+// echoes locally), and strip the commands from the byte stream.
 function telnetFilter(bytes) {
     const out = [];
     const replies = [];
@@ -477,19 +710,8 @@ function telnetFilter(bytes) {
         }
         if (cmd === DO || cmd === DONT || cmd === WILL || cmd === WONT) {
             const opt = bytes[i + 2];
-            if (cmd === WILL && opt === OPT_ECHO) {
-                app.telnet.localEcho = false;
-                $('#telnet-echo').checked = false;
-                replies.push(IAC, DO, opt);
-            } else if (cmd === WONT && opt === OPT_ECHO) {
-                app.telnet.localEcho = true;
-                $('#telnet-echo').checked = true;
-                replies.push(IAC, DONT, opt);
-            } else if (cmd === WILL) {
-                replies.push(IAC, DONT, opt);
-            } else if (cmd === DO) {
-                replies.push(IAC, WONT, opt);
-            }
+            if (cmd === WILL) replies.push(IAC, DONT, opt);
+            else if (cmd === DO) replies.push(IAC, WONT, opt);
             i += 3;
             continue;
         }
@@ -498,229 +720,90 @@ function telnetFilter(bytes) {
     return { data: new Uint8Array(out), replies: new Uint8Array(replies) };
 }
 
+function setTelnetState(text, up) {
+    const el = $('#telnet-state');
+    el.textContent = text;
+    el.classList.toggle('is-up', !!up);
+}
+
 function telnetConnect() {
     const t = app.telnet;
     if (t.conn !== null) { app.netget.close(t.conn); t.conn = null; }
-    const port = parseInt($('#telnet-port').value, 10) || t.port;
-    t.port = port;
-    t.term.reset();
-    t.term.write(`Trying 127.0.0.1:${port}…\r\n`);
-    const id = app.netget.connect(port, (bytes) => {
+    t.line = '';
+    t.term.write(`\r\nTrying 127.0.0.1:${TELNET_PORT}…\r\n`);
+    const id = app.netget.connect(TELNET_PORT, (bytes) => {
         const { data, replies } = telnetFilter(bytes);
         if (replies.length && t.conn === id) app.netget.send(id, replies);
         if (data.length) t.term.write(dec.decode(data).replace(/(?<!\r)\n/g, '\r\n'));
     }, (reason) => {
-        t.term.write(reason ? `\r\n[could not connect: ${reason}]\r\n` : '\r\n[connection closed by the server]\r\n');
+        t.term.write(reason ? `\r\n[could not connect: ${reason}]\r\n` : '\r\n[connection closed by the server; press Enter to reconnect]\r\n');
         if (t.conn === id) t.conn = null;
-        $('#telnet-connect').textContent = 'Connect';
+        setTelnetState('closed', false);
+        step('step-client', false);
+        if (!app.current) renderIdle();
     });
     t.conn = id;
-    t.term.write('Connected.\r\n');
-    $('#telnet-connect').textContent = 'Reconnect';
-    t.term.focus();
+    t.term.write(`Connected to 127.0.0.1:${TELNET_PORT}.\r\n`);
+    setTelnetState(`connected to :${TELNET_PORT}`, true);
+    step('step-client', true, `The Telnet client is connected to <code>127.0.0.1:${TELNET_PORT}</code>.`);
+    if (!app.current) renderIdle();
+}
+
+// telnet(1) in line mode: the line is edited and echoed here, and sent whole on Enter.
+function telnetInput(d) {
+    const t = app.telnet;
+    if (t.conn === null) {
+        if ((d === '\r' || d === '\n') && t.serverUp) telnetConnect();
+        return;
+    }
+    for (const ch of d.replace(/\x1b\[[0-9;]*[A-Za-z~]|\x1bO./g, '')) {
+        if (ch === '\r' || ch === '\n') {
+            t.term.write('\r\n');
+            app.netget.send(t.conn, enc.encode(t.line + '\r\n'));
+            t.line = '';
+        } else if (ch === '\x7f' || ch === '\b') {
+            if (t.line.length) { t.line = t.line.slice(0, -1); t.term.write('\b \b'); }
+        } else if (ch === '\x15') {                   // Ctrl-U: erase the line
+            t.term.write('\b \b'.repeat(t.line.length));
+            t.line = '';
+        } else if (ch >= ' ') {
+            t.line += ch;
+            t.term.write(ch);
+        }
+    }
 }
 
 function wireTelnet() {
-    const { term } = makeTerm($('#telnet-term'), { cursorBlink: true, scrollback: 500 });
+    const term = makeTerm($('#telnet-term'), { cursorBlink: true, scrollback: 500 });
     app.telnet.term = term;
-    term.write('Telnet client. Start a Telnet server in the dashboard, then Connect.\r\n');
-    term.onData((d) => {
-        const t = app.telnet;
-        if (t.conn === null) return;
-        const wire = d.replace(/\r(?!\n)/g, '\r\n');
-        app.netget.send(t.conn, enc.encode(wire));
-        if (t.localEcho) term.write(d === '\r' ? '\r\n' : d === '\x7f' ? '\b \b' : d);
-    });
-    $('#telnet-connect').addEventListener('click', telnetConnect);
-    $('#telnet-echo').addEventListener('change', (ev) => { app.telnet.localEcho = ev.target.checked; });
+    term.write('Telnet client. It connects to NetGet by itself in a moment.\r\n');
+    term.onData(telnetInput);
 }
 
-// --- the browser -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------------------
+// The automatic start: the Telnet server, then the client.
+// ---------------------------------------------------------------------------------------
 
-function parseHttpResponse(bytes) {
-    const text = dec.decode(bytes);
-    const sep = text.indexOf('\r\n\r\n');
-    if (sep < 0) return { status: '(incomplete response)', headers: [], body: text, contentType: 'text/plain' };
-    const head = text.slice(0, sep).split('\r\n');
-    const status = head.shift();
-    const headers = head.map((l) => { const i = l.indexOf(':'); return [l.slice(0, i).trim(), l.slice(i + 1).trim()]; });
-    const get = (name) => (headers.find((h) => h[0].toLowerCase() === name) || [])[1] || '';
-    let bodyBytes = bytes.slice(enc.encode(text.slice(0, sep + 4)).length);
-    if (/chunked/i.test(get('transfer-encoding'))) bodyBytes = dechunk(bodyBytes);
-    return { status, headers, body: dec.decode(bodyBytes), contentType: get('content-type') };
-}
-
-function dechunk(bytes) {
-    const out = [];
-    let i = 0;
-    while (i < bytes.length) {
-        let j = i;
-        while (j < bytes.length && !(bytes[j] === 13 && bytes[j + 1] === 10)) j += 1;
-        const size = parseInt(dec.decode(bytes.slice(i, j)).split(';')[0], 16);
-        if (!size) break;
-        out.push(...bytes.slice(j + 2, j + 2 + size));
-        i = j + 2 + size + 2;
-    }
-    return new Uint8Array(out);
-}
-
-function browse() {
-    const bar = $('#browser-url');
-    let url = bar.value.trim();
-    const m = url.match(/^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1)?(?::(\d+))?(\/.*)?$/i);
-    if (!m) { renderPage({ status: 'Only http://localhost:<port>/<path> exists on this network.', headers: [], body: '' }); return; }
-    const port = m[1] ? parseInt(m[1], 10) : app.browser.port;
-    const path = m[2] || '/';
-    app.browser.port = port;
-    bar.value = `http://localhost:${port}${path}`;
-    const chunks = [];
-    const win = $('#browser-window');
-    win.classList.add('is-loading');
-    const started = performance.now();
-    const id = app.netget.connect(port, (bytes) => chunks.push(bytes), (reason) => {
-        win.classList.remove('is-loading');
-        if (reason) { renderPage({ status: 'Connection failed: ' + reason, headers: [], body: '' }); return; }
-        const total = chunks.reduce((n, c) => n + c.length, 0);
-        const all = new Uint8Array(total);
-        let off = 0;
-        for (const c of chunks) { all.set(c, off); off += c.length; }
-        const res = parseHttpResponse(all);
-        res.ms = Math.round(performance.now() - started);
-        renderPage(res);
-    });
-    const request = `GET ${path} HTTP/1.1\r\nHost: localhost:${port}\r\nUser-Agent: NetGet-demo-browser/1.0\r\nAccept: text/html,application/json,*/*\r\nConnection: close\r\n\r\n`;
-    app.netget.send(id, enc.encode(request));
-    app.netget.close(id);
-}
-
-function renderPage(res) {
-    $('#browser-status').textContent = res.status + (res.ms != null ? ` · ${res.ms} ms` : '');
-    $('#browser-headers').textContent = res.headers.map((h) => h.join(': ')).join('\n');
-    const frame = $('#browser-frame');
-    const pre = $('#browser-pre');
-    if (/html/i.test(res.contentType || '')) {
-        frame.hidden = false; pre.hidden = true;
-        frame.srcdoc = res.body;
-    } else {
-        frame.hidden = true; pre.hidden = false;
-        let body = res.body;
-        if (/json/i.test(res.contentType || '')) { try { body = JSON.stringify(JSON.parse(body), null, 2); } catch (e) { /* as is */ } }
-        pre.textContent = body;
-    }
-}
-
-function wireBrowser() {
-    $('#browser-go').addEventListener('click', browse);
-    $('#browser-url').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') browse(); });
-}
-
-// --- raw TCP ------------------------------------------------------------------------------
-
-function rawLog(kind, text) {
-    const log = $('#raw-log');
-    const line = document.createElement('div');
-    line.className = 'raw-line raw-' + kind;
-    line.textContent = text;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-}
-
-function printable(bytes) {
-    let s = '';
-    for (const b of bytes) {
-        if (b === 10) s += '\n';
-        else if (b >= 32 && b < 127) s += String.fromCharCode(b);
-        else if (b === 13 || b === 9) s += b === 9 ? '\t' : '';
-        else s += '\\x' + b.toString(16).padStart(2, '0');
-    }
-    return s;
-}
-
-function wireRaw() {
-    $('#raw-connect').addEventListener('click', () => {
-        if (app.raw.conn !== null) { app.netget.close(app.raw.conn); app.raw.conn = null; }
-        const port = parseInt($('#raw-port').value, 10) || app.raw.port;
-        app.raw.port = port;
-        rawLog('sys', `connecting to 127.0.0.1:${port}`);
-        const id = app.netget.connect(port, (bytes) => rawLog('in', printable(bytes)), (reason) => {
-            rawLog('sys', reason ? 'could not connect: ' + reason : 'closed by the server');
-            if (app.raw.conn === id) app.raw.conn = null;
-        });
-        app.raw.conn = id;
-    });
-    $('#raw-close').addEventListener('click', () => {
-        if (app.raw.conn === null) return;
-        app.netget.close(app.raw.conn);
-        rawLog('sys', 'closed our end');
-        app.raw.conn = null;
-    });
-    const send = () => {
-        if (app.raw.conn === null) { rawLog('sys', 'not connected'); return; }
-        const input = $('#raw-input');
-        const text = input.value + ($('#raw-newline').checked ? '\n' : '');
-        app.netget.send(app.raw.conn, enc.encode(text));
-        rawLog('out', printable(enc.encode(text)));
-        input.value = '';
-    };
-    $('#raw-send').addEventListener('click', send);
-    $('#raw-input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') send(); });
-}
-
-// --- raw UDP ------------------------------------------------------------------------------
-
-function udpLog(kind, text) {
-    const log = $('#udp-log');
-    const line = document.createElement('div');
-    line.className = 'raw-line raw-' + kind;
-    line.textContent = text;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-}
-
-function hexBytes(text) {
-    const clean = text.replace(/[^0-9a-fA-F]/g, '');
-    const out = new Uint8Array(Math.floor(clean.length / 2));
-    for (let i = 0; i < out.length; i += 1) out[i] = parseInt(clean.substr(i * 2, 2), 16);
-    return out;
-}
-
-function wireUdp() {
-    const send = () => {
-        if (app.udp.sock === null) {
-            app.udp.sock = app.netget.udp_open((bytes, fromPort) => {
-                udpLog('in', `:${fromPort} → ` + printable(bytes));
-            });
-            udpLog('sys', 'opened a UDP socket on the virtual network');
+function startTelnetServer(attempt = 0) {
+    app.netget.start_server(JSON.stringify({
+        protocol: 'telnet', port: TELNET_PORT, instruction: TELNET_INSTRUCTION,
+    }), (json) => {
+        const r = JSON.parse(json);
+        if (r.error) {
+            // The dashboard hands over its status channel a moment after it boots.
+            if (/not running yet/.test(r.error) && attempt < 40) { setTimeout(() => startTelnetServer(attempt + 1), 250); return; }
+            step('step-server', false, `Could not open the Telnet server: ${escapeHtml(r.error)}`);
+            return;
         }
-        const port = parseInt($('#udp-port').value, 10) || app.udp.port;
-        app.udp.port = port;
-        const input = $('#udp-input');
-        const bytes = $('#udp-hex').checked ? hexBytes(input.value) : enc.encode(input.value);
-        app.netget.udp_send(app.udp.sock, port, bytes);
-        udpLog('out', `→ :${port} ` + printable(bytes));
-        input.value = '';
-    };
-    $('#udp-send').addEventListener('click', send);
-    $('#udp-input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') send(); });
+        step('step-server', true, `NetGet opened a Telnet server on port <code>${TELNET_PORT}</code> (#${r.id} in the dashboard).`);
+        refreshServers();
+    });
 }
 
-// --- tabs, quick starts, server list ---------------------------------------------------
-
-function wireTabs() {
-    for (const tabs of document.querySelectorAll('.tabs')) {
-        tabs.addEventListener('click', (ev) => {
-            const btn = ev.target.closest('[data-tab]');
-            if (!btn) return;
-            showTab(tabs, btn.dataset.tab);
-        });
-    }
-}
-
-function showTab(tabs, name) {
-    for (const b of tabs.querySelectorAll('[data-tab]')) b.classList.toggle('is-active', b.dataset.tab === name);
-    const panelRoot = tabs.parentElement;
-    for (const p of panelRoot.querySelectorAll('[data-panel]')) p.hidden = p.dataset.panel !== name;
-    if (name === 'telnet') { app.telnet.term.focus(); }
+function whenListening(port, then, deadline = performance.now() + 15000) {
+    if (app.netget.listening_ports().includes(port)) { app.telnet.serverUp = true; then(); return; }
+    if (performance.now() > deadline) { app.telnet.term.write('\r\n[the Telnet server did not come up]\r\n'); return; }
+    setTimeout(() => whenListening(port, then, deadline), 100);
 }
 
 function refreshServers() {
@@ -729,38 +812,12 @@ function refreshServers() {
     app.netget.servers((json) => {
         const rows = JSON.parse(json);
         const el = $('#server-list');
-        if (!rows.length) { el.innerHTML = '<span class="muted">nothing yet — use a quick start, or press <kbd>a</kbd> in the dashboard</span>'; return; }
+        if (!rows.length) { el.innerHTML = '<span class="muted">nothing yet</span>'; return; }
         el.innerHTML = rows.map((r) => {
             const transport = udpPorts.has(r.port) ? 'udp' : 'tcp';
             return `<span class="server-chip ${r.status === 'Running' ? 'is-up' : ''}">#${r.id} ${escapeHtml(r.protocol)} ${transport}/${r.port} <small>${escapeHtml(r.status)}${transport === 'tcp' ? ' · ' + r.connections + ' conn' : ''}</small></span>`;
         }).join('');
     });
-}
-
-function wireQuickStarts() {
-    const box = $('#quick-starts');
-    for (const q of QUICK_STARTS) {
-        const btn = document.createElement('button');
-        btn.className = 'btn';
-        btn.textContent = q.label;
-        btn.title = q.instruction;
-        btn.addEventListener('click', () => {
-            btn.disabled = true;
-            app.netget.start_server(JSON.stringify({ protocol: q.protocol, port: q.port, instruction: q.instruction }), (json) => {
-                const r = JSON.parse(json);
-                btn.disabled = false;
-                if (r.error) { alert(r.error); return; }
-                refreshServers();
-                const tabs = $('#client-tabs');
-                showTab(tabs, q.client);
-                if (q.client === 'telnet') $('#telnet-port').value = q.port;
-                if (q.client === 'browser') $('#browser-url').value = `http://localhost:${q.port}/`;
-                if (q.client === 'raw') $('#raw-port').value = q.port;
-                if (q.client === 'udp') $('#udp-port').value = q.port;
-            });
-        });
-        box.appendChild(btn);
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -769,6 +826,9 @@ async function main() {
     const root = $('#demo');
     if (!root) return;
     const banner = $('#demo-banner');
+    renderIdle();
+    // Which model the control offers does not depend on NetGet; find out while it loads.
+    const control = setupModelControl();
     if (!('WebAssembly' in window)) { banner.textContent = 'This browser cannot run WebAssembly.'; return; }
 
     let mod;
@@ -785,9 +845,16 @@ async function main() {
     banner.hidden = true;
     banner.textContent = '';
 
-    const { term, fit } = makeTerm($('#dash-term'));
+    // xterm.js measures its cell once, when it opens: let the terminal font arrive first.
+    await Promise.race([
+        document.fonts?.load("13px 'JetBrains Mono'").catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    wireTelnet();
+    let netget = null;
+    const term = makeTerm($('#dash-term'), {}, (cols, rows) => netget?.resize(cols, rows), { minCols: 80 });
     app.dash = term;
-    const netget = new mod.NetGet({
+    netget = new mod.NetGet({
         cols: term.cols,
         rows: term.rows,
         model: 'you',
@@ -797,25 +864,15 @@ async function main() {
     });
     app.netget = netget;
     wireDashboardInput(term, netget);
-    new ResizeObserver(() => { fit.fit(); netget.resize(term.cols, term.rows); }).observe($('#dash-term'));
-    term.focus();
+    await control;
+    renderBadges();
 
-    wireTabs();
-    wireTelnet();
-    wireBrowser();
-    wireRaw();
-    wireUdp();
-    wireQuickStarts();
+    setTimeout(() => startTelnetServer(), SERVER_AFTER_MS);
+    setTimeout(() => whenListening(TELNET_PORT, () => {
+        telnetConnect();
+        focusTerm(app.telnet.term);
+    }), CLIENT_AFTER_MS);
 
-    for (const r of document.querySelectorAll('input[name=llm-mode]')) {
-        r.addEventListener('change', () => setMode(r.value));
-    }
-    const sel = $('#webllm-model');
-    sel.innerHTML = WEBLLM_MODELS.map(([id, label]) => `<option value="${id}">${label}</option>`).join('');
-    $('#webllm-load').addEventListener('click', loadWebLlm);
-    $('#ollama-connect').addEventListener('click', connectOllama);
-    if (!navigator.gpu) $('#webllm-status').textContent = 'No WebGPU in this browser; WebLLM needs Chrome/Edge on a desktop or Safari 18+.';
-    setMode('manual');
     setInterval(refreshServers, 2000);
     refreshServers();
 
