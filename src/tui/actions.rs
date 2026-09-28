@@ -362,6 +362,48 @@ fn cycle_driver(app: &mut DashboardApp, key: UiKey, state: &AppState) {
     });
 }
 
+/// The create form `[ + <proto> client ]` applies for a server: a client of the server
+/// protocol's compiled counterpart (`protocol::compiled_client_protocol_for_server`), pointed
+/// at 127.0.0.1 on the port the server actually bound, with an instruction naming the pair.
+/// `Err` says why there is none. Shared with the browser build's page API, so a page that
+/// connects a client to one of its servers goes through exactly what the button does.
+pub fn client_form_for_server(
+    server_id: crate::state::ServerId,
+    server_protocol: &str,
+    local_addr: Option<&str>,
+    port: u16,
+) -> Result<crate::tui::modal::form::FormModel, String> {
+    use crate::tui::modal::form::{FieldTarget, FormModel};
+    let Some(client_protocol) =
+        crate::protocol::compiled_client_protocol_for_server(server_protocol)
+    else {
+        return Err(format!(
+            "{server_protocol} has no client implementation compiled into this build"
+        ));
+    };
+    let remote = loopback_target(local_addr, port);
+
+    let mut model = FormModel::for_create(Section::Clients, &client_protocol, None);
+    model.set_field_value(&FieldTarget::RemoteAddr, remote.clone());
+    model.set_field_value(
+        &FieldTarget::Instruction,
+        format!(
+            "You are a {client_protocol} client connected to our own server #{} at {remote}.",
+            server_id.as_u32()
+        ),
+    );
+    Ok(model)
+}
+
+/// Where a client of our own server connects: 127.0.0.1 on the port the server actually
+/// bound (its configured port may be 0).
+fn loopback_target(local_addr: Option<&str>, port: u16) -> String {
+    let port = local_addr
+        .and_then(|a| a.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()))
+        .unwrap_or(port);
+    format!("127.0.0.1:{port}")
+}
+
 /// `[ + client ]` on a server: create a client of the counterpart protocol
 /// pointed at that very server, so the pair can talk to each other.
 async fn open_client_for_server(
@@ -372,30 +414,20 @@ async fn open_client_for_server(
     let Some(row) = app.server_row(server_id) else {
         return;
     };
-    let Some(client_protocol) = row.client_counterpart.clone() else {
-        app.push_system(format!(
-            "{} has no client implementation compiled into this build",
-            row.protocol
-        ));
-        return;
+    let mut model = match client_form_for_server(
+        server_id,
+        &row.protocol,
+        row.local_addr.as_deref(),
+        row.port,
+    ) {
+        Ok(model) => model,
+        Err(why) => {
+            app.push_system(why);
+            return;
+        }
     };
-    let port = row
-        .local_addr
-        .as_ref()
-        .and_then(|a| a.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()))
-        .unwrap_or(row.port);
-    let remote = format!("127.0.0.1:{port}");
-
-    use crate::tui::modal::form::{FieldTarget, FormModel};
-    let mut model = FormModel::for_create(Section::Clients, &client_protocol, None);
-    model.set_field_value(&FieldTarget::RemoteAddr, remote.clone());
-    model.set_field_value(
-        &FieldTarget::Instruction,
-        format!(
-            "You are a {client_protocol} client connected to our own server #{} at {remote}.",
-            server_id.as_u32()
-        ),
-    );
+    let client_protocol = model.protocol.clone();
+    let remote = loopback_target(row.local_addr.as_deref(), row.port);
 
     // When everything this client needs is known, connect it rather than
     // showing a form with nothing left to fill in. A client whose protocol

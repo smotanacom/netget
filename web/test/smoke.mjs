@@ -14,14 +14,24 @@
 //
 //   ./web/build.sh && node web/test/smoke.mjs
 //
-// There is deliberately no HTTP leg here, and the reason is worth knowing before adding one:
-// hyper's HTTP/1 server cannot run on wasm32 at all. `proto::h1::dispatch::poll_inner` calls
-// `T::update_date()` on its very first poll, which reaches `std::time::SystemTime::now()` —
-// and that panics on wasm32-unknown-unknown ("time not implemented on this platform"), taking
-// the whole wasm instance down with `RuntimeError: unreachable`. It is inside hyper's own
-// date-header cache, so `crate::utils::clock` cannot reach it. Measured 22 September 2026: a
-// `start_server` for `http` binds and accepts happily, and the first byte of a request kills
-// the page. The same is true of the eighteen other hyper-based servers in the browser build.
+// Then HTTP, from the client side. `[ + http client ]` on an HTTP server card must resolve and
+// connect — the same form the button applies (`connect_client_to_server`) — and an HTTP client
+// started through `ClientForm` must complete real exchanges over the virtual loopback: the
+// model's answer to `http_connected` becomes a request, the response reaches the client and is
+// reported back to the model, a request injected through the client's command channel (the
+// dashboard's `[ send ]`) comes back `Executed` with its status, a non-200 is reported as a
+// status, and `https://` is refused with the reason.
+//
+// The peer for those exchanges is NetGet's HLS server, not its HTTP server, and the reason is
+// worth knowing before changing it: hyper's HTTP/1 *server* cannot answer on wasm32 at all.
+// `proto::h1::dispatch::poll_inner` calls `T::update_date()` on its very first poll, which
+// reaches `std::time::SystemTime::now()` — and that panics on wasm32-unknown-unknown ("time not
+// implemented on this platform"), taking the whole wasm instance down with `RuntimeError:
+// unreachable`. It is inside hyper's own date-header cache, so `crate::utils::clock` cannot reach
+// it. The same is true of every other hyper-based server in the browser build. hyper's *client*
+// role never touches the clock, and HLS reads HTTP/1.1 with its own small parser, so the pair
+// runs. The `http` server is started only to prove the button resolves and connects; nothing is
+// ever sent to it.
 
 import { readFileSync } from 'node:fs';
 import init, { NetGet } from '../../site/demo/pkg/netget_web.js';
@@ -38,6 +48,9 @@ const received = [];
 // When set, requests are answered by the composer's default reply instead of the echo below.
 let answerLikeTheComposer = false;
 const composed = [];
+// What the HTTP client reported to the model: its connect event and each response it read.
+const httpConnected = [];
+const httpResponses = [];
 
 function fail(msg) {
     console.error('FAIL:', msg);
@@ -84,6 +97,31 @@ const netget = new NetGet({
         let context = {};
         if (ctx >= 0) {
             try { context = JSON.parse(user.content.slice(ctx + 'Context data:'.length)); } catch (e) { /* prompt-only */ }
+        }
+        // A client's prompt carries its event as "Event: <id>\nData: {...}" instead.
+        const withEvent = req.messages.map((m) => m.content).find((c) => c.includes('\nData: {'));
+        if (ctx < 0 && withEvent) {
+            try { context = JSON.parse(withEvent.slice(withEvent.lastIndexOf('\nData: ') + '\nData: '.length)); } catch (e) { /* prompt-only */ }
+        }
+        const offered = new Set((req.actions || []).map((a) => a.name));
+        const answer = (actions) => JSON.stringify({ content: JSON.stringify({ actions }), prompt_tokens: 10, completion_tokens: 5 });
+        // The HLS server: a playlist for .m3u8, a 404 for anything else.
+        if (offered.has('hls_playlist_response')) {
+            return answer([{ type: 'hls_playlist_response', target_duration: 6, segments: [{ uri: 'seg0.ts', duration: 6.0 }] }]);
+        }
+        if (offered.has('hls_segment_response')) {
+            return answer([{ type: 'hls_segment_response', status_code: 404, content_type: 'text/plain', content: 'no such segment' }]);
+        }
+        // The HTTP client: fetch the playlist when connected, and report every response.
+        if (offered.has('send_http_request')) {
+            if (context.status_code !== undefined) {
+                httpResponses.push(context);
+                return answer([]);
+            }
+            if (context.base_url !== undefined) {
+                httpConnected.push(context);
+                return answer([{ type: 'send_http_request', method: 'GET', path: '/live.m3u8' }]);
+            }
         }
         const text = String(context.data ?? context.data_preview ?? context.content ?? context.text ?? '');
         // Answer in the vocabulary of whichever server asked: TCP echoes uppercased, UDP
@@ -170,8 +208,66 @@ try {
     if (datagrams[0][1] !== UDP_PORT) fail('reply came from port ' + datagrams[0][1] + ', expected ' + UDP_PORT);
     netget.udp_close(sock);
 
-    console.log('ok: dashboard painted, tcp and udp servers started, virtual connections round-tripped through the model bridge');
+    // HTTP, the button: an http server's card offers [ + http client ], and pressing it (the
+    // same form, through connect_client_to_server) connects a client to it.
+    const HTTP_PORT = 8080;
+    let httpStarted = null;
+    netget.start_server(JSON.stringify({ protocol: 'http', port: HTTP_PORT, instruction: 'Serve a tiny site.' }), (json) => { httpStarted = JSON.parse(json); });
+    await waitFor(() => httpStarted !== null, 'start_server (http) to answer');
+    if (httpStarted.error) fail('start_server http: ' + httpStarted.error);
+    await waitFor(() => netget.listening_ports().includes(HTTP_PORT), `port ${HTTP_PORT} to be listening`);
+    // Tall enough that every card, with its open peers section, is on screen at once.
+    netget.resize(160, 200);
+    const screenBefore = screen.length;
+    await waitFor(() => screen.slice(screenBefore).includes('+ http client'), 'the [ + http client ] button on the http card');
+    let viaButton = null;
+    netget.connect_client_to_server(httpStarted.id, (json) => { viaButton = JSON.parse(json); });
+    await waitFor(() => viaButton !== null, 'connect_client_to_server to answer');
+    if (viaButton.error) fail('[ + http client ]: ' + viaButton.error);
+    if (viaButton.protocol !== 'HTTP' || viaButton.remote_addr !== `127.0.0.1:${HTTP_PORT}`) fail('[ + http client ] made the wrong client: ' + JSON.stringify(viaButton));
+    let clients = null;
+    netget.clients((json) => { clients = JSON.parse(json); });
+    await waitFor(() => clients !== null, 'clients()');
+    const buttonClient = clients.find((c) => c.id === viaButton.id);
+    if (!buttonClient || buttonClient.status !== 'Connected') fail('the [ + http client ] client is not connected: ' + JSON.stringify(clients));
+
+    // HTTP, the exchanges, against NetGet's HLS server (see the header for why not http).
+    const HLS_PORT = 8090;
+    let hlsStarted = null;
+    netget.start_server(JSON.stringify({ protocol: 'hls', port: HLS_PORT, instruction: 'Serve a live playlist.' }), (json) => { hlsStarted = JSON.parse(json); });
+    await waitFor(() => hlsStarted !== null, 'start_server (hls) to answer');
+    if (hlsStarted.error) fail('start_server hls: ' + hlsStarted.error);
+    await waitFor(() => netget.listening_ports().includes(HLS_PORT), `port ${HLS_PORT} to be listening`);
+
+    let refused = null;
+    netget.start_client(JSON.stringify({ protocol: 'http', remote_addr: `https://127.0.0.1:${HLS_PORT}`, instruction: 'Fetch the playlist.' }), (json) => { refused = JSON.parse(json); });
+    await waitFor(() => refused !== null, 'start_client (https) to answer');
+    if (!refused.error || !refused.error.includes('https:// is not available')) fail('an https:// client was not refused with the reason: ' + JSON.stringify(refused));
+
+    let httpClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'http', remote_addr: `127.0.0.1:${HLS_PORT}`, instruction: 'Fetch /live.m3u8 and read the playlist.' }), (json) => { httpClient = JSON.parse(json); });
+    await waitFor(() => httpClient !== null, 'start_client (http) to answer');
+    if (httpClient.error) fail('start_client http: ' + httpClient.error);
+    await waitFor(() => httpConnected.length > 0, 'the http_connected model request', 20000);
+    await waitFor(() => httpResponses.length > 0, 'the playlist response reported to the model', 20000);
+    const first = httpResponses[0];
+    if (first.status_code !== 200) fail('the playlist came back ' + JSON.stringify(first));
+    if (!String(first.body).includes('#EXTM3U') || !String(first.body).includes('seg0.ts')) fail('the playlist body did not reach the client: ' + JSON.stringify(first));
+    const contentType = Object.entries(first.headers || {}).find(([k]) => k.toLowerCase() === 'content-type');
+    if (!contentType) fail('the response headers did not reach the client: ' + JSON.stringify(first.headers));
+
+    // The dashboard's [ send ] on that client, and a status that is not 200.
+    let injected = null;
+    netget.send_to_client(httpClient.id, JSON.stringify({ type: 'send_http_request', method: 'GET', path: '/missing.ts' }), (json) => { injected = JSON.parse(json); });
+    await waitFor(() => injected !== null, 'send_to_client to answer', 45000);
+    const detail = injected.Executed && injected.Executed.detail;
+    if (!detail || !detail.includes('GET /missing.ts -> 404')) fail('send_to_client did not report the exchange: ' + JSON.stringify(injected));
+    await waitFor(() => httpResponses.length > 1, 'the injected request\'s response reported to the model', 20000);
+    if (httpResponses[1].status_code !== 404 || !String(httpResponses[1].body).includes('no such segment')) fail('the 404 did not reach the client intact: ' + JSON.stringify(httpResponses[1]));
+
+    console.log('ok: dashboard painted, tcp, udp, http and hls servers started, virtual connections round-tripped through the model bridge');
     console.log('    composer: ' + composed[0].actions.length + ' actions offered, default ' + composed[0].entry.name + ', example bytes ' + JSON.stringify(composerReceived.join('')) + ' reached the peer');
+    console.log('    http: [ + http client ] connected client #' + viaButton.id + ' to :' + HTTP_PORT + '; client #' + httpClient.id + ' read ' + first.status_code + ' (' + String(first.body).length + ' byte playlist) and, via [ send ], ' + detail.split('-> ')[1] + '; https refused');
     console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);
     process.exit(0);
 } catch (e) {

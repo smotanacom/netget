@@ -18,8 +18,10 @@ The protocol servers are compiled **unchanged**. On
 wasm32 the names `tokio` and `crossterm` resolve to the shim crates
 (`extern crate … as` in `src/lib.rs`), which is what keeps the `#[cfg]` count in protocol
 code at zero. Everything platform-bound that the servers do not need — the rolling TUI,
-process spawning for scripts, the HTTP client, termbg, socket2, ollama-rs — is gated with
-`#[cfg(not(target_arch = "wasm32"))]`.
+process spawning for scripts, reqwest, termbg, socket2, ollama-rs — is gated with
+`#[cfg(not(target_arch = "wasm32"))]`. The `http` *client* is in the browser build: there it
+speaks HTTP/1.1 through `src/client/http/transport.rs` (hyper's client over the virtual
+loopback) instead of reqwest; see below.
 
 ## Build
 
@@ -63,6 +65,15 @@ Two things the script handles that are easy to lose an hour to:
   Ollama/OpenAI wire carries it.
 - `start_server(json, cb)` — `cli::management::ServerForm`, the same path the dashboard's
   own form and MCP use.
+- `start_client(json, cb)` — `cli::management::ClientForm`, as the dashboard's form and MCP
+  `start_client`: `{"protocol":"http","remote_addr":"127.0.0.1:8090","instruction":"..."}`;
+  `cb` gets `{id}` or `{error}`. `connect_client_to_server(serverId, cb)` is the dashboard's
+  `[ + <proto> client ]` itself (`tui::actions::client_form_for_server` and the form's apply,
+  default routing included); `cb` gets `{id, protocol, remote_addr}` or `{error}`.
+  `send_to_client(id, actionJson, cb)` is the client card's `[ send ]`
+  (`AppState::send_to_client`); `cb` gets the `ClientSendOutcome` as serde writes it
+  (`{"Executed":{"detail":"http_request GET / -> 200 (5 byte body)"}}`, …) or `{error}`.
+  `clients(cb)` lists `{id, protocol, remote_addr, status}`.
 - `connect(port, onData, onClose) -> id`, `send(id, bytes)`, `close(id)` — a TCP client on
   the virtual network; `udp_open(onDatagram) -> id`, `udp_send(id, port, bytes)`,
   `udp_close(id)` — a UDP one. `listening_ports()`, `bound_udp_ports()` and `servers(cb)`
@@ -91,9 +102,42 @@ modbus, kafka, nats, stomp, memcached, whois, gopher, finger, ident, svn, mercur
 rtsp, hls, snowflake, db2, mongodb-server, saml, openid, oci-registry, npm, pypi, maven,
 elasticsearch, jsonrpc, oauth2, openapi, openidconnect, bitcoin, torrent-*, tls, …) and
 UDP ones (udp, dhcp, dhcpv6, bootp, tftp, snmp, syslog, coap, radius, ssdp, netbios-ns,
-rtp, gtp, hsrp, wol, dc, …). Twelve of those have a *client* that is reqwest end to end;
-the client is gated with `not(target_arch = "wasm32")` in `src/client/mod.rs` and the
-registry, the server is in.
+rtp, gtp, hsrp, wol, dc, …). Eleven of those — http2, jsonrpc, npm, pypi, maven, oauth2,
+openapi, openidconnect, elasticsearch, bitcoin, torrent-tracker — have a *client* that is
+reqwest end to end; the client is gated with `not(target_arch = "wasm32")` in
+`src/client/mod.rs` and the registry, the server is in. The ollama client is gated the same
+way.
+
+**The `http` client runs in the browser.** reqwest's wasm backend is the browser's `fetch`,
+whose futures are not `Send` and which cannot reach the virtual loopback anyway, so on wasm32
+`src/client/http/transport.rs` writes the request with hyper 1's `client::conn::http1` over
+the shim's `TcpStream` — one connection per request, the body bounded at
+`MAX_RESPONSE_BODY_BYTES` (8 MiB, the bound the native reqwest path enforces too) and the
+exchange at `REQUEST_TIMEOUT` (30 s). hyper's *client* role never touches the clock, so the
+date-cache panic below does not apply to it. **`https://` is refused** at connect with the
+reason: the transport has no TLS, and nothing on the page's network holds a certificate a
+client could verify. The transport compiles natively too, and
+`tests/client/http/transport_test.rs` drives NetGet's HTTP and TCP servers through it (body,
+headers, a 404, a chunked response, the body bound, the deadline). `web/test/smoke.mjs`
+proves it in the bundle: `[ + http client ]` on an http card connects, and a client started
+against NetGet's **HLS** server completes a model-driven exchange, a `[ send ]` and a 404.
+
+Reusing the transport for the other eleven, measured by what each asks of reqwest:
+
+- **jsonrpc, elasticsearch, openapi, bitcoin** — JSON over plain `send()`/`json()`/`text()`
+  (bitcoin adds `basic_auth`, a header). Cheapest: swap the round trip for `transport::fetch`
+  on wasm, as `http` does. Their servers are hyper-based, so a browser peer has to be one that
+  is not (see below).
+- **npm, pypi, maven** — the same, plus `bytes()` for artifacts: the transport would need a
+  `Vec<u8>` body alongside the lossy `String`. Their default targets are public `https://`
+  registries, which the browser build cannot reach at all.
+- **torrent-tracker** — GET with a query and a **bencoded binary** body: needs the byte-body
+  variant.
+- **http2** — `http2_prior_knowledge()`: needs hyper's `client::conn::http2` with an executor,
+  a second transport rather than a switch.
+- **oauth2, openidconnect** — the `oauth2`/`openidconnect` crates call reqwest through their
+  own `async_http_client`; each takes a custom HTTP function, so the transport can be plugged
+  in, but it is an adapter per crate, and both flows assume `https://` issuers.
 
 Left out, and why (re-derive with the probe below rather than trusting this):
 
