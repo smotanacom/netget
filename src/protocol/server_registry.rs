@@ -399,6 +399,9 @@ impl ServerRegistry {
         #[cfg(feature = "prometheus")]
         self.register(Arc::new(crate::server::PrometheusProtocol::new()));
 
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(crate::server::OtlpProtocol::new()));
+
         #[cfg(feature = "docker")]
         self.register(Arc::new(crate::server::DockerProtocol::new()));
 
@@ -1253,6 +1256,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("OCI-Registry", "oci-registry"),
     ("Kubernetes", "kubernetes-server"),
     ("Prometheus", "prometheus"),
+    ("OTLP", "otlp"),
     ("Docker", "docker"),
     ("Vault", "vault"),
     ("Bolt", "bolt"),

@@ -797,6 +797,12 @@ pub mod prometheus;
 pub use prometheus::actions::PrometheusProtocol;
 #[cfg(feature = "prometheus")]
 pub use prometheus::PrometheusServer;
+#[cfg(feature = "otlp")]
+pub mod otlp;
+#[cfg(feature = "otlp")]
+pub use otlp::actions::OtlpProtocol;
+#[cfg(feature = "otlp")]
+pub use otlp::OtlpServer;
 
 #[cfg(feature = "docker")]
 pub mod docker;

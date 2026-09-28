@@ -196,6 +196,8 @@ pub mod openid;
 pub mod openvpn;
 #[cfg(feature = "ospf")]
 pub mod ospf;
+#[cfg(feature = "otlp")]
+pub mod otlp;
 #[cfg(feature = "pop3")]
 pub mod pop3;
 #[cfg(feature = "postgresql")]

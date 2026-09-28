@@ -348,6 +348,19 @@ async fn stopping_an_nsq_server_disconnects_a_live_peer() {
     stopping_disconnects_a_peer_of("NSQ", b"  V2").await;
 }
 
+/// An OTLP export whose body has not finished arriving is held by hyper reading it, under the
+/// two-minute idle bound; the stop must end it rather than that deadline.
+#[cfg(feature = "otlp")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_an_otlp_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of(
+        "OTLP",
+        b"POST /v1/traces HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+          Content-Length: 100\r\n\r\n{",
+    )
+    .await;
+}
+
 /// A Bolt client that has sent the magic and not yet its version proposals is held by a task
 /// waiting on the rest of the 20-byte handshake for up to 30 seconds; the stop must end it
 /// rather than that deadline.
