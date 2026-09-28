@@ -67,6 +67,9 @@ impl Protocol for PypiProtocol {
                  this server: that needs a real wheel, which the model cannot author",
             )
             .max_inbound_bytes(crate::server::http_common::MAX_REQUEST_BODY_BYTES)
+            .request_only(
+                "PyPI is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

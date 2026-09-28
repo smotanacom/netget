@@ -569,6 +569,7 @@ impl Protocol for OciRegistryProtocol {
                  each time a blob is fetched — use a script or static handler for anything a \
                  real client will pull.",
             )
+            .request_only("The OCI registry API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

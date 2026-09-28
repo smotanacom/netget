@@ -511,6 +511,8 @@ impl Protocol for OspfClientProtocol {
             // A client listens on nothing, so it has no port of its own to declare.
             well_known_port: None,
             well_known_transport: PortTransport::Tcp,
+            // A client has no peers of its own to message; the declaration is a server's.
+            request_only: None,
         }
     }
     fn description(&self) -> &'static str {

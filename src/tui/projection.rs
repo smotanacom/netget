@@ -44,6 +44,10 @@ pub struct ServerRow {
     /// Canonical client protocol name when this server's protocol has a
     /// compiled client counterpart (drives the [+client] button).
     pub client_counterpart: Option<String>,
+    /// Why this server's protocol can only answer its peers, when it declares that
+    /// ([`crate::protocol::metadata::ProtocolMetadataV2::request_only`]): the reason a peer's
+    /// disabled `[ send message ]` gives instead of "not implemented here yet".
+    pub request_only: Option<String>,
     /// Requests a `manual` rule parked, waiting for the operator's answer.
     pub intercepts: Vec<crate::state::intercepts::InterceptView>,
 }
@@ -218,6 +222,9 @@ pub async fn build_snapshot(state: &AppState) -> RailSnapshot {
             client_counterpart: crate::protocol::compiled_client_protocol_for_server(
                 &server.protocol_name,
             ),
+            request_only: crate::protocol::server_registry::registry()
+                .request_only_reason(&server.protocol_name)
+                .map(str::to_string),
             intercepts: server_intercepts
                 .remove(&server.id.as_u32())
                 .unwrap_or_default(),

@@ -105,6 +105,7 @@ impl Protocol for SnowflakeProtocol {
                  login is a refusal (no token issued), never a success-shaped empty result.",
             )
             .max_inbound_bytes(crate::server::snowflake::MAX_REQUEST_BYTES)
+            .request_only("The Snowflake API is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

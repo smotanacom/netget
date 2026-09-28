@@ -106,6 +106,7 @@ impl Protocol for GitProtocol {
                  static or script handler guarantees that, an LLM answering twice does not.",
             )
             .max_inbound_bytes(crate::server::git::MAX_UPLOAD_PACK_BYTES)
+            .request_only("Git smart HTTP is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

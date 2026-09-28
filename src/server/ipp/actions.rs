@@ -101,6 +101,9 @@ impl Protocol for IppProtocol {
                  IPPS, no authentication, no CUPS extensions.",
             )
             .max_inbound_bytes(crate::server::ipp::MAX_IPP_BODY_BYTES)
+            .request_only(
+                "IPP is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

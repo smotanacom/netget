@@ -332,6 +332,9 @@ impl Protocol for XmlRpcProtocol {
                  value nesting at 64 levels.",
             )
             .max_inbound_bytes(crate::server::xmlrpc::MAX_REQUEST_BODY_BYTES)
+            .request_only(
+                "XML-RPC is HTTP request/response; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

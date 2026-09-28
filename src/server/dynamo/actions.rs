@@ -175,6 +175,7 @@ impl Protocol for DynamoProtocol {
             )
             .notes("Virtual data (no persistence)")
             .max_inbound_bytes(crate::server::dynamo::MAX_REQUEST_BYTES)
+            .request_only("DynamoDB is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {

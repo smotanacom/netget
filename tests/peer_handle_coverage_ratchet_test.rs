@@ -3,7 +3,9 @@
 //!
 //! `[ message this peer ]` and `[ disconnect this peer ]` are drawn on every live peer row, and
 //! `src/tui/projection.rs` enables them from `AppState::has_peer_handle` alone. Without a
-//! handle both stay dim and say "this protocol cannot message a peer from here yet". That is
+//! handle both stay dim and say why — the protocol's own reason where it declares
+//! `request_only` (HTTP and the protocols on plain HTTP request/response, which have no way to
+//! message a peer unprompted at all), "not implemented here yet" everywhere else. That is
 //! merely an absence right up until the moment it is not: a `manual` rule parks the peer's
 //! event for a **human** (`src/state/intercepts.rs`, 300s by default), the dashboard flags the
 //! connection `⚠ waiting for YOUR answer` — and the operator is being asked to decide about a

@@ -91,6 +91,9 @@ impl Protocol for HttpProtocol {
                  and request bodies are fully buffered before the LLM sees them",
             )
             .max_inbound_bytes(crate::server::http_common::MAX_REQUEST_BODY_BYTES)
+            .request_only(
+                "HTTP only answers requests; a server cannot send a peer anything unprompted",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

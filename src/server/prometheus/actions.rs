@@ -128,6 +128,7 @@ impl Protocol for PrometheusProtocol {
             // with a fixed text/plain category. Prometheus records the status as the scrape
             // error and never reads the body as metrics.
             .answers_on_failure()
+            .request_only("Prometheus scraping is HTTP request/response; a server cannot send a peer anything unprompted")
             .build()
     }
 

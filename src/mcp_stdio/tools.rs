@@ -1028,6 +1028,14 @@ impl NetGetMcpService {
                     result.push_str("- **Connections**: none\n");
                 } else {
                     result.push_str("\n### Connections\n\n");
+                    if let Some(reason) = crate::protocol::server_registry::registry()
+                        .request_only_reason(&server.protocol_name)
+                    {
+                        result.push_str(&format!(
+                            "No connection accepts send_to_peer: {}.\n\n",
+                            reason
+                        ));
+                    }
                     for conn in connections {
                         let injectable = self
                             .state
@@ -1675,7 +1683,7 @@ impl NetGetMcpService {
     }
 
     #[tool(
-        description = "Put one action on the wire to ONE live peer of a running server, now, without waiting for the peer to speak — the dashboard's [ message ] on a peer row. `connection_id` comes from server_status, which also marks the connections that accept this (only protocols that register a peer handle do; tcp and telnet among them). `action` is one of the server protocol's actions ({\"type\":\"send_tcp_data\",\"data\":\"hi\\n\"}), checked against its action set first. Errors clearly when the protocol or connection has no peer handle."
+        description = "Put one action on the wire to ONE live peer of a running server, now, without waiting for the peer to speak — the dashboard's [ message ] on a peer row. `connection_id` comes from server_status, which also marks the connections that accept this (only protocols that register a peer handle do; tcp and telnet among them). `action` is one of the server protocol's actions ({\"type\":\"send_tcp_data\",\"data\":\"hi\\n\"}), checked against its action set first. Errors clearly when the protocol or connection has no peer handle, and with the protocol's own reason when it only answers requests (HTTP and the protocols on it)."
     )]
     async fn send_to_peer(
         &self,
@@ -1688,6 +1696,16 @@ impl NetGetMcpService {
                 params.server_id
             ))]));
         };
+        if let Some(reason) =
+            crate::protocol::server_registry::registry().request_only_reason(&server.protocol_name)
+        {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Server #{} ({}) cannot message a peer: {}. It speaks only in answer to a \
+                 request — answer those through its event handlers, the model, or a `manual` \
+                 rule and answer_intercept.",
+                params.server_id, server.protocol_name, reason
+            ))]));
+        }
         let vocabulary = match crate::mcp_stdio::control::peer_vocabulary(
             &self.state.app_state,
             &server.protocol_name,
