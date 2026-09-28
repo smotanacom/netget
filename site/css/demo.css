@@ -1,9 +1,11 @@
 /* The live demo: three machines — a Telnet client, NetGet, the model — and what joins them.
  *
- * Desktop: Telnet (left half) above NetGet (full width), the model (right half) below it,
- * with the step list and the notes filling the other halves. Narrow screens stack everything.
- * Nothing in the demo scrolls inside itself: the terminals have fixed heights that xterm.js
- * fits, and the model panel grows with what it shows. */
+ * Desktop: Telnet (left half) and the model (right half) side by side and the same height,
+ * NetGet below them at full width, and the step list and the notes as two columns under
+ * NetGet. Narrow screens stack everything: steps, Telnet, NetGet, the model, notes. Nothing in
+ * the demo scrolls inside itself: the dashboard has a fixed height that xterm.js fits, the
+ * model panel grows with what it shows, and the Telnet terminal fills whatever height the
+ * model panel gives the row (never less than its own floor). */
 
 .hero-demo { padding-bottom: 0.5rem; }
 
@@ -54,14 +56,16 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
-        "telnet steps"
-        "cable1 ."
+        "telnet model"
+        "cable1 cable2"
         "netget netget"
-        ".      cable2"
-        "notes  model";
+        "steps  notes";
     column-gap: 1.25rem;
     align-items: start;
 }
+
+/* The top row is even: both machines stretch to the taller one. */
+.machine-client, .machine-model { align-self: stretch; display: flex; flex-direction: column; }
 
 .machine-client { grid-area: telnet; }
 .demo-steps { grid-area: steps; }
@@ -133,13 +137,18 @@
 
 .term-host { background: var(--term-bg); }
 
-/* Fixed heights that xterm.js fits to (see makeTerm in js/demo.js). */
+/* Heights that xterm.js fits to (see makeTerm in js/demo.js). The dashboard's is fixed. The
+   Telnet terminal has a floor and otherwise fills its machine, which the model beside it may
+   stretch: the terminal is positioned out of the flow, so what it has drawn never holds the
+   row open once the model panel shrinks again. */
 #dash-term { height: clamp(360px, 66vh, 600px); }
-#telnet-term { height: clamp(200px, 34vh, 300px); }
+.machine-client .screen { flex: 1 1 auto; display: flex; flex-direction: column; }
+.machine-client .term-host { flex: 1 1 auto; position: relative; min-height: clamp(200px, 34vh, 300px); }
+#telnet-term { position: absolute; inset: 0; }
 
 @media (max-width: 900px) {
     #dash-term { height: clamp(320px, 56vh, 440px); }
-    #telnet-term { height: clamp(180px, 30vh, 260px); }
+    .machine-client .term-host { min-height: clamp(180px, 30vh, 260px); }
 }
 
 /* A terminal scrolls by wheel and keys, never by a bar. */
@@ -194,7 +203,7 @@
     color: var(--text);
 }
 
-/* ---- what is happening, beside the Telnet machine ------------------------------------- */
+/* ---- what is happening, under NetGet (above everything on a narrow screen) ------------- */
 
 .demo-steps {
     list-style: none;
@@ -203,9 +212,9 @@
     flex-direction: column;
     gap: 0.55rem;
     padding: 0.4rem 0.2rem;
+    margin: 1.4rem 0 0;
     font-size: 0.92rem;
     color: var(--muted);
-    align-self: center;
 }
 
 .demo-steps li {
@@ -236,10 +245,11 @@
 .demo-steps code { font-family: var(--mono); font-size: 0.85em; }
 
 @media (max-width: 900px) {
-    .demo-steps { margin-bottom: 0.8rem; font-size: 0.88rem; }
+    .demo-steps { margin: 0 0 0.8rem; font-size: 0.88rem; }
 }
 
-/* ---- the cables: Telnet down to NetGet, NetGet down to the model --------------------- */
+/* ---- the cables: Telnet and the model, each down to NetGet (on a narrow screen, NetGet
+   down to the model) ------------------------------------------------------------------- */
 
 .cable {
     display: flex;
@@ -337,7 +347,7 @@
 .llm-progress[hidden] { display: none; }
 .llm-progress span { display: block; height: 100%; width: 0; background: var(--yellow); transition: width 0.2s; }
 
-.screen-model { padding: 0.6rem 0.2rem 0.2rem; font-size: 0.82rem; }
+.screen-model { flex: 1 1 auto; padding: 0.6rem 0.2rem 0.2rem; font-size: 0.82rem; }
 
 .llm-idle { padding: 0.2rem 0.6rem 0.5rem; color: var(--muted); font-size: 0.85rem; }
 
@@ -465,6 +475,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
+    margin-top: 1.4rem;
     padding: 0.4rem 0.2rem;
     font-size: 0.88rem;
     color: var(--muted);

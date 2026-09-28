@@ -207,7 +207,7 @@ function answererName() {
     return app.active ? app.active.name : 'you';
 }
 
-// Tell every place that names the answerer: the steps above the machines, and NetGet itself
+// Tell every place that names the answerer: the step list, and NetGet itself
 // (the dashboard's status bar and the `model` of every request).
 function renderWho() {
     const who = $('#step-model-who');

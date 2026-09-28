@@ -84,8 +84,12 @@ Two things the script handles that are easy to lose an hour to:
   `udp_close(id)` — a UDP one. `listening_ports()`, `bound_udp_ports()` and `servers(cb)`
   describe what is there.
 
-`site/js/demo.js` is the page, and the demo on it is Telnet only: three machines, a Telnet
-client above the dashboard and the model below it. Nothing needs a click:
+`site/js/demo.js` is the page, and the demo on it is Telnet only: three machines. On a wide
+screen the Telnet client and the model sit side by side, the same height (the Telnet terminal
+fills whatever the model panel makes the row, and never holds it open), with the dashboard
+below them at full width and the step list and notes as two columns under that; on a narrow
+one they stack as Telnet, dashboard, model, with the steps above and the notes below.
+Nothing needs a click:
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
   2323 with a short BBS instruction, so it is a normal instance on the dashboard; about a
