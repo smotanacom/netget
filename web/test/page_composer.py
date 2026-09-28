@@ -4,13 +4,13 @@
     ./web/build.sh && python3 web/test/page_composer.py
 
 Serves site/ (or SITE_DIR) from 127.0.0.1 and opens the page in headless Chromium
-(Playwright) six times. Nothing is clicked before the assertions that say so. In every run the
+(Playwright) eight times. Nothing is clicked before the assertions that say so. In every run the
 model select sits in the LLM machine's header and no badge names a model; who answers is read
 from the steps above the machines (`#step-model-who`).
 
-1. WebGPU but no built-in model. The select lists only the four WebLLM models, each with its
-   download size, the default selected, one button naming the download, and nothing is
-   downloaded. The Telnet server opens by itself and the Telnet terminal reads as a shell:
+1. WebGPU but no built-in model. The select lists only the six WebLLM models, each with its
+   download size (and "thinks" for Qwen3), the default selected, one button naming the
+   download, and nothing is downloaded. The Telnet server opens by itself and the Telnet terminal reads as a shell:
    `$ telnet localhost 2323`, then telnet's own `Trying 127.0.0.1...`, `Connected to
    localhost.`, `Escape character is '^]'.`. The connection's first request lands in the LLM
    panel as the "you are the model" composer, prefilled from the example of the protocol's
@@ -27,17 +27,26 @@ from the steps above the machines (`#step-model-who`).
    (built into Chrome)" first; the page loads it without being asked, and it answers every
    request with no composer; its prompt() receives a responseConstraint naming the offered
    actions. An answer that does not parse falls back to the composer for that one request.
-4. Switching, with that stub and WebGPU: choosing an uncached WebLLM model shows one button
+4. A stub whose promptStreaming() holds after two chunks: the partial answer is in the LLM
+   panel while the Telnet terminal has nothing, and no Thinking block ever appears (Gemini
+   Nano does not think); released, the answer reaches Telnet. Its next stream yields the whole
+   text so far each time and gives the same answer. The constraint asks for `actions` alone.
+5. The fake WebLLM's Qwen3, held inside its `<think>` block: the Thinking block shows the
+   thinking and no answer exists yet; released, it folds to "Thought for N s", opens and closes
+   on a click, the answer reaches Telnet and the thinking never does (with the real xterm.js,
+   the dashboard's stream shows it). The request asked for enable_thinking and 2048 tokens.
+   Screenshots of both, mid-stream and done, at 1440x900 and 390x844 when SCREENSHOT_DIR is set.
+6. Switching, with the stub of 3 and WebGPU: choosing an uncached WebLLM model shows one button
    naming its size and downloads nothing, while Gemini Nano keeps answering; the click
    downloads it (the status counts the percentage) and it takes over; choosing Gemini Nano
    again re-uses its session (no create()) and unloads the WebLLM engine; choosing the WebLLM
    model again loads it from the cache with no click; and after a reload the choice is still
    selected (localStorage) and loads by itself.
-5. A stub whose availability() is "downloadable" and whose create() refuses without a user
+7. A stub whose availability() is "downloadable" and whose create() refuses without a user
    activation, as Chrome's does. The page shows "Download Gemini Nano" and does not start
    the download until the visitor's first keypress in the Telnet terminal; the stub then
    reports progress, and the model takes over the request the visitor had not touched.
-6. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
+8. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
 
 Headless Chromium has no built-in model, so the stubs are the only evidence this test can
 give for the Prompt API path; they pin the page's side of it (availability, create with a
