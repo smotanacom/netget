@@ -65,9 +65,21 @@ repository regardless of where the page is hosted.
 ./deploy.sh
 ```
 
-Assets go up with `max-age=604800`, `index.html` with `max-age=0`, then the distribution is
-invalidated. Because `index.html` is never cached by browsers and the invalidation clears the
-edges, a deploy is visible within a few seconds. The first pass syncs with `--delete`, so a
+**Caching is by URL.** `css/`, `js/` and `demo/` are published under `v/<hash>/`, where
+`<hash>` comes from their contents, with `max-age=31536000, immutable`; `index.html` is
+rewritten to point at that prefix and goes up with `no-cache`. So a browser always loads one
+deploy's files together. Publishing them at fixed URLs with a week's `max-age` let a browser pair
+a fresh `demo.js` and `netget_web.js` with the previous deploy's `.wasm`, which fails at load
+with `wasm.<export> is not a function` — seen on 28 September 2026. Keep new assets inside one of
+the versioned directories, or add the directory to `VERSIONED_DIRS`.
+
+Order matters and the script keeps it: versioned assets first, then `index.html`, then the
+invalidation (`/`, `/index.html`, `/favicon.svg` — the versioned paths are new, so nothing needs
+invalidating there). Old `v/<hash>/` prefixes stay so a page already open keeps loading its
+modules; only the newest five are kept. The root sync uses `--delete` with `v/*` excluded, so a
 file removed from this directory is removed from the bucket — except an excluded one, which
 `--delete` also skips. Deleting `deploy.sh` or a `*.md` from the bucket is a manual
 `aws s3 rm`.
+
+`DRY_RUN=1 ./deploy.sh` stages everything and prints what would be uploaded or deleted, changing
+nothing; `STAGE_DIR=<dir>` keeps the staged copy — serve it to test the exact layout that ships.

@@ -1472,8 +1472,12 @@ stays at whatever the last person uploaded.
 ./site/deploy.sh        # needs AWS_PROFILE=smotana, which the script exports itself
 ```
 
-It syncs `site/` to the `netget.net` S3 bucket (assets `max-age=604800`, `index.html`
-`max-age=0`) and invalidates the CloudFront distribution, so a deploy is live within seconds.
+It publishes `site/` to the `netget.net` S3 bucket and invalidates the CloudFront distribution,
+so a deploy is live within seconds. `css/`, `js/` and `demo/` go up under a content-hashed
+`v/<hash>/` prefix (immutable) and `index.html` (`no-cache`) is rewritten to point there, so a
+browser never pairs one deploy's JavaScript with another's `.wasm` — which fixed-URL week-long
+caching did, breaking the demo with `wasm.<export> is not a function`. `DRY_RUN=1` changes
+nothing; `STAGE_DIR=<dir>` keeps the staged copy to test. Details in `site/CLAUDE.md`.
 
 Two things about it are load-bearing:
 

@@ -86,22 +86,38 @@ client above the dashboard and the model below it. Nothing needs a click:
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
   2323 with a short BBS instruction, so it is a normal instance on the dashboard; about a
-  second later the Telnet terminal `connect()`s to it. The terminal is a line-mode client:
-  it edits and echoes the line locally (always; it refuses every option the server offers)
-  and sends it whole on Enter. The connection's `telnet_connection_opened` is the first model
+  second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
+  a `$ ` prompt, `telnet localhost 2323` typed out so that it finishes as the client connects,
+  then telnet(1)'s own `Trying 127.0.0.1...` / `Connected to localhost.` / `Escape character
+  is '^]'.`; when the server hangs up, `Connection closed by foreign host.` and the prompt
+  again, where Enter types the command again and reconnects. The client is line-mode: it
+  edits and echoes the line locally (always; it refuses every option the server offers) and
+  sends it whole on Enter. The connection's `telnet_connection_opened` is the first model
   request, so the greeting is the first thing anyone answers.
 - Requests are answered one at a time and only the current one is on screen: the composer
   (below) while the visitor is the model, a one-line status while a model answers.
-- The model control offers one model. Where `LanguageModel.availability()` answers
-  `available`, `downloadable` or `downloading` it is the browser's built-in model: loaded at
-  once when `available`; otherwise the download is started by the visitor's first
-  `pointerdown` or `keydown` anywhere on the page (Chrome requires a user activation for it,
-  and `create()` is called synchronously inside that handler so the activation counts), or by
-  the button, with `monitor`'s `downloadprogress` as the bar. Elsewhere it is WebLLM, the
-  default model preselected, downloaded (from Hugging Face) on one click. Until either is
-  ready the visitor is the model; when it is, the page switches by itself (`set_model`, the
-  badges) and hands it the current request if the visitor has not started answering it.
-- Chrome's model gets a fresh session per request (NetGet sends the whole context each
+- The model control is one `<select>` in the LLM machine's header. Where
+  `LanguageModel.availability()` answers `available`, `downloadable` or `downloading`, its
+  first option is the browser's built-in model, by name: "Gemini Nano (built into Chrome)",
+  or "Phi-4-mini (built into Edge)" when the user agent says Edge (the API does not name its
+  model; Edge's flag-gated Aion-1.0-Instruct cannot be told apart). Then the WebLLM models
+  (`WEBLLM_MODELS`), each with its download size, or "downloaded" once WebLLM's
+  `hasModelInCache` says so; without WebGPU they are listed disabled and the visitor is the
+  model. The default is the built-in model, else the first WebLLM model; a choice made in the
+  select is kept in `localStorage` (`netget-demo-model`) and restored on the next visit.
+  Choosing a model that is on this device (the built-in model `available`, or a cached WebLLM
+  model) loads it and switches with no click; one that needs a download shows one button
+  naming it and its size. The built-in model's download also starts on the visitor's first
+  `pointerdown` or `keydown` anywhere on the page but the select (Chrome requires a user
+  activation for it, and `create()` is called synchronously inside that handler so the
+  activation counts), with `monitor`'s `downloadprogress` as the bar. Until the chosen model
+  is ready, whoever answered before keeps answering — at first the visitor — and the status
+  line under the select says which, and how far the download is. On the switch the page calls
+  `set_model` with the model's name, updates the steps, and hands the model the current
+  request if the visitor has not started answering it. A WebLLM model that stops answering is
+  unloaded; the built-in model's session is kept, so switching back to it is immediate. The
+  WebLLM runtime (esm.run) is only imported once a WebLLM model is selected.
+- The built-in model gets a fresh session per request (NetGet sends the whole context each
   time) and `prompt()` with a `responseConstraint`: a JSON Schema of `{"actions": [...]}`
   whose items are the offered non-tool actions, `type` pinned to each name. Its text goes
   through the composer's own `entriesFromEnvelope`/`buildReply`, so an answer is accepted only
@@ -122,14 +138,19 @@ without `actions` gets the raw editor alone. The top half of the file is DOM-fre
 `smoke.mjs` builds the same default reply under Node; `web/test/page_composer.py` drives the
 page itself in headless Chromium: the Telnet server and client come up with no clicks, the
 visitor answers through the composer and the answers reach the Telnet terminal, no element of
-the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, and a stub
-`LanguageModel` proves the Chrome path both when the model is `available` (loads by itself,
-answers with no composer, constrained to the offered actions, falls back on an unparseable
-answer) and when it is `downloadable` (waits for the first keypress). Headless Chromium has
-no built-in model, so the stubs are the evidence for that path; with Chrome itself the test
-also checks the real `availability()` is detected and no download starts unasked. xterm.js is
-stubbed unless `XTERM_DIR` points at the real files; every other non-local request is
-answered by the test.
+the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, the terminal reads as
+a telnet session through a hang-up and a reconnect, and a stub `LanguageModel` proves the
+Prompt API path both when the model is `available` (named first in the select, loads by
+itself, answers with no composer, constrained to the offered actions, falls back on an
+unparseable answer) and when it is `downloadable` (waits for the first keypress). Switching is
+driven against a fake WebLLM module the test serves in place of the esm.run import: an
+uncached model shows its sized download button and downloads nothing unasked, switching back
+re-uses the built-in session, a cached model loads with no click, and the choice survives a
+reload. Headless Chromium has no built-in model, so the stubs are the evidence for that path;
+with Chrome itself the test also checks the real `availability()` is detected and no download
+starts unasked. xterm.js is stubbed unless `XTERM_DIR` points at the real files; every other
+non-local request is answered by the test. `SITE_DIR` serves another layout of the page
+(deploy.sh's staged copy) instead of `site/`.
 
 ## Which protocols are in the browser build
 

@@ -271,21 +271,6 @@
 .cable-model .cable-line { border-color: var(--yellow); }
 .cable-model .cable-tag { color: var(--yellow); }
 
-.model-badge {
-    font-family: var(--mono);
-    font-size: 0.72rem;
-    font-weight: 500;
-    padding: 0.15rem 0.55rem;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--panel);
-    color: var(--muted);
-    white-space: nowrap;
-}
-
-.model-badge.is-you { border-color: var(--yellow); color: var(--yellow); }
-.model-badge.is-model { border-color: var(--green); color: var(--green); }
-
 /* ---- controls ------------------------------------------------------------------------- */
 
 .btn {
@@ -339,10 +324,11 @@
 
 /* ---- the model ------------------------------------------------------------------------ */
 
-.llm-source { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.7rem 0.9rem 0.1rem; font-size: 0.85rem; }
-.llm-source-row { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
-.llm-source-name { color: var(--text); font-weight: 600; }
-.llm-source-row select { flex: 1 1 12rem; }
+/* The header carries the model control: the title, the model select, and the one button a
+   download needs. The select takes the rest of the row and shrinks before anything wraps. */
+.llm-header select { flex: 1 1 12rem; width: 0; font-size: 0.78rem; font-weight: 400; padding: 0.2rem 0.45rem; margin-left: 0.3rem; }
+.llm-header .btn { font-size: 0.76rem; padding: 0.22rem 0.6rem; white-space: nowrap; }
+.llm-source { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.55rem 0.9rem 0.1rem; font-size: 0.85rem; }
 .llm-status { font-size: 0.78rem; color: var(--muted); }
 .llm-status:empty { display: none; }
 .llm-status b { color: var(--yellow); font-weight: 600; }
@@ -454,11 +440,4 @@
 
 @media (max-width: 900px) {
     .demo-notes { margin-top: 1.2rem; }
-}
-
-/* ---- the protocol table: the ones compiled into the demo ------------------------------ */
-
-.proto-list .in-web {
-    font-weight: 600;
-    color: var(--green);
 }
