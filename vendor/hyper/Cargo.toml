@@ -186,6 +186,11 @@ default-features = false
 version = "0.3"
 optional = true
 
+# NetGet patch (vendor/hyper/README.md): the wall clock for src/common/date.rs
+# on wasm32-unknown-unknown, where `SystemTime::now()` panics.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies.js-sys]
+version = "0.3"
+
 [dev-dependencies.form_urlencoded]
 version = "1"
 

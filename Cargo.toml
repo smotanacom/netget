@@ -11,7 +11,7 @@ members = ["crates/*"]
 # toolchain and links libFuzzer's sanitizer runtime, so it must stay invisible to
 # `cargo build`/`cargo test`/`cargo check` here. It already excludes itself via its
 # own `[workspace]` table; this makes that intentional rather than incidental.
-exclude = ["fuzz"]
+exclude = ["fuzz", "vendor"]
 resolver = "2"
 
 [features]
@@ -1267,3 +1267,13 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# hyper, patched for the browser build: vendor/hyper is the exact crates.io source of the
+# version Cargo.lock pins, changed only in src/common/date.rs under
+# cfg(all(target_arch = "wasm32", target_os = "unknown")) so that the HTTP date cache reads
+# JavaScript's clock instead of `SystemTime::now()`, which panics there and took down the
+# page on the first request to every hyper server. Native builds compile the upstream code
+# unchanged. vendor/hyper/README.md has the diff and how to re-apply it on a hyper upgrade;
+# tests/vendored_hyper_patch_test.rs fails when Cargo.lock and the vendored copy disagree.
+[patch.crates-io]
+hyper = { path = "vendor/hyper" }

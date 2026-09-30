@@ -5941,8 +5941,6 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb3aa54a13a0dfe7fbe3a59e0c76093041720fdc77b110cc0fc260fafb4dc51e"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -5954,6 +5952,7 @@ dependencies = [
  "httparse",
  "httpdate",
  "itoa",
+ "js-sys",
  "pin-project-lite",
  "pin-utils",
  "smallvec",

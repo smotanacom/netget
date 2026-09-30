@@ -43,6 +43,14 @@ struct CachedDate {
 
 thread_local!(static CACHED: RefCell<CachedDate> = RefCell::new(CachedDate::new()));
 
+// NetGet patch (vendor/hyper/README.md): `SystemTime::now()` panics on
+// wasm32-unknown-unknown, which has no clock in std. The page's wall clock is
+// JavaScript's `Date.now()`, milliseconds since the Unix epoch.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn wasm_now() -> SystemTime {
+    UNIX_EPOCH + Duration::from_millis(js_sys::Date::now() as u64)
+}
+
 impl CachedDate {
     fn new() -> Self {
         let mut cache = CachedDate {
@@ -50,7 +58,10 @@ impl CachedDate {
             pos: 0,
             #[cfg(feature = "http2")]
             header_value: HeaderValue::from_static(""),
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             next_update: SystemTime::now(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            next_update: wasm_now(),
         };
         cache.update(cache.next_update);
         cache
@@ -61,7 +72,10 @@ impl CachedDate {
     }
 
     fn check(&mut self) {
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         let now = SystemTime::now();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let now = wasm_now();
         if now > self.next_update {
             self.update(now);
         }
