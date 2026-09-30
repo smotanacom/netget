@@ -116,6 +116,11 @@ documents, not that a real Spark client or History Server UI accepts them. That 
 generic-HTTP-client exclusion the root `CLAUDE.md` lists, and it is the whole distance between
 this rating and Beta.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "The Spark REST API is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
+
 ## References
 
 - Spark Monitoring REST API:

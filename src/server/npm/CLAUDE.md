@@ -185,6 +185,10 @@ packages like express, axios, request
 6. **No Dependency Resolution**: No automatic dependency graph calculation
 7. **No Versioning**: LLM must manually handle version negotiation
 8. **No npm-specific headers**: No support for npm-specific HTTP headers (X-npm-session-id, etc.)
+9. **Request-only**: `metadata()` declares `.request_only(…)`: "The npm registry is HTTP
+   request/response; a server cannot send a peer anything unprompted". The dashboard's
+   `[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+   with it.
 
 ## Protocol Compliance
 

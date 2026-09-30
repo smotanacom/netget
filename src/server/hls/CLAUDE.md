@@ -94,10 +94,12 @@ blanket `_ => "OK"` framed a model-chosen 403 as `HTTP/1.1 403 OK`.
 
 HLS is one-shot HTTP request/response — one read of the request, one write of the response, then
 `handle_connection` returns and the socket closes (`Connection: close`). So it deliberately
-registers **no** `peer_support` handle: the dashboard's `[ message this peer ]` /
-`[ disconnect this peer ]` would have no live connection window to fire, and `execute_action`
-needs no `close_connection` arm. The rail shows the dim "cannot message or disconnect a peer from
-here yet" row for HLS connections, which is correct.
+registers **no** `peer_support` handle: the dashboard's `[ send message ]` / `[ disconnect ]`
+would have no live connection window to fire, and `execute_action` needs no `close_connection`
+arm. `metadata()` declares `.request_only(…)`: "HLS is HTTP request/response; a server cannot send
+a peer anything unprompted". The dashboard's `[ send message ]` on an HLS peer is disabled and
+shows that reason, and MCP `send_to_peer` refuses with it; `[ disconnect ]` stays disabled with
+"this protocol cannot disconnect a peer from here yet".
 
 What it does do is refresh `AppState::update_connection_stats` on the single read and the single
 write, so the rail shows real `↓ ↑` byte/packet counts and a fresh `last_activity` rather than

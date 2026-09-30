@@ -236,13 +236,17 @@ bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
   whatever the model says, which may not be what was written.
 - Text content only. `send_webdav_file` writes UTF-8; images and archives cannot be served, and
   a non-UTF-8 `PUT` body reaches the model only as a lossy decoding.
-- Request bodies are fully buffered with no size cap before the LLM call.
+- An admitted request body (up to `MAX_REQUEST_BODY`) is fully buffered before the LLM call;
+  nothing streams it.
 - Locks accepted, never enforced. No authentication. No TLS. No `Range` support (the model can
   set `206` and a partial body, but nothing parses the `Range` header for it).
 - `PROPPATCH` can be answered but no dead property is stored; `PROPFIND` returns a fixed
   property set (`displayname`, `getlastmodified`, `resourcetype`, `getcontentlength`,
   `getcontenttype`) regardless of what the client's `<D:prop>` asked for.
 - No DAV versioning (RFC 3253), no `Depth: infinity` expansion beyond what the model lists.
+- **Request-only.** `metadata()` declares `.request_only(…)`: "WebDAV is HTTP request/response; a
+  server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+  disabled and shows that reason, and MCP `send_to_peer` refuses with it.
 
 ## Testing
 

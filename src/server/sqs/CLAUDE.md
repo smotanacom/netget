@@ -297,6 +297,9 @@ does not exist. Handlers come from the caller, via `open_server`'s `event_handle
 - **No long polling** - WaitTimeSeconds supported in design but requires async waiting
 - **No message attributes** - Supported in design, LLM can include in responses
 - **No batch operations** - SendMessageBatch, DeleteMessageBatch not yet implemented
+- **Request-only** - `metadata()` declares `.request_only(…)`: "SQS is HTTP request/response; a
+  server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+  disabled and shows that reason, and MCP `send_to_peer` refuses with it
 
 ### Performance
 

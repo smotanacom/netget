@@ -90,6 +90,10 @@ actions).
 
 No peer handle: hyper owns the socket for the life of the connection
 (`tests/peer_handle_coverage_ratchet_test.rs`, `HyperOwnsSocket`).
+It is also request-only; `metadata()` declares `.request_only(…)`: "Prometheus scraping is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
 
 ## Not implemented
 

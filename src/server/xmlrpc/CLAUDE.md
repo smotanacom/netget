@@ -160,6 +160,9 @@ Executor behaviour that changed:
   `encoding="ISO-8859-1"` document is mangled.
 - **Connection byte/packet counters are never updated**, so stats read zero.
 - Per-connection tasks are untracked, so `stop_server` does not abort in-flight requests.
+- **Request-only** — `metadata()` declares `.request_only(…)`: "XML-RPC is HTTP request/response;
+  a server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer
+  is disabled and shows that reason, and MCP `send_to_peer` refuses with it.
 
 ## Example
 

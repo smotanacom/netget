@@ -269,6 +269,9 @@ event handlers and connection-scoped scheduled tasks silently inapplicable to ev
 - No document data: `Print-Job` bodies are read into memory to size them and then discarded.
 - `operations-supported` encoded as integer rather than enum (above).
 - No job store, by design (above).
+- Request-only. `metadata()` declares `.request_only(…)`: "IPP is HTTP request/response; a server
+  cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+  disabled and shows that reason, and MCP `send_to_peer` refuses with it.
 
 ## Manual verification
 

@@ -196,6 +196,10 @@ for it.
   test — and it cost a write lock on the single global `AppState` `RwLock` on every request
   plus a clone-and-reparse of the vector. The method name is already in the access log and
   in the event's log template.
+- **Request-only** — `metadata()` declares `.request_only(…)`: "JSON-RPC over HTTP is HTTP
+  request/response; a server cannot send a peer anything unprompted". The dashboard's
+  `[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+  with it.
 
 ## References
 

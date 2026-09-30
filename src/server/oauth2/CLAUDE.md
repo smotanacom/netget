@@ -200,6 +200,10 @@ PKCE (RFC 7636), dynamic client registration (RFC 7591), scope validation, a log
 user authentication, JWT access tokens, a JWKS endpoint (that is the `openid` protocol), and
 TLS. `expires_in` is echoed, never enforced.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "OAuth 2.0 is HTTP request/response; a
+server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## Examples
 
 ```text
