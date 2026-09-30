@@ -51,7 +51,7 @@ impl ClientRegistry {
         #[cfg(feature = "bgp")]
         self.register(Arc::new(crate::client::bgp::BgpClientProtocol::new()));
 
-        #[cfg(all(feature = "bitcoin", not(target_arch = "wasm32")))]
+        #[cfg(feature = "bitcoin")]
         self.register(Arc::new(
             crate::client::bitcoin::BitcoinClientProtocol::new(),
         ));
@@ -94,7 +94,7 @@ impl ClientRegistry {
             crate::client::dynamodb::DynamoDbClientProtocol::new(),
         ));
 
-        #[cfg(all(feature = "elasticsearch", not(target_arch = "wasm32")))]
+        #[cfg(feature = "elasticsearch")]
         self.register(Arc::new(
             crate::client::elasticsearch::ElasticsearchClientProtocol::new(),
         ));
@@ -149,7 +149,7 @@ impl ClientRegistry {
         #[cfg(feature = "isis")]
         self.register(Arc::new(crate::client::isis::IsisClientProtocol::new()));
 
-        #[cfg(all(feature = "jsonrpc", not(target_arch = "wasm32")))]
+        #[cfg(feature = "jsonrpc")]
         self.register(Arc::new(
             crate::client::jsonrpc::JsonRpcClientProtocol::new(),
         ));
@@ -212,7 +212,7 @@ impl ClientRegistry {
         #[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::ollama::OllamaClientProtocol::new()));
 
-        #[cfg(all(feature = "openapi", not(target_arch = "wasm32")))]
+        #[cfg(feature = "openapi")]
         self.register(Arc::new(
             crate::client::openapi::OpenApiClientProtocol::new(),
         ));

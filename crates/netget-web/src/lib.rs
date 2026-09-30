@@ -470,8 +470,8 @@ impl NetGet {
 
     /// Start a client the way the dashboard's form and MCP `start_client` do — through
     /// `cli::management::ClientForm`. `json`: `{"protocol":"http","remote_addr":
-    /// "127.0.0.1:8080","instruction":"...","event_handlers":[...]}`. `callback` receives
-    /// `{"id": n}` or `{"error": "..."}`.
+    /// "127.0.0.1:8080","instruction":"...","event_handlers":[...],"startup_params":{...}}`.
+    /// `callback` receives `{"id": n}` or `{"error": "..."}`.
     pub fn start_client(&self, json: &str, callback: Function) {
         #[derive(serde::Deserialize)]
         struct Req {
@@ -481,6 +481,8 @@ impl NetGet {
             instruction: Option<String>,
             #[serde(default)]
             event_handlers: Option<Vec<serde_json::Value>>,
+            #[serde(default)]
+            startup_params: Option<serde_json::Value>,
         }
         let req = match serde_json::from_str::<Req>(json) {
             Ok(r) => r,
@@ -506,6 +508,7 @@ impl NetGet {
                 remote_addr: Some(req.remote_addr),
                 instruction: req.instruction,
                 event_handlers: req.event_handlers,
+                startup_params: req.startup_params,
                 ..Default::default()
             };
             let result = match form.create(&state, llm, status_tx).await {
@@ -562,6 +565,41 @@ impl NetGet {
                         "protocol": c.protocol_name,
                         "remote_addr": c.remote_addr,
                         "status": format!("{:?}", c.status),
+                    })
+                })
+                .collect();
+            reply_json(&callback, serde_json::Value::Array(rows));
+        });
+    }
+
+    /// The events parked for a human (a `manual` routing rule, which every instance the
+    /// dashboard creates falls through to), oldest first, as a JSON array of `{id, owner:
+    /// {kind: "server" | "client", id}, connection_id, event_type, event_data}`, delivered to
+    /// `callback`. `AppState::list_intercepts`, the list the dashboard's "waiting for YOUR
+    /// answer" rows draw.
+    pub fn intercepts(&self, callback: Function) {
+        use netget::state::intercepts::InterceptOwner;
+        let state = self.inner.state.clone();
+        spawn_local(async move {
+            let rows: Vec<serde_json::Value> = state
+                .list_intercepts()
+                .await
+                .into_iter()
+                .map(|view| {
+                    let owner = match view.owner {
+                        InterceptOwner::Server(id) => {
+                            serde_json::json!({ "kind": "server", "id": id.as_u32() })
+                        }
+                        InterceptOwner::Client(id) => {
+                            serde_json::json!({ "kind": "client", "id": id.as_u32() })
+                        }
+                    };
+                    serde_json::json!({
+                        "id": view.id,
+                        "owner": owner,
+                        "connection_id": view.connection_id,
+                        "event_type": view.event_type,
+                        "event_data": view.event_data,
                     })
                 })
                 .collect();

@@ -51,3 +51,11 @@ What it pins:
 ```
 
 All mocked; no Ollama required.
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/bitcoin/CLAUDE.md`, "Browser build"), and the transport backend's requests
+are pinned to reqwest's by `tests/client/http/fetch_client_test.rs`.
+

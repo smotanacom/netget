@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+use crate::client::http_fetch::{FetchClient, FetchResponse};
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::openapi::actions::{
     OPENAPI_CLIENT_CONNECTED_EVENT, OPENAPI_OPERATION_RESPONSE_EVENT,
@@ -71,7 +72,7 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// Refuses as soon as the cap is passed rather than after buffering, so a server answering
 /// with an endless stream costs at most the cap.
-async fn read_body_bounded(mut response: reqwest::Response) -> Result<String> {
+async fn read_body_bounded(mut response: FetchResponse) -> Result<String> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
@@ -96,7 +97,8 @@ impl OpenApiClient {
     /// keychain synchronously and serialises across processes. It runs on `spawn_blocking`
     /// so it cannot park a tokio worker, and it is kept so operations after the first
     /// reuse the connection pool rather than rebuilding a TLS stack each time.
-    async fn http_client() -> Result<reqwest::Client> {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn reqwest_client() -> Result<reqwest::Client> {
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         if let Some(client) = CLIENT.get() {
             return Ok(client.clone());
@@ -111,6 +113,17 @@ impl OpenApiClient {
         .await
         .context("OpenAPI HTTP client build task panicked")??;
         Ok(CLIENT.get_or_init(|| built).clone())
+    }
+
+    /// The HTTP client: the process-wide reqwest client natively ([`Self::reqwest_client`]),
+    /// the shared hyper transport over the virtual loopback in the browser build
+    /// ([`crate::client::http_fetch`]), with the same 30-second bound.
+    async fn http_client() -> Result<FetchClient> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let client = FetchClient::from_reqwest(Self::reqwest_client().await?);
+        #[cfg(target_arch = "wasm32")]
+        let client = FetchClient::transport(std::time::Duration::from_secs(30));
+        Ok(client)
     }
 
     /// Connect to an OpenAPI server with integrated LLM actions
@@ -210,6 +223,9 @@ impl OpenApiClient {
         // bind to `_http_client`: a full rustls stack built at connect time and discarded,
         // while every operation built another one.
         Self::http_client().await?;
+        // The browser transport has no TLS: an `https://` base URL is refused here, with the
+        // reason, rather than on the first operation.
+        crate::client::http_fetch::check_url(&base_url)?;
 
         // Store spec and base URL in protocol_data
         app_state
@@ -769,7 +785,7 @@ impl OpenApiClient {
                     "OpenAPI client {} request failed for '{}': {}",
                     client_id, operation_id, e
                 ));
-                Err(e.into())
+                Err(e)
             }
         }
     }

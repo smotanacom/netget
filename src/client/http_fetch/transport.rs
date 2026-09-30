@@ -1,17 +1,18 @@
 //! One HTTP/1.1 request and its response, over a stream NetGet opens itself.
 //!
-//! This is the HTTP client's transport in the browser build. `reqwest` cannot serve there: its
-//! wasm32 backend is the browser's `fetch`, whose futures are not `Send` (the `Client` trait
-//! requires `Send`) and which cannot reach the page's virtual loopback anyway — NetGet's servers
-//! in the page listen on `crates/netget-tokio-wasm`'s in-memory network, not on anything `fetch`
-//! can dial. So the request is written with hyper 1's `client::conn::http1` over whatever
+//! This is the transport every HTTP-family client uses in the browser build, through
+//! [`super::FetchClient`] (the `http` client calls [`fetch`] directly). `reqwest` cannot serve
+//! there: its wasm32 backend is the browser's `fetch`, whose futures are not `Send` (the `Client`
+//! trait requires `Send`) and which cannot reach the page's virtual loopback anyway — NetGet's
+//! servers in the page listen on `crates/netget-tokio-wasm`'s in-memory network, not on anything
+//! `fetch` can dial. So the request is written with hyper 1's `client::conn::http1` over whatever
 //! [`tokio::net::TcpStream`] is on this target: the kernel's natively, the virtual loopback's in
 //! the browser. The client role of hyper's HTTP/1 dispatcher never touches the clock (only the
-//! server role maintains a `Date` header cache, which is what keeps hyper-based *servers* from
-//! answering in the browser), so this path runs there unchanged.
+//! server role maintains a `Date` header cache, which `vendor/hyper` patches for the browser), so
+//! this path runs there unchanged.
 //!
 //! It compiles on both targets so it can be tested natively (`tests/client/http/transport_test.rs`
-//! drives NetGet's own HTTP and TCP servers through it). The native client still uses reqwest,
+//! drives NetGet's own HTTP and TCP servers through it). The native clients still use reqwest,
 //! which brings TLS, HTTP/2 and connection pooling this module deliberately does not have.
 //!
 //! What it does not do, stated rather than implied: no TLS — an `https://` URL is refused with
@@ -27,7 +28,35 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::HttpExchange;
+/// One completed HTTP exchange, the body read as text (lossily, where it is not UTF-8).
+///
+/// What the `http` client reports to the model; [`fetch_response`] keeps the body as bytes for
+/// the clients whose bodies are binary.
+#[derive(Debug, Clone)]
+pub struct HttpExchange {
+    pub status_code: u16,
+    pub status_text: String,
+    pub headers: serde_json::Map<String, serde_json::Value>,
+    pub body: String,
+}
+
+impl HttpExchange {
+    fn from_response(response: hyper::Response<Bytes>) -> Self {
+        let status = response.status();
+        let mut headers = serde_json::Map::new();
+        for (name, value) in response.headers() {
+            if let Ok(text) = value.to_str() {
+                headers.insert(name.to_string(), serde_json::json!(text));
+            }
+        }
+        HttpExchange {
+            status_code: status.as_u16(),
+            status_text: status.to_string(),
+            headers,
+            body: String::from_utf8_lossy(response.body()).into_owned(),
+        }
+    }
+}
 
 /// The largest response body this client reads before refusing the response. The HTTP/3 client
 /// uses the same number; it is far above anything a model can usefully read in one event.
@@ -43,8 +72,8 @@ pub const HTTPS_UNSUPPORTED: &str =
      no server on the page's virtual network holds a certificate a client could verify. Use \
      http:// (NetGet's own servers in the page speak plain HTTP)";
 
-/// The methods the client accepts — the same set the native reqwest path does.
-const METHODS: [&str; 6] = ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"];
+/// The methods the transport sends: the `http` client's set, plus `OPTIONS`.
+const METHODS: [&str; 7] = ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS"];
 
 /// Where an `http://` URL points: the host and port to dial, the `Host` header, and the
 /// origin-form request target.
@@ -99,12 +128,33 @@ pub async fn fetch(
     timeout: Duration,
     max_body: usize,
 ) -> Result<HttpExchange> {
+    fetch_response(
+        method,
+        url,
+        headers,
+        body.map(Bytes::from),
+        timeout,
+        max_body,
+    )
+    .await
+    .map(HttpExchange::from_response)
+}
+
+/// As [`fetch`], with the request and response bodies as bytes.
+pub async fn fetch_response(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<Bytes>,
+    timeout: Duration,
+    max_body: usize,
+) -> Result<hyper::Response<Bytes>> {
     let target = parse_http_url(url)?;
     let exchange = async {
         let stream = tokio::net::TcpStream::connect((target.host.clone(), target.port))
             .await
             .with_context(|| format!("connect to {}:{}", target.host, target.port))?;
-        exchange(stream, method, &target, headers, body, max_body).await
+        exchange_response(stream, method, &target, headers, body, max_body).await
     };
     tokio::time::timeout(timeout, exchange)
         .await
@@ -120,6 +170,23 @@ pub async fn exchange<S>(
     body: Option<String>,
     max_body: usize,
 ) -> Result<HttpExchange>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    exchange_response(io, method, target, headers, body.map(Bytes::from), max_body)
+        .await
+        .map(HttpExchange::from_response)
+}
+
+/// As [`exchange`], with the request and response bodies as bytes.
+pub async fn exchange_response<S>(
+    io: S,
+    method: &str,
+    target: &HttpTarget,
+    headers: &[(String, String)],
+    body: Option<Bytes>,
+    max_body: usize,
+) -> Result<hyper::Response<Bytes>>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -147,7 +214,7 @@ where
         }
     }
     let request = builder
-        .body(Full::new(Bytes::from(body.unwrap_or_default())))
+        .body(Full::new(body.unwrap_or_default()))
         .context("build HTTP request")?;
 
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
@@ -163,32 +230,17 @@ where
             .send_request(request)
             .await
             .context("send HTTP request")?;
-        let status = response.status();
-        let mut headers = serde_json::Map::new();
-        for (name, value) in response.headers() {
-            if let Ok(text) = value.to_str() {
-                headers.insert(name.to_string(), serde_json::json!(text));
+        let (parts, body) = response.into_parts();
+        let collected = Limited::new(body, max_body).collect().await.map_err(|e| {
+            if e.downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some()
+            {
+                anyhow!("response body exceeds the {max_body}-byte limit; refused")
+            } else {
+                anyhow!("read HTTP response body: {e}")
             }
-        }
-        let collected = Limited::new(response.into_body(), max_body)
-            .collect()
-            .await
-            .map_err(|e| {
-                if e.downcast_ref::<http_body_util::LengthLimitError>()
-                    .is_some()
-                {
-                    anyhow!("response body exceeds the {max_body}-byte limit; refused")
-                } else {
-                    anyhow!("read HTTP response body: {e}")
-                }
-            })?;
-        let body = collected.to_bytes();
-        Ok(HttpExchange {
-            status_code: status.as_u16(),
-            status_text: status.to_string(),
-            headers,
-            body: String::from_utf8_lossy(&body).into_owned(),
-        })
+        })?;
+        Ok(hyper::Response::from_parts(parts, collected.to_bytes()))
     }
     .await;
     driver.abort();

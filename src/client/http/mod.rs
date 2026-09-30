@@ -6,7 +6,10 @@
 //! cannot reach NetGet's in-page servers. Everything above the round trip — the command
 //! channel, the model's answers, the follow-up chain — is the same code on both.
 pub mod actions;
-pub mod transport;
+/// The browser transport, shared with the other HTTP-family clients through
+/// [`crate::client::http_fetch`].
+pub use crate::client::http_fetch::transport;
+pub use crate::client::http_fetch::transport::HttpExchange;
 
 pub use actions::HttpClientProtocol;
 
@@ -34,19 +37,6 @@ use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 /// How often the command loop re-checks that its client still exists. HTTP has no
 /// socket to notice a close on, so this is what the old idle task was for.
 const REMOVAL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
-
-/// One completed HTTP exchange.
-///
-/// Split out of [`HttpClient::make_request`] so the injected-command loop can await
-/// the network round-trip - and report a truthful outcome - without also awaiting the
-/// LLM call the response event triggers.
-#[derive(Debug, Clone)]
-pub struct HttpExchange {
-    pub status_code: u16,
-    pub status_text: String,
-    pub headers: serde_json::Map<String, serde_json::Value>,
-    pub body: String,
-}
 
 /// What one executed action did. Shared vocabulary between the connected-event
 /// handler and the injected-command loop.

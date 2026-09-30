@@ -250,3 +250,11 @@ Not yet established. Initial measurements:
 - **Bulk operation (3 docs)**: ~150-250ms
 - **Get operation**: ~50-100ms
 - **Delete operation**: ~50-100ms
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/elasticsearch/CLAUDE.md`, "Browser build"), and the transport backend's requests
+are pinned to reqwest's by `tests/client/http/fetch_client_test.rs`.
+

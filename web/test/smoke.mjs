@@ -33,6 +33,14 @@
 // date cache to read `Date.now()` the first request to any hyper server killed the page. A
 // panic anywhere fails the run by name (see `panics` below), not as a timeout.
 //
+// Then the other HTTP-family clients, which in the browser speak through the same transport
+// (src/client/http_fetch) as the http client: jsonrpc and elasticsearch through `[ + client ]`
+// on NetGet's own server of their protocol, `[ send ]`, and the response found parked on the
+// client (`intercepts()`), since a dashboard-created client routes it to the human; openapi
+// (which needs the server's spec, so it goes through ClientForm) and bitcoin (whose RPC NetGet
+// serves only as plain HTTP) routed to the model, which runs the first request itself and is
+// shown each response. An https:// jsonrpc endpoint is refused with the reason.
+//
 // The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
 // thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
 // site/js/thinking.js — the page's split of a streamed answer into the "Thinking…" block and
@@ -76,6 +84,9 @@ const httpConnected = [];
 const httpResponses = [];
 // Every request a hyper server reported to the model: { protocol, context }.
 const serverRequests = [];
+// What the model-routed HTTP-family clients reported to the model, by protocol: each
+// response event's data.
+const clientResponses = { openapi: [], bitcoin: [] };
 
 function fail(msg) {
     console.error('FAIL:', msg);
@@ -167,6 +178,14 @@ const netget = new NetGet({
             if (context.method === 'POST' && context.path === '/echo') {
                 return answer([{ type: 'send_http_response', status: 201, headers: { 'Content-Type': 'text/plain', 'X-Smoke': 'echoed' }, body: String(context.body).toUpperCase() }]);
             }
+            // Bitcoin Core's RPC is JSON-RPC 1.0 over HTTP POST; NetGet has no server of it
+            // (its `bitcoin` server speaks the P2P wire protocol), so the http server answers
+            // the shape bitcoind would.
+            if (context.method === 'POST' && String(context.body).includes('"jsonrpc":"1.0"')) {
+                const call = JSON.parse(context.body);
+                return answer([{ type: 'send_http_response', status: 200, headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ result: { chain: 'regtest', blocks: 101, called: call.method }, error: null, id: call.id }) }]);
+            }
             if (context.path === '/') {
                 return answer([{ type: 'send_http_response', status: 200, headers: { 'Content-Type': 'text/html' }, body: '<h1>smoke</h1><p>accept=' + (context.headers || {}).accept + '</p>' }]);
             }
@@ -191,6 +210,27 @@ const netget = new NetGet({
         if (offered.has('send_http2_response')) {
             serverRequests.push({ protocol: 'http2', context });
             return answer([{ type: 'send_http2_response', status: 200, headers: { 'content-type': 'text/plain', 'x-smoke': 'h2' }, body: 'h2 says hi to ' + context.uri }]);
+        }
+        if (offered.has('send_elasticsearch_response')) {
+            serverRequests.push({ protocol: 'elasticsearch', context });
+            return answer([{ type: 'send_elasticsearch_response', status_code: 200,
+                body: JSON.stringify({ took: 1, timed_out: false, hits: { total: { value: 1, relation: 'eq' },
+                    hits: [{ _index: context.index, _id: 'dune', _source: { title: 'Dune', asked: context.operation } }] } }) }]);
+        }
+        // The OpenAPI client: run the spec's operation when connected, report its response.
+        if (offered.has('execute_operation')) {
+            if (context.status_code !== undefined) {
+                clientResponses.openapi.push(context);
+                return answer([]);
+            }
+            if (context.operations !== undefined) {
+                return answer([{ type: 'execute_operation', operation_id: 'listTodos', path_params: {}, query_params: { owner: 'smoke test' } }]);
+            }
+        }
+        // The Bitcoin RPC client: nothing on connect; report every response.
+        if (offered.has('get_blockchain_info')) {
+            if (context.status_code !== undefined) clientResponses.bitcoin.push(context);
+            return answer([]);
         }
         // The HTTP client: fetch a page when connected, and report every response.
         if (offered.has('send_http_request')) {
@@ -461,7 +501,7 @@ try {
 
     // jsonrpc: a call answered with a result, and one answered with an error.
     const JSONRPC_PORT = 8082;
-    await startServer({ protocol: 'jsonrpc', port: JSONRPC_PORT, instruction: 'Implement add(a, b).' });
+    const jsonrpcServer = await startServer({ protocol: 'jsonrpc', port: JSONRPC_PORT, instruction: 'Implement add(a, b).' });
     const rpc = (payload) => httpRequest(JSONRPC_PORT, { method: 'POST', path: '/', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
     const sum = await rpc({ jsonrpc: '2.0', method: 'add', params: [2, 3], id: 7 });
     const sumBody = JSON.parse(sum.body);
@@ -491,6 +531,105 @@ try {
     if (h2.status !== 200 || h2.headers['x-smoke'] !== 'h2' || h2.body !== 'h2 says hi to /greet?who=smoke') fail('http2 GET /greet: ' + JSON.stringify(h2));
     hyper.http2 = `GET /greet?who=smoke ${h2.status} ${JSON.stringify(h2.body)}`;
 
+    // The HTTP-family clients in the browser: each speaks through the shared transport
+    // (src/client/http_fetch) over the virtual loopback to NetGet's own server of its protocol.
+    const webClients = {};
+    // An event parked for the human on a client, as the dashboard's "waiting for YOUR answer"
+    // rows show it. A client the dashboard creates routes everything after its connect event
+    // to `manual`, so that is where the response lands.
+    async function parkedOn(clientId, eventType) {
+        let found = null;
+        await waitFor(() => {
+            netget.intercepts((json) => {
+                const rows = JSON.parse(json);
+                found = rows.find((r) => r.owner.kind === 'client' && r.owner.id === clientId && r.event_type === eventType) || found;
+            });
+            return found !== null;
+        }, `a ${eventType} parked on client #${clientId}`, 20000);
+        return found;
+    }
+    async function connectViaButton(serverId, protocol) {
+        let made = null;
+        netget.connect_client_to_server(serverId, (json) => { made = JSON.parse(json); });
+        await waitFor(() => made !== null, `[ + ${protocol} client ] to answer`);
+        if (made.error) fail(`[ + ${protocol} client ]: ` + made.error);
+        let rows = null;
+        netget.clients((json) => { rows = JSON.parse(json); });
+        await waitFor(() => rows !== null, 'clients()');
+        const row = rows.find((c) => c.id === made.id);
+        if (!row || row.status !== 'Connected') fail(`the [ + ${protocol} client ] client is not connected: ` + JSON.stringify(rows));
+        return made;
+    }
+    async function send(clientId, action) {
+        let outcome = null;
+        netget.send_to_client(clientId, JSON.stringify(action), (json) => { outcome = JSON.parse(json); });
+        await waitFor(() => outcome !== null, `send_to_client(${action.type}) to answer`, 45000);
+        const detail = outcome.Executed && outcome.Executed.detail;
+        if (!detail) fail(`[ send ] ${action.type} was not executed: ` + JSON.stringify(outcome));
+        return detail;
+    }
+
+    // jsonrpc: [ + JSON-RPC client ] on the jsonrpc server's card, then [ send ] add(2, 3). The
+    // server's model computes 5; the client reads it and parks the response for the human.
+    const rpcClient = await connectViaButton(jsonrpcServer.id, 'jsonrpc');
+    if (rpcClient.remote_addr !== `127.0.0.1:${JSONRPC_PORT}`) fail('[ + jsonrpc client ] made the wrong client: ' + JSON.stringify(rpcClient));
+    const rpcDetail = await send(rpcClient.id, { type: 'send_jsonrpc_request', method: 'add', params: [2, 3], id: 41 });
+    if (!rpcDetail.includes('HTTP 200') || !rpcDetail.includes('JSON-RPC response received')) fail('jsonrpc [ send ]: ' + rpcDetail);
+    const rpcParked = await parkedOn(rpcClient.id, 'jsonrpc_response_received');
+    if (rpcParked.event_data?.result !== 5 || rpcParked.event_data?.id !== 41) fail('the jsonrpc response did not reach the client intact: ' + JSON.stringify(rpcParked));
+    webClients.jsonrpc = `[ + client ] #${rpcClient.id}, [ send ] add(2,3) -> ${rpcDetail}; parked result ${rpcParked.event_data.result}`;
+
+    // The transport has no TLS: an https:// endpoint is refused at connect, naming why.
+    let rpcRefused = null;
+    netget.start_client(JSON.stringify({ protocol: 'jsonrpc', remote_addr: `https://127.0.0.1:${JSONRPC_PORT}`, instruction: 'Call add.' }), (json) => { rpcRefused = JSON.parse(json); });
+    await waitFor(() => rpcRefused !== null, 'start_client (jsonrpc, https) to answer');
+    if (!rpcRefused.error || !rpcRefused.error.includes('https:// is not available')) fail('an https:// jsonrpc client was not refused with the reason: ' + JSON.stringify(rpcRefused));
+
+    // elasticsearch: NetGet's Elasticsearch server, [ + client ], [ send ] a search.
+    const ES_PORT = 8085;
+    const esServer = await startServer({ protocol: 'elasticsearch', port: ES_PORT, instruction: 'Serve a small library index.' });
+    const esClient = await connectViaButton(esServer.id, 'elasticsearch');
+    const esDetail = await send(esClient.id, { type: 'search', index: 'books', query: { match: { title: 'dune' } } });
+    if (!esDetail.includes('HTTP 200')) fail('elasticsearch [ send ]: ' + esDetail);
+    const esAsked = serverRequests.filter((r) => r.protocol === 'elasticsearch');
+    if (!esAsked.some((r) => r.context.index === 'books' && String(r.context.request_body).includes('dune'))) fail('the search did not reach the Elasticsearch server\'s model: ' + JSON.stringify(esAsked));
+    const esParked = await parkedOn(esClient.id, 'elasticsearch_response_received');
+    if (!JSON.stringify(esParked.event_data).includes('"title":"Dune"')) fail('the Elasticsearch hits did not reach the client: ' + JSON.stringify(esParked));
+    webClients.elasticsearch = `[ + client ] #${esClient.id}, [ send ] search -> ${esDetail}; parked hit "Dune"`;
+
+    // openapi: the client needs the spec, which `[ + client ]` cannot know (the dashboard's form
+    // asks for it), so it is started through ClientForm with the server's spec and routed to the
+    // model: connected -> the model runs listTodos -> the openapi server's model answers -> the
+    // response is reported back to the model. Then [ send ] the same operation.
+    let oaClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'openapi', remote_addr: `127.0.0.1:${OPENAPI_PORT}`, instruction: 'List the todos.', startup_params: { spec: TODO_SPEC } }), (json) => { oaClient = JSON.parse(json); });
+    await waitFor(() => oaClient !== null, 'start_client (openapi) to answer');
+    if (oaClient.error) fail('start_client openapi: ' + oaClient.error);
+    await waitFor(() => clientResponses.openapi.length > 0, 'the openapi client\'s response reported to the model', 20000);
+    const oaFirst = clientResponses.openapi[0];
+    if (oaFirst.status_code !== 200 || JSON.parse(oaFirst.body)[0]?.title !== 'Buy milk') fail('the openapi response did not reach the client: ' + JSON.stringify(oaFirst));
+    if (!serverRequests.some((r) => r.protocol === 'openapi' && JSON.stringify(r.context).includes('smoke'))) fail('the model\'s query parameter did not reach the openapi server: ' + JSON.stringify(serverRequests.filter((r) => r.protocol === 'openapi')));
+    const oaDetail = await send(oaClient.id, { type: 'execute_operation', operation_id: 'listTodos', path_params: {}, query_params: {} });
+    await waitFor(() => clientResponses.openapi.length > 1, 'the injected operation\'s response reported to the model', 20000);
+    webClients.openapi = `ClientForm #${oaClient.id}: model ran listTodos -> ${oaFirst.status_code} ${oaFirst.body}; [ send ] -> ${oaDetail}`;
+
+    // bitcoin: Bitcoin Core RPC is JSON-RPC over HTTP, and NetGet's `bitcoin` server is the P2P
+    // protocol, so the peer is NetGet's http server answering as bitcoind would. The RPC
+    // credentials go out as Basic auth, which the server's request must show.
+    let btcClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'bitcoin', remote_addr: `127.0.0.1:${HTTP_PORT}`, instruction: 'Watch the chain.', startup_params: { rpc_user: 'smoke', rpc_password: 'pw' } }), (json) => { btcClient = JSON.parse(json); });
+    await waitFor(() => btcClient !== null, 'start_client (bitcoin) to answer');
+    if (btcClient.error) fail('start_client bitcoin: ' + btcClient.error);
+    const btcDetail = await send(btcClient.id, { type: 'get_blockchain_info' });
+    if (!btcDetail.includes("'getblockchaininfo' -> HTTP 200 (result)")) fail('bitcoin [ send ]: ' + btcDetail);
+    await waitFor(() => clientResponses.bitcoin.length > 0, 'the bitcoin RPC response reported to the model', 20000);
+    const btc = clientResponses.bitcoin[0];
+    if (btc.result?.blocks !== 101 || btc.result?.called !== 'getblockchaininfo') fail('the RPC result did not reach the client: ' + JSON.stringify(btc));
+    const rpcSeen = serverRequests.find((r) => r.protocol === 'http' && String(r.context.body).includes('getblockchaininfo'));
+    const auth = rpcSeen && headerOf(rpcSeen.context.headers, 'authorization');
+    if (auth !== 'Basic ' + Buffer.from('smoke:pw').toString('base64')) fail('the RPC credentials did not arrive as Basic auth: ' + JSON.stringify(rpcSeen && rpcSeen.context.headers));
+    webClients.bitcoin = `ClientForm #${btcClient.id} -> http :${HTTP_PORT}: [ send ] ${btcDetail}; blocks ${btc.result.blocks}; Basic auth arrived`;
+
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 
     console.log('ok: dashboard painted, tcp, udp, http, openapi, jsonrpc, rss and http2 servers started, virtual connections round-tripped through the model bridge');
@@ -498,6 +637,7 @@ try {
     console.log('    composer: ' + composed[0].actions.length + ' actions offered, default ' + composed[0].entry.name + ', example bytes ' + JSON.stringify(composerReceived.join('')) + ' reached the peer');
     console.log('    http client: [ + http client ] connected client #' + viaButton.id + ' to :' + HTTP_PORT + '; client #' + httpClient.id + ' read ' + first.status_code + ' ' + JSON.stringify(first.body) + ' and, via [ send ], ' + detail.split('-> ')[1] + '; https refused');
     for (const [name, line] of Object.entries(hyper)) console.log(`    ${name} (node client): ${line}`);
+    for (const [name, line] of Object.entries(webClients)) console.log(`    ${name} client: ${line}`);
     console.log('    Date headers checked:', dates.length, '| latest:', dates[dates.length - 1]);
     console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);
     process.exit(0);

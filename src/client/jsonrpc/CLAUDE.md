@@ -381,3 +381,15 @@ parking that LLM call would wedge the command loop for the length of a human's t
 and `send_to_client` would time out on a request that in fact succeeded. `make_request` /
 `make_batch_request` are unchanged for callers; each is now `perform_*` (network only)
 followed by `notify_*` (the LLM event).
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same
+30-second bound per exchange and an 8 MiB response body bound. The transport has no TLS, so in
+the browser an `https://` target is refused at connect with the reason
+(`http_fetch::check_url`) rather than on the first request. `web/test/smoke.mjs` proves it in
+the bundle: `[ + JSON-RPC client ]` on NetGet's `jsonrpc` server connects, and `[ send ]` of `add(2, 3)` comes back `Executed` with `HTTP 200 (JSON-RPC response received)`; the response event (`result` 5, `id` 41) is what parks on the client for the human, which is where a dashboard-created client routes it.
+

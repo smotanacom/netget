@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::client::elasticsearch::actions::{
     ELASTICSEARCH_CLIENT_CONNECTED_EVENT, ELASTICSEARCH_CLIENT_RESPONSE_RECEIVED_EVENT,
 };
+use crate::client::http_fetch::{FetchClient, FetchRequest};
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::actions::protocol_trait::Protocol;
@@ -62,10 +63,14 @@ impl ElasticsearchClient {
             };
 
         // Build HTTP client for Elasticsearch
+        #[cfg(not(target_arch = "wasm32"))]
         let _http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("Failed to build HTTP client for Elasticsearch")?;
+        // The browser transport has no TLS: an `https://` cluster is refused here, with the
+        // reason, rather than on the first request.
+        crate::client::http_fetch::check_url(&cluster_url)?;
 
         // `username` / `password` / `default_index` were all declared and none was read:
         // a secured cluster answered 401 with nothing in the parameter list to explain it,
@@ -243,7 +248,7 @@ impl ElasticsearchClient {
             client_id, index
         );
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let response = Self::authorize(http_client.post(&url), &authorization)
             .json(&document)
             .send()
@@ -301,7 +306,7 @@ impl ElasticsearchClient {
             "query": query
         });
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let response = Self::authorize(http_client.post(&url), &authorization)
             .json(&search_body)
             .send()
@@ -361,7 +366,7 @@ impl ElasticsearchClient {
             client_id, id, index
         );
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let response = Self::authorize(http_client.get(&url), &authorization)
             .send()
             .await
@@ -409,7 +414,7 @@ impl ElasticsearchClient {
             client_id, id, index
         );
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let response = Self::authorize(http_client.delete(&url), &authorization)
             .send()
             .await
@@ -531,7 +536,7 @@ impl ElasticsearchClient {
 
         let bulk_body = Self::build_bulk_ndjson(operations)?;
 
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let response = Self::authorize(http_client.post(&url), &authorization)
             .header("Content-Type", "application/x-ndjson")
             .body(bulk_body)
@@ -848,11 +853,19 @@ impl ElasticsearchClient {
             )
     }
 
+    /// The HTTP client for one request: a fresh `reqwest::Client` natively, the shared hyper
+    /// transport over the virtual loopback in the browser build
+    /// ([`crate::client::http_fetch`]), there bounded at 30 seconds an exchange.
+    fn http_client() -> FetchClient {
+        #[cfg(not(target_arch = "wasm32"))]
+        let client = FetchClient::from_reqwest(reqwest::Client::new());
+        #[cfg(target_arch = "wasm32")]
+        let client = FetchClient::transport(std::time::Duration::from_secs(30));
+        client
+    }
+
     /// Apply the cluster's `Authorization` header, when one was configured.
-    fn authorize(
-        request: reqwest::RequestBuilder,
-        authorization: &Option<String>,
-    ) -> reqwest::RequestBuilder {
+    fn authorize(request: FetchRequest, authorization: &Option<String>) -> FetchRequest {
         match authorization {
             Some(value) => request.header("Authorization", value),
             None => request,
@@ -876,7 +889,7 @@ impl ElasticsearchClient {
     /// its hits to nobody. The bound is the depth counter, not the silence.
     async fn run_request_once(
         client_id: ClientId,
-        method: reqwest::Method,
+        method: hyper::Method,
         path: &str,
         body: Option<RequestBody>,
         app_state: &Arc<AppState>,
@@ -887,7 +900,7 @@ impl ElasticsearchClient {
             cluster_url.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        let http_client = reqwest::Client::new();
+        let http_client = Self::http_client();
         let mut req = Self::authorize(http_client.request(method, &url), &authorization);
         match body {
             Some(RequestBody::Json(b)) => req = req.json(&b),
@@ -1020,23 +1033,24 @@ impl ElasticsearchClient {
                         let index = index.as_str();
                         let plan = match name.as_str() {
                             "search" => Some((
-                                reqwest::Method::POST,
+                                hyper::Method::POST,
                                 format!("{index}/_search"),
                                 Some(RequestBody::Json(serde_json::json!({
                                     "query": data.get("query").cloned()
                                         .unwrap_or(serde_json::json!({"match_all": {}}))
                                 }))),
                             )),
-                            "get_document" => data.get("id").and_then(|v| v.as_str()).map(|id| {
-                                (reqwest::Method::GET, format!("{index}/_doc/{id}"), None)
-                            }),
+                            "get_document" => data
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|id| (hyper::Method::GET, format!("{index}/_doc/{id}"), None)),
                             "delete_document" => {
                                 data.get("id").and_then(|v| v.as_str()).map(|id| {
-                                    (reqwest::Method::DELETE, format!("{index}/_doc/{id}"), None)
+                                    (hyper::Method::DELETE, format!("{index}/_doc/{id}"), None)
                                 })
                             }
                             "index_document" => Some((
-                                reqwest::Method::POST,
+                                hyper::Method::POST,
                                 format!("{index}/_doc"),
                                 data.get("document").cloned().map(RequestBody::Json),
                             )),
@@ -1053,7 +1067,7 @@ impl ElasticsearchClient {
                                     .unwrap_or_default();
                                 match Self::build_bulk_ndjson(ops) {
                                     Ok(ndjson) => Some((
-                                        reqwest::Method::POST,
+                                        hyper::Method::POST,
                                         "_bulk".to_string(),
                                         Some(RequestBody::Ndjson(ndjson)),
                                     )),

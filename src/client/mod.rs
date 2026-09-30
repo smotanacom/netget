@@ -7,6 +7,9 @@
 // Shared plumbing: budget-checked LLM entry point used by every client protocol.
 // See the module docs for why clients need a hard call ceiling.
 pub mod command_support;
+/// The HTTP round trip the HTTP-family clients share: reqwest natively, hyper's HTTP/1.1
+/// client over the virtual loopback in the browser build.
+pub mod http_fetch;
 pub mod llm_budget;
 
 // arp client
@@ -22,9 +25,9 @@ pub mod bgp;
 pub use bgp::actions::BgpClientProtocol;
 
 // bitcoin client
-#[cfg(all(feature = "bitcoin", not(target_arch = "wasm32")))]
+#[cfg(feature = "bitcoin")]
 pub mod bitcoin;
-#[cfg(all(feature = "bitcoin", not(target_arch = "wasm32")))]
+#[cfg(feature = "bitcoin")]
 pub use bitcoin::actions::BitcoinClientProtocol;
 
 // bluetooth-ble client
@@ -88,9 +91,9 @@ pub mod dynamodb;
 pub use dynamodb::actions::DynamoDbClientProtocol;
 
 // elasticsearch client
-#[cfg(all(feature = "elasticsearch", not(target_arch = "wasm32")))]
+#[cfg(feature = "elasticsearch")]
 pub mod elasticsearch;
-#[cfg(all(feature = "elasticsearch", not(target_arch = "wasm32")))]
+#[cfg(feature = "elasticsearch")]
 pub use elasticsearch::actions::ElasticsearchClientProtocol;
 
 // etcd client
@@ -177,9 +180,9 @@ pub mod isis;
 pub use isis::actions::IsisClientProtocol;
 
 // jsonrpc client
-#[cfg(all(feature = "jsonrpc", not(target_arch = "wasm32")))]
+#[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
-#[cfg(all(feature = "jsonrpc", not(target_arch = "wasm32")))]
+#[cfg(feature = "jsonrpc")]
 pub use jsonrpc::actions::JsonRpcClientProtocol;
 
 // kafka client (pure Rust, shares the broker's kafka-protocol codecs)
@@ -291,9 +294,9 @@ pub mod ollama;
 pub use ollama::actions::OllamaClientProtocol;
 
 // openapi client
-#[cfg(all(feature = "openapi", not(target_arch = "wasm32")))]
+#[cfg(feature = "openapi")]
 pub mod openapi;
-#[cfg(all(feature = "openapi", not(target_arch = "wasm32")))]
+#[cfg(feature = "openapi")]
 pub use openapi::actions::OpenApiClientProtocol;
 
 // openidconnect client

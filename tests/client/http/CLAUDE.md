@@ -1,6 +1,6 @@
 # HTTP Client E2E Tests
 
-Four files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
+Five files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
 
 | File | Peer | Tests | LLM calls |
 |---|---|---|---|
@@ -8,6 +8,7 @@ Four files, declared in `tests/client/http/mod.rs`. Nothing is `#[ignore]`d.
 | `e2e_test.rs` | NetGet's own HTTP server | 2 | 8 (4 + 4, server and client mocks) |
 | `command_channel_test.rs` | NetGet's own HTTP server, in-process | 1 | 0 |
 | `transport_test.rs` | NetGet's own HTTP and TCP servers, in-process | 5 | 0 |
+| `fetch_client_test.rs` | a recording HTTP/1.1 peer in the test | 5 | 0 |
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http,tcp --test client -- http:: --test-threads=100
@@ -87,7 +88,8 @@ access log is checked for the path.
 
 ## `transport_test.rs` — the browser transport, natively
 
-`src/client/http/transport.rs` is what the client uses in the browser build; it compiles
+`src/client/http_fetch/transport.rs` (re-exported as `client::http::transport`) is what the
+client uses in the browser build; it compiles
 natively so it can be tested without one. Every server answers through a `*` static handler,
 so there are no LLM calls. NetGet's HTTP server gives a 200 (body, `status_text`, two headers,
 and a POST) and a 404 read as a status; NetGet's **TCP** server writes hand-made HTTP bytes,
@@ -97,3 +99,17 @@ at a 10-byte bound and accepted at exactly 19, and a server that never answers g
 client's own reqwest path through `send_to_client`: a 5-byte body is read, a body one byte over
 `MAX_RESPONSE_BODY_BYTES` fails the request. Each bound was verified by removal — the body
 bound, the deadline and the reqwest chunk check each turn their test red.
+
+## `fetch_client_test.rs` — the shared request API, both backends
+
+`src/client/http_fetch/mod.rs`'s `FetchClient` is how jsonrpc, elasticsearch, openapi, bitcoin
+and the other HTTP-family clients issue requests: reqwest natively, the transport above in the
+browser build. Each test sends the same request through **both** backends to a peer written in
+the test that records the request line, headers and body, so the browser path is pinned to what
+reqwest itself writes: `basic_auth` (the same `Authorization` value), `query` (the same encoded
+request line), `header`, `json` (`Content-Type: application/json`) and `form`
+(`application/x-www-form-urlencoded`, the same encoding). A non-UTF-8 body comes back byte for
+byte through `bytes()` and through `chunk()`; the transport's `with_max_body` refuses 65 bytes
+against 64 and accepts exactly 64; `https://` on the transport is refused with
+`HTTPS_UNSUPPORTED`. Zero LLM calls. Making `with_max_body` a no-op turns the bound test red.
+
