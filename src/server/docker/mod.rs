@@ -453,7 +453,7 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
     }
 
     console_debug!(ctx.status_tx, "Calling LLM for Docker {} {}", method, path);
-    let event = Event::new(&actions::DOCKER_API_REQUEST_EVENT, data);
+    let event = Event::new(actions::event_for_resource(resource), data);
     let llm_result = call_llm(
         &ctx.llm_client,
         &ctx.app_state,
