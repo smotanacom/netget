@@ -344,6 +344,12 @@ ProtocolConnectionInfo::Pypi {
 - **Requests** are capped at `MAX_REQUEST_BODY_BYTES` (8 MiB) and refused with 413
   above it, so the inbound side is not a peer-controlled allocation
 
+### 8. Request-Only
+
+- `metadata()` declares `.request_only(…)`: "PyPI is HTTP request/response; a server cannot send a
+  peer anything unprompted". The dashboard's `[ send message ]` on a peer is disabled and shows
+  that reason, and MCP `send_to_peer` refuses with it.
+
 ## Example Prompts
 
 ### Simple Single Package

@@ -219,6 +219,9 @@ body='{"__type":"ResourceNotFoundException","message":"Table not found"}'
 - **No TTL** - time-to-live not supported
 - **No streams** - DynamoDB Streams not implemented
 - **No global tables** - single-region only
+- **Request-only** - `metadata()` declares `.request_only(…)`: "DynamoDB is HTTP request/response;
+  a server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer
+  is disabled and shows that reason, and MCP `send_to_peer` refuses with it
 
 ### Performance
 

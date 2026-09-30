@@ -170,6 +170,11 @@ objects, symlinks, submodules, binary file content (`content` is a UTF-8 string)
 deltas/thin packs, shallow and partial clones, protocol v2, the dumb HTTP
 protocol, authentication, and the SHA-256 object format.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "Git smart HTTP is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
+
 ## Example prompts
 
 Deterministic (recommended — no LLM calls, clone always succeeds):

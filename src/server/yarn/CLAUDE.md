@@ -69,6 +69,11 @@ No scheduler/queue endpoints, no app-attempts/containers sub-resources, no RM HA
 (SPNEGO/delegation tokens). HTTP/1.1 only. Cluster state is virtual and lives only in the model's
 context across a conversation.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "The YARN REST API is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
+
 ## References
 
 - Hadoop ResourceManager REST APIs:

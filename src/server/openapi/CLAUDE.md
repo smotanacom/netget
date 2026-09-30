@@ -156,6 +156,11 @@ is false, and **returns `Ok(())` unconditionally** — its body is a TODO listin
 checks it would do. A reader of the call site would reasonably conclude requests are validated
 against the schema; nothing is. The `immediate_400` path it guards is therefore unreachable.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "An OpenAPI service is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
+
 ## Examples
 
 ```json

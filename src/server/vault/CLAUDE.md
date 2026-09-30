@@ -80,6 +80,10 @@ Never a 404 on failure: "No value found" would tell a job the secret was deleted
 | `api::MAX_LIST_KEYS` | 10 000 | render bound |
 
 No peer handle: hyper owns the socket (`HyperOwnsSocket`).
+It is also request-only; `metadata()` declares `.request_only(…)`: "The Vault API is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
 
 ## Startup parameters
 

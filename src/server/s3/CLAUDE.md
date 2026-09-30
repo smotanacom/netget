@@ -343,6 +343,9 @@ impractical regardless of encoding.
 - **No versioning** - object versioning not supported
 - **No ACLs** - access control lists not implemented
 - **No lifecycle policies** - automated data management not supported
+- **Request-only** - `metadata()` declares `.request_only(…)`: "S3 is HTTP request/response; a
+  server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+  disabled and shows that reason, and MCP `send_to_peer` refuses with it
 
 ### XML Generation
 

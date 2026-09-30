@@ -254,6 +254,12 @@ the equivalent problem (a filter plus a rolling per-minute window); RSS has no s
 - No 304 Not Modified responses
 - Client has If-Modified-Since support though
 
+### 8. Request-Only
+
+- `metadata()` declares `.request_only(…)`: "RSS is HTTP request/response; a server cannot send a
+  peer anything unprompted". The dashboard's `[ send message ]` on a peer is disabled and shows
+  that reason, and MCP `send_to_peer` refuses with it.
+
 ## Example Prompts
 
 ### Basic Feed Server

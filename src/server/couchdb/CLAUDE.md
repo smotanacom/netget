@@ -392,6 +392,9 @@ For any request without valid auth (when auth enabled), use send_auth_required w
 - **No partitioned databases** - single partition only
 - **No purge action** - `POST /{db}/_purge` is detected and reaches the LLM as `purge`, but
   has no dedicated action; answer it with `send_couchdb_response`
+- **Request-only** - `metadata()` declares `.request_only(…)`: "CouchDB is HTTP request/response;
+  a server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer
+  is disabled and shows that reason, and MCP `send_to_peer` refuses with it
 
 ### Performance
 

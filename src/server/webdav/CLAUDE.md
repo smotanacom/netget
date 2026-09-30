@@ -243,6 +243,9 @@ bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
   property set (`displayname`, `getlastmodified`, `resourcetype`, `getcontentlength`,
   `getcontenttype`) regardless of what the client's `<D:prop>` asked for.
 - No DAV versioning (RFC 3253), no `Depth: infinity` expansion beyond what the model lists.
+- **Request-only.** `metadata()` declares `.request_only(…)`: "WebDAV is HTTP request/response; a
+  server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+  disabled and shows that reason, and MCP `send_to_peer` refuses with it.
 
 ## Testing
 

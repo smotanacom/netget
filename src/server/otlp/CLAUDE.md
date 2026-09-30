@@ -74,6 +74,10 @@ The first verdict in the model's order is the one sent. `answer_with` names the 
 the item count and unit, and which statuses make the client retry; the examples are
 placeholders (`<why>`).
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "OTLP/HTTP is request/response; a
+receiver cannot send an exporter anything unprompted". The dashboard's `[ send message ]` on a
+peer is disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## Failure behaviour
 
 `FailureMode::Answers`. Never an invented 200 — a success tells the exporter to discard its copy.

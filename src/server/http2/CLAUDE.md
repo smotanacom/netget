@@ -228,6 +228,10 @@ Deterministic variant (no LLM call):
 ALPN negotiation · stream prioritization control · streaming/chunked responses ·
 binary bodies · LLM control over connection lifetime · trailers · `recent_requests`.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "HTTP/2 only answers requests; every
+response and push rides a stream the peer opened". The dashboard's `[ send message ]` on a peer is
+disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## References
 
 - RFC 7540 (HTTP/2), RFC 7541 (HPACK)

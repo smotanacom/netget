@@ -214,6 +214,12 @@ looks like a complete one, and the model would answer a request it never saw. Th
 declared locally rather than imported from `http_common`, because the `ollama` feature does
 not pull in `http` and that module is configured out of an `--features ollama` build.
 
+### 6. Request-only
+
+`metadata()` declares `.request_only(…)`: "The Ollama API is HTTP request/response; a server
+cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is disabled
+and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## A refusal must not arrive as a success
 
 `model_error_response` is the only path that turns `ollama_error_response` into an HTTP reply,
