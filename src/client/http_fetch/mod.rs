@@ -47,6 +47,7 @@ enum Backend {
         timeout: Duration,
         max_body: usize,
         user_agent: Option<String>,
+        wire: transport::Wire,
     },
 }
 
@@ -67,6 +68,7 @@ impl FetchClient {
                 timeout,
                 max_body: transport::MAX_RESPONSE_BODY_BYTES,
                 user_agent: None,
+                wire: transport::Wire::Http1,
             },
         }
     }
@@ -95,6 +97,17 @@ impl FetchClient {
         self
     }
 
+    /// Speak HTTP/2 with prior knowledge on the transport (cleartext h2c, no upgrade), as
+    /// reqwest's `ClientBuilder::http2_prior_knowledge` does for a reqwest-backed client,
+    /// whose builder already carries it.
+    #[allow(irrefutable_let_patterns)]
+    pub fn http2_prior_knowledge(mut self) -> Self {
+        if let Backend::Transport { wire, .. } = &mut self.backend {
+            *wire = transport::Wire::Http2PriorKnowledge;
+        }
+        self
+    }
+
     pub fn request(&self, method: Method, url: &str) -> FetchRequest {
         match &self.backend {
             #[cfg(not(target_arch = "wasm32"))]
@@ -105,12 +118,14 @@ impl FetchClient {
                 timeout,
                 max_body,
                 user_agent,
+                wire,
             } => FetchRequest {
                 inner: RequestInner::Transport(TransportRequest {
                     method,
                     url: url.to_string(),
                     headers: Vec::new(),
                     user_agent: user_agent.clone(),
+                    wire: *wire,
                     body: None,
                     timeout: *timeout,
                     max_body: *max_body,
@@ -174,6 +189,7 @@ struct TransportRequest {
     headers: Vec<(String, String)>,
     body: Option<Bytes>,
     user_agent: Option<String>,
+    wire: transport::Wire,
     timeout: Duration,
     max_body: usize,
     error: Option<anyhow::Error>,
@@ -371,7 +387,8 @@ impl FetchRequest {
                             .push((hyper::header::USER_AGENT.as_str().to_string(), user_agent));
                     }
                 }
-                let response = transport::fetch_response(
+                let response = transport::fetch_response_on(
+                    req.wire,
                     req.method.as_str(),
                     &req.url,
                     &req.headers,
@@ -384,6 +401,7 @@ impl FetchRequest {
                 Ok(FetchResponse {
                     inner: ResponseInner::Transport {
                         status: parts.status,
+                        version: parts.version,
                         headers: parts.headers,
                         body: Some(body),
                     },
@@ -404,6 +422,7 @@ enum ResponseInner {
     Reqwest(reqwest::Response),
     Transport {
         status: StatusCode,
+        version: hyper::Version,
         headers: HeaderMap,
         body: Option<Bytes>,
     },
@@ -415,6 +434,15 @@ impl FetchResponse {
             #[cfg(not(target_arch = "wasm32"))]
             ResponseInner::Reqwest(response) => response.status(),
             ResponseInner::Transport { status, .. } => *status,
+        }
+    }
+
+    /// The HTTP version the response came in.
+    pub fn version(&self) -> hyper::Version {
+        match &self.inner {
+            #[cfg(not(target_arch = "wasm32"))]
+            ResponseInner::Reqwest(response) => response.version(),
+            ResponseInner::Transport { version, .. } => *version,
         }
     }
 

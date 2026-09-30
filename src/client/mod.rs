@@ -132,9 +132,9 @@ pub use http::actions::HttpClientProtocol;
 // browser build; see web/README.md for the list.
 
 // http2 client
-#[cfg(all(feature = "http2", not(target_arch = "wasm32")))]
+#[cfg(feature = "http2")]
 pub mod http2;
-#[cfg(all(feature = "http2", not(target_arch = "wasm32")))]
+#[cfg(feature = "http2")]
 pub use http2::actions::Http2ClientProtocol;
 
 // http3 client

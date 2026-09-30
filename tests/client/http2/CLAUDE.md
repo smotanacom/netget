@@ -172,3 +172,14 @@ The peer is a NetGet HTTP/2 server of our own, started without `tls_enabled` so 
 cleartext h2c — which is what the client's `http2_prior_knowledge()` requires. A `*` static
 handler answers, so the `200` and the server's access-log entry for the path are a real round
 trip.
+
+## `h2_transport_test.rs` — the browser transport, natively
+
+`FetchClient::transport(..).http2_prior_knowledge()` (hyper's HTTP/2 client over a plain TCP
+stream, what this client uses in the browser build) and the reqwest backend, side by side
+against NetGet's own HTTP/2 server answering through a `*` static handler (zero LLM calls): a
+GET and a POST each read status 201, the server's `x-h2-marker` header, the body and version
+`HTTP/2.0` through both. Making `http2_prior_knowledge()` a no-op sends HTTP/1.1 and the
+transport half fails ("invalid HTTP version parsed"). `https://` is refused with
+`HTTPS_UNSUPPORTED`. The browser path itself is proven by `web/test/smoke.mjs`.
+

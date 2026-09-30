@@ -326,7 +326,15 @@ NetGet's own server of its protocol where one speaks it:
 | `npm` | yes | `[ + npm client ]` on the `npm` server; `[ send ]` `get_package_info` → the packument the server's model wrote, parked on the client; `https://registry.npmjs.org` refused with the reason |
 | `pypi` | yes | `[ + PyPI client ]` on the `pypi` server; `[ send ]` `get_package_info` → the JSON the server's model wrote, parked on the client |
 | `maven` | yes | `[ + Maven client ]` on the `maven` server; `[ send ]` `download_pom` → HTTP 200, the POM the server's model wrote parked on the client |
+| `http2` | yes | `[ + HTTP/2 client ]` on the `http2` server; `[ send ]` a GET over h2c with prior knowledge → the response read as `HTTP/2.0`, the model's body and header, parked on the client |
 | `torrent-tracker` | yes | `[ + BitTorrent Tracker client ]` on the `torrent-tracker` server; `[ send ]` an announce → the server's bencoded reply with a **binary** compact peer list decoded on the client (`127, 0, 0, 1, 26, 225, …`) |
+
+`http2` speaks HTTP/2 with prior knowledge through hyper's `client::conn::http2`
+(`transport::exchange_response_h2`), whose connection spawns its own tasks: they go through
+`transport::SpawnExecutor`, which is `tokio::spawn` as NetGet names it (the shim's, on the JS
+event loop), because hyper-util's `TokioExecutor` would call the real tokio's `spawn`, which
+has no runtime in the page. `tests/client/http2/h2_transport_test.rs` holds it to reqwest's
+answers natively.
 
 npm, pypi and maven default to public `https://` registries natively; in the browser build a
 scheme-less address means `http://` (a server on the page's virtual network) and an explicit
@@ -337,8 +345,6 @@ has one (npm's 64 MiB tarball cap, pypi's download cap, the tracker's 1 MiB), el
 Still gated with `not(target_arch = "wasm32")` in `src/client/mod.rs` and the registry (their
 servers are in), measured by what each asks of reqwest:
 
-- **http2** — `http2_prior_knowledge()`: needs hyper's `client::conn::http2` with an executor,
-  a second transport rather than a switch.
 - **oauth2, openidconnect** — the `oauth2`/`openidconnect` crates call reqwest through their
   own `async_http_client`; each takes a custom HTTP function, so the transport can be plugged
   in, but it is an adapter per crate, and both flows assume `https://` issuers.

@@ -1571,13 +1571,15 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   offering its actions with examples); `web/test/smoke.mjs` drives the real bundle under Node
   (dashboard paints, `start_server`, connect, model round-trip, bytes back, the
   composer's default reply accepted, the HTTP-family clients — `http`, `jsonrpc`,
-  `elasticsearch`, `openapi`, `bitcoin`, `npm`, `pypi`, `maven` and `torrent-tracker`, each through `[ + <proto> client ]` or `ClientForm`
+  `elasticsearch`, `openapi`, `bitcoin`, `npm`, `pypi`, `maven`, `torrent-tracker` and `http2`
+  (h2c through hyper's HTTP/2 client), each through `[ + <proto> client ]` or `ClientForm`
   and a `[ send ]` against NetGet's own server of its protocol (bitcoin's JSON-RPC against
   the `http` server), the response checked on the client — and Node's `node:http`/`node:http2` clients against the `http`, `openapi`,
   `jsonrpc`, `rss` and `http2` servers over `NetGet.connect()`, `Date` headers checked) and
   CI's `wasm-web` job runs both. In the browser those clients issue their requests through
-  `src/client/http_fetch` (`FetchClient`: reqwest natively, unchanged; hyper's HTTP/1.1 client
-  over the virtual loopback on wasm32, `https://` refused with the reason); the clients still
+  `src/client/http_fetch` (`FetchClient`: reqwest natively, unchanged; hyper's HTTP/1.1 client —
+  HTTP/2 with prior knowledge for `http2` — over the virtual loopback on wasm32, `https://`
+  refused with the reason); the clients still
   gated out, and why, are listed in `web/README.md`.
   `web/test/page_composer.py` drives the page in headless Chromium and is run by hand.
 - **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any

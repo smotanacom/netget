@@ -120,7 +120,7 @@ impl ClientRegistry {
             tracing::debug!("ClientRegistry: HTTP client protocol registered");
         }
 
-        #[cfg(all(feature = "http2", not(target_arch = "wasm32")))]
+        #[cfg(feature = "http2")]
         self.register(Arc::new(crate::client::http2::Http2ClientProtocol::new()));
 
         // Real RFC 9114 HTTP/3 (the `h3` crate), so it keeps the `http3` name.

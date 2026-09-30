@@ -15,6 +15,12 @@
 //! drives NetGet's own HTTP and TCP servers through it). The native clients still use reqwest,
 //! which brings TLS, HTTP/2 and connection pooling this module deliberately does not have.
 //!
+//! HTTP/2 is spoken with prior knowledge only ([`Wire::Http2PriorKnowledge`], cleartext h2c
+//! with no upgrade and no ALPN — what `reqwest`'s `http2_prior_knowledge()` does), through
+//! hyper's `client::conn::http2`. Its connection spawns its own tasks through
+//! [`SpawnExecutor`], which is `tokio::spawn` as this crate names it: tokio's natively, the
+//! browser shim's (the JS event loop) on wasm32.
+//!
 //! What it does not do, stated rather than implied: no TLS — an `https://` URL is refused with
 //! the reason (see [`HTTPS_UNSUPPORTED`]); no redirects (a 3xx is reported to the model like any
 //! other status, which is what the model is for); no connection reuse (one connection per
@@ -140,8 +146,50 @@ pub async fn fetch(
     .map(HttpExchange::from_response)
 }
 
+/// Which HTTP a request is written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// HTTP/1.1.
+    Http1,
+    /// HTTP/2 over cleartext TCP with prior knowledge (h2c, no upgrade, no ALPN).
+    Http2PriorKnowledge,
+}
+
+/// Runs the tasks hyper's HTTP/2 connection spawns (its connection and per-stream body
+/// pipes) with `tokio::spawn` as this crate resolves it: tokio's natively, the browser shim's
+/// on wasm32. hyper-util's `TokioExecutor` would call the real tokio's `spawn` in the browser,
+/// where no tokio runtime exists.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpawnExecutor;
+
+impl<F> hyper::rt::Executor<F> for SpawnExecutor
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn execute(&self, future: F) {
+        // Each task ends with the stream or the connection it serves; the exchange aborts the
+        // connection driver on every exit, which ends the rest.
+        drop(tokio::spawn(future));
+    }
+}
+
 /// As [`fetch`], with the request and response bodies as bytes.
 pub async fn fetch_response(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<Bytes>,
+    timeout: Duration,
+    max_body: usize,
+) -> Result<hyper::Response<Bytes>> {
+    fetch_response_on(Wire::Http1, method, url, headers, body, timeout, max_body).await
+}
+
+/// As [`fetch_response`], written in `wire`'s HTTP.
+#[allow(clippy::too_many_arguments)]
+pub async fn fetch_response_on(
+    wire: Wire,
     method: &str,
     url: &str,
     headers: &[(String, String)],
@@ -154,7 +202,14 @@ pub async fn fetch_response(
         let stream = tokio::net::TcpStream::connect((target.host.clone(), target.port))
             .await
             .with_context(|| format!("connect to {}:{}", target.host, target.port))?;
-        exchange_response(stream, method, &target, headers, body, max_body).await
+        match wire {
+            Wire::Http1 => {
+                exchange_response(stream, method, &target, headers, body, max_body).await
+            }
+            Wire::Http2PriorKnowledge => {
+                exchange_response_h2(stream, method, &target, headers, body, max_body).await
+            }
+        }
     };
     tokio::time::timeout(timeout, exchange)
         .await
@@ -238,6 +293,74 @@ where
                 anyhow!("response body exceeds the {max_body}-byte limit; refused")
             } else {
                 anyhow!("read HTTP response body: {e}")
+            }
+        })?;
+        Ok(hyper::Response::from_parts(parts, collected.to_bytes()))
+    }
+    .await;
+    driver.abort();
+    result
+}
+
+/// As [`exchange_response`], in HTTP/2 with prior knowledge: the connection preface goes out
+/// first, with no HTTP/1.1 upgrade. The request carries its scheme and authority in the URI,
+/// which hyper writes as the `:scheme` and `:authority` pseudo-headers; no `Host` header is
+/// added (a `Host` among `headers` is sent as given).
+pub async fn exchange_response_h2<S>(
+    io: S,
+    method: &str,
+    target: &HttpTarget,
+    headers: &[(String, String)],
+    body: Option<Bytes>,
+    max_body: usize,
+) -> Result<hyper::Response<Bytes>>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let method = method.to_ascii_uppercase();
+    if !METHODS.contains(&method.as_str()) {
+        bail!("Unsupported HTTP method: {method}");
+    }
+
+    let uri = format!("http://{}{}", target.authority, target.path_and_query);
+    let mut builder = hyper::Request::builder()
+        .method(method.as_str())
+        .uri(uri.as_str())
+        .version(hyper::Version::HTTP_2);
+    for (name, value) in headers {
+        let name = hyper::header::HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("invalid header name {name:?}"))?;
+        let value = hyper::header::HeaderValue::from_str(value)
+            .with_context(|| format!("invalid value for header {name}"))?;
+        builder
+            .headers_mut()
+            .context("request builder rejected an earlier part")?
+            .append(name, value);
+    }
+    let request = builder
+        .body(Full::new(body.unwrap_or_default()))
+        .context("build HTTP/2 request")?;
+
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(SpawnExecutor, TokioIo::new(io))
+            .await
+            .context("HTTP/2 handshake (prior knowledge)")?;
+    let driver = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let result = async {
+        let response = sender
+            .send_request(request)
+            .await
+            .context("send HTTP/2 request")?;
+        let (parts, body) = response.into_parts();
+        let collected = Limited::new(body, max_body).collect().await.map_err(|e| {
+            if e.downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some()
+            {
+                anyhow!("response body exceeds the {max_body}-byte limit; refused")
+            } else {
+                anyhow!("read HTTP/2 response body: {e}")
             }
         })?;
         Ok(hyper::Response::from_parts(parts, collected.to_bytes()))

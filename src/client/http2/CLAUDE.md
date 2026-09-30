@@ -294,3 +294,25 @@ that LLM call cannot wedge the command loop.
 `perform_request` also now prefixes `http://` when the client was opened on a bare
 `host:port` (the common case), which reqwest requires; `http2_prior_knowledge()` speaks
 cleartext h2c, so that is the correct scheme for it.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same cached reqwest client
+(`http2_prior_knowledge()`), so what reaches the wire is unchanged; on wasm32 it is
+`FetchClient::transport(30 s).http2_prior_knowledge()` — hyper 1's `client::conn::http2` over
+the page's virtual loopback (`src/client/http_fetch/transport.rs`, `exchange_response_h2`),
+one connection per request, cleartext h2c with the connection preface first and no upgrade.
+The request URI carries `http://` and the authority, which hyper writes as `:scheme` and
+`:authority`. The tasks hyper's HTTP/2 connection spawns go through `SpawnExecutor`, which is
+`tokio::spawn` as NetGet names it — the browser shim's spawn on wasm32; hyper-util's
+`TokioExecutor` would reach the real tokio, which has no runtime there. The connection driver
+is aborted when the exchange ends. The response body is bounded at 8 MiB. An `https://` server
+is refused at connect with the reason.
+
+`tests/client/http2/h2_transport_test.rs` drives both backends against NetGet's own HTTP/2
+server natively and asserts they read the same status, header, body and `HTTP/2.0`;
+`web/test/smoke.mjs` proves it in the bundle: `[ + HTTP/2 client ]` on NetGet's `http2`
+server connects, `[ send ]` of a GET reaches the server's model, and the response — read as
+`HTTP/2.0`, status 200, the model's body and header — is parked on the client.
+

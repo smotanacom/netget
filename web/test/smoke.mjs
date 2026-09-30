@@ -42,6 +42,8 @@
 // shown each response. An https:// jsonrpc endpoint is refused with the reason. npm, pypi,
 // maven and torrent-tracker follow the button path too; the tracker's reply is bencoded with a
 // binary compact peer list, which must arrive decoded, and an https:// npm registry is refused.
+// http2's client follows the button path over h2c with prior knowledge (hyper's HTTP/2 client,
+// its tasks on the shim's spawn), and the response must be read as HTTP/2.
 //
 // The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
 // thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
@@ -548,7 +550,7 @@ try {
     // http2: prior-knowledge h2c through node:http2 (nghttp2). NetGet's http2 server is the
     // `h2` crate rather than hyper, and it sets no Date header.
     const HTTP2_PORT = 8084;
-    await startServer({ protocol: 'http2', port: HTTP2_PORT, instruction: 'Greet every request.' });
+    const http2Server = await startServer({ protocol: 'http2', port: HTTP2_PORT, instruction: 'Greet every request.' });
     const h2 = await http2Request(HTTP2_PORT, '/greet?who=smoke');
     if (h2.status !== 200 || h2.headers['x-smoke'] !== 'h2' || h2.body !== 'h2 says hi to /greet?who=smoke') fail('http2 GET /greet: ' + JSON.stringify(h2));
     hyper.http2 = `GET /greet?who=smoke ${h2.status} ${JSON.stringify(h2.body)}`;
@@ -688,6 +690,17 @@ try {
     const peers = await parkedOn(trackerClient.id, 'tracker_announce_response', (d) => d.interval !== undefined);
     if (peers.event_data.interval !== 900 || peers.event_data.complete !== 3 || !String(peers.event_data.peers).includes('127, 0, 0, 1, 26, 225')) fail('the compact peer list did not reach the client intact: ' + JSON.stringify(peers));
     webClients['torrent-tracker'] = `[ + client ] #${trackerClient.id}, [ send ] announce -> ${announceDetail}; parked interval ${peers.event_data.interval}, peers ${peers.event_data.peers}`;
+
+    // http2: [ + HTTP/2 client ] on the http2 server's card; the client speaks h2c with prior
+    // knowledge through hyper's HTTP/2 client over the virtual loopback, its connection tasks
+    // on the shim's spawn. [ send ] a GET; the server's model answers; the response, read as
+    // HTTP/2, is parked on the client.
+    const h2Client = await connectViaButton(http2Server.id, 'http2');
+    const h2Detail = await send(h2Client.id, { type: 'send_http2_request', method: 'GET', path: '/from-netget?via=h2c' });
+    const h2Parked = await parkedOn(h2Client.id, 'http2_response_received');
+    const h2Data = h2Parked.event_data;
+    if (h2Data.status_code !== 200 || h2Data.body !== 'h2 says hi to /from-netget?via=h2c' || h2Data.http_version !== 'HTTP/2.0' || headerOf(h2Data.headers, 'x-smoke') !== 'h2') fail('the HTTP/2 response did not reach the client as HTTP/2: ' + JSON.stringify(h2Parked) + '; [ send ] said ' + h2Detail);
+    webClients.http2 = `[ + client ] #${h2Client.id}, [ send ] GET -> ${h2Detail}; parked ${h2Data.http_version} ${h2Data.status_code} ${JSON.stringify(h2Data.body)}`;
 
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 
