@@ -12,6 +12,8 @@
 //! | `MAX_READ_SIZE` (1 MiB, `MaxReadSize`) | a READ's requested length | `read_and_output_buffer_lengths_past_the_negotiated_maxima_are_refused` |
 //! | `MAX_TRANSACT_SIZE` (1 MiB, `MaxTransactSize`) | a QUERY_INFO or QUERY_DIRECTORY output buffer | `read_and_output_buffer_lengths_past_the_negotiated_maxima_are_refused` |
 //! | `MAX_COMPOUND_REQUESTS` (32) | requests acted on per compound frame | `a_compound_past_the_request_cap_is_answered_without_being_acted_on` |
+//! | `MAX_CREDIT_GRANT` (64) | **outbound**: credits one response grants | `credits_and_the_netbios_session_layer_are_bounded` |
+//! | RFC 1002 session request, at most 256 bytes of names | the one frame read before SMB2 | `credits_and_the_netbios_session_layer_are_bounded` |
 //! | `MAX_RESPONSE_FRAME_BYTES` (16 MiB - 1 - 2 MiB) | **outbound**: the bytes of one compound reply | `a_compound_whose_replies_would_overflow_a_frame_is_still_answered_in_one` |
 //!
 //! `MAX_MESSAGE_BYTES` and `MAX_WRITE_SIZE` are in `inbound_limit_test.rs`.
@@ -36,6 +38,8 @@
 //! - the MaxReadSize check removed (the length clamped instead, as it once was): the over-size
 //!   READ reaches the model.
 //! - each MaxTransactSize check removed: its over-size request reaches the model.
+//! - the credit clamp removed (the request's CreditRequest granted as asked): 1000 is granted.
+//! - the session request's 256-byte bound removed: the 257-byte request is answered.
 //! - the compound cap removed: all 40 CREATEs reach the model.
 //! - the response budget removed: `wire::frame`'s 24-bit assertion panics the connection task
 //!   and the 17-READ compound gets no reply at all.
@@ -879,5 +883,96 @@ async fn read_and_output_buffer_lengths_past_the_negotiated_maxima_are_refused()
         w::STATUS_INVALID_PARAMETER,
         "a READ past MaxReadSize (MS-SMB2 3.3.5.12)"
     );
+    server.stop().await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The transport and credit bounds
+// ---------------------------------------------------------------------------------------------
+
+/// An ECHO asking for `credits` in its header's CreditRequest.
+fn echo_requesting(message_id: u64, credits: u16) -> Vec<u8> {
+    let mut m = w::simple(w::ECHO, message_id, 0, 0);
+    m[14..16].copy_from_slice(&credits.to_le_bytes());
+    m
+}
+
+fn credits_granted(reply: &[u8]) -> u16 {
+    u16::from_le_bytes([reply[14], reply[15]])
+}
+
+/// `MAX_CREDIT_GRANT` (64) caps what one response grants, and at least one is always granted;
+/// an RFC 1002 session request (a client that dialled 139) of at most 256 bytes of names is
+/// answered positively and one longer closes the connection; a keep-alive is not answered; a
+/// frame shorter than an SMB2 header, and a first frame that is SMB1, close the connection.
+#[tokio::test]
+async fn credits_and_the_netbios_session_layer_are_bounded() {
+    use netget::server::smb::wire::MAX_CREDIT_GRANT;
+    let server = Server::start(None, None).await;
+
+    let mut s = server.connect().await;
+    for (asked, granted) in [(0u16, 1u16), (8, 8), (MAX_CREDIT_GRANT, MAX_CREDIT_GRANT)] {
+        let r = call(&mut s, echo_requesting(u64::from(asked), asked)).await;
+        assert_eq!(credits_granted(&r), granted, "asked for {asked} credits");
+    }
+    let r = call(&mut s, echo_requesting(1000, 1000)).await;
+    assert_eq!(
+        credits_granted(&r),
+        MAX_CREDIT_GRANT,
+        "one response grants at most MAX_CREDIT_GRANT credits"
+    );
+
+    // A keep-alive (0x85) is read and not answered: the next reply is the ECHO's.
+    s.write_all(&[0x85, 0, 0, 0]).await.unwrap();
+    let r = call(&mut s, w::simple(w::ECHO, 7, 0, 0)).await;
+    assert_eq!((w::command(&r), w::message_id(&r)), (w::ECHO, 7));
+
+    // An RFC 1002 session request with 68 bytes of names (two encoded NetBIOS names) gets a
+    // positive session response, and SMB2 follows on the same connection.
+    let mut names = Vec::new();
+    for _ in 0..2 {
+        names.push(0x20u8);
+        names.extend_from_slice(&[b'C', b'A'].repeat(16));
+        names.push(0);
+    }
+    let mut request = vec![0x81, 0, 0, names.len() as u8];
+    request.extend_from_slice(&names);
+    let mut s = server.connect().await;
+    s.write_all(&request).await.unwrap();
+    let mut positive = [0u8; 4];
+    tokio::time::timeout(Duration::from_secs(20), s.read_exact(&mut positive))
+        .await
+        .expect("a positive session response")
+        .unwrap();
+    assert_eq!(positive, [0x82, 0, 0, 0]);
+    let r = call(&mut s, w::simple(w::ECHO, 8, 0, 0)).await;
+    assert_eq!(w::message_id(&r), 8);
+
+    // One byte past 256 is not a session request this server reads.
+    let mut s = server.connect().await;
+    let mut request = vec![0x81, 0, 0x01, 0x01];
+    request.extend_from_slice(&[b'A'; 257]);
+    s.write_all(&request).await.unwrap();
+    let sink = read_until_closed(&mut s, 20, "a 257-byte session request").await;
+    assert!(
+        sink.is_empty(),
+        "no positive response past 256 bytes; got {sink:02x?}"
+    );
+
+    // A frame shorter than an SMB2 header, and an SMB1 NEGOTIATE, each close the connection.
+    let mut s = server.connect().await;
+    s.write_all(&nbss(vec![0xFE, b'S', b'M', b'B', 0, 0, 0, 0, 0, 0]))
+        .await
+        .unwrap();
+    let sink = read_until_closed(&mut s, 20, "a 10-byte frame").await;
+    assert!(sink.is_empty(), "got {sink:02x?}");
+    let mut s = server.connect().await;
+    let mut smb1 = b"\xFFSMBr".to_vec();
+    smb1.resize(64, 0);
+    s.write_all(&nbss(smb1)).await.unwrap();
+    let sink = read_until_closed(&mut s, 20, "an SMB1 NEGOTIATE").await;
+    assert!(sink.is_empty(), "SMB1 is not answered; got {sink:02x?}");
+
+    assert_eq!(server.settled_calls().await, 0);
     server.stop().await;
 }
