@@ -41,6 +41,13 @@ const WEBLLM_MODELS = [
     { id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC', name: 'Hermes 3 8B', size: '~5 GB' },
 ];
 
+// The dashboard's widths (see makeTerm): its two columns sit side by side from 80 columns
+// (src/tui/render/mod.rs's TWO_COLUMN_WIDTH) and stack below that, down to 40 (MIN_WIDTH).
+const DASH_COLS = { wide: 80, narrow: 48 };
+
+// Where the model select is too narrow for the full option labels (about 30 characters).
+const NARROW = window.matchMedia('(max-width: 600px)');
+
 const TELNET_PORT = 2323;
 const SERVER_AFTER_MS = 1000;   // after NetGet boots, open the Telnet server
 const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
@@ -102,9 +109,11 @@ function xtermTheme() {
 }
 
 // A terminal that fills its host element and refits whenever the host changes size. With
-// `minCols`, the font shrinks (not below 6px) until that many columns fit: the dashboard
-// needs 80, and a phone is narrower than 80 columns of 13px text.
-function makeTerm(el, opts = {}, onFit = () => {}, { minCols = 0 } = {}) {
+// `cols`, the font follows the width: 13px wherever `cols.wide` columns fit at 13px (the
+// dashboard's two columns side by side), otherwise the largest size, from 13px down to 6px,
+// that fits `cols.narrow` (the dashboard stacks its columns below 80, and a phone gets about
+// 48 columns of 11px text instead of 80 columns of 6px text).
+function makeTerm(el, opts = {}, onFit = () => {}, { cols = null } = {}) {
     const term = new window.Terminal(Object.assign({
         cursorBlink: false,
         fontFamily: "'JetBrains Mono', ui-monospace, monospace",
@@ -120,9 +129,12 @@ function makeTerm(el, opts = {}, onFit = () => {}, { minCols = 0 } = {}) {
     let last = '';
     const refit = () => {
         try { fit.fit(); } catch (e) { return; }
-        if (minCols && term.cols) {
+        if (cols && term.cols) {
             const now = term.options.fontSize;
-            const want = Math.max(6, Math.min(13, Math.floor((now * term.cols / minCols) * 2) / 2));
+            const at13 = now * term.cols / 13;
+            const want = at13 >= cols.wide
+                ? 13
+                : Math.max(6, Math.min(13, Math.floor((now * term.cols / cols.narrow) * 2) / 2));
             if (want !== now) {
                 term.options.fontSize = want;
                 requestAnimationFrame(refit);
@@ -281,7 +293,16 @@ const YOU = 'you';
 function modelById(id) { return app.models.find((m) => m.id === id) || null; }
 function selectedModel() { return modelById(app.selected); }
 
+// The full label on a wide screen; on a narrow one only what tells the options apart, so it
+// fits the select: "Qwen2.5 3B · 2 GB", "Qwen3 1.7B · thinks · cached".
 function optionLabel(m) {
+    if (NARROW.matches) {
+        if (m.kind === BUILTIN) return `${m.name} · built in`;
+        const bits = [m.name];
+        if (m.thinks) bits.push('thinks');
+        bits.push(m.state === 'unsupported' ? 'no WebGPU' : m.cached ? 'cached' : m.size.replace(/^~/, ''));
+        return bits.join(' · ');
+    }
     if (m.kind === BUILTIN) return `${m.name} (built into ${m.where})`;
     const kind = m.thinks ? 'WebLLM · thinks' : 'WebLLM';
     if (m.state === 'unsupported') return `${m.name} · ${kind} · needs WebGPU`;
@@ -443,6 +464,7 @@ async function setupModelControl() {
         try { localStorage.setItem(MODEL_KEY, sel.value); } catch (e) { /* storage refused */ }
         choose(sel.value);
     };
+    NARROW.addEventListener('change', paintControl);
     $('#llm-load').onclick = () => { const m = selectedModel(); if (m) loadModel(m); };
 
     // The built-in model's download starts on the visitor's first click or keypress anywhere
@@ -1303,7 +1325,7 @@ async function main() {
     ]);
     wireTelnet();
     let netget = null;
-    const term = makeTerm($('#dash-term'), {}, (cols, rows) => netget?.resize(cols, rows), { minCols: 80 });
+    const term = makeTerm($('#dash-term'), {}, (cols, rows) => netget?.resize(cols, rows), { cols: DASH_COLS });
     app.dash = term;
     netget = new mod.NetGet({
         cols: term.cols,
