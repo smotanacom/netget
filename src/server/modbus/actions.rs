@@ -216,7 +216,9 @@ data = json.load(sys.stdin)
 event = data["event"]
 if data["event_type_id"] == "modbus_read_registers":
     qty = event.get("quantity") or 1
-    actions = [{"type": "send_modbus_registers", "values": [0] * qty}]
+    start = event.get("start_address") or 0
+    actions = [{"type": "send_modbus_registers",
+                "registers": {str(a): 0 for a in range(start, start + qty)}}]
 else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
@@ -339,10 +341,25 @@ impl Server for ModbusProtocol {
 
         match action_type {
             "send_modbus_bits" => {
-                let values = action
-                    .get("values")
-                    .and_then(|v| v.as_array())
-                    .context("send_modbus_bits requires a 'values' array of booleans")?;
+                if let Some(map) = action.get("bits") {
+                    let bits = address_map(map, "send_modbus_bits", "bits", |v| {
+                        v.as_bool().map(serde_json::Value::Bool).ok_or_else(|| {
+                            format!(
+                                "must be true or false, got {v}. Coils and discrete inputs \
+                                 are single bits; use send_modbus_registers for 16-bit values."
+                            )
+                        })
+                    })?;
+                    return Ok(ActionResult::Custom {
+                        name: RESULT_BITS.to_string(),
+                        data: json!({ "bits": bits }),
+                    });
+                }
+                // The positional form, one value per requested address starting at
+                // `start_address`: still accepted, so handlers written against it keep working.
+                let values = action.get("values").and_then(|v| v.as_array()).context(
+                    "send_modbus_bits requires 'bits', an object of address -> true/false",
+                )?;
 
                 let bits: Vec<bool> = values
                     .iter()
@@ -371,10 +388,29 @@ impl Server for ModbusProtocol {
                 })
             }
             "send_modbus_registers" => {
-                let values = action
-                    .get("values")
-                    .and_then(|v| v.as_array())
-                    .context("send_modbus_registers requires a 'values' array of integers")?;
+                if let Some(map) = action.get("registers") {
+                    let registers = address_map(map, "send_modbus_registers", "registers", |v| {
+                        match v.as_u64() {
+                            Some(n) if n <= u64::from(u16::MAX) => Ok(json!(n)),
+                            _ => Err(format!(
+                                "must be a whole number between 0 and 65535, got {v}. Modbus \
+                                 registers are unsigned 16-bit; encode signed or floating point \
+                                 values yourself (two's complement, or two registers for a \
+                                 32-bit float)."
+                            )),
+                        }
+                    })?;
+                    return Ok(ActionResult::Custom {
+                        name: RESULT_REGISTERS.to_string(),
+                        data: json!({ "registers": registers }),
+                    });
+                }
+                // The positional form, one value per requested register starting at
+                // `start_address`: still accepted, so handlers written against it keep working.
+                let values = action.get("values").and_then(|v| v.as_array()).context(
+                    "send_modbus_registers requires 'registers', an object of address -> \
+                         value 0-65535",
+                )?;
 
                 let registers: Vec<u16> = values
                     .iter()
@@ -470,6 +506,40 @@ impl Server for ModbusProtocol {
     }
 }
 
+/// Validate an address-keyed answer (`{"500": 0, "501": 0}`) and normalise its keys.
+///
+/// Every key must be a Modbus address, 0-65535, written in decimal; it is re-keyed in canonical
+/// form (`"007"` becomes `"7"`) so the connection loop can look each requested address up by
+/// its plain decimal spelling. Each value goes through `value` and is refused with the address
+/// named. An empty object is a valid answer: the device has none of the addresses asked for,
+/// which the connection loop answers as exception 2.
+fn address_map(
+    map: &serde_json::Value,
+    action: &str,
+    field: &str,
+    value: impl Fn(&serde_json::Value) -> std::result::Result<serde_json::Value, String>,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let object = map.as_object().with_context(|| {
+        format!(
+            "{action} '{field}' must be an object keyed by address, e.g. {{\"40\": ...}}, got \
+             {map}"
+        )
+    })?;
+    let mut out = serde_json::Map::new();
+    for (key, raw) in object {
+        let address: u16 = key.trim().parse().map_err(|_| {
+            anyhow::anyhow!(
+                "{action} '{field}' key {key:?} is not a Modbus address; keys are the decimal \
+                 addresses 0-65535 the values belong to"
+            )
+        })?;
+        let checked = value(raw)
+            .map_err(|reason| anyhow::anyhow!("{action} '{field}'[{address}] {reason}"))?;
+        out.insert(address.to_string(), checked);
+    }
+    Ok(out)
+}
+
 // ===========================================================================
 // Action definitions
 // ===========================================================================
@@ -478,26 +548,26 @@ fn send_modbus_bits_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_modbus_bits".to_string(),
         description:
-            "Answer a coil or discrete-input read (function code 1 or 2) with the bit values \
-             this device reports - only when the device has every address asked for; otherwise \
-             send_modbus_exception with exception_code 2. Supply exactly 'quantity' booleans, \
-             in address order starting at 'start_address'. Where the instructions leave a \
-             value open, you decide what the device reads as - invent plausible, \
-             self-consistent state and use set_memory/append_memory to keep it consistent \
-             across requests. The response framing (transaction id, unit id, byte \
-             count, bit packing) is handled for you."
+            "Answer a coil or discrete-input read (function code 1 or 2) with the bits this \
+             device has, as an object keyed by address. Include only addresses the \
+             instructions give this device. NetGet answers the read from your entries, and \
+             any requested address missing from them is answered as exception 2 (illegal data \
+             address) - so never add an entry for an address the device does not have. Where \
+             the instructions leave a value open, you decide what the device reads as - \
+             invent plausible, self-consistent state and use set_memory/append_memory to keep \
+             it consistent across requests."
                 .to_string(),
         parameters: vec![Parameter {
-            name: "values".to_string(),
-            type_hint: "array of booleans".to_string(),
-            description: "One true/false per coil or discrete input requested, first element = \
-                 'start_address'. The array length must equal the event's 'quantity'."
+            name: "bits".to_string(),
+            type_hint: "object".to_string(),
+            description: "Address (as a string) -> true or false, one entry per coil or \
+                 discrete input this device has."
                 .to_string(),
             required: true,
         }],
         example: json!({
             "type": "send_modbus_bits",
-            "values": [true, false, false, true]
+            "bits": {"40": true, "41": false}
         }),
         log_template: Some(
             LogTemplate::new()
@@ -513,27 +583,25 @@ fn send_modbus_registers_action() -> ActionDefinition {
         name: "send_modbus_registers".to_string(),
         description:
             "Answer a holding-register or input-register read (function code 3 or 4) with the \
-             values this device reports - only when the device has every register asked for; \
-             a read that reaches an address the instructions do not give it is \
-             send_modbus_exception with exception_code 2, never zeros. Supply exactly \
-             'quantity' whole numbers in the range 0-65535, in address order starting at \
-             'start_address'. Where the instructions leave a value open, you decide what the \
-             device reads as: a tank level, a motor current, a fault word. Use \
-             set_memory/append_memory so successive reads tell a consistent story. Registers \
-             are unsigned 16-bit, so encode signed values as two's complement and 32-bit \
-             values across two registers yourself."
+             registers this device has, as an object keyed by register address. Include only \
+             addresses the instructions give this device. NetGet answers the read from your \
+             entries, and any requested address missing from them is answered as exception 2 \
+             (illegal data address) - so never add an entry for an address the device does \
+             not have. Values are whole numbers 0-65535. Where the instructions leave a value \
+             open, you decide what the device reads as: a tank level, a motor current, a fault \
+             word."
                 .to_string(),
         parameters: vec![Parameter {
-            name: "values".to_string(),
-            type_hint: "array of integers".to_string(),
-            description: "One number per register requested, each 0-65535, first element = \
-                 'start_address'. The array length must equal the event's 'quantity'."
+            name: "registers".to_string(),
+            type_hint: "object".to_string(),
+            description: "Register address (as a string) -> value 0-65535, one entry per \
+                 register this device has."
                 .to_string(),
             required: true,
         }],
         example: json!({
             "type": "send_modbus_registers",
-            "values": [1834, 1450]
+            "registers": {"40": 1834, "41": 1450}
         }),
         log_template: Some(
             LogTemplate::new()
@@ -649,9 +717,7 @@ fn common_event_parameters() -> Vec<Parameter> {
         Parameter {
             name: "answer_with".to_string(),
             type_hint: "string".to_string(),
-            description: "Which answer this request takes: the values (or the write \
-                 acknowledgement) when your instructions give this device every address it \
-                 covers, exception 2 when any of them does not exist."
+            description: "Which answer this request takes, naming the addresses it covers"
                 .to_string(),
             required: true,
         },
@@ -660,15 +726,19 @@ fn common_event_parameters() -> Vec<Parameter> {
 
 /// The `answer_with` event field: the answer this request takes, naming the exact addresses.
 ///
-/// The action descriptions already say that exception 2 is "the most common refusal", and the
-/// model still did not use it: told "ten holding registers at addresses 0 to 9 ... nothing at
-/// any other address", llama3.1:8b answered a read of registers 500-501 with `[0, 0]` five
-/// times in five. A small model does not compare a start address and a quantity against a
-/// range it was given in prose; it follows a sentence that names the addresses and says what
-/// to do when they are not the device's. It leads with the check and gives the exception as the
-/// literal action: worded values-first ("send_modbus_registers with exactly 2 numbers ... only
-/// if ...; if any of those addresses is not ..., send_modbus_exception"), the same model
-/// answered with prose instead of JSON in 4 runs of 5 and with zeros in the fifth.
+/// **A read is answered from an address-keyed map, and NetGet does the comparison.** Told "ten
+/// holding registers at addresses 0 to 9, all zero. There is nothing at any other address",
+/// llama3.1:8b answered a read of 500-501 by describing the whole device - ten zeros - under
+/// every wording that asked it to compare 500 against 0-9 first (0/5 to 3/5 across five
+/// wordings, recorded in `src/server/modbus/CLAUDE.md`). Its reasoning said the device "has
+/// only holding registers 0 to 9, which is exactly what the client is asking for": it restates
+/// the instruction rather than comparing addresses. Keyed by address, that same answer is a
+/// correct one - `{"0": 0, ..., "9": 0}` has no entry for 500, and a missing entry is exception
+/// 2 - so the hint asks for the device's registers and says what a missing one means, and asks
+/// for no comparison at all.
+///
+/// A write carries no values to key, so it keeps the check-first wording: the addresses, a
+/// worked comparison computed from the request itself, and the literal exception-2 action.
 pub fn answer_with_for_request(request: &codec::ModbusRequest) -> String {
     use codec::ModbusRequest as R;
     let start = u32::from(request.start_address());
@@ -688,17 +758,20 @@ pub fn answer_with_for_request(request: &codec::ModbusRequest) -> String {
     } else {
         format!("{plural} {start} to {}", start + quantity - 1)
     };
-    let found = match request {
-        R::ReadCoils { .. } | R::ReadDiscreteInputs { .. } => {
-            format!("send_modbus_bits with exactly {quantity} booleans, one per address, in order")
+    let keyed = match request {
+        R::ReadCoils { .. } | R::ReadDiscreteInputs { .. } => Some(("send_modbus_bits", "bits")),
+        R::ReadHoldingRegisters { .. } | R::ReadInputRegisters { .. } => {
+            Some(("send_modbus_registers", "registers"))
         }
-        R::ReadHoldingRegisters { .. } | R::ReadInputRegisters { .. } => format!(
-            "send_modbus_registers with exactly {quantity} numbers, one per register, in order"
-        ),
-        _ => "send_modbus_write_ack, or send_modbus_exception with exception_code 3 when the \
-              value is one the equipment would refuse"
-            .to_string(),
+        _ => None,
     };
+    if let Some((action, field)) = keyed {
+        return format!(
+            "{action} with a {field} object holding every {singular} your instructions give \
+             this device, keyed by address. The client asked for {addresses}; NetGet answers \
+             exception 2 if any of them is not in your object"
+        );
+    }
     // A worked comparison computed from this request, never from any particular instruction:
     // a range that stops just short of the first address asked for.
     let illustration = if start > 0 {
@@ -716,9 +789,9 @@ pub fn answer_with_for_request(request: &codec::ModbusRequest) -> String {
         "first check whether your instructions give this device {addresses}. A device has \
          only the addresses its instructions give it - {illustration}. If any of those \
          addresses is outside what they describe, answer exactly {{\"type\": \
-         \"send_modbus_exception\", \"exception_code\": 2}} and nothing else - never \
-         made-up values or zeros for an address the device does not have. If every one of \
-         them exists, {found}"
+         \"send_modbus_exception\", \"exception_code\": 2}} and nothing else. If every one \
+         of them exists, send_modbus_write_ack, or send_modbus_exception with exception_code 3 \
+         when the value is one the equipment would refuse"
     )
 }
 
@@ -737,14 +810,12 @@ pub static MODBUS_READ_BITS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 
     EventType::new(
         "modbus_read_bits",
-        "A Modbus client is reading coils (FC 1) or discrete inputs (FC 2). First decide \
-         whether this device has every address asked for - it has only the addresses its \
-         instructions give it. If it does not, refuse with send_modbus_exception, \
-         exception_code 2. If it does, answer with exactly 'quantity' booleans. answer_with \
-         names the addresses.",
+        "A Modbus client is reading coils (FC 1) or discrete inputs (FC 2). Answer with the \
+         bits this device has, keyed by address; NetGet serves the read from them and answers \
+         exception 2 for any requested address you did not give.",
         json!({
             "type": "send_modbus_bits",
-            "values": [true, false, false, true]
+            "bits": {"40": true, "41": false}
         }),
     )
     .with_parameters(params)
@@ -779,13 +850,11 @@ pub static MODBUS_READ_REGISTERS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "modbus_read_registers",
         "A Modbus client is reading holding registers (FC 3) or input registers (FC 4). \
-         First decide whether this device has every register asked for - it has only the \
-         addresses its instructions give it. If it does not, refuse with \
-         send_modbus_exception, exception_code 2. If it does, answer with exactly 'quantity' \
-         numbers in 0-65535. answer_with names the addresses.",
+         Answer with the registers this device has, keyed by address; NetGet serves the read \
+         from them and answers exception 2 for any requested address you did not give.",
         json!({
             "type": "send_modbus_registers",
-            "values": [1834, 1450]
+            "registers": {"40": 1834, "41": 1450}
         }),
     )
     .with_parameters(params)

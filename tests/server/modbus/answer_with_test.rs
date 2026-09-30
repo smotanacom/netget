@@ -1,53 +1,31 @@
 //! The `answer_with` hint each Modbus event carries.
 //!
 //! Told "ten holding registers at addresses 0 to 9 ... nothing at any other address",
-//! llama3.1:8b answered a read of 500-501 with `[0, 0]` five runs in five: it does not compare a
-//! start address and a quantity with a range given in prose. The hint names the exact addresses,
-//! leads with the check, and gives exception 2 as the literal action. `e2e_test.rs` proves the
-//! field reaches the event.
+//! llama3.1:8b answers a read of 500-501 by describing the device's whole register map. A read is
+//! therefore answered with an address-keyed map and NetGet does the comparison: the hint asks
+//! for the registers the device has, names the addresses asked for, and says that one missing
+//! from the map is exception 2 - it asks the model to compare nothing. A write carries no values
+//! to key, so it keeps the check-first wording. `e2e_test.rs` proves the field reaches the event
+//! and that a map without the address becomes exception 2 on the wire.
 
 use netget::server::modbus::actions::answer_with_for_request;
 use netget::server::modbus::codec::ModbusRequest;
 
 #[test]
-fn a_register_read_names_its_addresses_and_leads_with_exception_2() {
+fn a_register_read_asks_for_the_map_and_names_the_addresses() {
     let hint = answer_with_for_request(&ModbusRequest::ReadHoldingRegisters {
         start: 500,
         quantity: 2,
     });
-    assert!(
-        hint.starts_with(
-            "first check whether your instructions give this device holding registers 500 to 501."
-        ),
-        "{hint}"
+    assert_eq!(
+        hint,
+        "send_modbus_registers with a registers object holding every holding register your \
+         instructions give this device, keyed by address. The client asked for holding \
+         registers 500 to 501; NetGet answers exception 2 if any of them is not in your object"
     );
-    assert!(
-        hint.contains(r#"{"type": "send_modbus_exception", "exception_code": 2}"#),
-        "{hint}"
-    );
-    assert!(
-        hint.contains("send_modbus_registers with exactly 2 numbers"),
-        "{hint}"
-    );
-    // The worked comparison is computed from the request, never from an instruction.
-    assert!(
-        hint.contains("one whose holding registers are 0 to 499 has no holding register 500"),
-        "{hint}"
-    );
-    let at_zero = answer_with_for_request(&ModbusRequest::ReadHoldingRegisters {
-        start: 0,
-        quantity: 3,
-    });
-    assert!(
-        at_zero.contains("one whose holding registers start at 3 has no holding register 0"),
-        "{at_zero}"
-    );
-    // The exception comes before the values: worded values-first, the model answered with
-    // prose or zeros.
-    assert!(
-        hint.find("send_modbus_exception") < hint.find("send_modbus_registers"),
-        "{hint}"
-    );
+    // No comparison is asked of the model, so no worked comparison and no literal exception.
+    assert!(!hint.contains("send_modbus_exception"), "{hint}");
+    assert!(!hint.contains("first check"), "{hint}");
 }
 
 #[test]
@@ -56,13 +34,19 @@ fn every_function_names_its_own_answer() {
         start: 7,
         quantity: 1,
     });
-    assert!(one.contains("give this device input register 7."), "{one}");
+    assert!(
+        one.starts_with(
+            "send_modbus_registers with a registers object holding every input register"
+        ),
+        "{one}"
+    );
+    assert!(one.contains("asked for input register 7;"), "{one}");
     let bits = answer_with_for_request(&ModbusRequest::ReadCoils {
         start: 0,
         quantity: 8,
     });
     assert!(
-        bits.contains("send_modbus_bits with exactly 8 booleans"),
+        bits.starts_with("send_modbus_bits with a bits object holding every coil"),
         "{bits}"
     );
     assert!(bits.contains("coils 0 to 7"), "{bits}");
@@ -71,16 +55,42 @@ fn every_function_names_its_own_answer() {
         quantity: 2,
     });
     assert!(inputs.contains("discrete inputs 3 to 4"), "{inputs}");
-    let write = answer_with_for_request(&ModbusRequest::WriteSingleRegister {
-        address: 10,
-        value: 1,
-    });
-    assert!(write.contains("send_modbus_write_ack"), "{write}");
-    assert!(write.contains("holding register 10."), "{write}");
     // The top of the address space does not overflow the range arithmetic.
     let top = answer_with_for_request(&ModbusRequest::ReadHoldingRegisters {
         start: 65535,
         quantity: 1,
     });
-    assert!(top.contains("holding register 65535."), "{top}");
+    assert!(top.contains("holding register 65535;"), "{top}");
+}
+
+#[test]
+fn a_write_leads_with_the_check_and_the_literal_exception() {
+    let write = answer_with_for_request(&ModbusRequest::WriteSingleRegister {
+        address: 10,
+        value: 1,
+    });
+    assert!(
+        write.starts_with(
+            "first check whether your instructions give this device holding register 10."
+        ),
+        "{write}"
+    );
+    assert!(
+        write.contains(r#"{"type": "send_modbus_exception", "exception_code": 2}"#),
+        "{write}"
+    );
+    assert!(write.contains("send_modbus_write_ack"), "{write}");
+    // The worked comparison is computed from the request, never from an instruction.
+    assert!(
+        write.contains("one whose holding registers are 0 to 9 has no holding register 10"),
+        "{write}"
+    );
+    let at_zero = answer_with_for_request(&ModbusRequest::WriteMultipleCoils {
+        start: 0,
+        values: vec![true, false, true],
+    });
+    assert!(
+        at_zero.contains("one whose coils start at 3 has no coil 0"),
+        "{at_zero}"
+    );
 }
