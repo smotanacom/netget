@@ -16,33 +16,49 @@
 //
 // Then HTTP, from the client side. `[ + http client ]` on an HTTP server card must resolve and
 // connect — the same form the button applies (`connect_client_to_server`) — and an HTTP client
-// started through `ClientForm` must complete real exchanges over the virtual loopback: the
-// model's answer to `http_connected` becomes a request, the response reaches the client and is
-// reported back to the model, a request injected through the client's command channel (the
-// dashboard's `[ send ]`) comes back `Executed` with its status, a non-200 is reported as a
-// status, and `https://` is refused with the reason.
+// started through `ClientForm` must complete real exchanges over the virtual loopback against
+// NetGet's own `http` server: the model's answer to `http_connected` becomes a request, the
+// server's model answers it, the response reaches the client and is reported back to the model,
+// a request injected through the client's command channel (the dashboard's `[ send ]`) comes
+// back `Executed` with its status, a non-200 is reported as a status, and `https://` is refused
+// with the reason.
+//
+// Then the hyper servers, from outside NetGet: Node's own HTTP/1.1 client (`node:http`, llhttp)
+// and HTTP/2 client (`node:http2`, nghttp2) are handed a Duplex over `NetGet.connect()` and talk
+// to `http`, `openapi`, `jsonrpc` and `rss` (hyper's HTTP/1 server) and `http2` (h2c, the `h2`
+// crate). Each request is answered by the model bridge, and each response is checked for its
+// status, its headers, its body and — for the hyper servers — a `Date` header within a day of
+// now. That last check is the point: hyper's HTTP/1 dispatcher reads the clock on its first
+// poll, `SystemTime::now()` panics on wasm32-unknown-unknown, and until vendor/hyper patched the
+// date cache to read `Date.now()` the first request to any hyper server killed the page. A
+// panic anywhere fails the run by name (see `panics` below), not as a timeout.
 //
 // The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
 // thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
 // site/js/thinking.js — the page's split of a streamed answer into the "Thinking…" block and
 // the answer — is checked at each point of a `<think>` stream, and a model that does not think
 // is checked to have nothing split out of its text.
-//
-// The peer for those exchanges is NetGet's HLS server, not its HTTP server, and the reason is
-// worth knowing before changing it: hyper's HTTP/1 *server* cannot answer on wasm32 at all.
-// `proto::h1::dispatch::poll_inner` calls `T::update_date()` on its very first poll, which
-// reaches `std::time::SystemTime::now()` — and that panics on wasm32-unknown-unknown ("time not
-// implemented on this platform"), taking the whole wasm instance down with `RuntimeError:
-// unreachable`. It is inside hyper's own date-header cache, so `crate::utils::clock` cannot reach
-// it. The same is true of every other hyper-based server in the browser build. hyper's *client*
-// role never touches the clock, and HLS reads HTTP/1.1 with its own small parser, so the pair
-// runs. The `http` server is started only to prove the button resolves and connects; nothing is
-// ever sent to it.
 
 import { readFileSync } from 'node:fs';
+import { Duplex } from 'node:stream';
+import http from 'node:http';
+import http2 from 'node:http2';
 import init, { NetGet } from '../../site/demo/pkg/netget_web.js';
 import { offeredActions, defaultActionIndex, newEntry, buildReply, buildAction } from '../../site/js/composer.js';
 import { splitThinking } from '../../site/js/thinking.js';
+
+// A Rust panic in the bundle is written by console_error_panic_hook and then aborts the wasm
+// instance (`RuntimeError: unreachable`), after which every later call into it throws. Record
+// either, so a waiting step fails naming the panic rather than timing out behind it.
+const panics = [];
+const consoleError = console.error.bind(console);
+console.error = (...args) => {
+    const text = args.map((a) => (a && a.stack) || String(a)).join(' ');
+    if (/panicked at|RuntimeError/.test(text)) panics.push(text);
+    consoleError(...args);
+};
+process.on('uncaughtException', (e) => { panics.push((e && e.stack) || String(e)); fail('uncaught exception: ' + ((e && e.stack) || e)); });
+process.on('unhandledRejection', (e) => { panics.push((e && e.stack) || String(e)); fail('unhandled rejection: ' + ((e && e.stack) || e)); });
 
 const wasm = readFileSync(new URL('../../site/demo/pkg/netget_web_bg.wasm', import.meta.url));
 await init({ module_or_path: wasm });
@@ -58,6 +74,8 @@ const composed = [];
 // What the HTTP client reported to the model: its connect event and each response it read.
 const httpConnected = [];
 const httpResponses = [];
+// Every request a hyper server reported to the model: { protocol, context }.
+const serverRequests = [];
 
 function fail(msg) {
     console.error('FAIL:', msg);
@@ -70,6 +88,7 @@ function waitFor(pred, what, ms = 15000) {
     const deadline = Date.now() + ms;
     return new Promise((resolve, reject) => {
         const tick = () => {
+            if (panics.length) return reject(new Error('the wasm instance panicked while waiting for ' + what + ':\n' + panics.join('\n')));
             if (pred()) return resolve();
             if (Date.now() > deadline) return reject(new Error('timed out waiting for ' + what));
             setTimeout(tick, 50);
@@ -138,14 +157,42 @@ const netget = new NetGet({
         }
         const offered = new Set((req.actions || []).map((a) => a.name));
         const answer = (actions) => JSON.stringify({ content: JSON.stringify({ actions }), prompt_tokens: 10, completion_tokens: 5 });
-        // The HLS server: a playlist for .m3u8, a 404 for anything else.
-        if (offered.has('hls_playlist_response')) {
-            return answer([{ type: 'hls_playlist_response', target_duration: 6, segments: [{ uri: 'seg0.ts', duration: 6.0 }] }]);
+        // The hyper servers. Each answer is built from the request the server reported, so a
+        // response that reaches the client proves the request's fields reached the model.
+        if (offered.has('send_http_response')) {
+            serverRequests.push({ protocol: 'http', context });
+            if (context.path === '/hello.txt') {
+                return answer([{ type: 'send_http_response', status: 200, headers: { 'Content-Type': 'text/plain' }, body: 'hello from the http server' }]);
+            }
+            if (context.method === 'POST' && context.path === '/echo') {
+                return answer([{ type: 'send_http_response', status: 201, headers: { 'Content-Type': 'text/plain', 'X-Smoke': 'echoed' }, body: String(context.body).toUpperCase() }]);
+            }
+            if (context.path === '/') {
+                return answer([{ type: 'send_http_response', status: 200, headers: { 'Content-Type': 'text/html' }, body: '<h1>smoke</h1><p>accept=' + (context.headers || {}).accept + '</p>' }]);
+            }
+            return answer([{ type: 'send_http_response', status: 404, headers: { 'Content-Type': 'text/plain' }, body: 'no such page: ' + context.path }]);
         }
-        if (offered.has('hls_segment_response')) {
-            return answer([{ type: 'hls_segment_response', status_code: 404, content_type: 'text/plain', content: 'no such segment' }]);
+        if (offered.has('send_openapi_response')) {
+            serverRequests.push({ protocol: 'openapi', context });
+            return answer([{ type: 'send_openapi_response', status_code: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify([{ id: 1, title: 'Buy milk', path: context.path }]) }]);
         }
-        // The HTTP client: fetch the playlist when connected, and report every response.
+        if (offered.has('jsonrpc_success')) {
+            serverRequests.push({ protocol: 'jsonrpc', context });
+            if (context.method === 'add' && Array.isArray(context.params)) {
+                return answer([{ type: 'jsonrpc_success', result: context.params.reduce((a, b) => a + b, 0) }]);
+            }
+            return answer([{ type: 'jsonrpc_error', code: -32601, message: 'Method not found: ' + context.method }]);
+        }
+        if (offered.has('generate_rss_feed')) {
+            serverRequests.push({ protocol: 'rss', context });
+            return answer([{ type: 'generate_rss_feed', title: 'Smoke News', link: 'http://127.0.0.1/news.xml', description: 'Served from ' + context.path,
+                items: [{ title: 'First post', link: 'http://127.0.0.1/1', description: 'Hello from the browser build' }] }]);
+        }
+        if (offered.has('send_http2_response')) {
+            serverRequests.push({ protocol: 'http2', context });
+            return answer([{ type: 'send_http2_response', status: 200, headers: { 'content-type': 'text/plain', 'x-smoke': 'h2' }, body: 'h2 says hi to ' + context.uri }]);
+        }
+        // The HTTP client: fetch a page when connected, and report every response.
         if (offered.has('send_http_request')) {
             if (context.status_code !== undefined) {
                 httpResponses.push(context);
@@ -153,7 +200,7 @@ const netget = new NetGet({
             }
             if (context.base_url !== undefined) {
                 httpConnected.push(context);
-                return answer([{ type: 'send_http_request', method: 'GET', path: '/live.m3u8' }]);
+                return answer([{ type: 'send_http_request', method: 'GET', path: '/hello.txt' }]);
             }
         }
         const text = String(context.data ?? context.data_preview ?? context.content ?? context.text ?? '');
@@ -168,6 +215,92 @@ const netget = new NetGet({
         return JSON.stringify({ content: JSON.stringify(reply), reasoning: SMOKE_REASONING, prompt_tokens: 10, completion_tokens: 5 });
     },
 });
+
+// An OpenAPI document with one route, for the openapi server's `spec` startup parameter.
+const TODO_SPEC = `openapi: 3.1.0
+info:
+  title: Todo API
+  version: 1.0.0
+paths:
+  /todos:
+    get:
+      operationId: listTodos
+      responses:
+        '200':
+          description: the todo list
+`;
+
+// Start a server through the page's start_server and wait until its port listens.
+async function startServer(spec) {
+    let started = null;
+    netget.start_server(JSON.stringify(spec), (json) => { started = JSON.parse(json); });
+    await waitFor(() => started !== null, `start_server (${spec.protocol}) to answer`);
+    if (started.error) fail(`start_server ${spec.protocol}: ` + started.error);
+    await waitFor(() => netget.listening_ports().includes(spec.port), `${spec.protocol} to listen on ${spec.port}`);
+    return started;
+}
+
+// A Node Duplex over one virtual-loopback connection, for Node's own HTTP clients.
+function virtualSocket(port) {
+    let id = null;
+    const sock = new Duplex({
+        read() {},
+        write(chunk, _encoding, callback) {
+            callback(netget.send(id, chunk) ? null : new Error(`the virtual connection to :${port} is gone`));
+        },
+        destroy(err, callback) {
+            if (id !== null) netget.close(id);
+            callback(err);
+        },
+    });
+    id = netget.connect(port, (bytes) => sock.push(Buffer.from(bytes)), () => sock.push(null));
+    return sock;
+}
+
+// One HTTP/1.1 exchange through node:http over the virtual loopback.
+function httpRequest(port, { method = 'GET', path = '/', headers = {}, body } = {}) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { req.destroy(new Error(`no response to ${method} ${path} on :${port} within 20s`)); }, 20000);
+        const req = http.request({ host: '127.0.0.1', port, method, path, headers, createConnection: () => virtualSocket(port) }, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }); });
+            res.on('error', (e) => { clearTimeout(timer); reject(e); });
+        });
+        req.on('error', (e) => { clearTimeout(timer); reject(new Error(`${method} ${path} on :${port}: ${e.message}`)); });
+        if (body !== undefined) req.write(body);
+        req.end();
+    });
+}
+
+// One HTTP/2 exchange (prior-knowledge h2c) through node:http2 over the virtual loopback.
+function http2Request(port, path) {
+    return new Promise((resolve, reject) => {
+        const session = http2.connect(`http://127.0.0.1:${port}`, { createConnection: () => virtualSocket(port) });
+        const timer = setTimeout(() => { session.destroy(new Error(`no HTTP/2 response to ${path} on :${port} within 20s`)); }, 20000);
+        const done = (err, value) => { clearTimeout(timer); session.close(); err ? reject(err) : resolve(value); };
+        session.on('error', (e) => done(new Error(`h2 session to :${port}: ${e.message}`)));
+        const stream = session.request({ ':method': 'GET', ':path': path });
+        let headers = null;
+        const chunks = [];
+        stream.on('response', (h) => { headers = h; });
+        stream.on('data', (c) => chunks.push(c));
+        stream.on('end', () => done(null, { status: headers && headers[':status'], headers: headers || {}, body: Buffer.concat(chunks).toString('utf8') }));
+        stream.on('error', (e) => done(new Error(`h2 stream ${path} on :${port}: ${e.message}`)));
+        stream.end();
+    });
+}
+
+// A hyper server's Date header: present, an HTTP date, and today's — the clock the vendored
+// hyper reads on wasm32 is the page's, not a placeholder.
+const dates = [];
+function checkDate(value, what) {
+    if (!value) fail(what + ': no Date header');
+    const at = Date.parse(value);
+    if (!/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value) || Number.isNaN(at)) fail(what + ': Date is not an HTTP date: ' + JSON.stringify(value));
+    if (Math.abs(at - Date.now()) > 24 * 3600 * 1000) fail(what + ': Date is not today: ' + value);
+    dates.push(value);
+}
 
 try {
     checkThinkingSplit();
@@ -274,44 +407,98 @@ try {
     const buttonClient = clients.find((c) => c.id === viaButton.id);
     if (!buttonClient || buttonClient.status !== 'Connected') fail('the [ + http client ] client is not connected: ' + JSON.stringify(clients));
 
-    // HTTP, the exchanges, against NetGet's HLS server (see the header for why not http).
-    const HLS_PORT = 8090;
-    let hlsStarted = null;
-    netget.start_server(JSON.stringify({ protocol: 'hls', port: HLS_PORT, instruction: 'Serve a live playlist.' }), (json) => { hlsStarted = JSON.parse(json); });
-    await waitFor(() => hlsStarted !== null, 'start_server (hls) to answer');
-    if (hlsStarted.error) fail('start_server hls: ' + hlsStarted.error);
-    await waitFor(() => netget.listening_ports().includes(HLS_PORT), `port ${HLS_PORT} to be listening`);
-
+    // HTTP, the exchanges: NetGet's HTTP client against NetGet's own hyper-based http server,
+    // both driven by the model bridge.
     let refused = null;
-    netget.start_client(JSON.stringify({ protocol: 'http', remote_addr: `https://127.0.0.1:${HLS_PORT}`, instruction: 'Fetch the playlist.' }), (json) => { refused = JSON.parse(json); });
+    netget.start_client(JSON.stringify({ protocol: 'http', remote_addr: `https://127.0.0.1:${HTTP_PORT}`, instruction: 'Fetch /hello.txt.' }), (json) => { refused = JSON.parse(json); });
     await waitFor(() => refused !== null, 'start_client (https) to answer');
     if (!refused.error || !refused.error.includes('https:// is not available')) fail('an https:// client was not refused with the reason: ' + JSON.stringify(refused));
 
     let httpClient = null;
-    netget.start_client(JSON.stringify({ protocol: 'http', remote_addr: `127.0.0.1:${HLS_PORT}`, instruction: 'Fetch /live.m3u8 and read the playlist.' }), (json) => { httpClient = JSON.parse(json); });
+    netget.start_client(JSON.stringify({ protocol: 'http', remote_addr: `127.0.0.1:${HTTP_PORT}`, instruction: 'Fetch /hello.txt and read it.' }), (json) => { httpClient = JSON.parse(json); });
     await waitFor(() => httpClient !== null, 'start_client (http) to answer');
     if (httpClient.error) fail('start_client http: ' + httpClient.error);
     await waitFor(() => httpConnected.length > 0, 'the http_connected model request', 20000);
-    await waitFor(() => httpResponses.length > 0, 'the playlist response reported to the model', 20000);
+    await waitFor(() => httpResponses.length > 0, 'the /hello.txt response reported to the model', 20000);
     const first = httpResponses[0];
-    if (first.status_code !== 200) fail('the playlist came back ' + JSON.stringify(first));
-    if (!String(first.body).includes('#EXTM3U') || !String(first.body).includes('seg0.ts')) fail('the playlist body did not reach the client: ' + JSON.stringify(first));
-    const contentType = Object.entries(first.headers || {}).find(([k]) => k.toLowerCase() === 'content-type');
-    if (!contentType) fail('the response headers did not reach the client: ' + JSON.stringify(first.headers));
+    if (first.status_code !== 200) fail('/hello.txt came back ' + JSON.stringify(first));
+    if (String(first.body) !== 'hello from the http server') fail('the http server\'s body did not reach the client: ' + JSON.stringify(first));
+    const headerOf = (headers, name) => Object.entries(headers || {}).find(([k]) => k.toLowerCase() === name)?.[1];
+    if (headerOf(first.headers, 'content-type') !== 'text/plain') fail('the response headers did not reach the client: ' + JSON.stringify(first.headers));
+    checkDate(headerOf(first.headers, 'date'), 'the http server, read by NetGet\'s http client');
 
     // The dashboard's [ send ] on that client, and a status that is not 200.
     let injected = null;
-    netget.send_to_client(httpClient.id, JSON.stringify({ type: 'send_http_request', method: 'GET', path: '/missing.ts' }), (json) => { injected = JSON.parse(json); });
+    netget.send_to_client(httpClient.id, JSON.stringify({ type: 'send_http_request', method: 'GET', path: '/missing' }), (json) => { injected = JSON.parse(json); });
     await waitFor(() => injected !== null, 'send_to_client to answer', 45000);
     const detail = injected.Executed && injected.Executed.detail;
-    if (!detail || !detail.includes('GET /missing.ts -> 404')) fail('send_to_client did not report the exchange: ' + JSON.stringify(injected));
+    if (!detail || !detail.includes('GET /missing -> 404')) fail('send_to_client did not report the exchange: ' + JSON.stringify(injected));
     await waitFor(() => httpResponses.length > 1, 'the injected request\'s response reported to the model', 20000);
-    if (httpResponses[1].status_code !== 404 || !String(httpResponses[1].body).includes('no such segment')) fail('the 404 did not reach the client intact: ' + JSON.stringify(httpResponses[1]));
+    if (httpResponses[1].status_code !== 404 || !String(httpResponses[1].body).includes('no such page: /missing')) fail('the 404 did not reach the client intact: ' + JSON.stringify(httpResponses[1]));
 
-    console.log('ok: dashboard painted, tcp, udp, http and hls servers started, virtual connections round-tripped through the model bridge');
+    // The hyper servers, spoken to by Node's own HTTP clients over the virtual loopback.
+    const hyper = {};
+
+    // http: a GET and a POST with a body, through node:http (llhttp).
+    const root = await httpRequest(HTTP_PORT, { path: '/', headers: { accept: 'text/html' } });
+    if (root.status !== 200 || root.headers['content-type'] !== 'text/html' || root.body !== '<h1>smoke</h1><p>accept=text/html</p>') fail('http GET /: ' + JSON.stringify(root));
+    checkDate(root.headers.date, 'http GET /');
+    const echo = await httpRequest(HTTP_PORT, { method: 'POST', path: '/echo', headers: { 'content-type': 'text/plain' }, body: 'shout this' });
+    if (echo.status !== 201 || echo.headers['x-smoke'] !== 'echoed' || echo.body !== 'SHOUT THIS') fail('http POST /echo: ' + JSON.stringify(echo));
+    checkDate(echo.headers.date, 'http POST /echo');
+    hyper.http = `GET / ${root.status} (${root.body.length}B), POST /echo ${echo.status} ${JSON.stringify(echo.body)}`;
+
+    // openapi: a spec-routed GET.
+    const OPENAPI_PORT = 8081;
+    await startServer({ protocol: 'openapi', port: OPENAPI_PORT, instruction: 'Serve the todo API.', startup_params: { spec: TODO_SPEC } });
+    const todos = await httpRequest(OPENAPI_PORT, { path: '/todos', headers: { accept: 'application/json' } });
+    if (todos.status !== 200 || !String(todos.headers['content-type']).startsWith('application/json')) fail('openapi GET /todos: ' + JSON.stringify(todos));
+    const todoList = JSON.parse(todos.body);
+    if (todoList[0]?.title !== 'Buy milk' || todoList[0]?.path !== '/todos') fail('openapi GET /todos body: ' + todos.body);
+    if (!serverRequests.some((r) => r.protocol === 'openapi' && r.context.matched_route)) fail('the openapi request reached the model without its matched route: ' + JSON.stringify(serverRequests.filter((r) => r.protocol === 'openapi')));
+    checkDate(todos.headers.date, 'openapi GET /todos');
+    hyper.openapi = `GET /todos ${todos.status} ${todos.body}`;
+
+    // jsonrpc: a call answered with a result, and one answered with an error.
+    const JSONRPC_PORT = 8082;
+    await startServer({ protocol: 'jsonrpc', port: JSONRPC_PORT, instruction: 'Implement add(a, b).' });
+    const rpc = (payload) => httpRequest(JSONRPC_PORT, { method: 'POST', path: '/', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    const sum = await rpc({ jsonrpc: '2.0', method: 'add', params: [2, 3], id: 7 });
+    const sumBody = JSON.parse(sum.body);
+    if (sum.status !== 200 || sumBody.jsonrpc !== '2.0' || sumBody.result !== 5 || sumBody.id !== 7) fail('jsonrpc add: ' + JSON.stringify(sum));
+    checkDate(sum.headers.date, 'jsonrpc add');
+    const missing = await rpc({ jsonrpc: '2.0', method: 'nope', id: 'x' });
+    const missingBody = JSON.parse(missing.body);
+    if (missingBody.error?.code !== -32601 || missingBody.id !== 'x') fail('jsonrpc error: ' + JSON.stringify(missing));
+    hyper.jsonrpc = `add(2,3) -> ${sum.body}; nope -> error ${missingBody.error.code}`;
+
+    // rss: the feed the model described, rendered to XML by the server.
+    const RSS_PORT = 8083;
+    await startServer({ protocol: 'rss', port: RSS_PORT, instruction: 'Serve a news feed.' });
+    const feed = await httpRequest(RSS_PORT, { path: '/news.xml', headers: { accept: 'application/rss+xml' } });
+    if (feed.status !== 200 || !/xml/.test(String(feed.headers['content-type']))) fail('rss GET /news.xml: ' + JSON.stringify(feed));
+    for (const needle of ['<rss', '<title>Smoke News</title>', '<description>Served from /news.xml</description>', '<title>First post</title>']) {
+        if (!feed.body.includes(needle)) fail('rss feed lacks ' + needle + ': ' + feed.body);
+    }
+    checkDate(feed.headers.date, 'rss GET /news.xml');
+    hyper.rss = `GET /news.xml ${feed.status} (${feed.body.length}B of RSS)`;
+
+    // http2: prior-knowledge h2c through node:http2 (nghttp2). NetGet's http2 server is the
+    // `h2` crate rather than hyper, and it sets no Date header.
+    const HTTP2_PORT = 8084;
+    await startServer({ protocol: 'http2', port: HTTP2_PORT, instruction: 'Greet every request.' });
+    const h2 = await http2Request(HTTP2_PORT, '/greet?who=smoke');
+    if (h2.status !== 200 || h2.headers['x-smoke'] !== 'h2' || h2.body !== 'h2 says hi to /greet?who=smoke') fail('http2 GET /greet: ' + JSON.stringify(h2));
+    hyper.http2 = `GET /greet?who=smoke ${h2.status} ${JSON.stringify(h2.body)}`;
+
+    if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
+
+    console.log('ok: dashboard painted, tcp, udp, http, openapi, jsonrpc, rss and http2 servers started, virtual connections round-tripped through the model bridge');
     console.log('    thinking: a reply\'s reasoning reached the dashboard; thinking.js split <think> streams and left other models\' text whole');
     console.log('    composer: ' + composed[0].actions.length + ' actions offered, default ' + composed[0].entry.name + ', example bytes ' + JSON.stringify(composerReceived.join('')) + ' reached the peer');
-    console.log('    http: [ + http client ] connected client #' + viaButton.id + ' to :' + HTTP_PORT + '; client #' + httpClient.id + ' read ' + first.status_code + ' (' + String(first.body).length + ' byte playlist) and, via [ send ], ' + detail.split('-> ')[1] + '; https refused');
+    console.log('    http client: [ + http client ] connected client #' + viaButton.id + ' to :' + HTTP_PORT + '; client #' + httpClient.id + ' read ' + first.status_code + ' ' + JSON.stringify(first.body) + ' and, via [ send ], ' + detail.split('-> ')[1] + '; https refused');
+    for (const [name, line] of Object.entries(hyper)) console.log(`    ${name} (node client): ${line}`);
+    console.log('    Date headers checked:', dates.length, '| latest:', dates[dates.length - 1]);
     console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);
     process.exit(0);
 } catch (e) {

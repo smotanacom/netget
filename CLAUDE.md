@@ -1540,7 +1540,14 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   `src/` is converted; keep new code on the alias. Because the shim's `Instant` is its own
   type, a stray `std::time::Instant` in anything the browser build compiles is a compile
   error there, which is the check. `std::process::id()` is the same kind of trap:
-  `clock::process_id()`.
+  `clock::process_id()`. A **dependency** reading the clock is the case no alias covers, and
+  hyper was one: its HTTP/1 dispatcher refreshes a `Date` cache from `SystemTime::now()` on
+  every poll, so every hyper server killed the page on its first request. The root
+  `Cargo.toml` patches hyper with `vendor/hyper` — the exact locked crates.io source, changed
+  only in `src/common/date.rs` under `cfg(all(target_arch = "wasm32", target_os = "unknown"))`
+  to read `js_sys::Date::now()`; native builds compile upstream's code.
+  `vendor/hyper/README.md` has the diff and the upgrade steps, and
+  `tests/vendored_hyper_patch_test.rs` fails if Cargo.lock's hyper stops being that copy.
 - **The LLM backend is `LlmBackend::Bridge`** (`src/llm/bridge.rs`): every request the client
   would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model,
   and `actions`: every action the prompt offers, with parameters, schema and example — and
@@ -1556,8 +1563,10 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   `tests/llm_bridge_test.rs` pins the mapping natively (including a real TCP server's event
   offering its actions with examples); `web/test/smoke.mjs` drives the real bundle under Node
   (dashboard paints, `start_server`, connect, model round-trip, bytes back, the
-  composer's default reply accepted, and the `http` client — `[ + http client ]` and a
-  model-driven exchange with `[ send ]`) and CI's `wasm-web` job runs both.
+  composer's default reply accepted, the `http` client — `[ + http client ]` and a
+  model-driven exchange with `[ send ]` against NetGet's own `http` server — and Node's
+  `node:http`/`node:http2` clients against the `http`, `openapi`, `jsonrpc`, `rss` and `http2`
+  servers over `NetGet.connect()`, `Date` headers checked) and CI's `wasm-web` job runs both.
   `web/test/page_composer.py` drives the page in headless Chromium and is run by hand.
 - **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any
   `Stream` of crossterm events); the web crate's backend emits ANSI into xterm.js and its
