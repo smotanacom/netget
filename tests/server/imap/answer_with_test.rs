@@ -190,3 +190,137 @@ fn a_tagged_response_without_text_still_has_text() {
         "a1 NO no such mailbox\r\n"
     );
 }
+
+/// A completion carrying another command's tag is written with this command's tag. llama3.1:8b
+/// copied the `A001` of an action example onto its LIST completion; as given, imaplib reads it
+/// as a response to a command it never sent and aborts ("unexpected response"). LOGIN's own
+/// completion goes through the same rewrite.
+#[tokio::test]
+async fn a_completion_with_another_tag_carries_the_commands_own() -> E2EResult<()> {
+    let prompt = "listen on port {AVAILABLE_PORT} via imap. Folders: INBOX, Archive.";
+
+    let server_config = NetGetConfig::new_no_scripts(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("via imap")
+            .respond_with_actions(serde_json::json!([{
+                "type": "open_server",
+                "port": 0,
+                "base_stack": "IMAP",
+                "instruction": "Folders: INBOX, Archive."
+            }]))
+            .expect_calls(1)
+            .and()
+            .on_event("imap_connection")
+            .respond_with_actions(serde_json::json!([{"type": "send_imap_greeting"}]))
+            .expect_calls(1)
+            .and()
+            .on_event("imap_auth")
+            .respond_with_actions(serde_json::json!([
+                {"type": "send_imap_response", "tag": "A001", "status": "OK", "message": "LOGIN completed"}
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_event("imap_command")
+            .and_event_data_contains("command", "LIST")
+            .respond_with_actions(serde_json::json!([
+                {"type": "send_imap_response", "tag": "A001", "status": "OK", "message": "LIST completed"},
+                {"type": "send_imap_list", "mailboxes": [
+                    {"name": "INBOX", "delimiter": "/", "flags": []},
+                    {"name": "Archive", "delimiter": "/", "flags": []}
+                ]}
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = start_netget_server(server_config).await?;
+    let stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    read_line(&mut reader).await?;
+
+    write_half
+        .write_all(b"b1 LOGIN eval eval-password\r\n")
+        .await?;
+    assert_eq!(
+        read_until_tagged(&mut reader, "b1").await?,
+        vec!["b1 OK LOGIN completed\r\n".to_string()]
+    );
+
+    write_half.write_all(b"b2 LIST \"\" *\r\n").await?;
+    let list = read_until_tagged(&mut reader, "b2").await?;
+    assert!(
+        !list.iter().any(|l| l.starts_with("A001")),
+        "a line for a tag the client never sent: {list:?}"
+    );
+    assert_eq!(list.len(), 3, "two mailboxes and the completion: {list:?}");
+    assert!(
+        list[0].starts_with("* LIST") && list[0].contains("INBOX"),
+        "{list:?}"
+    );
+    assert!(
+        list[1].starts_with("* LIST") && list[1].contains("Archive"),
+        "{list:?}"
+    );
+    assert_eq!(list[2], "b2 OK LIST completed\r\n");
+
+    server
+        .wait_for_log("decision=completion_retagged", 30)
+        .await?;
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
+#[test]
+fn only_a_tagged_status_line_for_another_tag_is_retagged() {
+    use netget::server::imap::retag_completion;
+    let fixed =
+        |s: &str| retag_completion(s.as_bytes(), "b7").map(|v| String::from_utf8(v).unwrap());
+    assert_eq!(fixed("A001 OK done\r\n").as_deref(), Some("b7 OK done\r\n"));
+    assert_eq!(fixed("A001 hello there\r\n"), None);
+    assert_eq!(
+        fixed("x NO [TRYCREATE] no such mailbox\r\n").as_deref(),
+        Some("b7 NO [TRYCREATE] no such mailbox\r\n")
+    );
+    assert_eq!(fixed("a9 bad\r\n").as_deref(), Some("b7 bad\r\n"));
+    // Already this command's, untagged, a continuation, or more than one line: left alone.
+    assert_eq!(fixed("b7 OK done\r\n"), None);
+    assert_eq!(fixed("* OK [UIDVALIDITY 1]\r\n"), None);
+    assert_eq!(fixed("+ go ahead\r\n"), None);
+    assert_eq!(fixed("* 3 EXISTS\r\nA001 OK done\r\n"), None);
+}
+
+/// LIST and SELECT are raised as `imap_command` offering only their own data answer and the
+/// tagged response: offered all thirteen actions, llama3.1:8b answered LIST with a bare tagged
+/// OK in 6 of 8 replays of one captured prompt; offered these two, 0 of 8.
+#[test]
+fn list_and_select_offer_their_own_answer_and_the_tagged_response() {
+    use netget::server::imap::actions::{command_event, IMAP_COMMAND_EVENT};
+    let names = |command: &str| -> Vec<String> {
+        command_event(command)
+            .actions
+            .iter()
+            .map(|a| a.name.clone())
+            .collect()
+    };
+    for (command, answer) in [
+        ("LIST", "send_imap_list"),
+        ("lsub", "send_imap_list"),
+        ("SELECT", "send_imap_select"),
+        ("Examine", "send_imap_select"),
+    ] {
+        assert_eq!(command_event(command).id, "imap_command");
+        assert_eq!(
+            names(command),
+            vec![answer, "send_imap_response"],
+            "{command}"
+        );
+    }
+    assert!(!command_event("LIST").description.contains("LOGIN"));
+    assert_eq!(
+        names("FETCH").len(),
+        IMAP_COMMAND_EVENT.actions.len(),
+        "a command with no narrowed event gets the declared one"
+    );
+}

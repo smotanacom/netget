@@ -117,7 +117,9 @@ mailbox_read_only: bool
     - `IMAP_AUTH_EVENT` - LOGIN command (special handling). Deliberately narrow:
       `send_imap_response` and `close_connection`.
     - `IMAP_COMMAND_EVENT` - All other commands (SELECT, FETCH, etc.). `CAPABILITY` is not
-      among them: NetGet answers it (below)
+      among them: NetGet answers it (below). `LIST`/`LSUB` and `SELECT`/`EXAMINE` are raised
+      as narrowed copies of it (`actions::command_event`), same id, offering only their data
+      action and `send_imap_response`
 - **Action-based responses** - LLM returns JSON actions for all protocol interactions
 - **Tagged responses** - IMAP uses command tags (A001, A002) for request/response correlation
 - **Untagged responses** - Server data (EXISTS, RECENT, FLAGS) sent before tagged completion
@@ -202,11 +204,26 @@ completion, and the greeting keeps only its first `Output`.
 imaplib aborts on a bare `a1 OK` ("unexpected response") - measured on `LOGIN` in the eval - so
 `send_imap_response` without a `message` renders `completed`.
 
-What is still the model's: answering `LIST`/`SELECT` with a tagged `OK` alone and no data. A
-`send_imap_response` description saying so in as many words ("it carries no data: LIST, SELECT
-… are answered with their own data action") was measured and made it worse (`list-folders`
-1/5, `inbox-count` 1/5 - the model started writing `* LIST` lines as `send_imap_untagged` data),
-so it is not shipped.
+**`LIST` and `SELECT` are offered only their own answer.** `actions::command_event` raises
+`imap_command` - the same id, so handlers match as before - as a narrowed copy for `LIST`/`LSUB`
+(`send_imap_list`, `send_imap_response`) and `SELECT`/`EXAMINE` (`send_imap_select`,
+`send_imap_response`), with a description naming the command instead of the general one, which
+lists every command and mentions `LOGIN`. Every other command gets the declared event with all
+thirteen actions. Offered everything, llama3.1:8b answered `LIST` with a bare tagged `OK` - or a
+tagged `OK` reading "Login successful. Folders: INBOX, Archive, Receipts." - in 6 of 8 replays
+of one captured prompt, its reasoning beginning "User wants to log in"; offered the two, it sent
+`send_imap_list` with the three mailboxes in 8 of 8. A `send_imap_response` description saying a
+tagged `OK` carries no data had been measured before and made both cases worse (1/5, 1/5 - the
+model started writing `* LIST` lines as `send_imap_untagged` data); removing the other eleven
+actions does what that sentence could not.
+
+**A completion carrying another tag is given the command's own** (`retag_completion`, logged
+`decision=completion_retagged`). One command is in flight at a time, so the only tagged response
+the server can owe is that command's completion; the model copied the `A001` of an action example
+onto a `LIST` completion, and written as given imaplib read it as a response to a command it never
+sent and aborted ("unexpected response"). A single `<tag> OK|NO|BAD …` line with a tag other than
+the command's is rewritten; untagged (`*`), continuation (`+`) and multi-line output are left
+alone. `LOGIN`'s completion goes through the same rewrite.
 
 The `send_imap_response` example no longer carries `code: READ-WRITE` (the model put it on its
 `CAPABILITY` answer), and the greeting example lists `IMAP4rev1` alone, since whatever it lists

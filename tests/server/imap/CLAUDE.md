@@ -10,7 +10,7 @@ third-party clients**, which are where the maturity rating actually rests:
 |---|---|---|
 | `e2e_client_test.rs` | `async-imap` 0.11 (Rust) | LIST, EXAMINE, STATUS, NOOP, concurrent sessions, LOGIN failure |
 | `real_client_test.rs` | python3 stdlib `imaplib` | the literal **byte** count, NetGet's answer to the `CAPABILITY` command, `select()`'s `EXISTS` return |
-| `answer_with_test.rs` | hand-written TCP | `CAPABILITY` answered by NetGet, `answer_with` on LOGIN/SELECT, nothing after a tagged completion |
+| `answer_with_test.rs` | hand-written TCP | `CAPABILITY` answered by NetGet, `answer_with` on LOGIN/SELECT, nothing after a tagged completion, a completion carrying another tag given the command's own, LIST/SELECT offered only their own answer |
 | `test.rs` | hand-written TCP | the command/response shapes, trimmed |
 
 ## `real_client_test.rs` — the second client
@@ -77,7 +77,9 @@ would have passed against both broken servers.
   SELECT/SEARCH/FETCH/LOGOUT = **7** (`CAPABILITY` is NetGet's)
 - `capability_is_netgets_and_each_command_gets_one_answer()` (`answer_with_test.rs`): 1 startup
   + greeting + LOGIN + SELECT = **4**
-- **Total: 42 LLM calls** (13 startups + 29 command calls)
+- `a_completion_with_another_tag_carries_the_commands_own()` (`answer_with_test.rs`): 1 startup
+  + greeting + LOGIN + LIST = **4**
+- **Total: 46 LLM calls** (14 startups + 32 command calls)
 
 ## `answer_with_test.rs`
 
@@ -92,7 +94,16 @@ Pins what the real-model eval's two IMAP zeros needed, from the wire:
   completion last, and the next command its own answer, never the stale completion;
 - `decision=duplicate_response_dropped` and `decision=netget_answer` are in the log.
 
-A second test, `a_tagged_response_without_text_still_has_text`, drives the executor directly:
+`a_completion_with_another_tag_carries_the_commands_own` answers `b1 LOGIN` and `b2 LIST` with
+completions tagged `A001` (the tag llama3.1:8b copied from an example in the eval): the client
+must read `b1 OK` and `b2 OK` after the two `* LIST` lines, no line tagged `A001`, and
+`decision=completion_retagged` in the log. `only_a_tagged_status_line_for_another_tag_is_retagged`
+pins what `retag_completion` leaves alone (the command's own tag, `*`, `+`, more than one line, a
+line that is not a status). `list_and_select_offer_their_own_answer_and_the_tagged_response`
+checks `command_event`: LIST/LSUB and SELECT/EXAMINE, any case, offer exactly their data action
+and `send_imap_response` under the `imap_command` id, and FETCH gets the declared event.
+
+A further test, `a_tagged_response_without_text_still_has_text`, drives the executor directly:
 `send_imap_response` with no `message` renders `a1 OK completed` (RFC 3501 `resp-text` is
 required; imaplib aborts on `a1 OK`). Verified by putting the empty text back.
 
