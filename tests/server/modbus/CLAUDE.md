@@ -35,13 +35,14 @@ decoded PDU: register values, coil bits, function codes, exception codes, MBAP f
 | Test | Startup | Events | Total |
 |---|---|---|---|
 | `e2e_test::test_modbus_reads_writes_and_exceptions_against_tokio_modbus` | 1 | 8 | **9** |
+| `e2e_test::test_modbus_keyed_answer_missing_an_address_is_illegal_data_address` | 1 | 4 | **5** |
 | `e2e_test::test_modbus_spec_exceptions_and_mbap_framing` | 1 | 0 | **1** |
 | `e2e_test::test_codec_*` (three tests), `test_out_of_range_*` | 0 | 0 | **0** |
 | `real_client_test::test_modbus_reads_writes_and_exceptions_against_mbpoll` | 1 | 8 | **9** |
 | `llm_failure_test::every_fail_closed_clause_answers_0x04_and_logs_which_one_it_was` | 1 | 9 matched + unmatched | **10** counted |
 | `llm_failure_test::a_static_rule_answering_the_wrong_kind_fails_closed` | 0 | 0 | **0** |
 | `bounds_test` (six tests), `connection_bounds_test` (two), `pcap_oracle_test`, `peer_inject_test` | 0 | 0 | **0** |
-| `answer_with_test` (two tests) | 0 | 0 | **0** |
+| `answer_with_test` (three tests) | 0 | 0 | **0** |
 
 Every file is under the ~10-call target. The in-process files (`bounds_test`,
 `connection_bounds_test`, `pcap_oracle_test`, `peer_inject_test`, and the second
@@ -73,12 +74,15 @@ Seven rules in the first test. Two things to know about them:
   `register_type: holding` one, and the `write_multiple_registers` rule precedes the
   `write_single_register` one. The coil-write rule matches `function` containing `coil`, which
   no register function name does. The input-register rule also requires the event's
-  `answer_with` to name exception 2, so it matches only when the per-request hint reaches the
-  model.
+  `answer_with` to say what a missing address is answered with ("NetGet answers exception 2"),
+  so it matches only when the per-request hint reaches the model.
 
 - **Three rules use `respond_with_actions_from_event`.** Two derive their answer from the
   request's own `quantity` and `start_address` — the holding-register read returns
-  `1800 + start + i*10` per register, the bit read returns a pattern of the requested width. A
+  `1800 + start + i*10` per register, keyed by address, plus one register past the window that
+  the server must leave out; the bit read returns a pattern of the requested width, keyed by
+  address. The positional `values` form is exercised by `real_client_test`, `pcap_oracle_test`,
+  `peer_inject_test` and `llm_failure_test`. A
   hardcoded array would pass just as well against a correct server, but would keep passing if
   the server started ignoring the requested quantity. The third accepts a coil write only if
   `coil_values` is exactly what the client sent, and refuses otherwise — so FC 15's bit
@@ -128,8 +132,14 @@ data.
 - Every declared bound from the wire, each verified by removal (`bounds_test.rs`,
   `connection_bounds_test.rs`): see the table at the top of `bounds_test.rs`
 - `mbtcp` dissects a whole session of all eight function codes and an exception cleanly
-- The `answer_with` sentence each event carries (`answer_with_test.rs`): the exact address
-  range, the value count, and exception 2 for an address the device does not have. Its wording
+- A keyed answer that does not cover the request (`e2e_test.rs::
+  test_modbus_keyed_answer_missing_an_address_is_illegal_data_address`): the device's whole map
+  0-9 answering a read of 500-501 and of 8-11, and an empty bits map, each reach tokio-modbus as
+  exception 0x02 and log `decision=model_address_absent`; the same map serves 7-9. Checked by
+  making a missing entry skip instead of refuse, which turns each into exception 0x04
+- The `answer_with` sentence each event carries (`answer_with_test.rs`): for a read, the map it
+  asks for, the addresses asked for, and exception 2 for one left out; for a write, the
+  check-first wording with the literal exception. Its wording
   is measured by the real-model eval (`src/server/modbus/CLAUDE.md`), not by these tests; they
   pin it so a rewording is a decision
 - Codec: spec example frames, incomplete frames reported as incomplete (not as an error),

@@ -149,10 +149,39 @@ passes out of 5 per case:
 | coap, modbus, snmp, sip, websocket, docker, beanstalkd, gemini, bolt, zabbix | 7 of 24 | 20 of 24 |
 | smtp, pop3, imap, nntp, memcached, mqtt | 4 of 15 | 7 of 15, and 13 of 15 at 3/5 or better |
 
-Still open: `modbus` illegal-address and `docker` inspect-missing (1/5 each) and `imap`, whose
-two cases move between 1/5 and 4/5 from run to run. Two protocol defects surfaced on the way and
-are fixed: `sip` sent every status with the reason phrase "OK", and a `websocket` accept naming
-a subprotocol the client never offered became a 503.
+Two protocol defects surfaced on the way and are fixed: `sip` sent every status with the reason
+phrase "OK", and a `websocket` accept naming a subprotocol the client never offered became a 503.
+
+**The three cases that round left open were closed on 29-30 September 2026**, and none of them by
+rewording. Each was read from the failing runs and then from the captured prompt replayed against
+Ollama (llama3.1:8b, seed 42) with one thing changed at a time, before the eval was run:
+
+| Case | Before | After | What changed |
+|---|---:|---:|---|
+| `modbus/illegal-address` | 3/5 (1/5 at the round's close) | **5/5** | a read is answered with the device's registers **keyed by address**, and NetGet answers exception 2 for a requested address the map lacks. The model's answer — the whole device, ten zeros — did not change; it is now read correctly |
+| `docker/inspect-missing` | 0/5 | **5/5** | each route's `docker_api_request` offers only the action that answers it and `send_docker_error`; offered all eight, the model answered the inspect with `send_docker_volumes` |
+| `imap/list-folders` | 3/5 | **5/5**, and 5/5 again | `LIST`/`SELECT` offered only their own data action and the tagged response; a completion carrying another tag (the model copied an example's `A001`) is written with the command's own |
+| `imap/inbox-count` | 4/5 | **5/5**, and 5/5 again | the same |
+
+Every other case of the three protocols stayed at 5/5 (`modbus/holding-registers`,
+`docker/ps-running-container`, `docker/ps-all-includes-stopped`). The pattern is the one to carry
+forward: **where the eval shows a model reusing the wrong action, stop offering it.** Every
+`call_llm` offers the model exactly `event.event_type.actions`, and a protocol can raise the same
+event id with a narrower list per request (`docker::actions::event_for_resource`,
+`imap::actions::command_event`) — handlers keep matching the id, and the declared event keeps the
+full list for documentation. Two things the round cost, both worth knowing before the next one:
+
+- **A description that reads as a verb becomes a name.** A docker route described as "lists
+  containers" was answered with an invented `list_containers` tool call beside the right action,
+  which the LLM layer rejects as unknown — `ps-all-includes-stopped` fell to 1/5 until the
+  descriptions named the CLI command (`docker ps`) instead.
+- **A loaded machine reads as a model failure.** One IMAP after-run scored `list-folders` 0/5
+  with every run killed at the 240 s probe timeout before LIST was asked: model calls were
+  taking ~35 s, and the greeting alone takes up to five of them, because the model attaches a
+  `generate_random uuid` tool call to every answer — the same call the shared response-format
+  prompt's "both tools and actions" example shows, which looks like where it comes from — and
+  the conversation loop re-asks while a tool call is pending, keeping every iteration's actions. That is a cross-protocol latency multiplier and
+  the next thing worth measuring; it is in `src/llm/`, not in any protocol.
 
 The first measurement of the new servers is the next thing to act on: `gemini`, `bolt`,
 `beanstalkd` and `docker` scored 0/15, `zabbix` 3/10, `gearman` 7/10, and `dict`,

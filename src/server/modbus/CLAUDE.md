@@ -95,9 +95,9 @@ do I accept this write.
 
 ### 3. Framing is server-side, so the actions carry meaning rather than bytes
 
-Actions return `ActionResult::Custom` with structured data — `{"values": [1834, 1450]}`,
-`{"values": [true, false]}`, `{"exception_code": 2}` — and `mod.rs` builds the PDU and the MBAP
-header from the request it parsed. Consequences:
+Actions return `ActionResult::Custom` with structured data — `{"registers": {"40": 1834, "41":
+1450}}`, `{"bits": {"40": true}}`, `{"exception_code": 2}` — and `mod.rs` builds the PDU and the
+MBAP header from the request it parsed. Consequences:
 
 - The model cannot desynchronise a transaction id or emit a wrong byte count.
 - The model never has to echo an identifier, which is exactly the failure mode that makes
@@ -167,6 +167,7 @@ stable `decision=` token, as `src/server/radius/` does:
 |---|---|---|
 | `model_answer` | the model supplied the values, or accepted the write | DEBUG |
 | `model_reject` | the model chose an exception itself | DEBUG |
+| `model_address_absent` | the model answered a read with the addresses the device has, and one asked for is not among them: exception 0x02 | DEBUG |
 | `spec_reject` | `parse_request` decided; the model was never asked | DEBUG |
 | `unit_mismatch` | addressed to another unit id | WARN |
 | `fail_closed_llm_error` | the LLM call failed — the backend, or an answer outside the event's vocabulary | **ERROR** |
@@ -274,42 +275,57 @@ Every event data payload carries `unit_id`, `function_code`, `function`, `start_
 (`holding` / `input`) so the model knows whether it is being asked about an output it can also
 write or a read-only measurement; writes add `coil_values` or `register_values`.
 
-`answer_with` (`actions::answer_with_for_request`) names the exact addresses the request covers
-("holding registers 500 to 501"), says to check them against the instructions first, gives a
-worked comparison computed from the request itself ("one whose holding registers are 0 to 499
-has no holding register 500"), the literal exception-2 action for an address the device does not
-have, and only then the action and value count for one it does. The two read events' descriptions
-and the two read actions' descriptions say the same thing: check first, exception 2 for a missing
-address, never zeros. The hint is advice to the model and changes nothing NetGet enforces —
-decision 2's spec-determined refusals still never reach it.
+**A read is answered with an address-keyed map, and NetGet does the address comparison.**
+`send_modbus_registers {"registers": {"<address>": value}}` and `send_modbus_bits {"bits":
+{"<address>": bool}}` give the addresses the device has; `mod.rs` (`read_from_map`) serves the
+requested window from them in address order, ignores entries outside it, and answers
+**exception 0x02 for the whole request when any requested address has no entry** — logged
+`decision=model_address_absent`, which is the model's answer (its map says the device has no such
+address), not a fail-closed. The positional `values` array, one value per requested address from
+`start_address`, is still accepted from handlers and scripts, with its length checked as before.
 
-**This is the case the prompt did not fix, and the measurements say why.** Told "you are a PLC
-with ten holding registers at addresses 0 to 9, all zero. There is nothing at any other address",
-llama3.1:8b answers a read of 500-501 (real-model eval, seed 42, 5 runs per variant):
+`answer_with` (`actions::answer_with_for_request`) asks a read for "a registers object holding
+every holding register your instructions give this device, keyed by address", names the
+addresses asked for, and says NetGet answers exception 2 for any of them the object leaves out.
+It asks the model to compare nothing. A write carries no values to key, so its `answer_with` keeps
+the check-first wording: the addresses, a worked comparison computed from the request ("one whose
+holding registers are 0 to 9 has no holding register 10"), the literal exception-2 action, then
+`send_modbus_write_ack`. The hint changes nothing NetGet enforces — decision 2's
+spec-determined refusals still never reach the model.
 
-| wording | illegal-address | holding-registers |
+**Why the map, and what the prompt alone could not do.** Told "you are a PLC with ten holding
+registers at addresses 0 to 9, all zero. There is nothing at any other address", llama3.1:8b
+answers a read of 500-501 by describing the whole device: ten zeros. Its reasoning says the
+device "has only holding registers 0 to 9, which is exactly what the client is asking for" — it
+restates the instruction rather than comparing 500 with 0-9. Five wordings that asked it to make
+the comparison (real-model eval, seed 42, 5 runs each) scored 0/5 to 1/5 on this case, with the
+positional answer:
+
+| wording (positional `values`) | illegal-address | holding-registers |
 |---|---|---|
-| no hint (the baseline) | 0/5 — `[0, 0]` every run | 5/5 |
+| no hint | 0/5 — `[0, 0]` every run | 5/5 |
 | hint, values first, exception second | 0/5 — prose instead of JSON 4 times, `[0, 0]` once | 5/5 |
 | hint, check first, exception as a literal action | 0/5 — `[0, 0]` every run | 4/5 |
-| + the computed comparison, + check-first event and action descriptions (shipped) | **1/5** | **5/5** |
-| the same as a yes/no question ("do your instructions give this device …?") | 0/5 — the action example's `[1834, 1450]` 4 times | 5/5 |
+| + the computed comparison, + check-first event and action descriptions | 1/5 (3/5 re-measured 29 September) | 5/5 |
+| the same as a yes/no question | 0/5 — the action example's `[1834, 1450]` 4 times | 5/5 |
 
-In the shipped variant's four misses the model answered with **ten zeros** — the device's whole
-register map, not the two registers asked for — which the count check refuses as exception 4.
-It is not comparing 500 against 0-9 at all; it is restating the instruction. No wording tried
-got it to, and the last variant shows the cost of pushing: a longer hint and the model fell back
-on the action's example. That is a model-capability ceiling at this size, recorded rather than
-papered over; a larger model is the next thing to measure it against.
+Keyed by address, the model's natural answer is a correct one: `{"0": 0, …, "9": 0}` has no entry
+for 500, and the server answers exception 2. With the map and the no-comparison hint the case
+measured **5/5**, and holding-registers stayed 5/5 (29 September 2026, same parameters). The
+answer the model gives did not change; what NetGet reads it as did.
 
 There is no event for an unsupported function code, because there is nothing to decide — see
 decision 2.
 
 ### Actions
 
-- `send_modbus_bits { values: [bool] }` — answers FC 1/2. Length must equal `quantity`.
-- `send_modbus_registers { values: [int 0..65535] }` — answers FC 3/4. Length must equal
-  `quantity`.
+- `send_modbus_bits { bits: {"<address>": bool} }` — answers FC 1/2 from the addresses given;
+  a requested address with no entry is exception 0x02. `{ values: [bool] }` (length must equal
+  `quantity`) is still accepted.
+- `send_modbus_registers { registers: {"<address>": int 0..65535} }` — answers FC 3/4 the same
+  way. `{ values: [int 0..65535] }` (length must equal `quantity`) is still accepted. A key that
+  is not a decimal address 0-65535, or a value out of range, is refused by the executor with the
+  address named.
 - `send_modbus_write_ack {}` — accepts a write; the echo is built from the request.
 - `send_modbus_exception { exception_code }` — refuses. Accepts a number the specification
   defines (1, 2, 3, 4, 5, 6, 8, 10, 11) or a name (`"illegal_data_address"`, ...). Anything

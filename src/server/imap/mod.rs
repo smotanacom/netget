@@ -44,7 +44,7 @@ use crate::state::server::{
     ConnectionStatus, ImapSessionState, ProtocolConnectionInfo, ProtocolState, ServerId,
 };
 #[cfg(feature = "imap")]
-use actions::{IMAP_AUTH_EVENT, IMAP_COMMAND_EVENT, IMAP_CONNECTION_EVENT};
+use actions::{IMAP_AUTH_EVENT, IMAP_CONNECTION_EVENT};
 #[cfg(feature = "imap")]
 use serde_json::json;
 
@@ -585,6 +585,26 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         }
     }
 
+    /// `data` with a tagged status line for another tag rewritten to this command's `tag`.
+    ///
+    /// See [`retag_completion`]; the rewrite is logged `decision=completion_retagged`.
+    fn own_tag(&self, data: &[u8], tag: &str, command: &str) -> Vec<u8> {
+        match retag_completion(data, tag) {
+            Some(fixed) => {
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "IMAP {} {} on connection {} decision=completion_retagged: the model's \
+                     completion {:?} carried another tag",
+                    tag,
+                    command.to_uppercase(),
+                    self.connection_id,
+                    String::from_utf8_lossy(data).trim_end()
+                ));
+                fixed
+            }
+            None => data.to_vec(),
+        }
+    }
+
     async fn handle_command(&mut self, line: &str) -> Result<()> {
         let (tag, command, args) = parse_imap_command(line);
 
@@ -632,7 +652,7 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         if let Some(answer_with) = imap_answer_with(&tag, &command, &args) {
             event_data["answer_with"] = answer_with.into();
         }
-        let event = Event::new(&IMAP_COMMAND_EVENT, event_data);
+        let event = Event::new(actions::command_event(&command), event_data);
 
         let result = call_llm(
             &self.llm_client,
@@ -671,6 +691,7 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         for action_result in result.protocol_results {
             match action_result {
                 ActionResult::Output(data) => {
+                    let data = self.own_tag(&data, &tag, &command);
                     let text = String::from_utf8_lossy(&data);
                     let is_tagged = text.lines().any(|line| {
                         line.trim_start()
@@ -821,6 +842,7 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                     dropped_replies += 1;
                     continue;
                 }
+                let data = self.own_tag(data, tag, "LOGIN");
                 let response = String::from_utf8_lossy(&data);
                 if tagged_ok_for(&response, tag) {
                     auth_success = true;
@@ -1002,6 +1024,44 @@ fn imap_failure_code(err: &anyhow::Error) -> (&'static str, String) {
 /// did an untagged line that happened to contain it. RFC 3501 §7.1 puts the condition in the
 /// second field of a line whose first field is the tag, and nowhere else.
 #[cfg(feature = "imap")]
+/// A single tagged status line (`<tag> OK|NO|BAD ...`) whose tag is not `tag`, rewritten to
+/// carry `tag`; `None` for anything else, including a line that already carries it.
+///
+/// One command is in flight at a time, so the only tagged response a server can owe is that
+/// command's completion. llama3.1:8b copied the `A001` of an action example onto a LIST
+/// completion; written as given, the line reads as a tagged response to a command the client
+/// never sent, and imaplib aborts on it ("unexpected response"). An untagged (`*`) or
+/// continuation (`+`) line, and anything that is not one line, is left as it is.
+pub fn retag_completion(data: &[u8], tag: &str) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(data).ok()?;
+    let line = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(text);
+    if line.contains(['\r', '\n']) {
+        return None;
+    }
+    let mut fields = line.splitn(3, ' ');
+    let first = fields.next()?;
+    let status = fields.next()?;
+    if first.is_empty() || first == "*" || first == "+" || first == tag {
+        return None;
+    }
+    if !["OK", "NO", "BAD"]
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(status))
+    {
+        return None;
+    }
+    Some(
+        match fields.next() {
+            Some(rest) => format!("{tag} {status} {rest}\r\n"),
+            None => format!("{tag} {status}\r\n"),
+        }
+        .into_bytes(),
+    )
+}
+
 fn tagged_ok_for(payload: &str, tag: &str) -> bool {
     payload.lines().any(|line| {
         let mut fields = line.trim().split_whitespace();
