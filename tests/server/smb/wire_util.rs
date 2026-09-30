@@ -16,6 +16,7 @@ pub const TREE_CONNECT: u16 = 0x0003;
 pub const TREE_DISCONNECT: u16 = 0x0004;
 pub const CREATE: u16 = 0x0005;
 pub const CLOSE: u16 = 0x0006;
+pub const FLUSH: u16 = 0x0007;
 pub const READ: u16 = 0x0008;
 pub const WRITE: u16 = 0x0009;
 pub const ECHO: u16 = 0x000D;
@@ -30,6 +31,27 @@ pub const STATUS_USER_SESSION_DELETED: u32 = 0xC000_0203;
 pub const STATUS_NO_MORE_FILES: u32 = 0x8000_0006;
 pub const STATUS_END_OF_FILE: u32 = 0xC000_0011;
 pub const STATUS_FILE_CLOSED: u32 = 0xC000_0128;
+pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
+pub const STATUS_TOO_MANY_OPENED_FILES: u32 = 0xC000_011F;
+
+/// A bare NTLMSSP NEGOTIATE (MS-NLMP 2.2.1.1): signature, MessageType 1, NegotiateFlags
+/// (UNICODE | NTLM | ALWAYS_SIGN), and empty domain and workstation fields.
+pub fn ntlmssp_negotiate() -> Vec<u8> {
+    let mut t = b"NTLMSSP\0".to_vec();
+    t.extend_from_slice(&1u32.to_le_bytes());
+    t.extend_from_slice(&0x0000_8201u32.to_le_bytes());
+    t.extend_from_slice(&[0u8; 16]);
+    t
+}
+
+/// An NTLMSSP AUTHENTICATE too short to carry its own fixed part (MS-NLMP 2.2.1.3 is 64 bytes
+/// before any payload), so the server cannot read a user name out of it.
+pub fn ntlmssp_truncated_authenticate() -> Vec<u8> {
+    let mut t = b"NTLMSSP\0".to_vec();
+    t.extend_from_slice(&3u32.to_le_bytes());
+    t.extend_from_slice(&[0u8; 20]);
+    t
+}
 
 /// Prefix a message with its Direct TCP transport header: a zero byte and a 24-bit length.
 pub fn nbss(message: Vec<u8>) -> Vec<u8> {
@@ -278,6 +300,16 @@ pub fn query_directory(
 pub fn simple(command: u16, message_id: u64, tree_id: u32, session_id: u64) -> Vec<u8> {
     let mut p = header(command, message_id, tree_id, session_id);
     p.extend_from_slice(&[4, 0, 0, 0]);
+    p
+}
+
+/// FLUSH (MS-SMB2 2.2.17).
+pub fn flush(message_id: u64, tree_id: u32, session_id: u64, file_id: &[u8]) -> Vec<u8> {
+    let mut p = header(FLUSH, message_id, tree_id, session_id);
+    p.extend_from_slice(&24u16.to_le_bytes()); // StructureSize
+    p.extend_from_slice(&0u16.to_le_bytes()); // Reserved1
+    p.extend_from_slice(&0u32.to_le_bytes()); // Reserved2
+    p.extend_from_slice(file_id);
     p
 }
 

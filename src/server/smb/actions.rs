@@ -28,6 +28,46 @@ impl SmbProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for SmbProtocol {
+    /// The three read deadlines, and nothing else. Each defaults to the constant the server
+    /// uses, so the form, `get_protocol_docs` and the model all show the number in force.
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        vec![
+            crate::llm::actions::ParameterDefinition {
+                name: "first_byte_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description: "Seconds a connected peer may send nothing before any session is \
+                              admitted; the server then closes it without a reply. SMB2 is \
+                              client-speaks-first and every real client sends NEGOTIATE as it \
+                              connects."
+                    .to_string(),
+                required: false,
+                example: json!(30),
+                default: Some(json!(super::FIRST_MESSAGE_READ_TIMEOUT.as_secs())),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "idle_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description: "Seconds a peer holding an admitted session may send nothing \
+                              before the server closes it. Default 900, Windows' \
+                              `autodisconnect`: a mounted share with no I/O is idle for long \
+                              stretches."
+                    .to_string(),
+                required: false,
+                example: json!(900),
+                default: Some(json!(super::IDLE_BETWEEN_MESSAGES_TIMEOUT.as_secs())),
+            },
+            crate::llm::actions::ParameterDefinition {
+                name: "body_timeout_secs".to_string(),
+                type_hint: "integer".to_string(),
+                description: "Seconds a peer may stall part-way through a message whose \
+                              length its Direct TCP header has already announced."
+                    .to_string(),
+                required: false,
+                example: json!(30),
+                default: Some(json!(super::BODY_READ_TIMEOUT.as_secs())),
+            },
+        ]
+    }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![disconnect_client_action()]
     }
@@ -199,13 +239,34 @@ impl Server for SmbProtocol {
         Box<dyn std::future::Future<Output = anyhow::Result<std::net::SocketAddr>> + Send>,
     > {
         Box::pin(async move {
-            use crate::server::smb::SmbServer;
+            use crate::server::smb::{Deadlines, SmbServer};
+            // Propagate, never unwrap: these values come from the model or an MCP caller. A
+            // zero deadline would close every connection before it could speak, so it is
+            // refused rather than honoured.
+            let secs = |name: &str, default: std::time::Duration| -> Result<std::time::Duration> {
+                let value = match ctx.startup_params.as_ref() {
+                    Some(p) => p.get_optional_u64(name)?,
+                    None => None,
+                };
+                match value {
+                    None => Ok(default),
+                    Some(0) => anyhow::bail!("{name} must be at least 1 second, got 0"),
+                    Some(n) => Ok(std::time::Duration::from_secs(n)),
+                }
+            };
+            let defaults = Deadlines::default();
+            let deadlines = Deadlines {
+                first_message: secs("first_byte_timeout_secs", defaults.first_message)?,
+                idle: secs("idle_timeout_secs", defaults.idle)?,
+                body: secs("body_timeout_secs", defaults.body)?,
+            };
             SmbServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                deadlines,
             )
             .await
         })

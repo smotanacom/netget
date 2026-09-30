@@ -21,3 +21,6 @@ pub mod header_layout_test;
 
 #[cfg(all(test, feature = "smb"))]
 pub mod real_client_test;
+
+#[cfg(all(test, feature = "smb"))]
+pub mod bounds_test;
