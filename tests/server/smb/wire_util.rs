@@ -373,6 +373,40 @@ pub fn lock(message_id: u64, tree_id: u32, session_id: u64, file_id: &[u8]) -> V
     p
 }
 
+/// Link `messages` into one compound chain (MS-SMB2 3.2.4.1.4): every message but the last is
+/// padded to 8 bytes and its `NextCommand` names that padded length.
+pub fn compound(messages: Vec<Vec<u8>>) -> Vec<u8> {
+    let count = messages.len();
+    let mut out = Vec::new();
+    for (i, mut m) in messages.into_iter().enumerate() {
+        if i + 1 < count {
+            while m.len() % 8 != 0 {
+                m.push(0);
+            }
+            let next = m.len() as u32;
+            m[20..24].copy_from_slice(&next.to_le_bytes());
+        }
+        out.extend(m);
+    }
+    out
+}
+
+/// Split a compound response on `NextCommand`.
+pub fn split_compound(frame: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    loop {
+        let rest = &frame[at..];
+        let next = next_command(rest) as usize;
+        if next == 0 {
+            out.push(rest.to_vec());
+            return out;
+        }
+        out.push(rest[..next].to_vec());
+        at += next;
+    }
+}
+
 /// Read one Direct TCP frame and return the SMB2 message inside it.
 pub fn read_frame_sync(stream: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
     let mut nb = [0u8; 4];

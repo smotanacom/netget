@@ -146,8 +146,29 @@ pub const MAX_WRITE_SIZE: u32 = 1024 * 1024;
 /// because the rest of the frame is unread and reading on would parse it as the next message.
 pub const MAX_MESSAGE_BYTES: usize = MAX_WRITE_SIZE as usize + 64 * 1024;
 
+/// Requests one compound frame may carry that the server will act on.
+///
+/// A frame of `MAX_MESSAGE_BYTES` has room for ~17 000 64-byte headers linked by
+/// `NextCommand`, and every one could be a CREATE or READ the model is asked about — one frame
+/// buying thousands of model calls. Real clients compound a handful (smbprotocol's stat is
+/// seven; the Windows and Linux redirectors stay under ten). Requests past this many are each
+/// answered `STATUS_INSUFFICIENT_RESOURCES` to their own MessageId without being acted on,
+/// logged `decision=fail_closed_compound_cap`, so the client can still correlate every reply.
+pub const MAX_COMPOUND_REQUESTS: usize = 32;
+
+/// The most response bytes one compound reply carries before further responses in it are
+/// replaced by `STATUS_INSUFFICIENT_RESOURCES`.
+///
+/// The Direct TCP header can announce at most 2^24 - 1 bytes, and a compound of READs can ask
+/// for more than that (32 x `MaxReadSize` is 32 MiB). Without this the reply could not be framed
+/// at all. The headroom is what the refusals themselves can cost: at most
+/// `MAX_MESSAGE_BYTES / 64` requests in a frame, each refused in 80 padded bytes, is ~1.4 MB,
+/// so 2 MiB below the frame limit keeps the whole chain frameable whatever follows. Logged
+/// `decision=fail_closed_response_too_large`.
+pub const MAX_RESPONSE_FRAME_BYTES: usize = wire::NBSS_MAX_LEN - 2 * 1024 * 1024;
+
 /// What READ will return in one response, advertised as `MaxReadSize`.
-const MAX_READ_SIZE: u32 = 1024 * 1024;
+pub const MAX_READ_SIZE: u32 = 1024 * 1024;
 
 /// A fixed server GUID. Clients key cached connection state on it; one per process is enough.
 const SERVER_GUID: [u8; 16] = [
@@ -655,6 +676,8 @@ impl SmbServer {
         let mut responses = Vec::new();
         let mut chain = Chain::default();
         let mut offset = 0usize;
+        let mut requests = 0usize;
+        let mut response_bytes = 0usize;
 
         loop {
             let rest = &frame[offset..];
@@ -702,16 +725,51 @@ impl SmbServer {
             chain.tree_id = req.tree_id;
 
             debug!("SMB2 command 0x{:04x} from {}", req.command, peer_addr);
-            match Self::handle_request(&req, message, &mut chain, ctx).await {
-                Ok(Some(response)) => responses.push(response),
-                Ok(None) => {}
-                Err(e) => {
-                    error!("SMB2 command 0x{:04x} failed: {}", req.command, e);
-                    responses.push(wire::error_response(&ResponseHeader::for_request(
-                        &req,
-                        status::INTERNAL_ERROR,
-                    )));
+            requests += 1;
+            let response = if requests > MAX_COMPOUND_REQUESTS {
+                if requests == MAX_COMPOUND_REQUESTS + 1 {
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "SMB2 compound from {} carries more than {} requests \
+                         (decision=fail_closed_compound_cap); answering the rest \
+                         STATUS_INSUFFICIENT_RESOURCES without acting on them",
+                        peer_addr, MAX_COMPOUND_REQUESTS
+                    ));
                 }
+                Some(wire::error_response(&ResponseHeader::for_request(
+                    &req,
+                    status::INSUFFICIENT_RESOURCES,
+                )))
+            } else {
+                match Self::handle_request(&req, message, &mut chain, ctx).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        error!("SMB2 command 0x{:04x} failed: {}", req.command, e);
+                        Some(wire::error_response(&ResponseHeader::for_request(
+                            &req,
+                            status::INTERNAL_ERROR,
+                        )))
+                    }
+                }
+            };
+            if let Some(mut response) = response {
+                // Each response but the last is padded to 8 bytes in the chain.
+                if response_bytes + response.len().div_ceil(8) * 8 > MAX_RESPONSE_FRAME_BYTES {
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "SMB2 command 0x{:04x} from {}: its {} byte response would take the \
+                         compound reply past {} bytes (decision=fail_closed_response_too_large); \
+                         replying STATUS_INSUFFICIENT_RESOURCES",
+                        req.command,
+                        peer_addr,
+                        response.len(),
+                        MAX_RESPONSE_FRAME_BYTES
+                    ));
+                    response = wire::error_response(&ResponseHeader::for_request(
+                        &req,
+                        status::INSUFFICIENT_RESOURCES,
+                    ));
+                }
+                response_bytes += response.len().div_ceil(8) * 8;
+                responses.push(response);
             }
 
             match located.next {

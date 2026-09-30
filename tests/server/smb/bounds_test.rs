@@ -9,12 +9,15 @@
 //! | `MAX_SESSIONS_PER_CONNECTION` (16) | sessions on one connection, mid-NTLMSSP ones included | `sessions_opened_before_anyone_is_asked_are_capped_per_connection` |
 //! | `MAX_TREES_PER_CONNECTION` (64) | tree connects on one connection | `tree_connects_are_capped_per_connection_and_a_disconnect_returns_a_slot` |
 //! | `MAX_OPEN_FILES_PER_CONNECTION` (1024) | open handles on one connection | `open_handles_are_capped_per_connection_and_a_close_returns_a_slot` |
+//! | `MAX_COMPOUND_REQUESTS` (32) | requests acted on per compound frame | `a_compound_past_the_request_cap_is_answered_without_being_acted_on` |
+//! | `MAX_RESPONSE_FRAME_BYTES` (16 MiB - 1 - 2 MiB) | **outbound**: the bytes of one compound reply | `a_compound_whose_replies_would_overflow_a_frame_is_still_answered_in_one` |
 //!
 //! `MAX_MESSAGE_BYTES` and `MAX_WRITE_SIZE` are in `inbound_limit_test.rs`.
 //!
-//! Every bound here is **inbound** — each counts or times something the peer does — and each
-//! refusal is decided before the model: the tests that count model calls assert the refused
-//! request cost none.
+//! Every bound here but the last is **inbound** — each counts or times something the peer
+//! does — and each of those refusals is decided before the model: the tests that count model
+//! calls assert the refused request cost none. `MAX_RESPONSE_FRAME_BYTES` governs what the
+//! server *writes*: a Direct TCP header cannot announce more than 2^24 - 1 bytes.
 //!
 //! **Verified by removal**, one bound at a time, each restored afterwards:
 //!
@@ -28,6 +31,9 @@
 //!   answered `STATUS_MORE_PROCESSING_REQUIRED`.
 //! - the tree-cap check removed: the 65th TREE_CONNECT succeeds.
 //! - the open-handle check removed: the 1025th CREATE succeeds.
+//! - the compound cap removed: all 40 CREATEs reach the model.
+//! - the response budget removed: `wire::frame`'s 24-bit assertion panics the connection task
+//!   and the 17-READ compound gets no reply at all.
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features smb --test server -- smb::bounds --test-threads=100
@@ -38,8 +44,8 @@ use std::time::{Duration, Instant};
 
 use netget::cli::management::ServerForm;
 use netget::server::smb::{
-    MAX_CONNECTIONS, MAX_OPEN_FILES_PER_CONNECTION, MAX_SESSIONS_PER_CONNECTION,
-    MAX_TREES_PER_CONNECTION,
+    MAX_COMPOUND_REQUESTS, MAX_CONNECTIONS, MAX_OPEN_FILES_PER_CONNECTION, MAX_READ_SIZE,
+    MAX_RESPONSE_FRAME_BYTES, MAX_SESSIONS_PER_CONNECTION, MAX_TREES_PER_CONNECTION,
 };
 use netget::state::app_state::AppState;
 use netget::state::ServerId;
@@ -645,5 +651,119 @@ async fn open_handles_are_capped_per_connection_and_a_close_returns_a_slot() {
         0,
         "every answer here came from the static handler"
     );
+    server.stop().await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Compound frames
+// ---------------------------------------------------------------------------------------------
+
+/// One frame can link thousands of requests. The first `MAX_COMPOUND_REQUESTS` are acted on;
+/// every one after is answered to its own MessageId without being acted on — here, without
+/// the model being asked about it.
+#[tokio::test]
+async fn a_compound_past_the_request_cap_is_answered_without_being_acted_on() {
+    let server = Server::start(None, None).await;
+    let mut s = server.connect().await;
+    log_in(&mut s).await;
+    let tree = call(&mut s, w::tree_connect(2, 1, r"\\127.0.0.1\share")).await;
+    assert_eq!(w::status(&tree), w::STATUS_SUCCESS);
+    let before = server.settled_calls().await;
+
+    let total = MAX_COMPOUND_REQUESTS + 8;
+    let creates = (0..total as u64)
+        .map(|i| w::create(100 + i, 1, 1, &format!("c{i}")))
+        .collect();
+    let reply = call(&mut s, w::compound(creates)).await;
+    let replies = w::split_compound(&reply);
+    assert_eq!(replies.len(), total, "one reply per request in the chain");
+    for (i, r) in replies.iter().enumerate() {
+        assert_eq!(
+            w::message_id(r),
+            100 + i as u64,
+            "reply {i} names its request"
+        );
+        if i < MAX_COMPOUND_REQUESTS {
+            // The model answers with no action: a refusal, but one the model made.
+            assert_eq!(
+                w::status(r),
+                w::STATUS_ACCESS_DENIED,
+                "CREATE {i} was acted on"
+            );
+        } else {
+            assert_eq!(
+                w::status(r),
+                w::STATUS_INSUFFICIENT_RESOURCES,
+                "CREATE {i} is past MAX_COMPOUND_REQUESTS ({MAX_COMPOUND_REQUESTS})"
+            );
+        }
+    }
+    let after = server.settled_calls().await;
+    assert_eq!(
+        after - before,
+        MAX_COMPOUND_REQUESTS,
+        "only the first {MAX_COMPOUND_REQUESTS} requests of the chain may reach the model"
+    );
+    server.stop().await;
+}
+
+/// A compound of READs can ask for more than one Direct TCP frame can carry (its length field
+/// is 24 bits). The reply must still be one frame: READs whose data would take it past
+/// `MAX_RESPONSE_FRAME_BYTES` are answered `STATUS_INSUFFICIENT_RESOURCES` instead.
+#[tokio::test]
+async fn a_compound_whose_replies_would_overflow_a_frame_is_still_answered_in_one() {
+    use base64::Engine as _;
+    let content =
+        base64::engine::general_purpose::STANDARD.encode(vec![0x5Au8; MAX_READ_SIZE as usize]);
+    let server = Server::start(
+        None,
+        Some(vec![serde_json::json!({
+            "event_pattern": "smb_operation",
+            "handler": {
+                "type": "static",
+                "actions": [
+                    {"type": "smb_auth_success", "username": "guest"},
+                    {"type": "smb_create_file", "path": "/big", "size": MAX_READ_SIZE},
+                    {"type": "smb_read_file", "path": "/big", "content": content,
+                     "encoding": "base64"}
+                ]
+            }
+        })]),
+    )
+    .await;
+    let mut s = server.connect().await;
+    log_in(&mut s).await;
+    let tree = call(&mut s, w::tree_connect(2, 1, r"\\127.0.0.1\share")).await;
+    assert_eq!(w::status(&tree), w::STATUS_SUCCESS);
+    let open = call(&mut s, w::create(3, 1, 1, "big")).await;
+    assert_eq!(w::status(&open), w::STATUS_SUCCESS);
+    let file = w::create_file_id(&open);
+
+    let count = 17;
+    let reads = (0..count as u64)
+        .map(|i| w::read(10 + i, 1, 1, &file, 0, MAX_READ_SIZE))
+        .collect();
+    let reply = call(&mut s, w::compound(reads)).await;
+    assert!(reply.len() <= 0x00FF_FFFF);
+    let replies = w::split_compound(&reply);
+    assert_eq!(replies.len(), count, "one reply per READ");
+    let per_read = (64 + 16 + MAX_READ_SIZE as usize).div_ceil(8) * 8;
+    let fit = MAX_RESPONSE_FRAME_BYTES / per_read;
+    for (i, r) in replies.iter().enumerate() {
+        assert_eq!(w::message_id(r), 10 + i as u64);
+        if i < fit {
+            assert_eq!(w::status(r), w::STATUS_SUCCESS, "READ {i} fits the frame");
+            assert_eq!(w::read_payload(r).len(), MAX_READ_SIZE as usize);
+        } else {
+            assert_eq!(
+                w::status(r),
+                w::STATUS_INSUFFICIENT_RESOURCES,
+                "READ {i} would take the reply past MAX_RESPONSE_FRAME_BYTES"
+            );
+        }
+    }
+    // The connection is still in step.
+    let echo = call(&mut s, w::simple(w::ECHO, 99, 0, 1)).await;
+    assert_eq!((w::command(&echo), w::message_id(&echo)), (w::ECHO, 99));
     server.stop().await;
 }
