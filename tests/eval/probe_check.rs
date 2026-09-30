@@ -779,10 +779,16 @@ async fn coap_not_found_waits_for_the_model() -> E2EResult<()> {
 fn answer_modbus(mock: MockLlmBuilder) -> MockLlmBuilder {
     mock.on_event("modbus_read_registers")
         .respond_with_actions_from_event(|event| {
+            // Each device's registers, keyed by address, as the read answer asks for them. The
+            // illegal-address device's map, 0-9, has no 500, which NetGet answers exception 2.
             if event["start_address"].as_u64() == Some(0) {
-                serde_json::json!([{"type": "send_modbus_registers", "values": [1200, 350, 42]}])
+                serde_json::json!([{"type": "send_modbus_registers",
+                                    "registers": {"0": 1200, "1": 350, "2": 42}}])
             } else {
-                serde_json::json!([{"type": "send_modbus_exception", "exception_code": 2}])
+                let registers: serde_json::Map<String, serde_json::Value> = (0..10)
+                    .map(|a| (a.to_string(), serde_json::json!(0)))
+                    .collect();
+                serde_json::json!([{"type": "send_modbus_registers", "registers": registers}])
             }
         })
         .after_delay(MODEL_LATENCY)

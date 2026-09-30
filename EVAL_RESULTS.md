@@ -826,6 +826,44 @@ Run 5 — `wrong_content`: valid actions executed, but client output does not ma
 
 </details>
 
+## Targeted reruns since this file was generated
+
+**Added by hand, and the one exception to the line at the top.** Everything above is the full
+run this file was generated from; the next `./run-eval.sh` over every protocol replaces the whole
+file, this section included, and should reproduce these numbers rather than need them.
+`PROTOCOL_QUALITY.md` carries the durable record.
+
+**29-30 September 2026 — `modbus`, `docker`, `imap`.** llama3.1:8b at `http://127.0.0.1:11434`,
+seed 42, model-default temperature, 5 runs per case, the real client each suite names
+(`pymodbus` 3.15, the `docker` CLI, Python's `imaplib`), built with
+`--features modbus,docker,imap`. "Before" is the branch's base (`9ebd4cc6`) measured the same
+night with the same parameters; each "after" is a separate run of the finished code.
+
+| Case | Before | After | Fix |
+|---|---:|---:|---|
+| `modbus/illegal-address` | 3/5 | **5/5** | a read is answered with an address-keyed register map; a requested address the map lacks is exception 2 (`decision=model_address_absent`) |
+| `modbus/holding-registers` | 5/5 | 5/5 | — |
+| `docker/inspect-missing` | 0/5 | **5/5** | each route offers only its answering action and `send_docker_error` |
+| `docker/ps-running-container` | 5/5 | 5/5 | — |
+| `docker/ps-all-includes-stopped` | 5/5 | 5/5 | — |
+| `imap/list-folders` | 3/5 | **5/5**, 5/5 | `LIST`/`SELECT` offered only their data action and the tagged response; a completion with another tag is given the command's own |
+| `imap/inbox-count` | 4/5 | **5/5**, 5/5 | the same |
+
+Every miss in the before runs, as the client and the executor saw it: `modbus/illegal-address`
+answered with ten zeros (the whole device, refused by the count check as exception 4) once and
+with the action example's `[1834, 1450]` once; `docker/inspect-missing` answered with
+`send_docker_volumes` and `[{"name": "none"}]` five times; `imap/list-folders` answered `LIST`
+with a tagged `OK` and no list, once with a stray `* LIST INBOX\nArchive\nReceipts`;
+`imap/inbox-count` answered `SELECT` with two tagged `OK`s and no `EXISTS`.
+
+Two runs are left out of the table and are worth knowing about. A docker run with route
+descriptions worded "This request lists containers" scored `ps-all-includes-stopped` 1/5 — an
+invented `list_containers` tool call rejected as an unknown action — and is why the shipped
+descriptions name the CLI command instead. An imap run on a loaded machine scored `list-folders`
+0/5, every run killed at the 240 s probe timeout before `LIST` was asked (model calls ~35 s
+each, and the greeting taking up to five of them in the LLM layer's tool loop); `inbox-count`
+was 5/5 in the same run. It measured the machine, not the prompt.
+
 ## Known limits of this measurement
 
 - **A pinned seed is not a pinned run.** The seed fixes the sampler, not the prompt; see the Reproducibility section for how often the runs agreed.

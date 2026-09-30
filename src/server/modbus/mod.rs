@@ -126,6 +126,9 @@ enum Decision {
     ModelAnswer,
     /// The model deliberately refused, with a Modbus exception of its choosing.
     ModelReject,
+    /// The model answered a read with the addresses this device has, and at least one of the
+    /// addresses asked for is not among them: exception 2, decided by the model's own map.
+    ModelAddressAbsent,
     /// The specification determined the answer; the model was never asked.
     SpecReject,
     /// Addressed to a unit id this device does not answer for.
@@ -149,6 +152,7 @@ impl Decision {
         match self {
             Decision::ModelAnswer => "model_answer",
             Decision::ModelReject => "model_reject",
+            Decision::ModelAddressAbsent => "model_address_absent",
             Decision::SpecReject => "spec_reject",
             Decision::UnitMismatch => "unit_mismatch",
             Decision::FailClosedLlmError => "fail_closed_llm_error",
@@ -802,11 +806,17 @@ impl ModbusServer {
                             codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
                         );
                     }
-                    let values: Vec<bool> = data
-                        .get("values")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.iter().filter_map(|v| v.as_bool()).collect())
-                        .unwrap_or_default();
+                    let values: Vec<bool> = if let Some(map) = data.get("bits") {
+                        match Self::read_from_map(connection_id, request, map, |v| v.as_bool()) {
+                            Ok(values) => values,
+                            Err(absent) => return absent,
+                        }
+                    } else {
+                        data.get("values")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.iter().filter_map(|v| v.as_bool()).collect())
+                            .unwrap_or_default()
+                    };
                     if values.len() != request.quantity() as usize {
                         error!(
                             "Modbus {}: model returned {} bit value(s) for a request of {}; \
@@ -855,17 +865,22 @@ impl ModbusServer {
                     // protocol is a fabricated measurement with physical consequences.
                     // Anything out of range is dropped here, which makes the count wrong,
                     // which the check below turns into an exception.
-                    let values: Vec<u16> = data
-                        .get("values")
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_u64())
-                                .filter(|n| *n <= u16::MAX as u64)
-                                .map(|n| n as u16)
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let in_range = |v: &serde_json::Value| {
+                        v.as_u64()
+                            .filter(|n| *n <= u16::MAX as u64)
+                            .map(|n| n as u16)
+                    };
+                    let values: Vec<u16> = if let Some(map) = data.get("registers") {
+                        match Self::read_from_map(connection_id, request, map, in_range) {
+                            Ok(values) => values,
+                            Err(absent) => return absent,
+                        }
+                    } else {
+                        data.get("values")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.iter().filter_map(in_range).collect())
+                            .unwrap_or_default()
+                    };
                     if values.len() != request.quantity() as usize {
                         error!(
                             "Modbus {}: model returned {} register value(s) for a request of \
@@ -924,6 +939,46 @@ impl ModbusServer {
             Decision::FailClosedNoAction,
             codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
         )
+    }
+
+    /// The requested window of an address-keyed answer, in address order.
+    ///
+    /// The model answers a read with the addresses the device has; a requested address with no
+    /// entry is one the device does not have, which Modbus answers with exception 2 (illegal
+    /// data address) for the whole request. `Err` carries that answer, ready to send. A value
+    /// `read` cannot use is left out, so the count check after this refuses the answer as the
+    /// wrong shape rather than sending a value the model did not give.
+    fn read_from_map<T>(
+        connection_id: ConnectionId,
+        request: &ModbusRequest,
+        map: &serde_json::Value,
+        read: impl Fn(&serde_json::Value) -> Option<T>,
+    ) -> std::result::Result<Vec<T>, (Decision, Vec<u8>)> {
+        let start = u32::from(request.start_address());
+        let end = start + u32::from(request.quantity());
+        let mut values = Vec::with_capacity(request.quantity() as usize);
+        for address in start..end {
+            match map.get(address.to_string()) {
+                Some(value) => values.extend(read(value)),
+                None => {
+                    debug!(
+                        "Modbus {}: address {} of {} is not among the addresses the model gave; \
+                         answering exception 2 (illegal data address)",
+                        connection_id,
+                        address,
+                        request.function_name()
+                    );
+                    return Err((
+                        Decision::ModelAddressAbsent,
+                        codec::encode_exception(
+                            request.function_code(),
+                            codec::EXC_ILLEGAL_DATA_ADDRESS,
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(values)
     }
 
     /// Frame a PDU and write it, updating counters and the dual logs.

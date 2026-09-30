@@ -103,27 +103,35 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
             //    before the holding-register rule so the narrower matcher wins.
             .on_event("modbus_read_registers")
             .and_event_data_contains("register_type", "input")
-            // Matches only when the event names the exception for a missing address.
-            .and_event_data_contains("answer_with", "\"exception_code\": 2")
+            // Matches only when the event says what a missing address is answered with.
+            .and_event_data_contains("answer_with", "NetGet answers exception 2")
             .respond_with_actions(serde_json::json!([{
                 "type": "send_modbus_exception",
                 "exception_code": 2
             }]))
             .expect_calls(1)
             .and()
-            // 3. Holding-register read: the model invents the telemetry. Answered from
-            //    the event so the reply is tied to the request that provoked it rather
-            //    than to a hardcoded constant.
+            // 3. Holding-register read: the model invents the telemetry, keyed by address.
+            //    Answered from the event so the reply is tied to the request that provoked
+            //    it rather than to a hardcoded constant, and with one register beyond the
+            //    window, which the server must leave out of the frame.
             .on_event("modbus_read_registers")
             .and_event_data_contains("register_type", "holding")
             .respond_with_actions_from_event(|event| {
                 let quantity = event["quantity"].as_u64().unwrap_or(1);
                 let start = event["start_address"].as_u64().unwrap_or(0);
                 // Tank level then pump speed, derived from the addresses asked for.
-                let values: Vec<u64> = (0..quantity).map(|i| 1800 + start + i * 10).collect();
+                let registers: serde_json::Map<String, serde_json::Value> = (0..=quantity)
+                    .map(|i| {
+                        (
+                            (start + i).to_string(),
+                            serde_json::json!(1800 + start + i * 10),
+                        )
+                    })
+                    .collect();
                 serde_json::json!([{
                     "type": "send_modbus_registers",
-                    "values": values
+                    "registers": registers
                 }])
             })
             .expect_calls(1)
@@ -132,11 +140,15 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
             .on_event("modbus_read_bits")
             .respond_with_actions_from_event(|event| {
                 let quantity = event["quantity"].as_u64().unwrap_or(1);
-                // Pattern derived from the request width, not a fixed literal.
-                let values: Vec<bool> = (0..quantity).map(|i| i % 3 == 0).collect();
+                let start = event["start_address"].as_u64().unwrap_or(0);
+                // Pattern derived from the request width, not a fixed literal, keyed by
+                // address from the request's own start.
+                let bits: serde_json::Map<String, serde_json::Value> = (0..quantity)
+                    .map(|i| ((start + i).to_string(), serde_json::json!(i % 3 == 0)))
+                    .collect();
                 serde_json::json!([{
                     "type": "send_modbus_bits",
-                    "values": values
+                    "bits": bits
                 }])
             })
             .expect_calls(2)
@@ -281,6 +293,94 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
+// ===========================================================================
+// A keyed answer that does not cover the request is exception 2
+// ===========================================================================
+
+/// The model answers a read with the addresses the device has; a requested address it did not
+/// give is one the device does not have. This is the answer llama3.1:8b gives to "ten holding
+/// registers at addresses 0 to 9 ... nothing at any other address" when asked for 500-501 -
+/// the whole register map - and the wire must carry exception 2 for it, not data and not a
+/// device failure. Partial coverage (8-11 against 0-9) and an empty map are the same answer.
+#[tokio::test]
+async fn test_modbus_keyed_answer_missing_an_address_is_illegal_data_address() -> E2EResult<()> {
+    let config =
+        NetGetConfig::new("Start a Modbus server on port {AVAILABLE_PORT} with ten zero registers")
+            .with_log_level("debug")
+            .with_mock(|mock| {
+                mock.on_instruction_containing("Modbus server")
+                    .and_instruction_containing("on port")
+                    .respond_with_actions(serde_json::json!([{
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "modbus",
+                        "instruction": "Ten holding registers at 0 to 9, all zero"
+                    }]))
+                    .expect_calls(1)
+                    .and()
+                    // Every read gets the device's whole map, 0-9, whatever it asked for - except
+                    // a discrete-input read, which gets an empty map.
+                    .on_event("modbus_read_registers")
+                    .respond_with_actions(serde_json::json!([{
+                        "type": "send_modbus_registers",
+                        "registers": {"0": 0, "1": 0, "2": 0, "3": 0, "4": 0,
+                                      "5": 0, "6": 0, "7": 0, "8": 0, "9": 0}
+                    }]))
+                    .expect_calls(3)
+                    .and()
+                    .on_event("modbus_read_bits")
+                    .respond_with_actions(
+                        serde_json::json!([{"type": "send_modbus_bits", "bits": {}}]),
+                    )
+                    .expect_calls(1)
+                    .and()
+            });
+
+    let server = start_netget_server(config).await?;
+    server
+        .wait_for_log("Modbus accept loop started", 15)
+        .await?;
+    let addr: SocketAddr = format!("127.0.0.1:{}", server.port).parse()?;
+    let mut ctx = tokio_modbus::client::tcp::connect_slave(addr, Slave(1))
+        .await
+        .expect("tokio-modbus failed to connect");
+
+    for (start, count) in [(500u16, 2u16), (8, 4)] {
+        let err = ctx
+            .read_holding_registers(start, count)
+            .await
+            .expect("transport error on read_holding_registers")
+            .expect_err("addresses the map does not give must be refused");
+        assert_eq!(
+            err,
+            ExceptionCode::IllegalDataAddress,
+            "a read of {start}+{count} against a map of 0-9 must be exception 0x02"
+        );
+    }
+    // The same map serves a read inside it.
+    let registers = ctx
+        .read_holding_registers(7, 3)
+        .await
+        .expect("transport error on read_holding_registers")
+        .expect("7-9 are in the map");
+    assert_eq!(registers, vec![0u16, 0, 0]);
+
+    let err = ctx
+        .read_discrete_inputs(0, 1)
+        .await
+        .expect("transport error on read_discrete_inputs")
+        .expect_err("an empty map has no address 0");
+    assert_eq!(err, ExceptionCode::IllegalDataAddress);
+
+    server
+        .wait_for_log("decision=model_address_absent", 10)
+        .await?;
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;

@@ -330,3 +330,50 @@ fn a_repeated_container_id_is_replaced_by_the_name_derived_one() {
     .unwrap();
     assert_eq!(distinct[1]["Id"], "bbbbbbbbbbbb");
 }
+
+/// Each route is raised as `docker_api_request` offering only the action that answers it and
+/// `send_docker_error`: offered all eight, llama3.1:8b answered an inspect of a missing
+/// container with `send_docker_volumes` in every run. The id is the declared one, so handlers
+/// keep matching, and the declared event keeps every action for documentation.
+#[test]
+fn every_route_offers_only_its_own_answer_and_the_error() {
+    use netget::server::docker::actions::{event_for_resource, DOCKER_API_REQUEST_EVENT};
+    let routes = [
+        Route::Version,
+        Route::Info,
+        Route::ContainerList,
+        Route::ContainerInspect("web".into()),
+        Route::ImageList,
+        Route::NetworkList,
+        Route::VolumeList,
+    ];
+    for route in routes {
+        let resource = route
+            .resource()
+            .expect("a model-answered route has a resource");
+        let event = event_for_resource(resource);
+        assert_eq!(event.id, "docker_api_request", "{resource}");
+        let names: Vec<&str> = event.actions.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![route.answering_action().unwrap(), "send_docker_error"],
+            "{resource}"
+        );
+        // A subset of what the declared event documents, never an action of its own.
+        for action in &event.actions {
+            assert!(
+                DOCKER_API_REQUEST_EVENT
+                    .actions
+                    .iter()
+                    .any(|a| a.name == action.name),
+                "{resource}: {} is not declared",
+                action.name
+            );
+        }
+    }
+    assert!(event_for_resource("container")
+        .description
+        .contains("status 404 when there is no such container"));
+    // Anything else is the declared event with every action.
+    assert_eq!(event_for_resource("unknown").actions.len(), 8);
+}

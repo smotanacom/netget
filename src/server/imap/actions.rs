@@ -1410,6 +1410,59 @@ pub static IMAP_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+/// `imap_command` as raised for a command with one data answer: the same event id, offering that
+/// answer's action and `send_imap_response` (for a NO or BAD), with a description naming the
+/// command instead of listing every command there is.
+///
+/// Offered the whole vocabulary, llama3.1:8b answered LIST with a bare tagged OK - or a tagged
+/// OK reading "Login successful. Folders: INBOX, Archive, Receipts." - in 6 of 8 replays of one
+/// captured prompt; its reasoning said "User wants to log in", primed by the general
+/// description's sentence about LOGIN. Offered `send_imap_list` and `send_imap_response` under a
+/// description that names LIST, it answered with the list in 8 of 8. The id is unchanged, so
+/// handlers for `imap_command` match as before, and `get_imap_event_types` still declares the one
+/// event with every action.
+static COMMAND_EVENTS: LazyLock<Vec<(&'static [&'static str], EventType)>> = LazyLock::new(|| {
+    let narrowed = |description: &str, answer: ActionDefinition| {
+        let mut event = IMAP_COMMAND_EVENT.clone();
+        event.description = description.to_string();
+        event.response_example = answer.example.clone();
+        event.alternative_examples.clear();
+        event.actions = vec![answer, send_imap_response_action()];
+        event
+    };
+    vec![
+        (
+            &["LIST", "LSUB"][..],
+            narrowed(
+                "The client sent LIST (or LSUB), asking which mailboxes the account has. Answer \
+                 with send_imap_list, one entry per mailbox; NetGet adds the tagged OK. \
+                 send_imap_response with status NO or BAD refuses the command.",
+                send_imap_list_action(),
+            ),
+        ),
+        (
+            &["SELECT", "EXAMINE"][..],
+            narrowed(
+                "The client sent SELECT (or EXAMINE), opening the mailbox named in args. Answer \
+                 with send_imap_select, whose exists is the number of messages in that mailbox; \
+                 NetGet adds the tagged OK. send_imap_response with status NO refuses it when \
+                 there is no such mailbox.",
+                send_imap_select_action(),
+            ),
+        ),
+    ]
+});
+
+/// The event to raise for `command`: its narrowed `imap_command` when it has one, the declared
+/// event with every action otherwise.
+pub fn command_event(command: &str) -> &'static EventType {
+    COMMAND_EVENTS
+        .iter()
+        .find(|(commands, _)| commands.iter().any(|c| c.eq_ignore_ascii_case(command)))
+        .map(|(_, event)| event)
+        .unwrap_or(&IMAP_COMMAND_EVENT)
+}
+
 pub fn get_imap_event_types() -> Vec<EventType> {
     vec![
         IMAP_CONNECTION_EVENT.clone(),

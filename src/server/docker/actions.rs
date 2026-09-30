@@ -37,6 +37,86 @@ pub static DOCKER_API_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_actions(all_actions())
 });
 
+/// What one route's request is, in the words its event description uses.
+fn route_request(route: &api::Route) -> &'static str {
+    use api::Route as R;
+    match route {
+        R::Version => "This request is `docker version`: answer it with send_docker_version.",
+        R::Info => "This request is `docker info`: answer it with send_docker_info.",
+        R::ContainerList => {
+            "This request is `docker ps` (`docker ps -a` when query.all == \"1\", which \
+             includes stopped containers): answer it with send_docker_containers."
+        }
+        R::ContainerInspect(_) => {
+            "This request inspects one container, named by `id` (a name or an ID prefix): \
+             answer with that container's fields in send_docker_container, or send_docker_error \
+             with status 404 when there is no such container."
+        }
+        R::ImageList => "This request is `docker images`: answer it with send_docker_images.",
+        R::NetworkList => {
+            "This request is `docker network ls`: answer it with send_docker_networks."
+        }
+        R::VolumeList => "This request is `docker volume ls`: answer it with send_docker_volumes.",
+        R::Ping | R::Mutating | R::NotFound => "",
+    }
+}
+
+/// `docker_api_request` as raised for one route: the same event id, offering only the action
+/// that answers that route and `send_docker_error`.
+///
+/// Every route has exactly one answering action, and the connection loop ignores any other
+/// (`decision=fail_closed_no_action`), so offering all eight only ever offered seven wrong
+/// answers. llama3.1:8b took one: asked to inspect a container on a host with no containers, it
+/// answered `send_docker_volumes` with `[{"name": "none"}]` five runs in five, reasoning that it
+/// was answering "the resource=volumes request". With the two actions that can answer an
+/// inspect, the same prompt is answered with the 404. The id is unchanged, so handlers written
+/// for `docker_api_request` match as before; `get_event_types` still declares the one event with
+/// every action, which is what documentation and handler validation read.
+static ROUTE_EVENTS: LazyLock<Vec<(&'static str, EventType)>> = LazyLock::new(|| {
+    use api::Route as R;
+    [
+        R::Version,
+        R::Info,
+        R::ContainerList,
+        R::ContainerInspect(String::new()),
+        R::ImageList,
+        R::NetworkList,
+        R::VolumeList,
+    ]
+    .iter()
+    .filter_map(|route| {
+        let resource = route.resource()?;
+        let answering = route.answering_action()?;
+        let actions: Vec<ActionDefinition> = all_actions()
+            .into_iter()
+            .filter(|a| a.name == answering || a.name == "send_docker_error")
+            .collect();
+        let example = actions.first()?.example.clone();
+        let event = EventType::new(
+            "docker_api_request",
+            format!(
+                "A Docker client (the docker CLI, an SDK, Portainer…) read the Docker Engine \
+                 API. {} Use send_docker_error for a refusal.",
+                route_request(route)
+            ),
+            example,
+        )
+        .with_actions(actions);
+        Some((resource, event))
+    })
+    .collect()
+});
+
+/// The event to raise for a request whose route resolved to `resource`: the route's own
+/// narrowed `docker_api_request`, or the declared one with every action for anything else.
+pub fn event_for_resource(resource: &str) -> &'static EventType {
+    ROUTE_EVENTS
+        .iter()
+        .find(|(r, _)| *r == resource)
+        .map(|(_, event)| event)
+        .unwrap_or(&DOCKER_API_REQUEST_EVENT)
+}
+
 fn all_actions() -> Vec<ActionDefinition> {
     vec![
         send_docker_version_action(),

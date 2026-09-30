@@ -40,12 +40,25 @@ JSON string), `resource` is one of `version`, `info`, `containers`, `container`,
 `networks`, `volumes`, and `id` is set for `container`. `answer_with` (`Route::answer_with`)
 names the action for this one request — for a list, the array it carries (and for
 `/containers/json` whether stopped containers belong in it), for an inspect the 404 and its
-`No such container: <id>` message. The event description carries the same table for every
-route, and llama3.1:8b still answered an inspect of a missing container with
-`send_docker_version` 5 times in 5: a small model reads the request in front of it, not the
-table. Naming the array matters as much as naming the action: a hint that said only
-"send_docker_containers with the running containers" was answered with
+`No such container: <id>` message. Naming the array matters as much as naming the action: a
+hint that said only "send_docker_containers with the running containers" was answered with
 `{"type": "send_docker_containers"}` and nothing else in 13 of 15 list requests.
+
+**Each route is raised with only the actions that can answer it.** `actions::event_for_resource`
+raises `docker_api_request` — the same id, so handlers match as before — offering the route's one
+answering action and `send_docker_error`, under a description naming the request ("This request
+is `docker ps` …", "This request inspects one container, named by `id` …"). The declared event
+in `get_event_types()` keeps all eight actions and the route table, which is what
+`get_protocol_docs` and handler validation read. Offered all eight, llama3.1:8b answered an
+inspect of a missing container with `send_docker_version`, and later with
+`{"type": "send_docker_volumes", "volumes": [{"name": "none"}]}` in every run, reasoning that it
+was answering "the resource=volumes request"; the connection loop ignores any action but the
+route's own, so those seven were only ever wrong answers. Offered two, it answers the 404
+(`inspect-missing` 0/5 → 5/5, 29 September 2026). One wording cost a round of its own: a
+description saying the request "lists containers" was answered with an invented
+`{"type": "list_containers", "all": "1"}` tool call beside a correct `send_docker_containers`,
+which the LLM layer rejects as an unknown action, 4 runs in 5; the descriptions name the CLI
+command instead.
 
 **The server picks the action that answers the route.** A response carrying several actions —
 which is what a static handler is, since it answers every `docker_api_request` identically — is
@@ -95,11 +108,9 @@ seed 42):
   action's example moved the answer to a different route.
 
 The example keeps its ID, and a repeated ID is repaired on the server side instead (above).
-`inspect-missing` is unchanged by anything shipped here, and it is noisy at this prompt: the
-committed baseline measured 3/5, and a run with this commit — whose only change the model can see
-is none at all, since the ID repair is rendering — measured 1/5. Every miss is
-`{"type": "send_docker_volumes", "volumes": [{"name": "none"}]}` answering the container inspect,
-which the server refuses as `decision=fail_closed_no_action`. It is the open docker case.
+`inspect-missing` was unchanged by the ID repair and noisy at that prompt (3/5, then 1/5, then
+0/5 on 29 September), every miss `{"type": "send_docker_volumes", "volumes": [{"name":
+"none"}]}`; offering each route only its own actions (above) is what fixed it.
 
 Refuses, with a reason: a container with no name or image, a name Docker would refuse
 (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`), a state outside `created|running|paused|restarting|removing|
