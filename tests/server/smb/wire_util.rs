@@ -35,6 +35,7 @@ pub const STATUS_USER_SESSION_DELETED: u32 = 0xC000_0203;
 pub const STATUS_NO_MORE_FILES: u32 = 0x8000_0006;
 pub const STATUS_END_OF_FILE: u32 = 0xC000_0011;
 pub const STATUS_FILE_CLOSED: u32 = 0xC000_0128;
+pub const STATUS_INTERNAL_ERROR: u32 = 0xC000_00E5;
 pub const STATUS_INVALID_DEVICE_REQUEST: u32 = 0xC000_0010;
 pub const STATUS_NOT_SUPPORTED: u32 = 0xC000_00BB;
 pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
@@ -48,6 +49,31 @@ pub fn ntlmssp_negotiate() -> Vec<u8> {
     t.extend_from_slice(&0x0000_8201u32.to_le_bytes());
     t.extend_from_slice(&[0u8; 16]);
     t
+}
+
+/// An NTLMSSP AUTHENTICATE (MS-NLMP 2.2.1.3) naming `user`, UNICODE, with a 24-byte NT
+/// response so it is not an anonymous login.
+pub fn ntlmssp_authenticate(user: &str) -> Vec<u8> {
+    let fields: [Vec<u8>; 6] = [
+        vec![0u8; 24],      // LmChallengeResponse
+        vec![0u8; 24],      // NtChallengeResponse
+        utf16("WORKGROUP"), // DomainName
+        utf16(user),        // UserName
+        utf16("WS"),        // Workstation
+        Vec::new(),         // EncryptedRandomSessionKey
+    ];
+    let mut fixed = b"NTLMSSP\0".to_vec();
+    fixed.extend_from_slice(&3u32.to_le_bytes());
+    let mut payload = Vec::new();
+    for f in &fields {
+        fixed.extend_from_slice(&(f.len() as u16).to_le_bytes());
+        fixed.extend_from_slice(&(f.len() as u16).to_le_bytes());
+        fixed.extend_from_slice(&(64 + payload.len() as u32).to_le_bytes());
+        payload.extend_from_slice(f);
+    }
+    fixed.extend_from_slice(&0x6208_8215u32.to_le_bytes()); // NegotiateFlags, UNICODE set
+    fixed.extend(payload);
+    fixed
 }
 
 /// An NTLMSSP AUTHENTICATE too short to carry its own fixed part (MS-NLMP 2.2.1.3 is 64 bytes
@@ -252,6 +278,18 @@ pub fn write_fixed(
     p.extend_from_slice(&0u32.to_le_bytes()); // Flags
     assert_eq!(p.len(), 112);
     p
+}
+
+/// Set the `OutputBufferLength` of a QUERY_INFO (body offset 4) or QUERY_DIRECTORY (body
+/// offset 28) built by the functions below.
+pub fn with_output_buffer_length(mut request: Vec<u8>, len: u32) -> Vec<u8> {
+    let at = match u16::from_le_bytes([request[12], request[13]]) {
+        QUERY_INFO => 64 + 4,
+        QUERY_DIRECTORY => 64 + 28,
+        other => panic!("command 0x{other:04x} has no OutputBufferLength"),
+    };
+    request[at..at + 4].copy_from_slice(&len.to_le_bytes());
+    request
 }
 
 /// QUERY_INFO (MS-SMB2 2.2.37).

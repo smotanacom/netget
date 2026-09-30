@@ -167,8 +167,15 @@ pub const MAX_COMPOUND_REQUESTS: usize = 32;
 /// `decision=fail_closed_response_too_large`.
 pub const MAX_RESPONSE_FRAME_BYTES: usize = wire::NBSS_MAX_LEN - 2 * 1024 * 1024;
 
-/// What READ will return in one response, advertised as `MaxReadSize`.
+/// The largest READ this server answers, advertised as `MaxReadSize`. MS-SMB2 3.3.5.12: a READ
+/// asking for more MUST fail with `STATUS_INVALID_PARAMETER`, and it does, before the model is
+/// asked, logged `decision=fail_closed_read_too_large`.
 pub const MAX_READ_SIZE: u32 = 1024 * 1024;
+
+/// The largest output buffer a QUERY_INFO or QUERY_DIRECTORY may ask for, advertised as
+/// `MaxTransactSize`. MS-SMB2 3.3.5.18 and 3.3.5.20: an `OutputBufferLength` past it MUST fail
+/// with `STATUS_INVALID_PARAMETER`, before the model is asked.
+pub const MAX_TRANSACT_SIZE: u32 = 1024 * 1024;
 
 /// A fixed server GUID. Clients key cached connection state on it; one per process is enough.
 const SERVER_GUID: [u8; 16] = [
@@ -958,7 +965,7 @@ impl SmbServer {
             // No DFS, no leasing, no multi-credit: none is implemented, and each one is a
             // promise a client acts on.
             capabilities: 0,
-            max_transact_size: MAX_READ_SIZE,
+            max_transact_size: MAX_TRANSACT_SIZE,
             max_read_size: MAX_READ_SIZE,
             // The bound the WRITE arm enforces, so a client never sends a write it will refuse.
             max_write_size: MAX_WRITE_SIZE,
@@ -1516,7 +1523,17 @@ impl SmbServer {
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
         };
-        let length = request.length.min(MAX_READ_SIZE);
+        if request.length > MAX_READ_SIZE {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 READ of {} bytes refused (decision=fail_closed_read_too_large, \
+                 MaxReadSize {}); replying STATUS_INVALID_PARAMETER",
+                request.length, MAX_READ_SIZE
+            ));
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        }
+        let length = request.length;
         let offset = request.offset;
         let Some((_, handle)) = Self::handle(ctx, req, request.file_id, chain).await else {
             return Ok(Some(wire::error_response(
@@ -1688,10 +1705,15 @@ impl SmbServer {
             .iter()
             .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_write_file"))
         else {
+            let decision = if actions.is_empty() {
+                "fail_closed_no_action"
+            } else {
+                "model_reject"
+            };
             Log::new(Some(ctx.status_tx)).warn(format!(
-                "SMB2 WRITE: no smb_write_file action for {} - refusing with \
-                 STATUS_ACCESS_DENIED",
-                path
+                "SMB2 WRITE refused for {} (decision={}): no smb_write_file in the answer; \
+                 replying STATUS_ACCESS_DENIED",
+                path, decision
             ));
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::ACCESS_DENIED),
@@ -1727,6 +1749,9 @@ impl SmbServer {
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
         };
+        if request.output_len > MAX_TRANSACT_SIZE {
+            return Ok(Some(Self::transact_too_large(req, request.output_len, ctx)));
+        }
         let info_type = request.info_type;
         let class = request.class;
         let output_len = request.output_len as usize;
@@ -1861,6 +1886,9 @@ impl SmbServer {
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
         };
+        if output_len > MAX_TRANSACT_SIZE {
+            return Ok(Some(Self::transact_too_large(req, output_len, ctx)));
+        }
         let output_len = output_len as usize;
         if !wire::directory_class_supported(class) {
             return Ok(Some(wire::error_response(
@@ -2018,6 +2046,18 @@ impl SmbServer {
         )))
     }
 
+    /// The refusal for a QUERY_INFO or QUERY_DIRECTORY whose `OutputBufferLength` is past
+    /// [`MAX_TRANSACT_SIZE`] (MS-SMB2 3.3.5.18, 3.3.5.20).
+    fn transact_too_large(req: &RequestHeader, output_len: u32, ctx: &Ctx<'_>) -> Vec<u8> {
+        Log::new(Some(ctx.status_tx)).warn(format!(
+            "SMB2 command 0x{:04x} asks for a {} byte output buffer \
+             (decision=fail_closed_transact_too_large, MaxTransactSize {}); replying \
+             STATUS_INVALID_PARAMETER",
+            req.command, output_len, MAX_TRANSACT_SIZE
+        ));
+        wire::error_response(&ResponseHeader::for_request(req, status::INVALID_PARAMETER))
+    }
+
     /// Consult the LLM for SMB file system operations
     #[cfg(feature = "smb")]
     async fn consult_llm(
@@ -2089,11 +2129,7 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Vec<u8> {
         let overloaded = crate::llm::is_overload_error(err);
-        let code = if overloaded {
-            status::INSUFFICIENT_RESOURCES
-        } else {
-            status::INTERNAL_ERROR
-        };
+        let code = status_for_llm_failure(err);
 
         Log::new(Some(ctx.status_tx)).warn(format!(
             "SMB {} {}: LLM {} (decision=fail_closed_llm_error) - refusing with NTSTATUS \
@@ -2131,6 +2167,18 @@ fn file_id_for(index: u64) -> [u8; 16] {
     id[..8].copy_from_slice(&index.to_le_bytes());
     id[8..].copy_from_slice(&(index ^ 0x4E47_5342_0000_0000).to_le_bytes());
     id
+}
+
+/// The NTSTATUS a request is refused with when the model could not be asked:
+/// `STATUS_INSUFFICIENT_RESOURCES` when `crate::llm::is_overload_error` recognises a capacity
+/// refusal (the closest NTSTATUS to "retryable"), `STATUS_INTERNAL_ERROR` for everything else.
+/// Neither is `STATUS_ACCESS_DENIED`, which is the model's own refusal.
+pub fn status_for_llm_failure(err: &anyhow::Error) -> u32 {
+    if crate::llm::is_overload_error(err) {
+        status::INSUFFICIENT_RESOURCES
+    } else {
+        status::INTERNAL_ERROR
+    }
 }
 
 /// Case-insensitive match of an SMB search pattern with `*` and `?`.

@@ -9,6 +9,8 @@
 //! | `MAX_SESSIONS_PER_CONNECTION` (16) | sessions on one connection, mid-NTLMSSP ones included | `sessions_opened_before_anyone_is_asked_are_capped_per_connection` |
 //! | `MAX_TREES_PER_CONNECTION` (64) | tree connects on one connection | `tree_connects_are_capped_per_connection_and_a_disconnect_returns_a_slot` |
 //! | `MAX_OPEN_FILES_PER_CONNECTION` (1024) | open handles on one connection | `open_handles_are_capped_per_connection_and_a_close_returns_a_slot` |
+//! | `MAX_READ_SIZE` (1 MiB, `MaxReadSize`) | a READ's requested length | `read_and_output_buffer_lengths_past_the_negotiated_maxima_are_refused` |
+//! | `MAX_TRANSACT_SIZE` (1 MiB, `MaxTransactSize`) | a QUERY_INFO or QUERY_DIRECTORY output buffer | `read_and_output_buffer_lengths_past_the_negotiated_maxima_are_refused` |
 //! | `MAX_COMPOUND_REQUESTS` (32) | requests acted on per compound frame | `a_compound_past_the_request_cap_is_answered_without_being_acted_on` |
 //! | `MAX_RESPONSE_FRAME_BYTES` (16 MiB - 1 - 2 MiB) | **outbound**: the bytes of one compound reply | `a_compound_whose_replies_would_overflow_a_frame_is_still_answered_in_one` |
 //!
@@ -31,6 +33,9 @@
 //!   answered `STATUS_MORE_PROCESSING_REQUIRED`.
 //! - the tree-cap check removed: the 65th TREE_CONNECT succeeds.
 //! - the open-handle check removed: the 1025th CREATE succeeds.
+//! - the MaxReadSize check removed (the length clamped instead, as it once was): the over-size
+//!   READ reaches the model.
+//! - each MaxTransactSize check removed: its over-size request reaches the model.
 //! - the compound cap removed: all 40 CREATEs reach the model.
 //! - the response budget removed: `wire::frame`'s 24-bit assertion panics the connection task
 //!   and the 17-READ compound gets no reply at all.
@@ -45,7 +50,8 @@ use std::time::{Duration, Instant};
 use netget::cli::management::ServerForm;
 use netget::server::smb::{
     MAX_COMPOUND_REQUESTS, MAX_CONNECTIONS, MAX_OPEN_FILES_PER_CONNECTION, MAX_READ_SIZE,
-    MAX_RESPONSE_FRAME_BYTES, MAX_SESSIONS_PER_CONNECTION, MAX_TREES_PER_CONNECTION,
+    MAX_RESPONSE_FRAME_BYTES, MAX_SESSIONS_PER_CONNECTION, MAX_TRANSACT_SIZE,
+    MAX_TREES_PER_CONNECTION,
 };
 use netget::state::app_state::AppState;
 use netget::state::ServerId;
@@ -765,5 +771,113 @@ async fn a_compound_whose_replies_would_overflow_a_frame_is_still_answered_in_on
     // The connection is still in step.
     let echo = call(&mut s, w::simple(w::ECHO, 99, 0, 1)).await;
     assert_eq!((w::command(&echo), w::message_id(&echo)), (w::ECHO, 99));
+    server.stop().await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// MaxReadSize and MaxTransactSize
+// ---------------------------------------------------------------------------------------------
+
+/// NEGOTIATE advertises both maxima, a request at each is served, and one byte past either is
+/// refused `STATUS_INVALID_PARAMETER` (MS-SMB2 3.3.5.12, 3.3.5.18, 3.3.5.20) before the model.
+#[tokio::test]
+async fn read_and_output_buffer_lengths_past_the_negotiated_maxima_are_refused() {
+    let server = Server::start(
+        None,
+        Some(vec![serde_json::json!({
+            "event_pattern": "smb_operation",
+            "handler": {
+                "type": "static",
+                "actions": [
+                    {"type": "smb_auth_success", "username": "guest"},
+                    {"type": "smb_create_directory", "path": "/"},
+                    {"type": "smb_list_directory", "path": "/", "files": []},
+                    {"type": "smb_read_file", "path": "/", "content": "x"}
+                ]
+            }
+        })]),
+    )
+    .await;
+    let mut s = server.connect().await;
+    let neg = call(&mut s, w::negotiate(0)).await;
+    // MaxTransactSize, MaxReadSize at NEGOTIATE response body offsets 28 and 32.
+    let body_u32 = |off: usize| u32::from_le_bytes(neg[64 + off..64 + off + 4].try_into().unwrap());
+    assert_eq!(
+        body_u32(28),
+        MAX_TRANSACT_SIZE,
+        "MaxTransactSize advertised"
+    );
+    assert_eq!(body_u32(32), MAX_READ_SIZE, "MaxReadSize advertised");
+    let setup = call(&mut s, w::session_setup(1)).await;
+    assert_eq!(w::status(&setup), w::STATUS_SUCCESS);
+    call(&mut s, w::tree_connect(2, 1, r"\\127.0.0.1\share")).await;
+    // The share root, opened as a directory: good for QUERY_DIRECTORY and QUERY_INFO.
+    let root = call(&mut s, w::create_with(3, 1, 1, "", 1)).await;
+    assert_eq!(w::status(&root), w::STATUS_SUCCESS);
+    let dir = w::create_file_id(&root);
+
+    let at = call(
+        &mut s,
+        w::with_output_buffer_length(
+            w::query_directory(4, 1, 1, &dir, 37, "*"),
+            MAX_TRANSACT_SIZE,
+        ),
+    )
+    .await;
+    assert_eq!(
+        w::status(&at),
+        w::STATUS_SUCCESS,
+        "QUERY_DIRECTORY at MaxTransactSize"
+    );
+    let over = call(
+        &mut s,
+        w::with_output_buffer_length(
+            w::query_directory(5, 1, 1, &dir, 37, "*"),
+            MAX_TRANSACT_SIZE + 1,
+        ),
+    )
+    .await;
+    assert_eq!(
+        w::status(&over),
+        w::STATUS_INVALID_PARAMETER,
+        "QUERY_DIRECTORY past MaxTransactSize"
+    );
+
+    let at = call(
+        &mut s,
+        w::with_output_buffer_length(w::query_info(6, 1, 1, &dir, 1, 4), MAX_TRANSACT_SIZE),
+    )
+    .await;
+    assert_eq!(
+        w::status(&at),
+        w::STATUS_SUCCESS,
+        "QUERY_INFO at MaxTransactSize"
+    );
+    let over = call(
+        &mut s,
+        w::with_output_buffer_length(w::query_info(7, 1, 1, &dir, 1, 4), MAX_TRANSACT_SIZE + 1),
+    )
+    .await;
+    assert_eq!(
+        w::status(&over),
+        w::STATUS_INVALID_PARAMETER,
+        "QUERY_INFO past MaxTransactSize"
+    );
+
+    // READ is checked against MaxReadSize before the handle is even looked at, so a directory
+    // handle shows the order: at the bound it gets the directory's own refusal, past it the
+    // length's.
+    let at = call(&mut s, w::read(8, 1, 1, &dir, 0, MAX_READ_SIZE)).await;
+    assert_eq!(
+        w::status(&at),
+        w::STATUS_INVALID_DEVICE_REQUEST,
+        "a READ of exactly MaxReadSize passes the length check"
+    );
+    let over = call(&mut s, w::read(9, 1, 1, &dir, 0, MAX_READ_SIZE + 1)).await;
+    assert_eq!(
+        w::status(&over),
+        w::STATUS_INVALID_PARAMETER,
+        "a READ past MaxReadSize (MS-SMB2 3.3.5.12)"
+    );
     server.stop().await;
 }

@@ -24,3 +24,6 @@ pub mod real_client_test;
 
 #[cfg(all(test, feature = "smb"))]
 pub mod bounds_test;
+
+#[cfg(all(test, feature = "smb"))]
+pub mod failure_modes_test;
