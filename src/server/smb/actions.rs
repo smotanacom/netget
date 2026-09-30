@@ -305,7 +305,9 @@ pub static SMB_OPERATION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
          read from or written to disk, so invent a consistent virtual tree and keep it in memory \
          across operations. Answer with the action matching 'operation': session_setup -> \
          smb_auth_success or smb_auth_deny, create -> smb_create_file or smb_create_directory \
-         (which one decides whether the client is told the handle is a directory), read -> \
+         (which one decides whether the client is told the handle is a directory; a create \
+         with delete_on_close true is the client deleting that path, and answering either \
+         action approves the delete), read -> \
          smb_read_file, write -> smb_write_file (the write is REFUSED with STATUS_ACCESS_DENIED \
          unless you return it), query_info -> smb_get_file_info, query_directory -> \
          smb_list_directory.",
@@ -362,6 +364,17 @@ pub static SMB_OPERATION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
                           base64-encoded, used whenever they are not all printable ASCII. To \
                           hand the same bytes back on a later read, pass this 'data' and this \
                           'encoding' straight into smb_read_file's 'content' and 'encoding'."
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "delete_on_close".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "create only, and present only when true: the client opened the path \
+                          in order to delete it (SMB2 has no DELETE command; `rm` opens with \
+                          delete-on-close and closes). smb_create_file or smb_create_directory \
+                          approves the delete, so forget the path; answering neither refuses it \
+                          with STATUS_ACCESS_DENIED."
                 .to_string(),
             required: false,
         },

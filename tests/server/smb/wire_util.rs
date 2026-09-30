@@ -17,6 +17,10 @@ pub const TREE_DISCONNECT: u16 = 0x0004;
 pub const CREATE: u16 = 0x0005;
 pub const CLOSE: u16 = 0x0006;
 pub const FLUSH: u16 = 0x0007;
+pub const LOCK: u16 = 0x000A;
+pub const IOCTL: u16 = 0x000B;
+pub const CANCEL: u16 = 0x000C;
+pub const SET_INFO: u16 = 0x0011;
 pub const READ: u16 = 0x0008;
 pub const WRITE: u16 = 0x0009;
 pub const ECHO: u16 = 0x000D;
@@ -31,6 +35,8 @@ pub const STATUS_USER_SESSION_DELETED: u32 = 0xC000_0203;
 pub const STATUS_NO_MORE_FILES: u32 = 0x8000_0006;
 pub const STATUS_END_OF_FILE: u32 = 0xC000_0011;
 pub const STATUS_FILE_CLOSED: u32 = 0xC000_0128;
+pub const STATUS_INVALID_DEVICE_REQUEST: u32 = 0xC000_0010;
+pub const STATUS_NOT_SUPPORTED: u32 = 0xC000_00BB;
 pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
 pub const STATUS_TOO_MANY_OPENED_FILES: u32 = 0xC000_011F;
 
@@ -310,6 +316,60 @@ pub fn flush(message_id: u64, tree_id: u32, session_id: u64, file_id: &[u8]) -> 
     p.extend_from_slice(&0u16.to_le_bytes()); // Reserved1
     p.extend_from_slice(&0u32.to_le_bytes()); // Reserved2
     p.extend_from_slice(file_id);
+    p
+}
+
+/// IOCTL (MS-SMB2 2.2.31) carrying `ctl_code` on `file_id`, with no input.
+pub fn ioctl(
+    message_id: u64,
+    tree_id: u32,
+    session_id: u64,
+    file_id: &[u8],
+    ctl_code: u32,
+) -> Vec<u8> {
+    let mut p = header(IOCTL, message_id, tree_id, session_id);
+    p.extend_from_slice(&57u16.to_le_bytes()); // StructureSize
+    p.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+    p.extend_from_slice(&ctl_code.to_le_bytes()); // CtlCode
+    p.extend_from_slice(file_id); // FileId
+    p.extend_from_slice(&0u32.to_le_bytes()); // InputOffset
+    p.extend_from_slice(&0u32.to_le_bytes()); // InputCount
+    p.extend_from_slice(&0u32.to_le_bytes()); // MaxInputResponse
+    p.extend_from_slice(&0u32.to_le_bytes()); // OutputOffset
+    p.extend_from_slice(&0u32.to_le_bytes()); // OutputCount
+    p.extend_from_slice(&1024u32.to_le_bytes()); // MaxOutputResponse
+    p.extend_from_slice(&1u32.to_le_bytes()); // Flags: SMB2_0_IOCTL_IS_FSCTL
+    p.extend_from_slice(&0u32.to_le_bytes()); // Reserved2
+    p.push(0); // StructureSize 57 counts one byte of Buffer
+    p
+}
+
+/// SET_INFO (MS-SMB2 2.2.39) of FileDispositionInformation (delete pending) on `file_id`.
+pub fn set_info_delete(message_id: u64, tree_id: u32, session_id: u64, file_id: &[u8]) -> Vec<u8> {
+    let mut p = header(SET_INFO, message_id, tree_id, session_id);
+    p.extend_from_slice(&33u16.to_le_bytes()); // StructureSize
+    p.push(1); // InfoType: SMB2_0_INFO_FILE
+    p.push(13); // FileInfoClass: FileDispositionInformation
+    p.extend_from_slice(&1u32.to_le_bytes()); // BufferLength
+    p.extend_from_slice(&96u16.to_le_bytes()); // BufferOffset (64 + 32)
+    p.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+    p.extend_from_slice(&0u32.to_le_bytes()); // AdditionalInformation
+    p.extend_from_slice(file_id); // FileId
+    p.push(1); // DeletePending
+    p
+}
+
+/// LOCK (MS-SMB2 2.2.26) of the first byte of `file_id`, exclusively.
+pub fn lock(message_id: u64, tree_id: u32, session_id: u64, file_id: &[u8]) -> Vec<u8> {
+    let mut p = header(LOCK, message_id, tree_id, session_id);
+    p.extend_from_slice(&48u16.to_le_bytes()); // StructureSize
+    p.extend_from_slice(&1u16.to_le_bytes()); // LockCount
+    p.extend_from_slice(&0u32.to_le_bytes()); // LockSequence
+    p.extend_from_slice(file_id); // FileId
+    p.extend_from_slice(&0u64.to_le_bytes()); // Offset
+    p.extend_from_slice(&1u64.to_le_bytes()); // Length
+    p.extend_from_slice(&2u32.to_le_bytes()); // Flags: SMB2_LOCKFLAG_EXCLUSIVE_LOCK
+    p.extend_from_slice(&0u32.to_le_bytes()); // Reserved
     p
 }
 

@@ -165,6 +165,7 @@ const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
 const FILE_CREATE: u32 = 0x0000_0002;
 const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 
 // QUERY_DIRECTORY request flags (MS-SMB2 2.2.33).
 const RESTART_SCANS: u8 = 0x01;
@@ -1308,17 +1309,19 @@ impl SmbServer {
 
         Log::new(Some(ctx.status_tx)).info(format!("SMB2 CREATE request for: {}", path));
 
-        let actions = match Self::consult_llm(
-            ctx,
-            "create",
-            serde_json::json!({
-                "path": path,
-                "disposition": disposition_name(disposition),
-                "directory_requested": options & FILE_DIRECTORY_FILE != 0,
-            }),
-        )
-        .await
-        {
+        let mut params = serde_json::json!({
+            "path": path,
+            "disposition": disposition_name(disposition),
+            "directory_requested": options & FILE_DIRECTORY_FILE != 0,
+        });
+        // SMB2 has no DELETE command: a client deletes by opening with FILE_DELETE_ON_CLOSE and
+        // closing (smbclient's `rm` and `rmdir`), so an open carrying it is a delete request and
+        // the model has to be told so. Admitting the open admits the delete; CLOSE then answers
+        // success without asking again.
+        if options & FILE_DELETE_ON_CLOSE != 0 {
+            params["delete_on_close"] = serde_json::json!(true);
+        }
+        let actions = match Self::consult_llm(ctx, "create", params).await {
             Ok(actions) => actions,
             Err(e) => {
                 return Ok(Some(Self::llm_failure_response(
