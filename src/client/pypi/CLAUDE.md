@@ -303,3 +303,13 @@ timeout protects the caller either way.
 - `download_package` **streams and counts**; it does not buffer. It used to hold an entire distribution in memory and use it for nothing but `.len()`, at a size chosen by whatever the client was pointed at. It is capped at `MAX_DOWNLOAD_BYTES` (256 MiB). Nothing is written to disk — NetGet implements no storage, so a download here is a fetch-and-report.
 - One `reqwest::Client`, built once on `spawn_blocking`. Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately — the blocking rustls + platform-root-store cost that `CLAUDE.md` records as having stalled a whole client runtime, paid per request.
 - `get_event_types()` returns clones of the `LazyLock` statics the client actually raises. It used to hand-build a parallel set with no parameters and `{"type": "placeholder"}` examples, which steered the model to `show_message` — an action `execute_action` rejects.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same 30-second bound, `User-Agent` and a body bound of `MAX_DOWNLOAD_BYTES`. The
+transport reads a response whole before `chunk()` yields it, so the streaming checks below the
+round trip see one chunk. A scheme-less index address gets `https://` natively and `http://` in the browser; an explicit `https://` index is refused there with the reason. `web/test/smoke.mjs` proves it in the bundle: `[ + PyPI client ]` on NetGet's `pypi` server connects, `[ send ]` of `get_package_info` reaches the server's model, and the JSON it wrote is in the `pypi_package_info_received` event parked on the client.
+

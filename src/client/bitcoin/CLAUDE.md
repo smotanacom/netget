@@ -350,3 +350,15 @@ than inline — otherwise a manual rule parking that LLM call would wedge the co
 the length of a human's think time and `send_to_client` would time out on an RPC that in fact
 succeeded. `execute_rpc_command` is unchanged for callers; it is now `perform_rpc` (network
 only) followed by `notify_response` (the LLM event).
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same
+60-second bound per exchange and an 8 MiB response body bound. The transport has no TLS, so in
+the browser an `https://` target is refused at connect with the reason
+(`http_fetch::check_url`) rather than on the first request. `web/test/smoke.mjs` proves it in
+the bundle: NetGet has no Bitcoin Core RPC *server* (its `bitcoin` server speaks the P2P wire protocol), so the peer is NetGet's `http` server answering as bitcoind would: `[ send ]` of `get_blockchain_info` comes back `bitcoin_rpc 'getblockchaininfo' -> HTTP 200 (result)`, the result reaches the model as the response event, and `rpc_user`/`rpc_password` arrive at the server as `Authorization: Basic`. The dashboard's `[ + Bitcoin client ]` on a Bitcoin P2P server card is **not** a working pair on either target: it points this JSON-RPC client at a P2P port.
+

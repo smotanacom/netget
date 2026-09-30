@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, trace, warn};
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::torrent_tracker::actions::{
     TRACKER_ANNOUNCE_RESPONSE_EVENT, TRACKER_SCRAPE_RESPONSE_EVENT,
@@ -70,7 +71,9 @@ const MAX_TRACKER_BODY_BYTES: usize = 1024 * 1024;
 /// waiting on its outcome — for as long as the peer cares to hold it open.
 const TRACKER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{LazyLock, Mutex};
 
 /// One `reqwest::Client` per tracker URL, built once and reused.
@@ -93,12 +96,14 @@ use std::sync::{LazyLock, Mutex};
 /// parked a worker *and* serialised every tracker client in the process behind it. Two
 /// callers racing for the same URL may now both build, and the loser's client is dropped;
 /// that is far cheaper than what it replaces.
+#[cfg(not(target_arch = "wasm32"))]
 static TRACKER_CLIENTS: LazyLock<Mutex<HashMap<String, reqwest::Client>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Lock, look, clone, drop. A poisoned mutex means another thread panicked mid-insert; the map
 /// is still structurally sound and building a fresh client is always correct, so it is taken
 /// rather than propagated.
+#[cfg(not(target_arch = "wasm32"))]
 fn cached_tracker_client(tracker_url: &str) -> Option<reqwest::Client> {
     match TRACKER_CLIENTS.lock() {
         Ok(cache) => cache.get(tracker_url).cloned(),
@@ -106,7 +111,8 @@ fn cached_tracker_client(tracker_url: &str) -> Option<reqwest::Client> {
     }
 }
 
-async fn tracker_http_client(tracker_url: &str) -> reqwest::Client {
+#[cfg(not(target_arch = "wasm32"))]
+async fn tracker_reqwest_client(tracker_url: &str) -> reqwest::Client {
     if let Some(client) = cached_tracker_client(tracker_url) {
         return client;
     }
@@ -130,6 +136,39 @@ async fn tracker_http_client(tracker_url: &str) -> reqwest::Client {
         .entry(tracker_url.to_string())
         .or_insert(built)
         .clone()
+}
+
+/// The HTTP client for one tracker: the cached reqwest client natively
+/// ([`tracker_reqwest_client`]); in the browser build the hyper HTTP/1.1 transport over the
+/// page's virtual loopback ([`crate::client::http_fetch`]), bounded by the same
+/// [`TRACKER_REQUEST_TIMEOUT`] and reading at most [`MAX_TRACKER_BODY_BYTES`].
+async fn tracker_http_client(tracker_url: &str) -> FetchClient {
+    #[cfg(not(target_arch = "wasm32"))]
+    let client = FetchClient::from_reqwest(tracker_reqwest_client(tracker_url).await);
+    #[cfg(target_arch = "wasm32")]
+    let client = {
+        let _ = tracker_url;
+        FetchClient::transport(TRACKER_REQUEST_TIMEOUT).with_max_body(MAX_TRACKER_BODY_BYTES)
+    };
+    client
+}
+
+/// A tracker URL the requests can be built on. A bare `host:port` — what the dashboard's
+/// `[ + BitTorrent Tracker client ]` and a model asked to "announce to 127.0.0.1:6969" produce —
+/// becomes `http://host:port/announce`: HTTP trackers are plain HTTP by convention, and the
+/// announce path is what BEP 3 tracker URLs name. Anything with a scheme is left as given.
+/// Without this, the announce URL was `127.0.0.1:6969?info_hash=…`, which is not an absolute
+/// URL and failed every request.
+pub fn resolve_tracker_url(remote_addr: &str) -> String {
+    let trimmed = remote_addr.trim();
+    if trimmed.contains("://") {
+        return trimmed.to_string();
+    }
+    if trimmed.contains('/') {
+        format!("http://{trimmed}")
+    } else {
+        format!("http://{trimmed}/announce")
+    }
 }
 
 /// GET `url` and return at most [`MAX_TRACKER_BODY_BYTES`] of body, refusing anything longer
@@ -264,6 +303,10 @@ impl TorrentTrackerClient {
     ) -> Result<SocketAddr> {
         // BitTorrent tracker is HTTP-based, so we don't maintain a persistent connection
         // We'll just track the tracker URL and make HTTP requests as needed
+        let remote_addr = resolve_tracker_url(&remote_addr);
+        // In the browser build the transport has no TLS: an `https://` tracker is refused
+        // here, with the reason, rather than on the first announce.
+        crate::client::http_fetch::check_url(&remote_addr)?;
 
         info!(
             "BitTorrent Tracker client {} initialized for {}",

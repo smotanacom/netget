@@ -33,6 +33,22 @@
 // date cache to read `Date.now()` the first request to any hyper server killed the page. A
 // panic anywhere fails the run by name (see `panics` below), not as a timeout.
 //
+// Then the other HTTP-family clients, which in the browser speak through the same transport
+// (src/client/http_fetch) as the http client: jsonrpc and elasticsearch through `[ + client ]`
+// on NetGet's own server of their protocol, `[ send ]`, and the response found parked on the
+// client (`intercepts()`), since a dashboard-created client routes it to the human; openapi
+// (which needs the server's spec, so it goes through ClientForm) and bitcoin (whose RPC NetGet
+// serves only as plain HTTP) routed to the model, which runs the first request itself and is
+// shown each response. An https:// jsonrpc endpoint is refused with the reason. npm, pypi,
+// maven and torrent-tracker follow the button path too; the tracker's reply is bencoded with a
+// binary compact peer list, which must arrive decoded, and an https:// npm registry is refused.
+// http2's client follows the button path over h2c with prior knowledge (hyper's HTTP/2 client,
+// its tasks on the shim's spawn), and the response must be read as HTTP/2. oauth2 and
+// openidconnect hand the transport to their crates' own HTTP hook, routed to the model: a
+// client-credentials token from NetGet's oauth2 server, and discovery, key set and token from
+// its OpenID provider; an https:// token URL is refused. ollama follows the button path against
+// NetGet's own Ollama server.
+//
 // The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
 // thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
 // site/js/thinking.js — the page's split of a streamed answer into the "Thinking…" block and
@@ -76,6 +92,9 @@ const httpConnected = [];
 const httpResponses = [];
 // Every request a hyper server reported to the model: { protocol, context }.
 const serverRequests = [];
+// What the model-routed HTTP-family clients reported to the model, by protocol: each
+// response event's data.
+const clientResponses = { openapi: [], bitcoin: [], oauth2: [], oidc: [] };
 
 function fail(msg) {
     console.error('FAIL:', msg);
@@ -98,6 +117,7 @@ function waitFor(pred, what, ms = 15000) {
 }
 
 const PORT = 7000;
+const OIDC_PORT = 8091;  // the OpenID provider, which names itself in its discovery document
 const SMOKE_REASONING = 'smokethought: the peer wants its line shouted back';  // a <think> block's text
 
 // site/js/thinking.js, at each point of a stream.
@@ -167,6 +187,14 @@ const netget = new NetGet({
             if (context.method === 'POST' && context.path === '/echo') {
                 return answer([{ type: 'send_http_response', status: 201, headers: { 'Content-Type': 'text/plain', 'X-Smoke': 'echoed' }, body: String(context.body).toUpperCase() }]);
             }
+            // Bitcoin Core's RPC is JSON-RPC 1.0 over HTTP POST; NetGet has no server of it
+            // (its `bitcoin` server speaks the P2P wire protocol), so the http server answers
+            // the shape bitcoind would.
+            if (context.method === 'POST' && String(context.body).includes('"jsonrpc":"1.0"')) {
+                const call = JSON.parse(context.body);
+                return answer([{ type: 'send_http_response', status: 200, headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ result: { chain: 'regtest', blocks: 101, called: call.method }, error: null, id: call.id }) }]);
+            }
             if (context.path === '/') {
                 return answer([{ type: 'send_http_response', status: 200, headers: { 'Content-Type': 'text/html' }, body: '<h1>smoke</h1><p>accept=' + (context.headers || {}).accept + '</p>' }]);
             }
@@ -191,6 +219,88 @@ const netget = new NetGet({
         if (offered.has('send_http2_response')) {
             serverRequests.push({ protocol: 'http2', context });
             return answer([{ type: 'send_http2_response', status: 200, headers: { 'content-type': 'text/plain', 'x-smoke': 'h2' }, body: 'h2 says hi to ' + context.uri }]);
+        }
+        // NetGet's OAuth2 authorization server: a token for whatever grant was asked.
+        if (offered.has('oauth2_token_response')) {
+            serverRequests.push({ protocol: 'oauth2', context });
+            return answer([{ type: 'oauth2_token_response', access_token: 'smoke-oauth2-token', token_type: 'Bearer', expires_in: 1234, scope: 'read smoke' }]);
+        }
+        // NetGet's OpenID provider: discovery naming itself, an empty key set, a token.
+        if (offered.has('send_discovery_document')) {
+            serverRequests.push({ protocol: 'openid', context });
+            const base = 'http://127.0.0.1:' + OIDC_PORT;
+            if (context.endpoint_type === 'discovery') {
+                return answer([{ type: 'send_discovery_document', issuer: base, authorization_endpoint: base + '/authorize', token_endpoint: base + '/token',
+                    userinfo_endpoint: base + '/userinfo', jwks_uri: base + '/jwks.json', supported_scopes: ['openid', 'smoke'] }]);
+            }
+            if (context.endpoint_type === 'jwks') return answer([{ type: 'send_jwks_response', keys: [] }]);
+            if (context.endpoint_type === 'token') return answer([{ type: 'send_token_response', access_token: 'smoke-oidc-token', token_type: 'Bearer', expires_in: 4321 }]);
+            return answer([{ type: 'send_error_response', error: 'invalid_request', error_description: 'not in the smoke test' }]);
+        }
+        if (offered.has('ollama_generate_response')) {
+            serverRequests.push({ protocol: 'ollama', context });
+            return answer([{ type: 'ollama_generate_response', response_text: 'Smoke City, said ' + context.model }]);
+        }
+        if (offered.has('npm_package_metadata')) {
+            serverRequests.push({ protocol: 'npm', context });
+            const name = decodeURIComponent(String(context.path).replace(/^\//, ''));
+            return answer([{ type: 'npm_package_metadata', metadata: { name, description: 'served to the smoke test', 'dist-tags': { latest: '1.3.0' },
+                versions: { '1.3.0': { name, version: '1.3.0', dist: { tarball: `http://127.0.0.1/${name}/-/${name}-1.3.0.tgz` } } } } }]);
+        }
+        if (offered.has('send_pypi_response')) {
+            serverRequests.push({ protocol: 'pypi', context });
+            return answer([{ type: 'send_pypi_response', status: 200, headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ info: { name: 'smoke-pkg', version: '2.0.0', summary: 'served to the smoke test from ' + context.path }, releases: { '2.0.0': [] }, urls: [] }) }]);
+        }
+        if (offered.has('send_maven_artifact')) {
+            serverRequests.push({ protocol: 'maven', context });
+            return answer([{ type: 'send_maven_artifact', status: 200, content_type: 'application/xml',
+                body: `<?xml version="1.0" encoding="UTF-8"?>\n<project><modelVersion>4.0.0</modelVersion><groupId>${context.group_id}</groupId><artifactId>${context.artifact_id}</artifactId><version>${context.version}</version><name>smoke pom</name></project>\n` }]);
+        }
+        if (offered.has('send_announce_response')) {
+            serverRequests.push({ protocol: 'torrent-tracker', context });
+            return answer([{ type: 'send_announce_response', interval: 900, complete: 3, incomplete: 1, compact: 1, peers: [{ ip: '127.0.0.1', port: 6881 }, { ip: '10.0.0.2', port: 51413 }] }]);
+        }
+        if (offered.has('send_elasticsearch_response')) {
+            serverRequests.push({ protocol: 'elasticsearch', context });
+            return answer([{ type: 'send_elasticsearch_response', status_code: 200,
+                body: JSON.stringify({ took: 1, timed_out: false, hits: { total: { value: 1, relation: 'eq' },
+                    hits: [{ _index: context.index, _id: 'dune', _source: { title: 'Dune', asked: context.operation } }] } }) }]);
+        }
+        // The OAuth2 client: ask for a client-credentials token when connected; report tokens.
+        if (offered.has('generate_auth_url')) {
+            if (context.access_token !== undefined || context.error !== undefined) {
+                clientResponses.oauth2.push(context);
+                return answer([]);
+            }
+            return answer([{ type: 'exchange_client_credentials', scopes: 'read smoke' }]);
+        }
+        // The OpenID Connect client: after discovery, a client-credentials token; report it.
+        if (offered.has('discover_configuration')) {
+            if (context.access_token !== undefined) {
+                clientResponses.oidc.push(context);
+                return answer([]);
+            }
+            if (context.issuer !== undefined) {
+                clientResponses.oidc.push(context);
+                return answer([{ type: 'exchange_client_credentials', scopes: 'openid' }]);
+            }
+            return answer([]);
+        }
+        // The OpenAPI client: run the spec's operation when connected, report its response.
+        if (offered.has('execute_operation')) {
+            if (context.status_code !== undefined) {
+                clientResponses.openapi.push(context);
+                return answer([]);
+            }
+            if (context.operations !== undefined) {
+                return answer([{ type: 'execute_operation', operation_id: 'listTodos', path_params: {}, query_params: { owner: 'smoke test' } }]);
+            }
+        }
+        // The Bitcoin RPC client: nothing on connect; report every response.
+        if (offered.has('get_blockchain_info')) {
+            if (context.status_code !== undefined) clientResponses.bitcoin.push(context);
+            return answer([]);
         }
         // The HTTP client: fetch a page when connected, and report every response.
         if (offered.has('send_http_request')) {
@@ -461,7 +571,7 @@ try {
 
     // jsonrpc: a call answered with a result, and one answered with an error.
     const JSONRPC_PORT = 8082;
-    await startServer({ protocol: 'jsonrpc', port: JSONRPC_PORT, instruction: 'Implement add(a, b).' });
+    const jsonrpcServer = await startServer({ protocol: 'jsonrpc', port: JSONRPC_PORT, instruction: 'Implement add(a, b).' });
     const rpc = (payload) => httpRequest(JSONRPC_PORT, { method: 'POST', path: '/', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
     const sum = await rpc({ jsonrpc: '2.0', method: 'add', params: [2, 3], id: 7 });
     const sumBody = JSON.parse(sum.body);
@@ -486,10 +596,209 @@ try {
     // http2: prior-knowledge h2c through node:http2 (nghttp2). NetGet's http2 server is the
     // `h2` crate rather than hyper, and it sets no Date header.
     const HTTP2_PORT = 8084;
-    await startServer({ protocol: 'http2', port: HTTP2_PORT, instruction: 'Greet every request.' });
+    const http2Server = await startServer({ protocol: 'http2', port: HTTP2_PORT, instruction: 'Greet every request.' });
     const h2 = await http2Request(HTTP2_PORT, '/greet?who=smoke');
     if (h2.status !== 200 || h2.headers['x-smoke'] !== 'h2' || h2.body !== 'h2 says hi to /greet?who=smoke') fail('http2 GET /greet: ' + JSON.stringify(h2));
     hyper.http2 = `GET /greet?who=smoke ${h2.status} ${JSON.stringify(h2.body)}`;
+
+    // The HTTP-family clients in the browser: each speaks through the shared transport
+    // (src/client/http_fetch) over the virtual loopback to NetGet's own server of its protocol.
+    const webClients = {};
+    // An event parked for the human on a client, as the dashboard's "waiting for YOUR answer"
+    // rows show it. A client the dashboard creates routes everything after its connect event
+    // to `manual`, so that is where the response lands.
+    async function parkedOn(clientId, eventType, matches = () => true) {
+        let found = null;
+        await waitFor(() => {
+            netget.intercepts((json) => {
+                const rows = JSON.parse(json);
+                found = rows.find((r) => r.owner.kind === 'client' && r.owner.id === clientId && r.event_type === eventType && matches(r.event_data || {})) || found;
+            });
+            return found !== null;
+        }, `a ${eventType} parked on client #${clientId}`, 20000);
+        return found;
+    }
+    async function connectViaButton(serverId, protocol) {
+        let made = null;
+        netget.connect_client_to_server(serverId, (json) => { made = JSON.parse(json); });
+        await waitFor(() => made !== null, `[ + ${protocol} client ] to answer`);
+        if (made.error) fail(`[ + ${protocol} client ]: ` + made.error);
+        let rows = null;
+        netget.clients((json) => { rows = JSON.parse(json); });
+        await waitFor(() => rows !== null, 'clients()');
+        const row = rows.find((c) => c.id === made.id);
+        if (!row || row.status !== 'Connected') fail(`the [ + ${protocol} client ] client is not connected: ` + JSON.stringify(rows));
+        return made;
+    }
+    async function send(clientId, action) {
+        let outcome = null;
+        netget.send_to_client(clientId, JSON.stringify(action), (json) => { outcome = JSON.parse(json); });
+        await waitFor(() => outcome !== null, `send_to_client(${action.type}) to answer`, 45000);
+        const detail = outcome.Executed && outcome.Executed.detail;
+        if (!detail) fail(`[ send ] ${action.type} was not executed: ` + JSON.stringify(outcome));
+        return detail;
+    }
+
+    // jsonrpc: [ + JSON-RPC client ] on the jsonrpc server's card, then [ send ] add(2, 3). The
+    // server's model computes 5; the client reads it and parks the response for the human.
+    const rpcClient = await connectViaButton(jsonrpcServer.id, 'jsonrpc');
+    if (rpcClient.remote_addr !== `127.0.0.1:${JSONRPC_PORT}`) fail('[ + jsonrpc client ] made the wrong client: ' + JSON.stringify(rpcClient));
+    const rpcDetail = await send(rpcClient.id, { type: 'send_jsonrpc_request', method: 'add', params: [2, 3], id: 41 });
+    if (!rpcDetail.includes('HTTP 200') || !rpcDetail.includes('JSON-RPC response received')) fail('jsonrpc [ send ]: ' + rpcDetail);
+    const rpcParked = await parkedOn(rpcClient.id, 'jsonrpc_response_received');
+    if (rpcParked.event_data?.result !== 5 || rpcParked.event_data?.id !== 41) fail('the jsonrpc response did not reach the client intact: ' + JSON.stringify(rpcParked));
+    webClients.jsonrpc = `[ + client ] #${rpcClient.id}, [ send ] add(2,3) -> ${rpcDetail}; parked result ${rpcParked.event_data.result}`;
+
+    // The transport has no TLS: an https:// endpoint is refused at connect, naming why.
+    let rpcRefused = null;
+    netget.start_client(JSON.stringify({ protocol: 'jsonrpc', remote_addr: `https://127.0.0.1:${JSONRPC_PORT}`, instruction: 'Call add.' }), (json) => { rpcRefused = JSON.parse(json); });
+    await waitFor(() => rpcRefused !== null, 'start_client (jsonrpc, https) to answer');
+    if (!rpcRefused.error || !rpcRefused.error.includes('https:// is not available')) fail('an https:// jsonrpc client was not refused with the reason: ' + JSON.stringify(rpcRefused));
+
+    // elasticsearch: NetGet's Elasticsearch server, [ + client ], [ send ] a search.
+    const ES_PORT = 8085;
+    const esServer = await startServer({ protocol: 'elasticsearch', port: ES_PORT, instruction: 'Serve a small library index.' });
+    const esClient = await connectViaButton(esServer.id, 'elasticsearch');
+    const esDetail = await send(esClient.id, { type: 'search', index: 'books', query: { match: { title: 'dune' } } });
+    if (!esDetail.includes('HTTP 200')) fail('elasticsearch [ send ]: ' + esDetail);
+    const esAsked = serverRequests.filter((r) => r.protocol === 'elasticsearch');
+    if (!esAsked.some((r) => r.context.index === 'books' && String(r.context.request_body).includes('dune'))) fail('the search did not reach the Elasticsearch server\'s model: ' + JSON.stringify(esAsked));
+    const esParked = await parkedOn(esClient.id, 'elasticsearch_response_received');
+    if (!JSON.stringify(esParked.event_data).includes('"title":"Dune"')) fail('the Elasticsearch hits did not reach the client: ' + JSON.stringify(esParked));
+    webClients.elasticsearch = `[ + client ] #${esClient.id}, [ send ] search -> ${esDetail}; parked hit "Dune"`;
+
+    // openapi: the client needs the spec, which `[ + client ]` cannot know (the dashboard's form
+    // asks for it), so it is started through ClientForm with the server's spec and routed to the
+    // model: connected -> the model runs listTodos -> the openapi server's model answers -> the
+    // response is reported back to the model. Then [ send ] the same operation.
+    let oaClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'openapi', remote_addr: `127.0.0.1:${OPENAPI_PORT}`, instruction: 'List the todos.', startup_params: { spec: TODO_SPEC } }), (json) => { oaClient = JSON.parse(json); });
+    await waitFor(() => oaClient !== null, 'start_client (openapi) to answer');
+    if (oaClient.error) fail('start_client openapi: ' + oaClient.error);
+    await waitFor(() => clientResponses.openapi.length > 0, 'the openapi client\'s response reported to the model', 20000);
+    const oaFirst = clientResponses.openapi[0];
+    if (oaFirst.status_code !== 200 || JSON.parse(oaFirst.body)[0]?.title !== 'Buy milk') fail('the openapi response did not reach the client: ' + JSON.stringify(oaFirst));
+    if (!serverRequests.some((r) => r.protocol === 'openapi' && JSON.stringify(r.context).includes('smoke'))) fail('the model\'s query parameter did not reach the openapi server: ' + JSON.stringify(serverRequests.filter((r) => r.protocol === 'openapi')));
+    const oaDetail = await send(oaClient.id, { type: 'execute_operation', operation_id: 'listTodos', path_params: {}, query_params: {} });
+    await waitFor(() => clientResponses.openapi.length > 1, 'the injected operation\'s response reported to the model', 20000);
+    webClients.openapi = `ClientForm #${oaClient.id}: model ran listTodos -> ${oaFirst.status_code} ${oaFirst.body}; [ send ] -> ${oaDetail}`;
+
+    // bitcoin: Bitcoin Core RPC is JSON-RPC over HTTP, and NetGet's `bitcoin` server is the P2P
+    // protocol, so the peer is NetGet's http server answering as bitcoind would. The RPC
+    // credentials go out as Basic auth, which the server's request must show.
+    let btcClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'bitcoin', remote_addr: `127.0.0.1:${HTTP_PORT}`, instruction: 'Watch the chain.', startup_params: { rpc_user: 'smoke', rpc_password: 'pw' } }), (json) => { btcClient = JSON.parse(json); });
+    await waitFor(() => btcClient !== null, 'start_client (bitcoin) to answer');
+    if (btcClient.error) fail('start_client bitcoin: ' + btcClient.error);
+    const btcDetail = await send(btcClient.id, { type: 'get_blockchain_info' });
+    if (!btcDetail.includes("'getblockchaininfo' -> HTTP 200 (result)")) fail('bitcoin [ send ]: ' + btcDetail);
+    await waitFor(() => clientResponses.bitcoin.length > 0, 'the bitcoin RPC response reported to the model', 20000);
+    const btc = clientResponses.bitcoin[0];
+    if (btc.result?.blocks !== 101 || btc.result?.called !== 'getblockchaininfo') fail('the RPC result did not reach the client: ' + JSON.stringify(btc));
+    const rpcSeen = serverRequests.find((r) => r.protocol === 'http' && String(r.context.body).includes('getblockchaininfo'));
+    const auth = rpcSeen && headerOf(rpcSeen.context.headers, 'authorization');
+    if (auth !== 'Basic ' + Buffer.from('smoke:pw').toString('base64')) fail('the RPC credentials did not arrive as Basic auth: ' + JSON.stringify(rpcSeen && rpcSeen.context.headers));
+    webClients.bitcoin = `ClientForm #${btcClient.id} -> http :${HTTP_PORT}: [ send ] ${btcDetail}; blocks ${btc.result.blocks}; Basic auth arrived`;
+
+    // npm, pypi, maven: each registry client through [ + client ] on NetGet's own server of its
+    // protocol (a bare address is http:// in the browser), [ send ] a lookup, and the answer the
+    // server's model wrote found parked on the client.
+    const registries = [
+        { protocol: 'npm', port: 8086, action: { type: 'get_package_info', package_name: 'smoke-pkg' }, event: 'npm_package_info_received', marker: 'served to the smoke test' },
+        { protocol: 'pypi', port: 8087, action: { type: 'get_package_info', package_name: 'smoke-pkg' }, event: 'pypi_package_info_received', marker: 'served to the smoke test from' },
+        { protocol: 'maven', port: 8088, action: { type: 'download_pom', group_id: 'net.netget', artifact_id: 'smoke', version: '1.0.0' }, event: 'maven_pom_received', marker: '<artifactId>smoke</artifactId>' },
+    ];
+    for (const r of registries) {
+        const server = await startServer({ protocol: r.protocol, port: r.port, instruction: `Serve a tiny ${r.protocol} registry.` });
+        const client = await connectViaButton(server.id, r.protocol);
+        const detail = await send(client.id, r.action);
+        if (!serverRequests.some((q) => q.protocol === r.protocol)) fail(`the ${r.protocol} request never reached the server's model; [ send ] said ` + detail);
+        const parked = await parkedOn(client.id, r.event);
+        if (!JSON.stringify(parked.event_data).includes(r.marker)) fail(`the ${r.protocol} answer did not reach the client: ` + JSON.stringify(parked));
+        webClients[r.protocol] = `[ + client ] #${client.id} -> http://127.0.0.1:${r.port}, [ send ] ${r.action.type} -> ${detail}; parked ${r.event}`;
+    }
+    // A registry named https:// is refused in the browser, with the reason.
+    let npmRefused = null;
+    netget.start_client(JSON.stringify({ protocol: 'npm', remote_addr: 'https://registry.npmjs.org', instruction: 'Look up left-pad.' }), (json) => { npmRefused = JSON.parse(json); });
+    await waitFor(() => npmRefused !== null, 'start_client (npm, https) to answer');
+    if (!npmRefused.error || !npmRefused.error.includes('https:// is not available')) fail('an https:// npm registry was not refused with the reason: ' + JSON.stringify(npmRefused));
+
+    // torrent-tracker: [ + client ] (a bare address becomes http://host:port/announce),
+    // [ send ] an announce, and the tracker's bencoded reply — a binary compact peer list —
+    // decoded on the client: 127.0.0.1:6881 is the six bytes 127 0 0 1 26 225.
+    const TRACKER_PORT = 8089;
+    const trackerServer = await startServer({ protocol: 'torrent-tracker', port: TRACKER_PORT, instruction: 'Track one swarm.' });
+    const trackerClient = await connectViaButton(trackerServer.id, 'torrent-tracker');
+    const infoHash = '0123456789abcdef0123456789abcdef01234567';
+    const announceDetail = await send(trackerClient.id, { type: 'tracker_announce', info_hash: infoHash, peer_id: '2d4e47303030312d736d6f6b6530303030303030', port: 6881, uploaded: 0, downloaded: 0, left: 0, event: 'started' });
+    const announced = serverRequests.find((q) => q.protocol === 'torrent-tracker');
+    if (!announced || !JSON.stringify(announced.context).toLowerCase().includes(infoHash)) fail('the announce did not reach the tracker\'s model with its info_hash: ' + JSON.stringify(announced) + '; [ send ] said ' + announceDetail);
+    const peers = await parkedOn(trackerClient.id, 'tracker_announce_response', (d) => d.interval !== undefined);
+    if (peers.event_data.interval !== 900 || peers.event_data.complete !== 3 || !String(peers.event_data.peers).includes('127, 0, 0, 1, 26, 225')) fail('the compact peer list did not reach the client intact: ' + JSON.stringify(peers));
+    webClients['torrent-tracker'] = `[ + client ] #${trackerClient.id}, [ send ] announce -> ${announceDetail}; parked interval ${peers.event_data.interval}, peers ${peers.event_data.peers}`;
+
+    // http2: [ + HTTP/2 client ] on the http2 server's card; the client speaks h2c with prior
+    // knowledge through hyper's HTTP/2 client over the virtual loopback, its connection tasks
+    // on the shim's spawn. [ send ] a GET; the server's model answers; the response, read as
+    // HTTP/2, is parked on the client.
+    const h2Client = await connectViaButton(http2Server.id, 'http2');
+    const h2Detail = await send(h2Client.id, { type: 'send_http2_request', method: 'GET', path: '/from-netget?via=h2c' });
+    const h2Parked = await parkedOn(h2Client.id, 'http2_response_received');
+    const h2Data = h2Parked.event_data;
+    if (h2Data.status_code !== 200 || h2Data.body !== 'h2 says hi to /from-netget?via=h2c' || h2Data.http_version !== 'HTTP/2.0' || headerOf(h2Data.headers, 'x-smoke') !== 'h2') fail('the HTTP/2 response did not reach the client as HTTP/2: ' + JSON.stringify(h2Parked) + '; [ send ] said ' + h2Detail);
+    webClients.http2 = `[ + client ] #${h2Client.id}, [ send ] GET -> ${h2Detail}; parked ${h2Data.http_version} ${h2Data.status_code} ${JSON.stringify(h2Data.body)}`;
+
+    // ollama: [ + Ollama client ] on NetGet's own Ollama server, [ send ] a generate request;
+    // the server's model writes the completion, and it is parked on the client.
+    const OLLAMA_PORT = 8092;
+    const ollamaServer = await startServer({ protocol: 'ollama', port: OLLAMA_PORT, instruction: 'Answer as a tiny model.' });
+    const ollamaClient = await connectViaButton(ollamaServer.id, 'ollama');
+    const ollamaDetail = await send(ollamaClient.id, { type: 'send_generate_request', prompt: 'What is the capital of Smokeland?', model: 'smoke-model' });
+    const generated = serverRequests.find((r) => r.protocol === 'ollama');
+    if (!generated || !String(generated.context.prompt).includes('Smokeland')) fail('the generate request did not reach the Ollama server\'s model: ' + JSON.stringify(generated) + '; [ send ] said ' + ollamaDetail);
+    const ollamaParked = await parkedOn(ollamaClient.id, 'ollama_response_received');
+    if (!JSON.stringify(ollamaParked.event_data).includes('Smoke City, said smoke-model')) fail('the completion did not reach the Ollama client: ' + JSON.stringify(ollamaParked));
+    webClients.ollama = `[ + client ] #${ollamaClient.id}, [ send ] generate -> ${ollamaDetail}; parked "Smoke City, said smoke-model"`;
+
+    // oauth2 and openidconnect: the crates' own HTTP hook (`request_async`, `discover_async`)
+    // is handed the transport in the browser. Both need startup parameters `[ + client ]`
+    // cannot know (a client_id, a token URL), so they go through ClientForm, routed to the
+    // model: it asks for a client-credentials token, NetGet's server's model issues one, and
+    // the token event (with the expiry the server chose) comes back to the model.
+    const OAUTH2_PORT = 8090;
+    await startServer({ protocol: 'oauth2', port: OAUTH2_PORT, instruction: 'Issue tokens to smoke-app.' });
+    let oauthRefused = null;
+    netget.start_client(JSON.stringify({ protocol: 'oauth2', remote_addr: `127.0.0.1:${OAUTH2_PORT}`, instruction: 'Get a token.', startup_params: { client_id: 'smoke-app', token_url: 'https://127.0.0.1:1/token' } }), (json) => { oauthRefused = JSON.parse(json); });
+    await waitFor(() => oauthRefused !== null, 'start_client (oauth2, https) to answer');
+    if (!oauthRefused.error || !oauthRefused.error.includes('https:// is not available')) fail('an https:// token endpoint was not refused with the reason: ' + JSON.stringify(oauthRefused));
+    let oauthClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'oauth2', remote_addr: `127.0.0.1:${OAUTH2_PORT}`, instruction: 'Get a client-credentials token.',
+        startup_params: { client_id: 'smoke-app', client_secret: 'smoke-secret', token_url: `http://127.0.0.1:${OAUTH2_PORT}/token` } }), (json) => { oauthClient = JSON.parse(json); });
+    await waitFor(() => oauthClient !== null, 'start_client (oauth2) to answer');
+    if (oauthClient.error) fail('start_client oauth2: ' + oauthClient.error);
+    await waitFor(() => clientResponses.oauth2.length > 0, 'the oauth2 token reported to the model', 20000);
+    const oauthToken = clientResponses.oauth2[0];
+    if (oauthToken.expires_in !== 1234 || oauthToken.scope === undefined) fail('the OAuth2 token did not reach the client: ' + JSON.stringify(oauthToken));
+    const tokenAsked = serverRequests.find((r) => r.protocol === 'oauth2');
+    if (!tokenAsked || tokenAsked.context.grant_type !== 'client_credentials') fail('the token request did not reach the OAuth2 server\'s model as client_credentials: ' + JSON.stringify(tokenAsked));
+    const oauthDetail = await send(oauthClient.id, { type: 'exchange_client_credentials', scopes: 'read' });
+    await waitFor(() => clientResponses.oauth2.length > 1, 'the injected token request reported to the model', 20000);
+    webClients.oauth2 = `ClientForm #${oauthClient.id}: model asked for client_credentials -> token, expires_in ${oauthToken.expires_in}; [ send ] -> ${oauthDetail}; https token URL refused`;
+
+    await startServer({ protocol: 'openid', port: OIDC_PORT, instruction: 'Be an OpenID provider for smoke-app.' });
+    let oidcClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'openidconnect', remote_addr: `http://127.0.0.1:${OIDC_PORT}`, instruction: 'Discover the provider and get a token.',
+        startup_params: { client_id: 'smoke-app', client_secret: 'smoke-secret' } }), (json) => { oidcClient = JSON.parse(json); });
+    await waitFor(() => oidcClient !== null, 'start_client (openidconnect) to answer');
+    if (oidcClient.error) fail('start_client openidconnect: ' + oidcClient.error);
+    await waitFor(() => clientResponses.oidc.some((c) => c.access_token !== undefined), 'the OIDC token reported to the model', 30000);
+    const discovered = clientResponses.oidc.find((c) => c.issuer !== undefined);
+    if (!discovered || discovered.issuer !== `http://127.0.0.1:${OIDC_PORT}` || discovered.token_endpoint !== `http://127.0.0.1:${OIDC_PORT}/token`) fail('discovery did not reach the client: ' + JSON.stringify(clientResponses.oidc));
+    const oidcToken = clientResponses.oidc.find((c) => c.access_token !== undefined);
+    if (oidcToken.expires_in !== 4321) fail('the OIDC token did not reach the client: ' + JSON.stringify(oidcToken));
+    const oidcAsked = serverRequests.filter((r) => r.protocol === 'openid').map((r) => r.context.endpoint_type);
+    for (const endpoint of ['discovery', 'jwks', 'token']) if (!oidcAsked.includes(endpoint)) fail(`the OpenID provider's model never saw a ${endpoint} request: ` + JSON.stringify(oidcAsked));
+    webClients.openidconnect = `ClientForm #${oidcClient.id}: discovered ${discovered.issuer} (${oidcAsked.join(', ')}), token expires_in ${oidcToken.expires_in}`;
 
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 
@@ -498,6 +807,7 @@ try {
     console.log('    composer: ' + composed[0].actions.length + ' actions offered, default ' + composed[0].entry.name + ', example bytes ' + JSON.stringify(composerReceived.join('')) + ' reached the peer');
     console.log('    http client: [ + http client ] connected client #' + viaButton.id + ' to :' + HTTP_PORT + '; client #' + httpClient.id + ' read ' + first.status_code + ' ' + JSON.stringify(first.body) + ' and, via [ send ], ' + detail.split('-> ')[1] + '; https refused');
     for (const [name, line] of Object.entries(hyper)) console.log(`    ${name} (node client): ${line}`);
+    for (const [name, line] of Object.entries(webClients)) console.log(`    ${name} client: ${line}`);
     console.log('    Date headers checked:', dates.length, '| latest:', dates[dates.length - 1]);
     console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);
     process.exit(0);

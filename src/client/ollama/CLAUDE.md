@@ -362,3 +362,10 @@ after connect event" and never called `make_generate_request`.
 **`Sent { bytes_sent }` is never reported**: reqwest owns the socket, so a byte count would
 be invented. The request is awaited before the outcome is returned, so `Executed` means it
 really completed and `ollama_response_received` has already fired.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through `crate::client::http_fetch::FetchClient`: natively it wraps the same cached reqwest client, so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport over the page's virtual loopback, bounded by the same `REQUEST_TIMEOUT` and `MAX_RESPONSE_BYTES`. `https://` endpoint is refused
+in the browser at connect with the reason (`http_fetch::check_url`): the transport has no TLS.
+`web/test/smoke.mjs` proves it in the bundle: `[ + Ollama client ]` on NetGet's `ollama` server connects, `[ send ]` of a generate request reaches the server's model with its prompt, and the completion it wrote is in the `ollama_response_received` event parked on the client.
+

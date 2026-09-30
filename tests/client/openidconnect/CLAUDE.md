@@ -58,3 +58,10 @@ no extra feature; copy it.
 (or `""` when absent), matching the sibling `oauth2` client. The values live in
 `protocol_data` and every action that needs one reads it back, so no test should assert on a
 token value *in an event* — assert on `protocol_data`, as `command_channel_test.rs` does.
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/openidconnect/CLAUDE.md`, "Browser build").
+

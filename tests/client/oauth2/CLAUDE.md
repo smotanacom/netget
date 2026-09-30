@@ -309,3 +309,10 @@ Test-only dependencies (in `[dev-dependencies]`):
 3. **Token Expiration**: Test automatic refresh on expiration
 4. **Multiple Providers**: Test compatibility with Google, GitHub, Auth0
 5. **Concurrent Clients**: Test multiple OAuth2 clients simultaneously
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/oauth2/CLAUDE.md`, "Browser build").
+

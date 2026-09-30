@@ -253,3 +253,10 @@ A client created that way arrived here unconfigured and failed with "Missing OAu
 client_id startup parameter", on the LLM path just as much as the injected one. `connect`
 now seeds `protocol_data` from `startup_params` once, without overwriting anything already
 set.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). The `oauth2` crate is handed its HTTP function per request (`request_async(http_hook)`): natively that is the crate's own reqwest `async_http_client`, unchanged; on wasm32 `http_hook` sends the crate's `HttpRequest` through `crate::client::http_fetch` (hyper's HTTP/1.1 client over the page's virtual loopback, 30 s, 8 MiB, no redirects — the crate's own client follows none either) and hands back its `HttpResponse`. The device-code poll this client writes itself goes through `FetchClient` the same way. The crate enforces no scheme, so an `http://` token endpoint on the page's network works. `https://` token endpoint is refused
+in the browser at connect with the reason (`http_fetch::check_url`): the transport has no TLS.
+`web/test/smoke.mjs` proves it in the bundle: the client is started through `ClientForm` (it needs `client_id` and `token_url`, which `[ + OAuth2 client ]` cannot know — the dashboard's form asks for them), the model asks for a client-credentials token, NetGet's `oauth2` server's model issues one (its request arrives as `grant_type` `client_credentials`), and the token event reaches the model with the expiry the server chose; `[ send ]` repeats the exchange; an `https://` token URL is refused.
+

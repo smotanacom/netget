@@ -217,3 +217,11 @@ What it asserts, in order:
 5. An unknown verb comes back `Rejected`, not silently swallowed. An `operation_id` absent from the spec comes back as `Err`, never a false `Executed`.
 6. `disconnect` returns `Disconnected`, the command loop exits, the handle is dropped and the
    client's status becomes `Disconnected`.
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/openapi/CLAUDE.md`, "Browser build"), and the transport backend's requests
+are pinned to reqwest's by `tests/client/http/fetch_client_test.rs`.
+

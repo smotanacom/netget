@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use crate::client::http2::actions::HTTP2_CLIENT_RESPONSE_RECEIVED_EVENT;
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::actions::protocol_trait::Protocol;
@@ -75,7 +76,8 @@ impl Http2Client {
     /// `http2_prior_knowledge()` is kept: this client speaks cleartext h2c and does not
     /// negotiate via ALPN, which is what makes it usable against NetGet's own HTTP/2
     /// server (that server never advertises ALPN).
-    async fn http2_client(url: &str) -> Result<reqwest::Client> {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn reqwest_client(url: &str) -> Result<reqwest::Client> {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
 
@@ -110,6 +112,21 @@ impl Http2Client {
             Err(_) => Ok(built),
         }
     }
+    /// The HTTP/2 client for `url`'s host: the cached reqwest client natively
+    /// ([`Self::reqwest_client`]); in the browser build the shared hyper transport
+    /// ([`crate::client::http_fetch`]) speaking HTTP/2 with prior knowledge over the page's
+    /// virtual loopback, with the same 30-second bound.
+    async fn http2_client(url: &str) -> Result<FetchClient> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let client = FetchClient::from_reqwest(Self::reqwest_client(url).await?);
+        #[cfg(target_arch = "wasm32")]
+        let client = {
+            let _ = url;
+            FetchClient::transport(Duration::from_secs(30)).http2_prior_knowledge()
+        };
+        Ok(client)
+    }
+
     /// Connect to an HTTP/2 server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -131,6 +148,14 @@ impl Http2Client {
         // used to bind to `_http_client`, a full rustls stack constructed at connect time
         // and discarded, while `perform_request` built another one for every request.
         Self::http2_client(&remote_addr).await?;
+        // In the browser build the transport has no TLS: an `https://` server is refused here,
+        // with the reason, rather than on the first request. A bare address is spoken to as
+        // cleartext h2c, as `perform_request` does.
+        crate::client::http_fetch::check_url(&if remote_addr.contains("://") {
+            remote_addr.clone()
+        } else {
+            format!("http://{remote_addr}")
+        })?;
 
         // `default_headers` is declared as "headers included in all requests" and nothing
         // read it, so setting it changed nothing. Stored here, merged in `perform_request`.
@@ -599,7 +624,7 @@ impl Http2Client {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("HTTP/2 client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }

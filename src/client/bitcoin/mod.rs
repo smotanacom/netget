@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::client::bitcoin::actions::BITCOIN_CLIENT_RESPONSE_RECEIVED_EVENT;
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::ollama_client::OllamaClient;
@@ -81,6 +82,9 @@ impl BitcoinClient {
         // **model**, so a userinfo URL put a password into the prompt and onto the screen. Both
         // now carry the redacted form; `perform_rpc` re-reads the real one from `rpc_url`.
         let display_url = redact_userinfo(&rpc_url);
+        // In the browser build the transport has no TLS: an `https://` node is refused here, with
+        // the reason (and without the credential), rather than on the first call.
+        crate::client::http_fetch::check_url(&split_userinfo(&rpc_url).0)?;
 
         // Store RPC URL and auth in protocol_data
         app_state
@@ -420,9 +424,16 @@ impl BitcoinClient {
         });
 
         // Make HTTP POST request to Bitcoin RPC
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()?;
+        // reqwest natively; in the browser build the shared hyper transport over the virtual
+        // loopback (`crate::client::http_fetch`), with the same 60-second bound.
+        #[cfg(not(target_arch = "wasm32"))]
+        let http_client = FetchClient::from_reqwest(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()?,
+        );
+        #[cfg(target_arch = "wasm32")]
+        let http_client = FetchClient::transport(std::time::Duration::from_secs(60));
 
         // Split the credential out of the URL and send it as a real `Authorization: Basic`
         // header. reqwest does **not** derive Basic auth from URL userinfo, so posting the
@@ -469,7 +480,7 @@ impl BitcoinClient {
                     "Bitcoin RPC client {} request failed: {}",
                     client_id, e
                 ));
-                Err(e.into())
+                Err(e)
             }
         }
     }

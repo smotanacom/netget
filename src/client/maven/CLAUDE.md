@@ -266,3 +266,13 @@ timeout protects the caller either way.
 - A model-produced `disconnect` used to be *logged* and not performed, so the log asserted something that had not happened; it now sets `ClientStatus::Disconnected`. The `_ => {}` arm next to it swallowed `Err` from `execute_action`, so a malformed or unknown action produced no log at all; it now warns.
 - `repository_url` is declared in `get_startup_parameters()` **and read**: `connect()` prefers it over `ctx.remote_addr`. It was read by nothing, so the advertised knob did nothing when turned.
 - One `reqwest::Client`, built once on `spawn_blocking`. `http_client()` built a fresh one per request — the blocking rustls + platform-root-store cost on the async runtime.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same 30-second bound, `User-Agent` and the transport's 8 MiB body bound. The
+transport reads a response whole before `chunk()` yields it, so the streaming checks below the
+round trip see one chunk. A scheme-less repository address (what `[ + Maven client ]` fills in) gets `https://` natively — every URL built on it is absolute, and without a scheme reqwest refused each request as a relative URL — and `http://` in the browser; an explicit `https://` repository, Maven Central included, is refused there with the reason. `web/test/smoke.mjs` proves it in the bundle: `[ + Maven client ]` on NetGet's `maven` server connects, `[ send ]` of `download_pom` reaches the server's model with its coordinates and comes back `HTTP 200`, and the POM it wrote is in the `maven_pom_received` event parked on the client.
+

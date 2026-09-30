@@ -224,3 +224,15 @@ What it asserts, in order:
 5. An unknown verb comes back `Rejected`, not silently swallowed.
 6. `disconnect` returns `Disconnected`, the command loop exits, the handle is dropped and the
    client's status becomes `Disconnected`.
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/maven/CLAUDE.md`, "Browser build"), and the transport backend's requests
+are pinned to reqwest's by `tests/client/http/fetch_client_test.rs`.
+
+`command_channel_test.rs::a_bare_repository_address_is_given_a_scheme` pins the connect-time
+normalisation: `127.0.0.1:1` is stored as `https://127.0.0.1:1`, and an address with a scheme
+is kept as given. Making the bare branch keep the address unchanged turns it red.
+

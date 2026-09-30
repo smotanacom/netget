@@ -341,3 +341,15 @@ client task) so `connect` returns promptly.
 
 Test: `tests/client/elasticsearch/command_channel_test.rs` (no LLM, no cluster — a loopback
 listener is the endpoint).
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same
+30-second bound per exchange and an 8 MiB response body bound. The transport has no TLS, so in
+the browser an `https://` target is refused at connect with the reason
+(`http_fetch::check_url`) rather than on the first request. `web/test/smoke.mjs` proves it in
+the bundle: `[ + Elasticsearch client ]` on NetGet's `elasticsearch` server connects, `[ send ]` of a `search` reaches the server's model with its index and body and comes back `search completed: HTTP 200`, and the hits the server's model wrote are in the response event parked on the client. Natively each request still builds a fresh `reqwest::Client` (no timeout); in the browser each exchange is bounded at 30 seconds.
+

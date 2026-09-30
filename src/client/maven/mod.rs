@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::maven::actions::MAVEN_CLIENT_CONNECTED_EVENT;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
@@ -78,10 +79,12 @@ fn truncate_document(body: String) -> String {
 /// the systemic defect `CLAUDE.md` records as having stalled a whole client runtime.
 ///
 /// So: `OnceCell`, and `spawn_blocking` for the build itself.
+#[cfg(not(target_arch = "wasm32"))]
 static SHARED_HTTP_CLIENT: tokio::sync::OnceCell<reqwest::Client> =
     tokio::sync::OnceCell::const_new();
 
-async fn shared_http_client() -> Result<reqwest::Client> {
+#[cfg(not(target_arch = "wasm32"))]
+async fn reqwest_client() -> Result<reqwest::Client> {
     SHARED_HTTP_CLIENT
         .get_or_try_init(|| async {
             tokio::task::spawn_blocking(|| {
@@ -96,6 +99,18 @@ async fn shared_http_client() -> Result<reqwest::Client> {
         })
         .await
         .cloned()
+}
+
+/// The HTTP client every request here uses: the shared reqwest client natively
+/// ([`reqwest_client`]), and in the browser build the hyper HTTP/1.1 transport over the page's
+/// virtual loopback ([`crate::client::http_fetch`]) with the same timeout and User-Agent.
+async fn shared_http_client() -> Result<FetchClient> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let client = FetchClient::from_reqwest(reqwest_client().await?);
+    #[cfg(target_arch = "wasm32")]
+    let client = FetchClient::transport(std::time::Duration::from_secs(30))
+        .with_user_agent("NetGet-Maven/1.0");
+    Ok(client)
 }
 
 /// How many model turns a single injected action may spawn before the chain is cut.
@@ -580,9 +595,25 @@ impl MavenClient {
             || repository_url == "maven-central"
         {
             "https://repo.maven.apache.org/maven2".to_string()
-        } else {
+        } else if repository_url.contains("://") {
             repository_url
+        } else {
+            // A bare `host:port` (what the dashboard's `[ + Maven client ]` and a model asked to
+            // "connect to 127.0.0.1:8080" produce) gets a scheme: every URL built from it is
+            // absolute, and without one reqwest refused each request as a relative URL.
+            // `https://` natively, like npm and pypi; `http://` in the browser build, whose
+            // transport speaks nothing else and whose repositories are servers on the page's
+            // virtual network.
+            let scheme = if cfg!(target_arch = "wasm32") {
+                "http"
+            } else {
+                "https"
+            };
+            format!("{scheme}://{}", repository_url.trim_end_matches('/'))
         };
+        // In the browser build the transport has no TLS: an `https://` repository — Maven
+        // Central included — is refused here, with the reason, rather than on the first request.
+        crate::client::http_fetch::check_url(&repo_url)?;
 
         info!(
             "Maven client {} initialized for repository: {}",
@@ -868,7 +899,7 @@ impl MavenClient {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("Maven client {} download failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -962,7 +993,7 @@ impl MavenClient {
                     "Maven client {} POM download failed: {}",
                     client_id, e
                 ));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -1055,7 +1086,7 @@ impl MavenClient {
                     "Maven client {} metadata fetch failed: {}",
                     client_id, e
                 ));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -1078,7 +1109,7 @@ impl MavenClient {
     ///
     /// This used to build a `reqwest::Client` on every call — a blocking rustls +
     /// platform-root-store setup on the async runtime. See `shared_http_client`.
-    async fn http_client() -> Result<reqwest::Client> {
+    async fn http_client() -> Result<FetchClient> {
         shared_http_client().await
     }
 }

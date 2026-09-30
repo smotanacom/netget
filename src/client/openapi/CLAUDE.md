@@ -387,3 +387,15 @@ the bounded channel, which surfaces as "client busy" backpressure. `send_to_clie
 timeout protects the caller either way.
 
 **Not wired:** `execute_operation` still discards the actions the LLM returns for `openapi_operation_response` (`actions: _`, with a comment blaming async recursion). The command channel does not change that, but it does give the operator a way to drive follow-up operations by hand. An `operation_id` that is not in the spec produces `Err`, not a false `Executed` — asserted in the test.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same
+30-second bound per exchange and an 8 MiB response body bound. The transport has no TLS, so in
+the browser an `https://` target is refused at connect with the reason
+(`http_fetch::check_url`) rather than on the first request. `web/test/smoke.mjs` proves it in
+the bundle: the client is started through `ClientForm` with the `openapi` server's own spec (the dashboard's `[ + OpenAPI client ]` cannot know the spec — the form asks for it, and applied without one the connect fails with "requires 'spec' or 'spec_file'"), the model's `execute_operation listTodos` with a query parameter reaches NetGet's `openapi` server, its answer is reported back to the model, and `[ send ]` of the same operation comes back `Executed`.
+

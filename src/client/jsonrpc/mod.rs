@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::jsonrpc::actions::JSONRPC_CLIENT_RESPONSE_RECEIVED_EVENT;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
@@ -84,7 +85,8 @@ impl JsonRpcClient {
     /// That last point is why the cache is keyed by host rather than being one process-wide
     /// client: `ClientBuilder::resolve` is a per-host override. Copied from
     /// `src/client/http/mod.rs`, which carries the full reasoning.
-    async fn http_client(base_url: &str) -> Result<reqwest::Client> {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn reqwest_client(base_url: &str) -> Result<reqwest::Client> {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
 
@@ -124,6 +126,20 @@ impl JsonRpcClient {
         }
     }
 
+    /// The HTTP client for `base_url`: the cached reqwest client natively
+    /// ([`Self::reqwest_client`]), the shared hyper transport over the virtual loopback in the
+    /// browser build ([`crate::client::http_fetch`]), with the same 30-second bound.
+    async fn http_client(base_url: &str) -> Result<FetchClient> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let client = FetchClient::from_reqwest(Self::reqwest_client(base_url).await?);
+        #[cfg(target_arch = "wasm32")]
+        let client = {
+            let _ = base_url;
+            FetchClient::transport(std::time::Duration::from_secs(30))
+        };
+        Ok(client)
+    }
+
     /// Connect to a JSON-RPC server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -146,6 +162,9 @@ impl JsonRpcClient {
         } else {
             format!("http://{remote_addr}")
         };
+        // In the browser build the transport has no TLS: an `https://` endpoint is refused here,
+        // with the reason, rather than on the first call.
+        crate::client::http_fetch::check_url(&remote_addr)?;
 
         info!(
             "JSON-RPC client {} initialized for {}",
