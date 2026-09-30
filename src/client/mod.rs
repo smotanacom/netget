@@ -204,9 +204,9 @@ pub mod ldap;
 pub use ldap::actions::LdapClientProtocol;
 
 // maven client
-#[cfg(all(feature = "maven", not(target_arch = "wasm32")))]
+#[cfg(feature = "maven")]
 pub mod maven;
-#[cfg(all(feature = "maven", not(target_arch = "wasm32")))]
+#[cfg(feature = "maven")]
 pub use maven::actions::MavenClientProtocol;
 
 // mcp client
@@ -264,9 +264,9 @@ pub mod nntp;
 pub use nntp::actions::NntpClientProtocol;
 
 // npm client
-#[cfg(all(feature = "npm", not(target_arch = "wasm32")))]
+#[cfg(feature = "npm")]
 pub mod npm;
-#[cfg(all(feature = "npm", not(target_arch = "wasm32")))]
+#[cfg(feature = "npm")]
 pub use npm::actions::NpmClientProtocol;
 
 // ntp client
@@ -318,9 +318,9 @@ pub mod postgresql;
 pub use postgresql::actions::PostgresqlClientProtocol;
 
 // pypi client
-#[cfg(all(feature = "pypi", not(target_arch = "wasm32")))]
+#[cfg(feature = "pypi")]
 pub mod pypi;
-#[cfg(all(feature = "pypi", not(target_arch = "wasm32")))]
+#[cfg(feature = "pypi")]
 pub use pypi::actions::PypiClientProtocol;
 
 // mssql client
@@ -492,9 +492,9 @@ pub mod torrent_peer;
 pub use torrent_peer::actions::TorrentPeerClientProtocol;
 
 // torrent_tracker client
-#[cfg(all(feature = "torrent-tracker", not(target_arch = "wasm32")))]
+#[cfg(feature = "torrent-tracker")]
 pub mod torrent_tracker;
-#[cfg(all(feature = "torrent-tracker", not(target_arch = "wasm32")))]
+#[cfg(feature = "torrent-tracker")]
 pub use torrent_tracker::actions::TorrentTrackerClientProtocol;
 
 // turn client

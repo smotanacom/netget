@@ -39,7 +39,9 @@
 // client (`intercepts()`), since a dashboard-created client routes it to the human; openapi
 // (which needs the server's spec, so it goes through ClientForm) and bitcoin (whose RPC NetGet
 // serves only as plain HTTP) routed to the model, which runs the first request itself and is
-// shown each response. An https:// jsonrpc endpoint is refused with the reason.
+// shown each response. An https:// jsonrpc endpoint is refused with the reason. npm, pypi,
+// maven and torrent-tracker follow the button path too; the tracker's reply is bencoded with a
+// binary compact peer list, which must arrive decoded, and an https:// npm registry is refused.
 //
 // The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
 // thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
@@ -210,6 +212,26 @@ const netget = new NetGet({
         if (offered.has('send_http2_response')) {
             serverRequests.push({ protocol: 'http2', context });
             return answer([{ type: 'send_http2_response', status: 200, headers: { 'content-type': 'text/plain', 'x-smoke': 'h2' }, body: 'h2 says hi to ' + context.uri }]);
+        }
+        if (offered.has('npm_package_metadata')) {
+            serverRequests.push({ protocol: 'npm', context });
+            const name = decodeURIComponent(String(context.path).replace(/^\//, ''));
+            return answer([{ type: 'npm_package_metadata', metadata: { name, description: 'served to the smoke test', 'dist-tags': { latest: '1.3.0' },
+                versions: { '1.3.0': { name, version: '1.3.0', dist: { tarball: `http://127.0.0.1/${name}/-/${name}-1.3.0.tgz` } } } } }]);
+        }
+        if (offered.has('send_pypi_response')) {
+            serverRequests.push({ protocol: 'pypi', context });
+            return answer([{ type: 'send_pypi_response', status: 200, headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ info: { name: 'smoke-pkg', version: '2.0.0', summary: 'served to the smoke test from ' + context.path }, releases: { '2.0.0': [] }, urls: [] }) }]);
+        }
+        if (offered.has('send_maven_artifact')) {
+            serverRequests.push({ protocol: 'maven', context });
+            return answer([{ type: 'send_maven_artifact', status: 200, content_type: 'application/xml',
+                body: `<?xml version="1.0" encoding="UTF-8"?>\n<project><modelVersion>4.0.0</modelVersion><groupId>${context.group_id}</groupId><artifactId>${context.artifact_id}</artifactId><version>${context.version}</version><name>smoke pom</name></project>\n` }]);
+        }
+        if (offered.has('send_announce_response')) {
+            serverRequests.push({ protocol: 'torrent-tracker', context });
+            return answer([{ type: 'send_announce_response', interval: 900, complete: 3, incomplete: 1, compact: 1, peers: [{ ip: '127.0.0.1', port: 6881 }, { ip: '10.0.0.2', port: 51413 }] }]);
         }
         if (offered.has('send_elasticsearch_response')) {
             serverRequests.push({ protocol: 'elasticsearch', context });
@@ -537,12 +559,12 @@ try {
     // An event parked for the human on a client, as the dashboard's "waiting for YOUR answer"
     // rows show it. A client the dashboard creates routes everything after its connect event
     // to `manual`, so that is where the response lands.
-    async function parkedOn(clientId, eventType) {
+    async function parkedOn(clientId, eventType, matches = () => true) {
         let found = null;
         await waitFor(() => {
             netget.intercepts((json) => {
                 const rows = JSON.parse(json);
-                found = rows.find((r) => r.owner.kind === 'client' && r.owner.id === clientId && r.event_type === eventType) || found;
+                found = rows.find((r) => r.owner.kind === 'client' && r.owner.id === clientId && r.event_type === eventType && matches(r.event_data || {})) || found;
             });
             return found !== null;
         }, `a ${eventType} parked on client #${clientId}`, 20000);
@@ -629,6 +651,43 @@ try {
     const auth = rpcSeen && headerOf(rpcSeen.context.headers, 'authorization');
     if (auth !== 'Basic ' + Buffer.from('smoke:pw').toString('base64')) fail('the RPC credentials did not arrive as Basic auth: ' + JSON.stringify(rpcSeen && rpcSeen.context.headers));
     webClients.bitcoin = `ClientForm #${btcClient.id} -> http :${HTTP_PORT}: [ send ] ${btcDetail}; blocks ${btc.result.blocks}; Basic auth arrived`;
+
+    // npm, pypi, maven: each registry client through [ + client ] on NetGet's own server of its
+    // protocol (a bare address is http:// in the browser), [ send ] a lookup, and the answer the
+    // server's model wrote found parked on the client.
+    const registries = [
+        { protocol: 'npm', port: 8086, action: { type: 'get_package_info', package_name: 'smoke-pkg' }, event: 'npm_package_info_received', marker: 'served to the smoke test' },
+        { protocol: 'pypi', port: 8087, action: { type: 'get_package_info', package_name: 'smoke-pkg' }, event: 'pypi_package_info_received', marker: 'served to the smoke test from' },
+        { protocol: 'maven', port: 8088, action: { type: 'download_pom', group_id: 'net.netget', artifact_id: 'smoke', version: '1.0.0' }, event: 'maven_pom_received', marker: '<artifactId>smoke</artifactId>' },
+    ];
+    for (const r of registries) {
+        const server = await startServer({ protocol: r.protocol, port: r.port, instruction: `Serve a tiny ${r.protocol} registry.` });
+        const client = await connectViaButton(server.id, r.protocol);
+        const detail = await send(client.id, r.action);
+        if (!serverRequests.some((q) => q.protocol === r.protocol)) fail(`the ${r.protocol} request never reached the server's model; [ send ] said ` + detail);
+        const parked = await parkedOn(client.id, r.event);
+        if (!JSON.stringify(parked.event_data).includes(r.marker)) fail(`the ${r.protocol} answer did not reach the client: ` + JSON.stringify(parked));
+        webClients[r.protocol] = `[ + client ] #${client.id} -> http://127.0.0.1:${r.port}, [ send ] ${r.action.type} -> ${detail}; parked ${r.event}`;
+    }
+    // A registry named https:// is refused in the browser, with the reason.
+    let npmRefused = null;
+    netget.start_client(JSON.stringify({ protocol: 'npm', remote_addr: 'https://registry.npmjs.org', instruction: 'Look up left-pad.' }), (json) => { npmRefused = JSON.parse(json); });
+    await waitFor(() => npmRefused !== null, 'start_client (npm, https) to answer');
+    if (!npmRefused.error || !npmRefused.error.includes('https:// is not available')) fail('an https:// npm registry was not refused with the reason: ' + JSON.stringify(npmRefused));
+
+    // torrent-tracker: [ + client ] (a bare address becomes http://host:port/announce),
+    // [ send ] an announce, and the tracker's bencoded reply — a binary compact peer list —
+    // decoded on the client: 127.0.0.1:6881 is the six bytes 127 0 0 1 26 225.
+    const TRACKER_PORT = 8089;
+    const trackerServer = await startServer({ protocol: 'torrent-tracker', port: TRACKER_PORT, instruction: 'Track one swarm.' });
+    const trackerClient = await connectViaButton(trackerServer.id, 'torrent-tracker');
+    const infoHash = '0123456789abcdef0123456789abcdef01234567';
+    const announceDetail = await send(trackerClient.id, { type: 'tracker_announce', info_hash: infoHash, peer_id: '2d4e47303030312d736d6f6b6530303030303030', port: 6881, uploaded: 0, downloaded: 0, left: 0, event: 'started' });
+    const announced = serverRequests.find((q) => q.protocol === 'torrent-tracker');
+    if (!announced || !JSON.stringify(announced.context).toLowerCase().includes(infoHash)) fail('the announce did not reach the tracker\'s model with its info_hash: ' + JSON.stringify(announced) + '; [ send ] said ' + announceDetail);
+    const peers = await parkedOn(trackerClient.id, 'tracker_announce_response', (d) => d.interval !== undefined);
+    if (peers.event_data.interval !== 900 || peers.event_data.complete !== 3 || !String(peers.event_data.peers).includes('127, 0, 0, 1, 26, 225')) fail('the compact peer list did not reach the client intact: ' + JSON.stringify(peers));
+    webClients['torrent-tracker'] = `[ + client ] #${trackerClient.id}, [ send ] announce -> ${announceDetail}; parked interval ${peers.event_data.interval}, peers ${peers.event_data.peers}`;
 
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 

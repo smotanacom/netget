@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::npm::actions::{
     NPM_CLIENT_PACKAGE_INFO_RECEIVED_EVENT, NPM_CLIENT_SEARCH_RESULTS_RECEIVED_EVENT,
@@ -59,10 +60,12 @@ enum Applied {
 /// the systemic defect `CLAUDE.md` records as having stalled a whole client runtime.
 ///
 /// So: `OnceCell`, and `spawn_blocking` for the build itself.
+#[cfg(not(target_arch = "wasm32"))]
 static SHARED_HTTP_CLIENT: tokio::sync::OnceCell<reqwest::Client> =
     tokio::sync::OnceCell::const_new();
 
-async fn shared_http_client() -> Result<reqwest::Client> {
+#[cfg(not(target_arch = "wasm32"))]
+async fn reqwest_client() -> Result<reqwest::Client> {
     SHARED_HTTP_CLIENT
         .get_or_try_init(|| async {
             tokio::task::spawn_blocking(|| {
@@ -77,6 +80,19 @@ async fn shared_http_client() -> Result<reqwest::Client> {
         })
         .await
         .cloned()
+}
+
+/// The HTTP client every request here uses: the shared reqwest client natively
+/// ([`reqwest_client`]), and in the browser build the hyper HTTP/1.1 transport over the page's
+/// virtual loopback ([`crate::client::http_fetch`]) with the same timeout and User-Agent. The body bound is the 64 MiB tarball cap (`MAX_TARBALL_BYTES`) rather than the transport's 8 MiB default, so the protocol's own bound is the one that governs.
+async fn shared_http_client() -> Result<FetchClient> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let client = FetchClient::from_reqwest(reqwest_client().await?);
+    #[cfg(target_arch = "wasm32")]
+    let client = FetchClient::transport(std::time::Duration::from_secs(120))
+        .with_user_agent("NetGet NPM Client/1.0")
+        .with_max_body(MAX_TARBALL_BYTES as usize);
+    Ok(client)
 }
 
 /// Ceiling on a tarball fetched by `download_tarball`.
@@ -100,8 +116,10 @@ const MAX_TARBALL_BYTES: u64 = 64 * 1024 * 1024;
 /// `remote_addr: "registry.npmjs.org"`, and it is honoured. Arriving there because nobody said
 /// otherwise is not.
 ///
-/// A scheme is left as given; without one, `https://` is added rather than the address being
-/// discarded, which was an earlier incarnation of this same bug (`127.0.0.1:8080` silently
+/// A scheme is left as given; without one, `https://` is added natively — and `http://` in
+/// the browser build, whose transport speaks nothing else and whose registrys are servers on the
+/// page's virtual network — rather than the address being discarded, which was an earlier
+/// incarnation of this same bug (`127.0.0.1:8080` silently
 /// became the public registry).
 fn resolve_registry_url(remote_addr: &str) -> Result<String> {
     let trimmed = remote_addr.trim().trim_end_matches('/');
@@ -118,7 +136,12 @@ fn resolve_registry_url(remote_addr: &str) -> Result<String> {
              by omission"
         );
     }
-    Ok(format!("https://{trimmed}"))
+    let scheme = if cfg!(target_arch = "wasm32") {
+        "http"
+    } else {
+        "https"
+    };
+    Ok(format!("{scheme}://{trimmed}"))
 }
 
 /// NPM Registry client that queries packages
@@ -142,6 +165,9 @@ impl NpmClient {
         // A host is now given the `https://` it was missing, and an address that is
         // missing entirely is an error rather than a silent trip to the vendor.
         let registry_url = resolve_registry_url(&remote_addr)?;
+        // In the browser build the transport has no TLS: an `https://` registry is refused here,
+        // with the reason, rather than on the first request.
+        crate::client::http_fetch::check_url(&registry_url)?;
 
         info!("NPM client {} initialized for {}", client_id, registry_url);
 
@@ -393,7 +419,7 @@ impl NpmClient {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("NPM client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -665,7 +691,7 @@ impl NpmClient {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("NPM client {} search failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }

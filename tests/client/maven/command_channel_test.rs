@@ -223,3 +223,45 @@ async fn injected_maven_action_reaches_the_repository() {
         state.has_client_handle(client_id).await
     );
 }
+
+/// A bare `host:port` — what the dashboard's `[ + Maven client ]` fills in — is given a scheme
+/// at connect: `https://` natively (the browser build gives `http://`, the only scheme its
+/// transport speaks). Every URL the client builds is absolute; a scheme-less repository made
+/// reqwest refuse each request as a relative URL. An explicit scheme is kept as given.
+#[tokio::test]
+async fn a_bare_repository_address_is_given_a_scheme() {
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut stored = Vec::new();
+    for remote in ["127.0.0.1:1", "http://127.0.0.1:1/maven2"] {
+        let client_id = ClientForm {
+            protocol: "maven".to_string(),
+            remote_addr: Some(remote.to_string()),
+            instruction: Some("test client".to_string()),
+            ..Default::default()
+        }
+        .create(
+            &state,
+            netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+            tx.clone(),
+        )
+        .await
+        .expect("create maven client");
+        let url = state
+            .with_client_mut(client_id, |c| {
+                c.get_protocol_field("repository_url")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .await
+            .flatten();
+        stored.push(url);
+    }
+    assert_eq!(
+        stored,
+        vec![
+            Some("https://127.0.0.1:1".to_string()),
+            Some("http://127.0.0.1:1/maven2".to_string())
+        ]
+    );
+}

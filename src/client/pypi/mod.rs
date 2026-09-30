@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::pypi::actions::{
     PYPI_FILE_DOWNLOADED_EVENT, PYPI_PACKAGE_INFO_EVENT, PYPI_SEARCH_RESULTS_EVENT,
@@ -76,8 +77,10 @@ const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 /// `remote_addr: "pypi.org"`, and it is honoured. Arriving there because nobody said otherwise
 /// is not.
 ///
-/// A scheme is left as given; without one, `https://` is added rather than the address being
-/// discarded, which was an earlier incarnation of this same bug (`127.0.0.1:8080` silently
+/// A scheme is left as given; without one, `https://` is added natively — and `http://` in
+/// the browser build, whose transport speaks nothing else and whose indexs are servers on the
+/// page's virtual network — rather than the address being discarded, which was an earlier
+/// incarnation of this same bug (`127.0.0.1:8080` silently
 /// became the public index).
 fn resolve_index_url(remote_addr: &str) -> Result<String> {
     let trimmed = remote_addr.trim().trim_end_matches('/');
@@ -94,7 +97,12 @@ fn resolve_index_url(remote_addr: &str) -> Result<String> {
              Python package index by omission"
         );
     }
-    Ok(format!("https://{trimmed}"))
+    let scheme = if cfg!(target_arch = "wasm32") {
+        "http"
+    } else {
+        "https"
+    };
+    Ok(format!("{scheme}://{trimmed}"))
 }
 
 /// The one `reqwest::Client` this protocol uses, built once.
@@ -106,10 +114,12 @@ fn resolve_index_url(remote_addr: &str) -> Result<String> {
 /// the systemic defect `CLAUDE.md` records as having stalled a whole client runtime.
 ///
 /// So: `OnceCell`, and `spawn_blocking` for the build itself.
+#[cfg(not(target_arch = "wasm32"))]
 static SHARED_HTTP_CLIENT: tokio::sync::OnceCell<reqwest::Client> =
     tokio::sync::OnceCell::const_new();
 
-async fn shared_http_client() -> Result<reqwest::Client> {
+#[cfg(not(target_arch = "wasm32"))]
+async fn reqwest_client() -> Result<reqwest::Client> {
     SHARED_HTTP_CLIENT
         .get_or_try_init(|| async {
             tokio::task::spawn_blocking(|| {
@@ -124,6 +134,19 @@ async fn shared_http_client() -> Result<reqwest::Client> {
         })
         .await
         .cloned()
+}
+
+/// The HTTP client every request here uses: the shared reqwest client natively
+/// ([`reqwest_client`]), and in the browser build the hyper HTTP/1.1 transport over the page's
+/// virtual loopback ([`crate::client::http_fetch`]) with the same timeout and User-Agent. The body bound is the download cap (`MAX_DOWNLOAD_BYTES`) rather than the transport's 8 MiB default, so the protocol's own bound is the one that governs.
+async fn shared_http_client() -> Result<FetchClient> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let client = FetchClient::from_reqwest(reqwest_client().await?);
+    #[cfg(target_arch = "wasm32")]
+    let client = FetchClient::transport(std::time::Duration::from_secs(30))
+        .with_user_agent("NetGet-PyPI-Client/1.0")
+        .with_max_body(MAX_DOWNLOAD_BYTES as usize);
+    Ok(client)
 }
 
 pub struct PypiClient;
@@ -149,6 +172,9 @@ impl PypiClient {
         // gets the `https://` it was missing, and an address that is missing entirely
         // is an error rather than a silent trip to the vendor.
         let index_url = resolve_index_url(&remote_addr)?;
+        // In the browser build the transport has no TLS: an `https://` index is refused here,
+        // with the reason, rather than on the first request.
+        crate::client::http_fetch::check_url(&index_url)?;
 
         // Store client data
         app_state
@@ -317,7 +343,7 @@ impl PypiClient {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("PyPI client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -448,7 +474,7 @@ impl PypiClient {
     ///
     /// This used to build a `reqwest::Client` on every call — a blocking rustls +
     /// platform-root-store setup on the async runtime. See `shared_http_client`.
-    async fn http_client() -> Result<reqwest::Client> {
+    async fn http_client() -> Result<FetchClient> {
         shared_http_client().await
     }
 

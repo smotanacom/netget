@@ -46,6 +46,7 @@ enum Backend {
     Transport {
         timeout: Duration,
         max_body: usize,
+        user_agent: Option<String>,
     },
 }
 
@@ -65,6 +66,7 @@ impl FetchClient {
             backend: Backend::Transport {
                 timeout,
                 max_body: transport::MAX_RESPONSE_BODY_BYTES,
+                user_agent: None,
             },
         }
     }
@@ -82,17 +84,33 @@ impl FetchClient {
         self
     }
 
+    /// Send `User-Agent: user_agent` on every transport request that sets none of its own —
+    /// what reqwest's `ClientBuilder::user_agent` does for a reqwest-backed client, whose
+    /// builder already carries it.
+    #[allow(irrefutable_let_patterns)]
+    pub fn with_user_agent(mut self, user_agent: &str) -> Self {
+        if let Backend::Transport { user_agent: ua, .. } = &mut self.backend {
+            *ua = Some(user_agent.to_string());
+        }
+        self
+    }
+
     pub fn request(&self, method: Method, url: &str) -> FetchRequest {
         match &self.backend {
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Reqwest(client) => FetchRequest {
                 inner: RequestInner::Reqwest(client.request(method, url)),
             },
-            Backend::Transport { timeout, max_body } => FetchRequest {
+            Backend::Transport {
+                timeout,
+                max_body,
+                user_agent,
+            } => FetchRequest {
                 inner: RequestInner::Transport(TransportRequest {
                     method,
                     url: url.to_string(),
                     headers: Vec::new(),
+                    user_agent: user_agent.clone(),
                     body: None,
                     timeout: *timeout,
                     max_body: *max_body,
@@ -155,6 +173,7 @@ struct TransportRequest {
     url: String,
     headers: Vec<(String, String)>,
     body: Option<Bytes>,
+    user_agent: Option<String>,
     timeout: Duration,
     max_body: usize,
     error: Option<anyhow::Error>,
@@ -342,9 +361,15 @@ impl FetchRequest {
             RequestInner::Reqwest(builder) => Ok(FetchResponse {
                 inner: ResponseInner::Reqwest(builder.send().await?),
             }),
-            RequestInner::Transport(req) => {
-                if let Some(error) = req.error {
+            RequestInner::Transport(mut req) => {
+                if let Some(error) = req.error.take() {
                     return Err(error);
+                }
+                if let Some(user_agent) = req.user_agent.take() {
+                    if !req.has_header(hyper::header::USER_AGENT.as_str()) {
+                        req.headers
+                            .push((hyper::header::USER_AGENT.as_str().to_string(), user_agent));
+                    }
                 }
                 let response = transport::fetch_response(
                     req.method.as_str(),

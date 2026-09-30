@@ -323,13 +323,20 @@ NetGet's own server of its protocol where one speaks it:
 | `elasticsearch` | yes | `[ + Elasticsearch client ]` on the `elasticsearch` server; `[ send ]` a `search` reaches the server's model with its index and body, and the hits it wrote are parked on the client |
 | `openapi` | yes | started through `ClientForm` with the server's spec (`[ + OpenAPI client ]` cannot know the spec; the dashboard's form asks for it): the model runs `listTodos` with a query parameter against the `openapi` server, is shown the response, and `[ send ]` repeats it |
 | `bitcoin` | yes | NetGet's `bitcoin` server is the P2P protocol, not Bitcoin Core's JSON-RPC, so the peer is the `http` server answering as bitcoind would: `[ send ]` `get_blockchain_info` → HTTP 200 with the result reported to the model, and `rpc_user`/`rpc_password` arriving as `Authorization: Basic` |
+| `npm` | yes | `[ + npm client ]` on the `npm` server; `[ send ]` `get_package_info` → the packument the server's model wrote, parked on the client; `https://registry.npmjs.org` refused with the reason |
+| `pypi` | yes | `[ + PyPI client ]` on the `pypi` server; `[ send ]` `get_package_info` → the JSON the server's model wrote, parked on the client |
+| `maven` | yes | `[ + Maven client ]` on the `maven` server; `[ send ]` `download_pom` → HTTP 200, the POM the server's model wrote parked on the client |
+| `torrent-tracker` | yes | `[ + BitTorrent Tracker client ]` on the `torrent-tracker` server; `[ send ]` an announce → the server's bencoded reply with a **binary** compact peer list decoded on the client (`127, 0, 0, 1, 26, 225, …`) |
+
+npm, pypi and maven default to public `https://` registries natively; in the browser build a
+scheme-less address means `http://` (a server on the page's virtual network) and an explicit
+`https://` one is refused with the reason, so none of them can reach the public registries
+from the page. The transport reads a response whole, bounded by the client's own cap where it
+has one (npm's 64 MiB tarball cap, pypi's download cap, the tracker's 1 MiB), else 8 MiB.
 
 Still gated with `not(target_arch = "wasm32")` in `src/client/mod.rs` and the registry (their
 servers are in), measured by what each asks of reqwest:
 
-- **npm, pypi, maven** — the same, plus `bytes()` for artifacts. Their default targets are
-  public `https://` registries, which the browser build cannot reach at all.
-- **torrent-tracker** — GET with a query and a **bencoded binary** body.
 - **http2** — `http2_prior_knowledge()`: needs hyper's `client::conn::http2` with an executor,
   a second transport rather than a switch.
 - **oauth2, openidconnect** — the `oauth2`/`openidconnect` crates call reqwest through their

@@ -178,3 +178,18 @@ it, so an injected `tracker_announce` builds the identical announce URL and fire
 
 **`Sent { bytes_sent }` is never reported**: reqwest owns the socket. The GET is awaited
 before the outcome is returned.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). Every request goes through
+`crate::client::http_fetch::FetchClient`: natively it wraps the same reqwest client as before,
+so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1 transport
+(`src/client/http_fetch/transport.rs`) over the page's virtual loopback, with the same 30-second `TRACKER_REQUEST_TIMEOUT` and `MAX_TRACKER_BODY_BYTES` as the transport's body bound. The
+transport reads a response whole before `chunk()` yields it, so the streaming checks below the
+round trip see one chunk. A bare `host:port` (what `[ + BitTorrent Tracker client ]` fills in) becomes `http://host:port/announce` on both targets (`resolve_tracker_url`); before, the announce URL was built on the bare address and failed every request. An explicit `https://` tracker is refused in the browser with the reason. `web/test/smoke.mjs` proves it in the bundle: `[ + BitTorrent Tracker client ]` on NetGet's `torrent-tracker` server connects, `[ send ]` of a `tracker_announce` reaches the server's model with its info_hash, and the server's bencoded reply — a **binary** compact peer list — is decoded on the client: the parked `tracker_announce_response` carries interval 900 and the peers as bytes `127, 0, 0, 1, 26, 225, …`.
+Tested by `tests/client/torrent_tracker/command_channel_test.rs`:
+`a_bare_tracker_address_announces_over_http` (a client created with `127.0.0.1:<port>`
+announces on `GET /announce?…` to a stub tracker) and
+`tracker_urls_resolve_to_absolute_http_announce_urls` (bare, bare-with-path, `https://` and
+`http://` inputs). Making `resolve_tracker_url` return its input turns both red.
+

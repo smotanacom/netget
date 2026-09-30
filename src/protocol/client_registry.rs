@@ -165,7 +165,7 @@ impl ClientRegistry {
         #[cfg(feature = "ldap")]
         self.register(Arc::new(crate::client::ldap::LdapClientProtocol::new()));
 
-        #[cfg(all(feature = "maven", not(target_arch = "wasm32")))]
+        #[cfg(feature = "maven")]
         self.register(Arc::new(crate::client::maven::MavenClientProtocol::new()));
 
         #[cfg(feature = "mcp")]
@@ -197,7 +197,7 @@ impl ClientRegistry {
         #[cfg(feature = "nntp")]
         self.register(Arc::new(crate::client::nntp::NntpClientProtocol::new()));
 
-        #[cfg(all(feature = "npm", not(target_arch = "wasm32")))]
+        #[cfg(feature = "npm")]
         self.register(Arc::new(crate::client::npm::NpmClientProtocol::new()));
 
         #[cfg(feature = "ntp")]
@@ -230,7 +230,7 @@ impl ClientRegistry {
             crate::client::postgresql::PostgresqlClientProtocol::new(),
         ));
 
-        #[cfg(all(feature = "pypi", not(target_arch = "wasm32")))]
+        #[cfg(feature = "pypi")]
         self.register(Arc::new(crate::client::pypi::PypiClientProtocol::new()));
 
         #[cfg(feature = "mssql")]
@@ -327,7 +327,7 @@ impl ClientRegistry {
             crate::client::torrent_peer::TorrentPeerClientProtocol::new(),
         ));
 
-        #[cfg(all(feature = "torrent-tracker", not(target_arch = "wasm32")))]
+        #[cfg(feature = "torrent-tracker")]
         self.register(Arc::new(
             crate::client::torrent_tracker::TorrentTrackerClientProtocol::new(),
         ));

@@ -373,3 +373,79 @@ async fn injected_unknown_action_is_rejected_and_disconnect_drops_the_handle() {
     }
     panic!("command handle should be gone after an injected disconnect");
 }
+
+/// A bare `host:port` — what the dashboard's `[ + BitTorrent Tracker client ]` fills in —
+/// announces to `http://host:port/announce`. The announce URL used to be built straight on the
+/// bare address (`127.0.0.1:6969?info_hash=…`), which is not an absolute URL, so every request
+/// failed before leaving the process.
+#[tokio::test]
+async fn a_bare_tracker_address_announces_over_http() {
+    let (port, seen) = spawn_http_stub(tracker_stub_body).await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let client_id = ClientForm {
+        protocol: "torrent_tracker".to_string(),
+        remote_addr: Some(format!("127.0.0.1:{port}")),
+        instruction: Some("test client".to_string()),
+        event_handlers: Some(no_llm_handlers()),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx,
+    )
+    .await
+    .expect("create torrent tracker client");
+    wait_for_client_handle(&state, client_id).await;
+
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "tracker_announce",
+                "info_hash": "baretrackermarker001",
+                "peer_id": "baretrackerpeer00001",
+                "port": 6881,
+                "uploaded": 0,
+                "downloaded": 0,
+                "left": 0,
+                "event": "started"
+            }),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client");
+    assert!(
+        matches!(&outcome, ClientSendOutcome::Executed { detail } if detail.contains("tracker_announce")),
+        "expected an executed announce, got {outcome:?}"
+    );
+    let requests = seen.lock().await.clone();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.starts_with("GET /announce?") && r.contains("baretrackermarker001")),
+        "the stub tracker never saw an announce on /announce: {requests:?}"
+    );
+}
+
+#[test]
+fn tracker_urls_resolve_to_absolute_http_announce_urls() {
+    use netget::client::torrent_tracker::resolve_tracker_url;
+    assert_eq!(
+        resolve_tracker_url("127.0.0.1:6969"),
+        "http://127.0.0.1:6969/announce"
+    );
+    assert_eq!(
+        resolve_tracker_url(" tracker.local:80/custom/announce "),
+        "http://tracker.local:80/custom/announce"
+    );
+    assert_eq!(
+        resolve_tracker_url("https://tracker.example/announce"),
+        "https://tracker.example/announce"
+    );
+    assert_eq!(
+        resolve_tracker_url("http://127.0.0.1:1/announce"),
+        "http://127.0.0.1:1/announce"
+    );
+}
