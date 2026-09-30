@@ -799,6 +799,192 @@ ids = b','.join([b'"' + b'0' * 64 + b'"'] * 1900)
 body = b'["REQ","s",{"ids":[' + ids + b']}]'
 write("nostr_message", "at_message_bound", body + b' ' * (131072 - len(body)))
 
+# --- SMB2: requests as smbclient and smbprotocol send them, compounds, and lengths --------
+# `smb2_request` walks a frame as the server does and hands every request to every parser;
+# `ntlmssp_token` is the SESSION_SETUP security buffer. See both targets' module docs.
+def smb2_header(cmd, mid, tid=0, sid=0, flags=0, next_command=0):
+    return (b"\xfeSMB" + struct.pack("<HHIHHIIQIIQ", 64, 0, 0, cmd, 8, flags, next_command,
+                                     mid, 0, tid, sid) + b"\x00" * 16)
+
+def utf16(s):
+    return s.encode("utf-16-le")
+
+FID = bytes(range(16))
+
+def smb2_negotiate(mid=0, dialects=(0x0202, 0x0210), count=None):
+    n = len(dialects) if count is None else count
+    return (smb2_header(0, mid) + struct.pack("<HHHHI", 36, n, 1, 0, 0) + b"\x11" * 16 +
+            b"\x00" * 8 + b"".join(struct.pack("<H", d) for d in dialects))
+
+def smb2_session_setup(mid, sid, blob, blob_len=None, blob_off=88):
+    n = len(blob) if blob_len is None else blob_len
+    return (smb2_header(1, mid, 0, sid) + struct.pack("<HBBIIHHQ", 25, 0, 1, 0, 0, blob_off, n, 0)
+            + blob)
+
+def smb2_tree_connect(mid, sid, unc, path_len=None):
+    path = utf16(unc)
+    n = len(path) if path_len is None else path_len
+    return smb2_header(3, mid, 0, sid) + struct.pack("<HHHH", 9, 0, 72, n) + path
+
+def smb2_create(mid, tid, sid, name, options=0, disposition=1, name_len=None, flags=0,
+                next_command=0):
+    nm = utf16(name)
+    n = len(nm) if name_len is None else name_len
+    body = (struct.pack("<HBBI", 57, 0, 0, 2) + b"\x00" * 16 +
+            struct.pack("<IIIIIHHII", 0x00120089, 0, 7, disposition, options, 120, n, 0, 0))
+    return smb2_header(5, mid, tid, sid, flags, next_command) + body + (nm or b"\x00")
+
+def smb2_file_id_request(cmd, mid, tid, sid, fid=FID, flags=0, next_command=0):
+    # CLOSE and FLUSH: StructureSize 24, a 16-bit field, 4 reserved, the FileId.
+    return smb2_header(cmd, mid, tid, sid, flags, next_command) + struct.pack("<HHI", 24, 0, 0) + fid
+
+def smb2_read(mid, tid, sid, length=65536, offset=0, fid=FID):
+    return (smb2_header(8, mid, tid, sid) + struct.pack("<HBBIQ", 49, 0x50, 0, length, offset) +
+            fid + struct.pack("<IIIHH", 0, 0, 0, 0, 0) + b"\x00")
+
+def smb2_write(mid, tid, sid, data, length=None, data_offset=112, offset=0, fid=FID):
+    n = len(data) if length is None else length
+    return (smb2_header(9, mid, tid, sid) + struct.pack("<HHIQ", 49, data_offset, n, offset) +
+            fid + struct.pack("<IIHHI", 0, 0, 0, 0, 0) + data)
+
+def smb2_query_info(mid, tid, sid, info_type=1, cls=18, out_len=0xFFFF, fid=FID, flags=0,
+                    next_command=0):
+    return (smb2_header(0x10, mid, tid, sid, flags, next_command) +
+            struct.pack("<HBBIHHIII", 41, info_type, cls, out_len, 0, 0, 0, 0, 0) + fid + b"\x00")
+
+def smb2_query_directory(mid, tid, sid, pattern="*", cls=37, name_len=None, out_len=0xFFFF):
+    nm = utf16(pattern)
+    n = len(nm) if name_len is None else name_len
+    return (smb2_header(0x0E, mid, tid, sid) + struct.pack("<HBBI", 33, cls, 0, 0) + FID +
+            struct.pack("<HHI", 96, n, out_len) + nm)
+
+def smb2_simple(cmd, mid, tid=0, sid=0):
+    return smb2_header(cmd, mid, tid, sid) + b"\x04\x00\x00\x00"
+
+def smb2_compound(msgs):
+    out = b""
+    for i, m in enumerate(msgs):
+        if i + 1 < len(msgs):
+            m = m + b"\x00" * (-len(m) % 8)
+            m = m[:20] + struct.pack("<I", len(m)) + m[24:]
+        out += m
+    return out
+
+RELATED = 0x4
+NTLM_NEGOTIATE = b"NTLMSSP\x00" + struct.pack("<II", 1, 0x62088215) + b"\x00" * 16
+
+def ntlm_authenticate(user, domain="", workstation="WS", lm=b"", nt=b"", flags=0x62088215):
+    fields = [lm, nt, utf16(domain), utf16(user), utf16(workstation), b""]
+    off = 64
+    fixed = b"NTLMSSP\x00" + struct.pack("<I", 3)
+    payload = b""
+    for f in fields:
+        fixed += struct.pack("<HHI", len(f), len(f), off + len(payload))
+        payload += f
+    fixed += struct.pack("<I", flags)
+    return fixed + payload
+
+def der(tag, content):
+    n = len(content)
+    if n < 0x80:
+        return bytes([tag, n]) + content
+    if n <= 0xFF:
+        return bytes([tag, 0x81, n]) + content
+    return bytes([tag, 0x82, n >> 8, n & 0xFF]) + content
+
+NTLMSSP_OID = bytes([0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a])
+SPNEGO_OID = bytes([0x06, 0x06, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02])
+
+def spnego_init(token):
+    init = der(0x30, der(0xa0, der(0x30, NTLMSSP_OID)) + der(0xa2, der(0x04, token)))
+    return der(0x60, SPNEGO_OID + der(0xa0, init))
+
+def spnego_resp(token):
+    return der(0xa1, der(0x30, der(0xa2, der(0x04, token))))
+
+ANON_AUTH = ntlm_authenticate("", lm=b"\x00", flags=0x62088A15)
+GUEST_AUTH = ntlm_authenticate("guest", "WORKGROUP", nt=b"\x00" * 24)
+
+write("smb2_request", "negotiate", smb2_negotiate())
+write("smb2_request", "session_setup_spnego_negotiate",
+      smb2_session_setup(1, 0, spnego_init(NTLM_NEGOTIATE)))
+write("smb2_request", "session_setup_spnego_authenticate",
+      smb2_session_setup(2, 7, spnego_resp(ANON_AUTH)))
+write("smb2_request", "session_setup_guest", smb2_session_setup(1, 0, b""))
+write("smb2_request", "tree_connect", smb2_tree_connect(3, 1, r"\\127.0.0.1\share"))
+write("smb2_request", "create_root", smb2_create(4, 1, 1, "", options=1))
+write("smb2_request", "create_file", smb2_create(5, 1, 1, r"dir\report.bin", options=0x40))
+write("smb2_request", "create_delete_on_close",
+      smb2_create(5, 1, 1, "upload.bin", options=0x1040))
+write("smb2_request", "close", smb2_file_id_request(6, 6, 1, 1))
+write("smb2_request", "flush", smb2_file_id_request(7, 7, 1, 1))
+write("smb2_request", "read", smb2_read(8, 1, 1))
+write("smb2_request", "write", smb2_write(9, 1, 1, b"hello world"))
+write("smb2_request", "query_info_all", smb2_query_info(10, 1, 1))
+write("smb2_request", "query_info_fs", smb2_query_info(11, 1, 1, info_type=2, cls=7))
+write("smb2_request", "query_directory", smb2_query_directory(12, 1, 1, "*.bin"))
+write("smb2_request", "echo", smb2_simple(0x0D, 13))
+write("smb2_request", "logoff", smb2_simple(0x02, 14, 0, 1))
+# smbprotocol's stat: CREATE, five QUERY_INFOs and CLOSE, all but the first RELATED_OPERATIONS
+# with the all-ones "the handle just opened" FileId.
+ONES = b"\xff" * 16
+write("smb2_request", "compound_stat", smb2_compound(
+    [smb2_create(20, 1, 1, "report.bin")] +
+    [smb2_query_info(21 + i, 1, 1, cls=c, fid=ONES, flags=RELATED)
+     for i, c in enumerate((4, 5, 6, 35))] +
+    [smb2_query_info(25, 1, 1, info_type=2, cls=1, fid=ONES, flags=RELATED),
+     smb2_file_id_request(6, 26, 1, 1, fid=ONES, flags=RELATED)]))
+# Lengths a peer declares, each at and past what the message holds.
+write("smb2_request", "negotiate_dialect_count_bomb", smb2_negotiate(count=0xFFFF))
+write("smb2_request", "session_setup_blob_past_end",
+      smb2_session_setup(1, 0, b"NTLMSSP\x00", blob_len=0xFFFF))
+write("smb2_request", "session_setup_blob_offset_past_end",
+      smb2_session_setup(1, 0, b"x", blob_off=0xFFFF))
+write("smb2_request", "tree_connect_path_past_end",
+      smb2_tree_connect(3, 1, r"\\a\b", path_len=0xFFFF))
+write("smb2_request", "create_name_past_end", smb2_create(4, 1, 1, "x", name_len=0xFFFF))
+write("smb2_request", "create_odd_name_len", smb2_create(4, 1, 1, "xy", name_len=3))
+write("smb2_request", "write_length_bomb", smb2_write(9, 1, 1, b"x", length=0xFFFFFFFF))
+write("smb2_request", "write_offset_bomb", smb2_write(9, 1, 1, b"x", data_offset=0xFFFF))
+write("smb2_request", "read_length_bomb", smb2_read(8, 1, 1, length=0xFFFFFFFF,
+                                                    offset=0xFFFFFFFFFFFFFFFF))
+write("smb2_request", "query_directory_name_past_end",
+      smb2_query_directory(12, 1, 1, "*", name_len=0xFFFF, out_len=0xFFFFFFFF))
+write("smb2_request", "query_info_out_len_bomb", smb2_query_info(10, 1, 1, out_len=0xFFFFFFFF))
+write("smb2_request", "next_command_past_end",
+      smb2_header(0x0D, 1, next_command=0xFFFFFFF8) + b"\x04\x00\x00\x00")
+write("smb2_request", "next_command_unaligned",
+      smb2_compound([smb2_simple(0x0D, 1), smb2_simple(0x0D, 2)])[:20] + struct.pack("<I", 68)
+      + smb2_compound([smb2_simple(0x0D, 1), smb2_simple(0x0D, 2)])[24:])
+write("smb2_request", "next_command_short", smb2_header(0x0D, 1, next_command=8) + b"\x04\x00\x00\x00")
+write("smb2_request", "smb1_negotiate", b"\xffSMBr" + b"\x00" * 60)
+# SMB2 has no nesting; a compound chain is its long axis. 14 000 minimal ECHOs, each 72 bytes
+# padded: ~1 MB, under both the server's frame bound and the 1 MiB at which libFuzzer silently
+# truncates a seed (fuzz/README.md).
+write("smb2_request", "chain_length_bomb",
+      smb2_compound([smb2_simple(0x0D, i) for i in range(14000)]))
+
+write("ntlmssp_token", "bare_negotiate", NTLM_NEGOTIATE)
+write("ntlmssp_token", "spnego_negotiate", spnego_init(NTLM_NEGOTIATE))
+write("ntlmssp_token", "spnego_authenticate_anonymous", spnego_resp(ANON_AUTH))
+write("ntlmssp_token", "bare_authenticate_guest", GUEST_AUTH)
+write("ntlmssp_token", "authenticate_oem", ntlm_authenticate("bob", flags=0x62088202)[:64] +
+      b"bob")
+write("ntlmssp_token", "authenticate_truncated", b"NTLMSSP\x00" + struct.pack("<I", 3) + b"\x00" * 20)
+write("ntlmssp_token", "authenticate_field_past_end",
+      b"NTLMSSP\x00" + struct.pack("<I", 3) +
+      struct.pack("<HHI", 0xFFFF, 0xFFFF, 0xFFFFFFF0) * 6 + struct.pack("<I", 1))
+write("ntlmssp_token", "authenticate_odd_utf16",
+      ntlm_authenticate("x")[:36] + struct.pack("<HHI", 3, 3, 64) + ntlm_authenticate("x")[44:])
+write("ntlmssp_token", "kerberos_only", der(0x60, SPNEGO_OID + der(0xa0, der(0x30, b""))))
+# The depth bomb. SPNEGO is ASN.1, and a DER walker recurses once per constructed TLV. The
+# server does not walk the DER — it scans for the NTLMSSP signature — so this is refused by
+# nothing and costs a linear scan. It is here for the day a real DER parser replaces the scan:
+# 20 000 nested SEQUENCEs (indefinite-length form, two bytes a level) with a token at the bottom,
+# inside the 16-bit SecurityBufferLength.
+write("ntlmssp_token", "der_depth_bomb",
+      b"\x30\x80" * 20000 + NTLM_NEGOTIATE + b"\x00\x00" * 8000)
+
 total = sum(len(files) for _, _, files in os.walk(CORPUS))
 print("seeded %d corpus files across %d targets" %
       (total, len(os.listdir(CORPUS))))

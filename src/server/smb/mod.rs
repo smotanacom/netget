@@ -60,8 +60,66 @@ const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::
 /// whose length has landed.
 const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The three read deadlines of one server, each a startup parameter defaulting to the constant
+/// above it (`first_byte_timeout_secs`, `idle_timeout_secs`, `body_timeout_secs`).
+///
+/// Configurable because the idle one is fifteen minutes, which no test can wait out, and a
+/// deadline nobody can test is a comment. The defaults are the numbers argued beside each
+/// constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deadlines {
+    /// Silence allowed before any session has been admitted.
+    pub first_message: std::time::Duration,
+    /// Silence allowed between messages once a session has been admitted.
+    pub idle: std::time::Duration,
+    /// How long a peer may stall part-way through a message it has announced.
+    pub body: std::time::Duration,
+}
+
+impl Default for Deadlines {
+    fn default() -> Self {
+        Self {
+            first_message: FIRST_MESSAGE_READ_TIMEOUT,
+            idle: IDLE_BETWEEN_MESSAGES_TIMEOUT,
+            body: BODY_READ_TIMEOUT,
+        }
+    }
+}
+
 /// Concurrent connections this server admits.
-const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+pub const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// Sessions one connection may hold at once, those still mid-NTLMSSP and those the model has
+/// admitted counted together.
+///
+/// The first SESSION_SETUP of an NTLMSSP exchange opens a session **before anyone is asked**
+/// — nothing has been said about who is logging in yet — and a peer that never sends the
+/// second leg leaves it open until the connection closes. Without this bound a peer grows the
+/// session table by one entry per NEGOTIATE leg it sends, at no cost to itself. A real client
+/// holds one session per user on a connection and has one exchange in flight at a time; a
+/// multi-user redirector holds a handful. Sixteen leaves room for every legitimate shape. The
+/// refusal is `STATUS_INSUFFICIENT_RESOURCES`, the status Samba returns when its session table
+/// is full, logged `decision=fail_closed_session_cap`, and it is decided before the model.
+pub const MAX_SESSIONS_PER_CONNECTION: usize = 16;
+
+/// Tree connects one connection may hold at once.
+///
+/// TREE_CONNECT asks no one — the share is a name for the root of the tree the model invents —
+/// so nothing else stops one admitted session growing the tree table by a request at a time. A
+/// client connects `IPC$` and the shares it browses; 64 is far past that. Refused
+/// `STATUS_INSUFFICIENT_RESOURCES` (Samba's answer when its tree table is full), logged
+/// `decision=fail_closed_tree_cap`. TREE_DISCONNECT and LOGOFF return slots.
+pub const MAX_TREES_PER_CONNECTION: usize = 64;
+
+/// Open handles one connection may hold at once.
+///
+/// Each CREATE the model admits records a handle, including its path. The model stands in
+/// front of every one, but a `static` handler answering every CREATE does not, and a client
+/// that opens and never closes would grow the table until the connection ends. 1024 is far
+/// past what one smbclient, smbprotocol or Explorer session holds open. Refused
+/// `STATUS_TOO_MANY_OPENED_FILES` (what Samba answers past `max open files`) before the model
+/// is asked, logged `decision=fail_closed_open_file_cap`. CLOSE returns a slot.
+pub const MAX_OPEN_FILES_PER_CONNECTION: usize = 1024;
 
 /// A peer over [`MAX_CONNECTIONS`] gets a plain close, as a real SMB server does.
 ///
@@ -88,8 +146,36 @@ pub const MAX_WRITE_SIZE: u32 = 1024 * 1024;
 /// because the rest of the frame is unread and reading on would parse it as the next message.
 pub const MAX_MESSAGE_BYTES: usize = MAX_WRITE_SIZE as usize + 64 * 1024;
 
-/// What READ will return in one response, advertised as `MaxReadSize`.
-const MAX_READ_SIZE: u32 = 1024 * 1024;
+/// Requests one compound frame may carry that the server will act on.
+///
+/// A frame of `MAX_MESSAGE_BYTES` has room for ~17 000 64-byte headers linked by
+/// `NextCommand`, and every one could be a CREATE or READ the model is asked about — one frame
+/// buying thousands of model calls. Real clients compound a handful (smbprotocol's stat is
+/// seven; the Windows and Linux redirectors stay under ten). Requests past this many are each
+/// answered `STATUS_INSUFFICIENT_RESOURCES` to their own MessageId without being acted on,
+/// logged `decision=fail_closed_compound_cap`, so the client can still correlate every reply.
+pub const MAX_COMPOUND_REQUESTS: usize = 32;
+
+/// The most response bytes one compound reply carries before further responses in it are
+/// replaced by `STATUS_INSUFFICIENT_RESOURCES`.
+///
+/// The Direct TCP header can announce at most 2^24 - 1 bytes, and a compound of READs can ask
+/// for more than that (32 x `MaxReadSize` is 32 MiB). Without this the reply could not be framed
+/// at all. The headroom is what the refusals themselves can cost: at most
+/// `MAX_MESSAGE_BYTES / 64` requests in a frame, each refused in 80 padded bytes, is ~1.4 MB,
+/// so 2 MiB below the frame limit keeps the whole chain frameable whatever follows. Logged
+/// `decision=fail_closed_response_too_large`.
+pub const MAX_RESPONSE_FRAME_BYTES: usize = wire::NBSS_MAX_LEN - 2 * 1024 * 1024;
+
+/// The largest READ this server answers, advertised as `MaxReadSize`. MS-SMB2 3.3.5.12: a READ
+/// asking for more MUST fail with `STATUS_INVALID_PARAMETER`, and it does, before the model is
+/// asked, logged `decision=fail_closed_read_too_large`.
+pub const MAX_READ_SIZE: u32 = 1024 * 1024;
+
+/// The largest output buffer a QUERY_INFO or QUERY_DIRECTORY may ask for, advertised as
+/// `MaxTransactSize`. MS-SMB2 3.3.5.18 and 3.3.5.20: an `OutputBufferLength` past it MUST fail
+/// with `STATUS_INVALID_PARAMETER`, before the model is asked.
+pub const MAX_TRANSACT_SIZE: u32 = 1024 * 1024;
 
 /// A fixed server GUID. Clients key cached connection state on it; one per process is enough.
 const SERVER_GUID: [u8; 16] = [
@@ -107,6 +193,7 @@ const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
 const FILE_CREATE: u32 = 0x0000_0002;
 const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 
 // QUERY_DIRECTORY request flags (MS-SMB2 2.2.33).
 const RESTART_SCANS: u8 = 0x01;
@@ -198,6 +285,7 @@ struct Ctx<'a> {
     protocol: &'a Arc<SmbProtocol>,
     state: &'a Mutex<SmbConnectionState>,
     status_tx: &'a mpsc::UnboundedSender<String>,
+    deadlines: Deadlines,
 }
 
 /// What earlier requests in the same compound chain established, for a request flagged
@@ -221,6 +309,7 @@ impl SmbServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: ServerId,
+        deadlines: Deadlines,
     ) -> Result<SocketAddr> {
         Log::new(Some(&status_tx)).info(format!(
             "SMB server (LLM-controlled, guest-only) starting on {}",
@@ -281,6 +370,7 @@ impl SmbServer {
                                     server_id,
                                     protocol,
                                     status_tx.clone(),
+                                    deadlines,
                                 )
                                 .await
                                 {
@@ -315,12 +405,14 @@ impl SmbServer {
         _app_state: Arc<AppState>,
         _status_tx: mpsc::UnboundedSender<String>,
         _server_id: ServerId,
+        _deadlines: Deadlines,
     ) -> Result<SocketAddr> {
         Err(anyhow!("SMB feature not enabled"))
     }
 
     /// Handle a single SMB connection
     #[cfg(feature = "smb")]
+    #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
         stream: TcpStream,
         peer_addr: SocketAddr,
@@ -329,6 +421,7 @@ impl SmbServer {
         server_id: ServerId,
         protocol: Arc<SmbProtocol>,
         status_tx: mpsc::UnboundedSender<String>,
+        deadlines: Deadlines,
     ) -> Result<()> {
         // Generate connection ID
         let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
@@ -402,6 +495,7 @@ impl SmbServer {
             protocol: &protocol,
             state: &ctx_state,
             status_tx: &status_tx,
+            deadlines,
         };
         Self::run_smb_session(&mut reader, &write_half, peer_addr, &ctx).await;
 
@@ -450,9 +544,9 @@ impl SmbServer {
             // message has been read — outside every deadline by construction. What is bounded
             // is a peer holding the connection while sending nothing.
             let header_timeout = if ctx.state.lock().await.has_authenticated_session() {
-                IDLE_BETWEEN_MESSAGES_TIMEOUT
+                ctx.deadlines.idle
             } else {
-                FIRST_MESSAGE_READ_TIMEOUT
+                ctx.deadlines.first_message
             };
             let mut transport = [0u8; 4];
             match tokio::time::timeout(header_timeout, reader.read_exact_counted(&mut transport))
@@ -487,7 +581,10 @@ impl SmbServer {
                     // A client that dialled port 139 names the called and calling NetBIOS
                     // names first. Any name is this server's; say yes and carry on.
                     let mut names = vec![0u8; len];
-                    if read_body_exact(reader, &mut names).await.is_err() {
+                    if read_body_exact(reader, &mut names, ctx.deadlines.body)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                     let positive = [wire::NBSS_POSITIVE_RESPONSE, 0, 0, 0];
@@ -519,7 +616,10 @@ impl SmbServer {
                 // refusal can name the request it refuses; the rest is unread, so the stream
                 // is out of step and the connection closes after the reply.
                 let mut header = [0u8; HEADER_LEN];
-                if read_body_exact(reader, &mut header).await.is_ok() {
+                if read_body_exact(reader, &mut header, ctx.deadlines.body)
+                    .await
+                    .is_ok()
+                {
                     if let Some(req) = RequestHeader::parse(&header) {
                         Log::new(Some(ctx.status_tx)).warn(format!(
                             "SMB2 command 0x{:04x} in a {} byte frame refused \
@@ -539,7 +639,7 @@ impl SmbServer {
             }
 
             let mut message = vec![0u8; len];
-            if let Err(e) = read_body_exact(reader, &mut message).await {
+            if let Err(e) = read_body_exact(reader, &mut message, ctx.deadlines.body).await {
                 debug!(
                     "SMB peer {} did not deliver its announced frame: {}",
                     peer_addr, e
@@ -583,11 +683,14 @@ impl SmbServer {
         let mut responses = Vec::new();
         let mut chain = Chain::default();
         let mut offset = 0usize;
+        let mut requests = 0usize;
+        let mut response_bytes = 0usize;
 
         loop {
             let rest = &frame[offset..];
-            let Some(mut req) = RequestHeader::parse(rest) else {
-                if offset == 0 {
+            let located = match wire::next_in_chain(rest) {
+                Ok(located) => located,
+                Err(wire::ChainError::NotSmb2) if offset == 0 => {
                     let what = if rest.starts_with(b"\xFFSMB") {
                         "an SMB1 message; this server speaks SMB2 only"
                     } else {
@@ -599,27 +702,27 @@ impl SmbServer {
                     ));
                     return None;
                 }
-                warn!(
-                    "SMB2 compound chain from {} ends in a malformed request",
-                    peer_addr
-                );
-                break;
+                Err(wire::ChainError::NotSmb2) => {
+                    warn!(
+                        "SMB2 compound chain from {} ends in a malformed request",
+                        peer_addr
+                    );
+                    break;
+                }
+                Err(wire::ChainError::BadNextCommand(req)) => {
+                    warn!(
+                        "SMB2 NextCommand {} from {} does not point at a request; refusing",
+                        req.next_command, peer_addr
+                    );
+                    responses.push(wire::error_response(&ResponseHeader::for_request(
+                        &req,
+                        status::INVALID_PARAMETER,
+                    )));
+                    break;
+                }
             };
-
-            let next = req.next_command as usize;
-            let chained = next != 0;
-            if chained && (next < HEADER_LEN || next > rest.len() || !next.is_multiple_of(8)) {
-                warn!(
-                    "SMB2 NextCommand {} from {} does not point at a request; refusing",
-                    next, peer_addr
-                );
-                responses.push(wire::error_response(&ResponseHeader::for_request(
-                    &req,
-                    status::INVALID_PARAMETER,
-                )));
-                break;
-            }
-            let message = if chained { &rest[..next] } else { rest };
+            let mut req = located.header;
+            let message = located.message;
 
             if req.is_related() && offset > 0 {
                 req.session_id = chain.session_id;
@@ -629,22 +732,57 @@ impl SmbServer {
             chain.tree_id = req.tree_id;
 
             debug!("SMB2 command 0x{:04x} from {}", req.command, peer_addr);
-            match Self::handle_request(&req, message, &mut chain, ctx).await {
-                Ok(Some(response)) => responses.push(response),
-                Ok(None) => {}
-                Err(e) => {
-                    error!("SMB2 command 0x{:04x} failed: {}", req.command, e);
-                    responses.push(wire::error_response(&ResponseHeader::for_request(
-                        &req,
-                        status::INTERNAL_ERROR,
-                    )));
+            requests += 1;
+            let response = if requests > MAX_COMPOUND_REQUESTS {
+                if requests == MAX_COMPOUND_REQUESTS + 1 {
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "SMB2 compound from {} carries more than {} requests \
+                         (decision=fail_closed_compound_cap); answering the rest \
+                         STATUS_INSUFFICIENT_RESOURCES without acting on them",
+                        peer_addr, MAX_COMPOUND_REQUESTS
+                    ));
                 }
+                Some(wire::error_response(&ResponseHeader::for_request(
+                    &req,
+                    status::INSUFFICIENT_RESOURCES,
+                )))
+            } else {
+                match Self::handle_request(&req, message, &mut chain, ctx).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        error!("SMB2 command 0x{:04x} failed: {}", req.command, e);
+                        Some(wire::error_response(&ResponseHeader::for_request(
+                            &req,
+                            status::INTERNAL_ERROR,
+                        )))
+                    }
+                }
+            };
+            if let Some(mut response) = response {
+                // Each response but the last is padded to 8 bytes in the chain.
+                if response_bytes + response.len().div_ceil(8) * 8 > MAX_RESPONSE_FRAME_BYTES {
+                    Log::new(Some(ctx.status_tx)).warn(format!(
+                        "SMB2 command 0x{:04x} from {}: its {} byte response would take the \
+                         compound reply past {} bytes (decision=fail_closed_response_too_large); \
+                         replying STATUS_INSUFFICIENT_RESOURCES",
+                        req.command,
+                        peer_addr,
+                        response.len(),
+                        MAX_RESPONSE_FRAME_BYTES
+                    ));
+                    response = wire::error_response(&ResponseHeader::for_request(
+                        &req,
+                        status::INSUFFICIENT_RESOURCES,
+                    ));
+                }
+                response_bytes += response.len().div_ceil(8) * 8;
+                responses.push(response);
             }
 
-            if !chained {
-                break;
+            match located.next {
+                Some(next) => offset += next,
+                None => break,
             }
-            offset += next;
         }
         Some(responses)
     }
@@ -757,10 +895,10 @@ impl SmbServer {
             command::CREATE => Self::create(req, message, chain, ctx).await,
             command::CLOSE => Self::close(req, body, chain, ctx).await,
             command::FLUSH => {
-                if body.len() < 24 {
+                let Some(file_id) = wire::parse_flush(body) else {
                     return error(status::INVALID_PARAMETER);
-                }
-                if Self::handle(ctx, req, &body[8..24], chain).await.is_none() {
+                };
+                if Self::handle(ctx, req, file_id, chain).await.is_none() {
                     return error(status::FILE_CLOSED);
                 }
                 Ok(Some(wire::empty_response(&ResponseHeader::for_request(
@@ -798,21 +936,11 @@ impl SmbServer {
     /// with NTLMSSP as the only mechanism.
     fn negotiate(req: &RequestHeader, body: &[u8], ctx: &Ctx<'_>) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        if body.len() < 36 {
-            return Ok(Some(wire::error_response(
-                &hdr.with_status(status::INVALID_PARAMETER),
-            )));
-        }
-        let count = wire::le16(body, 2) as usize;
-        let Some(list) = body.get(36..36 + 2 * count) else {
+        let Some(offered) = wire::parse_negotiate(body) else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
         };
-        let offered: Vec<u16> = list
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
         let Some(dialect) = [DIALECT_SMB_2_1, DIALECT_SMB_2_0_2]
             .into_iter()
             .find(|d| offered.contains(d))
@@ -837,7 +965,7 @@ impl SmbServer {
             // No DFS, no leasing, no multi-credit: none is implemented, and each one is a
             // promise a client acts on.
             capabilities: 0,
-            max_transact_size: MAX_READ_SIZE,
+            max_transact_size: MAX_TRANSACT_SIZE,
             max_read_size: MAX_READ_SIZE,
             // The bound the WRITE arm enforces, so a client never sends a write it will refuse.
             max_write_size: MAX_WRITE_SIZE,
@@ -860,28 +988,19 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        let body = &message[HEADER_LEN..];
-        if body.len() < 24 {
+        let Some(blob) = wire::parse_session_setup(message) else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
-        }
-        let blob_offset = wire::le16(body, 12) as usize;
-        let blob_len = wire::le16(body, 14) as usize;
-        let blob = if blob_len == 0 {
-            &[][..]
-        } else {
-            match message.get(blob_offset..blob_offset + blob_len) {
-                Some(blob) => blob,
-                None => {
-                    return Ok(Some(wire::error_response(
-                        &hdr.with_status(status::INVALID_PARAMETER),
-                    )))
-                }
-            }
         };
 
         if blob.is_empty() {
+            // A one-step login allocates a session if the model admits it, so the cap is
+            // checked before the model is asked: a refusal it would have to make anyway must
+            // not cost a model call.
+            if let Some(refusal) = Self::session_cap_refusal(req, ctx).await {
+                return Ok(Some(refusal));
+            }
             return Self::decide_login(
                 req,
                 None,
@@ -908,11 +1027,28 @@ impl SmbServer {
 
         match auth::message_type(token) {
             Some(auth::NTLMSSP_NEGOTIATE) => {
-                let session_id = ctx
-                    .state
-                    .lock()
-                    .await
-                    .allocate_session(String::new(), false);
+                // A NEGOTIATE leg naming a session whose exchange is still in progress restarts
+                // that exchange (MS-SMB2 3.3.5.5) rather than opening another; anything else
+                // opens a new session, which is where the per-connection cap applies.
+                let restarted = {
+                    let s = ctx.state.lock().await;
+                    s.sessions
+                        .get(&req.session_id)
+                        .is_some_and(|s| !s.authenticated)
+                        .then_some(req.session_id)
+                };
+                let session_id = match restarted {
+                    Some(sid) => sid,
+                    None => {
+                        if let Some(refusal) = Self::session_cap_refusal(req, ctx).await {
+                            return Ok(Some(refusal));
+                        }
+                        ctx.state
+                            .lock()
+                            .await
+                            .allocate_session(String::new(), false)
+                    }
+                };
                 let challenge = auth::challenge(
                     auth::negotiate_flags(token),
                     server_challenge(),
@@ -1086,6 +1222,29 @@ impl SmbServer {
         Ok(Some(wire::session_setup_response(&hdr, 0, &[])))
     }
 
+    /// The refusal for a SESSION_SETUP that would open a session past
+    /// [`MAX_SESSIONS_PER_CONNECTION`], or `None` if there is room.
+    async fn session_cap_refusal(req: &RequestHeader, ctx: &Ctx<'_>) -> Option<Vec<u8>> {
+        let (held, pending) = {
+            let s = ctx.state.lock().await;
+            let pending = s.sessions.values().filter(|s| !s.authenticated).count();
+            (s.sessions.len(), pending)
+        };
+        if held < MAX_SESSIONS_PER_CONNECTION {
+            return None;
+        }
+        Log::new(Some(ctx.status_tx)).warn(format!(
+            "SMB2 SESSION_SETUP refused (decision=fail_closed_session_cap): this connection \
+             already holds {} sessions ({} still mid-exchange), the most one connection may \
+             hold is {}; replying STATUS_INSUFFICIENT_RESOURCES",
+            held, pending, MAX_SESSIONS_PER_CONNECTION
+        ));
+        Some(wire::error_response(&ResponseHeader::for_request(
+            req,
+            status::INSUFFICIENT_RESOURCES,
+        )))
+    }
+
     /// TREE_CONNECT (MS-SMB2 3.3.5.7). Every share name is accepted without asking the model:
     /// the share is only a name for the root of the tree the model invents, and admission was
     /// decided at SESSION_SETUP. `IPC$` connects as a pipe share, and every operation on it is
@@ -1097,18 +1256,7 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        let body = &message[HEADER_LEN..];
-        if body.len() < 8 {
-            return Ok(Some(wire::error_response(
-                &hdr.with_status(status::INVALID_PARAMETER),
-            )));
-        }
-        let path_offset = wire::le16(body, 4) as usize;
-        let path_len = wire::le16(body, 6) as usize;
-        let Some(path) = message
-            .get(path_offset..path_offset + path_len)
-            .and_then(wire::from_utf16le)
-        else {
+        let Some(path) = wire::parse_tree_connect(message) else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
@@ -1118,6 +1266,21 @@ impl SmbServer {
 
         let tree_id = {
             let mut s = ctx.state.lock().await;
+            // No model call stands in front of a TREE_CONNECT, so nothing but this bound stops
+            // one admitted session from growing the table by a tree per request.
+            if s.trees.len() >= MAX_TREES_PER_CONNECTION {
+                let held = s.trees.len();
+                drop(s);
+                Log::new(Some(ctx.status_tx)).warn(format!(
+                    "SMB2 TREE_CONNECT {} refused (decision=fail_closed_tree_cap): this \
+                     connection already holds {} tree connects, the most one connection may \
+                     hold is {}; replying STATUS_INSUFFICIENT_RESOURCES",
+                    path, held, MAX_TREES_PER_CONNECTION
+                ));
+                return Ok(Some(wire::error_response(
+                    &hdr.with_status(status::INSUFFICIENT_RESOURCES),
+                )));
+            }
             let tid = s.next_tree_id;
             s.next_tree_id += 1;
             s.trees.insert(
@@ -1153,10 +1316,9 @@ impl SmbServer {
     async fn handle(
         ctx: &Ctx<'_>,
         req: &RequestHeader,
-        raw: &[u8],
+        mut file_id: [u8; 16],
         chain: &Chain,
     ) -> Option<([u8; 16], SmbFileHandle)> {
-        let mut file_id: [u8; 16] = raw.try_into().ok()?;
         if req.is_related() && file_id == RELATED_FILE_ID {
             file_id = chain.file_id?;
         }
@@ -1174,47 +1336,57 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        let body = &message[HEADER_LEN..];
-        if body.len() < 56 {
+        let Some(wire::CreateRequest {
+            disposition,
+            options,
+            path,
+        }) = wire::parse_create(message)
+        else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
-        }
-        let is_pipe = ctx
-            .state
-            .lock()
-            .await
-            .trees
-            .get(&req.tree_id)
-            .is_some_and(|t| t.is_pipe);
+        };
+        let (is_pipe, open) = {
+            let s = ctx.state.lock().await;
+            let is_pipe = s.trees.get(&req.tree_id).is_some_and(|t| t.is_pipe);
+            (is_pipe, s.files.len())
+        };
         if is_pipe {
             debug!("SMB2 CREATE on a pipe share refused: no named pipe is implemented");
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::NOT_SUPPORTED),
             )));
         }
-
-        let disposition = wire::le32(body, 36);
-        let options = wire::le32(body, 40);
-        let Some(path) = parse_create_path(message) else {
+        // Checked before the model is asked, so a refusal the server would have to make anyway
+        // costs no model call — and a static handler answering every CREATE cannot grow the
+        // handle table without limit.
+        if open >= MAX_OPEN_FILES_PER_CONNECTION {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 CREATE {} refused (decision=fail_closed_open_file_cap): this connection \
+                 already holds {} open handles, the most one connection may hold is {}; \
+                 replying STATUS_TOO_MANY_OPENED_FILES",
+                path, open, MAX_OPEN_FILES_PER_CONNECTION
+            ));
             return Ok(Some(wire::error_response(
-                &hdr.with_status(status::INVALID_PARAMETER),
+                &hdr.with_status(status::TOO_MANY_OPENED_FILES),
             )));
-        };
+        }
 
         Log::new(Some(ctx.status_tx)).info(format!("SMB2 CREATE request for: {}", path));
 
-        let actions = match Self::consult_llm(
-            ctx,
-            "create",
-            serde_json::json!({
-                "path": path,
-                "disposition": disposition_name(disposition),
-                "directory_requested": options & FILE_DIRECTORY_FILE != 0,
-            }),
-        )
-        .await
-        {
+        let mut params = serde_json::json!({
+            "path": path,
+            "disposition": disposition_name(disposition),
+            "directory_requested": options & FILE_DIRECTORY_FILE != 0,
+        });
+        // SMB2 has no DELETE command: a client deletes by opening with FILE_DELETE_ON_CLOSE and
+        // closing (smbclient's `rm` and `rmdir`), so an open carrying it is a delete request and
+        // the model has to be told so. Admitting the open admits the delete; CLOSE then answers
+        // success without asking again.
+        if options & FILE_DELETE_ON_CLOSE != 0 {
+            params["delete_on_close"] = serde_json::json!(true);
+        }
+        let actions = match Self::consult_llm(ctx, "create", params).await {
             Ok(actions) => actions,
             Err(e) => {
                 return Ok(Some(Self::llm_failure_response(
@@ -1319,13 +1491,12 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        if body.len() < 24 {
+        let Some((flags, file_id)) = wire::parse_close(body) else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
-        }
-        let flags = wire::le16(body, 2);
-        let Some((file_id, handle)) = Self::handle(ctx, req, &body[8..24], chain).await else {
+        };
+        let Some((file_id, handle)) = Self::handle(ctx, req, file_id, chain).await else {
             Log::new(Some(ctx.status_tx)).warn("SMB2 CLOSE: unknown file handle");
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::FILE_CLOSED),
@@ -1347,14 +1518,24 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        if body.len() < 48 {
+        let Some(request) = wire::parse_read(body) else {
+            return Ok(Some(wire::error_response(
+                &hdr.with_status(status::INVALID_PARAMETER),
+            )));
+        };
+        if request.length > MAX_READ_SIZE {
+            Log::new(Some(ctx.status_tx)).warn(format!(
+                "SMB2 READ of {} bytes refused (decision=fail_closed_read_too_large, \
+                 MaxReadSize {}); replying STATUS_INVALID_PARAMETER",
+                request.length, MAX_READ_SIZE
+            ));
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
         }
-        let length = wire::le32(body, 4).min(MAX_READ_SIZE);
-        let offset = wire::le64(body, 8);
-        let Some((_, handle)) = Self::handle(ctx, req, &body[16..32], chain).await else {
+        let length = request.length;
+        let offset = request.offset;
+        let Some((_, handle)) = Self::handle(ctx, req, request.file_id, chain).await else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::FILE_CLOSED),
             )));
@@ -1453,16 +1634,13 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        let body = &message[HEADER_LEN..];
-        if body.len() < 48 {
+        let Some(request) = wire::parse_write(message) else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
-        }
-        // MS-SMB2 2.2.21: StructureSize(2) DataOffset(2) Length(4) Offset(8) FileId(16).
-        let data_offset = wire::le16(body, 2) as usize;
-        let length = wire::le32(body, 4);
-        let offset = wire::le64(body, 8);
+        };
+        let length = request.length;
+        let offset = request.offset;
 
         if length > MAX_WRITE_SIZE {
             Log::new(Some(ctx.status_tx)).warn(format!(
@@ -1474,12 +1652,11 @@ impl SmbServer {
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
         }
-        let Some(data) = message.get(data_offset..data_offset + length as usize) else {
+        let Some(data) = request.data else {
             Log::new(Some(ctx.status_tx)).warn(format!(
-                "SMB2 WRITE declares {} bytes at offset {} of a {} byte message; replying \
+                "SMB2 WRITE declares {} bytes past the end of a {} byte message; replying \
                  STATUS_INVALID_PARAMETER",
                 length,
-                data_offset,
                 message.len()
             ));
             return Ok(Some(wire::error_response(
@@ -1487,7 +1664,7 @@ impl SmbServer {
             )));
         };
 
-        let Some((_, handle)) = Self::handle(ctx, req, &body[16..32], chain).await else {
+        let Some((_, handle)) = Self::handle(ctx, req, request.file_id, chain).await else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::FILE_CLOSED),
             )));
@@ -1528,10 +1705,15 @@ impl SmbServer {
             .iter()
             .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_write_file"))
         else {
+            let decision = if actions.is_empty() {
+                "fail_closed_no_action"
+            } else {
+                "model_reject"
+            };
             Log::new(Some(ctx.status_tx)).warn(format!(
-                "SMB2 WRITE: no smb_write_file action for {} - refusing with \
-                 STATUS_ACCESS_DENIED",
-                path
+                "SMB2 WRITE refused for {} (decision={}): no smb_write_file in the answer; \
+                 replying STATUS_ACCESS_DENIED",
+                path, decision
             ));
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::ACCESS_DENIED),
@@ -1561,19 +1743,19 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        // MS-SMB2 2.2.37: StructureSize(2) InfoType(1) FileInfoClass(1) OutputBufferLength(4)
-        // InputBufferOffset(2) Reserved(2) InputBufferLength(4) AdditionalInformation(4)
-        // Flags(4) FileId(16).
-        if body.len() < 40 {
+        let Some(request) = wire::parse_query_info(body) else {
             warn!("SMB2 QUERY_INFO: invalid request size");
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
+        };
+        if request.output_len > MAX_TRANSACT_SIZE {
+            return Ok(Some(Self::transact_too_large(req, request.output_len, ctx)));
         }
-        let info_type = body[2];
-        let class = body[3];
-        let output_len = wire::le32(body, 4) as usize;
-        let Some((file_id, handle)) = Self::handle(ctx, req, &body[24..40], chain).await else {
+        let info_type = request.info_type;
+        let class = request.class;
+        let output_len = request.output_len as usize;
+        let Some((file_id, handle)) = Self::handle(ctx, req, request.file_id, chain).await else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::FILE_CLOSED),
             )));
@@ -1691,41 +1873,29 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Result<Option<Vec<u8>>> {
         let hdr = ResponseHeader::for_request(req, status::SUCCESS);
-        let body = &message[HEADER_LEN..];
-        // MS-SMB2 2.2.33: StructureSize(2) FileInformationClass(1) Flags(1) FileIndex(4)
-        // FileId(16) FileNameOffset(2) FileNameLength(2) OutputBufferLength(4).
-        if body.len() < 32 {
-            warn!("SMB2 QUERY_DIRECTORY: invalid request size");
+        let Some(wire::QueryDirectoryRequest {
+            class,
+            flags,
+            file_id,
+            pattern,
+            output_len,
+        }) = wire::parse_query_directory(message)
+        else {
+            warn!("SMB2 QUERY_DIRECTORY: invalid request");
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_PARAMETER),
             )));
-        }
-        let class = body[2];
-        let flags = body[3];
-        let name_offset = wire::le16(body, 24) as usize;
-        let name_len = wire::le16(body, 26) as usize;
-        let output_len = wire::le32(body, 28) as usize;
-        let pattern = if name_len == 0 {
-            "*".to_string()
-        } else {
-            match message
-                .get(name_offset..name_offset + name_len)
-                .and_then(wire::from_utf16le)
-            {
-                Some(p) => p,
-                None => {
-                    return Ok(Some(wire::error_response(
-                        &hdr.with_status(status::INVALID_PARAMETER),
-                    )))
-                }
-            }
         };
+        if output_len > MAX_TRANSACT_SIZE {
+            return Ok(Some(Self::transact_too_large(req, output_len, ctx)));
+        }
+        let output_len = output_len as usize;
         if !wire::directory_class_supported(class) {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::INVALID_INFO_CLASS),
             )));
         }
-        let Some((file_id, handle)) = Self::handle(ctx, req, &body[8..24], chain).await else {
+        let Some((file_id, handle)) = Self::handle(ctx, req, file_id, chain).await else {
             return Ok(Some(wire::error_response(
                 &hdr.with_status(status::FILE_CLOSED),
             )));
@@ -1876,6 +2046,18 @@ impl SmbServer {
         )))
     }
 
+    /// The refusal for a QUERY_INFO or QUERY_DIRECTORY whose `OutputBufferLength` is past
+    /// [`MAX_TRANSACT_SIZE`] (MS-SMB2 3.3.5.18, 3.3.5.20).
+    fn transact_too_large(req: &RequestHeader, output_len: u32, ctx: &Ctx<'_>) -> Vec<u8> {
+        Log::new(Some(ctx.status_tx)).warn(format!(
+            "SMB2 command 0x{:04x} asks for a {} byte output buffer \
+             (decision=fail_closed_transact_too_large, MaxTransactSize {}); replying \
+             STATUS_INVALID_PARAMETER",
+            req.command, output_len, MAX_TRANSACT_SIZE
+        ));
+        wire::error_response(&ResponseHeader::for_request(req, status::INVALID_PARAMETER))
+    }
+
     /// Consult the LLM for SMB file system operations
     #[cfg(feature = "smb")]
     async fn consult_llm(
@@ -1947,11 +2129,7 @@ impl SmbServer {
         ctx: &Ctx<'_>,
     ) -> Vec<u8> {
         let overloaded = crate::llm::is_overload_error(err);
-        let code = if overloaded {
-            status::INSUFFICIENT_RESOURCES
-        } else {
-            status::INTERNAL_ERROR
-        };
+        let code = status_for_llm_failure(err);
 
         Log::new(Some(ctx.status_tx)).warn(format!(
             "SMB {} {}: LLM {} (decision=fail_closed_llm_error) - refusing with NTSTATUS \
@@ -1969,24 +2147,6 @@ impl SmbServer {
 
         wire::error_response(&ResponseHeader::for_request(req, code))
     }
-}
-
-/// The path a CREATE names (MS-SMB2 2.2.13), as `/`-separated and rooted at the share.
-///
-/// The name is located through `NameOffset`/`NameLength`, which are measured from the start of
-/// the SMB2 header. It is relative to the share and uses `\`; an empty name is the share root.
-fn parse_create_path(message: &[u8]) -> Option<String> {
-    let body = message.get(HEADER_LEN..)?;
-    let name_offset = wire::le16(body, 44) as usize;
-    let name_len = wire::le16(body, 46) as usize;
-    let name = if name_len == 0 {
-        String::new()
-    } else {
-        wire::from_utf16le(message.get(name_offset..name_offset.checked_add(name_len)?)?)?
-    };
-    let trimmed = name.replace('\\', "/");
-    let trimmed = trimmed.trim_matches('/');
-    Some(format!("/{}", trimmed))
 }
 
 fn disposition_name(disposition: u32) -> &'static str {
@@ -2007,6 +2167,18 @@ fn file_id_for(index: u64) -> [u8; 16] {
     id[..8].copy_from_slice(&index.to_le_bytes());
     id[8..].copy_from_slice(&(index ^ 0x4E47_5342_0000_0000).to_le_bytes());
     id
+}
+
+/// The NTSTATUS a request is refused with when the model could not be asked:
+/// `STATUS_INSUFFICIENT_RESOURCES` when `crate::llm::is_overload_error` recognises a capacity
+/// refusal (the closest NTSTATUS to "retryable"), `STATUS_INTERNAL_ERROR` for everything else.
+/// Neither is `STATUS_ACCESS_DENIED`, which is the model's own refusal.
+pub fn status_for_llm_failure(err: &anyhow::Error) -> u32 {
+    if crate::llm::is_overload_error(err) {
+        status::INSUFFICIENT_RESOURCES
+    } else {
+        status::INTERNAL_ERROR
+    }
 }
 
 /// Case-insensitive match of an SMB search pattern with `*` and `?`.
@@ -2153,12 +2325,13 @@ where
 }
 
 /// Read exactly `buf.len()` bytes of a message the peer has already announced, bounded by
-/// [`BODY_READ_TIMEOUT`].
+/// `deadline` ([`BODY_READ_TIMEOUT`] unless configured).
 async fn read_body_exact<R: tokio::io::AsyncRead + Unpin>(
     stream: &mut SmbReader<R>,
     buf: &mut [u8],
+    deadline: std::time::Duration,
 ) -> std::io::Result<()> {
-    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read_exact_counted(buf)).await {
+    match tokio::time::timeout(deadline, stream.read_exact_counted(buf)).await {
         Ok(read) => read.map(|_| ()),
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
