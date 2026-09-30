@@ -144,6 +144,8 @@ guard does not panic, which is the easy half.
 | `svn_tuple` | `svn::wire::ItemReader::read_item` (iterative) → `svn::command_event_data`, which walks the `Item` recursively (`MAX_TUPLE_DEPTH`) | the first tuple on an ra_svn connection |
 | `xmlrpc_value` | `xmlrpc::parse_method_call` (iterative) → `actions::create_method_call_event`, which walks the `XmlRpcValue` recursively (`MAX_VALUE_DEPTH`) | the first POST body |
 | `packstream_message` | `bolt::packstream::decode` (recursive, `MAX_PACKSTREAM_DEPTH`, declared lengths checked before allocation) and `Dechunker` (1 MiB cap), then `parse_request` and the event's JSON conversion; `encode ∘ decode` must be idempotent | HELLO, before any login |
+| `smb2_request` | `smb::wire::next_in_chain` over a whole compound frame, then every `parse_*` request parser on every request in it (not only its own command's); every reply header must round-trip MessageId/TreeId/SessionId | first frame of a TCP connection; NEGOTIATE and SESSION_SETUP are pre-auth |
+| `ntlmssp_token` | `smb::auth` — the NTLMSSP scan through a SPNEGO wrapper, `parse_authenticate`, and the CHALLENGE / `negTokenResp` the server builds back (its DER lengths must be exact) | SESSION_SETUP security buffer, pre-auth |
 
 Every target is deterministic: no I/O, no sockets, no clock, no LLM. Several assert
 determinism explicitly by decoding twice and comparing, because a decoder that disagrees
@@ -158,9 +160,9 @@ committed precisely so 116 binary blobs have a provenance. Edit the script, not 
 python3 fuzz/seed_corpus.py .      # from the repository root
 ```
 
-Nine targets carry **depth bombs** — `bencode_structure`, `snmp_ber`,
+Ten targets carry **depth bombs** — `bencode_structure`, `snmp_ber`,
 `amqp_field_table`, `resp_frame`, `bson_document`, `ldap_filter`, `svn_tuple`,
-`xmlrpc_value`, `packstream_message` — and they are the reason this harness can find anything. Coverage-guided fuzzing gives **no gradient toward nesting depth**: a value
+`xmlrpc_value`, `packstream_message`, `ntlmssp_token` — and they are the reason this harness can find anything. Coverage-guided fuzzing gives **no gradient toward nesting depth**: a value
 nested 10,000 deep runs exactly the same basic blocks as one nested 3 deep, so libFuzzer
 scores it as uninteresting and discards it. It will not grow one by itself.
 
@@ -194,7 +196,11 @@ attribute contains attributes; ATTR_SET is unimplemented) seed every declared le
 maximum instead; `ndef_message`'s decoder returns a nested message as hex rather than
 descending into it; and `nats_frame` and `stomp_frame` are flat, but each once *recursed per
 blank line*, so each carries a `blank_line_bomb` — 32 Ki blank lines ahead of a frame —
-against that coming back.
+against that coming back. `ntlmssp_token`'s bomb (20 000 nested DER SEQUENCEs around an
+NTLMSSP token) reaches no recursion today — the server scans SPNEGO for the NTLMSSP signature
+instead of walking the DER — and is there for the day a DER walker replaces the scan.
+`smb2_request` is flat too: a compound chain is linear, so its long-axis seed is a chain of
+14 000 linked ECHOs.
 
 ## Proving the harness works
 
