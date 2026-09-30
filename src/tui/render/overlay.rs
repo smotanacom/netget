@@ -16,13 +16,13 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         return;
     };
     let size = modal.size();
-    let rect = super::centered_capped(
-        area,
-        size.percent_x,
-        size.percent_y,
-        size.max_cols,
-        size.max_rows,
-    );
+    // Stacked (narrow) layout: a modal takes the whole width, which is all there is.
+    let (percent_x, max_cols) = if area.width < super::TWO_COLUMN_WIDTH {
+        (100, u16::MAX)
+    } else {
+        (size.percent_x, size.max_cols)
+    };
+    let rect = super::centered_capped(area, percent_x, size.percent_y, max_cols, size.max_rows);
     let title = modal.title();
     let hint = modal.hint();
 
