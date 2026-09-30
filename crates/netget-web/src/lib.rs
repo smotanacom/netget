@@ -354,8 +354,9 @@ impl NetGet {
 
     /// Start a server the way the dashboard's own form does — through
     /// `cli::management::ServerForm`, so validation and defaults are the ones every other
-    /// front end gets. `json`: `{"protocol":"telnet","port":2323,"instruction":"..."}`.
-    /// `callback` receives `{"id": n}` or `{"error": "..."}`.
+    /// front end gets. `json`: `{"protocol":"telnet","port":2323,"instruction":"..."}`, plus
+    /// optional `event_handlers` and `startup_params` (the protocol's declared parameters, e.g.
+    /// openapi's `spec`). `callback` receives `{"id": n}` or `{"error": "..."}`.
     pub fn start_server(&self, json: &str, callback: Function) {
         #[derive(serde::Deserialize)]
         struct Req {
@@ -368,6 +369,8 @@ impl NetGet {
             instruction: Option<String>,
             #[serde(default)]
             event_handlers: Option<Vec<serde_json::Value>>,
+            #[serde(default)]
+            startup_params: Option<serde_json::Value>,
         }
         let req = match serde_json::from_str::<Req>(json) {
             Ok(r) => r,
@@ -396,6 +399,7 @@ impl NetGet {
                 host: req.host,
                 instruction: req.instruction,
                 event_handlers: req.event_handlers,
+                startup_params: req.startup_params,
                 ..Default::default()
             };
             let result = match form.create(&state, status_tx).await {

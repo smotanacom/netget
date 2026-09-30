@@ -303,21 +303,20 @@ whose futures are not `Send` and which cannot reach the virtual loopback anyway,
 `src/client/http/transport.rs` writes the request with hyper 1's `client::conn::http1` over
 the shim's `TcpStream` — one connection per request, the body bounded at
 `MAX_RESPONSE_BODY_BYTES` (8 MiB, the bound the native reqwest path enforces too) and the
-exchange at `REQUEST_TIMEOUT` (30 s). hyper's *client* role never touches the clock, so the
-date-cache panic below does not apply to it. **`https://` is refused** at connect with the
+exchange at `REQUEST_TIMEOUT` (30 s). **`https://` is refused** at connect with the
 reason: the transport has no TLS, and nothing on the page's network holds a certificate a
 client could verify. The transport compiles natively too, and
 `tests/client/http/transport_test.rs` drives NetGet's HTTP and TCP servers through it (body,
 headers, a 404, a chunked response, the body bound, the deadline). `web/test/smoke.mjs`
 proves it in the bundle: `[ + http client ]` on an http card connects, and a client started
-against NetGet's **HLS** server completes a model-driven exchange, a `[ send ]` and a 404.
+against NetGet's own `http` server completes a model-driven exchange, a `[ send ]` and a 404,
+with the model answering both ends.
 
 Reusing the transport for the other eleven, measured by what each asks of reqwest:
 
 - **jsonrpc, elasticsearch, openapi, bitcoin** — JSON over plain `send()`/`json()`/`text()`
   (bitcoin adds `basic_auth`, a header). Cheapest: swap the round trip for `transport::fetch`
-  on wasm, as `http` does. Their servers are hyper-based, so a browser peer has to be one that
-  is not (see below).
+  on wasm, as `http` does.
 - **npm, pypi, maven** — the same, plus `bytes()` for artifacts: the transport would need a
   `Vec<u8>` body alongside the lossy `String`. Their default targets are public `https://`
   registries, which the browser build cannot reach at all.
@@ -343,17 +342,31 @@ Left out, and why (re-derive with the probe below rather than trusting this):
   protocols, usb-*, bluetooth-*, nfc, pty/stdio/named_pipe/socket_file, tuntap, wireguard,
   tor, openvpn. m3ua reaches for socket2 directly.
 
-**Compiling is not running, and the hyper servers are the standing example.** `http`,
-`http2`, `openapi`, `jsonrpc`, `oauth2`, `openid`, `ollama`, `elasticsearch`, `npm`, `pypi`,
-`maven`, `yarn`, `spark`, `snowflake`, `rss`, `mercurial`, `oci-registry`, `saml-idp`,
-`saml-sp` and `kubernetes-server` are all in the build and all bind, accept and log happily —
-and every one of them kills the page on the first byte of a request. `hyper`'s HTTP/1
-dispatcher calls `T::update_date()` at the top of its **first poll**, which reaches
-`std::time::SystemTime::now()`; on `wasm32-unknown-unknown` that panics, and a panic inside
-hyper's own date-header cache is not somewhere `crate::utils::clock` can reach. Measured
-22 September 2026 against the real bundle. There is no fix short of patching hyper, so treat
-"in the feature list" as "compiles", never as "works", and prove a protocol with a round trip
-through `web/test/smoke.mjs` before claiming it runs.
+**Compiling is not running — prove a protocol with a round trip.** The hyper servers are the
+case that taught it. `http`, `http2`, `openapi`, `jsonrpc`, `oauth2`, `openid`, `ollama`,
+`elasticsearch`, `npm`, `pypi`, `maven`, `yarn`, `spark`, `snowflake`, `rss`, `mercurial`,
+`oci-registry`, `saml-idp`, `saml-sp` and `kubernetes-server` all compiled, bound, accepted
+and logged — and until September 2026 every hyper-based one of them killed the page on the
+first byte of a request: hyper's HTTP/1 dispatcher calls `T::update_date()` at the top of every
+poll, whatever `auto_date_header` says, which reached `std::time::SystemTime::now()`, and on
+`wasm32-unknown-unknown` that panics inside a dependency where `crate::utils::clock` cannot
+reach.
+
+The fix is a patched hyper: `vendor/hyper` is the exact crates.io source of the version
+Cargo.lock pins, changed only in `src/common/date.rs` so that on wasm32-unknown-unknown the
+date cache reads JavaScript's `Date.now()` (the `Date` header stays correct); the root
+`Cargo.toml`'s `[patch.crates-io]` points hyper there, native builds compile upstream's code
+unchanged, and `tests/vendored_hyper_patch_test.rs` fails if Cargo.lock's hyper drifts from the
+vendored copy or the patch goes missing. `vendor/hyper/README.md` has the diff and how to
+re-apply it on an upgrade.
+
+**Proven by `web/test/smoke.mjs`**, with Node's own HTTP clients (`node:http`, `node:http2`)
+over `NetGet.connect()` and every response model-answered: `http` (a GET and a POST with a
+body, and NetGet's own `http` client against it), `openapi` (a spec-routed GET), `jsonrpc` (a
+result and an error), `rss` (a rendered feed), each with a `Date` header checked to be today's,
+and `http2` over prior-knowledge h2c — which is the `h2` crate rather than hyper and never
+touched the date cache. The other hyper servers share the dispatcher that was patched but have
+no round trip of their own yet; treat them as "compiles" until one is added.
 
 To re-derive the list, run the probe: for each feature, `cargo check --target
 wasm32-unknown-unknown --no-default-features --features tcp,udp,telnet,http,<f> --lib`
@@ -373,7 +386,7 @@ its dependency does.
    `src/`; keep new code on that alias. On wasm the shim's `Instant` is its own type, so a
    stray `std::time::Instant` is a **compile** error there, not a runtime panic. A
    *dependency* calling `SystemTime::now()` is the one this does not cover — that is a
-   runtime panic and it is what rules out every hyper server above.
+   runtime panic, found only by a round trip (hyper's date cache was the case; see above).
 4. The virtual `TcpStream` supports `peek`, so the first-byte deadline the hyper-based
    servers take before `serve_connection` compiles and behaves the same way here: it reads,
    holds what it read in a pushback buffer, and the next read returns those bytes first. See

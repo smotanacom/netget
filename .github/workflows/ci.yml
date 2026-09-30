@@ -247,6 +247,7 @@ jobs:
             --test tcp_server_bounds_ratchet_test \
             --test real_client_evidence_is_run_test \
             --test test_suite_hygiene_test \
+            --test vendored_hyper_patch_test \
             -- --test-threads=50
 
       # BLOCKING, and it belongs here rather than in `registry-audit`: the script reads
