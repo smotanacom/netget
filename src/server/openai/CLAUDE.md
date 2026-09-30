@@ -109,6 +109,10 @@ never existed.
   whole job is to look like an LLM backend, a client pointed at it presents a real key, so
   *not* capturing it is the safer default; making it a model decision would mean deliberately
   putting a credential into a prompt.
+- **Request-only** - `metadata()` declares `.request_only(…)`: "The OpenAI API is HTTP
+  request/response; a server cannot send a peer anything unprompted". The dashboard's
+  `[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+  with it
 
 ### Bounds
 

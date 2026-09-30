@@ -371,6 +371,12 @@ tag: `model_answer`, `model_no_action` (nothing usable came back, the default
 404 stands), `fail_closed_llm_overloaded` / `fail_closed_llm_error`, and
 `fail_closed_bad_body`.
 
+### 10. Request-Only
+
+- `metadata()` declares `.request_only(…)`: "Maven is HTTP request/response; a server cannot send
+  a peer anything unprompted". The dashboard's `[ send message ]` on a peer is disabled and shows
+  that reason, and MCP `send_to_peer` refuses with it.
+
 ## Example Prompts
 
 ### Simple Library Repository

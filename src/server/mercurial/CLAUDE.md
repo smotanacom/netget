@@ -127,6 +127,10 @@ A clone against this server therefore produces an **empty repository** at best.
 It is useful as a honeypot, for exercising a client's metadata path, and for
 logging what a client asks for — not for distributing code.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "Mercurial is HTTP request/response; a
+server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## Example prompts
 
 ```json

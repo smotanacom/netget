@@ -243,6 +243,10 @@ Other clients, none of them validated here:
 - The whole response is built in memory. A model-authored blob is not streamed.
 - Per-connection tasks are untracked, so `stop_server` does not cancel a request
   already in flight (a repo-wide issue, not specific to this protocol).
+- Request-only. `metadata()` declares `.request_only(…)`: "The OCI registry API is HTTP
+  request/response; a server cannot send a peer anything unprompted". The dashboard's
+  `[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+  with it.
 
 ## Connection bounds
 

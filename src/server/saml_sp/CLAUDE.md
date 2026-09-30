@@ -114,6 +114,10 @@ server memory or the instruction states a rule.
 XML signature verification, certificate/trust management, SingleLogout, artifact binding,
 encrypted assertions, replay protection, persistent sessions, and TLS.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "SAML is HTTP request/response; a
+server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## Examples
 
 ```text

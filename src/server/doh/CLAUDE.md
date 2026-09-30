@@ -515,7 +515,7 @@ was made last, deliberately.** Raising it first would have hidden both real defe
 exactly what nearly happened when an earlier pass concluded the cause was "machine load".
 
 
-## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+## No peer handle — `[ send message ]` / `[ disconnect ]` stay disabled
 
 `src/server/peer_support.rs` needs an `AsyncWrite` write half that the session and the
 peer-command task can share. DoH has none to give: `handle_connection` hands the socket to
@@ -527,8 +527,11 @@ There is nothing useful to send either. A DoH answer is the body of a response t
 `POST /dns-query`, correlated by the HTTP exchange itself; an unsolicited one has no request to
 belong to.
 
-The dashboard renders that as a dim button reading "this protocol cannot message a peer from
-here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+That is also why `metadata()` declares `.request_only(…)`: "DNS over HTTPS only answers
+queries; a server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a
+peer is disabled and shows that reason, and MCP `send_to_peer` refuses with it; `[ disconnect ]`
+stays disabled with "this protocol cannot disconnect a peer from here yet".
+`tests/peer_handle_coverage_ratchet_test.rs` carries
 this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
 source on every run, so if the mechanism changes the build fails rather than the file going
 quietly stale.

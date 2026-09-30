@@ -173,6 +173,10 @@ answer given a boolean — not that the requester was authenticated. The query l
   `asyncExec:true` and the `/queries/.../result` poll loop), result chunking via
   `chunks`/`rowsetBase64`, `PUT`/`GET` stage file transfer, MFA, key-pair/SSO auth
   flows beyond the single login round-trip.
+- **Request-only** — `metadata()` declares `.request_only(…)`: "The Snowflake API is HTTP
+  request/response; a server cannot send a peer anything unprompted". The dashboard's
+  `[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+  with it.
 
 ## Testing
 

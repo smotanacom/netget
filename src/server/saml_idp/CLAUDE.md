@@ -154,6 +154,10 @@ rule.
 XML signing and signature verification, certificate/key management, SingleLogout, artifact
 binding, encrypted assertions, MFA, replay protection, and TLS.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "SAML is HTTP request/response; a
+server cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## Examples
 
 ```text

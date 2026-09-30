@@ -271,6 +271,10 @@ body='{"_index":"products","_id":"nonexistent","found":false}'
 - **No snapshots** - backup/restore not implemented
 - **No plugins** - no plugin system
 - **No X-Pack features** - no ML, security, monitoring
+- **Request-only** - `metadata()` declares `.request_only(…)`: "Elasticsearch is HTTP
+  request/response; a server cannot send a peer anything unprompted". The dashboard's
+  `[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+  with it
 
 ### Performance
 

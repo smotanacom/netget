@@ -272,6 +272,10 @@ WebSocket upgrade · streaming/chunked responses · request-body streaming ·
 binary bodies · multipart/urlencoded form parsing (the body is handed over raw) ·
 LLM control over keep-alive or connection close · ALPN · `recent_requests`.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "HTTP only answers requests; a server
+cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is disabled
+and shows that reason, and MCP `send_to_peer` refuses with it.
+
 ## References
 
 - RFC 7230-7235 (HTTP/1.1)

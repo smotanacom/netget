@@ -173,6 +173,11 @@ Signing or verification of anything, PKCE validation, device flow, dynamic clien
 registration, token introspection/revocation (use the `oauth2` protocol), session management,
 and TLS.
 
+**Request-only.** `metadata()` declares `.request_only(…)`: "OpenID Connect is HTTP
+request/response; a server cannot send a peer anything unprompted". The dashboard's
+`[ send message ]` on a peer is disabled and shows that reason, and MCP `send_to_peer` refuses
+with it.
+
 ## Examples
 
 ```text
