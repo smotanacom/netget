@@ -66,23 +66,43 @@ const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
 
 // Short, and answerable in one line by a small model or by a person filling in a form.
 //
-// The banner is its own rule, on the one event it is for, and not part of the instruction:
-// every model request carries the instruction and a single event with no record of what was
-// said before it, so an instruction that opened with "when a visitor connects, send a banner
-// that asks for their name; after that, answer every line" had a model answering a typed
-// "hello" decide whether the banner was still owed, and llama3.1:8b and qwen2.5:1.5b sent it
-// again nearly every time. A `llm` event handler adds its instruction to that event's prompt
-// alone (web/README.md has the measurements).
+// Every model request carries the instruction, the server's memory and one event, with no
+// record of what was said before it, and whatever a small model is asked to do it reads best
+// at the end. So each event that needs its own words gets them in its own rule: a `llm` event
+// handler adds its instruction to that event's prompt alone, after the event's data, as the
+// last thing the model reads (web/README.md has the measurements).
+//
+// - The banner. An instruction that opened with "when a visitor connects, send a banner that
+//   asks for their name; after that, answer every line" had llama3.1:8b and qwen2.5:1.5b send
+//   the banner again for a typed "hello" nearly every time.
+// - The adventure. "run a very small text adventure if they type play", in the instruction
+//   alone, had Gemini Nano answer "play" with a bare "> " prompt 4 times in 5 and no model
+//   start a game; "look" and "go north" then arrived as unrelated lines. The map is in the
+//   instruction so that every answer can place the visitor, starting at the Gate, and the
+//   game's rule is on `telnet_message_received`: with it Nano starts the game 5 times in 5 and
+//   answers "look" in it 4 in 5. Where the visitor is after a move lives only in the server's
+//   memory, and small models rarely write it: Nano did on 1 turn in 67 across four wordings of
+//   this rule, so "go north" is still answered from the Gate (web/README.md has the table).
 const TELNET_INSTRUCTION = 'You are the NetGet BBS, a tiny retro bulletin board reached over '
-    + 'Telnet. Answer every line a visitor types with one or two short, friendly lines: greet '
-    + 'them by name, chat, tell a one-line joke when asked, or run a very small text adventure '
-    + 'if they type "play". Plain text only, under 200 characters per reply.';
+    + 'Telnet. Answer every line a visitor types with send_telnet_line: one or two short, friendly '
+    + 'lines of plain text, under 200 characters. Greet them by name, chat, tell a one-line joke '
+    + 'when asked, or run a tiny text adventure if they type "play". The adventure\'s map: Gate '
+    + '(a rusty lamp; north to Hall), Hall (a sleeping dragon; south to Gate, east to Vault), '
+    + 'Vault (a heap of gold; west to Hall). It starts at the Gate.';
+const TELNET_GAME_RULE = 'Answer with send_telnet_line. "play" starts the adventure: describe '
+    + 'the Gate. A game command (look, go <direction>, take <thing>) is answered as the adventure, '
+    + 'from the room Memory names, or from the Gate if it names none: "look" describes that room; '
+    + '"go <direction>" walks to the next room on the map (from the Gate, "go north" reaches the '
+    + 'Hall) and describes it, then set_memory "room: <that room>". Anything else is chat.';
 const TELNET_EVENT_HANDLERS = [{
     event_pattern: 'telnet_connection_opened',
     handler: {
         type: 'llm',
         instruction: 'Send a short welcome banner (two lines at most) that ends by asking for their name.',
     },
+}, {
+    event_pattern: 'telnet_message_received',
+    handler: { type: 'llm', instruction: TELNET_GAME_RULE },
 }];
 
 // Options for the Prompt API: English text in, English text out.
@@ -645,7 +665,9 @@ function describe(req) {
     const at = text.lastIndexOf('Context data:');
     if (at >= 0) {
         try {
-            const ctx = JSON.parse(text.slice(at + 'Context data:'.length).trim());
+            // The data is pretty-printed JSON, so it holds no blank line; a rule's instruction
+            // may follow it after one.
+            const ctx = JSON.parse(text.slice(at + 'Context data:'.length).trim().split('\n\n')[0]);
             const v = ctx.message ?? ctx.data ?? ctx.line ?? ctx.text;
             if (typeof v === 'string') detail = v;
         } catch (e) { /* not a JSON object */ }

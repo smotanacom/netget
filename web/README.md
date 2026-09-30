@@ -87,13 +87,16 @@ Two things the script handles that are easy to lose an hour to:
 `site/js/demo.js` is the page, and the demo on it is Telnet only: three machines. On a wide
 screen the Telnet client and the model sit side by side, the same height (the Telnet terminal
 fills whatever the model panel makes the row, and never holds it open), with the dashboard
-below them at full width; on a narrow one they stack as Telnet, dashboard, model. The page
+below them at full width; on a narrow one they stack as Telnet, dashboard, model. The
+dashboard's terminal is 13px wherever 80 columns fit; narrower, the dashboard stacks its own
+two columns (`src/tui/render/mod.rs`, from 40 columns up) and the page picks the largest font
+that fits 48 columns — 10.5px on a 390px phone, where squeezing in 80 columns meant 6.5px. The page
 around them carries no step list or notes: the machines are the explanation. Nothing needs a
 click:
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
-  2323 with a short BBS instruction and one `llm` rule on `telnet_connection_opened` that
-  asks for the welcome banner, so it is a normal instance on the dashboard (`rules 1`). The
+  2323 with a short BBS instruction and an `llm` rule on `telnet_connection_opened` that
+  asks for the welcome banner, so it is a normal instance on the dashboard. The
   banner is a rule rather than a sentence in the instruction because every request carries
   the instruction and one event with nothing said before it: "when a visitor connects, send a
   banner asking for their name; after that, answer every line" had llama3.1:8b answer every
@@ -101,6 +104,37 @@ click:
   times in 20, and naming the events inside the instruction barely changed that (16 in 20).
   With the rule it answers `hello` and `hi there` with a greeting of its own (such as
   `Hello, how are you?`) 10 times in 10, and Gemini Nano with `Hi there!` / `Hello there!`.
+
+  The text adventure works the same way, with a second rule, on `telnet_message_received`
+  (`rules 2`), whose instruction is the game's: "play" describes the Gate, a game command is
+  played in the room the server's memory names (the Gate if none), and a move ends with
+  `set_memory`. The map is in the instruction. Before, the instruction said only "run a very
+  small text adventure if they type play", and every line reached the model alone — nothing in
+  a request says what was said before it, so "look" and "go north" had no game to belong to.
+  Measured on a scripted session (`hello`, `play`, `look`, `go north`), 5 runs per model:
+  Gemini Nano on the real page in Chrome, and llama3.1:8b and qwen2.5:1.5b through Ollama
+  answering the page's exact requests the way WebLLM does (the text back to NetGet, no schema),
+  temperature 0.2:
+
+  | model | `hello` → greeting | `play` → the game starts | `look` → the room | `go north` → the Hall |
+  |---|---|---|---|---|
+  | Gemini Nano, before | 5/5 | 0/5 (4× a bare `> ` prompt) | 0/5 | 0/5 |
+  | Gemini Nano, after | 5/5 | 5/5 | 4/5 | 0/5 |
+  | llama3.1:8b, before | 5/5 | 0/5 | 0/5 (4× a "dark room" of its own) | 0/5 ("a dark forest") |
+  | llama3.1:8b, after | 5/5 | 5/5 | 5/5 | 0/5 |
+  | qwen2.5:1.5b, before | 5/5 | 0/5 | 0/5 | 0/5 |
+  | qwen2.5:1.5b, after | 5/5 | 0/5 | 0/5 (echoes `look`) | 0/5 |
+
+  "Go north" is the open end, and it is about state, not wording: where the visitor is after a
+  move exists only if the model writes it to memory, and across four wordings of the rule
+  (including one that spelled out the two actions to answer with) Gemini Nano wrote memory on
+  1 turn in 67 and llama3.1:8b in 1 session of 13 (the Gate, on "play"), neither ever on a
+  move, so both answer "go north" from the Gate. A transcript
+  kept by the server was tried as well — each line's prompt listing the connection's earlier
+  exchanges from the access log, above the line — and rejected: the models copied earlier
+  answers (llama3.1:8b repeated its previous line in 4 of 5 sessions, qwen2.5:1.5b in all
+  five), which undid the gains above. qwen2.5:1.5b unconstrained does not follow this prompt
+  at all; the Prompt API's response schema is what keeps Gemini Nano on the offered actions.
   About a second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
   a `$ ` prompt, `telnet localhost 2323` typed out so that it finishes as the client connects,
   then telnet(1)'s own `Trying 127.0.0.1...` / `Connected to localhost.` / `Escape character
@@ -125,7 +159,10 @@ click:
   `LanguageModel.availability()` answers `available`, `downloadable` or `downloading`, its
   first option is the browser's built-in model, by name: "Gemini Nano (built into Chrome)",
   or "Phi-4-mini (built into Edge)" when the user agent says Edge (the API does not name its
-  model; Edge's flag-gated Aion-1.0-Instruct cannot be told apart). Then the WebLLM models
+  model; Edge's flag-gated Aion-1.0-Instruct cannot be told apart). Below 600px wide the
+  labels say only what tells the options apart, so they fit the select on a phone ("Gemini
+  Nano · built in", "Qwen2.5 3B · 2 GB", "Qwen3 1.7B · thinks · 1 GB", "… · cached").
+  Then the WebLLM models
   (`WEBLLM_MODELS`), each with its download size (the weights in the model's
   `ndarray-cache.json`; WebLLM's prebuilt config gives only VRAM) and "thinks" for Qwen3, or
   "downloaded" once WebLLM's
@@ -186,13 +223,20 @@ click:
   built it; anything else sends that one request to the composer, with the reason. WebLLM's
   text goes back as written, to NetGet's own parser and repair, less a thinking model's
   `<think>` block, which goes as the reply's `reasoning` (a block with no `<think>` in sight,
-  because the template opened it in the prompt, ends at `</think>`; one that never closes has
-  no answer, and NetGet's retry takes it from there). Qwen3 is asked with
-  `extra_body: {enable_thinking: true}` (WebLLM 0.2.85's toggle; `false` would prefill an empty
+  because the template opened it in the prompt, ends at `</think>`). Qwen3 is asked with
+  `extra_body: {enable_thinking: true}` (WebLLM 0.2.85's toggle; `false` prefills an empty
   think block), temperature 0.6 and top_p 0.95 (Qwen's own advice for thinking; greedy
-  decoding makes it repeat itself), and `max_tokens` 2048, since its thinking is spent from the
-  same budget. Its prebuilt context window is 4096 tokens; WebLLM refuses a prompt longer than
-  that and stops generating at it.
+  decoding makes it repeat itself), and `max_tokens` 1024, since its thinking is spent from the
+  same budget; a reply that spends all of it without closing `<think>` is asked again with
+  thinking off, and the cut-off thinking stays in the Thinking block, marked as cut off.
+  Every WebLLM model is loaded with `context_window_size` 8192 (the third argument of
+  `CreateMLCEngine`). The prebuilt 4096 does not hold a NetGet request: measured on the page
+  with the real Qwen3 1.7B, a Telnet event's prompt is about 3900 tokens, so the connect event
+  left it 169 tokens, it ran out inside `<think>` and sent no banner, and the next line's
+  prompt (4146 tokens) was refused (`ContextWindowSizeExceededError`). With 8192, its thinking
+  on typed lines closed within 290–390 tokens (answers in about a minute at this machine's
+  5–6 tokens/s), while on the connect event it ran past 2048 without closing, which is what
+  the retry without thinking is for.
 
 The page never starts an HTTP-family server (see below for why they cannot answer here). The
 dashboard's picker still lists every compiled protocol, so a visitor can.
@@ -210,7 +254,9 @@ page itself in headless Chromium: the Telnet server and client come up with no c
 visitor answers through the composer and the answers reach the Telnet terminal, no element of
 the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, the terminal reads as
 a telnet session through a hang-up and a reconnect, the removed explanatory text stays
-removed, and a stub `LanguageModel` proves the Prompt API path both when the model is
+removed, a stub model that follows the game's rule plays the adventure into the Hall through
+the server's memory (verbatim in the next prompt), a 390x844 phone gets the short select
+labels (each measured to fit) and the stacked dashboard at 10px or more, and a stub `LanguageModel` proves the Prompt API path both when the model is
 `available` (named first in the select, loads by itself, answers with no composer,
 constrained to the offered actions, falls back on an unparseable answer) and when it is
 `downloadable` (waits for the first keypress). A stub whose `create()` the test holds for
@@ -228,7 +274,9 @@ Thinking block (its second stream yields cumulative chunks, and the answer is th
 the fake WebLLM's Qwen3 streams a `<think>` block, held before `</think>`, which shows in the
 Thinking block with no answer yet, folds to "Thought for N s" once answered, opens on a click,
 and never reaches the Telnet terminal (with the real xterm.js the test reads it in the
-dashboard's stream too). `smoke.mjs` checks `site/js/thinking.js` at each point of a `<think>`
+dashboard's stream too); the engine is asked for an 8192-token context, and a Qwen3 reply that
+spends its 1024 tokens inside `<think>` is asked again with thinking off and still reaches
+Telnet. `smoke.mjs` checks `site/js/thinking.js` at each point of a `<think>`
 stream and that a reply's `reasoning` reaches the dashboard.
 Headless Chromium has no built-in model, so the stubs are the evidence for that path;
 with Chrome itself the test also checks the real `availability()` is detected and no download
