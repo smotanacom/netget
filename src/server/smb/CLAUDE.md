@@ -14,7 +14,9 @@ length — so the server reads each request whole before deciding anything about
 session request (a client that dialled 139) gets a positive session response; keep-alives are
 ignored; anything else as the first byte closes the connection.
 **Port**: 445 (standard), configurable
-**Status**: Beta (see "Maturity" at the end)
+**Status**: **Stable**, set 30 September 2026. See "Maturity: the six conditions" at the foot
+of this file for what was checked, what was false when it was checked, and what the rating
+does *not* cover.
 **Startup parameters**: the three read deadlines and nothing else — `first_byte_timeout_secs`
 (default 30), `idle_timeout_secs` (900) and `body_timeout_secs` (30), each defaulting to the
 constant the server uses; zero is refused at startup. See "Connection bounds".
@@ -739,25 +741,95 @@ cap and one past it with the slot coming back, and both compound bounds — and 
 by removal. `tests/tcp_server_bounds_ratchet_test.rs` additionally fails the build if the
 deadline or the cap disappears from the source.
 
-## Maturity: Beta, and what it rests on
+## Maturity: the six conditions
 
-**Beta since September 2026**, on the bar in the root `CLAUDE.md`: two independent
-third-party clients complete a real session, in tests that fail rather than skip when the
-client is absent (`tests/server/smb/real_client_test.rs`).
+The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
+30 September 2026 rather than inherited from the Beta pass. All six hold; four of them only
+after this pass repaired something.
 
-| Client | What it drives | What it checks that nothing else does |
+| # | condition | holds? |
 |---|---|---|
-| Samba `smbclient` 4.24 (C) | anonymous SPNEGO/NTLMSSP login, TREE_CONNECT, `ls` (QUERY_DIRECTORY to NO_MORE_FILES, FileFsFullSizeInformation), `get` of a 70 000-byte binary file (CREATE, QUERY_INFO FileAllInformation, READ, CLOSE), TREE_DISCONNECT, LOGOFF | MessageId correlation on every reply, credits, the NTLMSSP CHALLENGE's shape, directory-entry chaining, the byte-exact file |
-| `smbprotocol` 1.17 (Python) | named-guest bare-NTLMSSP login, listdir, open+read of the same file | that a client which trusts CREATE's EndOfFile reads the whole file |
+| 1 | two independent third-party clients, no skip, no `#[ignore]` | **yes, as of this pass** — Samba's `smbclient` 4.24 (C) and `smbprotocol` 1.17 (Python), neither linked by the server, both failing rather than skipping when absent, now counted verb by verb from the recorded bytes |
+| 2 | the pcap oracle is green over its wire traffic | **yes** — both real-client sessions (smbprotocol's was not recorded before) and a raw session of every command the server answers, through Wireshark's `nbss`/`smb2` |
+| 3 | a fuzz target exists and has run clean, with a corpus | **yes, as of this pass** — `smb2_request` and `ntlmssp_token`, below |
+| 4 | every declared bound has a test | **yes, as of this pass** — `bounds_test.rs` and `inbound_limit_test.rs`, every bound verified by removal |
+| 5 | both `CLAUDE.md` files verified against source in this pass | **yes** — this file and `tests/server/smb/CLAUDE.md`; the corrections are below |
+| 6 | no `#[ignore]`, no skip-when-missing gate | **yes** — `grep -rn '#\[ignore\]' tests/server/smb/` is empty and both client checks panic with the install command |
 
-The smbclient session is recorded through a relay and read clean by Wireshark's `nbss`/`smb2`
-dissectors (the pcap oracle); so is a raw session exercising every implemented command
-(`header_layout_test.rs`). Both inbound bounds have a test that was verified by removal.
+**Condition 1, verb by verb.** The server answers NEGOTIATE, SESSION_SETUP, LOGOFF,
+TREE_CONNECT, TREE_DISCONNECT, CREATE, CLOSE, FLUSH, READ, WRITE, QUERY_INFO,
+QUERY_DIRECTORY and ECHO with success; refuses IOCTL (no FSCTL) and never answers CANCEL.
+Each real-client test prints the commands its client sent with every NTSTATUS each was
+answered with, and fails unless each expected verb was sent and answered STATUS_SUCCESS:
 
-**Not Stable, and what is missing for it:** no fuzz target exists for the request parsers or
-the NTLMSSP parser (condition 3); `FIRST_MESSAGE_READ_TIMEOUT`, `IDLE_BETWEEN_MESSAGES_TIMEOUT`,
-`BODY_READ_TIMEOUT` and `MAX_CONNECTIONS` are held by the shared ratchets but have no SMB test
-of their own (condition 4). **What the rating covers is the surface the server implements** —
-SMB 2.0.2/2.1, guest and null sessions, the commands above — which is a small subset of
-MS-SMB2. Neither client exercises WRITE; the raw-packet suites do. Windows, macOS and Linux
-kernel clients have not been run against it.
+| verb | smbclient | smbprotocol | raw session |
+|---|---|---|---|
+| NEGOTIATE, SESSION_SETUP (both legs), TREE_CONNECT, CREATE, CLOSE, READ, WRITE, QUERY_INFO, QUERY_DIRECTORY, ECHO, TREE_DISCONNECT, LOGOFF | yes | yes | yes |
+| FLUSH | **no** — smbclient has no command that sends it | yes | yes |
+| delete (CREATE with `FILE_DELETE_ON_CLOSE`) | yes (`rm`) | no (`remove()` uses SET_INFO, not implemented) | — |
+| related compound (CREATE + QUERY_INFO×5 + CLOSE) | no | yes (`stat`) | — |
+| IOCTL (refused), CANCEL (unanswered) | no | no | yes |
+
+It was true of a sample when this pass began: **neither client wrote**, smbclient's
+documented LOGOFF was never sent (it drops the socket after `tdis` unless told `logoff`), and
+no client issued FLUSH, ECHO, mkdir or a compound. Both now upload a file in two WRITEs at two
+offsets, and the test reassembles the model's `write` events by offset and requires exactly the
+uploaded bytes — checked by mutation (every write reported at offset 0 fails both). Driving
+smbclient's `rm` found a defect: an open with `FILE_DELETE_ON_CLOSE` was an ordinary "create"
+to the model, which said yes, and the client was told the file was gone while the model still
+believed it existed. The event now carries `delete_on_close`.
+
+**Condition 3.** Both targets were written in this pass, over request parsing that this pass
+first moved out of the handlers into pure functions in `wire.rs` (`next_in_chain` and one
+`parse_*` per command) so there was something to fuzz without a socket or a model. Built with
+`rustup run nightly-2025-12-04 cargo fuzz build -s none` — `-s none` because ASan deadlocks
+before `main` on this macOS (`fuzz/README.md`) — and run 300s each against the committed
+corpus: `smb2_request` 482 657 executions, `ntlmssp_token` 406 094, no crash, no timeout, peak
+RSS 71 MB. SPNEGO is ASN.1 but is not walked as DER (see "Authentication"), so there is no
+recursion to bound; the corpus carries a 20 000-level nested-DER bomb anyway. SMB2 is flat,
+and its long axis — a compound chain — is seeded as 14 000 linked ECHOs.
+
+**Condition 4 found two defects, not only missing tests.**
+
+- **A compound reply too large for one frame panicked the connection task.** A Direct TCP
+  header carries 24 bits of length; 17 READs of `MaxReadSize` in one compound asked for
+  17 MiB, and `wire::frame`'s assertion fired. `MAX_RESPONSE_FRAME_BYTES` and
+  `MAX_COMPOUND_REQUESTS` now bound it.
+- **MaxReadSize and MaxTransactSize were advertised and not enforced** — a longer READ was
+  clamped, a larger output buffer was not checked — where MS-SMB2 says each MUST fail with
+  `STATUS_INVALID_PARAMETER`.
+
+And three growths with no bound at all: sessions opened by the first NTLMSSP leg (before
+anyone is asked), tree connects (nobody is asked), and open handles behind a static handler.
+All three are capped per connection, and the three read deadlines became startup parameters
+because the idle one (900s) could not otherwise be tested. The declared direction was checked
+for each: every bound is inbound except `MAX_CREDIT_GRANT` and `MAX_RESPONSE_FRAME_BYTES`,
+which govern what the server writes, and are tested as such. The connection cap was checked
+for the modbus defect (a server-side close holding its slot while the peer holds on) and does
+not have it: the permit lives in the task that owns the read loop.
+
+**Condition 5 turned up claims the code did not keep**, all now true or removed:
+
+- the failure section promised a `decision=` token on every refusal; WRITE logged none.
+  `failure_modes_test.rs` now asserts all eighteen (six decided operations × reject, silent,
+  outage) on the wire and in the log;
+- "SET_INFO, so no delete" — deletes arrived as CREATEs with `FILE_DELETE_ON_CLOSE` and were
+  answered success without the model knowing (above);
+- the raw session "covering every implemented command" covered neither FLUSH, IOCTL nor
+  CANCEL; it now covers them plus SET_INFO and LOCK;
+- smbclient was said to send LOGOFF, and did not;
+- "the update site is a `TODO`" (there is none), "`Arc<Mutex<SmbConnectionState>>`" (it is a
+  `Mutex` owned by the task), and a Logging section describing hex dumps and header-parse
+  traces the code does not write.
+
+**What the rating covers is the surface the server implements** — SMB 2.0.2/2.1, guest and
+null sessions over SPNEGO/NTLMSSP that authenticate nothing, the thirteen answered commands
+above, compounds — which is a small subset of MS-SMB2: no SMB 3.x, signing, encryption,
+oplocks, leases, durable handles, SET_INFO, LOCK, CHANGE_NOTIFY, IOCTL/FSCTL or named pipes.
+Windows, macOS and Linux kernel clients have not been run against it, and the kernel clients
+negotiate SMB 3.x first. The blocking CI `test` job does not compile `smb`; `registry-audit`
+runs `smb::real_client_test` and is `continue-on-error`, so run the suite yourself:
+
+```bash
+./cargo-isolated.sh test --no-default-features --features smb --test server -- smb:: --test-threads=100
+```

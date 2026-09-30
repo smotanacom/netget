@@ -115,10 +115,10 @@ netget --mcp   # then call list_protocols / get_protocol_docs
 
 Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/protocol/metadata.rs`):
 
-- **Stable** — **three as of 26 September 2026: `coap`, `dns` and `modbus`.** Before
+- **Stable** — **four as of 30 September 2026: `coap`, `dns`, `modbus` and `smb`.** Before
   16 September 2026 there were none, and three protocols had held the rating and lost it, each
   for the same reason: nobody had said what it required, so "Stable" meant whoever set it felt
-  good about the code. The bar below is what replaced that, and these three are the ones
+  good about the code. The bar below is what replaced that, and these four are the ones
   measured against it rather than against a feeling. Each carries its own justification in
   `metadata()` — read `e2e_testing` and `notes` there, and the "Maturity: the six conditions"
   section at the foot of each `src/server/<p>/CLAUDE.md`, before quoting any of the ratings:
@@ -167,7 +167,8 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What was left
   for them was condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
   re-verified against source). **All three went the rest of the way and are Stable** — `coap`
-  and `dns` on 16 September, `modbus` on 26 September 2026.
+  and `dns` on 16 September, `modbus` on 26 September 2026. `smb` followed on 30 September
+  2026 from Beta, with conditions 1, 3 and 4 made true in the pass rather than found true.
 
   Things those passes turned up which are worth carrying to whatever comes next:
 
@@ -186,6 +187,13 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
     named FC 2 as decoded. Count the verbs each client drives against the verbs the server
     implements. The same pass found condition 2 satisfied by exception frames alone — the
     success paths were read by a client library that never showed the test the bytes.
+  - **A client drives only what its CLI exposes, so count what it sends, not what it runs.**
+    `smb`'s real-client tests print every command each client put on the wire with every
+    NTSTATUS it was answered with. That showed smbclient never sending the LOGOFF its docs
+    claimed, and `rm` showed a delete arriving as an ordinary CREATE (`FILE_DELETE_ON_CLOSE`)
+    that the model approved without knowing. The same pass found a compound reply too large
+    for one 24-bit Direct TCP frame panicking the connection task — a bound on what the server
+    *writes*, the coap direction again.
   - **Condition 4 finds defects, not just missing tests.** Testing that a closed connection
     returns its cap slot found that a Modbus connection closed for a framing error kept its
     slot as long as the peer held its end open: `close` shut the write half from another task
@@ -225,11 +233,10 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (61 protocols as of 27 September 2026:
+- **Beta** — human-reviewed, works against real clients (60 protocols as of 30 September 2026:
   49 plus nine new servers that each arrived Beta on a real client — `dict`, `gemini`,
   `prometheus`, `docker`, `vault`, `beanstalkd`, `zabbix`, `gearman`, `bolt` — less `modbus`,
-  which went to Stable, plus `smb`, on smbclient and smbprotocol once its SMB2 headers,
-  Direct TCP framing and NTLMSSP were rebuilt to the spec, and `nostr`, a new relay that
+  which went to Stable, plus `nostr`, a new relay that
   arrived Beta on nak and rust-nostr's `nostr-sdk`, and `nsq` (`to_nsq`, `nsq_tail`) and `otlp`
   (`otel-cli`, `telemetrygen`), new servers that arrived Beta the same day; re-derive, the count drifts every pass —
   `python3 scripts/beta_evidence_table.py --check` prints it).

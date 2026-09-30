@@ -117,50 +117,65 @@ impl Protocol for SmbProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            // Beta on two independent clients, each driving a whole session in
-            // tests/server/smb/real_client_test.rs, both hard-failing when absent. See
-            // "Maturity" in src/server/smb/CLAUDE.md for what the rating does not cover.
-            .state(DevelopmentState::Beta)
+            // Stable on the six conditions in the root CLAUDE.md, each re-derived against
+            // source on 30 September 2026; "Maturity: the six conditions" at the foot of
+            // src/server/smb/CLAUDE.md says what each rests on and what the rating does not
+            // cover.
+            .state(DevelopmentState::Stable)
             .well_known_port(445)
             // The Direct TCP frame length is the one peer-chosen size this server allocates
             // for; a frame over MAX_MESSAGE_BYTES is refused after its 64-byte header, and a
             // WRITE over the negotiated MaxWriteSize inside a legal frame is refused before the
-            // model. Both tested in tests/server/smb/inbound_limit_test.rs.
+            // model. Both tested in tests/server/smb/inbound_limit_test.rs; every other bound
+            // in tests/server/smb/bounds_test.rs.
             .max_inbound_bytes(crate::server::smb::MAX_MESSAGE_BYTES)
             .implementation(
                 "Hand-written SMB2 (dialects 0x0202 and 0x0210) over Direct TCP (MS-SMB2 2.1), \
                  with compound requests. SESSION_SETUP walks SPNEGO/NTLMSSP so real clients \
-                 finish the login; no password is verified and no session is signed.",
+                 finish the login; no password is verified and no session is signed. Every \
+                 request is parsed by a pure function in wire.rs.",
             )
             .llm_control(
                 "Authentication (allow/deny, on the user name the NTLMSSP AUTHENTICATE carries), \
                  directory listings, file metadata, file content on read, file-vs-directory on \
-                 create, and write authorisation. File payloads carry an explicit `encoding` \
-                 field (utf8/base64/hex) in both directions, so binary content survives a read \
-                 and a written binary payload is shown to the model losslessly.",
+                 create, deletes (a create carrying delete_on_close), and write authorisation. \
+                 File payloads carry an explicit `encoding` field (utf8/base64/hex) in both \
+                 directions, so binary content survives a read and a written binary payload is \
+                 shown to the model losslessly.",
             )
             .e2e_testing(
-                "Two independent real clients against a mocked model \
-                 (tests/server/smb/real_client_test.rs): Samba's smbclient 4.24 logs in \
-                 anonymously over SPNEGO/NTLMSSP, runs `ls` (QUERY_DIRECTORY to \
-                 STATUS_NO_MORE_FILES, and the FileFsFullSizeInformation behind 'blocks \
-                 available') and `get` of a 70 000-byte binary file whose bytes are asserted \
-                 exactly; the Python smbprotocol library logs in as a named guest over bare \
-                 NTLMSSP, lists the share and reads the same file. Both fail rather than skip \
-                 when absent. The smbclient session is recorded and read clean by Wireshark's \
-                 nbss/smb2 dissectors (pcap oracle), as is a raw session covering every \
-                 implemented command in header_layout_test.rs. Raw-packet suites pin the \
-                 encoding, fail-closed and LLM-failure paths (e2e_test.rs, \
-                 llm_failure_test.rs) and both inbound bounds (inbound_limit_test.rs). Not \
-                 verified against Windows Explorer, mount_smbfs or mount.cifs.",
+                "Condition 1: two independent real clients against a mocked model \
+                 (tests/server/smb/real_client_test.rs), neither linked by the server, both \
+                 failing rather than skipping when absent, counted verb by verb from the \
+                 recorded bytes. Samba's smbclient 4.24 logs in anonymously over \
+                 SPNEGO/NTLMSSP and runs ls, get of a 70 000-byte binary file, put of a \
+                 100 000-byte one in two WRITEs, mkdir, rm (a delete-on-close open the model is \
+                 told about), echo, tdis and logoff; smbprotocol 1.17 logs in as a named guest \
+                 over bare NTLMSSP and runs listdir, read, stat (a related compound of CREATE, \
+                 five QUERY_INFOs and CLOSE), a two-WRITE upload, FLUSH, mkdir, echo, \
+                 TREE_DISCONNECT and LOGOFF. Every answered verb is driven by both clients \
+                 except FLUSH (smbclient has no command for it). The model's write events must \
+                 reassemble to exactly the uploaded bytes. Condition 2: both sessions and a raw \
+                 session of every command the server answers (header_layout_test.rs) read \
+                 clean in Wireshark's nbss/smb2 dissectors. Condition 3: fuzz targets \
+                 smb2_request and ntlmssp_token, 300s each clean against a corpus with a \
+                 nested-DER depth bomb and a 14 000-request compound chain. Condition 4: every \
+                 declared bound tested at and past the bound and verified by removal \
+                 (bounds_test.rs, inbound_limit_test.rs). failure_modes_test.rs asserts all \
+                 eighteen refusal paths on the wire and in the log. Not verified against \
+                 Windows Explorer, mount_smbfs or mount.cifs.",
             )
             .notes(
-                "SMB 2.0.2/2.1 only; no SMB 3.x, signing, encryption, oplocks, leases, durable \
+                "Stable covers the surface implemented, a small subset of MS-SMB2: SMB \
+                 2.0.2/2.1 only; no SMB 3.x, signing, encryption, oplocks, leases, durable \
                  handles, DFS or named pipes (IPC$ connects, every open on it is refused). \
                  Sessions are guest or null: NTLMSSP is walked, never verified. No SET_INFO (so \
-                 no delete/rename), no LOCK, no CHANGE_NOTIFY, no IOCTL. The volume size is a \
-                 fixed report, not a measurement. Adjacent operations share no state beyond the \
-                 per-connection session, tree and handle tables: the model is the filesystem.",
+                 no rename, truncate or set-times; delete only through FILE_DELETE_ON_CLOSE), \
+                 no LOCK, no CHANGE_NOTIFY, IOCTL refused, CANCEL unanswered. The volume size \
+                 is a fixed report, not a measurement. Per connection: 16 sessions, 64 trees, \
+                 1024 open handles, 32 acted-on requests per compound. Adjacent operations \
+                 share no state beyond the per-connection session, tree and handle tables: the \
+                 model is the filesystem.",
             )
             .build()
     }
