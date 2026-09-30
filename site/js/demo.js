@@ -48,6 +48,18 @@ const DASH_COLS = { wide: 80, narrow: 48 };
 // Where the model select is too narrow for the full option labels (about 30 characters).
 const NARROW = window.matchMedia('(max-width: 600px)');
 
+// The context window every WebLLM model is loaded with. WebLLM's prebuilt configs give these
+// models 4096 tokens, and a NetGet request for a Telnet event is about 3900 of them before the
+// model writes anything: measured on the page with the real Qwen3 1.7B, the connect event left
+// it 169 tokens, it ran out inside its <think> block (finish_reason "length") and answered
+// nothing, and the next line's prompt (4146 tokens) was refused outright. 8192 holds the
+// prompt plus what a model may write; every model listed supports at least 32K.
+const WEBLLM_CONTEXT = 8192;
+
+// What a thinking model may write for one request, thinking included; one that uses it all
+// without closing its `<think>` block is asked again with thinking off (answerWithWebLlm).
+const THINKING_MAX_TOKENS = 1024;
+
 const TELNET_PORT = 2323;
 const SERVER_AFTER_MS = 1000;   // after NetGet boots, open the Telnet server
 const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
@@ -591,7 +603,7 @@ async function loadWebLlm(m) {
                 if (typeof p.progress === 'number') m.progress = p.progress;
                 if (app.selected === m.id) renderControl();
             },
-        });
+        }, { context_window_size: WEBLLM_CONTEXT });
         m.cached = true;
         if (app.selected === m.id) {
             m.engine = engine;
@@ -1058,10 +1070,10 @@ async function answerWithWebLlm(req, engine, model, onText) {
     const thinks = !!model.thinks;
     // Qwen's own sampling advice for thinking mode is 0.6 (greedy decoding makes it repeat
     // itself), and its thinking comes out of max_tokens. `enable_thinking` is WebLLM 0.2.85's
-    // toggle: true (its default, stated here) lets the model think; false would prefill an
-    // empty `<think></think>` so it answers at once, which splitThinking also handles.
+    // toggle: true (its default, stated here) lets the model think; false prefills an empty
+    // `<think></think>` so it answers at once, which splitThinking also handles.
     const base = thinks
-        ? { messages, temperature: 0.6, top_p: 0.95, max_tokens: 2048, extra_body: { enable_thinking: true } }
+        ? { messages, temperature: 0.6, top_p: 0.95, max_tokens: THINKING_MAX_TOKENS, extra_body: { enable_thinking: true } }
         : { messages, temperature: 0.2, max_tokens: 1024 };
     const asked = (text) => {
         const split = splitThinking(text, { thinks, final: true });
@@ -1097,13 +1109,30 @@ async function answerWithWebLlm(req, engine, model, onText) {
         }
     }
 
-    let text = '';
-    const stream = await engine.chat.completions.create(Object.assign({}, base, { messages, stream: true, stream_options: { include_usage: true } }));
-    let usage = null;
-    for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (delta) { text += delta; onText(text); }
-        if (chunk.usage) usage = chunk.usage;
+    const streamed = async (opts, before = '') => {
+        let text = '';
+        let usage = null;
+        let finish = null;
+        const stream = await engine.chat.completions.create(Object.assign({}, base, opts, { messages, stream: true, stream_options: { include_usage: true } }));
+        for await (const chunk of stream) {
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (delta) { text += delta; onText(before + text); }
+            if (chunk.choices?.[0]?.finish_reason) finish = chunk.choices[0].finish_reason;
+            if (chunk.usage) usage = chunk.usage;
+        }
+        return { text, usage, finish };
+    };
+    let { text, usage, finish } = await streamed({});
+    // A thinking model that spends its whole budget inside `<think>` has no answer. Ask again
+    // with thinking off, keeping what it thought on screen: measured on the page with the real
+    // Qwen3 1.7B, the Telnet connect event's thinking ran past 2048 tokens (seven minutes at
+    // this machine's 5 tokens/s) while every typed line's closed within 400.
+    if (thinks && finish === 'length' && !/<\/think>/.test(text)) {
+        const thought = splitThinking(text, { thinks, final: true }).thinking;
+        const before = `<think>${thought}\n(cut off after ${THINKING_MAX_TOKENS} tokens; answering without thinking)</think>\n`;
+        const again = await streamed({ max_tokens: 1024, extra_body: { enable_thinking: false } }, before);
+        text = before + again.text;
+        usage = again.usage;
     }
     const { split, reasoning } = asked(text);
     const reply = { content: split.answer, reasoning, prompt_tokens: usage?.prompt_tokens || 0, completion_tokens: usage?.completion_tokens || 0 };
