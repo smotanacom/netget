@@ -240,8 +240,14 @@ fn drive_session(port: u16) -> std::io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut s = TcpStream::connect(("127.0.0.1", port))?;
     s.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut exchange = Vec::new();
+    // A CANCEL is never answered (MS-SMB2 3.3.5.16), so it is written and not waited for; the
+    // request after it proves no answer came, because the next frame read is that request's.
     let mut send = |s: &mut TcpStream, req: Vec<u8>| -> std::io::Result<Vec<u8>> {
         s.write_all(&nbss(req.clone()))?;
+        if w::command(&req) == w::CANCEL {
+            exchange.push((req, Vec::new()));
+            return Ok(Vec::new());
+        }
         let resp = read_frame_sync(s)?;
         exchange.push((req, resp.clone()));
         Ok(resp)
@@ -324,6 +330,37 @@ fn drive_session(port: u16) -> std::io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     );
     let r = send(&mut s, w::write(base + 12, tid, sid, &file, b"more"))?;
     assert_header(&r, w::WRITE, 0, base + 12, "WRITE");
+    let r = send(&mut s, w::flush(base + 20, tid, sid, &file))?;
+    assert_header(&r, w::FLUSH, 0, base + 20, "FLUSH");
+    // The refusals are answers too, each to its own MessageId: IOCTL has no FSCTL behind it,
+    // and SET_INFO and LOCK are not implemented.
+    let r = send(&mut s, w::ioctl(base + 21, tid, sid, &file, 0x0014_0204))?;
+    assert_header(
+        &r,
+        w::IOCTL,
+        w::STATUS_INVALID_DEVICE_REQUEST,
+        base + 21,
+        "IOCTL",
+    );
+    let r = send(&mut s, w::set_info_delete(base + 22, tid, sid, &file))?;
+    assert_header(
+        &r,
+        w::SET_INFO,
+        w::STATUS_NOT_SUPPORTED,
+        base + 22,
+        "SET_INFO",
+    );
+    let r = send(&mut s, w::lock(base + 23, tid, sid, &file))?;
+    assert_header(&r, w::LOCK, w::STATUS_NOT_SUPPORTED, base + 23, "LOCK");
+    send(&mut s, w::simple(w::CANCEL, base + 12, 0, sid))?;
+    let r = send(&mut s, w::simple(w::ECHO, base + 24, 0, sid))?;
+    assert_header(
+        &r,
+        w::ECHO,
+        0,
+        base + 24,
+        "the ECHO after a CANCEL (the CANCEL itself is never answered)",
+    );
     let r = send(&mut s, w::close(base + 13, tid, sid, &file))?;
     assert_header(&r, w::CLOSE, 0, base + 13, "CLOSE of the file");
     let r = send(&mut s, w::close(base + 14, tid, sid, &file))?;
@@ -426,9 +463,10 @@ async fn a_full_session_answers_every_request_with_its_own_message_id() -> E2ERe
     // Everything that crossed the wire, framed exactly as it was sent, read by Wireshark.
     let mut oracle = PcapOracle::tcp("smb");
     for (req, resp) in &exchange {
-        oracle = oracle
-            .to_server(&nbss(req.clone()))
-            .from_server(&nbss(resp.clone()));
+        oracle = oracle.to_server(&nbss(req.clone()));
+        if !resp.is_empty() {
+            oracle = oracle.from_server(&nbss(resp.clone()));
+        }
     }
     oracle.assert_clean();
 

@@ -74,6 +74,8 @@ jobs:
           - xmlrpc_value
           - packstream_message
           - nsq_frame
+          - smb2_request
+          - ntlmssp_token
     steps:
       - uses: actions/checkout@v4
 
