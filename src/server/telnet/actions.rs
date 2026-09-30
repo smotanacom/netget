@@ -339,7 +339,10 @@ fn send_telnet_line_action() -> ActionDefinition {
 fn send_telnet_prompt_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_telnet_prompt".to_string(),
-        description: "Send a command prompt (e.g., '> ' or '$ ')".to_string(),
+        description: "Send only a prompt such as '> ' or '$ ': no newline and no other text. \
+            A prompt says nothing by itself; to answer the line, use send_telnet_line (and a \
+            prompt after it if you want one)."
+            .to_string(),
         parameters: vec![Parameter {
             name: "prompt".to_string(),
             type_hint: "string".to_string(),
@@ -434,7 +437,10 @@ pub static TELNET_MESSAGE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(||
         "telnet_message_received",
         "A complete line of text arrived from a Telnet client. Lines are split on \\n and the \
          trailing whitespace/CR is trimmed before you see them. A line longer than 8 KiB with \
-         no newline in it is refused by the server and never raises this event.",
+         no newline in it is refused by the server and never raises this event. The event \
+         carries this one line only: nothing said earlier on the connection is repeated in it, \
+         so whatever a later line depends on (a game in progress, a login step, a current \
+         directory) has to be kept in memory with set_memory.",
         json!({
             "type": "send_telnet_line",
             "line": "Command received. Processing..."

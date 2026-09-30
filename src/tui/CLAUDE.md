@@ -56,6 +56,14 @@ the wheel scrolls back, ↑/↓ then walk lines and Enter opens what one points 
 
 Tab hops between the two columns. That is the only thing Tab does.
 
+**Narrower than 80 columns the two columns stack** (`render::TWO_COLUMN_WIDTH`): the canvas
+on top (55% of the height, leaving the stream at least six rows), the stream and the input box
+under it, each the full width, and a modal takes the whole width. Below 40×24
+(`render::MIN_WIDTH` / `MIN_HEIGHT`) it says the terminal is too small. The stacked layout is
+what a phone gets in the browser demo: `site/js/demo.js` sizes that terminal to about 48
+columns of ~10.5px text on a 390px screen, where 80 columns meant 6px.
+`tests/dashboard_frame_test.rs` renders it at 40, 48, 60 and 79 columns.
+
 ## Manual first, model optional
 
 The dashboard is built around driving instances yourself. Three mechanisms carry that:

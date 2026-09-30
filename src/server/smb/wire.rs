@@ -76,6 +76,7 @@ pub mod status {
     pub const NOT_SUPPORTED: u32 = 0xC000_00BB;
     pub const NETWORK_NAME_DELETED: u32 = 0xC000_00C9;
     pub const INTERNAL_ERROR: u32 = 0xC000_00E5;
+    pub const TOO_MANY_OPENED_FILES: u32 = 0xC000_011F;
     pub const FILE_CLOSED: u32 = 0xC000_0128;
     pub const USER_SESSION_DELETED: u32 = 0xC000_0203;
     pub const NO_MORE_FILES: u32 = 0x8000_0006;
@@ -767,6 +768,269 @@ pub fn join_directory_entries(entries: &[Vec<u8>]) -> Vec<u8> {
 /// is not the last.
 pub fn padded_len(entry: &[u8]) -> usize {
     entry.len().div_ceil(8) * 8
+}
+
+// ---------------------------------------------------------------------------------------------
+// Requests
+//
+// Every byte of a request the server reads is located here, as a pure function of the message,
+// so the parsing a peer controls can be fuzzed without a socket, a session or a model
+// (`fuzz/fuzz_targets/smb2_request.rs`). Each parser takes the whole message — header and body
+// — or the body alone, says which, and returns `None` for a request too short to carry its own
+// fields or whose offsets point outside it; the session loop answers that with
+// `STATUS_INVALID_PARAMETER`. Nothing here indexes past what it has checked.
+// ---------------------------------------------------------------------------------------------
+
+/// Why a compound chain could not be walked any further.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainError {
+    /// The bytes at this position are not an SMB2 header.
+    NotSmb2,
+    /// `NextCommand` does not point at another request inside the frame (MS-SMB2 3.3.5.2.7):
+    /// shorter than a header, past the end, or not 8-byte aligned.
+    BadNextCommand(RequestHeader),
+}
+
+/// One request of a compound chain, located but not yet interpreted.
+#[derive(Debug, Clone, Copy)]
+pub struct ChainedRequest<'a> {
+    pub header: RequestHeader,
+    /// This request's header and body, and nothing of the requests after it.
+    pub message: &'a [u8],
+    /// Where the next request starts, relative to the start of `message`; `None` for the last.
+    pub next: Option<usize>,
+}
+
+/// Locate the request at the start of `rest`, the unread tail of a frame.
+pub fn next_in_chain(rest: &[u8]) -> Result<ChainedRequest<'_>, ChainError> {
+    let header = RequestHeader::parse(rest).ok_or(ChainError::NotSmb2)?;
+    let next = header.next_command as usize;
+    if next == 0 {
+        return Ok(ChainedRequest {
+            header,
+            message: rest,
+            next: None,
+        });
+    }
+    if next < HEADER_LEN || next > rest.len() || !next.is_multiple_of(8) {
+        return Err(ChainError::BadNextCommand(header));
+    }
+    Ok(ChainedRequest {
+        header,
+        message: &rest[..next],
+        next: Some(next),
+    })
+}
+
+/// The body of a message: everything after its 64-byte header.
+pub fn body(message: &[u8]) -> &[u8] {
+    message.get(HEADER_LEN..).unwrap_or_default()
+}
+
+/// `message[offset..offset + len]`, where both come from the peer. `None` if it overruns.
+fn buffer(message: &[u8], offset: usize, len: usize) -> Option<&[u8]> {
+    message.get(offset..offset.checked_add(len)?)
+}
+
+fn file_id(body: &[u8], at: usize) -> Option<[u8; 16]> {
+    body.get(at..at + 16)?.try_into().ok()
+}
+
+/// NEGOTIATE (MS-SMB2 2.2.3): the dialects the client offers. Takes the body.
+pub fn parse_negotiate(body: &[u8]) -> Option<Vec<u16>> {
+    if body.len() < 36 {
+        return None;
+    }
+    let count = le16(body, 2) as usize;
+    let list = body.get(36..36 + 2 * count)?;
+    Some(
+        list.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect(),
+    )
+}
+
+/// SESSION_SETUP (MS-SMB2 2.2.5): the security buffer, which may be empty. Takes the message,
+/// because `SecurityBufferOffset` is measured from the start of the header.
+pub fn parse_session_setup(message: &[u8]) -> Option<&[u8]> {
+    let body = body(message);
+    if body.len() < 24 {
+        return None;
+    }
+    let offset = le16(body, 12) as usize;
+    let len = le16(body, 14) as usize;
+    if len == 0 {
+        return Some(&[]);
+    }
+    buffer(message, offset, len)
+}
+
+/// TREE_CONNECT (MS-SMB2 2.2.9): the UNC path, `\\server\share`. Takes the message.
+pub fn parse_tree_connect(message: &[u8]) -> Option<String> {
+    let body = body(message);
+    if body.len() < 8 {
+        return None;
+    }
+    let offset = le16(body, 4) as usize;
+    let len = le16(body, 6) as usize;
+    from_utf16le(buffer(message, offset, len)?)
+}
+
+/// The fields of a CREATE request (MS-SMB2 2.2.13) this server acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateRequest {
+    pub disposition: u32,
+    pub options: u32,
+    /// `/`-separated and rooted at the share; the share root is `/`.
+    pub path: String,
+}
+
+/// CREATE (MS-SMB2 2.2.13). Takes the message: `NameOffset` is measured from the header. The
+/// name is relative to the share and uses `\`; it comes back `/`-separated and `/`-rooted.
+pub fn parse_create(message: &[u8]) -> Option<CreateRequest> {
+    let body = body(message);
+    if body.len() < 56 {
+        return None;
+    }
+    let disposition = le32(body, 36);
+    let options = le32(body, 40);
+    let name_offset = le16(body, 44) as usize;
+    let name_len = le16(body, 46) as usize;
+    let name = if name_len == 0 {
+        String::new()
+    } else {
+        from_utf16le(buffer(message, name_offset, name_len)?)?
+    };
+    let name = name.replace('\\', "/");
+    Some(CreateRequest {
+        disposition,
+        options,
+        path: format!("/{}", name.trim_matches('/')),
+    })
+}
+
+/// CLOSE (MS-SMB2 2.2.15): its `Flags` and FileId. Takes the body.
+pub fn parse_close(body: &[u8]) -> Option<(u16, [u8; 16])> {
+    if body.len() < 24 {
+        return None;
+    }
+    Some((le16(body, 2), file_id(body, 8)?))
+}
+
+/// FLUSH (MS-SMB2 2.2.17): its FileId. Takes the body.
+pub fn parse_flush(body: &[u8]) -> Option<[u8; 16]> {
+    if body.len() < 24 {
+        return None;
+    }
+    file_id(body, 8)
+}
+
+/// The fields of a READ request (MS-SMB2 2.2.19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadRequest {
+    /// As the client sent it; the session loop caps it at `MaxReadSize`.
+    pub length: u32,
+    pub offset: u64,
+    pub file_id: [u8; 16],
+}
+
+/// READ (MS-SMB2 2.2.19). Takes the body.
+pub fn parse_read(body: &[u8]) -> Option<ReadRequest> {
+    if body.len() < 48 {
+        return None;
+    }
+    Some(ReadRequest {
+        length: le32(body, 4),
+        offset: le64(body, 8),
+        file_id: file_id(body, 16)?,
+    })
+}
+
+/// The fields of a WRITE request (MS-SMB2 2.2.21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteRequest<'a> {
+    /// The length the client declared, which the session loop checks against `MaxWriteSize`
+    /// before it looks at the data.
+    pub length: u32,
+    pub offset: u64,
+    pub file_id: [u8; 16],
+    /// `length` bytes at `DataOffset`, or `None` when they run past the end of the message.
+    pub data: Option<&'a [u8]>,
+}
+
+/// WRITE (MS-SMB2 2.2.21). Takes the message: `DataOffset` is measured from the header.
+pub fn parse_write(message: &[u8]) -> Option<WriteRequest<'_>> {
+    let body = body(message);
+    if body.len() < 48 {
+        return None;
+    }
+    let data_offset = le16(body, 2) as usize;
+    let length = le32(body, 4);
+    Some(WriteRequest {
+        length,
+        offset: le64(body, 8),
+        file_id: file_id(body, 16)?,
+        data: buffer(message, data_offset, length as usize),
+    })
+}
+
+/// The fields of a QUERY_INFO request (MS-SMB2 2.2.37) this server acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryInfoRequest {
+    pub info_type: u8,
+    pub class: u8,
+    pub output_len: u32,
+    pub file_id: [u8; 16],
+}
+
+/// QUERY_INFO (MS-SMB2 2.2.37): StructureSize(2) InfoType(1) FileInfoClass(1)
+/// OutputBufferLength(4) InputBufferOffset(2) Reserved(2) InputBufferLength(4)
+/// AdditionalInformation(4) Flags(4) FileId(16). Takes the body.
+pub fn parse_query_info(body: &[u8]) -> Option<QueryInfoRequest> {
+    if body.len() < 40 {
+        return None;
+    }
+    Some(QueryInfoRequest {
+        info_type: body[2],
+        class: body[3],
+        output_len: le32(body, 4),
+        file_id: file_id(body, 24)?,
+    })
+}
+
+/// The fields of a QUERY_DIRECTORY request (MS-SMB2 2.2.33).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryDirectoryRequest {
+    pub class: u8,
+    pub flags: u8,
+    pub file_id: [u8; 16],
+    /// The search pattern; `*` when the client sent none.
+    pub pattern: String,
+    pub output_len: u32,
+}
+
+/// QUERY_DIRECTORY (MS-SMB2 2.2.33): StructureSize(2) FileInformationClass(1) Flags(1)
+/// FileIndex(4) FileId(16) FileNameOffset(2) FileNameLength(2) OutputBufferLength(4). Takes the
+/// message: `FileNameOffset` is measured from the header.
+pub fn parse_query_directory(message: &[u8]) -> Option<QueryDirectoryRequest> {
+    let body = body(message);
+    if body.len() < 32 {
+        return None;
+    }
+    let name_offset = le16(body, 24) as usize;
+    let name_len = le16(body, 26) as usize;
+    let pattern = if name_len == 0 {
+        "*".to_string()
+    } else {
+        from_utf16le(buffer(message, name_offset, name_len)?)?
+    };
+    Some(QueryDirectoryRequest {
+        class: body[2],
+        flags: body[3],
+        file_id: file_id(body, 8)?,
+        pattern,
+        output_len: le32(body, 28),
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
