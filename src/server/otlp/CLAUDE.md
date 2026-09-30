@@ -9,11 +9,17 @@ it, or refuse it. NetGet reads and decodes the payload, and encodes every respon
 
 ## Library choice
 
-- **`opentelemetry-proto` 0.30** (the OpenTelemetry project's generated types) for protobuf, with
+- **`opentelemetry-proto` 0.29** (the OpenTelemetry project's generated types) for protobuf, with
   `default-features = false` and only `gen-tonic-messages`, `trace`, `metrics`, `logs`. That
-  builds cleanly and pulls four crates into the lock (`opentelemetry`, `opentelemetry_sdk`,
-  `opentelemetry-proto`, and `tonic` 0.13 for its codec traits — no transport). The generated
-  gRPC client/server modules are behind the `gen-tonic` feature and are not compiled.
+  pulls `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-proto` and `tonic` (codec traits
+  only — no transport). The generated gRPC client/server modules are behind the `gen-tonic`
+  feature and are not compiled. **The version is chosen for its `tonic`**: 0.29 depends on
+  `tonic` 0.12, the one `grpc`, `etcd`, `tonic-reflection` and `etcd-client` use, so the tree
+  carries a single `tonic`; 0.30 moved to `tonic` 0.13 and 0.31 to `tonic` 0.14 with `prost`
+  0.14, each of which puts a second copy in the lock. Move this crate and the gRPC servers
+  together. The one message-level difference 0.30 adds is `Resource.entity_refs` (tag 3, a
+  development-status field); 0.29 skips it as an unknown field, and the decoder never read it.
+  `cargo tree -i tonic --no-default-features --features grpc,etcd,otlp` should list one version.
 - **JSON is not decoded through the crate's serde layer** (`with-serde`). That layer accepts
   64-bit integers only as strings and enums only as numbers, and OTLP/JSON senders differ on
   both; a strict typed decode would refuse exports a collector takes. The body is parsed as a
