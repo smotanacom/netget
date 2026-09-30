@@ -4,7 +4,7 @@
     ./web/build.sh && python3 web/test/page_composer.py
 
 Serves site/ (or SITE_DIR) from 127.0.0.1 and opens the page in headless Chromium
-(Playwright) eleven times. Nothing is clicked before the assertions that say so. In every run the
+(Playwright) thirteen times. Nothing is clicked before the assertions that say so. In every run the
 model select sits in the LLM machine's header and no badge names a model; who answers is read
 from the LLM machine's `data-answerer`.
 
@@ -38,7 +38,9 @@ from the LLM machine's `data-answerer`.
 5. The fake WebLLM's Qwen3, held inside its `<think>` block: the Thinking block shows the
    thinking and no answer exists yet; released, it folds to "Thought for N s", opens and closes
    on a click, the answer reaches Telnet and the thinking never does (with the real xterm.js,
-   the dashboard's stream shows it). The request asked for enable_thinking and 2048 tokens.
+   the dashboard's stream shows it). The request asked for enable_thinking and 1024 tokens, and
+   the engine was loaded with an 8192-token context. A thinking request that spends its tokens
+   inside <think> is asked again with thinking off, and that answer reaches Telnet.
    Screenshots of both, mid-stream and done, at 1440x900 and 390x844 when SCREENSHOT_DIR is set.
 6. Switching, with the stub of 3 and WebGPU: choosing an uncached WebLLM model shows one button
    naming its size and downloads nothing, while Gemini Nano keeps answering; the click
@@ -59,7 +61,15 @@ from the LLM machine's `data-answerer`.
    the composer's and the model is not asked; choosing the model again hands requests back with
    no new session; after a reload the choice is still selected, the model is not loaded, and
    the connect request is the composer's.
-11. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
+11. The adventure with a stub model that follows the game's rule and remembers nothing itself:
+   "hello" is small talk; "play", "look", "go north", "look" end in the Hall, which the stub
+   can know only from the Memory its own set_memory left in the next prompt (verbatim); the
+   game's rule is the last thing in the prompt.
+12. A 390x844 phone: the select shows the short option labels ("Qwen2.5 3B · 2 GB") and each
+   fits the select, measured in its own font; with the real xterm.js the dashboard stacks its
+   columns (the canvas above the stream) at 10px or more instead of 80 columns of 6px text;
+   no scrollbars at the four sizes; back at 1280 the full labels return.
+13. The browser's own Prompt API, if it has one: detected, named, and not downloaded unasked.
 
 Headless Chromium has no built-in model, so the stubs are the only evidence this test can
 give for the Prompt API path; they pin the page's side of it (availability, create with a
@@ -138,7 +148,7 @@ LANGUAGE_MODEL_STUB = r"""
   const answer = (text) => {
     const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
     let msg = '';
-    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim()).message || ''; } catch (e) {}
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
     if (msg === 'garble') return 'I am not JSON at all';
     if (event === 'telnet_connection_opened') return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: 'Hello from the stub model. Your name?' }] });
     return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: 'stub model heard: ' + msg }] });
@@ -187,8 +197,9 @@ export async function hasModelInCache(id) { log.cacheQueries.push(id); return ca
 // `window.__webllmHold` is true it stops inside the block, before `</think>`, until the test
 // calls `window.__webllmRelease()`.
 const THINK_PIECES = ['<think>\nThe visitor', ' just connected (zeta7). A BBS greets first,', ' then asks for a name.\nKeep it to two lines.\n', '</think>\n\n'];
-export async function CreateMLCEngine(id, opts) {
+export async function CreateMLCEngine(id, opts, chatOpts) {
   log.creates.push(id);
+  log.chatOpts = (log.chatOpts || []).concat([chatOpts || null]);
   log.requests = log.requests || [];
   const fresh = !cached().has(id);
   for (let p = 0.25; p <= 1; p += 0.25) {
@@ -199,7 +210,7 @@ export async function CreateMLCEngine(id, opts) {
   const answer = (messages) => {
     const text = messages.map((m) => m.content).join('\n');
     let msg = '';
-    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim()).message || ''; } catch (e) {}
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
     return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: `webllm ${id} heard: ${msg}` }] });
   };
   return {
@@ -208,8 +219,21 @@ export async function CreateMLCEngine(id, opts) {
       log.requests.push({ id, stream: !!req.stream, max_tokens: req.max_tokens, temperature: req.temperature, extra_body: req.extra_body || null });
       const content = answer(req.messages);
       if (!req.stream) return { choices: [{ message: { content, tool_calls: [] } }], usage: {} };
-      if (!id.startsWith('Qwen3')) {
+      // Thinking off (WebLLM prefills an empty think block): the answer alone.
+      if (!id.startsWith('Qwen3') || (req.extra_body && req.extra_body.enable_thinking === false)) {
         return (async function* () { yield { choices: [{ delta: { content } }] }; yield { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }; })();
+      }
+      // Runaway: while `window.__webllmRunaway` is set, a thinking request thinks until its
+      // max_tokens is spent and ends with finish_reason "length", its <think> never closed.
+      if (window.__webllmRunaway && req.extra_body && req.extra_body.enable_thinking) {
+        return (async function* () {
+          for (const p of ['<think>\nThe visitor connected. Maybe a banner.', ' Or maybe not. Let me reconsider the banner', ' once more (runaway7)...']) {
+            await new Promise((r) => setTimeout(r, 40));
+            yield { choices: [{ delta: { content: p } }] };
+          }
+          yield { choices: [{ delta: {}, finish_reason: 'length' }] };
+          yield { choices: [], usage: { prompt_tokens: 1, completion_tokens: req.max_tokens } };
+        })();
       }
       const pieces = [...THINK_PIECES, content.slice(0, 25), content.slice(25)];
       return (async function* () {
@@ -237,7 +261,7 @@ STREAMING_LANGUAGE_MODEL_STUB = r"""
   const pieces = (text) => {
     const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
     let msg = '';
-    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim()).message || ''; } catch (e) {}
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
     if (event === 'telnet_connection_opened') {
       return ['{"actions":[{"type":"send_telnet_line",', '"line":"Hello from the ', 'streaming stub. Your name?"}', ']}'];
     }
@@ -270,6 +294,34 @@ STREAMING_LANGUAGE_MODEL_STUB = r"""
     async availability() { return 'available'; },
     async create() { log.creates += 1; return session(); },
   };
+})();
+"""
+
+# A built-in model that plays the demo's adventure by its rule and remembers nothing itself:
+# "play" describes the Gate and sets memory to "room: Gate"; a game command is played in the room
+# the prompt's Memory names (the Gate if none), and "go north" from the Gate arrives in the Hall
+# and sets memory to "room: Hall". Anything else is chat. A room in its answer to a later "look"
+# is proof the server's memory carried it from one line's prompt to the next.
+ADVENTURE_STUB = r"""
+(() => {
+  const log = window.__lm = { prompts: [], creates: 0 };
+  const answer = (text) => {
+    const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
+    if (event === 'telnet_connection_opened') return { actions: [{ type: 'send_telnet_line', line: 'Welcome. Your name?' }] };
+    let msg = '';
+    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
+    const room = ((/- \*\*Memory\*\*: room: (\w+)/.exec(text) || [])[1]) || 'Gate';
+    if (msg === 'play') return { actions: [{ type: 'send_telnet_line', line: 'You stand at the Gate.' }, { type: 'set_memory', value: 'room: Gate' }] };
+    if (msg === 'look') return { actions: [{ type: 'send_telnet_line', line: 'You look around the ' + room + '.' }] };
+    if (msg === 'go north' && room === 'Gate') return { actions: [{ type: 'send_telnet_line', line: 'You walk into the Hall.' }, { type: 'set_memory', value: 'room: Hall' }] };
+    return { actions: [{ type: 'send_telnet_line', line: 'Just chatting: ' + msg }] };
+  };
+  const session = () => ({
+    async prompt(text, o) { log.prompts.push({ text, options: o }); return JSON.stringify(answer(text)); },
+    async clone() { return session(); },
+    destroy() {},
+  });
+  self.LanguageModel = { async availability() { return 'available'; }, async create() { log.creates += 1; return session(); } };
 })();
 """
 
@@ -830,7 +882,10 @@ def run_webllm_thinking(browser, origin):
     expect(llm.locator(".llm-answer")).to_be_hidden()
     assert "Hello" not in telnet_text(page)
     req = page.evaluate("window.__webllm.requests[window.__webllm.requests.length - 1]")
-    assert req["stream"] and req["extra_body"] == {"enable_thinking": True} and req["max_tokens"] == 2048, req
+    assert req["stream"] and req["extra_body"] == {"enable_thinking": True} and req["max_tokens"] == 1024, req
+    # Loaded with a context window that holds a Telnet event's ~3900-token prompt plus what the
+    # model writes; WebLLM's prebuilt 4096 does not.
+    assert page.evaluate("window.__webllm.chatOpts") == [{"context_window_size": 8192}], page.evaluate("window.__webllm.chatOpts")
     check_no_scrollbars(page, "qwen3-thinking")
     shoot(page, "qwen3-mid")
 
@@ -856,6 +911,19 @@ def run_webllm_thinking(browser, origin):
     type_line(page, "Ada")
     expect_telnet(page, "webllm Qwen3-1.7B-q4f16_1-MLC heard: Ada")
     assert "zeta7" not in telnet_text(page) and "think>" not in telnet_text(page), telnet_text(page)
+    # A thinking request that spends max_tokens inside <think> is asked again with thinking
+    # off: the cut-off thinking stays in the Thinking block and the answer reaches Telnet.
+    page.evaluate("window.__webllmRunaway = true")
+    n = page.evaluate("window.__webllm.requests.length")
+    type_line(page, "Grace")
+    expect_telnet(page, "webllm Qwen3-1.7B-q4f16_1-MLC heard: Grace")
+    page.evaluate("window.__webllmRunaway = false")
+    asked = page.evaluate(f"window.__webllm.requests.slice({n})")
+    assert [r["extra_body"] for r in asked] == [{"enable_thinking": True}, {"enable_thinking": False}], asked
+    llm.locator(".llm-think-head").click()
+    expect(body).to_contain_text("runaway7")
+    expect(body).to_contain_text("answering without thinking")
+    assert "runaway7" not in telnet_text(page)
     # With the real xterm.js the dashboard renders into the DOM: its stream shows the thinking.
     if XTERM_DIR:
         page.locator("#dash-term").scroll_into_view_if_needed()
@@ -1046,6 +1114,86 @@ def run_you_are_selected(browser, origin):
     page.close()
 
 
+def run_adventure_state(browser, origin):
+    """The demo's adventure keeps its place across lines through the server's memory, with a
+    model that follows the rule and remembers nothing itself: the rule on
+    `telnet_message_received` is the last thing in each line's prompt, the Memory the stub's
+    set_memory wrote is in the next line's prompt verbatim, and "look" after "go north" names
+    the Hall. "hello" stays small talk."""
+    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB)
+    wait_for_autostart(page)
+    expect_telnet(page, "Welcome. Your name?")
+    for line, want in (("hello", "Just chatting: hello"), ("play", "You stand at the Gate."),
+                       ("look", "You look around the Gate."), ("go north", "You walk into the Hall."),
+                       ("look", "You look around the Hall.")):
+        type_line(page, line)
+        expect_telnet(page, want)
+    last = page.evaluate("window.__lm.prompts.map((p) => p.text)")[-1]
+    assert last.rstrip().endswith("Anything else is chat."), last[-400:]
+    assert "- **Memory**: room: Hall" in last, last[last.find("# Current State"):][:600]
+    assert not errors, f"page errors: {errors}"
+    page.close()
+
+
+# On a phone the select shows the short labels, and each one fits the select's text box.
+NARROW_LABELS = ["Gemini Nano · built in"] + [
+    "Qwen2.5 1.5B · 1 GB", "Qwen3 1.7B · thinks · 1 GB", "Llama 3.2 3B · 2 GB",
+    "Qwen2.5 3B · 2 GB", "Qwen3 4B · thinks · 2.3 GB", "Hermes 3 8B · 5 GB",
+] + [YOU_LABEL]
+
+# Every option's text, measured in the select's own font, against the room the select gives it
+# (its content box less the drop-down arrow): the overflow in px of each that does not fit.
+LABEL_FIT = r"""
+() => {
+  const sel = document.querySelector('#model-select');
+  const cs = getComputedStyle(sel);
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const room = sel.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 18;
+  return [...sel.options].map((o) => [o.textContent, Math.round(ctx.measureText(o.textContent).width - room)]).filter(([, over]) => over > 0);
+}
+"""
+
+
+def run_mobile(browser, origin):
+    """A 390x844 phone: the select's labels are the short ones and each fits; the dashboard
+    stacks its columns at a readable font rather than squeezing 80 columns (with the real
+    xterm.js, which measures); back at 1280 the full labels return."""
+    page, errors = open_page(browser, origin, size=(390, 844),
+                             init_script=LANGUAGE_MODEL_STUB % {"mode": "available"} + GPU_STUB)
+    wait_for_autostart(page)
+    expect_who(page, "Gemini Nano")
+    assert model_labels(page) == NARROW_LABELS, model_labels(page)
+    over = page.evaluate(LABEL_FIT)
+    assert not over, f"labels wider than the select at 390px: {over}"
+    dash = None
+    if XTERM_DIR:
+        page.locator("#dash-term").scroll_into_view_if_needed()
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            dash = page.evaluate("""() => { const r = document.querySelector('#dash-term .xterm-rows');
+                const cell = document.querySelector('#dash-term .xterm-rows > div');
+                return r && cell ? { text: r.innerText, font: parseFloat(getComputedStyle(cell).fontSize) } : null; }""")
+            if dash and "SERVERS" in dash["text"] and "ACTIVITY" in dash["text"]:
+                break
+            time.sleep(0.2)
+        assert dash and "Terminal too small" not in dash["text"], dash
+        assert "SERVERS" in dash["text"] and "ACTIVITY" in dash["text"], dash
+        assert dash["font"] >= 10, f"the dashboard's font is {dash['font']}px on a phone"
+        rows = dash["text"].split("\n")
+        # Stacked: the canvas's title row is above the stream's, not beside it.
+        top = next(i for i, l in enumerate(rows) if "SERVERS" in l)
+        below = next(i for i, l in enumerate(rows) if "ACTIVITY" in l)
+        assert below > top and "ACTIVITY" not in rows[top], rows
+    check_no_scrollbars(page, "mobile")
+    page.set_viewport_size({"width": 1280, "height": 800})
+    expect(page.locator("#model-select option").first).to_have_text("Gemini Nano (built into Chrome)", timeout=5_000)
+    assert model_labels(page)[1:] == WEBLLM_LABELS + [YOU_LABEL], model_labels(page)
+    assert not errors, f"page errors: {errors}"
+    page.close()
+    return dash["font"] if dash else None
+
+
 def run_real_prompt_api(browser, origin):
     """The browser's own LanguageModel, if it has one: detected, offered with the button,
     and not asked to download anything without a click or keypress (none is given)."""
@@ -1089,6 +1237,8 @@ def main():
         held_ms = run_model_still_loading(browser, origin)
         run_model_fails_to_load(browser, origin)
         run_you_are_selected(browser, origin)
+        run_adventure_state(browser, origin)
+        mobile_font = run_mobile(browser, origin)
         real = run_real_prompt_api(browser, origin)
         browser.close()
 
@@ -1117,6 +1267,10 @@ def main():
     print("ok: when create() failed, the request that waited went to the composer with the reason")
     print("ok: 'You are the model' made the next request the composer's with the model loaded; choosing the "
           "model again handed requests back with no new session; the choice survived a reload")
+    print("ok: the adventure kept its place across lines through the server's memory with a stub model that "
+          "follows the rule and remembers nothing: \"look\" after \"go north\" named the Hall")
+    print("ok: at 390x844 the select showed the short labels, each fitting the select, and the full ones "
+          "again at 1280" + (f"; the dashboard stacked its columns at {mobile_font}px" if mobile_font else ""))
     print(f"real Prompt API in this browser: availability() = {real!r}"
           + ("; the page offered it with the button and started no download" if real in ("downloadable", "downloading") else ""))
 

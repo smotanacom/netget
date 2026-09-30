@@ -41,29 +41,68 @@ const WEBLLM_MODELS = [
     { id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC', name: 'Hermes 3 8B', size: '~5 GB' },
 ];
 
+// The dashboard's widths (see makeTerm): its two columns sit side by side from 80 columns
+// (src/tui/render/mod.rs's TWO_COLUMN_WIDTH) and stack below that, down to 40 (MIN_WIDTH).
+const DASH_COLS = { wide: 80, narrow: 48 };
+
+// Where the model select is too narrow for the full option labels (about 30 characters).
+const NARROW = window.matchMedia('(max-width: 600px)');
+
+// The context window every WebLLM model is loaded with. WebLLM's prebuilt configs give these
+// models 4096 tokens, and a NetGet request for a Telnet event is about 3900 of them before the
+// model writes anything: measured on the page with the real Qwen3 1.7B, the connect event left
+// it 169 tokens, it ran out inside its <think> block (finish_reason "length") and answered
+// nothing, and the next line's prompt (4146 tokens) was refused outright. 8192 holds the
+// prompt plus what a model may write; every model listed supports at least 32K.
+const WEBLLM_CONTEXT = 8192;
+
+// What a thinking model may write for one request, thinking included; one that uses it all
+// without closing its `<think>` block is asked again with thinking off (answerWithWebLlm).
+const THINKING_MAX_TOKENS = 1024;
+
 const TELNET_PORT = 2323;
 const SERVER_AFTER_MS = 1000;   // after NetGet boots, open the Telnet server
 const CLIENT_AFTER_MS = 2000;   // after NetGet boots, connect the Telnet client
 
 // Short, and answerable in one line by a small model or by a person filling in a form.
 //
-// The banner is its own rule, on the one event it is for, and not part of the instruction:
-// every model request carries the instruction and a single event with no record of what was
-// said before it, so an instruction that opened with "when a visitor connects, send a banner
-// that asks for their name; after that, answer every line" had a model answering a typed
-// "hello" decide whether the banner was still owed, and llama3.1:8b and qwen2.5:1.5b sent it
-// again nearly every time. A `llm` event handler adds its instruction to that event's prompt
-// alone (web/README.md has the measurements).
+// Every model request carries the instruction, the server's memory and one event, with no
+// record of what was said before it, and whatever a small model is asked to do it reads best
+// at the end. So each event that needs its own words gets them in its own rule: a `llm` event
+// handler adds its instruction to that event's prompt alone, after the event's data, as the
+// last thing the model reads (web/README.md has the measurements).
+//
+// - The banner. An instruction that opened with "when a visitor connects, send a banner that
+//   asks for their name; after that, answer every line" had llama3.1:8b and qwen2.5:1.5b send
+//   the banner again for a typed "hello" nearly every time.
+// - The adventure. "run a very small text adventure if they type play", in the instruction
+//   alone, had Gemini Nano answer "play" with a bare "> " prompt 4 times in 5 and no model
+//   start a game; "look" and "go north" then arrived as unrelated lines. The map is in the
+//   instruction so that every answer can place the visitor, starting at the Gate, and the
+//   game's rule is on `telnet_message_received`: with it Nano starts the game 5 times in 5 and
+//   answers "look" in it 4 in 5. Where the visitor is after a move lives only in the server's
+//   memory, and small models rarely write it: Nano did on 1 turn in 67 across four wordings of
+//   this rule, so "go north" is still answered from the Gate (web/README.md has the table).
 const TELNET_INSTRUCTION = 'You are the NetGet BBS, a tiny retro bulletin board reached over '
-    + 'Telnet. Answer every line a visitor types with one or two short, friendly lines: greet '
-    + 'them by name, chat, tell a one-line joke when asked, or run a very small text adventure '
-    + 'if they type "play". Plain text only, under 200 characters per reply.';
+    + 'Telnet. Answer every line a visitor types with send_telnet_line: one or two short, friendly '
+    + 'lines of plain text, under 200 characters. Greet them by name, chat, tell a one-line joke '
+    + 'when asked, or run a tiny text adventure if they type "play". The adventure\'s map: Gate '
+    + '(a rusty lamp; north to Hall), Hall (a sleeping dragon; south to Gate, east to Vault), '
+    + 'Vault (a heap of gold; west to Hall). It starts at the Gate.';
+const TELNET_GAME_RULE = 'Answer with send_telnet_line. "play" starts the adventure: describe '
+    + 'the Gate. A game command (look, go <direction>, take <thing>) is answered as the adventure, '
+    + 'from the room Memory names, or from the Gate if it names none: "look" describes that room; '
+    + '"go <direction>" walks to the next room on the map (from the Gate, "go north" reaches the '
+    + 'Hall) and describes it, then set_memory "room: <that room>". Anything else is chat.';
 const TELNET_EVENT_HANDLERS = [{
     event_pattern: 'telnet_connection_opened',
     handler: {
         type: 'llm',
         instruction: 'Send a short welcome banner (two lines at most) that ends by asking for their name.',
     },
+}, {
+    event_pattern: 'telnet_message_received',
+    handler: { type: 'llm', instruction: TELNET_GAME_RULE },
 }];
 
 // Options for the Prompt API: English text in, English text out.
@@ -102,9 +141,11 @@ function xtermTheme() {
 }
 
 // A terminal that fills its host element and refits whenever the host changes size. With
-// `minCols`, the font shrinks (not below 6px) until that many columns fit: the dashboard
-// needs 80, and a phone is narrower than 80 columns of 13px text.
-function makeTerm(el, opts = {}, onFit = () => {}, { minCols = 0 } = {}) {
+// `cols`, the font follows the width: 13px wherever `cols.wide` columns fit at 13px (the
+// dashboard's two columns side by side), otherwise the largest size, from 13px down to 6px,
+// that fits `cols.narrow` (the dashboard stacks its columns below 80, and a phone gets about
+// 48 columns of 11px text instead of 80 columns of 6px text).
+function makeTerm(el, opts = {}, onFit = () => {}, { cols = null } = {}) {
     const term = new window.Terminal(Object.assign({
         cursorBlink: false,
         fontFamily: "'JetBrains Mono', ui-monospace, monospace",
@@ -120,9 +161,12 @@ function makeTerm(el, opts = {}, onFit = () => {}, { minCols = 0 } = {}) {
     let last = '';
     const refit = () => {
         try { fit.fit(); } catch (e) { return; }
-        if (minCols && term.cols) {
+        if (cols && term.cols) {
             const now = term.options.fontSize;
-            const want = Math.max(6, Math.min(13, Math.floor((now * term.cols / minCols) * 2) / 2));
+            const at13 = now * term.cols / 13;
+            const want = at13 >= cols.wide
+                ? 13
+                : Math.max(6, Math.min(13, Math.floor((now * term.cols / cols.narrow) * 2) / 2));
             if (want !== now) {
                 term.options.fontSize = want;
                 requestAnimationFrame(refit);
@@ -281,7 +325,16 @@ const YOU = 'you';
 function modelById(id) { return app.models.find((m) => m.id === id) || null; }
 function selectedModel() { return modelById(app.selected); }
 
+// The full label on a wide screen; on a narrow one only what tells the options apart, so it
+// fits the select: "Qwen2.5 3B · 2 GB", "Qwen3 1.7B · thinks · cached".
 function optionLabel(m) {
+    if (NARROW.matches) {
+        if (m.kind === BUILTIN) return `${m.name} · built in`;
+        const bits = [m.name];
+        if (m.thinks) bits.push('thinks');
+        bits.push(m.state === 'unsupported' ? 'no WebGPU' : m.cached ? 'cached' : m.size.replace(/^~/, ''));
+        return bits.join(' · ');
+    }
     if (m.kind === BUILTIN) return `${m.name} (built into ${m.where})`;
     const kind = m.thinks ? 'WebLLM · thinks' : 'WebLLM';
     if (m.state === 'unsupported') return `${m.name} · ${kind} · needs WebGPU`;
@@ -443,6 +496,7 @@ async function setupModelControl() {
         try { localStorage.setItem(MODEL_KEY, sel.value); } catch (e) { /* storage refused */ }
         choose(sel.value);
     };
+    NARROW.addEventListener('change', paintControl);
     $('#llm-load').onclick = () => { const m = selectedModel(); if (m) loadModel(m); };
 
     // The built-in model's download starts on the visitor's first click or keypress anywhere
@@ -569,7 +623,7 @@ async function loadWebLlm(m) {
                 if (typeof p.progress === 'number') m.progress = p.progress;
                 if (app.selected === m.id) renderControl();
             },
-        });
+        }, { context_window_size: WEBLLM_CONTEXT });
         m.cached = true;
         if (app.selected === m.id) {
             m.engine = engine;
@@ -611,7 +665,9 @@ function describe(req) {
     const at = text.lastIndexOf('Context data:');
     if (at >= 0) {
         try {
-            const ctx = JSON.parse(text.slice(at + 'Context data:'.length).trim());
+            // The data is pretty-printed JSON, so it holds no blank line; a rule's instruction
+            // may follow it after one.
+            const ctx = JSON.parse(text.slice(at + 'Context data:'.length).trim().split('\n\n')[0]);
             const v = ctx.message ?? ctx.data ?? ctx.line ?? ctx.text;
             if (typeof v === 'string') detail = v;
         } catch (e) { /* not a JSON object */ }
@@ -1036,10 +1092,10 @@ async function answerWithWebLlm(req, engine, model, onText) {
     const thinks = !!model.thinks;
     // Qwen's own sampling advice for thinking mode is 0.6 (greedy decoding makes it repeat
     // itself), and its thinking comes out of max_tokens. `enable_thinking` is WebLLM 0.2.85's
-    // toggle: true (its default, stated here) lets the model think; false would prefill an
-    // empty `<think></think>` so it answers at once, which splitThinking also handles.
+    // toggle: true (its default, stated here) lets the model think; false prefills an empty
+    // `<think></think>` so it answers at once, which splitThinking also handles.
     const base = thinks
-        ? { messages, temperature: 0.6, top_p: 0.95, max_tokens: 2048, extra_body: { enable_thinking: true } }
+        ? { messages, temperature: 0.6, top_p: 0.95, max_tokens: THINKING_MAX_TOKENS, extra_body: { enable_thinking: true } }
         : { messages, temperature: 0.2, max_tokens: 1024 };
     const asked = (text) => {
         const split = splitThinking(text, { thinks, final: true });
@@ -1075,13 +1131,30 @@ async function answerWithWebLlm(req, engine, model, onText) {
         }
     }
 
-    let text = '';
-    const stream = await engine.chat.completions.create(Object.assign({}, base, { messages, stream: true, stream_options: { include_usage: true } }));
-    let usage = null;
-    for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (delta) { text += delta; onText(text); }
-        if (chunk.usage) usage = chunk.usage;
+    const streamed = async (opts, before = '') => {
+        let text = '';
+        let usage = null;
+        let finish = null;
+        const stream = await engine.chat.completions.create(Object.assign({}, base, opts, { messages, stream: true, stream_options: { include_usage: true } }));
+        for await (const chunk of stream) {
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (delta) { text += delta; onText(before + text); }
+            if (chunk.choices?.[0]?.finish_reason) finish = chunk.choices[0].finish_reason;
+            if (chunk.usage) usage = chunk.usage;
+        }
+        return { text, usage, finish };
+    };
+    let { text, usage, finish } = await streamed({});
+    // A thinking model that spends its whole budget inside `<think>` has no answer. Ask again
+    // with thinking off, keeping what it thought on screen: measured on the page with the real
+    // Qwen3 1.7B, the Telnet connect event's thinking ran past 2048 tokens (seven minutes at
+    // this machine's 5 tokens/s) while every typed line's closed within 400.
+    if (thinks && finish === 'length' && !/<\/think>/.test(text)) {
+        const thought = splitThinking(text, { thinks, final: true }).thinking;
+        const before = `<think>${thought}\n(cut off after ${THINKING_MAX_TOKENS} tokens; answering without thinking)</think>\n`;
+        const again = await streamed({ max_tokens: 1024, extra_body: { enable_thinking: false } }, before);
+        text = before + again.text;
+        usage = again.usage;
     }
     const { split, reasoning } = asked(text);
     const reply = { content: split.answer, reasoning, prompt_tokens: usage?.prompt_tokens || 0, completion_tokens: usage?.completion_tokens || 0 };
@@ -1303,7 +1376,7 @@ async function main() {
     ]);
     wireTelnet();
     let netget = null;
-    const term = makeTerm($('#dash-term'), {}, (cols, rows) => netget?.resize(cols, rows), { minCols: 80 });
+    const term = makeTerm($('#dash-term'), {}, (cols, rows) => netget?.resize(cols, rows), { cols: DASH_COLS });
     app.dash = term;
     netget = new mod.NetGet({
         cols: term.cols,

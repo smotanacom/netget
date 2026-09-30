@@ -508,3 +508,78 @@ fn a_peer_that_cannot_be_messaged_says_why_in_the_protocols_own_terms() {
     assert_eq!(other, NO_PEER_HANDLE_REASON);
     assert!(other.contains("not implemented here yet"), "{other}");
 }
+
+/// Narrower than 80 columns the two columns stack: the canvas on top, the stream and the input
+/// box beneath it, each the full width. The browser demo sizes its terminal on a phone to a
+/// readable font (about 40–48 columns) rather than to 80 columns of 6px text, so this is the
+/// layout a phone visitor sees.
+#[test]
+fn a_narrow_terminal_stacks_the_canvas_over_the_stream() {
+    for (width, height) in [(40u16, 34u16), (48, 34), (60, 30), (79, 24)] {
+        let mut app = app();
+        app.absorb_snapshot(RailSnapshot::default());
+        app.absorb_snapshot(populated());
+        app.sample_metrics();
+        let lines = frame(&mut app, width, height);
+        let text = dump(&lines);
+        println!("--- {width}x{height}\n{text}");
+        assert!(!text.contains("Terminal too small"), "{text}");
+        assert!(lines.iter().all(|l| l.chars().count() <= width as usize));
+
+        let canvas = lines
+            .iter()
+            .position(|l| l.contains("SERVERS"))
+            .expect("the canvas's title");
+        let stream = lines
+            .iter()
+            .position(|l| l.contains("ACTIVITY & CHAT"))
+            .expect("the stream's title");
+        assert!(canvas < stream, "the canvas is above the stream:\n{text}");
+        // Stacked, each pane starts at the left edge and spans the width: its title row
+        // opens with a corner in column 0 and closes with one in the last column.
+        for row in [canvas, stream] {
+            let chars: Vec<char> = lines[row].chars().collect();
+            assert_eq!(chars.first(), Some(&'╭'), "{}", lines[row]);
+            assert_eq!(chars.len(), width as usize, "{}", lines[row]);
+            assert_eq!(chars.last(), Some(&'╮'), "{}", lines[row]);
+        }
+        // The first card and the stream's events are both on screen.
+        assert!(text.contains("#1"), "{text}");
+        assert!(
+            text.contains("listening on"),
+            "the stream shows its events:\n{text}"
+        );
+        // The input box sits under the stream, above the status line.
+        let input = lines
+            .iter()
+            .rposition(|l| l.starts_with('╭'))
+            .expect("the input box");
+        assert!(input > stream && input < lines.len() - 1, "{text}");
+    }
+
+    // Below the minimum the dashboard says so instead of drawing a broken frame.
+    let mut app = app();
+    app.absorb_snapshot(RailSnapshot::default());
+    assert!(dump(&frame(&mut app, 39, 30)).contains("Terminal too small"));
+}
+
+/// Stacked, a modal takes the whole width: at 48 columns a modal sized for a wide screen would
+/// leave its content a few characters wide.
+#[test]
+fn a_modal_takes_the_whole_width_of_a_narrow_terminal() {
+    let mut app = app();
+    app.absorb_snapshot(RailSnapshot::default());
+    app.modals
+        .push(netget::tui::modal::Modal::Help { scroll: 0 });
+    let lines = frame(&mut app, 48, 34);
+    let text = dump(&lines);
+    println!("{text}");
+    let top = lines
+        .iter()
+        .find(|l| l.contains("Keys"))
+        .expect("the help modal's title");
+    let chars: Vec<char> = top.chars().collect();
+    assert_eq!(chars.len(), 48, "{top}");
+    assert!(matches!(chars.first(), Some('╭' | '┌')), "{top}");
+    assert!(matches!(chars.last(), Some('╮' | '┐')), "{top}");
+}

@@ -2,6 +2,8 @@
 //!
 //! Left column: the instance canvas. Right column: the stream, then the
 //! input box. One status line along the bottom; modals on top of everything.
+//! Narrower than [`TWO_COLUMN_WIDTH`] the two columns stack: the canvas on top,
+//! the stream and the input box under it.
 
 pub mod cards;
 pub mod chat;
@@ -18,9 +20,19 @@ use ratatui::Frame;
 use crate::tui::app::DashboardApp;
 use crate::tui::rail::Tone;
 
-/// Minimum terminal size the dashboard renders at.
-pub const MIN_WIDTH: u16 = 80;
+/// Minimum terminal size the dashboard renders at. Below [`TWO_COLUMN_WIDTH`] it
+/// renders stacked, which is what a phone gets (the browser demo sizes its
+/// terminal to a readable font rather than to 80 columns of 6px text).
+pub const MIN_WIDTH: u16 = 40;
 pub const MIN_HEIGHT: u16 = 24;
+
+/// From this width the canvas and the stream sit side by side.
+pub const TWO_COLUMN_WIDTH: u16 = 80;
+
+/// Stacked, the canvas takes this share of the body's height; the stream and
+/// the input box get the rest, never fewer than [`STACKED_STREAM_MIN`] rows.
+const STACKED_CANVAS_PERCENT: u16 = 55;
+const STACKED_STREAM_MIN: u16 = 6;
 
 /// The management column: never narrower than this, never wider than what
 /// leaves the feed readable.
@@ -50,16 +62,28 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp) {
     let body = rows[0];
     let status = rows[1];
 
-    let left_width = ((body.width as u32 * LEFT_PERCENT as u32) / 100) as u16;
-    let left_width = left_width
-        .clamp(LEFT_MIN, LEFT_MAX)
-        .min(body.width.saturating_sub(RIGHT_MIN));
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_width), Constraint::Min(RIGHT_MIN)])
-        .split(body);
-    let left = columns[0];
-    let right = columns[1];
+    let (left, right) = if body.width >= TWO_COLUMN_WIDTH {
+        let left_width = ((body.width as u32 * LEFT_PERCENT as u32) / 100) as u16;
+        let left_width = left_width
+            .clamp(LEFT_MIN, LEFT_MAX)
+            .min(body.width.saturating_sub(RIGHT_MIN));
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(left_width), Constraint::Min(RIGHT_MIN)])
+            .split(body);
+        (columns[0], columns[1])
+    } else {
+        let canvas_height = ((body.height as u32 * STACKED_CANVAS_PERCENT as u32) / 100) as u16;
+        let canvas_height = canvas_height.min(
+            body.height
+                .saturating_sub(STACKED_STREAM_MIN + chat::input_height(app)),
+        );
+        let stack = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(canvas_height), Constraint::Min(1)])
+            .split(body);
+        (stack[0], stack[1])
+    };
 
     cards::draw(frame, app, left);
 
