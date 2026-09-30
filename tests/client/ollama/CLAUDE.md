@@ -327,3 +327,10 @@ RUN cargo test --features ollama --test client::ollama::e2e_test
 3. **Timeout too short**: Increase `Duration::from_secs()` values
 4. **Model changed**: Update model name in tests
 5. **Protocol changes**: Update expected output strings
+
+## In the browser
+
+The native suites here drive the reqwest backend. The browser path — the same client code over
+`src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
+bundle (see `src/client/ollama/CLAUDE.md`, "Browser build").
+

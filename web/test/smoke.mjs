@@ -43,7 +43,11 @@
 // maven and torrent-tracker follow the button path too; the tracker's reply is bencoded with a
 // binary compact peer list, which must arrive decoded, and an https:// npm registry is refused.
 // http2's client follows the button path over h2c with prior knowledge (hyper's HTTP/2 client,
-// its tasks on the shim's spawn), and the response must be read as HTTP/2.
+// its tasks on the shim's spawn), and the response must be read as HTTP/2. oauth2 and
+// openidconnect hand the transport to their crates' own HTTP hook, routed to the model: a
+// client-credentials token from NetGet's oauth2 server, and discovery, key set and token from
+// its OpenID provider; an https:// token URL is refused. ollama follows the button path against
+// NetGet's own Ollama server.
 //
 // The model's thinking: the TCP echo's reply carries a `reasoning` field, as the page sends a
 // thinking model's `<think>` text, and it must reach the dashboard. Before any of that,
@@ -90,7 +94,7 @@ const httpResponses = [];
 const serverRequests = [];
 // What the model-routed HTTP-family clients reported to the model, by protocol: each
 // response event's data.
-const clientResponses = { openapi: [], bitcoin: [] };
+const clientResponses = { openapi: [], bitcoin: [], oauth2: [], oidc: [] };
 
 function fail(msg) {
     console.error('FAIL:', msg);
@@ -113,6 +117,7 @@ function waitFor(pred, what, ms = 15000) {
 }
 
 const PORT = 7000;
+const OIDC_PORT = 8091;  // the OpenID provider, which names itself in its discovery document
 const SMOKE_REASONING = 'smokethought: the peer wants its line shouted back';  // a <think> block's text
 
 // site/js/thinking.js, at each point of a stream.
@@ -215,6 +220,27 @@ const netget = new NetGet({
             serverRequests.push({ protocol: 'http2', context });
             return answer([{ type: 'send_http2_response', status: 200, headers: { 'content-type': 'text/plain', 'x-smoke': 'h2' }, body: 'h2 says hi to ' + context.uri }]);
         }
+        // NetGet's OAuth2 authorization server: a token for whatever grant was asked.
+        if (offered.has('oauth2_token_response')) {
+            serverRequests.push({ protocol: 'oauth2', context });
+            return answer([{ type: 'oauth2_token_response', access_token: 'smoke-oauth2-token', token_type: 'Bearer', expires_in: 1234, scope: 'read smoke' }]);
+        }
+        // NetGet's OpenID provider: discovery naming itself, an empty key set, a token.
+        if (offered.has('send_discovery_document')) {
+            serverRequests.push({ protocol: 'openid', context });
+            const base = 'http://127.0.0.1:' + OIDC_PORT;
+            if (context.endpoint_type === 'discovery') {
+                return answer([{ type: 'send_discovery_document', issuer: base, authorization_endpoint: base + '/authorize', token_endpoint: base + '/token',
+                    userinfo_endpoint: base + '/userinfo', jwks_uri: base + '/jwks.json', supported_scopes: ['openid', 'smoke'] }]);
+            }
+            if (context.endpoint_type === 'jwks') return answer([{ type: 'send_jwks_response', keys: [] }]);
+            if (context.endpoint_type === 'token') return answer([{ type: 'send_token_response', access_token: 'smoke-oidc-token', token_type: 'Bearer', expires_in: 4321 }]);
+            return answer([{ type: 'send_error_response', error: 'invalid_request', error_description: 'not in the smoke test' }]);
+        }
+        if (offered.has('ollama_generate_response')) {
+            serverRequests.push({ protocol: 'ollama', context });
+            return answer([{ type: 'ollama_generate_response', response_text: 'Smoke City, said ' + context.model }]);
+        }
         if (offered.has('npm_package_metadata')) {
             serverRequests.push({ protocol: 'npm', context });
             const name = decodeURIComponent(String(context.path).replace(/^\//, ''));
@@ -240,6 +266,26 @@ const netget = new NetGet({
             return answer([{ type: 'send_elasticsearch_response', status_code: 200,
                 body: JSON.stringify({ took: 1, timed_out: false, hits: { total: { value: 1, relation: 'eq' },
                     hits: [{ _index: context.index, _id: 'dune', _source: { title: 'Dune', asked: context.operation } }] } }) }]);
+        }
+        // The OAuth2 client: ask for a client-credentials token when connected; report tokens.
+        if (offered.has('generate_auth_url')) {
+            if (context.access_token !== undefined || context.error !== undefined) {
+                clientResponses.oauth2.push(context);
+                return answer([]);
+            }
+            return answer([{ type: 'exchange_client_credentials', scopes: 'read smoke' }]);
+        }
+        // The OpenID Connect client: after discovery, a client-credentials token; report it.
+        if (offered.has('discover_configuration')) {
+            if (context.access_token !== undefined) {
+                clientResponses.oidc.push(context);
+                return answer([]);
+            }
+            if (context.issuer !== undefined) {
+                clientResponses.oidc.push(context);
+                return answer([{ type: 'exchange_client_credentials', scopes: 'openid' }]);
+            }
+            return answer([]);
         }
         // The OpenAPI client: run the spec's operation when connected, report its response.
         if (offered.has('execute_operation')) {
@@ -701,6 +747,58 @@ try {
     const h2Data = h2Parked.event_data;
     if (h2Data.status_code !== 200 || h2Data.body !== 'h2 says hi to /from-netget?via=h2c' || h2Data.http_version !== 'HTTP/2.0' || headerOf(h2Data.headers, 'x-smoke') !== 'h2') fail('the HTTP/2 response did not reach the client as HTTP/2: ' + JSON.stringify(h2Parked) + '; [ send ] said ' + h2Detail);
     webClients.http2 = `[ + client ] #${h2Client.id}, [ send ] GET -> ${h2Detail}; parked ${h2Data.http_version} ${h2Data.status_code} ${JSON.stringify(h2Data.body)}`;
+
+    // ollama: [ + Ollama client ] on NetGet's own Ollama server, [ send ] a generate request;
+    // the server's model writes the completion, and it is parked on the client.
+    const OLLAMA_PORT = 8092;
+    const ollamaServer = await startServer({ protocol: 'ollama', port: OLLAMA_PORT, instruction: 'Answer as a tiny model.' });
+    const ollamaClient = await connectViaButton(ollamaServer.id, 'ollama');
+    const ollamaDetail = await send(ollamaClient.id, { type: 'send_generate_request', prompt: 'What is the capital of Smokeland?', model: 'smoke-model' });
+    const generated = serverRequests.find((r) => r.protocol === 'ollama');
+    if (!generated || !String(generated.context.prompt).includes('Smokeland')) fail('the generate request did not reach the Ollama server\'s model: ' + JSON.stringify(generated) + '; [ send ] said ' + ollamaDetail);
+    const ollamaParked = await parkedOn(ollamaClient.id, 'ollama_response_received');
+    if (!JSON.stringify(ollamaParked.event_data).includes('Smoke City, said smoke-model')) fail('the completion did not reach the Ollama client: ' + JSON.stringify(ollamaParked));
+    webClients.ollama = `[ + client ] #${ollamaClient.id}, [ send ] generate -> ${ollamaDetail}; parked "Smoke City, said smoke-model"`;
+
+    // oauth2 and openidconnect: the crates' own HTTP hook (`request_async`, `discover_async`)
+    // is handed the transport in the browser. Both need startup parameters `[ + client ]`
+    // cannot know (a client_id, a token URL), so they go through ClientForm, routed to the
+    // model: it asks for a client-credentials token, NetGet's server's model issues one, and
+    // the token event (with the expiry the server chose) comes back to the model.
+    const OAUTH2_PORT = 8090;
+    await startServer({ protocol: 'oauth2', port: OAUTH2_PORT, instruction: 'Issue tokens to smoke-app.' });
+    let oauthRefused = null;
+    netget.start_client(JSON.stringify({ protocol: 'oauth2', remote_addr: `127.0.0.1:${OAUTH2_PORT}`, instruction: 'Get a token.', startup_params: { client_id: 'smoke-app', token_url: 'https://127.0.0.1:1/token' } }), (json) => { oauthRefused = JSON.parse(json); });
+    await waitFor(() => oauthRefused !== null, 'start_client (oauth2, https) to answer');
+    if (!oauthRefused.error || !oauthRefused.error.includes('https:// is not available')) fail('an https:// token endpoint was not refused with the reason: ' + JSON.stringify(oauthRefused));
+    let oauthClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'oauth2', remote_addr: `127.0.0.1:${OAUTH2_PORT}`, instruction: 'Get a client-credentials token.',
+        startup_params: { client_id: 'smoke-app', client_secret: 'smoke-secret', token_url: `http://127.0.0.1:${OAUTH2_PORT}/token` } }), (json) => { oauthClient = JSON.parse(json); });
+    await waitFor(() => oauthClient !== null, 'start_client (oauth2) to answer');
+    if (oauthClient.error) fail('start_client oauth2: ' + oauthClient.error);
+    await waitFor(() => clientResponses.oauth2.length > 0, 'the oauth2 token reported to the model', 20000);
+    const oauthToken = clientResponses.oauth2[0];
+    if (oauthToken.expires_in !== 1234 || oauthToken.scope === undefined) fail('the OAuth2 token did not reach the client: ' + JSON.stringify(oauthToken));
+    const tokenAsked = serverRequests.find((r) => r.protocol === 'oauth2');
+    if (!tokenAsked || tokenAsked.context.grant_type !== 'client_credentials') fail('the token request did not reach the OAuth2 server\'s model as client_credentials: ' + JSON.stringify(tokenAsked));
+    const oauthDetail = await send(oauthClient.id, { type: 'exchange_client_credentials', scopes: 'read' });
+    await waitFor(() => clientResponses.oauth2.length > 1, 'the injected token request reported to the model', 20000);
+    webClients.oauth2 = `ClientForm #${oauthClient.id}: model asked for client_credentials -> token, expires_in ${oauthToken.expires_in}; [ send ] -> ${oauthDetail}; https token URL refused`;
+
+    await startServer({ protocol: 'openid', port: OIDC_PORT, instruction: 'Be an OpenID provider for smoke-app.' });
+    let oidcClient = null;
+    netget.start_client(JSON.stringify({ protocol: 'openidconnect', remote_addr: `http://127.0.0.1:${OIDC_PORT}`, instruction: 'Discover the provider and get a token.',
+        startup_params: { client_id: 'smoke-app', client_secret: 'smoke-secret' } }), (json) => { oidcClient = JSON.parse(json); });
+    await waitFor(() => oidcClient !== null, 'start_client (openidconnect) to answer');
+    if (oidcClient.error) fail('start_client openidconnect: ' + oidcClient.error);
+    await waitFor(() => clientResponses.oidc.some((c) => c.access_token !== undefined), 'the OIDC token reported to the model', 30000);
+    const discovered = clientResponses.oidc.find((c) => c.issuer !== undefined);
+    if (!discovered || discovered.issuer !== `http://127.0.0.1:${OIDC_PORT}` || discovered.token_endpoint !== `http://127.0.0.1:${OIDC_PORT}/token`) fail('discovery did not reach the client: ' + JSON.stringify(clientResponses.oidc));
+    const oidcToken = clientResponses.oidc.find((c) => c.access_token !== undefined);
+    if (oidcToken.expires_in !== 4321) fail('the OIDC token did not reach the client: ' + JSON.stringify(oidcToken));
+    const oidcAsked = serverRequests.filter((r) => r.protocol === 'openid').map((r) => r.context.endpoint_type);
+    for (const endpoint of ['discovery', 'jwks', 'token']) if (!oidcAsked.includes(endpoint)) fail(`the OpenID provider's model never saw a ${endpoint} request: ` + JSON.stringify(oidcAsked));
+    webClients.openidconnect = `ClientForm #${oidcClient.id}: discovered ${discovered.issuer} (${oidcAsked.join(', ')}), token expires_in ${oidcToken.expires_in}`;
 
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 

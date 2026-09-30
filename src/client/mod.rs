@@ -120,16 +120,13 @@ pub mod grpc;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcClientProtocol;
 
-// The HTTP client runs in the browser build too: there it speaks HTTP/1.1 through
-// `http::transport` (hyper's client over the virtual loopback) instead of reqwest.
+// The HTTP-family clients run in the browser build too: there they issue their requests
+// through `http_fetch` (hyper's client over the virtual loopback) instead of reqwest; see
+// web/README.md.
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "http")]
 pub use http::actions::HttpClientProtocol;
-
-// Clients gated with `not(target_arch = "wasm32")` are reqwest end to end, and a browser
-// fetch future is not `Send`, which the client trait requires. Their *servers* are in the
-// browser build; see web/README.md for the list.
 
 // http2 client
 #[cfg(feature = "http2")]
@@ -276,9 +273,9 @@ pub mod ntp;
 pub use ntp::actions::NtpClientProtocol;
 
 // oauth2 client
-#[cfg(all(feature = "oauth2", not(target_arch = "wasm32")))]
+#[cfg(feature = "oauth2")]
 pub mod oauth2;
-#[cfg(all(feature = "oauth2", not(target_arch = "wasm32")))]
+#[cfg(feature = "oauth2")]
 pub use oauth2::actions::OAuth2ClientProtocol;
 
 // openai client
@@ -288,9 +285,9 @@ pub mod openai;
 pub use openai::actions::OpenAiClientProtocol;
 
 // ollama client
-#[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
+#[cfg(feature = "ollama")]
 pub mod ollama;
-#[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
+#[cfg(feature = "ollama")]
 pub use ollama::actions::OllamaClientProtocol;
 
 // openapi client
@@ -300,9 +297,9 @@ pub mod openapi;
 pub use openapi::actions::OpenApiClientProtocol;
 
 // openidconnect client
-#[cfg(all(feature = "openidconnect", not(target_arch = "wasm32")))]
+#[cfg(feature = "openidconnect")]
 pub mod openidconnect;
-#[cfg(all(feature = "openidconnect", not(target_arch = "wasm32")))]
+#[cfg(feature = "openidconnect")]
 pub use openidconnect::actions::OpenIdConnectClientProtocol;
 
 // ospf client

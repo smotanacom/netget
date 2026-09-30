@@ -203,13 +203,13 @@ impl ClientRegistry {
         #[cfg(feature = "ntp")]
         self.register(Arc::new(crate::client::ntp::NtpClientProtocol::new()));
 
-        #[cfg(all(feature = "oauth2", not(target_arch = "wasm32")))]
+        #[cfg(feature = "oauth2")]
         self.register(Arc::new(crate::client::oauth2::OAuth2ClientProtocol::new()));
 
         #[cfg(feature = "openai")]
         self.register(Arc::new(crate::client::openai::OpenAiClientProtocol::new()));
 
-        #[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
+        #[cfg(feature = "ollama")]
         self.register(Arc::new(crate::client::ollama::OllamaClientProtocol::new()));
 
         #[cfg(feature = "openapi")]
@@ -217,7 +217,7 @@ impl ClientRegistry {
             crate::client::openapi::OpenApiClientProtocol::new(),
         ));
 
-        #[cfg(all(feature = "openidconnect", not(target_arch = "wasm32")))]
+        #[cfg(feature = "openidconnect")]
         self.register(Arc::new(
             crate::client::openidconnect::OpenIdConnectClientProtocol::new(),
         ));

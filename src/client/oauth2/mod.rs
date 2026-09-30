@@ -6,7 +6,6 @@ pub use actions::OAuth2ClientProtocol;
 use anyhow::{Context, Result};
 use oauth2::{
     basic::{BasicClient, BasicTokenType},
-    reqwest::async_http_client,
     AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, DeviceAuthorizationUrl,
     EmptyExtraDeviceAuthorizationFields, EmptyExtraTokenFields, PkceCodeChallenge, RedirectUrl,
     RefreshToken, ResourceOwnerPassword, ResourceOwnerUsername, Scope, StandardTokenResponse,
@@ -17,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::oauth2::actions::{
     OAUTH2_CLIENT_CONNECTED_EVENT, OAUTH2_DEVICE_CODE_EVENT, OAUTH2_ERROR_EVENT,
@@ -30,6 +30,64 @@ use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId as NetGetClientId, ClientStatus};
+
+/// The HTTP function the `oauth2` crate is handed for every request it makes. Natively it is
+/// the crate's own reqwest `async_http_client`, unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+use oauth2::reqwest::async_http_client as http_hook;
+
+/// The HTTP function the `oauth2` crate is handed in the browser build. The crate's own
+/// `async_http_client` is reqwest's `fetch` backend there, which cannot reach the page's virtual
+/// loopback, so each request goes through the shared hyper transport
+/// ([`crate::client::http_fetch`]) instead: 30 seconds an exchange, 8 MiB of body, no redirects
+/// (the crate's own client follows none either), and `https://` refused with the reason.
+#[cfg(target_arch = "wasm32")]
+async fn http_hook(
+    request: oauth2::HttpRequest,
+) -> std::result::Result<oauth2::HttpResponse, crate::client::http_fetch::FetchError> {
+    let client = FetchClient::transport(std::time::Duration::from_secs(30));
+    let headers = request
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str().to_string(), value.as_bytes().to_vec()))
+        .collect();
+    let (status, headers, body) = crate::client::http_fetch::round_trip_parts(
+        &client,
+        request.method.as_str(),
+        request.url.as_str(),
+        headers,
+        request.body,
+    )
+    .await?;
+    let mut map = oauth2::http::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            oauth2::http::header::HeaderName::from_bytes(name.as_bytes()),
+            oauth2::http::HeaderValue::from_bytes(&value),
+        ) {
+            map.append(name, value);
+        }
+    }
+    let status_code = oauth2::http::StatusCode::from_u16(status).map_err(|e| {
+        crate::client::http_fetch::FetchError(anyhow::anyhow!("status {status}: {e}"))
+    })?;
+    Ok(oauth2::HttpResponse {
+        status_code,
+        headers: map,
+        body: body.to_vec(),
+    })
+}
+
+/// The HTTP client for the requests this client writes itself (device-code polling, the
+/// authorization-code callback's exchange): a fresh reqwest client natively, as before, and the
+/// shared hyper transport in the browser build, bounded at 30 seconds.
+fn plain_http_client() -> FetchClient {
+    #[cfg(not(target_arch = "wasm32"))]
+    let client = FetchClient::from_reqwest(reqwest::Client::new());
+    #[cfg(target_arch = "wasm32")]
+    let client = FetchClient::transport(std::time::Duration::from_secs(30));
+    client
+}
 
 type TokenResponseType = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
 
@@ -137,6 +195,10 @@ impl OAuth2Client {
             })
             .await
             .context("Client not found")??;
+
+        // In the browser build the transport has no TLS: an `https://` token endpoint is refused
+        // here, with the reason, rather than on the first token request.
+        crate::client::http_fetch::check_url(&token_url)?;
 
         // Build OAuth2 client
         let client_id_obj = ClientId::new(oauth_client_id);
@@ -548,7 +610,7 @@ impl OAuth2Client {
         }
 
         // Execute token exchange
-        match token_request.request_async(async_http_client).await {
+        match token_request.request_async(http_hook).await {
             Ok(token_response) => {
                 Self::handle_token_response(
                     client_id,
@@ -641,7 +703,7 @@ impl OAuth2Client {
         }
 
         // Execute token exchange
-        match token_request.request_async(async_http_client).await {
+        match token_request.request_async(http_hook).await {
             Ok(token_response) => {
                 Self::handle_token_response(
                     client_id,
@@ -735,7 +797,7 @@ impl OAuth2Client {
 
         // Execute device authorization request
         match device_auth_request
-            .request_async::<_, _, _, EmptyExtraDeviceAuthorizationFields>(async_http_client)
+            .request_async::<_, _, _, EmptyExtraDeviceAuthorizationFields>(http_hook)
             .await
         {
             Ok(device_response) => {
@@ -883,7 +945,7 @@ impl OAuth2Client {
 
         // Make direct HTTP request to token endpoint for device code polling
         // This is a workaround since we can't reconstruct DeviceAuthorizationResponse
-        let client = reqwest::Client::new();
+        let client = plain_http_client();
         let mut params = vec![
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("device_code", device_code_str.as_str()),
@@ -1044,7 +1106,7 @@ impl OAuth2Client {
         // Execute token refresh
         match oauth_client
             .exchange_refresh_token(&RefreshToken::new(refresh_token_str))
-            .request_async(async_http_client)
+            .request_async(http_hook)
             .await
         {
             Ok(token_response) => {
@@ -1244,7 +1306,7 @@ impl OAuth2Client {
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(oauth2::PkceCodeVerifier::new(pkce_verifier_str));
 
-        match token_request.request_async(async_http_client).await {
+        match token_request.request_async(http_hook).await {
             Ok(token_response) => {
                 Self::handle_token_response(
                     client_id,

@@ -485,3 +485,10 @@ both outlive `connect()`). The `scopes` startup parameter rides along on that ac
 and a password, which are parameters of the `exchange_password` *action* and are deliberately
 not startup parameters. No value of `flow` alone could start it, so the client says so
 instead of coming up and doing nothing.
+
+## Browser build
+
+This client is in the browser build (`crates/netget-web`). The `openidconnect` crate is handed its HTTP function per request (`discover_async(.., http_hook)`, `request_async(http_hook)`): natively that is the crate's own reqwest `async_http_client`, unchanged; on wasm32 `http_hook` sends the crate's `HttpRequest` through `crate::client::http_fetch` (hyper's HTTP/1.1 client over the page's virtual loopback, 30 s, 8 MiB, no redirects) and hands back its `HttpResponse`. The device and authorization-code token requests this client writes itself go through `FetchClient` the same way. Discovery compares the document's `issuer` with the URL it was asked for and enforces no scheme, so an `http://` provider on the page's network works when it names itself as such. `https://` provider is refused
+in the browser at connect with the reason (`http_fetch::check_url`): the transport has no TLS.
+`web/test/smoke.mjs` proves it in the bundle: the client is started through `ClientForm` with `client_id` (`[ + OpenIDConnect client ]` cannot know it), discovers NetGet's `openid` provider (discovery document and key set, both written by the server's model, the issuer `http://127.0.0.1:<port>`), and the model's client-credentials exchange comes back with the expiry the provider chose.
+

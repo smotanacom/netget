@@ -512,3 +512,48 @@ impl FetchResponse {
         }
     }
 }
+
+/// A [`FetchClient`] failure as a `std::error::Error`, for crates whose HTTP hook requires one
+/// (oauth2's and openidconnect's `request_async` / `discover_async`).
+#[derive(Debug)]
+pub struct FetchError(pub anyhow::Error);
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for FetchError {}
+
+/// One request given as raw parts, for a crate's own HTTP hook to call: the method, the URL,
+/// the headers as (name, value bytes) and the body, back as the status, the headers and the
+/// body. Header values that are not visible ASCII are sent lossily; the hooks that call this
+/// (OAuth2 and OpenID Connect token, discovery and key-set requests) send none.
+pub async fn round_trip_parts(
+    client: &FetchClient,
+    method: &str,
+    url: &str,
+    headers: Vec<(String, Vec<u8>)>,
+    body: Vec<u8>,
+) -> std::result::Result<(u16, Vec<(String, Vec<u8>)>, Bytes), FetchError> {
+    let method: Method = method
+        .parse()
+        .map_err(|e| FetchError(anyhow!("invalid HTTP method {method:?}: {e}")))?;
+    let mut request = client.request(method, url);
+    for (name, value) in &headers {
+        request = request.header(name, String::from_utf8_lossy(value));
+    }
+    if !body.is_empty() {
+        request = request.body(body);
+    }
+    let response = request.send().await.map_err(FetchError)?;
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| (name.as_str().to_string(), value.as_bytes().to_vec()))
+        .collect();
+    let body = response.bytes().await.map_err(FetchError)?;
+    Ok((status, headers, body))
+}

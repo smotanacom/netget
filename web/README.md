@@ -19,8 +19,8 @@ wasm32 the names `tokio` and `crossterm` resolve to the shim crates
 (`extern crate … as` in `src/lib.rs`), which is what keeps the `#[cfg]` count in protocol
 code at zero. Everything platform-bound that the servers do not need — the rolling TUI,
 process spawning for scripts, reqwest, termbg, socket2, ollama-rs — is gated with
-`#[cfg(not(target_arch = "wasm32"))]`. The HTTP-family *clients* that are in the browser
-build speak HTTP/1.1 there through `src/client/http_fetch/transport.rs` (hyper's client over
+`#[cfg(not(target_arch = "wasm32"))]`. The HTTP-family *clients* are in the browser build
+too: there they speak HTTP through `src/client/http_fetch/transport.rs` (hyper's client over
 the virtual loopback) instead of reqwest; see below.
 
 ## Build
@@ -327,6 +327,9 @@ NetGet's own server of its protocol where one speaks it:
 | `pypi` | yes | `[ + PyPI client ]` on the `pypi` server; `[ send ]` `get_package_info` → the JSON the server's model wrote, parked on the client |
 | `maven` | yes | `[ + Maven client ]` on the `maven` server; `[ send ]` `download_pom` → HTTP 200, the POM the server's model wrote parked on the client |
 | `http2` | yes | `[ + HTTP/2 client ]` on the `http2` server; `[ send ]` a GET over h2c with prior knowledge → the response read as `HTTP/2.0`, the model's body and header, parked on the client |
+| `ollama` | yes | `[ + Ollama client ]` on the `ollama` server; `[ send ]` a generate request → the completion the server's model wrote, parked on the client |
+| `oauth2` | yes | through `ClientForm` (it needs `client_id` and `token_url`, which `[ + client ]` cannot know): the model asks for a client-credentials token, the `oauth2` server's model issues one, and the token event comes back to the model; `[ send ]` repeats it; an `https://` token URL refused |
+| `openidconnect` | yes | through `ClientForm` (it needs `client_id`): discovery of the `openid` provider (document and key set written by its model, issuer `http://127.0.0.1:<port>`), then a client-credentials token with the provider's expiry |
 | `torrent-tracker` | yes | `[ + BitTorrent Tracker client ]` on the `torrent-tracker` server; `[ send ]` an announce → the server's bencoded reply with a **binary** compact peer list decoded on the client (`127, 0, 0, 1, 26, 225, …`) |
 
 `http2` speaks HTTP/2 with prior knowledge through hyper's `client::conn::http2`
@@ -342,13 +345,16 @@ scheme-less address means `http://` (a server on the page's virtual network) and
 from the page. The transport reads a response whole, bounded by the client's own cap where it
 has one (npm's 64 MiB tarball cap, pypi's download cap, the tracker's 1 MiB), else 8 MiB.
 
-Still gated with `not(target_arch = "wasm32")` in `src/client/mod.rs` and the registry (their
-servers are in), measured by what each asks of reqwest:
+`oauth2` and `openidconnect` do not call reqwest themselves: their crates take the HTTP
+function per request (`request_async(f)`, `discover_async(.., f)`). Natively that is still the
+crates' own reqwest `async_http_client`; in the browser each client hands them `http_hook`,
+which sends the crate's `HttpRequest` through `http_fetch::round_trip_parts` and returns its
+`HttpResponse`. Neither crate enforces `https://` — the OAuth2 token URL and the OIDC issuer
+are URLs like any other, and discovery only checks that the document names the issuer it was
+fetched from — so a provider on the page's network over `http://` is honest, not a bypass.
 
-- **oauth2, openidconnect** — the `oauth2`/`openidconnect` crates call reqwest through their
-  own `async_http_client`; each takes a custom HTTP function, so the transport can be plugged
-  in, but it is an adapter per crate, and both flows assume `https://` issuers.
-- **ollama** — gated the same way.
+No HTTP-family client is gated out of the browser build any more: `not(target_arch = "wasm32")`
+no longer appears in `src/client/mod.rs` or the client registry.
 
 Left out, and why (re-derive with the probe below rather than trusting this):
 
@@ -387,8 +393,13 @@ over `NetGet.connect()` and every response model-answered: `http` (a GET and a P
 body, and NetGet's own `http` client against it), `openapi` (a spec-routed GET), `jsonrpc` (a
 result and an error), `rss` (a rendered feed), each with a `Date` header checked to be today's,
 and `http2` over prior-knowledge h2c — which is the `h2` crate rather than hyper and never
-touched the date cache. The other hyper servers share the dispatcher that was patched but have
-no round trip of their own yet; treat them as "compiles" until one is added.
+touched the date cache. NetGet's own clients add round trips to more of them (see the client
+table above): `elasticsearch`, `npm`, `pypi`, `maven`, `ollama`, `oauth2` and `openid` each
+answer a model-written response to NetGet's client of their protocol, as does
+`torrent-tracker`, which is not hyper. The remaining hyper servers (`yarn`, `spark`,
+`snowflake`, `mercurial`, `oci-registry`, `saml-idp`, `saml-sp`, `kubernetes-server`) share the
+patched dispatcher but have no round trip of their own yet; treat them as "compiles" until one
+is added.
 
 To re-derive the list, run the probe: for each feature, `cargo check --target
 wasm32-unknown-unknown --no-default-features --features tcp,udp,telnet,http,<f> --lib`

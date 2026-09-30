@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use crate::client::http_fetch::{FetchClient, FetchResponse};
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::ollama::actions::{
     OLLAMA_CLIENT_CONNECTED_EVENT, OLLAMA_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -45,6 +46,9 @@ impl OllamaClientImpl {
         } else {
             format!("http://{remote_addr}")
         };
+        // In the browser build the transport has no TLS: an `https://` endpoint is refused here,
+        // with the reason, rather than on the first call.
+        crate::client::http_fetch::check_url(&remote_addr)?;
 
         info!(
             "Ollama client {} initializing with API endpoint: {}",
@@ -795,7 +799,7 @@ impl OllamaClientImpl {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("Ollama client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -876,7 +880,7 @@ impl OllamaClientImpl {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("Ollama client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -946,7 +950,7 @@ impl OllamaClientImpl {
             Err(e) => {
                 Log::new(Some(status_tx))
                     .error(format!("Ollama client {} request failed: {}", client_id, e));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -1028,7 +1032,7 @@ impl OllamaClientImpl {
                     "Ollama client {} embeddings request failed: {}",
                     client_id, e
                 ));
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -1071,7 +1075,8 @@ impl OllamaClientImpl {
     ///
     /// Keyed by endpoint because the resolver override is per-host. The cache is a plain
     /// `std::sync::Mutex` holding nothing across an await.
-    async fn http_client(endpoint: &str) -> Result<reqwest::Client> {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn reqwest_client(endpoint: &str) -> Result<reqwest::Client> {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
 
@@ -1095,11 +1100,26 @@ impl OllamaClientImpl {
         Ok(built)
     }
 
+    /// The HTTP client for `endpoint`: the cached reqwest client natively
+    /// ([`Self::reqwest_client`]); in the browser build the shared hyper transport over the
+    /// page's virtual loopback ([`crate::client::http_fetch`]), bounded by the same
+    /// [`REQUEST_TIMEOUT`] and [`MAX_RESPONSE_BYTES`].
+    async fn http_client(endpoint: &str) -> Result<FetchClient> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let client = FetchClient::from_reqwest(Self::reqwest_client(endpoint).await?);
+        #[cfg(target_arch = "wasm32")]
+        let client = {
+            let _ = endpoint;
+            FetchClient::transport(REQUEST_TIMEOUT).with_max_body(MAX_RESPONSE_BYTES)
+        };
+        Ok(client)
+    }
+
     /// Read a JSON response body, refusing anything past [`MAX_RESPONSE_BYTES`].
     ///
     /// `response.json()` buffers the whole body first; this refuses as soon as the cap is
     /// passed, so an endpoint answering with an endless stream costs at most the cap.
-    async fn json_bounded(mut response: reqwest::Response) -> Result<serde_json::Value> {
+    async fn json_bounded(mut response: FetchResponse) -> Result<serde_json::Value> {
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             if body.len() + chunk.len() > MAX_RESPONSE_BYTES {

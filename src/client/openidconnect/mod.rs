@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 use urlencoding;
 
+use crate::client::http_fetch::FetchClient;
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::openidconnect::actions::{
     OIDC_CLIENT_DISCOVERED_EVENT, OIDC_CLIENT_TOKEN_RECEIVED_EVENT,
@@ -24,9 +25,66 @@ use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 
+/// The HTTP function the `openidconnect` crate is handed for every request it makes. Natively it is
+/// the crate's own reqwest `async_http_client`, unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+use openidconnect::reqwest::async_http_client as http_hook;
+
+/// The HTTP function the `openidconnect` crate is handed in the browser build. The crate's own
+/// `async_http_client` is reqwest's `fetch` backend there, which cannot reach the page's virtual
+/// loopback, so each request goes through the shared hyper transport
+/// ([`crate::client::http_fetch`]) instead: 30 seconds an exchange, 8 MiB of body, no redirects
+/// (the crate's own client follows none either), and `https://` refused with the reason.
+#[cfg(target_arch = "wasm32")]
+async fn http_hook(
+    request: openidconnect::HttpRequest,
+) -> std::result::Result<openidconnect::HttpResponse, crate::client::http_fetch::FetchError> {
+    let client = FetchClient::transport(std::time::Duration::from_secs(30));
+    let headers = request
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str().to_string(), value.as_bytes().to_vec()))
+        .collect();
+    let (status, headers, body) = crate::client::http_fetch::round_trip_parts(
+        &client,
+        request.method.as_str(),
+        request.url.as_str(),
+        headers,
+        request.body,
+    )
+    .await?;
+    let mut map = openidconnect::http::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            openidconnect::http::header::HeaderName::from_bytes(name.as_bytes()),
+            openidconnect::http::HeaderValue::from_bytes(&value),
+        ) {
+            map.append(name, value);
+        }
+    }
+    let status_code = openidconnect::http::StatusCode::from_u16(status).map_err(|e| {
+        crate::client::http_fetch::FetchError(anyhow::anyhow!("status {status}: {e}"))
+    })?;
+    Ok(openidconnect::HttpResponse {
+        status_code,
+        headers: map,
+        body: body.to_vec(),
+    })
+}
+
+/// The HTTP client for the requests this client writes itself (device-code polling, the
+/// authorization-code callback's exchange): a fresh reqwest client natively, as before, and the
+/// shared hyper transport in the browser build, bounded at 30 seconds.
+fn plain_http_client() -> FetchClient {
+    #[cfg(not(target_arch = "wasm32"))]
+    let client = FetchClient::from_reqwest(reqwest::Client::new());
+    #[cfg(target_arch = "wasm32")]
+    let client = FetchClient::transport(std::time::Duration::from_secs(30));
+    client
+}
+
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreTokenResponse, CoreUserInfoClaims},
-    reqwest::async_http_client,
     ClientId as OidcClientId, ClientSecret, IssuerUrl, OAuth2TokenResponse, ResourceOwnerPassword,
     ResourceOwnerUsername, Scope,
 };
@@ -114,6 +172,10 @@ impl OpenIdConnectClient {
                 ));
             }
         };
+
+        // In the browser build the transport has no TLS: an `https://` provider is refused here,
+        // with the reason, rather than inside discovery.
+        crate::client::http_fetch::check_url(&remote_addr)?;
 
         // Store provider URL in protocol_data, and seed the startup params alongside it.
         // Every OIDC flow reads `client_id` / `client_secret` out of `protocol_data`, but
@@ -234,10 +296,9 @@ impl OpenIdConnectClient {
         // Discover provider metadata
         let issuer_url = IssuerUrl::new(provider_url.to_string()).context("Invalid issuer URL")?;
 
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url.clone(), async_http_client)
-                .await
-                .context("Failed to discover OIDC provider metadata")?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url.clone(), http_hook)
+            .await
+            .context("Failed to discover OIDC provider metadata")?;
 
         Log::new(Some(status_tx))
             .info(format!("Discovered OIDC provider: {}", issuer_url.as_str()));
@@ -624,7 +685,7 @@ impl OpenIdConnectClient {
 
         let issuer_url = IssuerUrl::new(provider_url)?;
         let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url.clone(), async_http_client).await?;
+            CoreProviderMetadata::discover_async(issuer_url.clone(), http_hook).await?;
 
         // Construct device authorization endpoint URL (typically /device/code or /device/authorize)
         let device_auth_url = format!("{}/device/code", issuer_url.as_str().trim_end_matches('/'));
@@ -641,7 +702,7 @@ impl OpenIdConnectClient {
         }
 
         // Make device authorization request
-        let http_client = reqwest::Client::new();
+        let http_client = plain_http_client();
         let response = http_client
             .post(&device_auth_url)
             .form(&params)
@@ -766,7 +827,7 @@ impl OpenIdConnectClient {
                 }
 
                 // Poll token endpoint
-                let http_client = reqwest::Client::new();
+                let http_client = plain_http_client();
                 match http_client
                     .post(&token_endpoint)
                     .form(&token_params)
@@ -989,8 +1050,7 @@ impl OpenIdConnectClient {
         let callback_port = data.get("port").and_then(|v| v.as_u64()).unwrap_or(8080) as u16;
 
         let issuer_url = IssuerUrl::new(provider_url)?;
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, async_http_client).await?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_hook).await?;
 
         // Get authorization endpoint
         let auth_endpoint = provider_metadata.authorization_endpoint().as_str();
@@ -1146,7 +1206,7 @@ impl OpenIdConnectClient {
                                                     .push(("client_secret", secret.as_str()));
                                             }
 
-                                            let http_client = reqwest::Client::new();
+                                            let http_client = plain_http_client();
                                             match http_client
                                                 .post(&token_endpoint)
                                                 .form(&token_params)
@@ -1272,8 +1332,7 @@ impl OpenIdConnectClient {
             .unwrap_or_else(|| ("default-client-id".to_string(), None, String::new()));
 
         let issuer_url = IssuerUrl::new(provider_url)?;
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, async_http_client).await?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_hook).await?;
 
         let client = if let Some(secret) = oidc_client_secret {
             CoreClient::from_provider_metadata(
@@ -1300,7 +1359,7 @@ impl OpenIdConnectClient {
         }
 
         let token_response = token_request
-            .request_async(async_http_client)
+            .request_async(http_hook)
             .await
             .context("Failed to exchange password for tokens")?;
 
@@ -1361,8 +1420,7 @@ impl OpenIdConnectClient {
             .context("Missing client configuration")?;
 
         let issuer_url = IssuerUrl::new(provider_url)?;
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, async_http_client).await?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_hook).await?;
 
         let client = CoreClient::from_provider_metadata(
             provider_metadata,
@@ -1381,7 +1439,7 @@ impl OpenIdConnectClient {
         }
 
         let token_response = token_request
-            .request_async(async_http_client)
+            .request_async(http_hook)
             .await
             .context("Failed to exchange client credentials")?;
 
@@ -1439,8 +1497,7 @@ impl OpenIdConnectClient {
             .context("Missing refresh token or client configuration")?;
 
         let issuer_url = IssuerUrl::new(provider_url)?;
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, async_http_client).await?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_hook).await?;
 
         let client = if let Some(secret) = oidc_client_secret {
             CoreClient::from_provider_metadata(
@@ -1459,7 +1516,7 @@ impl OpenIdConnectClient {
         use openidconnect::RefreshToken;
         let token_response = client
             .exchange_refresh_token(&RefreshToken::new(refresh_token_str))
-            .request_async(async_http_client)
+            .request_async(http_hook)
             .await
             .context("Failed to refresh token")?;
 
@@ -1517,8 +1574,7 @@ impl OpenIdConnectClient {
             .context("Missing access token or client configuration")?;
 
         let issuer_url = IssuerUrl::new(provider_url)?;
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, async_http_client).await?;
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_hook).await?;
 
         let client = if let Some(secret) = oidc_client_secret {
             CoreClient::from_provider_metadata(
@@ -1538,7 +1594,7 @@ impl OpenIdConnectClient {
         let userinfo: CoreUserInfoClaims = client
             .user_info(AccessToken::new(access_token_str), None)
             .context("UserInfo endpoint not available")?
-            .request_async(async_http_client)
+            .request_async(http_hook)
             .await
             .context("Failed to fetch UserInfo")?;
 
