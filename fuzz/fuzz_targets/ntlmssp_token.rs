@@ -52,7 +52,10 @@ fuzz_target!(|data: &[u8]| {
         .windows(NTLMSSP_SIGNATURE.len())
         .position(|w| w == NTLMSSP_SIGNATURE);
     let Some((token, wrapping)) = auth::find_ntlmssp(data) else {
-        assert!(first.is_none(), "the signature is present and the scan missed it");
+        assert!(
+            first.is_none(),
+            "the signature is present and the scan missed it"
+        );
         return;
     };
     let at = first.expect("a token was found, so the signature is present");
@@ -71,10 +74,16 @@ fuzz_target!(|data: &[u8]| {
 
     let flags = auth::negotiate_flags(token);
     let challenge = auth::challenge(flags, [0x11; 8], 0x01D9_0000_0000_0000);
-    assert_eq!(auth::message_type(&challenge), Some(auth::NTLMSSP_CHALLENGE));
+    assert_eq!(
+        auth::message_type(&challenge),
+        Some(auth::NTLMSSP_CHALLENGE)
+    );
     for (len_at, off_at) in [(12, 16), (40, 44)] {
         let (len, off) = (le16(&challenge, len_at), le32(&challenge, off_at));
-        assert!(off + len <= challenge.len(), "a CHALLENGE field points outside it");
+        assert!(
+            off + len <= challenge.len(),
+            "a CHALLENGE field points outside it"
+        );
     }
 
     let wrapped = auth::wrap_challenge(&challenge, wrapping);
@@ -82,7 +91,11 @@ fuzz_target!(|data: &[u8]| {
         Wrapping::Raw => assert_eq!(wrapped, challenge),
         Wrapping::Spnego => {
             let (len, start) = der_outer(&wrapped);
-            assert_eq!(start + len, wrapped.len(), "the negTokenResp length is exact");
+            assert_eq!(
+                start + len,
+                wrapped.len(),
+                "the negTokenResp length is exact"
+            );
             let (found, _) = auth::find_ntlmssp(&wrapped).expect("the CHALLENGE is findable");
             assert!(found.starts_with(&challenge));
         }
