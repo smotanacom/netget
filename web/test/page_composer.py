@@ -90,6 +90,7 @@ job installs. web/test/smoke.mjs is the CI check of the bundle, without a DOM.
 
 import functools
 import http.server
+import json
 import os
 import re
 import sys
