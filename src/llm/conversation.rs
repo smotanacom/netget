@@ -166,6 +166,9 @@ pub struct ConversationHandler {
     /// client with every request so a bridge host can show them as structured data.
     offered_actions: Vec<ActionDefinition>,
 
+    /// Structured metadata for a single network event, retained across all retries.
+    bridge_event: Option<crate::llm::bridge::BridgeEventContext>,
+
     /// Cap on `messages.len()` — see [`DEFAULT_MAX_HISTORY_MESSAGES`]
     max_history_messages: usize,
 
@@ -220,10 +223,30 @@ impl ConversationHandler {
             tool_schemas: Vec::new(),
             use_native_tools: false,
             offered_actions: Vec::new(),
+            bridge_event: None,
             max_history_messages: DEFAULT_MAX_HISTORY_MESSAGES,
             max_history_chars: DEFAULT_MAX_HISTORY_CHARS,
             trim_generation: 0,
         }
+    }
+
+    /// Attach the event for a bridge host without making it recover context from prompt text.
+    pub fn with_bridge_event(
+        mut self,
+        server_id: crate::state::ServerId,
+        connection_id: Option<crate::server::connection::ConnectionId>,
+        protocol: &str,
+        event: &crate::protocol::Event,
+    ) -> Self {
+        self.bridge_event = Some(crate::llm::bridge::BridgeEventContext {
+            token: self.conversation_id.clone(),
+            server_id: server_id.as_u32(),
+            connection_id: connection_id.map(|id| id.as_u32()),
+            protocol: protocol.to_string(),
+            event_type: event.id().to_string(),
+            data: event.data.clone(),
+        });
+        self
     }
 
     /// Override the conversation-history caps (see [`DEFAULT_MAX_HISTORY_MESSAGES`] and
@@ -1646,7 +1669,13 @@ impl ConversationHandler {
                 // as some models (e.g., gpt-oss) don't support Ollama's JSON format mode
                 let generate_response = self
                     .client
-                    .generate_offering(&self.model, &full_prompt, None, &self.offered_actions)
+                    .generate_offering_with_event(
+                        &self.model,
+                        &full_prompt,
+                        None,
+                        &self.offered_actions,
+                        self.bridge_event.as_ref(),
+                    )
                     .await
                     .context("Generate API call failed")?;
 
