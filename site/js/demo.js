@@ -656,7 +656,11 @@ function retireWebLlm(m) {
 
 // What a request is about, for a one-line summary: the event id and the line received.
 function describe(req) {
-    if (req.event) return { event: req.event.event_type, detail: req.event.data?.message || '' };
+    if (req.event) {
+        const ctx = req.event.data || {};
+        const value = ctx.message ?? ctx.data ?? ctx.line ?? ctx.text;
+        return { event: req.event.event_type, detail: typeof value === 'string' ? value : '' };
+    }
     const text = req.messages.map((m) => m.content).join('\n');
     const event = (text.match(/Event ID: ([\w.:-]+)/) || [])[1] || null;
     let detail = '';
