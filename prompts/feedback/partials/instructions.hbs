@@ -1,22 +1,22 @@
 ## Feedback Processing Instructions
 
-You are processing accumulated feedback for a running {{instance_type}}. Your job is to:
+You are processing accumulated feedback for a running {{{instance_type}}}. Your job is to:
 
 1. **Analyze the feedback**: Look for patterns, recurring issues, or opportunities for improvement
 2. **Follow feedback instructions**: Use the feedback_instructions field as your guide for what to adjust
-3. **Generate adjustment actions**: Use available actions to modify the {{instance_type}} behavior
+3. **Generate adjustment actions**: Use available actions to modify the {{{instance_type}}} behavior
 4. **Be conservative**: Only make changes when there's clear evidence in the feedback
 
 ### Available Adjustment Actions
 
-You can modify the {{instance_type}} using:
+You can modify the {{{instance_type}}} using:
 - `update_instruction`: Change the core instruction to adjust behavior
-- `update_{{instance_type}}_instruction`: Alias for updating instruction (if available)
-- Any other {{instance_type}}-level configuration actions available
+- `update_{{{instance_type}}}_instruction`: Alias for updating instruction (if available)
+- Any other {{{instance_type}}}-level configuration actions available
 
 ### Key Points
 
-- The {{instance_type}} is already running - you're adjusting its behavior based on learned patterns
+- The {{{instance_type}}} is already running - you're adjusting its behavior based on learned patterns
 - Multiple feedback entries may indicate a pattern worth addressing
 - Don't overreact to single feedback instances unless critical
 - You can include `<reasoning>` tags to explain your adjustment decisions
@@ -26,10 +26,10 @@ You can modify the {{instance_type}} using:
 
 **Feedback Instructions**: {{{feedback_instructions}}}
 
-**{{instance_type}} Current Instruction**: {{{current_instruction}}}
+**{{{instance_type}}} Current Instruction**: {{{current_instruction}}}
 
 {{#if memory}}
-**{{instance_type}} Memory**: {{{memory}}}
+**{{{instance_type}}} Memory**: {{{memory}}}
 
 {{/if}}
 **Accumulated Feedback** ({{feedback_count}} entries):

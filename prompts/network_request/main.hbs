@@ -41,6 +41,10 @@ Output: {{{this.output}}}
       when a script or static handler matches an event the LLM is never called,
       so any prompt rendered here means no script handler applied. Including it
       added ~9.6KB (81%) to every per-request prompt. --}}
+{{#if tool_actions}}
 {{> shared/partials/response_format }}
+{{else}}
+{{> network_request/partials/response_format }}
+{{/if}}
 
 {{> shared/partials/current_state active_server=active_server can_bind_privileged_ports=can_bind_privileged_ports has_raw_socket_access=has_raw_socket_access }}
