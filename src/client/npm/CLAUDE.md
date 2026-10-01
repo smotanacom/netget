@@ -439,3 +439,5 @@ so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1
 transport reads a response whole before `chunk()` yields it, so the streaming checks below the
 round trip see one chunk. A scheme-less registry address gets `https://` natively and `http://` in the browser, whose registries are servers on the page's virtual network; an explicit `https://` registry — the public one included — is refused there with the reason. `web/test/smoke.mjs` proves it in the bundle: `[ + npm client ]` on NetGet's `npm` server connects (`http://127.0.0.1:<port>`), `[ send ]` of `get_package_info` reaches the server's model and comes back `Executed` with the version it answered, and the packument it wrote is in the `npm_package_info_received` event parked on the client; `https://registry.npmjs.org` is refused with the reason.
 
+
+The dashboard pairs NetGet servers with explicit `http://127.0.0.1:<bound-port>` URLs on both native and browser builds. Native pairing exchanges are covered in `tests/dashboard_create_flow_test.rs`.

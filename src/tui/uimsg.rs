@@ -17,6 +17,9 @@ pub enum ActionOrigin {
 
 #[derive(Debug)]
 pub enum UiMsg {
+    /// A page API needs input before creating an instance. Show the same form as the
+    /// dashboard button, so credentials can be supplied with the normal field editor.
+    OpenForm(Box<crate::tui::modal::form::FormModel>),
     /// A spawned action finished. On success the originating modal closes and
     /// `message` goes to chat; on failure the modal stays open and shows it.
     ActionDone {

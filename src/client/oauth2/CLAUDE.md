@@ -260,3 +260,5 @@ This client is in the browser build (`crates/netget-web`). The `oauth2` crate is
 in the browser at connect with the reason (`http_fetch::check_url`): the transport has no TLS.
 `web/test/smoke.mjs` proves it in the bundle: the client is started through `ClientForm` (it needs `client_id` and `token_url`, which `[ + OAuth2 client ]` cannot know — the dashboard's form asks for them), the model asks for a client-credentials token, NetGet's `oauth2` server's model issues one (its request arrives as `grant_type` `client_credentials`), and the token event reaches the model with the expiry the server chose; `[ send ]` repeats the exchange; an `https://` token URL is refused.
 
+
+Dashboard pairing fills `/authorize` and `/token` URLs from the running local server and opens the normal form for `client_id` and any optional `client_secret`; it does not invent credentials. The browser page API opens the same focused form.

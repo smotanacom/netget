@@ -136,6 +136,7 @@ impl Protocol for OpenApiClientProtocol {
                 ),
                 default: None,
             },
+            #[cfg(not(target_arch = "wasm32"))]
             ParameterDefinition {
                 name: "spec_file".to_string(),
                 description: "Path to OpenAPI specification file (YAML or JSON)".to_string(),

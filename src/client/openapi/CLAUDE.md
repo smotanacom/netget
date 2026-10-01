@@ -57,7 +57,7 @@ Unlike TCP (persistent connection), OpenAPI client is **request/response** based
 
 **1. Spec Loading:**
 - Inline spec via `spec` parameter (YAML or JSON string)
-- File spec via `spec_file` parameter
+- File spec via `spec_file` parameter (native builds only; browsers accept inline content)
 - Parsed using `openapi-rs` at startup
 
 **2. Operation Discovery:**
@@ -399,3 +399,5 @@ the browser an `https://` target is refused at connect with the reason
 (`http_fetch::check_url`) rather than on the first request. `web/test/smoke.mjs` proves it in
 the bundle: the client is started through `ClientForm` with the `openapi` server's own spec (the dashboard's `[ + OpenAPI client ]` cannot know the spec — the form asks for it, and applied without one the connect fails with "requires 'spec' or 'spec_file'"), the model's `execute_operation listTodos` with a query parameter reaches NetGet's `openapi` server, its answer is reported back to the model, and `[ send ]` of the same operation comes back `Executed`.
 
+
+`[ + OpenAPI client ]` inherits the running server's inline spec and local base URL. A new unpaired client form asks for `spec` or `spec_file` (inline `spec` only in the browser); the document field uses the multiline editor and JSON specifications stay strings when submitted.
