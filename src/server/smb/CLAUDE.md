@@ -31,9 +31,8 @@ the per-connection state, the bounds and the model.
 
 ## Library Choices
 
-- **Manual SMB2 implementation** - No library used. The `smb` feature still pulls in the
-  `smb-msg` crate, which no code references (`grep -rn smb_msg src/` is empty); removing it
-  is a `Cargo.toml` and `Cargo.lock` change left for a pass that owns those files
+- **Manual SMB2 implementation** - No SMB library dependency; the `smb` feature enables
+  NetGet's own wire and authentication implementations.
     - SMB2 binary protocol parsing and response generation
     - Custom packet builders for Negotiate, Session Setup, Tree Connect, etc.
     - Direct control over all protocol aspects
