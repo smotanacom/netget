@@ -148,7 +148,7 @@ pub async fn call_llm_with_actions(
 
     // Build system prompt using action system (NO trigger - that goes in user message).
     //
-    // The builder returns the list it advertised: it adds the network-event tools and drops
+    // The builder returns the list it advertised: it removes tools and drops
     // the script actions the current scripting mode disallows. Validating against the
     // pre-adjustment `all_actions` accepted `update_script` with scripting Off and withheld
     // native schemas for tools the prompt offered, so the advertised list is used from here on.
@@ -180,8 +180,8 @@ pub async fn call_llm_with_actions(
     // tests/llm_native_tools_test.rs, which explains why in full.
     // Short version: native schemas gave the model a second way to answer
     // alongside the JSON action envelope this prompt teaches, and it took it —
-    // 6 of 6 failing protocol cases pass once they are removed. Tools still work
-    // through the JSON envelope and the tool loop; only the schema channel is gone.
+    // 6 of 6 failing protocol cases pass once they are removed. Network events use only
+    // protocol/common actions; operator conversations retain their tool loop.
     .with_tracking(
         state.clone(),
         crate::state::app_state::ConversationSource::Network {
@@ -619,8 +619,8 @@ async fn call_llm_inner(
     // tests/llm_native_tools_test.rs, which explains why in full.
     // Short version: native schemas gave the model a second way to answer
     // alongside the JSON action envelope this prompt teaches, and it took it —
-    // 6 of 6 failing protocol cases pass once they are removed. Tools still work
-    // through the JSON envelope and the tool loop; only the schema channel is gone.
+    // 6 of 6 failing protocol cases pass once they are removed. Network events use only
+    // protocol/common actions; operator conversations retain their tool loop.
     .with_tracking(
         state.clone(),
         crate::state::app_state::ConversationSource::Network {

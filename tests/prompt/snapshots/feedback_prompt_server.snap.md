@@ -76,12 +76,10 @@ error_count: 3
 # Available Actions
 
 Include actions in your JSON response to execute operations.
-You will see past actions you have executed on previous invocation, actions are not idempotent.
-Unless tools are also included, you will not be invoked again if you only return actions
-so you may include multiple actions in a single response.
+Include every action you want executed, in order, in one final response.
+Your response completes this event; you will not be invoked again to add more actions.
 
 **CRITICAL: Only use actions listed below. Do NOT invent or hallucinate action names.**
-If an action you need is not listed, use `read_documentation` tool to learn about protocol-specific actions.
 Unknown actions will be rejected and you will be asked to retry.
 
 ## 0. open_server
@@ -390,135 +388,15 @@ Example:
 
 # Response Format
 
-**CRITICAL:** Your response must be **valid JSON only**. No explanations, no markdown, no code blocks.
+Return a JSON object with an `actions` array. Each action has a `type` from the
+Available Actions list and that action's documented parameters.
 
-## Required Format
+Put every action needed in this single response, in execution order.
+Actions execute once after the response is validated. No tools are available for
+this response. Return `{"actions": []}` when no action is needed.
 
-```json
-{
-  "tools": [{"type": "read_file", "path": "config.json"}],
-  "actions": [{"type": "cancel_task", "task_id": "cleanup_logs"}]
-}
-```
-
-- Must start with `{` and end with `}`
-- **`tools`** (optional): Array of tool calls (read_file, web_search, generate_random, etc.)
-  - Tools are executed FIRST and their results feed back to you before actions execute
-  - Use tools to gather information before deciding on actions
-- **`actions`** (optional): Array of protocol-specific actions (open_server, close_server, etc.)
-  - Actions execute AFTER tools complete
-  - Actions execute in order
-- You can use `tools` only, `actions` only, or BOTH in the same response
-- Both arrays are optional - you can omit either if empty
-
-## Optional Reasoning
-
-You may include a `<reasoning>` tag to explain your thought process:
-
-```xml
-<reasoning>
-Brief explanation of your understanding and decision (1-3 sentences)
-</reasoning>
-{
-  "actions": [...]
-}
-```
-
-**When to include reasoning:**
-- **User input commands**: Strongly encouraged, especially for ambiguous requests, port conflicts, update vs create decisions, multi-step operations
-- **Network events**: Optional, use when helpful for complex logic, authentication decisions, error handling
-- Explain: what you understand, what you checked, why you chose this action
-
-**Reasoning rules:**
-1. **Tag is optional** - You can omit it for simple, straightforward cases
-2. **Keep it brief** - 1-3 sentences explaining key points
-3. **Tag can be anywhere** - Before or after JSON (will be extracted and logged)
-4. **Valid JSON still required** - After removing reasoning tag, valid JSON must remain
-
-## Examples
-
-✓ **Valid (tools only):**
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "config.json", "mode": "full"}
-  ]
-}
-```
-
-✓ **Valid (actions only):**
-```json
-{
-  "actions": [
-    {"type": "show_message", "message": "Hello"}
-  ]
-}
-```
-
-✓ **Valid (both tools and actions):**
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "config.json"},
-    {"type": "generate_random", "data_type": "uuid"}
-  ],
-  "actions": [
-    {"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"},
-    {"type": "show_message", "message": "Server started"}
-  ]
-}
-```
-
-✓ **Valid (with reasoning):**
-```
-<reasoning>User wants to learn about HTTP protocol before starting server.</reasoning>
-{
-  "tools": [{"type": "read_documentation", "protocols": ["http"]}]
-}
-```
-
-✓ **Valid (multiple tools):**
-```json
-{
-  "tools": [
-    {"type": "web_search", "query": "https://datatracker.ietf.org/doc/html/rfc7231"},
-    {"type": "generate_random", "data_type": "uuid"}
-  ]
-}
-```
-
-✓ **Valid (multiple actions):**
-```json
-{
-  "actions": [
-    {"type": "close_server", "server_id": 1},
-    {"type": "cancel_task", "task_id": "cleanup_logs"}
-  ]
-}
-```
-
-✗ **Invalid** (explanation before JSON):
-```
-Here's what I'll do:
-{"tools": [...]}
-```
-
-✗ **Invalid** (markdown code block):
-```
-```json
-{"tools": [...]}
-```
-```
-
-## JSON Rules
-
-1. **Valid JSON required** - Must be valid JSON after reasoning tag removed
-2. **Use appropriate keys** - `tools` for tool calls, `actions` for protocol actions
-3. **Tools execute first** - Tools gather information, then actions execute based on results
-4. **Both keys optional** - Omit empty arrays: `{"tools": [...]}` or `{"actions": [...]}` or both
-5. **One action per object** - Each tool/action in a separate object in the array
-6. **Exact parameter names** - Use the parameter names exactly as documented
-7. **Appropriate types** - Numbers should be numbers, not strings
+Return JSON only, without Markdown fences or narration. Optional brief reasoning
+may precede the JSON inside `<reasoning>` tags; it is not sent to the peer.
 
 # Current State
 

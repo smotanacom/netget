@@ -45,6 +45,272 @@ fn conversation(client: OllamaClient) -> ConversationHandler {
 }
 
 #[tokio::test]
+async fn an_unadvertised_tool_is_rejected_before_execution_and_its_draft_is_discarded() {
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let host = tokio::spawn(async move {
+        let first = rx.recv().await.unwrap();
+        first
+            .reply
+            .send(Ok(BridgeReply {
+                content: Some(
+                    json!({
+                        "tools": [{"type": "read_file", "path": "/must-not-be-read"}],
+                        "actions": [{"type": "send_tcp_data", "data": "draft greeting"}]
+                    })
+                    .to_string(),
+                ),
+                ..Default::default()
+            }))
+            .unwrap();
+        let second = rx.recv().await.unwrap();
+        let correction = &second.messages.last().unwrap().content;
+        assert!(correction.contains("read_file"), "{correction}");
+        assert!(correction.contains("Available Actions"), "{correction}");
+        assert!(!second
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Tool Results")));
+        second
+            .reply
+            .send(Ok(BridgeReply {
+                content: Some(
+                    json!({"actions": [
+                        {"type": "send_tcp_data", "data": "final greeting"}
+                    ]})
+                    .to_string(),
+                ),
+                ..Default::default()
+            }))
+            .unwrap();
+    });
+    let actions = conversation(client)
+        .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
+        .await
+        .unwrap();
+    host.await.unwrap();
+    assert_eq!(
+        actions,
+        vec![json!({"type": "send_tcp_data", "data": "final greeting"})]
+    );
+}
+
+/// Operator conversations retain tools, but an intermediate action is not a commitment.
+#[tokio::test]
+async fn a_tool_rounds_actions_are_replaced_by_the_final_response() {
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let host = tokio::spawn(async move {
+        for (round, tools) in [
+            json!([{"type": "generate_random", "data_type": "uuid"}]),
+            json!([]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request = rx.recv().await.unwrap();
+            if round == 1 {
+                let prompt = request
+                    .messages
+                    .iter()
+                    .map(|m| m.content.as_str())
+                    .collect::<String>();
+                assert!(prompt.contains("generate_random"));
+                assert!(prompt.contains("have not been executed"));
+            }
+            request
+                .reply
+                .send(Ok(BridgeReply {
+                    content: Some(
+                        json!({
+                            "tools": tools,
+                            "actions": [{"type": "send_tcp_data", "data": "one greeting"}]
+                        })
+                        .to_string(),
+                    ),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
+    });
+    let mut handler = ConversationHandler::new(
+        "Use a tool if needed, then return the final actions.".into(),
+        Arc::new(client),
+        "page-model".into(),
+        RateLimiter::new(RateLimiterConfig::default()),
+        RequestSource::User,
+    );
+    handler.add_user_message("greet the peer".into());
+    let mut available = netget::llm::actions::get_all_tool_actions(WebSearchMode::Off);
+    available.push(send_tcp_data());
+    let actions = handler
+        .generate_with_tools_and_retry(None, WebSearchMode::Off, available)
+        .await
+        .unwrap();
+    host.await.unwrap();
+    assert_eq!(
+        actions,
+        vec![json!({"type": "send_tcp_data", "data": "one greeting"})]
+    );
+}
+
+#[tokio::test]
+async fn exhausting_tool_rounds_fails_without_committing_draft_actions() {
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let state = netget::state::app_state::AppState::new();
+    let observed_state = state.clone();
+    let host = tokio::spawn(async move {
+        for _ in 0..5 {
+            let request = rx.recv().await.unwrap();
+            assert_eq!(observed_state.get_active_conversations().await.len(), 1);
+            request
+                .reply
+                .send(Ok(BridgeReply {
+                    content: Some(
+                        json!({
+                            "tools": [{"type": "generate_random", "data_type": "uuid"}],
+                            "actions": [{"type": "send_tcp_data", "data": "draft"}]
+                        })
+                        .to_string(),
+                    ),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
+    });
+    let mut available = netget::llm::actions::get_all_tool_actions(WebSearchMode::Off);
+    available.push(send_tcp_data());
+    let error = conversation(client)
+        .with_tracking(
+            state.clone(),
+            netget::state::app_state::ConversationSource::User,
+            "unfinished tool loop".into(),
+        )
+        .generate_with_tools_and_retry(None, WebSearchMode::Off, available)
+        .await
+        .expect_err("an unfinished tool loop cannot commit its drafts");
+    host.await.unwrap();
+    assert!(
+        error.to_string().contains("Tool iteration limit"),
+        "{error:#}"
+    );
+    assert!(state
+        .get_active_conversations()
+        .await
+        .iter()
+        .all(|conversation| conversation.end_time.is_some()));
+}
+
+#[tokio::test]
+async fn malformed_tool_entries_cannot_commit_the_other_actions() {
+    for malformed in [json!(null), json!({}), json!({"type": 7})] {
+        let (bridge, mut rx) = LlmBridge::new();
+        let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+        let host = tokio::spawn(async move {
+            for _ in 0..2 {
+                let request = rx.recv().await.unwrap();
+                request
+                    .reply
+                    .send(Ok(BridgeReply {
+                        content: Some(
+                            json!({
+                                "tools": [malformed],
+                                "actions": [{"type": "send_tcp_data", "data": "draft"}]
+                            })
+                            .to_string(),
+                        ),
+                        ..Default::default()
+                    }))
+                    .unwrap();
+            }
+        });
+        let result = conversation(client)
+            .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
+            .await;
+        host.await.unwrap();
+        assert!(
+            result.is_err(),
+            "malformed tool returned actions: {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repeated_tool_failure_cannot_finish_successfully_without_a_final_response() {
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let missing = tempfile::tempdir().unwrap();
+    let missing = missing.path().join("does-not-exist");
+    let host = tokio::spawn(async move {
+        for _ in 0..2 {
+            let request = rx.recv().await.unwrap();
+            request
+                .reply
+                .send(Ok(BridgeReply {
+                    content: Some(
+                        json!({
+                            "tools": [{"type": "read_file", "path": missing}],
+                            "actions": [{"type": "send_tcp_data", "data": "draft"}]
+                        })
+                        .to_string(),
+                    ),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
+    });
+    let mut available = netget::llm::actions::get_all_tool_actions(WebSearchMode::Off);
+    available.push(send_tcp_data());
+    let error = conversation(client)
+        .generate_with_tools_and_retry(None, WebSearchMode::Off, available)
+        .await
+        .expect_err("tool failures cannot commit drafts");
+    host.await.unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("without a final action response"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn unresolved_drafts_exhausting_retries_are_not_a_successful_empty_response() {
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let host = tokio::spawn(async move {
+        for _ in 0..5 {
+            rx.recv()
+                .await
+                .unwrap()
+                .reply
+                .send(Ok(BridgeReply {
+                    content: Some(
+                        json!({"actions": [{
+                            "type": "send_tcp_data", "data": "{{tools[0].result}}"
+                        }]})
+                        .to_string(),
+                    ),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
+    });
+    let error = conversation(client)
+        .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
+        .await
+        .expect_err("rejected drafts are not a final answer");
+    host.await.unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("without a final action response"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
 async fn a_generate_request_carries_the_whole_prompt_and_its_text_answer_is_parsed_as_actions() {
     let (bridge, mut rx) = LlmBridge::new();
     bridge.set_models(vec!["page-model".to_string()]);
