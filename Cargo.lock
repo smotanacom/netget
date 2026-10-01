@@ -1825,30 +1825,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "binrw"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81419ff39e6ed10a92a7f125290859776ced35d9a08a665ae40b23e7ca702f30"
-dependencies = [
- "array-init",
- "binrw_derive",
- "bytemuck",
-]
-
-[[package]]
-name = "binrw_derive"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "376404e55ec40d0d6f8b4b7df3f87b87954bd987f0cf9a7207ea3b6ea5c9add4"
-dependencies = [
- "either",
- "owo-colors",
- "proc-macro2",
- "quote",
- "syn 2.0.109",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7734,27 +7710,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "modular-bitfield"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a53d79ba8304ac1c4f9eb3b9d281f21f7be9d4626f72ce7df4ad8fbde4f38a74"
-dependencies = [
- "modular-bitfield-impl",
- "static_assertions",
-]
-
-[[package]]
-name = "modular-bitfield-impl"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a7d5f7076603ebc68de2dc6a650ec331a062a13abaa346975be747bbfa4b789"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "moka"
 version = "0.12.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8235,7 +8190,6 @@ dependencies = [
  "serde_yaml",
  "sha1",
  "sha2",
- "smb-msg",
  "snmp",
  "socket2 0.5.10",
  "socketcan",
@@ -9246,12 +9200,6 @@ name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
-
-[[package]]
-name = "owo-colors"
-version = "4.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c6901729fa79e91a0913333229e9ca5dc725089d1c363b2f4b4760709dc4a52"
 
 [[package]]
 name = "p12-keystore"
@@ -12865,48 +12813,6 @@ name = "smawk"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7c388c1b5e93756d0c740965c41e8822f866621d41acbdf6336a6a168f8840c"
-
-[[package]]
-name = "smb-dtyp"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d9436e20c076aa12b688d9e60765bf6af0d4eb93630e970468f9dd6c6b5965a"
-dependencies = [
- "binrw",
- "modular-bitfield",
- "pastey 0.1.1",
- "rand 0.8.5",
- "time",
-]
-
-[[package]]
-name = "smb-fscc"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0966df60e54a298ad6f3a4472c81d449d077035ce29bcf7557ee484800923daf"
-dependencies = [
- "binrw",
- "modular-bitfield",
- "pastey 0.1.1",
- "smb-dtyp",
- "thiserror 2.0.20",
- "time",
-]
-
-[[package]]
-name = "smb-msg"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec8932ddcf2136c7b5eaefbe31475e504ba3308aef3d3a2a11a4566cf464d217"
-dependencies = [
- "binrw",
- "modular-bitfield",
- "pastey 0.1.1",
- "smb-dtyp",
- "smb-fscc",
- "thiserror 2.0.20",
- "time",
-]
 
 [[package]]
 name = "smol_str"

@@ -15,6 +15,12 @@ killed it to a file, and keeps going.
 Every decoder targeted here is reachable **before any authentication**, most of them on
 the first packet of a connection or on a single unauthenticated UDP datagram.
 
+CI checks all targets against the library on each change. It also runs
+`python3 scripts/check_fuzz_targets.py`, which requires the `fuzz/Cargo.toml` binaries,
+`fuzz/fuzz_targets/*.rs`, and `.github/workflows/fuzz.yml` matrix to match. Add a new target
+to all three. The on-demand workflow gives each target its own job and keeps crash inputs
+and the grown corpus as downloadable artifacts.
+
 ## Running one locally
 
 Needs a nightly toolchain (libFuzzer's sanitizer support ships only there) and

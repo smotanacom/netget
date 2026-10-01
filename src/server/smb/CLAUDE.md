@@ -31,9 +31,8 @@ the per-connection state, the bounds and the model.
 
 ## Library Choices
 
-- **Manual SMB2 implementation** - No library used. The `smb` feature still pulls in the
-  `smb-msg` crate, which no code references (`grep -rn smb_msg src/` is empty); removing it
-  is a `Cargo.toml` and `Cargo.lock` change left for a pass that owns those files
+- **Manual SMB2 implementation** - No SMB library dependency; the `smb` feature enables
+  NetGet's own wire and authentication implementations.
     - SMB2 binary protocol parsing and response generation
     - Custom packet builders for Negotiate, Session Setup, Tree Connect, etc.
     - Direct control over all protocol aspects
@@ -827,8 +826,9 @@ null sessions over SPNEGO/NTLMSSP that authenticate nothing, the thirteen answer
 above, compounds — which is a small subset of MS-SMB2: no SMB 3.x, signing, encryption,
 oplocks, leases, durable handles, SET_INFO, LOCK, CHANGE_NOTIFY, IOCTL/FSCTL or named pipes.
 Windows, macOS and Linux kernel clients have not been run against it, and the kernel clients
-negotiate SMB 3.x first. The blocking CI `test` job does not compile `smb`; `registry-audit`
-runs `smb::real_client_test` and is `continue-on-error`, so run the suite yourself:
+negotiate SMB 3.x first. The dedicated blocking CI `smb-evidence` job runs the SMB server
+suite, including both real clients, the packet oracle, and bound tests. The advisory
+`registry-audit` also runs `smb::real_client_test` with every feature enabled. Run it locally:
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features smb --test server -- smb:: --test-threads=100
