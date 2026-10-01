@@ -300,13 +300,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpcap-dev libpcsclite-dev
 
+      - name: Check every fuzz target is scheduled
+        run: python3 scripts/check_fuzz_targets.py
+
       - name: cargo check (fuzz targets still compile)
         run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
 
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    # The previous 45-minute budget expired during SMB after 45 passing groups.
+    # Leave room for cold compilation, every evidence group, and artifact upload.
+    timeout-minutes: 120
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -920,6 +925,7 @@ jobs:
       # only job here that runs protocol code rather than reading its declarations.
       - name: cargo test --all-features (registry audits)
         continue-on-error: true
+        timeout-minutes: 40
         run: |
           echo "::notice::Advisory only. Covers all registered protocols, not just CI_FEATURES."
           cargo test --locked --all-features \
@@ -965,19 +971,28 @@ jobs:
       # one run should tell you everything that is broken. It just remembers, and exits
       # non-zero at the end.
       #
-      # TO MAKE THIS BLOCKING: delete the `continue-on-error` line below. That is the whole
-      # change. Do it once this step has been green three runs in a row on `master` - these
-      # tests drive real network clients on a shared runner, and they have never been
-      # observed under that load.
-      - name: cargo test --all-features (real-client evidence)
+      # The broad audit remains advisory until it has completed cleanly three times.
+      # Making it blocking requires removing BOTH the job and step continue-on-error.
+      # SMB has its own blocking job below so its Stable evidence cannot hide here.
+      - name: Compile real-client evidence before starting its execution budget
+        id: evidence-build
         continue-on-error: true
+        timeout-minutes: 35
+        run: cargo test --locked --all-features --test server --test client --no-run
+
+      - name: cargo test --all-features (real-client evidence)
+        if: steps.evidence-build.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
         run: |
+          set -o pipefail
           echo "::notice::These are the real-client tests behind the Beta ratings."
           # Written to the run summary, not just the log. This job is `continue-on-error`
           # at JOB level, so it reports green whatever happens inside it — which is how it
           # sat dead for six days on a missing apt package with nobody noticing, and how a
           # later `--all-features` build failure did the same. A log nobody opens is not a
           # signal; the summary is on the run's own page.
+          mkdir -p evidence-results
           failed=""
           for filter in \
             bolt::real_client_test \
@@ -1021,24 +1036,84 @@ jobs:
             case "$filter" in
               client/*) target=client ; test_filter="${filter#client/}" ;;
             esac
-            if ! cargo test --locked --all-features --test "$target" -- \
-                 --test-threads=100 --nocapture "$test_filter" ; then
-              echo "::error::$filter failed - a Beta rating rests on this test"
+            result_file="evidence-results/${filter//[:\/]/_}"
+            printf 'running\t%s\n' "$filter" > "$result_file.status"
+            # Each group has a bounded runtime; a stuck client cannot consume the whole
+            # job. pipefail keeps cargo/timeout failure visible through tee. A renamed
+            # filter running zero tests is a failure too, never evidence of success.
+            if timeout --signal=TERM --kill-after=10s 5m \
+                 cargo test --locked --all-features --test "$target" -- \
+                 --test-threads=32 --nocapture "$test_filter" 2>&1 | tee "$result_file.log" \
+                 && grep -Eq '^test result: ok\. [1-9][0-9]* passed;' "$result_file.log"; then
+              printf 'passed\t%s\n' "$filter" > "$result_file.status"
+            else
+              printf 'FAILED\t%s\n' "$filter" > "$result_file.status"
+              echo "::error::$filter failed or ran no tests - a Beta rating rests on this test"
               failed="$failed $filter"
             fi
             echo "::endgroup::"
           done
+          touch evidence-results/complete
           if [ -n "$failed" ]; then
-            {
-              echo "### Real-client evidence FAILED"
-              echo
-              echo "These Beta ratings rest on tests that did not pass:"
-              echo
-              for f in $failed; do echo "- \`$f\`"; done
-            } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::real-client evidence failed for:$failed"
             exit 1
           fi
+
+      - name: Summarize real-client evidence even after interruption
+        if: always()
+        env:
+          EVIDENCE_BUILD: ${{ steps.evidence-build.outcome }}
+        run: python3 .github/scripts/summarize-evidence.py
+
+      - name: Preserve real-client evidence logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-client-evidence
+          path: evidence-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  smb-evidence:
+    name: SMB stable evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smb-evidence
+      - name: Install both independent clients and the packet oracle
+        run: |
+          sudo apt-get update
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            smbclient tshark python3-venv
+          python3 -m venv "$RUNNER_TEMP/smb-evidence-venv"
+          "$RUNNER_TEMP/smb-evidence-venv/bin/pip" install 'smbprotocol==1.17.*'
+          echo "$RUNNER_TEMP/smb-evidence-venv/bin" >> "$GITHUB_PATH"
+          smbclient --version
+          tshark --version | head -1
+      - name: Verify SMB framing, bounds, independent clients, and packet decoding
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          python3 -c 'import smbprotocol, smbclient'
+          mkdir -p evidence-results
+          cargo test --locked --no-default-features --features smb \
+            --lib --test server -- smb:: --test-threads=32 --nocapture \
+            2>&1 | tee evidence-results/smb.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed;' evidence-results/smb.log
+      - name: Preserve SMB evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smb-stable-evidence
+          path: evidence-results/
+          if-no-files-found: warn
+          retention-days: 14
 
   test:
     name: Test
