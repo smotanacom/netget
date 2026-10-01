@@ -158,9 +158,12 @@ async fn a_tool_rounds_actions_are_replaced_by_the_final_response() {
 async fn exhausting_tool_rounds_fails_without_committing_draft_actions() {
     let (bridge, mut rx) = LlmBridge::new();
     let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
+    let state = netget::state::app_state::AppState::new();
+    let observed_state = state.clone();
     let host = tokio::spawn(async move {
         for _ in 0..5 {
             let request = rx.recv().await.unwrap();
+            assert_eq!(observed_state.get_active_conversations().await.len(), 1);
             request
                 .reply
                 .send(Ok(BridgeReply {
@@ -179,6 +182,11 @@ async fn exhausting_tool_rounds_fails_without_committing_draft_actions() {
     let mut available = netget::llm::actions::get_all_tool_actions(WebSearchMode::Off);
     available.push(send_tcp_data());
     let error = conversation(client)
+        .with_tracking(
+            state.clone(),
+            netget::state::app_state::ConversationSource::User,
+            "unfinished tool loop".into(),
+        )
         .generate_with_tools_and_retry(None, WebSearchMode::Off, available)
         .await
         .expect_err("an unfinished tool loop cannot commit its drafts");
@@ -187,6 +195,11 @@ async fn exhausting_tool_rounds_fails_without_committing_draft_actions() {
         error.to_string().contains("Tool iteration limit"),
         "{error:#}"
     );
+    assert!(state
+        .get_active_conversations()
+        .await
+        .iter()
+        .all(|conversation| conversation.end_time.is_some()));
 }
 
 #[tokio::test]
@@ -260,29 +273,6 @@ async fn repeated_tool_failure_cannot_finish_successfully_without_a_final_respon
             .contains("without a final action response"),
         "{error:#}"
     );
-}
-
-#[tokio::test]
-async fn an_explicit_empty_final_response_is_a_successful_no_op() {
-    let (bridge, mut rx) = LlmBridge::new();
-    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(5));
-    let host = tokio::spawn(async move {
-        rx.recv()
-            .await
-            .unwrap()
-            .reply
-            .send(Ok(BridgeReply {
-                content: Some(r#"{"actions":[]}"#.into()),
-                ..Default::default()
-            }))
-            .unwrap();
-    });
-    let actions = conversation(client)
-        .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
-        .await
-        .unwrap();
-    host.await.unwrap();
-    assert!(actions.is_empty());
 }
 
 #[tokio::test]

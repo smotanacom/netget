@@ -1,3 +1,4 @@
+{{#if tool_actions}}
 ---
 
 # Response Format
@@ -116,3 +117,6 @@ Here's what I'll do:
 5. **One action per object** - Each tool/action in a separate object in the array
 6. **Exact parameter names** - Use the parameter names exactly as documented
 7. **Appropriate types** - Numbers should be numbers, not strings
+{{else}}
+{{> shared/partials/actions_response_format }}
+{{/if}}

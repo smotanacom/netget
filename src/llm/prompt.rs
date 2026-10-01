@@ -1137,7 +1137,7 @@ Return: [{{"type": "show_message", "message": "Task '{}' cancelled - server no l
                 let mut actions = get_network_event_common_actions();
                 actions.extend(protocol_actions);
 
-                // Add tool actions (excluding documentation tools for network events)
+                // Scoped scheduled tasks retain tools for gathering information.
                 let web_search_mode = state.get_web_search_mode().await;
                 actions.extend(get_network_event_tool_actions(web_search_mode));
 
@@ -1197,7 +1197,7 @@ Return: [{{"type": "show_message", "message": "Task '{}' cancelled - connection 
                 let mut actions = get_network_event_common_actions();
                 actions.extend(protocol_actions);
 
-                // Add tool actions (excluding documentation tools for network events)
+                // Scoped scheduled tasks retain tools for gathering information.
                 let web_search_mode = state.get_web_search_mode().await;
                 actions.extend(get_network_event_tool_actions(web_search_mode));
 
@@ -1259,7 +1259,7 @@ Return: [{{"type": "show_message", "message": "Task '{}' cancelled - client no l
                 let mut actions = get_network_event_common_actions();
                 actions.extend(protocol_actions);
 
-                // Add tool actions (excluding documentation tools for network events)
+                // Scoped scheduled tasks retain tools for gathering information.
                 let web_search_mode = state.get_web_search_mode().await;
                 actions.extend(get_network_event_tool_actions(web_search_mode));
 

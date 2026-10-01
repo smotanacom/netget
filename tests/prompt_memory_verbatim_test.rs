@@ -1,4 +1,4 @@
-//! A server's memory and instruction reach the network-event prompt verbatim.
+//! Model-facing text reaches prompts verbatim, including memory, instructions, and HTTP data.
 //!
 //! Memory is the one thing a model keeps between events, and it reads it back from the
 //! prompt's "Current State" section. That section is a Handlebars partial, and a
@@ -31,6 +31,27 @@ async fn user_instructions_are_verbatim_and_operator_tools_remain_available() {
     for escaped in ["&quot;", "&#x27;", "&amp;", "&lt;", "&gt;"] {
         assert!(!prompt.contains(escaped), "{escaped} in:\n{prompt}");
     }
+}
+
+#[tokio::test]
+async fn feedback_without_tools_uses_the_actions_only_response_contract() {
+    let state = AppState::new();
+    let instruction = r#"Keep "quotes" & <tags> literal."#;
+    let prompt = PromptBuilder::build_feedback_system_prompt(
+        &state,
+        None,
+        None,
+        instruction,
+        instruction,
+        instruction,
+        &[],
+        get_network_event_common_actions(),
+    )
+    .await;
+    assert!(prompt.contains(instruction), "{prompt}");
+    assert!(prompt.contains("No tools are available"), "{prompt}");
+    assert!(!prompt.contains("generate_random"), "{prompt}");
+    assert!(!prompt.contains("read_file"), "{prompt}");
 }
 
 #[test]

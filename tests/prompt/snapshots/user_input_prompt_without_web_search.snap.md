@@ -42,24 +42,24 @@ Understand what the user wants and respond with the appropriate actions to make 
 
 ### Important Guidelines
 
-1. **Read documentation first**: Before starting servers or clients, you MUST call &#x60;read_documentation&#x60; with the protocol(s) you need. This enables the server/client actions and explains when to use each mode.
+1. **Read documentation first**: Before starting servers or clients, you MUST call `read_documentation` with the protocol(s) you need. This enables the server/client actions and explains when to use each mode.
 
 2. **Understanding Server vs Client** (CRITICAL):
    - **Server (hosting)**: Use when user wants to HOST/SERVE content
-     - Keywords: &quot;serve&quot;, &quot;host&quot;, &quot;listen&quot;, &quot;provide&quot;, &quot;run server&quot;
-     - Example: &quot;host a website&quot;, &quot;start HTTP server&quot;, &quot;run DNS server&quot;
+     - Keywords: "serve", "host", "listen", "provide", "run server"
+     - Example: "host a website", "start HTTP server", "run DNS server"
    - **Client (connecting)**: Use when user wants to CONNECT to existing remote server
-     - Keywords: &quot;connect to&quot;, &quot;fetch from&quot;, &quot;query&quot;, &quot;send to&quot;, &quot;access remote&quot;
-     - Example: &quot;connect to Redis at localhost:6379&quot;, &quot;send ping to host&quot;
-   - ⚠️ If user says &quot;serve&quot;, &quot;host&quot;, or &quot;provide&quot;, use server mode even if they say &quot;client&quot;. The ACTION matters more than the word choice!
+     - Keywords: "connect to", "fetch from", "query", "send to", "access remote"
+     - Example: "connect to Redis at localhost:6379", "send ping to host"
+   - ⚠️ If user says "serve", "host", or "provide", use server mode even if they say "client". The ACTION matters more than the word choice!
 
-3. **Gather information**: Use tools like &#x60;read_file&#x60; to read files or search for information before taking action.
+3. **Gather information**: Use tools like `read_file` to read files or search for information before taking action.
 
-4. **Update, don&#x27;t recreate**: If a user asks to modify an existing server (e.g., &quot;add an endpoint&quot;, &quot;change the behavior&quot;), use &#x60;update_instruction&#x60; - don&#x27;t create a new server on the same port.
+4. **Update, don't recreate**: If a user asks to modify an existing server (e.g., "add an endpoint", "change the behavior"), use `update_instruction` - don't create a new server on the same port.
 
-5. **JSON responses only**: Your entire response must be valid JSON: &#x60;{&quot;actions&quot;: [...]}&#x60;
+5. **JSON responses only**: Your entire response must be valid JSON: `{"actions": [...]}`
 
-**IMPORTANT**: The server and client actions are DISABLED until you read protocol documentation. Use &#x60;read_documentation&#x60; first!
+**IMPORTANT**: The server and client actions are DISABLED until you read protocol documentation. Use `read_documentation` first!
             
 
 # Available Tools
@@ -158,12 +158,12 @@ Example:
 # Available Actions
 
 Include actions in your JSON response to execute operations.
-You will see past actions you have executed on previous invocation, actions are not idempotent.
-Unless tools are also included, you will not be invoked again if you only return actions
-so you may include multiple actions in a single response.
+Include every action you want executed, in order, in one final response.
+A response containing tools is an intermediate round: its actions are drafts and
+are not executed. Read the tool results, then return your final actions without tools.
 
 **CRITICAL: Only use actions listed below. Do NOT invent or hallucinate action names.**
-If an action you need is not listed, use `read_documentation` tool to learn about protocol-specific actions.
+Only use the tools listed above to gather any additional information you need.
 Unknown actions will be rejected and you will be asked to retry.
 
 ## 0. close_server
@@ -839,19 +839,18 @@ Use `*` as event_pattern to route all events to the LLM.
 
 ```json
 {
-  "tools": [{"type": "read_file", "path": "config.json"}],
   "actions": [{"type": "cancel_task", "task_id": "cleanup_logs"}]
 }
 ```
 
 - Must start with `{` and end with `}`
 - **`tools`** (optional): Array of tool calls (read_file, generate_random, etc.)
-  - Tools are executed FIRST and their results feed back to you before actions execute
+  - Tools return their results for another response; any actions in that intermediate response are drafts
   - Use tools to gather information before deciding on actions
 - **`actions`** (optional): Array of protocol-specific actions (open_server, close_server, etc.)
-  - Actions execute AFTER tools complete
+  - Only actions from your final response with no tool calls execute
   - Actions execute in order
-- You can use `tools` only, `actions` only, or BOTH in the same response
+- Gather information with tools first, then return all actions in one final response without tools
 - Both arrays are optional - you can omit either if empty
 
 ## Optional Reasoning
@@ -894,20 +893,6 @@ Brief explanation of your understanding and decision (1-3 sentences)
 {
   "actions": [
     {"type": "show_message", "message": "Hello"}
-  ]
-}
-```
-
-✓ **Valid (both tools and actions):**
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "config.json"},
-    {"type": "generate_random", "data_type": "uuid"}
-  ],
-  "actions": [
-    {"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"},
-    {"type": "show_message", "message": "Server started"}
   ]
 }
 ```
@@ -956,8 +941,8 @@ Here's what I'll do:
 
 1. **Valid JSON required** - Must be valid JSON after reasoning tag removed
 2. **Use appropriate keys** - `tools` for tool calls, `actions` for protocol actions
-3. **Tools execute first** - Tools gather information, then actions execute based on results
-4. **Both keys optional** - Omit empty arrays: `{"tools": [...]}` or `{"actions": [...]}` or both
+3. **Finish gathering information first** - After tools return results, send one final actions-only response
+4. **Both keys optional** - Omit empty arrays: `{"tools": [...]}` or `{"actions": [...]}`
 5. **One action per object** - Each tool/action in a separate object in the array
 6. **Exact parameter names** - Use the parameter names exactly as documented
 7. **Appropriate types** - Numbers should be numbers, not strings
