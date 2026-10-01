@@ -672,7 +672,7 @@ try {
     // OpenAPI pairing inherits the running server's spec and targets its local base URL.
     const oaPair = await connectViaButton(openapiServer.id, 'openapi');
     await send(oaPair.id, { type: 'execute_operation', operation_id: 'listTodos', path_params: {}, query_params: {} });
-    const oaPairReply = await parkedOn(oaPair.id, 'openapi_response_received');
+    const oaPairReply = await parkedOn(oaPair.id, 'openapi_operation_response');
     if (oaPairReply.event_data.status_code !== 200 || !String(oaPairReply.event_data.body).includes('Buy milk')) fail('the inherited OpenAPI spec did not complete a request: ' + JSON.stringify(oaPairReply));
 
     // A separately model-driven client still chooses operations on connect and response.
@@ -836,7 +836,7 @@ try {
     }
     const oauthPair = await credentialPair(oauthServer.id, 'oauth2');
     await send(oauthPair.id, { type: 'exchange_client_credentials', scopes: 'read' });
-    const oauthPairToken = await parkedOn(oauthPair.id, 'oauth2_token_received');
+    const oauthPairToken = await parkedOn(oauthPair.id, 'oauth2_token_obtained');
     if (oauthPairToken.event_data.expires_in !== 1234) fail('the configured OAuth2 pair failed to receive its token: ' + JSON.stringify(oauthPairToken));
     webClients.oauth2 += '; paired through credential form, local token endpoint received token';
 
