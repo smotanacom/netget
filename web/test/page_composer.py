@@ -1152,9 +1152,11 @@ def run_adventure_state(browser, origin):
         type_line(page, line)
         expect(llm.locator(".llm-state")).to_have_text("waiting for you", timeout=30_000)
         expect(llm.locator(".adventure-state b")).to_have_text(room)
+        llm.locator(".llm-prompt summary").click()
         prompt = llm.locator(".llm-prompt pre").last.inner_text()
         state = json.loads(prompt.rsplit("Demo adventure state:\n", 1)[1].split("\n")[0])
         assert state["result"] == result, (line, state)
+        llm.locator(".llm-prompt summary").click()
         llm.locator("select.cmp-picker").select_option("send_telnet_line")
         answer = f"Manual {room}; {result}; turn {turn}."
         llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill(answer)
