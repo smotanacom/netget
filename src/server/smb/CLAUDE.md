@@ -826,8 +826,9 @@ null sessions over SPNEGO/NTLMSSP that authenticate nothing, the thirteen answer
 above, compounds — which is a small subset of MS-SMB2: no SMB 3.x, signing, encryption,
 oplocks, leases, durable handles, SET_INFO, LOCK, CHANGE_NOTIFY, IOCTL/FSCTL or named pipes.
 Windows, macOS and Linux kernel clients have not been run against it, and the kernel clients
-negotiate SMB 3.x first. The blocking CI `test` job does not compile `smb`; `registry-audit`
-runs `smb::real_client_test` and is `continue-on-error`, so run the suite yourself:
+negotiate SMB 3.x first. The dedicated blocking CI `smb-evidence` job runs the SMB server
+suite, including both real clients, the packet oracle, and bound tests. The advisory
+`registry-audit` also runs `smb::real_client_test` with every feature enabled. Run it locally:
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features smb --test server -- smb:: --test-threads=100

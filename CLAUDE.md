@@ -128,10 +128,11 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   **One condition was false for `coap` when that pass began, and how it broke generalises.**
   `fuzz/fuzz_targets/coap_message.rs` had not compiled since `0996d00f` made
   `CoapMessage::encode` fallible — hours after the target was written — so "a fuzz target
-  exists and has run clean" was a claim about a file rather than an execution. **No CI job
-  builds `fuzz/` at all**; it is deliberately its own workspace (nightly toolchain, libFuzzer
-  runtime), so `cargo check` at the repository root never sees it. Condition 3 is therefore the
-  one most likely to be silently false for any protocol. Rebuild before believing it:
+  exists and has run clean" was a claim about a file rather than an execution. **The blocking
+  `ratchets` job now checks every fuzz target**, using the fuzz workspace manifest explicitly:
+  a root-only `cargo check` still never sees it. `scripts/check_fuzz_targets.py` also verifies
+  that every declared target has a source file and an on-demand workflow job. Compilation
+  does not prove a clean fuzz run; build and run the affected targets before claiming that:
 
   ```bash
   cd fuzz && rustup run nightly-2025-12-04 cargo fuzz build <target>
@@ -1106,7 +1107,7 @@ Bind to localhost only (127.0.0.1 / ::1); never contact external endpoints.
 ```bash
 # Single protocol (fast: 10-30s)
 ./cargo-isolated.sh test --no-default-features --features tcp \
-    --test server::tcp::e2e_test -- --test-threads=100
+    --test server -- server::tcp::e2e_test --test-threads=100
 
 # Full sweep. NOTE THE THREAD COUNT: 32, not 100.
 ./cargo-isolated.sh test --all-features --no-fail-fast -- --test-threads=32 > /tmp/sweep.txt 2>&1
@@ -1130,32 +1131,36 @@ because of how their output was handled, and both nearly got reported as clean:
 So: parse for a **non-zero target count** and a plausible total, never grep only for failures,
 and never truncate the stream you are about to measure.
 
-**Always pass `--test-threads=100`.** Single-threaded runs are 10-20x slower; if a test hangs,
-fix the hang rather than serializing the suite.
+**Use `--test-threads=32` for a whole-tree or combined-feature suite; 100 is useful for
+targeted stress runs.** If a test hangs, fix the hang rather than serializing the suite.
 
 `./test-e2e.sh <protocol>` runs mocked; `./test-e2e.sh --use-ollama <protocol>` uses a real model.
 
 ### CI reality
 
-Two workflows. `release.yml` triggers on `v*` tags and manual dispatch, and runs `cargo build`
-for the `dist*` feature sets across 6 targets. `ci.yml` is the PR/push-to-master gate, added
-after a long period when no CI job ran `cargo test` at all:
+`release.yml` builds the `dist*` feature sets on release tags and manual dispatch.
+`ci.yml` is the PR/push-to-master gate; `fuzz.yml` remains an on-demand search.
 
 | Job | Blocking | What it does |
 |---|---|---|
-| `lint` | yes | `cargo fmt --check`; `clippy -D clippy::correctness -D clippy::suspicious` over the lib **and all test targets**. A full default clippy runs advisory-only — ~50 style/complexity warnings predate the gate |
-| `test` | yes | `cargo test` on `tcp,http,dns,udp,redis,mcp-stdio` |
-| `single-feature` | yes | `cargo check --tests` on **all 133** standalone features (`SINGLE_FEATURE_CORE` + `SINGLE_FEATURE_REST`), **one at a time**, across a 4-way sharded matrix — catches a feature whose deps are under-declared, which no multi-feature build can |
-| `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
-| `clippy-wide` | **no** (`continue-on-error`) | Clippy over a wide feature set. Advisory because at `--all-features` the lib alone emits ~495 warnings |
-| `registry-audit` | **no** (`continue-on-error`) | The registry-walking audits at `--all-features`, with the system libraries installed. This is the only job that sees more than 6 of 116 protocols — and it cannot fail the build, so **a green PR is not evidence the audits passed**. Read its log |
+| `lint` | yes | Formatting and correctness/suspicious clippy lints over the library and every compiled test target |
+| `test` | yes | Tests the representative `CI_FEATURES` set, including `finger` so the Experimental refusal path stays covered |
+| `single-feature` | yes | Checks tests for every standalone feature in `SINGLE_FEATURE_CORE` and `SINGLE_FEATURE_REST`, one feature at a time across four shards |
+| `ratchets` | yes | Whole-tree source checks, server/client Beta evidence declarations, fuzz target compilation, and fuzz matrix completeness |
+| `smb-evidence` | yes | The SMB server suite, including bounds, both independent clients, and the packet oracle |
+| `wasm-web` | yes | Browser bundle build and smoke exchanges |
+| `orphaned-tests` | yes | Fails if a test directory on disk is undeclared in `mod.rs` |
+| `clippy-wide` | **no** (`continue-on-error`) | Clippy over the wide feature set |
+| `registry-audit` | **no** (`continue-on-error`) | Registry audits and all-feature real-client/server evidence, with their external peers installed |
 
-Eight jobs, not the seven tabulated: `ratchets` and `wasm-web` are blocking and missing from
-the table above, and `clippy-wide` and `registry-audit` are easy to miss because both are
-`continue-on-error` and so report green regardless of outcome. Derive the list from
-`.github/workflows/ci.yml`; this table has been short before, and wrong about the count in
-both directions — it said "nine" while `single-feature-full` existed and nothing had counted
-them:
+The broad registry audit has separate compilation and execution budgets, a five-minute
+limit per evidence group, and a summary/artifact step that preserves partial results after
+an interrupted evidence step. Each group must run at least one passing test. Its job still
+reports green on test failures, so **a green PR is not evidence the audit passed**: inspect
+the evidence summary and step outcome. SMB's Stable evidence has a separate blocking job.
+
+Derive the current job list from `.github/workflows/ci.yml` instead of trusting a remembered
+count (matrix shards create multiple job executions):
 
 ```bash
 python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/ci.yml')); \
@@ -1191,8 +1196,10 @@ a search, but it has a cost worth knowing, because `fuzz.yml`'s own header recor
 `coap_message.rs` stopped compiling hours after it was written and stayed broken for weeks,
 while the Stable bar's "a fuzz target exists and has run clean" was being satisfied by a target
 that could not build. The fix was not to put the search on a cron — it was to have `ratchets`
-do `cargo check --manifest-path fuzz/Cargo.toml --all-targets` on every PR. **Separate the
-search from the check it depends on, and gate the check.**
+do `cargo check --manifest-path fuzz/Cargo.toml --all-targets` on every PR. The ratchets also
+run `python3 scripts/check_fuzz_targets.py`: a target missing from the dispatch matrix cannot
+be exercised even if it compiles. **Separate the search from the checks it depends on, and
+gate the checks.**
 
 ### Terminal (PTY) tests
 
