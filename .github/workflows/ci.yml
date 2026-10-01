@@ -303,6 +303,9 @@ jobs:
       - name: Check every fuzz target is scheduled
         run: python3 scripts/check_fuzz_targets.py
 
+      - name: Check interrupted evidence reporting
+        run: python3 .github/scripts/test_summarize_evidence.py
+
       - name: cargo check (fuzz targets still compile)
         run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
 

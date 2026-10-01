@@ -8,9 +8,17 @@ import re
 results = Path("evidence-results")
 rows = []
 for status_file in sorted(results.glob("*.status")):
-    status, name = status_file.read_text().strip().split("\t", 1)
+    # A cancellation can land after shell redirection truncates the file but before
+    # printf writes its row. Preserve the other groups and report this one honestly.
+    fields = status_file.read_text(errors="replace").strip().split("\t")
+    if len(fields) == 2 and fields[0] in {"running", "passed", "FAILED"} and fields[1]:
+        status, name = fields
+    else:
+        status, name = "INCOMPLETE (malformed status)", status_file.stem
     log = status_file.with_suffix(".log")
     counts = re.findall(r"test result: ok\. (\d+) passed;", log.read_text(errors="replace")) if log.exists() else []
+    if status == "passed" and not sum(map(int, counts)):
+        status = "INCOMPLETE (no passing test result)"
     rows.append((name, status, sum(map(int, counts))))
 
 complete = (results / "complete").exists()
