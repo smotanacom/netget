@@ -117,7 +117,7 @@ fn message_ids_reject_control_and_non_hex_bytes_before_accepting_a_command() {
     // Reduced from the 274-byte input in Fuzz run 36918355914. Previously FIN
     // accepted the 16-byte ID ending in CR because a space followed it. Re-encoding
     // discarded the extra parameter, making that CR part of CRLF and the ID 15 bytes.
-    let regression = include_bytes!("../../../fuzz/corpus/nsq_frame/message_id_trailing_cr");
+    let regression = b"FIN 000000000000000\r \n";
     assert_eq!(regression.len(), 22);
     let error = wire::parse_command(regression).expect_err("a CR cannot be part of a message ID");
     assert_eq!(

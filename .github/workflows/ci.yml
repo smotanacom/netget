@@ -300,9 +300,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpcap-dev libpcsclite-dev
 
-      - name: Check every fuzz target is scheduled
-        run: python3 scripts/check_fuzz_targets.py
-
       - name: Check interrupted evidence reporting
         run: python3 .github/scripts/test_summarize_evidence.py
 

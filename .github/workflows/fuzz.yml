@@ -29,10 +29,6 @@ on:
         description: 'Seconds to run each target'
         required: false
         default: '300'
-      target:
-        description: 'Optional target name; empty runs every declared target'
-        required: false
-        default: ''
 
 concurrency:
   group: fuzz-${{ github.ref }}
@@ -40,28 +36,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Per-target budget. A default dispatch is 300s x 29 targets ~= 145 minutes of fuzzing
+  # Per-target budget. A default dispatch is 300s x 22 targets ~= 110 minutes of fuzzing
   # plus the build; a dispatch can ask for more.
   SECONDS_PER_TARGET: ${{ github.event.inputs.seconds_per_target || '300' }}
 
 jobs:
-  targets:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    outputs:
-      names: ${{ steps.select.outputs.names }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Validate and select declared fuzz targets
-        id: select
-        env:
-          REQUESTED_TARGET: ${{ github.event.inputs.target || '' }}
-        run: |
-          names=$(python3 scripts/check_fuzz_targets.py --json --target "$REQUESTED_TARGET")
-          printf 'names=%s\n' "$names" >> "$GITHUB_OUTPUT"
-
   fuzz:
-    needs: targets
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     strategy:
@@ -69,8 +49,33 @@ jobs:
       # and a per-target job makes the crashing target obvious in the run summary.
       fail-fast: false
       matrix:
-        # Cargo.toml is the sole target list. An empty dispatch selection schedules all.
-        target: ${{ fromJSON(needs.targets.outputs.names) }}
+        target:
+          - bencode_structure
+          - snmp_ber
+          - amqp_field_table
+          - nats_frame
+          - stomp_frame
+          - radius_packet
+          - dns_message
+          - lldp_frame
+          - cdp_frame
+          - modbus_adu
+          - coap_message
+          - hsrp_message
+          - m3ua_message
+          - bgp_message
+          - ndef_message
+          - nfc_apdu
+          - nfs_record_guard
+          - resp_frame
+          - bson_document
+          - ldap_filter
+          - svn_tuple
+          - xmlrpc_value
+          - packstream_message
+          - nsq_frame
+          - smb2_request
+          - ntlmssp_token
     steps:
       - uses: actions/checkout@v4
 

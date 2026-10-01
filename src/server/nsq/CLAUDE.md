@@ -49,8 +49,7 @@ FIN, REQ and TOUCH IDs must be exactly 16 ASCII hexadecimal digits, as the
 [NSQ TCP specification](https://nsq.io/clients/tcp_protocol_spec.html#fin) requires. NetGet
 generates lowercase IDs and accepts either case. This deliberately tightens nsqd 1.3's
 length-only check: a control byte in an otherwise 16-byte ID could change meaning when the
-command was re-encoded. The `message_id_trailing_cr` fuzz seed and bounded wire tests preserve
-the regression found by Fuzz run 36918355914 (a round-trip assertion, not a parser panic).
+command was re-encoded. The bounded wire tests preserve this trailing-carriage-return regression.
 
 **Heartbeats** are `_heartbeat_` response frames on the negotiated interval (default 30 s,
 `heartbeat_interval_secs`), written while the loop waits for a command **and** while the model

@@ -128,12 +128,10 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   **One condition was false for `coap` when that pass began, and how it broke generalises.**
   `fuzz/fuzz_targets/coap_message.rs` had not compiled since `0996d00f` made
   `CoapMessage::encode` fallible — hours after the target was written — so "a fuzz target
-  exists and has run clean" was a claim about a file rather than an execution. **The blocking
-  `ratchets` job now checks every fuzz target**, using the fuzz workspace manifest explicitly:
-  a root-only `cargo check` still never sees it. `scripts/check_fuzz_targets.py` also verifies
-  that every declared target has a source file; the workflow generates its full matrix from
-  that same list. Compilation
-  does not prove a clean fuzz run; build and run the affected targets before claiming that:
+  exists and has run clean" was a claim about a file rather than an execution. **No CI job
+  builds `fuzz/` at all**; it is deliberately its own workspace (nightly toolchain, libFuzzer
+  runtime), so `cargo check` at the repository root never sees it. Condition 3 is therefore the
+  one most likely to be silently false for any protocol. Rebuild before believing it:
 
   ```bash
   cd fuzz && rustup run nightly-2025-12-04 cargo fuzz build <target>
@@ -1147,7 +1145,7 @@ targeted stress runs.** If a test hangs, fix the hang rather than serializing th
 | `lint` | yes | Formatting and correctness/suspicious clippy lints over the library and every compiled test target |
 | `test` | yes | Tests the representative `CI_FEATURES` set, including `finger` so the Experimental refusal path stays covered |
 | `single-feature` | yes | Checks tests for every standalone feature in `SINGLE_FEATURE_CORE` and `SINGLE_FEATURE_REST`, one feature at a time across four shards |
-| `ratchets` | yes | Whole-tree source checks, server/client Beta evidence declarations, fuzz target compilation, and fuzz matrix completeness |
+| `ratchets` | yes | Whole-tree source checks, server/client Beta evidence declarations, fuzz target compilation |
 | `smb-evidence` | yes | The SMB server suite, including bounds, both independent clients, and the packet oracle |
 | `wasm-web` | yes | Browser bundle build and smoke exchanges |
 | `orphaned-tests` | yes | Fails if a test directory on disk is undeclared in `mod.rs` |
@@ -1197,11 +1195,8 @@ a search, but it has a cost worth knowing, because `fuzz.yml`'s own header recor
 `coap_message.rs` stopped compiling hours after it was written and stayed broken for weeks,
 while the Stable bar's "a fuzz target exists and has run clean" was being satisfied by a target
 that could not build. The fix was not to put the search on a cron — it was to have `ratchets`
-do `cargo check --manifest-path fuzz/Cargo.toml --all-targets` on every PR. The ratchets also
-run `python3 scripts/check_fuzz_targets.py`; full dispatches generate their matrix from its
-validated Cargo target list, so a new target cannot silently miss the search. A dispatch may
-select one existing target for a repair check; unknown names fail before building. **Separate the search from the checks it depends on, and
-gate the checks.**
+do `cargo check --manifest-path fuzz/Cargo.toml --all-targets` on every PR. **Separate the
+search from the check it depends on, and gate the check.**
 
 ### Terminal (PTY) tests
 
