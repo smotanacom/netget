@@ -330,7 +330,7 @@ impl NetGet {
     }
 
     /// The servers NetGet has, as a JSON array of
-    /// `{id, protocol, port, status, connections}`, delivered to `callback`.
+    /// `{id, protocol, port, status, connections, active_connection_ids}`, delivered to `callback`.
     pub fn servers(&self, callback: Function) {
         let state = self.inner.state.clone();
         spawn_local(async move {
@@ -344,6 +344,9 @@ impl NetGet {
                         "port": s.local_addr.map(|a| a.port()).unwrap_or(s.port),
                         "status": format!("{:?}", s.status),
                         "connections": s.connections.len(),
+                        "active_connection_ids": s.connections.values()
+                            .filter(|c| matches!(c.status, netget::state::server::ConnectionStatus::Active))
+                            .map(|c| c.id.as_u32()).collect::<Vec<_>>(),
                     })
                 })
                 .collect();

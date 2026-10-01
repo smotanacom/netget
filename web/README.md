@@ -105,36 +105,32 @@ click:
   With the rule it answers `hello` and `hi there` with a greeting of its own (such as
   `Hello, how are you?`) 10 times in 10, and Gemini Nano with `Hi there!` / `Hello there!`.
 
-  The text adventure works the same way, with a second rule, on `telnet_message_received`
-  (`rules 2`), whose instruction is the game's: "play" describes the Gate, a game command is
-  played in the room the server's memory names (the Gate if none), and a move ends with
-  `set_memory`. The map is in the instruction. Before, the instruction said only "run a very
-  small text adventure if they type play", and every line reached the model alone — nothing in
-  a request says what was said before it, so "look" and "go north" had no game to belong to.
-  Measured on a scripted session (`hello`, `play`, `look`, `go north`), 5 runs per model:
-  Gemini Nano on the real page in Chrome, and llama3.1:8b and qwen2.5:1.5b through Ollama
-  answering the page's exact requests the way WebLLM does (the text back to NetGet, no schema),
-  temperature 0.2:
+  The adventure's room state now belongs to `site/js/adventure.js`, scoped to the demo
+  server and each connection. `play`/`reset` starts at the Gate; north reaches the Hall, east
+  reaches the Vault, west returns to the Hall and south returns to the Gate. Invalid exits
+  keep the player in the same room. The model still writes the response, but receives the
+  current room, exits and already-applied command result on every turn. The manual composer
+  shows the same room and result. Models never have to call `set_memory` to make a move stick.
 
-  | model | `hello` → greeting | `play` → the game starts | `look` → the room | `go north` → the Hall |
-  |---|---|---|---|---|
-  | Gemini Nano, before | 5/5 | 0/5 (4× a bare `> ` prompt) | 0/5 | 0/5 |
-  | Gemini Nano, after | 5/5 | 5/5 | 4/5 | 0/5 |
-  | llama3.1:8b, before | 5/5 | 0/5 | 0/5 (4× a "dark room" of its own) | 0/5 ("a dark forest") |
-  | llama3.1:8b, after | 5/5 | 5/5 | 5/5 | 0/5 |
-  | qwen2.5:1.5b, before | 5/5 | 0/5 | 0/5 | 0/5 |
-  | qwen2.5:1.5b, after | 5/5 | 0/5 | 0/5 (echoes `look`) | 0/5 |
+  The bridge carries optional structured event metadata (`server_id`, `connection_id`,
+  protocol, event type/data and a token stable across retries). The demo does not recover
+  event data from prompt prose. A repeated model attempt reuses the same room snapshot,
+  whereas a later identical command is a new turn. The last 16 snapshots per connection are
+  retained; `servers()` reports active connection ids so closed peers and stopped/restarted
+  servers lose their game state. Other servers and ordinary chat requests are unchanged.
 
-  "Go north" is the open end, and it is about state, not wording: where the visitor is after a
-  move exists only if the model writes it to memory, and across four wordings of the rule
-  (including one that spelled out the two actions to answer with) Gemini Nano wrote memory on
-  1 turn in 67 and llama3.1:8b in 1 session of 13 (the Gate, on "play"), neither ever on a
-  move, so both answer "go north" from the Gate. A transcript
-  kept by the server was tried as well — each line's prompt listing the connection's earlier
-  exchanges from the access log, above the line — and rejected: the models copied earlier
-  answers (llama3.1:8b repeated its previous line in 4 of 5 sessions, qwen2.5:1.5b in all
-  five), which undid the gains above. qwen2.5:1.5b unconstrained does not follow this prompt
-  at all; the Prompt API's response schema is what keeps Gemini Nano on the offered actions.
+  This replaces the earlier instruction-only approach. In the September 30 measurements,
+  asking for `set_memory` explicitly still had Gemini Nano save memory in only 1 of 67 turns
+  and llama3.1:8b in 1 of 13 sessions, neither on a move. Adding a server-kept transcript was
+  also tried and rejected: models copied their earlier replies (llama3.1:8b in 4 of 5 sessions,
+  qwen2.5:1.5b in all five). No transcript is sent by the current demo.
+
+  `web/test/adventure.mjs` covers map transitions, invalid moves, reset, repeated model
+  attempts, connection isolation and cleanup. The page test uses stateless model stubs that
+  never emit `set_memory`: both built-in model identities, all six WebLLM adapters and the
+  manual composer receive the same deterministic state. These are adapter/state guarantees,
+  not claims that every downloaded model phrases the answer correctly.
+
   About a second later the Telnet terminal `connect()`s to it. The terminal reads as a shell session:
   a `$ ` prompt, `telnet localhost 2323` typed out so that it finishes as the client connects,
   then telnet(1)'s own `Trying 127.0.0.1...` / `Connected to localhost.` / `Escape character
@@ -254,8 +250,8 @@ page itself in headless Chromium: the Telnet server and client come up with no c
 visitor answers through the composer and the answers reach the Telnet terminal, no element of
 the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, the terminal reads as
 a telnet session through a hang-up and a reconnect, the removed explanatory text stays
-removed, a stub model that follows the game's rule plays the adventure into the Hall through
-the server's memory (verbatim in the next prompt), a 390x844 phone gets the short select
+removed, stateless model stubs and the manual composer play the adventure through every room
+without saving model memory, a 390x844 phone gets the short select
 labels (each measured to fit) and the stacked dashboard at 10px or more, and a stub `LanguageModel` proves the Prompt API path both when the model is
 `available` (named first in the select, loads by itself, answers with no composer,
 constrained to the offered actions, falls back on an unparseable answer) and when it is
