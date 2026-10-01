@@ -309,16 +309,17 @@ jobs:
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
     runs-on: ubuntu-22.04
-    env:
-      # build.rs watches package files by default. Writing statuses inside the checkout
-      # would invalidate the precompiled binaries before every evidence group.
-      EVIDENCE_DIR: ${{ runner.temp }}/netget-real-client-evidence
     # The previous 45-minute budget expired during SMB after 45 passing groups.
     # Leave room for cold compilation, every evidence group, and artifact upload.
     timeout-minutes: 120
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set evidence output directory outside the checkout
+        # build.rs watches package files by default. Status updates inside the checkout
+        # would invalidate the precompiled binaries before every evidence group.
+        run: printf 'EVIDENCE_DIR=%s/netget-real-client-evidence\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1101,7 +1102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: real-client-evidence
-          path: ${{ env.EVIDENCE_DIR }}/
+          path: ${{ runner.temp }}/netget-real-client-evidence/
           if-no-files-found: warn
           retention-days: 14
 
