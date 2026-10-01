@@ -16,10 +16,12 @@ Every decoder targeted here is reachable **before any authentication**, most of 
 the first packet of a connection or on a single unauthenticated UDP datagram.
 
 CI checks all targets against the library on each change. It also runs
-`python3 scripts/check_fuzz_targets.py`, which requires the `fuzz/Cargo.toml` binaries,
-`fuzz/fuzz_targets/*.rs`, and `.github/workflows/fuzz.yml` matrix to match. Add a new target
-to all three. The on-demand workflow gives each target its own job and keeps crash inputs
-and the grown corpus as downloadable artifacts.
+`python3 scripts/check_fuzz_targets.py`, which requires the `fuzz/Cargo.toml` binaries and
+`fuzz/fuzz_targets/*.rs` sources to match. The workflow derives its complete matrix from that
+validated list. An empty `target` dispatch input runs every target; `gh workflow run fuzz.yml
+-f target=nsq_frame` selects one declared target for a repair check, and an unknown name fails
+before any build starts. Each selected target gets its own job, with crash inputs and the
+grown corpus kept as downloadable artifacts.
 
 ## Running one locally
 
