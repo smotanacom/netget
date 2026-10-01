@@ -131,7 +131,8 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   exists and has run clean" was a claim about a file rather than an execution. **The blocking
   `ratchets` job now checks every fuzz target**, using the fuzz workspace manifest explicitly:
   a root-only `cargo check` still never sees it. `scripts/check_fuzz_targets.py` also verifies
-  that every declared target has a source file and an on-demand workflow job. Compilation
+  that every declared target has a source file; the workflow generates its full matrix from
+  that same list. Compilation
   does not prove a clean fuzz run; build and run the affected targets before claiming that:
 
   ```bash
@@ -1197,8 +1198,9 @@ a search, but it has a cost worth knowing, because `fuzz.yml`'s own header recor
 while the Stable bar's "a fuzz target exists and has run clean" was being satisfied by a target
 that could not build. The fix was not to put the search on a cron — it was to have `ratchets`
 do `cargo check --manifest-path fuzz/Cargo.toml --all-targets` on every PR. The ratchets also
-run `python3 scripts/check_fuzz_targets.py`: a target missing from the dispatch matrix cannot
-be exercised even if it compiles. **Separate the search from the checks it depends on, and
+run `python3 scripts/check_fuzz_targets.py`; full dispatches generate their matrix from its
+validated Cargo target list, so a new target cannot silently miss the search. A dispatch may
+select one existing target for a repair check; unknown names fail before building. **Separate the search from the checks it depends on, and
 gate the checks.**
 
 ### Terminal (PTY) tests

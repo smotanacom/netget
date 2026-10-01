@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Keep the on-demand fuzz matrix, Cargo binaries, and target sources in agreement.
+"""Validate Cargo fuzz binaries and sources, and generate the workflow target matrix.
 
 This source-only CI check uses Python's standard library (including on Ubuntu 22.04's
-Python 3.10). The deliberately narrow readers fail closed on unfamiliar declarations.
+Python 3.10). Full dispatches derive their matrix from this list, so a new Cargo target
+cannot silently miss the workflow. Optional single-target runs must name a declared target.
 """
 
+import argparse
 from collections import Counter
+import json
 from pathlib import Path
 import re
 import sys
@@ -24,34 +27,38 @@ def targets(root):
             raise ValueError(f"unexpected source path for {name[1]}: {path[1]}")
         declared.append(name[1])
 
-    workflow = (root / ".github/workflows/fuzz.yml").read_text()
-    matrix = re.search(r"(?m)^        target:\s*\n((?:          - [a-z0-9_]+\s*\n)+)", workflow)
-    if not declared or not matrix:
-        raise ValueError("missing fuzz binaries or literal workflow target matrix")
-    scheduled = re.findall(r"- ([a-z0-9_]+)", matrix[1])
+    if not declared:
+        raise ValueError("missing fuzz binaries")
     sources = [p.stem for p in (root / "fuzz/fuzz_targets").glob("*.rs")]
 
     errors = []
-    for label, values in [("Cargo", declared), ("workflow", scheduled)]:
-        duplicates = sorted(name for name, count in Counter(values).items() if count > 1)
-        if duplicates:
-            errors.append(f"duplicate {label} targets: {', '.join(duplicates)}")
-    for label, values in [("workflow", scheduled), ("sources", sources)]:
-        missing = sorted(set(declared) - set(values))
-        extra = sorted(set(values) - set(declared))
-        if missing:
-            errors.append(f"{label} missing Cargo targets: {', '.join(missing)}")
-        if extra:
-            errors.append(f"{label} has undeclared targets: {', '.join(extra)}")
+    duplicates = sorted(name for name, count in Counter(declared).items() if count > 1)
+    if duplicates:
+        errors.append(f"duplicate Cargo targets: {', '.join(duplicates)}")
+    missing = sorted(set(declared) - set(sources))
+    extra = sorted(set(sources) - set(declared))
+    if missing:
+        errors.append(f"sources missing Cargo targets: {', '.join(missing)}")
+    if extra:
+        errors.append(f"sources have undeclared targets: {', '.join(extra)}")
     if errors:
         raise ValueError("\n".join(errors))
     return declared
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit the selected workflow matrix")
+    parser.add_argument("--target", default="", help="select one declared target; empty selects all")
+    args = parser.parse_args()
     try:
         found = targets(Path(__file__).resolve().parents[1])
+        if args.target and args.target not in found:
+            raise ValueError(f"unknown fuzz target: {args.target}; choose from {', '.join(found)}")
     except (OSError, ValueError) as error:
         print(error, file=sys.stderr)
         sys.exit(1)
-    print(f"All {len(found)} fuzz targets have Cargo declarations, sources, and workflow jobs.")
+    if args.json:
+        print(json.dumps([args.target] if args.target else found))
+    else:
+        print(f"All {len(found)} fuzz targets have Cargo declarations and sources; full runs schedule all.")
