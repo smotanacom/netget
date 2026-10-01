@@ -401,10 +401,29 @@ and `http2` over prior-knowledge h2c — which is the `h2` crate rather than hyp
 touched the date cache. NetGet's own clients add round trips to more of them (see the client
 table above): `elasticsearch`, `npm`, `pypi`, `maven`, `ollama`, `oauth2` and `openid` each
 answer a model-written response to NetGet's client of their protocol, as does
-`torrent-tracker`, which is not hyper. The remaining hyper servers (`yarn`, `spark`,
-`snowflake`, `mercurial`, `oci-registry`, `saml-idp`, `saml-sp`, `kubernetes-server`) share the
-patched dispatcher but have no round trip of their own yet; treat them as "compiles" until one
-is added.
+`torrent-tracker`, which is not hyper. `remaining_http_servers.mjs`, called by the same smoke
+run, drives `yarn`, `spark`, `snowflake`, `mercurial`, `oci-registry`, `saml-idp`, `saml-sp`, and
+`kubernetes-server` through Node's HTTP client with static protocol handlers. It checks each
+response's protocol envelope, content type and Date header, including Snowflake POST bodies,
+Mercurial's wire text, SAML metadata XML and Kubernetes list objects.
+
+`web/test/nostr_browser.mjs` covers the native Nostr relay with real Chromium, independently
+of the virtual browser network. It starts a temporary relay from `NETGET_BIN`, fetches NIP-11
+from a different page origin (so browser CORS is enforced), subscribes over Chromium's native
+WebSocket, publishes a signed event, checks live delivery and tampering rejection, and completes
+the close handshake. `nak` signs the input and verifies the relay's returned event independently.
+It requires a native binary with `nostr`, `nak` on PATH, and Playwright/Chromium; missing tools fail.
+
+```bash
+npm install --prefix /tmp/netget-browser-evidence playwright@1.57.0
+node /tmp/netget-browser-evidence/node_modules/playwright/cli.js install chromium
+PLAYWRIGHT_MODULE=/tmp/netget-browser-evidence/node_modules/playwright/index.mjs \
+  NETGET_BIN="$PWD/target/debug/netget" node web/test/nostr_browser.mjs
+```
+
+`BROWSER_EXECUTABLE_PATH` can select an already installed Chromium. The test makes no remote
+requests and uses static handlers, so it needs no model. Its temporary server is stopped and
+its files removed on both success and failure.
 
 To re-derive the list, run the probe: for each feature, `cargo check --target
 wasm32-unknown-unknown --no-default-features --features tcp,udp,telnet,http,<f> --lib`

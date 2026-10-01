@@ -55,6 +55,7 @@
 // the answer — is checked at each point of a `<think>` stream, and a model that does not think
 // is checked to have nothing split out of its text.
 
+import { checkRemainingHttpServers } from './remaining_http_servers.mjs';
 import { readFileSync } from 'node:fs';
 import { Duplex } from 'node:stream';
 import http from 'node:http';
@@ -844,6 +845,8 @@ try {
     const oidcPairToken = await parkedOn(oidcPair.id, 'oidc_token_received');
     if (oidcPairToken.event_data.expires_in !== 4321) fail('the configured OIDC pair failed to receive its token: ' + JSON.stringify(oidcPairToken));
     webClients.openidconnect += '; paired through credential form, discovery completed and token received';
+
+    Object.assign(hyper, await checkRemainingHttpServers({ startServer, httpRequest, checkDate, fail }));
 
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 
