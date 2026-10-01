@@ -36,7 +36,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Per-target budget. A default dispatch is 300s x 22 targets ~= 110 minutes of fuzzing
+  # Per-target budget. A default dispatch is 300s x 29 targets ~= 145 minutes of fuzzing
   # plus the build; a dispatch can ask for more.
   SECONDS_PER_TARGET: ${{ github.event.inputs.seconds_per_target || '300' }}
 
@@ -74,6 +74,9 @@ jobs:
           - xmlrpc_value
           - packstream_message
           - nsq_frame
+          - nostr_message
+          - gearman_packet
+          - zabbix_packet
           - smb2_request
           - ntlmssp_token
     steps:
