@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import re
 
-results = Path("evidence-results")
+results = Path(os.environ.get("EVIDENCE_DIR", "evidence-results"))
 rows = []
 for status_file in sorted(results.glob("*.status")):
     # A cancellation can land after shell redirection truncates the file but before

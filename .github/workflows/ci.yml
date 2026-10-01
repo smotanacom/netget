@@ -309,6 +309,10 @@ jobs:
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
     runs-on: ubuntu-22.04
+    env:
+      # build.rs watches package files by default. Writing statuses inside the checkout
+      # would invalidate the precompiled binaries before every evidence group.
+      EVIDENCE_DIR: ${{ runner.temp }}/netget-real-client-evidence
     # The previous 45-minute budget expired during SMB after 45 passing groups.
     # Leave room for cold compilation, every evidence group, and artifact upload.
     timeout-minutes: 120
@@ -992,7 +996,7 @@ jobs:
           # sat dead for six days on a missing apt package with nobody noticing, and how a
           # later `--all-features` build failure did the same. A log nobody opens is not a
           # signal; the summary is on the run's own page.
-          mkdir -p evidence-results
+          mkdir -p "$EVIDENCE_DIR"
           failed=""
           for filter in \
             bolt::real_client_test \
@@ -1036,7 +1040,7 @@ jobs:
             case "$filter" in
               client/*) target=client ; test_filter="${filter#client/}" ;;
             esac
-            result_file="evidence-results/${filter//[:\/]/_}"
+            result_file="$EVIDENCE_DIR/${filter//[:\/]/_}"
             printf 'running\t%s\n' "$filter" > "$result_file.status"
             # Each group has a bounded runtime; a stuck client cannot consume the whole
             # job. pipefail keeps cargo/timeout failure visible through tee. A renamed
@@ -1053,7 +1057,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          touch evidence-results/complete
+          touch "$EVIDENCE_DIR/complete"
           if [ -n "$failed" ]; then
             echo "::error::real-client evidence failed for:$failed"
             exit 1
@@ -1079,10 +1083,10 @@ jobs:
         timeout-minutes: 5
         run: |
           set -o pipefail
-          mkdir -p evidence-results
+          mkdir -p "$EVIDENCE_DIR"
           PLAYWRIGHT_MODULE="$RUNNER_TEMP/netget-browser-evidence/node_modules/playwright/index.mjs" \
             NETGET_BIN=target/debug/netget node web/test/nostr_browser.mjs \
-            2>&1 | tee evidence-results/nostr-browser.log
+            2>&1 | tee "$EVIDENCE_DIR/nostr-browser.log"
 
       - name: Summarize real-client evidence even after interruption
         if: always()
@@ -1097,7 +1101,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: real-client-evidence
-          path: evidence-results/
+          path: ${{ env.EVIDENCE_DIR }}/
           if-no-files-found: warn
           retention-days: 14
 

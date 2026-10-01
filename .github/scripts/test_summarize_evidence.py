@@ -15,6 +15,8 @@ class EvidenceSummaryTest(unittest.TestCase):
     def report(self, status=None, log=None, complete=True):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
             results = root / "evidence-results"
             results.mkdir()
             (results / "healthy.status").write_text("passed\thttp::real_client_test\n")
@@ -27,11 +29,13 @@ class EvidenceSummaryTest(unittest.TestCase):
                 (results / "complete").touch()
             summary = root / "summary.md"
             run = subprocess.run(
-                [sys.executable, str(SCRIPT)], cwd=root,
-                env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary), "EVIDENCE_BUILD": "success"},
+                [sys.executable, str(SCRIPT)], cwd=checkout,
+                env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary), "EVIDENCE_BUILD": "success",
+                     "EVIDENCE_DIR": str(results)},
                 capture_output=True, text=True, check=True,
             )
             self.assertEqual(run.stdout, summary.read_text() + "\n")
+            self.assertEqual(list(checkout.iterdir()), [], "evidence must not modify the Cargo checkout")
             return summary.read_text()
 
     def test_complete_success_requires_positive_test_evidence(self):
