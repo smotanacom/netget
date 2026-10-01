@@ -74,7 +74,12 @@ Two things the script handles that are easy to lose an hour to:
   `start_client`: `{"protocol":"http","remote_addr":"127.0.0.1:8090","instruction":"..."}`;
   `cb` gets `{id}` or `{error}`. `connect_client_to_server(serverId, cb)` is the dashboard's
   `[ + <proto> client ]` itself (`tui::actions::client_form_for_server` and the form's apply,
-  default routing included); `cb` gets `{id, protocol, remote_addr}` or `{error}`.
+  default routing included); `cb` gets `{id, protocol, remote_addr}` or `{error}`. It inherits
+  an OpenAPI server's spec, sets OAuth2's local endpoints, and uses explicit HTTP for local
+  package registries and OIDC. If credentials are missing, it opens a focused form in the
+  dashboard terminal and returns `{configuration_required, protocol, form_opened: true}`.
+  Fill `client_id` and any needed `client_secret`, then use the form's `[ Apply ]` button;
+  `clients(cb)` exposes the created client. Cancel leaves the server running without a client.
   `send_to_client(id, actionJson, cb)` is the client card's `[ send ]`
   (`AppState::send_to_client`); `cb` gets the `ClientSendOutcome` as serde writes it
   (`{"Executed":{"detail":"http_request GET / -> 200 (5 byte body)"}}`, …) or `{error}`.

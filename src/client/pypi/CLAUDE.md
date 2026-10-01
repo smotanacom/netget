@@ -313,3 +313,5 @@ so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1
 transport reads a response whole before `chunk()` yields it, so the streaming checks below the
 round trip see one chunk. A scheme-less index address gets `https://` natively and `http://` in the browser; an explicit `https://` index is refused there with the reason. `web/test/smoke.mjs` proves it in the bundle: `[ + PyPI client ]` on NetGet's `pypi` server connects, `[ send ]` of `get_package_info` reaches the server's model, and the JSON it wrote is in the `pypi_package_info_received` event parked on the client.
 
+
+The dashboard pairs NetGet servers with explicit `http://127.0.0.1:<bound-port>` URLs on both native and browser builds. Native pairing exchanges are covered in `tests/dashboard_create_flow_test.rs`.

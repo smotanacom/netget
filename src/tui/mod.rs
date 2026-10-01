@@ -67,10 +67,14 @@ pub async fn run_dashboard(
     event_loop::run(app, ctx).await
 }
 
+/// Channels a hosted page uses to report status and request dashboard forms.
+pub type DashboardReady =
+    Box<dyn FnOnce(mpsc::UnboundedSender<String>, mpsc::UnboundedSender<uimsg::UiMsg>)>;
+
 /// The dashboard on a caller-supplied terminal and input stream: the browser
 /// build's entry point (`crates/netget-web`), where the terminal is xterm.js
 /// and the events come from the DOM. Same construction as [`run_dashboard`];
-/// `on_ready` receives the status channel once the loop is about to start.
+/// `on_ready` receives the status and UI channels once the loop is about to start.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_dashboard_on<B, S>(
     terminal: &mut ratatui::Terminal<B>,
@@ -82,7 +86,7 @@ pub async fn run_dashboard_on<B, S>(
     settings: Settings,
     args: &crate::cli::Args,
     palette: ColorPalette,
-    on_ready: Option<Box<dyn FnOnce(mpsc::UnboundedSender<String>)>>,
+    on_ready: Option<DashboardReady>,
 ) -> Result<()>
 where
     B: ratatui::backend::Backend,
@@ -102,7 +106,7 @@ where
     // side (the page's quick-start buttons go through `ServerForm::create`) logs into the
     // same stream and repaints the same cards.
     if let Some(ready) = on_ready {
-        ready(ctx.status_tx.clone());
+        ready(ctx.status_tx.clone(), app.ui_tx.clone());
     }
     event_loop::run_loop(terminal, events, app, ctx).await
 }

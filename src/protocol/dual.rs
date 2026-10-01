@@ -23,11 +23,11 @@ use super::server_registry::ALL_KNOWN_PROTOCOLS;
 /// The USB-* and BLUETOOTH_BLE_* profile servers are deliberately absent: the
 /// generic "USB" / "Bluetooth (BLE)" clients speak the base transport, not a
 /// specific profile, so pairing a profile server with them would promise an
-/// exchange the client cannot hold up.
+/// exchange the client cannot hold up. Bitcoin P2P is likewise absent: the Bitcoin
+/// client speaks Bitcoin Core JSON-RPC over HTTP, not the peer-to-peer wire protocol.
 const SERVER_TO_CLIENT_ALIASES: &[(&str, &str)] = &[
     ("DoH", "DNS-over-HTTPS"),
     ("Proxy", "HTTP Proxy"),
-    ("Bitcoin P2P", "Bitcoin"),
     ("Tor Relay", "Tor"),
     ("OpenID", "OpenIDConnect"),
     ("SamlIdp", "SAML"),

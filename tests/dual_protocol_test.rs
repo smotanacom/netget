@@ -65,7 +65,6 @@ fn aliased_duals_map() {
     assert_eq!(client_protocol_for_server("DoH"), Some("DNS-over-HTTPS"));
     assert_eq!(client_protocol_for_server("Proxy"), Some("HTTP Proxy"));
     assert_eq!(client_protocol_for_server("Tor Relay"), Some("Tor"));
-    assert_eq!(client_protocol_for_server("Bitcoin P2P"), Some("Bitcoin"));
     assert_eq!(client_protocol_for_server("SamlIdp"), Some("SAML"));
     assert_eq!(client_protocol_for_server("SamlSp"), Some("SAML"));
     assert_eq!(client_protocol_for_server("OpenID"), Some("OpenIDConnect"));
@@ -113,6 +112,7 @@ fn normalized_duals_map() {
 #[test]
 fn server_only_protocols_have_no_dual() {
     for server in [
+        "Bitcoin P2P", // The Bitcoin client is Core RPC over HTTP.
         "RDP",
         "TFTP",
         "SVN",
