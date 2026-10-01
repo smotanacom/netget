@@ -256,3 +256,62 @@ fn the_connection_cap_refusal_is_a_well_framed_http_response() {
         "the refusal claims Content-Type: application/json and its body does not parse: {body}"
     );
 }
+
+/// Hold the tail back until the 413 and EOF have arrived. This makes the unread-upload race
+/// deterministic: the server must flush the refusal first, then keep its read half alive for
+/// the sender, rather than dropping the socket while that sender is still writing.
+#[tokio::test]
+async fn a_body_refusal_is_flushed_before_the_upload_tail_is_drained() {
+    let state = new_state().await;
+    let port = start_server(&state, None, None).await;
+    let cap = netget::server::ollama::MAX_REQUEST_BODY_BYTES;
+    let tail = vec![b'A'; 1024 * 1024];
+    for chunked in [false, true] {
+        let peer = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (mut reader, mut writer) = peer.into_split();
+        let framing = if chunked {
+            format!(
+                "Transfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+                cap + 1 + tail.len()
+            )
+        } else {
+            format!("Content-Length: {}\r\n\r\n", cap + 1 + tail.len())
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            writer
+                .write_all(
+                    format!("POST /api/generate HTTP/1.1\r\nHost: localhost\r\n{framing}")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            writer.write_all(&vec![b'A'; cap + 1]).await.unwrap();
+            let mut response = Vec::new();
+            reader
+                .read_to_end(&mut response)
+                .await
+                .expect("413 and EOF");
+            let response = String::from_utf8(response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+            assert!(response.contains("request body too large"), "{response}");
+            for chunk in tail.chunks(8192) {
+                writer
+                    .write_all(chunk)
+                    .await
+                    .expect("the refused upload tail must drain without RST");
+                tokio::task::yield_now().await;
+            }
+            if chunked {
+                writer.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        })
+        .await
+        .expect("the refusal must not wait for the rest of the upload");
+    }
+    assert_eq!(
+        state.access_log_total().await,
+        0,
+        "oversized requests never raise a model event"
+    );
+}
