@@ -238,6 +238,11 @@ impl ConversationHandler {
         protocol: &str,
         event: &crate::protocol::Event,
     ) -> Self {
+        // Native transports already render event data into the prompt and never consume
+        // this metadata. Avoid another potentially large clone for every native request.
+        if self.client.backend_type() != "bridge" {
+            return self;
+        }
         self.bridge_event = Some(crate::llm::bridge::BridgeEventContext {
             token: self.conversation_id.clone(),
             server_id: server_id.as_u32(),
