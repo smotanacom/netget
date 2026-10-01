@@ -161,3 +161,12 @@ fn compiled_mapping_is_subset_of_codebase_mapping() {
         Some("TCP")
     );
 }
+
+/// A running instance keeps the operator's registry keyword, not necessarily its canonical
+/// name. Bitcoin's keyword is also the RPC client's name, so resolve the server first.
+#[cfg(feature = "bitcoin")]
+#[test]
+fn bitcoin_server_keyword_never_offers_the_rpc_client() {
+    assert_eq!(compiled_client_protocol_for_server("bitcoin"), None);
+    assert_eq!(compiled_client_protocol_for_server("Bitcoin P2P"), None);
+}

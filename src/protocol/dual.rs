@@ -69,7 +69,14 @@ pub fn client_protocol_for_server(server_name: &str) -> Option<&'static str> {
 /// client registry), so the UI can offer "open a client against this server"
 /// truthfully.
 pub fn compiled_client_protocol_for_server(server_name: &str) -> Option<String> {
-    let client_name = client_protocol_for_server(server_name)?;
+    // Instances preserve the operator's spelling (e.g. `bitcoin`), which may be a
+    // registry keyword rather than the canonical server name (`Bitcoin P2P`). Resolve
+    // that first: matching the keyword directly would incorrectly pick the RPC client.
+    let canonical = super::server_registry::registry()
+        .resolve(server_name)
+        .ok()
+        .map(|server| server.protocol_name());
+    let client_name = client_protocol_for_server(canonical.unwrap_or(server_name))?;
     CLIENT_REGISTRY
         .resolve(client_name)
         .ok()
