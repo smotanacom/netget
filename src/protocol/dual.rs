@@ -69,17 +69,28 @@ pub fn client_protocol_for_server(server_name: &str) -> Option<&'static str> {
 /// client registry), so the UI can offer "open a client against this server"
 /// truthfully.
 pub fn compiled_client_protocol_for_server(server_name: &str) -> Option<String> {
+    // A known canonical name keeps its identity even when its server is not compiled.
+    // The keyword resolver deliberately falls back from an unavailable FTP to TCP;
+    // that CLI convenience must not change which client a protocol is paired with.
+    let wanted = normalize(server_name);
+    let known_canonical = ALL_KNOWN_PROTOCOLS
+        .iter()
+        .map(|(name, _)| *name)
+        .find(|name| normalize(name) == wanted);
     // Instances preserve the operator's spelling (e.g. `bitcoin`), which may be a
     // registry keyword rather than the canonical server name (`Bitcoin P2P`). Resolve
-    // that first: matching the keyword directly would incorrectly pick the RPC client.
-    let canonical = super::server_registry::registry()
-        .resolve(server_name)
-        .ok()
-        .map(|server| server.protocol_name());
+    // those aliases before joining: the Bitcoin keyword would match the RPC client.
+    let canonical = known_canonical.or_else(|| {
+        super::server_registry::registry()
+            .resolve(server_name)
+            .ok()
+            .map(|server| server.protocol_name())
+    });
     let client_name = client_protocol_for_server(canonical.unwrap_or(server_name))?;
+    // The join already returned the client's canonical name. Keyword matching here
+    // could substitute another compiled client for an unavailable implementation.
     CLIENT_REGISTRY
-        .resolve(client_name)
-        .ok()
+        .get(client_name)
         .map(|_| client_name.to_string())
 }
 

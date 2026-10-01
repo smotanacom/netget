@@ -162,6 +162,15 @@ fn compiled_mapping_is_subset_of_codebase_mapping() {
     );
 }
 
+/// A small build must not pair an unavailable FTP implementation with its TCP fallback.
+#[cfg(all(feature = "tcp", not(feature = "ftp")))]
+#[test]
+fn an_uncompiled_ftp_protocol_never_offers_the_tcp_client() {
+    for name in ["FTP", "ftp", "Ftp"] {
+        assert_eq!(compiled_client_protocol_for_server(name), None, "{name}");
+    }
+}
+
 /// A running instance keeps the operator's registry keyword, not necessarily its canonical
 /// name. Bitcoin's keyword is also the RPC client's name, so resolve the server first.
 #[cfg(feature = "bitcoin")]
