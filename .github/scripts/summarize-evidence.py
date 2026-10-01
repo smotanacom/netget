@@ -28,6 +28,9 @@ summary = [
     "| --- | --- | ---: |",
 ]
 summary.extend(f"| `{name}` | {status} | {count} |" for name, status, count in rows)
+summary.extend(["", "### Nostr real-browser evidence", "",
+                f"Chromium setup: {os.environ.get('NOSTR_BROWSER_SETUP', 'not run')}. "
+                f"Browser exchange: {os.environ.get('NOSTR_BROWSER', 'not run')}."])
 text = "\n".join(summary) + "\n"
 print(text)
 with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:

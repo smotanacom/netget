@@ -1059,10 +1059,37 @@ jobs:
             exit 1
           fi
 
+      # Browser interoperability uses the same all-feature binary and nak installation.
+      # A native WebSocket client cannot prove browser CORS or the browser's close handshake.
+      - name: Install Chromium for Nostr browser evidence
+        id: nostr-browser-setup
+        if: steps.evidence-build.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          npm install --prefix "$RUNNER_TEMP/netget-browser-evidence" \
+            --no-save --no-audit --no-fund playwright@1.57.0
+          node "$RUNNER_TEMP/netget-browser-evidence/node_modules/playwright/cli.js" \
+            install --with-deps chromium
+
+      - name: Nostr real-browser evidence (Chromium)
+        id: nostr-browser
+        if: steps.evidence-build.outcome == 'success' && steps.nostr-browser-setup.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          mkdir -p evidence-results
+          PLAYWRIGHT_MODULE="$RUNNER_TEMP/netget-browser-evidence/node_modules/playwright/index.mjs" \
+            NETGET_BIN=target/debug/netget node web/test/nostr_browser.mjs \
+            2>&1 | tee evidence-results/nostr-browser.log
+
       - name: Summarize real-client evidence even after interruption
         if: always()
         env:
           EVIDENCE_BUILD: ${{ steps.evidence-build.outcome }}
+          NOSTR_BROWSER_SETUP: ${{ steps.nostr-browser-setup.outcome }}
+          NOSTR_BROWSER: ${{ steps.nostr-browser.outcome }}
         run: python3 .github/scripts/summarize-evidence.py
 
       - name: Preserve real-client evidence logs
