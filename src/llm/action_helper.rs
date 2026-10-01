@@ -614,6 +614,7 @@ async fn call_llm_inner(
         rate_limiter,
         crate::llm::RequestSource::Network, // Network events are discarded if rate limited
     )
+    .with_bridge_event(server_id, connection_id, protocol.protocol_name(), event)
     // Deliberately NO `.with_native_tools(...)`; guarded by
     // tests/llm_native_tools_test.rs, which explains why in full.
     // Short version: native schemas gave the model a second way to answer

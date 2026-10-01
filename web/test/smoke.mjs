@@ -57,6 +57,7 @@
 
 import { checkRemainingHttpServers } from './remaining_http_servers.mjs';
 import { readFileSync } from 'node:fs';
+import './adventure.mjs';
 import { Duplex } from 'node:stream';
 import http from 'node:http';
 import http2 from 'node:http2';

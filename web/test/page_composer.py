@@ -61,10 +61,9 @@ from the LLM machine's `data-answerer`.
    the composer's and the model is not asked; choosing the model again hands requests back with
    no new session; after a reload the choice is still selected, the model is not loaded, and
    the connect request is the composer's.
-11. The adventure with a stub model that follows the game's rule and remembers nothing itself:
-   "hello" is small talk; "play", "look", "go north", "look" end in the Hall, which the stub
-   can know only from the Memory its own set_memory left in the next prompt (verbatim); the
-   game's rule is the last thing in the prompt.
+11. The adventure with stateless model stubs that never call set_memory: play/north/east/west/
+   south, invalid exits, look and reset receive authoritative room state through both built-in
+   identities, all six WebLLM choices and the manual composer.
 12. A 390x844 phone: the select shows the short option labels ("Qwen2.5 3B · 2 GB") and each
    fits the select, measured in its own font; with the real xterm.js the dashboard stacks its
    columns (the canvas above the stream) at 10px or more instead of 80 columns of 6px text;
@@ -209,6 +208,7 @@ export async function CreateMLCEngine(id, opts, chatOpts) {
   const set = cached(); set.add(id); localStorage.setItem(KEY, JSON.stringify([...set]));
   const answer = (messages) => {
     const text = messages.map((m) => m.content).join('\n');
+    if (window.__adventureAnswer) return JSON.stringify(window.__adventureAnswer(text));
     let msg = '';
     try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
     return JSON.stringify({ actions: [{ type: 'send_telnet_line', line: `webllm ${id} heard: ${msg}` }] });
@@ -297,27 +297,24 @@ STREAMING_LANGUAGE_MODEL_STUB = r"""
 })();
 """
 
-# A built-in model that plays the demo's adventure by its rule and remembers nothing itself:
-# "play" describes the Gate and sets memory to "room: Gate"; a game command is played in the room
-# the prompt's Memory names (the Gate if none), and "go north" from the Gate arrives in the Hall
-# and sets memory to "room: Hall". Anything else is chat. A room in its answer to a later "look"
-# is proof the server's memory carried it from one line's prompt to the next.
+# A stateless model: it only describes the authoritative room supplied by the demo. It
+# never emits set_memory, so passing cannot conceal the small-model bug with a smarter stub.
 ADVENTURE_STUB = r"""
 (() => {
   const log = window.__lm = { prompts: [], creates: 0 };
-  const answer = (text) => {
-    const event = (/Event ID: (\S+)/.exec(text) || [])[1] || '';
-    if (event === 'telnet_connection_opened') return { actions: [{ type: 'send_telnet_line', line: 'Welcome. Your name?' }] };
-    let msg = '';
-    try { msg = JSON.parse(text.slice(text.lastIndexOf('Context data:') + 13).trim().split('\n\n')[0]).message || ''; } catch (e) {}
-    const room = ((/- \*\*Memory\*\*: room: (\w+)/.exec(text) || [])[1]) || 'Gate';
-    if (msg === 'play') return { actions: [{ type: 'send_telnet_line', line: 'You stand at the Gate.' }, { type: 'set_memory', value: 'room: Gate' }] };
-    if (msg === 'look') return { actions: [{ type: 'send_telnet_line', line: 'You look around the ' + room + '.' }] };
-    if (msg === 'go north' && room === 'Gate') return { actions: [{ type: 'send_telnet_line', line: 'You walk into the Hall.' }, { type: 'set_memory', value: 'room: Hall' }] };
-    return { actions: [{ type: 'send_telnet_line', line: 'Just chatting: ' + msg }] };
+  window.__adventureCalls = [];
+  window.__adventureAnswer = (text) => {
+    let state = null;
+    const marker = 'Demo adventure state:\n';
+    const at = text.lastIndexOf(marker);
+    if (at >= 0) state = JSON.parse(text.slice(at + marker.length).split('\n')[0]);
+    const turn = window.__adventureCalls.length + 1;
+    const line = state ? `Room ${state.room}; ${state.result}; turn ${turn}.` : `Chat or welcome; turn ${turn}.`;
+    window.__adventureCalls.push({ text, state, line });
+    return { actions: [{ type: 'send_telnet_line', line }] };
   };
   const session = () => ({
-    async prompt(text, o) { log.prompts.push({ text, options: o }); return JSON.stringify(answer(text)); },
+    async prompt(text, o) { log.prompts.push({ text, options: o }); return JSON.stringify(window.__adventureAnswer(text)); },
     async clone() { return session(); },
     destroy() {},
   });
@@ -1115,22 +1112,64 @@ def run_you_are_selected(browser, origin):
 
 
 def run_adventure_state(browser, origin):
-    """The demo's adventure keeps its place across lines through the server's memory, with a
-    model that follows the rule and remembers nothing itself: the rule on
-    `telnet_message_received` is the last thing in each line's prompt, the Memory the stub's
-    set_memory wrote is in the next line's prompt verbatim, and "look" after "go north" names
-    the Hall. "hello" stays small talk."""
-    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB)
+    """Every model adapter and the human composer see deterministic rooms; no model saves memory."""
+    commands = (("play", "Gate", "start"), ("north", "Hall", "move"),
+                ("east", "Vault", "move"), ("west", "Hall", "move"),
+                ("south", "Gate", "move"), ("east", "Gate", "blocked"),
+                ("go north", "Hall", "move"), ("look", "Hall", "look"),
+                ("reset", "Gate", "start"))
+
+    def check_model(page):
+        for line, room, result in commands:
+            before = page.evaluate("window.__adventureCalls.length")
+            type_line(page, line)
+            page.wait_for_function("n => window.__adventureCalls.length > n", arg=before)
+            call = page.evaluate("window.__adventureCalls.at(-1)")
+            assert call["state"] and call["state"]["room"] == room, (line, call)
+            assert call["state"]["result"] == result, (line, call)
+            assert "- **Memory**: (empty)" in call["text"], "the model never had to save room memory"
+            expect_telnet(page, call["line"])
+
+    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB + GPU_STUB)
     wait_for_autostart(page)
-    expect_telnet(page, "Welcome. Your name?")
-    for line, want in (("hello", "Just chatting: hello"), ("play", "You stand at the Gate."),
-                       ("look", "You look around the Gate."), ("go north", "You walk into the Hall."),
-                       ("look", "You look around the Hall.")):
+    expect_telnet(page, "Chat or welcome; turn 1.")
+    check_model(page)  # Chrome's built-in Prompt API route.
+    models = page.locator("#model-select option").evaluate_all(
+        "os => os.filter(o => !['you', 'builtin'].includes(o.value)).map(o => [o.value, o.textContent.split(' · ')[0]])")
+    for model_id, name in models:
+        page.locator("#model-select").select_option(model_id)
+        page.locator("#llm-load").click()  # Fake module; no model weights or network download.
+        expect_who(page, name)
+        check_model(page)
+
+    # The same state reaches the manual composer. A human only supplies the response line.
+    page.locator("#model-select").select_option("you")
+    expect_who(page, "you")
+    before = page.evaluate("window.__adventureCalls.length")
+    llm = page.locator("#llm-current")
+    for turn, (line, room, result) in enumerate(commands):
         type_line(page, line)
-        expect_telnet(page, want)
-    last = page.evaluate("window.__lm.prompts.map((p) => p.text)")[-1]
-    assert last.rstrip().endswith("Anything else is chat."), last[-400:]
-    assert "- **Memory**: room: Hall" in last, last[last.find("# Current State"):][:600]
+        expect(llm.locator(".llm-state")).to_have_text("waiting for you", timeout=30_000)
+        expect(llm.locator(".adventure-state b")).to_have_text(room)
+        prompt = llm.locator(".llm-prompt pre").last.inner_text()
+        state = json.loads(prompt.rsplit("Demo adventure state:\n", 1)[1].split("\n")[0])
+        assert state["result"] == result, (line, state)
+        llm.locator("select.cmp-picker").select_option("send_telnet_line")
+        answer = f"Manual {room}; {result}; turn {turn}."
+        llm.locator(".cmp-field textarea, .cmp-field input[type=text]").first.fill(answer)
+        llm.get_by_role("button", name="Send reply").click()
+        expect_telnet(page, answer)
+    assert page.evaluate("window.__adventureCalls.length") == before, "manual turns never ask a model"
+    assert not errors, f"page errors: {errors}"
+    page.close()
+
+    # Edge uses the same Prompt API adapter, with its own supported built-in model identity.
+    edge = "Object.defineProperty(Navigator.prototype, 'userAgent', {get() {return 'Mozilla/5.0 Edg/143.0';}});"
+    page, errors = open_page(browser, origin, init_script=ADVENTURE_STUB + edge)
+    wait_for_autostart(page)
+    expect_who(page, "Phi-4-mini")
+    expect_telnet(page, "Chat or welcome; turn 1.")
+    check_model(page)
     assert not errors, f"page errors: {errors}"
     page.close()
 
@@ -1267,8 +1306,8 @@ def main():
     print("ok: when create() failed, the request that waited went to the composer with the reason")
     print("ok: 'You are the model' made the next request the composer's with the model loaded; choosing the "
           "model again handed requests back with no new session; the choice survived a reload")
-    print("ok: the adventure kept its place across lines through the server's memory with a stub model that "
-          "follows the rule and remembers nothing: \"look\" after \"go north\" named the Hall")
+    print("ok: deterministic adventure movement, invalid exits and reset reached both built-in model "
+          "identities, all six WebLLM choices and the manual composer; no model wrote set_memory")
     print("ok: at 390x844 the select showed the short labels, each fitting the select, and the full ones "
           "again at 1280" + (f"; the dashboard stacked its columns at {mobile_font}px" if mobile_font else ""))
     print(f"real Prompt API in this browser: availability() = {real!r}"

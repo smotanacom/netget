@@ -57,6 +57,8 @@ async fn a_generate_request_carries_the_whole_prompt_and_its_text_answer_is_pars
         let req = rx.recv().await.expect("the bridge delivers the request");
         assert_eq!(req.kind, BridgeRequestKind::Generate);
         assert_eq!(req.model, "page-model");
+        assert!(req.event.is_none());
+        assert!(serde_json::to_value(&req).unwrap().get("event").is_none());
         assert!(
             req.tools.is_empty(),
             "the generate path embeds actions in the prompt"
@@ -517,4 +519,65 @@ async fn a_network_event_request_offers_the_events_actions_with_their_examples()
         got.extend_from_slice(&buf[..n]);
     }
     let _ = state.remove_server(id).await;
+}
+
+#[tokio::test]
+async fn structured_event_context_survives_retries_and_distinguishes_repeated_commands() {
+    use netget::protocol::{Event, EventType};
+    use netget::server::connection::ConnectionId;
+    use netget::state::ServerId;
+    static EVENT: std::sync::LazyLock<EventType> = std::sync::LazyLock::new(|| {
+        EventType::new(
+            "test_message",
+            "A peer sent a line",
+            json!({"type": "send_tcp_data", "data": "ok"}),
+        )
+    });
+    let event = Event::new(&EVENT, json!({"message": "north <&>"}));
+    let (bridge, mut rx) = LlmBridge::new();
+    let client = OllamaClient::new_bridge(bridge, Duration::from_secs(10));
+    let host = tokio::spawn(async move {
+        let mut tokens = Vec::new();
+        let mut requests = Vec::new();
+        for round in 0..3 {
+            let req = rx.recv().await.expect("event request");
+            let event = req.event.as_ref().expect("structured event metadata");
+            assert_eq!(event.server_id, 7);
+            assert_eq!(event.connection_id, Some(11));
+            assert_eq!(event.protocol, "tcp");
+            assert_eq!(event.event_type, "test_message");
+            assert_eq!(event.data, json!({"message": "north <&>"}));
+            tokens.push(event.token.clone());
+            requests.push(req.id);
+            req.reply
+                .send(Ok(BridgeReply {
+                    // Force a formatting retry; it remains the same network event.
+                    content: Some(if round == 0 {
+                        "{".to_string()
+                    } else {
+                        json!({"actions": [{"type": "send_tcp_data", "data": "ok"}]}).to_string()
+                    }),
+                    ..Default::default()
+                }))
+                .unwrap();
+        }
+        assert_ne!(requests[0], requests[1], "each model call has its own id");
+        assert_eq!(
+            tokens[0], tokens[1],
+            "a retry must not reapply a host's event side effect"
+        );
+        assert_ne!(
+            tokens[1], tokens[2],
+            "an identical later command is a new event"
+        );
+    });
+    for _ in 0..2 {
+        let actions = conversation(client.clone())
+            .with_bridge_event(ServerId::new(7), Some(ConnectionId::new(11)), "tcp", &event)
+            .generate_with_tools_and_retry(None, WebSearchMode::Off, vec![send_tcp_data()])
+            .await
+            .unwrap();
+        assert_eq!(actions[0]["data"], "ok");
+    }
+    host.await.unwrap();
 }
