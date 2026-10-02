@@ -529,3 +529,97 @@ async fn parked_delivery_handler_cannot_grow_event_queue_without_bound() {
     fixture.await.unwrap();
     state.remove_client(id).await;
 }
+
+#[tokio::test]
+async fn one_selected_message_after_close_wait_remains_acknowledgeable_but_a_second_is_refused() {
+    // Upstream nsqd 1.3.0: protocol_v2.go's memoryMsgChan branch can already
+    // be selected when CLS/StartClose changes RDY/state. SendMessage acquires
+    // the writer lock independently, so CLOSE_WAIT may win the write race.
+    // The next pump iteration disables the message channels, bounding this to one.
+    for second in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fixture = tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let mut r = BufReader::new(s);
+            handshake(&mut r, features()).await;
+            let mut line = String::new();
+            r.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "SUB a b\n");
+            r.get_mut()
+                .write_all(&nsq::response_frame(b"OK"))
+                .await
+                .unwrap();
+            line.clear();
+            r.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "RDY 1\n");
+            line.clear();
+            r.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "CLS\n");
+            r.get_mut()
+                .write_all(&nsq::response_frame(b"CLOSE_WAIT"))
+                .await
+                .unwrap();
+            let message = |id: &[u8]| {
+                let mut b = 1i64.to_be_bytes().to_vec();
+                b.extend(1u16.to_be_bytes());
+                b.extend(id);
+                b.extend(b"selected before close");
+                nsq::encode_frame(nsq::FRAME_MESSAGE, &b)
+            };
+            r.get_mut()
+                .write_all(&message(b"0000000000000001"))
+                .await
+                .unwrap();
+            line.clear();
+            r.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "FIN 0000000000000001\n");
+            if second {
+                r.get_mut()
+                    .write_all(&message(b"0000000000000002"))
+                    .await
+                    .unwrap();
+            }
+            let mut remaining = Vec::new();
+            r.read_to_end(&mut remaining).await.unwrap();
+        });
+        let state = state();
+        let id = connected_client(&state, addr.to_string()).await;
+        request(
+            &state,
+            id,
+            json!({"operation":"subscribe","topic":"a","channel":"b"}),
+        )
+        .await;
+        send(&state, id, json!({"operation":"ready","count":1})).await;
+        request(&state, id, json!({"operation":"close"})).await;
+        let (_, late) = event(&state, id, "nsq_message", 0).await;
+        assert_eq!(late["body"], "selected before close");
+        send(
+            &state,
+            id,
+            json!({"operation":"finish","message_id":late["message_id"]}),
+        )
+        .await;
+        if second {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let netget::state::ClientStatus::Error(error) =
+                        state.get_client(id).await.unwrap().status
+                    {
+                        assert!(
+                            error.contains("more than one message after CLOSE_WAIT"),
+                            "{error}"
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        state.remove_client(id).await;
+        fixture.await.unwrap();
+    }
+}
