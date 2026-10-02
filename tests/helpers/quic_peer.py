@@ -58,6 +58,15 @@ class H3Peer(QuicConnectionProtocol):
                         self.http.send_headers(http_event.stream_id, [(b":status", b"200")] + [(b"accept", b"*/*") for i in range(900)], end_stream=True)
                         self.transmit()
                         continue
+                    if headers.get(":path") in ("/te-response", "/te-trailer"):
+                        bad = [(b"te", b"trailers")]
+                        self.http.send_headers(http_event.stream_id, [(b":status", b"200")] + (bad if headers[":path"] == "/te-response" else []))
+                        if headers[":path"] == "/te-trailer":
+                            self.http.send_headers(http_event.stream_id, bad, end_stream=True)
+                        else:
+                            self.http.send_data(http_event.stream_id, b"", end_stream=True)
+                        self.transmit()
+                        continue
                     body = json.dumps({"method": headers.get(":method"), "path": headers.get(":path"),
                                        "headers": headers, "body": message["body"].decode()}).encode()
                     self.http.send_headers(http_event.stream_id, [(b":status", b"200"),

@@ -12,6 +12,8 @@ trailers, priority 0..7), wait_for_more, disconnect. Startup default_headers are
 merged case-insensitively under per-request headers. Priority sends RFC 9218
 `priority: u=N`; zero is most urgent. Trailers are followed by an explicit FIN.
 Foreign absolute URLs are refused; requests always use the connected target.
+TE is allowed only in request headers with value `trailers`; responses and both
+trailer sections reject TE.
 
 Events: http3_connected (real authenticated session), http3_response_received
 (status_code, headers, UTF-8 body, trailers, stream index), http3_request_failed

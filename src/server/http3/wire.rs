@@ -11,11 +11,17 @@ fn header_size(headers: &HeaderMap) -> usize {
     })
 }
 pub fn check_headers(headers: &HeaderMap) -> Result<()> {
+    check_headers_for(headers, false)
+}
+pub fn check_request_headers(headers: &HeaderMap) -> Result<()> {
+    check_headers_for(headers, true)
+}
+fn check_headers_for(headers: &HeaderMap, request: bool) -> Result<()> {
     ensure!(
         header_size(headers) <= MAX_HEADERS,
         "HTTP3 field section exceeds 32 KiB"
     );
-    for (k, _) in headers {
+    for (k, value) in headers {
         ensure!(
             !matches!(
                 k.as_str(),
@@ -23,13 +29,19 @@ pub fn check_headers(headers: &HeaderMap) -> Result<()> {
             ),
             "HTTP3 forbids connection-specific headers"
         );
+        if k == "te" {
+            ensure!(
+                request && value.to_str()?.trim().eq_ignore_ascii_case("trailers"),
+                "HTTP3 TE is allowed only in request headers with value trailers"
+            );
+        }
     }
     Ok(())
 }
 /// Outgoing field sections include pseudo-fields, even when the peer advertises
 /// a larger limit. h3 enforces the full decoded bound on incoming sections.
 pub fn check_field_section(headers: &HeaderMap, pseudo: &[(&str, &str)]) -> Result<()> {
-    check_headers(headers)?;
+    check_headers_for(headers, pseudo.iter().any(|(key, _)| *key == ":method"))?;
     let size = pseudo
         .iter()
         .fold(header_size(headers), |size, (key, value)| {
@@ -39,6 +51,12 @@ pub fn check_field_section(headers: &HeaderMap, pseudo: &[(&str, &str)]) -> Resu
     Ok(())
 }
 pub fn parse_headers(value: &Value) -> Result<HeaderMap> {
+    parse_headers_for(value, false)
+}
+pub fn parse_request_headers(value: &Value) -> Result<HeaderMap> {
+    parse_headers_for(value, true)
+}
+fn parse_headers_for(value: &Value, request: bool) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     if value.is_null() {
         return Ok(headers);
@@ -65,11 +83,17 @@ pub fn parse_headers(value: &Value) -> Result<HeaderMap> {
             headers.append(name.clone(), HeaderValue::from_str(v)?);
         }
     }
-    check_headers(&headers)?;
+    check_headers_for(&headers, request)?;
     Ok(headers)
 }
 pub fn header_json(headers: &HeaderMap) -> Result<Map<String, Value>> {
-    check_headers(headers)?;
+    header_json_for(headers, false)
+}
+pub fn request_header_json(headers: &HeaderMap) -> Result<Map<String, Value>> {
+    header_json_for(headers, true)
+}
+fn header_json_for(headers: &HeaderMap, request: bool) -> Result<Map<String, Value>> {
+    check_headers_for(headers, request)?;
     let mut object = Map::new();
     for key in headers.keys() {
         let values: Vec<_> = headers

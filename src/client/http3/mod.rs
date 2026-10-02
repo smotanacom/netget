@@ -348,7 +348,7 @@ pub async fn exchange(
         .method(method)
         .uri(format!("https://{remote}{path}"))
         .body(())?;
-    *request.headers_mut() = parse_headers(&Value::Object(headers))?;
+    *request.headers_mut() = parse_request_headers(&Value::Object(headers))?;
     check_field_section(
         request.headers(),
         &[
