@@ -181,6 +181,19 @@ async fn dispatch(
             &actions::GelfProtocol::new(),
         )
         .await?;
+        if !result.failures.is_empty() {
+            console_error!(
+                ctx.status_tx,
+                "GELF decision=fail_closed_handler_action_error failed_actions={}",
+                result.failures.len()
+            );
+            ctx.state.record_access_log(
+                AccessLogOwner::Server(ctx.server_id.as_u32()), "GELF", Some(id.as_u32()),
+                "gelf_handler_failed", event.data,
+                vec![json!({"decision":"fail_closed_handler_action_error","failed_action_count":result.failures.len()})],
+            ).await;
+            anyhow::bail!("GELF handler action failed");
+        }
         for message in result.messages {
             console_info!(ctx.status_tx, "{}", message);
         }

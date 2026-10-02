@@ -21,7 +21,9 @@ Unmatched messages collect directly in the standard bounded access log without m
 even with a nonempty instruction. Explicit static/script/manual/model rules always dispatch;
 `llm_fallback=true` opts unmatched messages into the model. `collect_gelf_message` observes;
 common actions update standard server memory through the shared dispatcher. There is no
-reply or delivery acknowledgment. TCP handler failure closes the peer, UDP logs and continues.
+reply or delivery acknowledgment. TCP handler failure closes the peer, UDP logs and continues. A mixed action batch with any
+failed action records a decision-tagged gelf_handler_failed event and fails closed even if
+a collect action succeeded; shared common-action side effects are not rolled back.
 
 Bounds: 256KiB encoded/decompressed/compressed JSON; 8192-byte UDP datagram; 128 chunks
 within five seconds; 128 in-progress messages and 4MiB stored chunk payload, plus bounded
