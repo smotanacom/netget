@@ -28,3 +28,8 @@ Shared registry/action/startup-default/pairing ratchets are run by the coordinat
 Final combined four-worker run passed all 14 tests (4 client, 10 server), none
 ignored. Minimal `--features quic --lib` compilation and formatting also passed.
 See server test notes for one unreproduced earlier mocked-test timeout.
+
+`pairing_test.rs` additionally verifies the netget client/server binary round trip,
+response event, disconnect and connection/port cleanup. Boundary tests enforce
+4 MiB encoded text before allocation and 1 MiB decoded payload, with bounded error
+messages. This pairing is separate from the independent peer evidence.

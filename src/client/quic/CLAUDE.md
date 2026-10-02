@@ -16,7 +16,8 @@ budgeted event dispatcher, including static/script/manual handlers, memory and
 memory updates. Injected actions report completion after the wire response. A
 parked handler does not block injected commands or concurrent streams.
 
-Limits: 1 MiB per direction, 32 active exchanges and 32 event handlers, 32 actions
+Limits: 4 MiB encoded action text (including whitespace), rejected before decoding;
+1 MiB decoded bytes per direction, 32 active exchanges and 32 event handlers, 32 actions
 per result, and four exchanges per automatic chain. Resolution/handshake defaults
 to 10s (range 1..60), each stream to 30s (1..300), connection idle to 300s
 (1..3600). Timeouts/removal stop and reset streams. One registered owner polls all

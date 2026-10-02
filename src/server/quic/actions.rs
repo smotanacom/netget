@@ -313,7 +313,17 @@ impl QuicProtocol {
 ///
 /// `"text"` is accepted as a synonym for `"utf8"` because that is the name the inbound
 /// event used before this pair was made symmetric.
+pub const MAX_ENCODED_QUIC_BYTES: usize = 4 * 1024 * 1024;
+
 pub fn decode_quic_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        data.len() <= MAX_ENCODED_QUIC_BYTES,
+        "Encoded QUIC payload exceeds 4 MiB"
+    );
+    anyhow::ensure!(
+        encoding.is_none_or(|e| e.len() <= 16),
+        "Invalid QUIC payload encoding"
+    );
     use base64::Engine as _;
 
     match encoding.unwrap_or("utf8") {
@@ -328,13 +338,13 @@ pub fn decode_quic_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>
             if cleaned.len() % 2 != 0 {
                 return Err(anyhow::anyhow!(
                     "Invalid hex in 'data': expected an even number of hex digits, got {} \
-                     ({data:?}). Each byte is two hex digits, e.g. \"48656c6c6f\" = \"Hello\".",
+                     bytes. Each byte is two hex digits, e.g. \"48656c6c6f\" = \"Hello\".",
                     cleaned.len()
                 ));
             }
             hex::decode(cleaned).map_err(|e| {
                 anyhow::anyhow!(
-                    "Invalid hex in 'data' ({data:?}): {e}. Use only 0-9/a-f, two digits per \
+                    "Invalid hex in 'data': {e}. Use only 0-9/a-f, two digits per \
                      byte. To send this string as literal text, omit 'encoding' or set it to \
                      \"utf8\"."
                 )
@@ -346,7 +356,7 @@ pub fn decode_quic_payload(data: &str, encoding: Option<&str>) -> Result<Vec<u8>
                 .decode(&cleaned)
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "Invalid base64 in 'data' ({data:?}): {e}. To send this string as \
+                        "Invalid base64 in 'data': {e}. To send this string as \
                          literal text, omit 'encoding' or set it to \"utf8\"."
                     )
                 })
