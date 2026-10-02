@@ -68,6 +68,7 @@ portable-base = [
     "snmp",
     "igmp",
     "syslog",
+    "statsd",
     "ssh",
     "ssh-agent",
     "svn",
@@ -236,6 +237,7 @@ netbios-ns = []  # NetBIOS Name Service (RFC 1002) - hand-rolled name encoding
 snmp = ["rasn-snmp", "rasn", "rasn-smi", "dep:snmp"]
 igmp = []  # IGMP multicast group management, no extra deps
 syslog = ["syslog_loose"]
+statsd = [] # StatsD / DogStatsD UDP collector and emitter; native codec
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -477,6 +479,7 @@ dist-windows = [
     "snmp",
     # igmp excluded: raw libc sockets (AF_INET/SOCK_RAW), unix-only
     "syslog",
+    "statsd",
     "ssh",
     "svn",
     "irc",
@@ -620,6 +623,7 @@ all-protocols = [
     "snmp",
     "igmp",
     "syslog",
+    "statsd",
     "ssh",
     "ssh-agent",
     "svn",

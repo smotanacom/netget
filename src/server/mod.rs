@@ -1220,3 +1220,5 @@ pub use connection::{Connection, ConnectionId};
 
 #[cfg(feature = "nut")]
 pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;

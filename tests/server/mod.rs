@@ -352,3 +352,5 @@ pub use super::helpers;
 
 #[cfg(feature = "nut")]
 pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
