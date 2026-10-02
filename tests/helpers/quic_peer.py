@@ -134,7 +134,10 @@ async def main(args):
     if args.mode == "server":
         config.load_cert_chain(args.cert, args.key)
         server = await serve("127.0.0.1", args.port, configuration=config, create_protocol=protocol)
-        print(json.dumps({"ready": True, "port": args.port}), flush=True)
+        # aioquic 1.3.0's serve API does not expose the bound address. Read it
+        # from its live transport so port 0 is allocated only once, by the peer.
+        port = server._transport.get_extra_info("sockname")[1]
+        print(json.dumps({"ready": True, "port": port}), flush=True)
         try:
             await asyncio.Event().wait()
         finally:
