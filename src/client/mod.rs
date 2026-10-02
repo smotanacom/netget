@@ -632,3 +632,6 @@ pub mod graphite;
 
 #[cfg(feature = "gelf")]
 pub mod gelf;
+
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
