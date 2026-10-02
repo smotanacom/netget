@@ -312,6 +312,9 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(crate::client::gelf::actions::GelfClientProtocol::new()));
+
         #[cfg(feature = "graphite")]
         self.register(Arc::new(
             crate::client::graphite::actions::GraphiteClientProtocol::new(),
@@ -760,6 +763,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
     ("Graphite", "graphite"),
     ("StatsD", "statsd"),
     ("DogStatsD", "statsd"),

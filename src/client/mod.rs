@@ -644,3 +644,6 @@ pub mod graphite;
 
 #[cfg(feature = "quic")]
 pub mod quic;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
