@@ -103,9 +103,14 @@ async fn write<W: tokio::io::AsyncWrite + Unpin>(
     w: &mut W,
     reply: &str,
 ) -> Result<()> {
-    tokio::time::timeout(wire::IO_TIMEOUT, w.write_all(reply.as_bytes()))
+    if let Err(error) = tokio::time::timeout(wire::IO_TIMEOUT, w.write_all(reply.as_bytes()))
         .await
-        .context("NUT write deadline")??;
+        .context("NUT write deadline")
+        .and_then(|result| result.map_err(Into::into))
+    {
+        outcome(ctx, id, "wire_reply", "fail_closed_send_error");
+        return Err(error);
+    }
     ctx.state
         .update_connection_stats(
             ctx.server_id,
@@ -124,7 +129,7 @@ async fn decision(
     event: Event,
     expected: &str,
 ) -> Result<Value> {
-    let result = call_llm(
+    let result = match call_llm(
         &ctx.llm_client,
         &ctx.state,
         ctx.server_id,
@@ -132,21 +137,48 @@ async fn decision(
         &event,
         &actions::NutProtocol,
     )
-    .await?;
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            outcome(ctx, id, event.id(), "fail_closed_llm_error");
+            return Err(error);
+        }
+    };
+    if !result.failures.is_empty() {
+        outcome(ctx, id, event.id(), "fail_closed_invalid_reply");
+        anyhow::bail!("NUT handler supplied an invalid action");
+    }
     let mut found = None;
     let mut pending = result.protocol_results;
     while let Some(result) = pending.pop() {
         match result {
             ActionResult::Custom { name, data } if name == expected => {
-                anyhow::ensure!(found.is_none(), "Multiple NUT replies");
+                if found.is_some() {
+                    outcome(ctx, id, event.id(), "fail_closed_invalid_reply");
+                    anyhow::bail!("Multiple NUT replies");
+                }
                 found = Some(data);
             }
             ActionResult::Multiple(items) => pending.extend(items),
             _ => {}
         }
     }
+    if found.is_none() {
+        outcome(ctx, id, event.id(), "model_silent");
+    }
     found.context("Handler did not answer NUT request")
 }
+fn outcome(ctx: &SpawnContext, id: ConnectionId, operation: &str, decision: &str) {
+    let summary = format!("NUT connection {id} operation={operation} decision={decision}");
+    let log = Log::new(Some(&ctx.status_tx));
+    if decision.starts_with("fail_closed_") || decision == "model_silent" {
+        log.error(summary);
+    } else {
+        log.info(summary);
+    }
+}
+
 async fn session(
     ctx: &SpawnContext,
     id: ConnectionId,
@@ -225,7 +257,23 @@ async fn session(
                     "nut_auth_decision",
                 )
                 .await;
-                authenticated = result.is_ok_and(|v| v["allowed"] == true);
+                authenticated = match result {
+                    Ok(value) => {
+                        let allowed = value["allowed"] == true;
+                        outcome(
+                            ctx,
+                            id,
+                            "nut_auth",
+                            if allowed {
+                                "model_answer"
+                            } else {
+                                "model_reject"
+                            },
+                        );
+                        allowed
+                    }
+                    Err(_) => false,
+                };
                 if authenticated {
                     "OK\n"
                 } else {
@@ -252,12 +300,29 @@ async fn session(
             "nut_reply",
         )
         .await
-        .and_then(|v| wire::render(&request, &v));
+        .and_then(|value| match wire::render(&request, &value) {
+            Ok(reply) => {
+                outcome(
+                    ctx,
+                    id,
+                    &request.operation,
+                    if value.get("error").is_some() {
+                        "model_reject"
+                    } else {
+                        "model_answer"
+                    },
+                );
+                Ok(reply)
+            }
+            Err(error) => {
+                outcome(ctx, id, &request.operation, "fail_closed_invalid_reply");
+                Err(error)
+            }
+        });
         match result {
             Ok(reply) => write(ctx, id, &mut write_half, &reply).await?,
-            Err(e) => {
-                Log::new(Some(&ctx.status_tx))
-                    .warn(format!("NUT handler failed for {}: {e}", request.operation));
+            Err(_) => {
+                // The terminal decision was logged above without credential or backend details.
                 write(ctx, id, &mut write_half, "ERR DATA-STALE\n").await?;
                 return Ok(());
             }
