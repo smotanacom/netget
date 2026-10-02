@@ -260,12 +260,20 @@ impl DoqServer {
                             Log::new(Some(&ctx.status_tx)).info(message);
                         }
                         let mut messages = Vec::new();
+                        let mut chose_silence = false;
                         for result in result.protocol_results {
+                            chose_silence |= matches!(result, ActionResult::NoAction);
                             if let ActionResult::Output(bytes) = result {
                                 messages.push(Message::from_vec(&bytes)?);
                             }
                         }
                         if messages.is_empty() {
+                            let log = Log::new(Some(&ctx.status_tx));
+                            if chose_silence && result.failures.is_empty() {
+                                log.debug("DoQ query decision=model_silent");
+                            } else {
+                                log.warn("DoQ query decision=fail_closed_no_action");
+                            }
                             // A dropped query is an explicit transaction cancellation, not an
                             // empty DNS stream or an indefinitely dangling request.
                             return Ok(None);
@@ -280,11 +288,21 @@ impl DoqServer {
                             .set_op_code(query.op_code())
                             .set_recursion_desired(query.recursion_desired());
                         *response.queries_mut() = query.queries().to_vec();
+                        Log::new(Some(&ctx.status_tx)).debug(format!(
+                            "DoQ query decision=model_answer response_code={}",
+                            response.response_code()
+                        ));
                         response
                     }
                     Err(e) => {
-                        Log::new(Some(&ctx.status_tx))
-                            .warn(format!("DoQ handler failed, answering SERVFAIL: {e}"));
+                        let decision = if crate::llm::is_overload_error(&e) {
+                            "fail_closed_llm_overload"
+                        } else {
+                            "fail_closed_llm_error"
+                        };
+                        Log::new(Some(&ctx.status_tx)).warn(format!(
+                            "DoQ handler failed, answering SERVFAIL decision={decision}: {e}"
+                        ));
                         error_response(&query, ResponseCode::ServFail)
                     }
                 }
@@ -324,10 +342,14 @@ impl DoqServer {
                 let _ = send.reset(NO_ERROR);
             }
             Ok(Err(e)) => {
-                Log::new(Some(&ctx.status_tx)).warn(format!("DoQ transaction failed: {e}"));
+                Log::new(Some(&ctx.status_tx)).warn(format!(
+                    "DoQ transaction failed decision=fail_closed_invalid_response: {e}"
+                ));
                 let _ = send.reset(INTERNAL_ERROR);
             }
             Err(_) => {
+                Log::new(Some(&ctx.status_tx))
+                    .warn("DoQ transaction decision=fail_closed_deadline");
                 let _ = recv.stop(UNSPECIFIED_ERROR);
                 let _ = send.reset(UNSPECIFIED_ERROR);
             }
