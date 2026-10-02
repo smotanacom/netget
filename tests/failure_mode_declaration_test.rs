@@ -72,6 +72,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "cdp",
     "datalink",
     "dhcp",
+    // One-way Carbon metrics have no application acknowledgement or negative reply.
+    "graphite",
     "hsrp",
     "icmp",
     "igmp",
@@ -87,6 +89,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "rip",
     "rtp",
     "ssdp",
+    // UDP metrics/events/service checks define no collector response.
+    "statsd",
     "stp",
     "syslog",
     "tuntap",

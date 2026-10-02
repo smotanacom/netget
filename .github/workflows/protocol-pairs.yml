@@ -58,9 +58,17 @@ jobs:
 
       - name: Server and client suites including independent interoperability
         run: |
-          for protocol in nut doq statsd; do
+          for filter in \
+            nut:: client/nut:: \
+            doq:: client/doq:: \
+            statsd:: client/statsd:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
             cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
-              --test server --test client -- "$protocol::" --test-threads=4
+              --test "$target" -- "$filter" --test-threads=4
           done
 
       - name: Protocol metadata and action wiring
@@ -114,9 +122,19 @@ jobs:
 
       - name: Server and client suites including independent interoperability
         run: |
-          for protocol in graphite beanstalkd dict gemini quic; do
+          for filter in \
+            graphite:: client/graphite:: \
+            beanstalkd:: client/beanstalkd:: \
+            dict:: client/dict:: \
+            gemini:: client/gemini:: \
+            quic:: client/quic:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
             cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
-              --test server --test client -- "$protocol::" --test-threads=4
+              --test "$target" -- "$filter" --test-threads=4
           done
 
       - name: Shared metadata and task ownership

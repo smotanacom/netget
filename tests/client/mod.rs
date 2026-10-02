@@ -215,10 +215,10 @@ pub mod nut;
 pub mod statsd;
 
 #[cfg(feature = "gemini")]
-mod gemini;
+pub mod gemini;
 
 #[cfg(feature = "dict")]
-mod dict;
+pub mod dict;
 
 #[cfg(feature = "beanstalkd")]
 pub mod beanstalkd;
