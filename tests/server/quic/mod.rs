@@ -5,3 +5,5 @@ mod e2e_test;
 
 #[cfg(all(test, feature = "quic"))]
 mod llm_failure_test;
+
+mod independent_peer_test;
