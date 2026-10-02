@@ -352,3 +352,6 @@ pub use super::helpers;
 
 #[cfg(feature = "doq")]
 pub mod doq;
+
+#[cfg(feature = "http3")]
+pub mod http3;

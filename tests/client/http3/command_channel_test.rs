@@ -1,22 +1,4 @@
-//! The dashboard's `[ send ]` path on an HTTP/3 client: `AppState::send_to_client` injects an
-//! action from outside the client's own task. Zero LLM calls - the client's LLM points at an
-//! unreachable URL.
-//!
-//! **No wire assertion here, deliberately.** There is no NetGet HTTP/3 *server* — the `http3`
-//! feature builds the client only (see the note in `src/protocol/server_registry.rs`) — so
-//! there is nothing of our own to send a QUIC request to, and pointing the client at a closed
-//! UDP port would assert a quinn handshake timeout rather than anything about this feature.
-//! What is pinned down instead is the contract the command channel owns: the handle exists as
-//! soon as `connect()` returns, an unknown action is `Rejected` rather than swallowed, an
-//! injected `disconnect` ends the loop and drops the handle, and every injected action lands
-//! in the client's access log.
-//!
-//! A successful `send_http3_request` reports `Executed { detail: "http3_request GET /p -> 200
-//! (N byte body)" }`, never `Sent`: h3/quinn own the datagrams and report no wire byte count
-//! for the request, so a number there would be invented.
-//!
-//! Run with:
-//!   ./cargo-isolated.sh test --no-default-features --features http3 --test client -- http3::command_channel --test-threads=100
+//! Injected commands on an authenticated live HTTP/3 connection.
 
 #![cfg(feature = "http3")]
 
@@ -71,11 +53,11 @@ async fn http3_client_accepts_injected_actions() {
     let state = new_state().await;
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    // Nothing is contacted at connect time: the HTTP/3 client only records the target and
-    // opens a fresh QUIC connection per request.
+    let mut peer = crate::helpers::quic_peer::Peer::start("http3").await;
     let client_id = ClientForm {
         protocol: "http3".to_string(),
-        remote_addr: Some("127.0.0.1:1".to_string()),
+        remote_addr: Some(peer.address()),
+        startup_params: Some(peer.cert.trust()),
         instruction: Some("test client".to_string()),
         ..Default::default()
     }
@@ -132,6 +114,7 @@ async fn http3_client_accepts_injected_actions() {
         if matches!(status, Some(ClientStatus::Disconnected))
             && !state.has_client_handle(client_id).await
         {
+            peer.close().await;
             return;
         }
         tokio::time::sleep(Duration::from_millis(30)).await;

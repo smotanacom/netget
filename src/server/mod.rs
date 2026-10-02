@@ -51,6 +51,7 @@ pub mod http_common;
     feature = "http",
     feature = "http2",
     feature = "quic",
+    feature = "http3",
     feature = "smtp",
     feature = "pop3",
     feature = "tls",
@@ -1221,3 +1222,8 @@ pub use connection::{Connection, ConnectionId};
 
 #[cfg(feature = "doq")]
 pub mod doq;
+
+#[cfg(feature = "http3")]
+pub mod http3;
+#[cfg(feature = "http3")]
+pub use http3::actions::Http3Protocol;
