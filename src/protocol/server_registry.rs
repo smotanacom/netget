@@ -207,6 +207,11 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "graphite")]
+        self.register(Arc::new(
+            crate::server::graphite::actions::GraphiteProtocol::new(),
+        ));
+
         #[cfg(feature = "statsd")]
         self.register(Arc::new(
             crate::server::statsd::actions::StatsdProtocol::new(),
@@ -1235,6 +1240,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("SNMP", "snmp"),
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
+    ("Graphite", "graphite"),
     ("StatsD", "statsd"),
     ("DogStatsD", "statsd"),
     ("SSH", "ssh"),

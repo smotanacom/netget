@@ -352,3 +352,6 @@ pub use super::helpers;
 
 #[cfg(feature = "statsd")]
 pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;

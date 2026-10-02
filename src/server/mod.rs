@@ -1220,3 +1220,6 @@ pub use connection::{Connection, ConnectionId};
 
 #[cfg(feature = "statsd")]
 pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;

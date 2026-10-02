@@ -209,3 +209,6 @@ pub mod zookeeper;
 
 #[cfg(feature = "statsd")]
 pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;

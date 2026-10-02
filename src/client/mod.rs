@@ -626,3 +626,6 @@ pub use xmpp::actions::XmppClientProtocol;
 
 #[cfg(feature = "statsd")]
 pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;
