@@ -213,6 +213,11 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::server::fluent_forward::actions::FluentForwardProtocol::new(),
+        ));
+
         #[cfg(feature = "gelf")]
         self.register(Arc::new(crate::server::gelf::actions::GelfProtocol::new()));
 
@@ -1254,6 +1259,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("SNMP", "snmp"),
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
     ("GELF", "gelf"),
     ("Graylog", "gelf"),
     ("Graphite", "graphite"),

@@ -652,3 +652,5 @@ pub mod gelf;
 
 #[cfg(feature = "nsq")]
 pub mod nsq;
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;

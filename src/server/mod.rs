@@ -1237,3 +1237,5 @@ pub mod gelf;
 pub mod http3;
 #[cfg(feature = "http3")]
 pub use http3::actions::Http3Protocol;
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;

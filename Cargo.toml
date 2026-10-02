@@ -72,6 +72,7 @@ portable-base = [
     "statsd",
     "graphite",
     "gelf",
+    "fluent-forward",
     "ssh",
     "ssh-agent",
     "svn",
@@ -244,6 +245,7 @@ syslog = ["syslog_loose"]
 statsd = [] # StatsD / DogStatsD UDP collector and emitter; native codec
 graphite = [] # Carbon plaintext TCP collector and emitter; native codec
 gelf = ["dep:flate2"] # GELF 1.1 UDP/TCP structured logging
+fluent-forward = ["dep:flate2"] # MessagePack Forward logs and ACKs
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -489,6 +491,7 @@ dist-windows = [
     "statsd",
     "graphite",
     "gelf",
+    "fluent-forward",
     "ssh",
     "svn",
     "irc",
@@ -636,6 +639,7 @@ all-protocols = [
     "statsd",
     "graphite",
     "gelf",
+    "fluent-forward",
     "ssh",
     "ssh-agent",
     "svn",

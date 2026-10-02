@@ -365,3 +365,5 @@ pub mod gelf;
 
 #[cfg(feature = "http3")]
 pub mod http3;
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;

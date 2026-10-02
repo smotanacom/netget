@@ -310,6 +310,11 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::client::fluent_forward::actions::FluentForwardClientProtocol::new(),
+        ));
+
         #[cfg(feature = "gelf")]
         self.register(Arc::new(
             crate::client::gelf::actions::GelfClientProtocol::new(),
@@ -766,6 +771,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
     ("GELF", "gelf"),
     ("Graylog", "gelf"),
     ("Graphite", "graphite"),
