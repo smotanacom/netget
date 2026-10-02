@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
         feature = "dc",
         feature = "doh",
         feature = "dot",
+        feature = "doq",
         feature = "gemini",
         feature = "http",
         feature = "http2",
