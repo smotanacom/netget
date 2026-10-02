@@ -2,6 +2,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{EventType, SpawnContext};
 use crate::state::app_state::AppState;
 use anyhow::{bail, ensure, Result};
@@ -29,12 +30,24 @@ pub fn action(
     parameters: Vec<Parameter>,
     example: Value,
 ) -> ActionDefinition {
+    let log_template = match name {
+        "nut_reply" => LogTemplate::new().with_info(
+            "-> NUT reply: entries={entries_len} value={preview(value,80)} types={preview(types,80)} ok={ok} error={error}",
+        ),
+        "nut_auth_decision" => {
+            LogTemplate::new().with_info("-> NUT authentication allowed={allowed}")
+        }
+        // The client uses this helper too. Credentials may be in value, so omit it.
+        "nut_request" => LogTemplate::new().with_info("-> NUT {operation} {ups} {name}"),
+        "disconnect" => LogTemplate::new().with_info("-> NUT disconnect"),
+        _ => LogTemplate::new().with_info(format!("-> NUT {name}")),
+    };
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(log_template),
     }
 }
 fn response_action() -> ActionDefinition {
@@ -62,11 +75,11 @@ fn auth_action() -> ActionDefinition {
 pub static REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("nut_request", "A UPS query or authenticated operation; data and policy come from the handler.", response_action().example.clone()).with_parameters(vec![
     parameter("operation","string","list_ups/list_var/list_rw/list_cmd/list_enum/get_var/get_desc/get_cmddesc/get_upsdesc/get_type/set_var/instcmd",true),
-    parameter("ups","string","Requested UPS",false), parameter("name","string","Variable or command name",false), parameter("value","string","Value for set_var",false), parameter("username","string","Authenticated user for write decisions",false),
+    parameter("ups","string","UPS identifier requested by the peer, such as rack1",false), parameter("name","string","Variable or command name",false), parameter("value","string","Value for set_var",false), parameter("username","string","Authenticated user for write decisions",false),
 ]).with_actions(vec![response_action()])
 });
 pub static AUTH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("nut_auth", "Authenticate credentials for this connection. Use a deterministic handler for real credentials.", auth_action().example.clone()).with_parameters(vec![parameter("username","string","Username",true),parameter("password","string","Password supplied by remote peer",true)]).with_actions(vec![auth_action()])
+    EventType::new("nut_auth", "Authenticate credentials for this connection. Use a deterministic handler for real credentials.", auth_action().example.clone()).with_parameters(vec![parameter("username","string","Username supplied by the peer for authentication",true),parameter("password","string","Password supplied by remote peer",true)]).with_actions(vec![auth_action()])
 });
 impl Protocol for NutProtocol {
     fn protocol_name(&self) -> &'static str {
@@ -109,13 +122,14 @@ impl Protocol for NutProtocol {
             .llm_control("UPS discovery, variable values/types/descriptions, instant-command lists, authentication and write authorization/results")
             .e2e_testing("tests/server/nut: raw-wire sessions, framing and bounds; independent client evidence is documented in CLAUDE.md")
             .notes("Plain TCP only: STARTTLS returns FEATURE-NOT-SUPPORTED. No built-in UPS storage or accounts. SET/INSTCMD require an accepted nut_auth decision and explicit handler success. ATTACH/LOGIN/PRIMARY/FSD, RANGE and tracking are not supported; unknown commands return UNKNOWN-COMMAND. 256 connections; 8192-byte lines; 4096 entries and 1 MiB replies; 30s write deadline.")
+            .request_only("NUT replies require the current parsed request and authenticated session state; unsolicited replies are not part of this protocol.")
             .max_inbound_bytes(super::wire::MAX_LINE_BYTES).build()
     }
     fn example_prompt(&self) -> &'static str {
         "NUT server on port 3493 simulating UPS rack1 at full battery charge"
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
-        let llm = json!({"type":"open_server","protocol":"nut","port":3493,"instruction":"Simulate UPS rack1"});
+        let llm = json!({"type":"open_server","base_stack":"nut","port":3493,"instruction":"Simulate UPS rack1"});
         let mut scripted = llm.clone();
         scripted["event_handlers"] = json!([{"event_pattern":"nut_request","handler":{"type":"script","language":"python","code":"respond([{'type':'nut_reply','error':'UNKNOWN-UPS'}])"}},{"event_pattern":"nut_auth","handler":{"type":"static","actions":[{"type":"nut_auth_decision","allowed":false}]}}]);
         let mut static_example = llm.clone();
