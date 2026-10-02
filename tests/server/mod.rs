@@ -356,3 +356,6 @@ pub mod doq;
 pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;

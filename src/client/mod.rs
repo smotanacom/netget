@@ -633,3 +633,5 @@ pub mod statsd;
 
 #[cfg(feature = "beanstalkd")]
 pub mod beanstalkd;
+#[cfg(feature = "graphite")]
+pub mod graphite;
