@@ -71,10 +71,10 @@ pub async fn run_mcp_http(args: &Args, settings: Settings, port: u16) -> Result<
     );
 
     let listen_addr = args.listen_addr.as_deref().unwrap_or("127.0.0.1");
-    let bind = format!("{}:{}", listen_addr, port);
 
     let app = axum::Router::new().nest_service("/mcp", service);
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let listener = tokio::net::TcpListener::bind((listen_addr, port)).await?;
+    let bind = listener.local_addr()?;
 
     info!("NetGet MCP HTTP server listening on http://{}/mcp", bind);
     axum::serve(listener, app).await?;

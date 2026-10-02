@@ -21,7 +21,18 @@ pub const SENSITIVE_KEY_PARTS: &[&str] = &[
     "api_key",
     "apikey",
     "private_key",
+    "privatekey",
     "credential",
+    "access_token",
+    "accesstoken",
+    "refresh_token",
+    "refreshtoken",
+    "id_token",
+    "idtoken",
+    "auth_token",
+    "authtoken",
+    "authorization",
+    "cookie",
 ];
 
 /// What a redacted value is shown as.
@@ -29,8 +40,8 @@ pub const REDACTED: &str = "<redacted>";
 
 /// Whether a key names a credential.
 pub fn is_sensitive_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    key == "token" || SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
 }
 
 /// Deepest nesting walked. `serde_json` refuses to parse past 128 levels, so a parsed value

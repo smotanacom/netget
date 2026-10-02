@@ -188,6 +188,17 @@ rather than pretending to know the domain.
 
 ## Hostile input
 
+An unavailable approval channel denies a presence request through a single direct CTAP/U2F
+replay with `UserPresence::Denied`. It never calls back into `run_command` or `park`. If a
+protocol handler incorrectly requests approval again after denial, the leaf helper returns
+the protocol's denial response immediately (U2F `0x6985`, CTAP2 `0x27`). The call graph is
+acyclic rather than relying on an enum variant to terminate recursion.
+
+`tests/audit_server_decoder_bounds_test.rs` drives the real `UsbInterfaceHandler` entirely in
+memory: absent/closed approval channels, approved/denied registrations, busy requests, malformed
+payloads, and maximum/excess CTAPHID lengths. It never opens USB/IP, enumerates USB devices,
+or calls a model; the existing wire tests below cover a different integration layer.
+
 Everything on the interrupt OUT endpoint arrives from whoever attached over USB/IP, before any
 user-presence decision has been made. Two bounds in `ctaphid.rs` exist because it was not:
 

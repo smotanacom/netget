@@ -113,7 +113,8 @@ async fn test_server_scoped_task_actions_match_prompt() {
         None,
         "Log a heartbeat message".to_string(),
         None,
-    );
+    )
+    .unwrap();
 
     // No protocol actions: keeps the assertion independent of which protocol features are on.
     let protocol_actions: Vec<ActionDefinition> = Vec::new();
@@ -177,7 +178,8 @@ async fn test_global_task_actions_match_prompt() {
         5,
         "Open a TCP server on an available port".to_string(),
         None,
-    );
+    )
+    .unwrap();
 
     let prompt = PromptBuilder::build_task_execution_prompt(&state, &task, Vec::new()).await;
 

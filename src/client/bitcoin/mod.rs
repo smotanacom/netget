@@ -454,7 +454,7 @@ impl BitcoinClient {
                 let status = response.status();
 
                 // Get response body
-                let response_text = response.text().await.unwrap_or_default();
+                let response_text = response.text().await?;
 
                 info!(
                     "Bitcoin RPC client {} received response: {}",

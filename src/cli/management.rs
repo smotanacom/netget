@@ -125,10 +125,10 @@ pub fn client_declared_params(protocol: &str) -> Option<Vec<ParameterDefinition>
         .map(|p| p.get_startup_parameters())
 }
 
-/// Validate that every key in `params` was declared in the protocol's schema,
+/// Validate declared keys, required fields and JSON types against the schema,
 /// *before* any running instance is touched.
 ///
-/// Delegates to the built-in [`StartupParams::new`] check — the same validation
+/// Delegates to the built-in [`StartupParams::new_validated`] check — the same validation
 /// `start_server_from_action` applies at spawn — so an undeclared key is reported
 /// (naming the key, via `StartupParamError`) and the running instance is left
 /// alone. Running it here, before `remove_server`, is what preserves the old
@@ -138,9 +138,57 @@ fn validate_params_declared(
     schema: &[ParameterDefinition],
     protocol: &str,
 ) -> Result<()> {
-    crate::protocol::spawn_context::StartupParams::new(params.clone(), schema.to_vec())
+    crate::protocol::spawn_context::StartupParams::new_validated(params.clone(), schema.to_vec())
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("Invalid startup_params for {}: {}", protocol, e))
+}
+
+/// Preflight shared TLS material while the current listener is still serving.
+/// File access/certificate parsing can fail independently of JSON shape.
+pub(crate) fn validate_server_startup_params(
+    params: &Value,
+    schema: &[ParameterDefinition],
+    protocol: &str,
+) -> Result<()> {
+    validate_params_declared(params, schema, protocol)?;
+    #[cfg(any(
+        feature = "dot",
+        feature = "doh",
+        feature = "http",
+        feature = "http2",
+        feature = "quic",
+        feature = "smtp",
+        feature = "pop3",
+        feature = "tls",
+        feature = "kubernetes-server",
+        feature = "gemini"
+    ))]
+    {
+        let names: std::collections::HashSet<_> = schema.iter().map(|p| p.name.as_str()).collect();
+        if [
+            "cert_path",
+            "key_path",
+            "common_name",
+            "san_dns_names",
+            "validity_days",
+            "organization",
+            "organizational_unit",
+        ]
+        .iter()
+        .all(|name| names.contains(name))
+        {
+            let validated =
+                crate::protocol::StartupParams::new_validated(params.clone(), schema.to_vec())?;
+            if names.contains("tls_enabled") {
+                crate::server::tls_cert_manager::extract_tls_config_from_params(&validated)?;
+            } else {
+                crate::server::tls_cert_manager::extract_required_tls_config_from_params(
+                    &validated,
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl ServerForm {
@@ -216,16 +264,17 @@ impl ClientForm {
 /// Merge a partial `overlay` object into `base`, overlay keys winning. Returns
 /// the merged object. Used so a partial `startup_params` update keeps the params
 /// it does not mention.
-fn merge_params(base: Option<&Value>, overlay: &Value) -> Value {
+fn merge_params(base: Option<&Value>, overlay: &Value) -> Result<Value> {
+    let map = overlay
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("startup_params must be a JSON object"))?;
     let mut out = base
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
-    if let Some(map) = overlay.as_object() {
-        for (k, v) in map {
-            out.insert(k.clone(), v.clone());
-        }
+    for (k, v) in map {
+        out.insert(k.clone(), v.clone());
     }
-    Value::Object(out)
+    Ok(Value::Object(out))
 }
 
 /// Fields on a [`ServerForm`] whose change requires a rebind (a clean stop+start
@@ -281,13 +330,17 @@ pub async fn update_server(
     // Compute the merged startup params that would take effect, and validate the
     // whole thing against the schema. A bad key is reported (naming the key) and
     // the running server is left untouched.
+    let prepared_tasks = crate::state::task::prepare_tasks(
+        form.scheduled_tasks.as_deref(),
+        crate::state::task::TaskScope::Server(server_id),
+    )?;
     let merged_params: Option<Value> = match &form.startup_params {
-        Some(overlay) => Some(merge_params(current.startup_params.as_ref(), overlay)),
+        Some(overlay) => Some(merge_params(current.startup_params.as_ref(), overlay)?),
         None => current.startup_params.clone(),
     };
     if let Some(params) = &merged_params {
         let schema = protocol_impl.get_startup_parameters();
-        validate_params_declared(params, &schema, &current.protocol_name)?;
+        validate_server_startup_params(params, &schema, &current.protocol_name)?;
     }
 
     // Validate event handlers before mutating, too.
@@ -415,7 +468,9 @@ pub async fn update_server(
     }
     if let Some(tasks) = form.scheduled_tasks {
         let n = tasks.len();
-        add_server_tasks(state, server_id, tasks).await;
+        for task in prepared_tasks {
+            state.add_task(task).await;
+        }
         if n > 0 {
             changed.push("scheduled_tasks");
         }
@@ -478,8 +533,12 @@ pub async fn update_client(
         })?;
 
     // Validate merged params before mutating.
+    let prepared_tasks = crate::state::task::prepare_tasks(
+        form.scheduled_tasks.as_deref(),
+        crate::state::task::TaskScope::Client(client_id),
+    )?;
     let merged_params: Option<Value> = match &form.startup_params {
-        Some(overlay) => Some(merge_params(current.startup_params.as_ref(), overlay)),
+        Some(overlay) => Some(merge_params(current.startup_params.as_ref(), overlay)?),
         None => current.startup_params.clone(),
     };
     if let Some(params) = &merged_params {
@@ -597,7 +656,9 @@ pub async fn update_client(
     }
     if let Some(tasks) = form.scheduled_tasks {
         let n = tasks.len();
-        add_client_tasks(state, client_id, tasks).await;
+        for task in prepared_tasks {
+            state.add_task(task).await;
+        }
         if n > 0 {
             changed.push("scheduled_tasks");
         }
@@ -641,66 +702,6 @@ fn parse_client_handlers(handlers: &[Value]) -> Result<crate::scripting::EventHa
         parsed.push(handler);
     }
     Ok(EventHandlerConfig { handlers: parsed })
-}
-
-/// Add scheduled tasks scoped to a server. Mirrors the task construction in
-/// `start_server_from_action` so both create and update produce identical tasks.
-async fn add_server_tasks(state: &AppState, server_id: ServerId, tasks: Vec<ServerTaskDefinition>) {
-    use crate::state::task::TaskScope;
-    for task_def in tasks {
-        let task = build_task(TaskScope::Server(server_id), task_def);
-        state.add_task(task).await;
-    }
-}
-
-/// Add scheduled tasks scoped to a client.
-async fn add_client_tasks(state: &AppState, client_id: ClientId, tasks: Vec<ServerTaskDefinition>) {
-    use crate::state::task::TaskScope;
-    for task_def in tasks {
-        let task = build_task(TaskScope::Client(client_id), task_def);
-        state.add_task(task).await;
-    }
-}
-
-/// Build a [`ScheduledTask`] from a definition and scope — the same shape both
-/// startup executors use.
-fn build_task(
-    scope: crate::state::task::TaskScope,
-    task_def: ServerTaskDefinition,
-) -> crate::state::task::ScheduledTask {
-    use crate::state::task::{ScheduledTask, TaskId, TaskStatus, TaskType};
-    use crate::utils::clock::Instant;
-    use std::time::Duration;
-
-    let task_type = if task_def.recurring {
-        TaskType::Recurring {
-            interval_secs: task_def.interval_secs.unwrap_or(60),
-            max_executions: task_def.max_executions,
-            executions_count: 0,
-        }
-    } else {
-        TaskType::OneShot {
-            delay_secs: task_def.delay_secs.unwrap_or(0),
-        }
-    };
-    let delay = if task_def.recurring {
-        Duration::from_secs(0)
-    } else {
-        Duration::from_secs(task_def.delay_secs.unwrap_or(0))
-    };
-    ScheduledTask {
-        id: TaskId::new(rand::random()),
-        name: task_def.task_id,
-        scope,
-        task_type,
-        instruction: task_def.instruction,
-        context: task_def.context,
-        status: TaskStatus::Scheduled,
-        created_at: Instant::now(),
-        next_execution: Instant::now() + delay,
-        last_error: None,
-        failure_count: 0,
-    }
 }
 
 // ===========================================================================

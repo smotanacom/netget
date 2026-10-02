@@ -23,17 +23,18 @@ echo "Please enter your Upstash Redis connection string:"
 echo "Format: rediss://default:<password>@<endpoint>.upstash.io:6379"
 echo
 
-read -p "Connection string: " REDIS_URL
+read -r -s -p "Connection string: " REDIS_URL
+echo
 
 # Create configuration script
 CONFIG_FILE="$HOME/.sccache-upstash-env"
-cat > "$CONFIG_FILE" << EOF
-# sccache with Upstash Redis configuration
-# Generated: $(date)
-export SCCACHE_REDIS_ENDPOINT="$REDIS_URL"
-export SCCACHE_REDIS_EXPIRATION=604800  # 7 days (in seconds)
-export RUSTC_WRAPPER=sccache
-EOF
+(umask 077
+    {
+        printf '# sccache with Upstash Redis configuration\n'
+        printf 'export SCCACHE_REDIS_ENDPOINT=%q\n' "$REDIS_URL"
+        printf 'export SCCACHE_REDIS_EXPIRATION=604800\nexport RUSTC_WRAPPER=sccache\n'
+    } > "$CONFIG_FILE"
+)
 
 chmod 600 "$CONFIG_FILE"
 

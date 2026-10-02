@@ -77,6 +77,186 @@ fn action_count(resp: &netget::scripting::types::ScriptResponse) -> u64 {
     resp.actions[0]["count"].as_u64().expect("count field")
 }
 
+async fn wait_for_script_marker(path: &std::path::Path) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resident script must begin the slow event");
+}
+
+fn marked_slow_script(path: &std::path::Path) -> ScriptConfig {
+    let path_literal = serde_json::to_string(&path.to_string_lossy()).unwrap();
+    python_config(&format!(
+        r#"
+import time
+count = 0
+def handle(event_type, event, message):
+    global count
+    count += 1
+    if event_type == "slow":
+        with open({path_literal}, "w") as marker:
+            marker.write("started")
+        time.sleep(60)
+    return [{{"type": "show_message", "count": count, "event": event_type}}]
+"#
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_cancelled_exchange_cannot_supply_the_next_events_reply() {
+    assert!(python_available(), "this regression requires python3");
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("started");
+    let config = marked_slow_script(&marker);
+    let first_config = config.clone();
+    let task = tokio::spawn(async move {
+        ResidentScriptManager::dispatch(
+            &first_config,
+            &make_input(700101, None, "slow", serde_json::json!({})),
+            ResidentScope::Server,
+        )
+        .await
+    });
+    wait_for_script_marker(&marker).await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let response = ResidentScriptManager::dispatch_with_timeout(
+        &config,
+        &make_input(700101, None, "fast", serde_json::json!({})),
+        ResidentScope::Server,
+        Duration::from_secs(2),
+    )
+    .await;
+    ResidentScriptManager::shutdown_server(700101).await;
+    let response = response.expect("cancelled process must be replaced on the next event");
+    assert_eq!(response.actions[0]["event"], "fast");
+    assert_eq!(
+        action_count(&response),
+        1,
+        "a replacement process starts fresh"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_extreme_timeout_is_an_error_without_panicking() {
+    assert!(python_available(), "this regression requires python3");
+    let config = python_config(PY_COUNTER);
+    let input = make_input(700115, None, "tick", serde_json::json!({}));
+    let result = ResidentScriptManager::dispatch_with_timeout(
+        &config,
+        &input,
+        ResidentScope::Server,
+        Duration::MAX,
+    )
+    .await;
+    // Rejection must not consume the event or damage the resident process.
+    let next = ResidentScriptManager::dispatch(&config, &input, ResidentScope::Server).await;
+    ResidentScriptManager::shutdown_server(700115).await;
+    let error = result.expect_err("an unrepresentable deadline must return an error");
+    assert!(
+        error.to_string().contains("exceeds the clock range"),
+        "{error:#}"
+    );
+    assert_eq!(action_count(&next.unwrap()), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_queue_wait_is_inside_the_events_timeout() {
+    assert!(python_available(), "this regression requires python3");
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("started");
+    let config = marked_slow_script(&marker);
+    let first_config = config.clone();
+    let task = tokio::spawn(async move {
+        ResidentScriptManager::dispatch(
+            &first_config,
+            &make_input(700102, None, "slow", serde_json::json!({})),
+            ResidentScope::Server,
+        )
+        .await
+    });
+    wait_for_script_marker(&marker).await;
+    let input = make_input(700102, None, "fast", serde_json::json!({}));
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        ResidentScriptManager::dispatch_with_timeout(
+            &config,
+            &input,
+            ResidentScope::Server,
+            Duration::from_millis(50),
+        ),
+    )
+    .await;
+    task.abort();
+    let _ = task.await;
+    ResidentScriptManager::shutdown_server(700102).await;
+    let error = result
+        .expect("queue wait must respect the shorter event budget")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("waiting for its turn"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_invalid_return_is_an_error_without_losing_process_state() {
+    let env = ScriptingEnvironment::detect();
+    let fixtures = [
+        (ScriptLanguage::Python, "count = 0\ndef handle(event_type, event, message):\n    global count\n    count += 1\n    if count == 1: return 42\n    return [{'type': 'show_message', 'count': count}]\n"),
+        (ScriptLanguage::JavaScript, "let count = 0; function handle() { count++; return count === 1 ? 42 : [{type:'show_message', count}]; }"),
+        (ScriptLanguage::Perl, "my $count = 0; sub handle { $count++; return $count == 1 ? 42 : [{type => 'show_message', count => $count}]; }"),
+    ];
+    for (index, (language, code)) in fixtures.into_iter().enumerate() {
+        assert!(
+            env.is_available(language),
+            "fixture requires {}",
+            language.as_str()
+        );
+        let owner = 700110 + index as u32;
+        let config = ScriptConfig {
+            language,
+            source: ScriptSource::Inline(code.into()),
+            handles_contexts: vec!["all".into()],
+        };
+        let input = make_input(owner, None, "tick", serde_json::json!({}));
+        let first = ResidentScriptManager::dispatch(&config, &input, ResidentScope::Server).await;
+        let second = ResidentScriptManager::dispatch(&config, &input, ResidentScope::Server).await;
+        ResidentScriptManager::shutdown_server(owner).await;
+        assert!(
+            first.is_err(),
+            "{} must reject a scalar return",
+            language.as_str()
+        );
+        assert_eq!(
+            action_count(&second.unwrap()),
+            2,
+            "the valid next event reuses the process"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_javascript_awaits_async_handlers() {
+    assert!(node_available(), "this regression requires node");
+    let config = ScriptConfig {
+        language: ScriptLanguage::JavaScript,
+        source: ScriptSource::Inline("async function handle() { await new Promise(resolve => setTimeout(resolve, 1)); return [{type:'show_message', count: 42}]; }".into()),
+        handles_contexts: vec!["all".into()],
+    };
+    let result = ResidentScriptManager::dispatch(
+        &config,
+        &make_input(700114, None, "tick", serde_json::json!({})),
+        ResidentScope::Server,
+    )
+    .await;
+    ResidentScriptManager::shutdown_server(700114).await;
+    assert_eq!(action_count(&result.unwrap()), 42);
+}
+
 /// The headline test: state persists across dispatches. Impossible per-event.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resident_counts_events_across_dispatches() {

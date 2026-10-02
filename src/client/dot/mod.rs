@@ -655,7 +655,7 @@ impl DotClient {
         trace!("DoT query hex: {}", hex::encode(&dns_bytes));
 
         // Length-prefix the message
-        let len = dns_bytes.len() as u16;
+        let len = u16::try_from(dns_bytes.len()).context("DoT request exceeds u16 frame length")?;
         let mut prefixed_message = len.to_be_bytes().to_vec();
         prefixed_message.extend_from_slice(&dns_bytes);
 

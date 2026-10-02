@@ -109,18 +109,13 @@ use std::path::{Path, PathBuf};
 /// a future arm that parks under a different presence value reopens it. Fix: a depth parameter,
 /// or an explicit `debug_assert` naming the invariant.
 ///
-/// **`scripting/event_handler.rs` (3).** `interpolate_value`, `contains_event_reference` and
-/// `validate_event_references` recurse over a handler's configuration JSON, which arrives over
-/// MCP and from the dashboard. Bounded by serde_json's parse limit rather than by anything
-/// here.
+/// Scripting's former three entries were removed after adding an explicit JSON
+/// tree budget and iterative preflight. They no longer rely only on serde's parse limit.
 const UNBOUNDED_RECURSIVE_DECODER_BASELINE: &[&str] = &[
     "client:grpc:mod.rs:json_to_dynamic_message",
     "client:grpc:mod.rs:json_to_field_value",
     "client:grpc:mod.rs:json_to_proto_value",
     "client:grpc:mod.rs:proto_value_to_json",
-    "scripting::contains_event_reference",
-    "scripting::interpolate_value",
-    "scripting::validate_event_references",
     "server:grpc:mod.rs:json_to_dynamic_message",
     "server:grpc:mod.rs:json_to_field_value",
     "server:grpc:mod.rs:json_to_proto_value",

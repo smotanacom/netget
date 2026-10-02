@@ -476,16 +476,10 @@ impl Client for VncClientProtocol {
                     .get("incremental")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
-                let x = action.get("x").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-                let y = action.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-                let width = action
-                    .get("width")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(u16::MAX as u64) as u16;
-                let height = action
-                    .get("height")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(u16::MAX as u64) as u16;
+                let x = super::rfb_u16(&action, "x", 0)?;
+                let y = super::rfb_u16(&action, "y", 0)?;
+                let width = super::rfb_u16(&action, "width", u16::MAX)?;
+                let height = super::rfb_u16(&action, "height", u16::MAX)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "request_framebuffer_update".to_string(),
@@ -499,19 +493,14 @@ impl Client for VncClientProtocol {
                 })
             }
             "send_pointer_event" => {
-                let x = action
-                    .get("x")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing or invalid 'x' field")? as u16;
-                let y = action
-                    .get("y")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing or invalid 'y' field")? as u16;
-                let button_mask = action
-                    .get("button_mask")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing or invalid 'button_mask' field")?
-                    as u8;
+                for key in ["x", "y", "button_mask"] {
+                    if action.get(key).is_none_or(serde_json::Value::is_null) {
+                        anyhow::bail!("Missing '{key}' field");
+                    }
+                }
+                let x = super::rfb_u16(&action, "x", 0)?;
+                let y = super::rfb_u16(&action, "y", 0)?;
+                let button_mask = super::rfb_u8(&action, "button_mask", 0)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "send_pointer_event".to_string(),

@@ -306,46 +306,74 @@ pub async fn run_non_interactive(
     // "join a group and log all received data" bound its socket, joined the group, logged
     // that its receive loop was listening, and was killed before a single datagram could
     // arrive. The same applies to every client with a read loop.
-    run_clients(&state, &limits, false).await;
+    run_clients(&state, &llm, &limits, false).await;
 
     Ok(())
 }
 
-/// Block while any client is still connected, until Ctrl+C, or until a [`RunLimits`] limit.
-///
-/// Returns immediately when there are no clients at all, so a one-shot instruction that
-/// started nothing still exits rather than hanging. `to_stderr` routes the one line saying why
-/// the wait ended.
-pub(crate) async fn run_clients(state: &AppState, limits: &RunLimits, to_stderr: bool) {
-    use tokio::time::sleep;
-
+/// Block while clients, servers created by tasks, or scheduled work remain live.
+/// No instances/tasks still exits immediately; completed tasks do not keep a run alive.
+pub(crate) async fn run_clients(
+    state: &AppState,
+    llm: &OllamaClient,
+    limits: &RunLimits,
+    to_stderr: bool,
+) {
     let shutdown = ctrl_c_flag();
-
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    let (status_tx, mut status_rx) = mpsc::unbounded_channel::<String>();
+    let owner = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_exit = owner.clone().drop_guard();
     loop {
-        let live = state
-            .get_all_clients()
-            .await
-            .into_iter()
-            .filter(|c| {
-                matches!(
-                    c.status,
-                    crate::state::ClientStatus::Connecting | crate::state::ClientStatus::Connected
-                )
-            })
-            .count();
-        if live == 0 {
+        while let Ok(message) = status_rx.try_recv() {
+            if !message.starts_with("__") {
+                emit_status_line(&message, to_stderr);
+            }
+        }
+        if !has_live_background_work(state).await {
             return;
         }
         if *shutdown.lock().await {
-            emit_status_line("\nShutting down clients...", to_stderr);
+            emit_status_line("\nShutting down background work...", to_stderr);
             return;
         }
         if let Some(reason) = limits.reached(state).await {
             emit_status_line(&format!("Stopping: {reason}."), to_stderr);
             return;
         }
-        sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            _ = ticker.tick() => {
+                crate::cli::execute_due_tasks_owned_public(state, llm, &status_tx, owner.clone()).await;
+                crate::llm::feedback::execute_due_feedback(state, llm, &status_tx).await;
+            }
+            Some(message) = status_rx.recv() => {
+                if !message.starts_with("__") {
+                    emit_status_line(&message, to_stderr);
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
     }
+}
+
+async fn has_live_background_work(state: &AppState) -> bool {
+    state.get_all_clients().await.iter().any(|client| {
+        matches!(
+            client.status,
+            crate::state::ClientStatus::Connecting | crate::state::ClientStatus::Connected
+        )
+    }) || state.get_all_servers().await.iter().any(|server| {
+        matches!(
+            server.status,
+            crate::state::server::ServerStatus::Starting
+                | crate::state::server::ServerStatus::Running
+        )
+    }) || state.get_all_tasks().await.iter().any(|task| {
+        matches!(
+            task.status,
+            crate::state::task::TaskStatus::Scheduled | crate::state::task::TaskStatus::Executing
+        )
+    })
 }
 
 /// Run every started server in non-interactive mode until they have all stopped, Ctrl+C, or a
@@ -417,6 +445,8 @@ pub(crate) async fn run_server(
     // Set up task execution ticker (execute tasks every 1 second, same as TUI mode)
     use tokio::time::interval;
     let mut task_execution_interval = interval(Duration::from_secs(1));
+    let owner = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_exit = owner.clone().drop_guard();
 
     // Main event loop
     loop {
@@ -445,7 +475,7 @@ pub(crate) async fn run_server(
                         )
                     })
                     .count();
-                if live == 0 {
+                if live == 0 && !has_live_background_work(state).await {
                     emit_status_line("All servers have stopped.", to_stderr);
                     break;
                 }
@@ -465,7 +495,7 @@ pub(crate) async fn run_server(
 
             // Execute due tasks every 1 second, and drain any feedback that has become due
             _ = task_execution_interval.tick() => {
-                crate::cli::execute_due_tasks_public(state, &llm, &status_tx).await;
+                crate::cli::execute_due_tasks_owned_public(state, &llm, &status_tx, owner.clone()).await;
                 crate::llm::feedback::execute_due_feedback(state, &llm, &status_tx).await;
             }
         }
@@ -556,6 +586,15 @@ pub async fn run_with_actions(
 
     // Execute each action
     for (i, action) in actions.iter().enumerate() {
+        if action.get("type").and_then(serde_json::Value::as_str) == Some("restore_session") {
+            if let Err(error) =
+                crate::utils::save_load::restore_session(&state, &llm, &action["session"]).await
+            {
+                failures.push(format!("action {} (session): {error:#}", i + 1));
+            }
+            continue;
+        }
+
         // Try to parse as common action
         if let Ok(common_action) = crate::llm::actions::common::CommonAction::from_json(action) {
             use crate::cli::{client_startup, server_startup};
@@ -710,8 +749,8 @@ pub async fn run_with_actions(
         return run_server(&state, llm, status_rx, limits).await;
     }
 
-    // Clients only: stay alive while any is connected, exactly as the prompt path does.
-    run_clients(&state, &limits, to_stderr).await;
+    // Clients and restored global tasks remain live until work finishes or a run limit.
+    run_clients(&state, &llm, &limits, to_stderr).await;
 
     Ok(())
 }

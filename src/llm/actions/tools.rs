@@ -465,7 +465,12 @@ pub async fn execute_read_file(
     }
 
     // Read file contents
-    let contents = match tokio::fs::read_to_string(&resolved_path).await {
+    let contents = match crate::utils::file_io::read_text_async(
+        &resolved_path,
+        MAX_FILE_SIZE as usize,
+    )
+    .await
+    {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to read file: {}", e);
@@ -642,7 +647,8 @@ pub async fn execute_web_search(query: &str) -> ToolResult {
                     );
                 }
 
-                match response.text().await {
+                match crate::client::http_fetch::read_response_text(response, 8 * 1024 * 1024).await
+                {
                     Ok(html) => {
                         // Parse search results from HTML
                         let results = parse_duckduckgo_results(&html);
@@ -722,7 +728,8 @@ async fn fetch_url(url: &str) -> ToolResult {
                     );
                 }
 
-                match response.text().await {
+                match crate::client::http_fetch::read_response_text(response, 8 * 1024 * 1024).await
+                {
                     Ok(html) => {
                         // Convert HTML to plain text
                         let text = html2text::from_read(html.as_bytes(), 120);

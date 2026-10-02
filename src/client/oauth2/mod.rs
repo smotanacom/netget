@@ -962,7 +962,7 @@ impl OAuth2Client {
         match client.post(&token_url).form(&params).send().await {
             Ok(response) => {
                 let status = response.status();
-                let body: serde_json::Value = response.json().await.unwrap_or_default();
+                let body: serde_json::Value = response.json().await?;
 
                 if status.is_success() {
                     // Token obtained successfully

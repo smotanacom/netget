@@ -24,6 +24,43 @@ use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 use serde_json::Value as JsonValue;
 
+/// Maximum length of server names, failure explanations and clipboard text.
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+/// Largest raw rectangle accepted (enough for an 8K 32-bit display).
+pub const MAX_RAW_RECTANGLE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read a server-controlled string length only after bounding its allocation.
+pub async fn read_server_text<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+    length: u32,
+) -> Result<Vec<u8>> {
+    if u64::from(length) > MAX_TEXT_BYTES as u64 {
+        bail!("VNC text length {length} exceeds the {MAX_TEXT_BYTES}-byte cap");
+    }
+    let mut text = vec![0; length as usize];
+    reader.read_exact(&mut text).await?;
+    Ok(text)
+}
+
+/// Consume raw pixels with bounded scratch space; the client reports update metadata
+/// rather than pixels, so retaining a full rectangle has no purpose.
+pub async fn discard_raw_rectangle<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+    width: u16,
+    height: u16,
+) -> Result<()> {
+    let length = u64::from(width) * u64::from(height) * 4;
+    if length > MAX_RAW_RECTANGLE_BYTES {
+        bail!("VNC raw rectangle is {length} bytes, over the {MAX_RAW_RECTANGLE_BYTES}-byte cap");
+    }
+    let consumed = tokio::io::copy(&mut reader.take(length), &mut tokio::io::sink()).await?;
+    if consumed != length {
+        bail!("truncated VNC raw rectangle: expected {length} bytes, received {consumed}");
+    }
+    Ok(())
+}
+
 /// Resolve the `key` field of `send_key_event` to an X11 keysym.
 ///
 /// Accepts a number (a keysym directly) or a **name** — a single character such as `"a"`, or a
@@ -100,6 +137,24 @@ struct ClientData {
 }
 
 /// VNC client that connects to a VNC server
+/// RFB security type 2: DES-ECB encrypt both challenge blocks with the first
+/// eight password bytes, zero padded and bit reversed for VNC's DES key order.
+pub fn vnc_auth_response(password: &[u8], mut challenge: [u8; 16]) -> [u8; 16] {
+    use des::cipher::{Block, BlockEncrypt, KeyInit};
+    let mut key = [0u8; 8];
+    for (target, source) in key.iter_mut().zip(password.iter()) {
+        *target = source.reverse_bits();
+    }
+    let cipher = des::Des::new_from_slice(&key).expect("DES uses an eight-byte key");
+    for block in challenge.chunks_exact_mut(8) {
+        let mut encrypted = Block::<des::Des>::default();
+        encrypted.copy_from_slice(block);
+        cipher.encrypt_block(&mut encrypted);
+        block.copy_from_slice(&encrypted);
+    }
+    challenge
+}
+
 pub struct VncClient;
 
 impl VncClient {
@@ -133,8 +188,12 @@ impl VncClient {
             .flatten();
 
         // Perform VNC handshake
-        let (fb_width, fb_height, server_name) =
-            Self::perform_handshake(&mut stream, password.as_deref()).await?;
+        let (fb_width, fb_height, server_name) = tokio::time::timeout(
+            crate::client::response_reader::RESPONSE_DEADLINE,
+            Self::perform_handshake(&mut stream, password.as_deref()),
+        )
+        .await
+        .context("VNC handshake deadline exceeded")??;
 
         info!(
             "VNC client {} connected: {}x{} ({})",
@@ -152,7 +211,8 @@ impl VncClient {
 
         // Split the stream now so the write half is a shared `Arc<Mutex<_>>`: the read loop, the
         // connected-event actions, and the injected-command task all write through it.
-        let (mut read_half, write_half) = tokio::io::split(stream);
+        let (read_half, write_half) = tokio::io::split(stream);
+        let mut read_half = crate::client::response_reader::FrameReader::new(read_half);
         let write_half_arc = Arc::new(Mutex::new(write_half));
 
         // Command channel for injected actions (the dashboard's [ send_key_event ] etc.).
@@ -246,10 +306,12 @@ impl VncClient {
         let task_registrar = app_state.clone();
         let task_handle = tokio::spawn(async move {
             loop {
+                read_half.end_frame();
                 // Read message type
                 let mut msg_type_buf = [0u8; 1];
                 match read_half.read_exact(&mut msg_type_buf).await {
                     Ok(_) => {
+                        read_half.start_frame(crate::client::response_reader::RESPONSE_DEADLINE);
                         let msg_type = msg_type_buf[0];
                         trace!(
                             "VNC client {} received message type: {}",
@@ -273,6 +335,7 @@ impl VncClient {
                                 .await
                                 {
                                     error!("Failed to handle framebuffer update: {}", e);
+                                    break;
                                 }
                             }
                             1 => {
@@ -281,6 +344,7 @@ impl VncClient {
                                     Self::handle_set_colour_map_entries(&mut read_half).await
                                 {
                                     error!("Failed to handle SetColourMapEntries: {}", e);
+                                    break;
                                 }
                             }
                             2 => {
@@ -302,6 +366,7 @@ impl VncClient {
                                 .await
                                 {
                                     error!("Failed to handle server cut text: {}", e);
+                                    break;
                                 }
                             }
                             _ => {
@@ -309,24 +374,24 @@ impl VncClient {
                                     "VNC client {}: Unknown message type: {}",
                                     client_id, msg_type
                                 );
+                                break;
                             }
                         }
                     }
                     Err(e) => {
                         info!("VNC client {} disconnected: {}", client_id, e);
-                        app_state
-                            .update_client_status(client_id, ClientStatus::Disconnected)
-                            .await;
-                        // Drop the command handle so the rail stops offering [ send ] on a dead
-                        // client; the command task's channel then closes and it exits.
-                        app_state.remove_client_handle(client_id).await;
-                        let _ = status_tx
-                            .send(format!("[CLIENT] VNC client {} disconnected", client_id));
-                        let _ = status_tx.send("__UPDATE_UI__".to_string());
                         break;
                     }
                 }
             }
+            // A framing failure is terminal too: its unconsumed payload cannot be
+            // interpreted as a new message, and its command handle must disappear.
+            app_state
+                .update_client_status(client_id, ClientStatus::Disconnected)
+                .await;
+            app_state.remove_client_handle(client_id).await;
+            let _ = status_tx.send(format!("[CLIENT] VNC client {} disconnected", client_id));
+            let _ = status_tx.send("__UPDATE_UI__".to_string());
         });
         task_registrar
             .register_client_task(client_id, task_handle)
@@ -363,8 +428,7 @@ impl VncClient {
             let mut reason_len = [0u8; 4];
             stream.read_exact(&mut reason_len).await?;
             let len = u32::from_be_bytes(reason_len);
-            let mut reason = vec![0u8; len as usize];
-            stream.read_exact(&mut reason).await?;
+            let reason = read_server_text(stream, len).await?;
             bail!(
                 "VNC connection failed: {}",
                 String::from_utf8_lossy(&reason)
@@ -377,7 +441,9 @@ impl VncClient {
         debug!("VNC security types: {:?}", security_types);
 
         // Choose security type (prefer None=1, then VNC=2)
-        let chosen_security = if security_types.contains(&1) {
+        let chosen_security = if password.is_some() && security_types.contains(&2) {
+            2
+        } else if security_types.contains(&1) {
             1 // None
         } else if security_types.contains(&2) {
             if password.is_none() {
@@ -409,8 +475,7 @@ impl VncClient {
             let mut reason_len = [0u8; 4];
             stream.read_exact(&mut reason_len).await?;
             let len = u32::from_be_bytes(reason_len);
-            let mut reason = vec![0u8; len as usize];
-            stream.read_exact(&mut reason).await?;
+            let reason = read_server_text(stream, len).await?;
             bail!(
                 "VNC authentication failed: {}",
                 String::from_utf8_lossy(&reason)
@@ -435,9 +500,20 @@ impl VncClient {
             server_init[23],
         ]);
 
-        let mut name_bytes = vec![0u8; name_length as usize];
-        stream.read_exact(&mut name_bytes).await?;
+        let name_bytes = read_server_text(stream, name_length).await?;
         let server_name = String::from_utf8_lossy(&name_bytes).to_string();
+
+        // Request the 32-bit true-color format the raw rectangle reader consumes.
+        // A server's default may be 8 or 16 bits, so assuming 32 without negotiating
+        // it would consume the next message as pixel data and lose framing.
+        stream
+            .write_all(&[
+                0, 0, 0, 0, // SetPixelFormat and padding
+                32, 24, 0, 1, // bits per pixel, depth, little endian, true color
+                0, 255, 0, 255, 0, 255, // red, green, blue maxima
+                16, 8, 0, 0, 0, 0, // shifts and padding
+            ])
+            .await?;
 
         // Send SetEncodings (support Raw encoding only for simplicity)
         let set_encodings = [
@@ -457,20 +533,9 @@ impl VncClient {
         let mut challenge = [0u8; 16];
         stream.read_exact(&mut challenge).await?;
 
-        // VNC authentication uses DES encryption
-        // For simplicity, we'll just send the password padded to 8 bytes
-        // This is not the correct DES encryption but demonstrates the flow
-        warn!("VNC authentication: Simplified implementation (may not work with all servers)");
-
-        let mut key = [0u8; 8];
-        let password_bytes = password.as_bytes();
-        for (i, &b) in password_bytes.iter().take(8).enumerate() {
-            key[i] = b;
-        }
-
-        // In a real implementation, we would use DES to encrypt the challenge
-        // For now, just send back the challenge (will likely fail)
-        stream.write_all(&challenge).await?;
+        stream
+            .write_all(&vnc_auth_response(password.as_bytes(), challenge))
+            .await?;
 
         Ok(())
     }
@@ -552,23 +617,10 @@ impl VncClient {
                 encoding
             );
 
-            // For Raw encoding (0), consume pixel data
-            // We're using 32-bit RGBA (4 bytes per pixel) based on server's pixel format
-            if encoding == 0 {
-                // Raw encoding: width * height * bytes_per_pixel
-                // Assuming 32-bit color (4 bytes per pixel) - typical for modern VNC
-                let pixel_data_size = (width as usize) * (height as usize) * 4;
-                let mut pixel_data = vec![0u8; pixel_data_size];
-                read_half.read_exact(&mut pixel_data).await?;
-                // Pixel data consumed and discarded
-            } else {
-                warn!(
-                    "Unsupported encoding: {}, may cause protocol issues",
-                    encoding
-                );
-                // For other encodings, we would need to parse differently
-                // Since we only advertised Raw encoding, this shouldn't happen
+            if encoding != 0 {
+                bail!("unsupported VNC rectangle encoding {encoding}; only Raw was negotiated");
             }
+            discard_raw_rectangle(read_half, width, height).await?;
         }
 
         let mut client_data_lock = client_data.lock().await;
@@ -662,8 +714,7 @@ impl VncClient {
 
         let text_length = u32::from_be_bytes([header[3], header[4], header[5], header[6]]);
 
-        let mut text_bytes = vec![0u8; text_length as usize];
-        read_half.read_exact(&mut text_bytes).await?;
+        let text_bytes = read_server_text(read_half, text_length).await?;
 
         let text = String::from_utf8_lossy(&text_bytes).to_string();
         debug!("VNC ServerCutText: {}", text);
@@ -938,7 +989,11 @@ impl VncClient {
             "send_client_cut_text" => {
                 let text = data["text"].as_str().unwrap_or("");
                 let text_bytes = text.as_bytes();
-                let length = text_bytes.len() as u32;
+                if text_bytes.len() > MAX_TEXT_BYTES {
+                    anyhow::bail!("VNC clipboard exceeds byte cap");
+                }
+                let length =
+                    u32::try_from(text_bytes.len()).context("VNC clipboard length exceeds u32")?;
 
                 let mut msg = vec![
                     6u8, // ClientCutText

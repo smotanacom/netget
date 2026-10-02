@@ -1,10 +1,11 @@
 //! Script runtime environment detection
 
 use super::types::ScriptLanguage;
-use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::warn;
+#[cfg(not(target_arch = "wasm32"))]
+use tracing::{debug, info};
 
 /// How long a single `<runtime> --version` probe may take before it is treated as absent.
 ///
@@ -56,22 +57,32 @@ impl ScriptingEnvironment {
 
     /// Run the probes. Public for the one caller that genuinely wants to re-probe.
     pub fn detect_uncached() -> Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self::default()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::detect_native()
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn detect_native() -> Self {
         debug!("Detecting scripting environments...");
-        debug!("Detecting Python...");
-        let python = Self::detect_python();
-        debug!("Python detection complete");
-
-        debug!("Detecting JavaScript/Node.js...");
-        let javascript = Self::detect_javascript();
-        debug!("JavaScript detection complete");
-
-        debug!("Detecting Go...");
-        let go = Self::detect_go();
-        debug!("Go detection complete");
-
-        debug!("Detecting Perl...");
-        let perl = Self::detect_perl();
-        debug!("Perl detection complete");
+        // A slow interpreter does not multiply startup latency by four.
+        let (python, javascript, go, perl) = std::thread::scope(|scope| {
+            let python = scope.spawn(Self::detect_python);
+            let javascript = scope.spawn(Self::detect_javascript);
+            let go = scope.spawn(Self::detect_go);
+            let perl = scope.spawn(Self::detect_perl);
+            (
+                python.join().unwrap_or_default(),
+                javascript.join().unwrap_or_default(),
+                go.join().unwrap_or_default(),
+                perl.join().unwrap_or_default(),
+            )
+        });
 
         info!("Scripting environment detection:");
         if let Some(ref ver) = python {
@@ -109,71 +120,90 @@ impl ScriptingEnvironment {
     /// `Command::output()`'s behaviour: block on the stdout pipe until the child exits, with
     /// no way out.
     pub fn probe(program: &str, args: &[&str]) -> Option<String> {
-        use std::process::Stdio;
+        Self::probe_with_timeout(program, args, PROBE_TIMEOUT)
+    }
 
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| debug!("{program} not found: {e}"))
-            .ok()?;
-
-        let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let out = child.wait_with_output().ok()?;
-                    if !status.success() {
-                        debug!("{program} probe failed: {status:?}");
-                        return None;
-                    }
-                    // Go writes its version to stdout; some runtimes use stderr.
-                    let text = if out.stdout.is_empty() {
-                        String::from_utf8_lossy(&out.stderr)
-                    } else {
-                        String::from_utf8_lossy(&out.stdout)
-                    };
-                    let text = text.trim().to_string();
-                    return (!text.is_empty()).then_some(text);
-                }
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        warn!(
-                            "{program} did not answer --version within {PROBE_TIMEOUT:?}; \
-                             treating it as unavailable. A hung runtime must not hold up \
-                             startup."
-                        );
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return None;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => {
-                    debug!("{program} probe error: {e}");
-                    return None;
-                }
-            }
+    /// Explicit budget is useful for callers probing a custom runtime.
+    pub fn probe_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (program, args, timeout);
+            None
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let program = program.to_owned();
+            let args = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            // This sync API may be called from a Tokio worker. Own a separate
+            // runtime rather than nesting block_on in the caller's runtime.
+            std::thread::Builder::new()
+                .name("netget-runtime-probe".into())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .ok()?;
+                    runtime.block_on(async move {
+                        use super::process_io::{read_bounded, ProcessGroup};
+                        use std::process::Stdio;
+                        let mut command = tokio::process::Command::new(&program);
+                        command
+                            .args(&args)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .kill_on_drop(true);
+                        ProcessGroup::configure(&mut command);
+                        let mut child = command.spawn().ok()?;
+                        let group = ProcessGroup::new(&child).ok()?;
+                        let stdout = child.stdout.take()?;
+                        let stderr = child.stderr.take()?;
+                        let outcome = tokio::time::timeout(timeout, async {
+                            tokio::try_join!(
+                                read_bounded(stdout, 64 * 1024),
+                                read_bounded(stderr, 64 * 1024),
+                                child.wait()
+                            )
+                        })
+                        .await;
+                        group.kill();
+                        let _ = child.start_kill();
+                        let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+                        let (stdout, stderr, status) = outcome.ok()?.ok()?;
+                        if !status.success() {
+                            return None;
+                        }
+                        let output = if stdout.is_empty() { stderr } else { stdout };
+                        let text = String::from_utf8_lossy(&output).trim().to_string();
+                        (!text.is_empty()).then_some(text)
+                    })
+                })
+                .ok()?
+                .join()
+                .ok()
+                .flatten()
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn detect_python() -> Option<String> {
         Self::probe("python3", &["--version"]).inspect(|v| debug!("python3 detected: {v}"))
     }
 
     /// Detect Node.js availability and version
+    #[cfg(not(target_arch = "wasm32"))]
     fn detect_javascript() -> Option<String> {
         Self::probe("node", &["--version"]).inspect(|v| debug!("node detected: {v}"))
     }
 
     /// Detect Go availability and version
+    #[cfg(not(target_arch = "wasm32"))]
     fn detect_go() -> Option<String> {
         Self::probe("go", &["version"]).inspect(|v| debug!("go detected: {v}"))
     }
 
     /// Detect Perl availability and version
+    #[cfg(not(target_arch = "wasm32"))]
     fn detect_perl() -> Option<String> {
         Self::probe("perl", &["--version"]).inspect(|v| debug!("perl detected: {v}"))
     }

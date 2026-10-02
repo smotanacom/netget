@@ -108,6 +108,8 @@ struct Inner {
     opened_at: Option<Instant>,
     trips: u64,
     last_error: Option<String>,
+    generation: u64,
+    probe_in_flight: bool,
 }
 
 /// See the module documentation.
@@ -135,35 +137,37 @@ impl CircuitBreaker {
                 opened_at: None,
                 trips: 0,
                 last_error: None,
+                generation: 0,
+                probe_in_flight: false,
             }),
         }
     }
 
-    /// Ask permission to make a request.
-    ///
-    /// Returns `Err` immediately — no I/O, no waiting — while the breaker is open. Once the
-    /// cooldown has elapsed the call is allowed through as a probe, and the caller is
-    /// expected to report the outcome via [`Self::record_success`] or
-    /// [`Self::record_failure`].
-    pub fn acquire(&self) -> Result<(), BreakerOpen> {
+    /// Acquire an owned request lease. Keep it until the request completes and report
+    /// its outcome through the lease. Only one half-open probe can be in flight;
+    /// cancelling it restarts the cooldown instead of leaving the breaker wedged.
+    pub fn acquire(&self) -> Result<BreakerPermit<'_>, BreakerOpen> {
         let mut inner = self.lock();
-        let Some(opened_at) = inner.opened_at else {
-            return Ok(());
+        let probe = if let Some(opened_at) = inner.opened_at {
+            let elapsed = opened_at.elapsed();
+            if inner.probe_in_flight || elapsed < self.cooldown {
+                return Err(BreakerOpen {
+                    consecutive_failures: inner.consecutive_failures,
+                    retry_in: self.cooldown.saturating_sub(elapsed),
+                    last_error: inner.last_error.clone(),
+                });
+            }
+            inner.probe_in_flight = true;
+            true
+        } else {
+            false
         };
-
-        let elapsed = opened_at.elapsed();
-        if elapsed < self.cooldown {
-            return Err(BreakerOpen {
-                consecutive_failures: inner.consecutive_failures,
-                retry_in: self.cooldown - elapsed,
-                last_error: inner.last_error.clone(),
-            });
-        }
-
-        // Cooldown expired: let one request through as a probe. The failure count is left
-        // at or above the threshold, so a failing probe re-opens the breaker immediately.
-        inner.opened_at = None;
-        Ok(())
+        Ok(BreakerPermit {
+            breaker: self,
+            generation: inner.generation,
+            probe,
+            completed: false,
+        })
     }
 
     /// Record that a request reached the backend and got an answer.
@@ -175,6 +179,8 @@ impl CircuitBreaker {
         inner.consecutive_failures = 0;
         inner.opened_at = None;
         inner.last_error = None;
+        inner.probe_in_flight = false;
+        inner.generation = inner.generation.wrapping_add(1);
     }
 
     /// Record a transport failure. Opens the breaker once the threshold is reached.
@@ -184,11 +190,15 @@ impl CircuitBreaker {
     pub fn record_failure(&self, error: &str) -> bool {
         let mut inner = self.lock();
         inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
-        inner.last_error = Some(error.to_string());
+        inner.last_error = Some(crate::utils::truncate_str(error, 4096).to_owned());
 
-        if inner.consecutive_failures >= self.failure_threshold && inner.opened_at.is_none() {
+        if inner.consecutive_failures >= self.failure_threshold
+            && (inner.opened_at.is_none() || inner.probe_in_flight)
+        {
             inner.opened_at = Some(Instant::now());
-            inner.trips += 1;
+            inner.trips = inner.trips.saturating_add(1);
+            inner.probe_in_flight = false;
+            inner.generation = inner.generation.wrapping_add(1);
             return true;
         }
         false
@@ -245,6 +255,65 @@ impl CircuitBreaker {
         // A poisoned lock only means some other thread panicked while holding it; the
         // counters are plain integers, so the state is still coherent.
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A request's circuit-breaker lease. Stale outcomes from requests started before
+/// a trip/reset cannot reopen or close the current generation of the breaker.
+#[must_use = "hold the lease for the request and record its outcome"]
+#[derive(Debug)]
+pub struct BreakerPermit<'a> {
+    breaker: &'a CircuitBreaker,
+    generation: u64,
+    probe: bool,
+    completed: bool,
+}
+
+impl BreakerPermit<'_> {
+    pub fn record_success(mut self) {
+        let mut inner = self.breaker.lock();
+        if inner.generation == self.generation {
+            inner.consecutive_failures = 0;
+            inner.opened_at = None;
+            inner.last_error = None;
+            inner.probe_in_flight = false;
+            if self.probe {
+                inner.generation = inner.generation.wrapping_add(1);
+            }
+        }
+        self.completed = true;
+    }
+
+    /// True when this failure opens (or reopens) the circuit.
+    pub fn record_failure(mut self, error: &str) -> bool {
+        let mut inner = self.breaker.lock();
+        let mut tripped = false;
+        if inner.generation == self.generation {
+            inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
+            inner.last_error = Some(crate::utils::truncate_str(error, 4096).to_owned());
+            if inner.consecutive_failures >= self.breaker.failure_threshold {
+                inner.opened_at = Some(Instant::now());
+                inner.probe_in_flight = false;
+                inner.trips = inner.trips.saturating_add(1);
+                inner.generation = inner.generation.wrapping_add(1);
+                tripped = true;
+            }
+        }
+        self.completed = true;
+        tripped
+    }
+}
+
+impl Drop for BreakerPermit<'_> {
+    fn drop(&mut self) {
+        if self.probe && !self.completed {
+            let mut inner = self.breaker.lock();
+            if inner.generation == self.generation && inner.probe_in_flight {
+                inner.probe_in_flight = false;
+                inner.opened_at = Some(Instant::now());
+                inner.generation = inner.generation.wrapping_add(1);
+            }
+        }
     }
 }
 

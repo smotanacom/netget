@@ -400,8 +400,9 @@ impl Client for Http3ClientProtocol {
 
                 let priority = action
                     .get("priority")
-                    .and_then(|v| v.as_u64())
-                    .map(|p| p as u8);
+                    .filter(|value| !value.is_null())
+                    .map(|_| crate::client::wire_values::number::<u8>(&action, "priority", 0))
+                    .transpose()?;
 
                 // Return custom result with request data
                 Ok(ClientActionResult::Custom {

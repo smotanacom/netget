@@ -294,3 +294,10 @@ Deterministic variant (no LLM call):
 - RFC 9000/9001 (QUIC) — what this implements
 - RFC 9114 (HTTP/3), RFC 9204 (QPACK) — what this does **not** implement
 - [quinn](https://docs.rs/quinn/)
+
+## Shared certificate validation
+
+QUIC now uses `extract_required_tls_config_from_params`, the mandatory-TLS form
+of the shared certificate extractor. SAN arrays must contain strings; malformed
+entries fail with their index before binding. Certificate validity/range and
+certificate/key pairing use the same checks as the other TLS protocols.

@@ -1137,18 +1137,22 @@ fn framebuffer_update_header(width: u16, height: u16) -> Vec<u8> {
 /// here as an error instead of silently killing the connection task.
 async fn render_frame(width: u16, height: u16, commands: Vec<DisplayCommand>) -> Result<Vec<u8>> {
     let (w, h) = (width as u32, height as u32);
-    let pixels = tokio::task::spawn_blocking(move || {
+    let pixels = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
         let mut canvas = DisplayCanvas::new(w, h);
         canvas.add_commands(commands);
-        let image = canvas.render();
-        let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+        let image = canvas
+            .try_render()
+            .context("Invalid VNC display commands")?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(w as usize * h as usize * 4)
+            .context("Unable to allocate VNC framebuffer")?;
         for pixel in image.pixels() {
             out.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 0]); // BGRX
         }
-        out
+        Ok(out)
     })
     .await
-    .context("VNC framebuffer rendering failed")?;
+    .context("VNC framebuffer rendering failed")??;
 
     debug!("Rendered VNC framebuffer: {}x{}", width, height);
     Ok(pixels)

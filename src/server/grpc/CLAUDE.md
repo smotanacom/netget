@@ -94,8 +94,17 @@ scalar path.
 
 Numeric conversions are range-checked (`i32::try_from`) rather than truncated with `as`, and an
 enum given a number is validated against the enum's declared values, matching what the
-string branch already did. A field name that is not in the message is logged rather than
-silently dropped.
+string branch already did. Unknown field names and non-object messages are rejected rather
+than dropped or converted to empty messages. Multiple members of a `oneof`, map keys that
+normalize to the same protobuf key, float overflow or underflow to zero, and non-finite
+protobuf values are errors.
+
+Both the client and server use `value_codec.rs`, with explicit bounds independent of the
+serde/prost parser limits: depth 32, 100,000 logical nodes, and 8 MiB of retained-content
+accounting. Root depth is zero; a field, list element, or map value adds one. Accounting
+charges 64 bytes per node, 32 bytes per key plus its text, and strings/base64 content before
+copying or decoding. These limits apply across siblings as well as recursion and are distinct
+from the 4 MiB inbound wire-body cap. Conversion returns complete values or an error.
 
 ## Error handling
 
@@ -117,6 +126,8 @@ to return 404/415/400/500 respectively and now all return 200 with the right `gr
 | request compression flag set | `12 UNIMPLEMENTED` |
 | body over 4 MiB | `8 RESOURCE_EXHAUSTED` |
 | request message fails protobuf decode | `3 INVALID_ARGUMENT` |
+| request value exceeds conversion depth/node/byte bounds | `8 RESOURCE_EXHAUSTED` |
+| request value cannot be represented as finite field-name JSON | `3 INVALID_ARGUMENT` |
 | everything else | `13 INTERNAL` |
 
 ## Correlation
@@ -272,6 +283,11 @@ Return the sum of a and b.
 ```
 
 ## Verified
+
+`tests/grpc_value_bounds_test.rs` covers both peers' shared converters with in-memory schema
+and value fixtures, including programmatically constructed deep protobuf trees, exact limits,
+base64 expansion, shared aggregate budgets, invalid values, and valid nested wire round trips.
+This CPU-only target requires the `grpc` feature and no protoc, model, or external service.
 
 **State: Beta**, September 2026, on **grpcurl** — grpc-go, the reference implementation, and
 deliberately not tonic, which this crate depends on and this server does not use.

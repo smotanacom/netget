@@ -41,7 +41,7 @@ pub enum TaskScope {
     /// for a specific connection. Automatically cleaned up when connection closes.
     Connection(ServerId, ConnectionId),
     /// Client-scoped task - uses client's instruction and protocol actions
-    /// Automatically cleaned up when client disconnects.
+    /// Automatically cleaned up when the client is removed.
     Client(ClientId),
 }
 
@@ -107,9 +107,10 @@ impl ScheduledTask {
         delay_secs: u64,
         instruction: String,
         context: Option<serde_json::Value>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let now = Instant::now();
-        Self {
+        let next_execution = checked_task_deadline(delay_secs)?;
+        Ok(Self {
             id,
             name,
             scope,
@@ -118,10 +119,10 @@ impl ScheduledTask {
             context,
             status: TaskStatus::Scheduled,
             created_at: now,
-            next_execution: now + Duration::from_secs(delay_secs),
+            next_execution,
             last_error: None,
             failure_count: 0,
-        }
+        })
     }
 
     /// Create a new recurring task
@@ -133,9 +134,18 @@ impl ScheduledTask {
         max_executions: Option<u64>,
         instruction: String,
         context: Option<serde_json::Value>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let now = Instant::now();
-        Self {
+        anyhow::ensure!(
+            interval_secs > 0,
+            "recurring interval_secs must be greater than zero"
+        );
+        anyhow::ensure!(
+            max_executions != Some(0),
+            "max_executions must be greater than zero"
+        );
+        let next_execution = checked_task_deadline(interval_secs)?;
+        Ok(Self {
             id,
             name,
             scope,
@@ -148,10 +158,10 @@ impl ScheduledTask {
             context,
             status: TaskStatus::Scheduled,
             created_at: now,
-            next_execution: now + Duration::from_secs(interval_secs),
+            next_execution,
             last_error: None,
             failure_count: 0,
-        }
+        })
     }
 
     /// Create a new connection-scoped one-shot task
@@ -163,7 +173,7 @@ impl ScheduledTask {
         delay_secs: u64,
         instruction: String,
         context: Option<serde_json::Value>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         Self::new_one_shot(
             id,
             name,
@@ -185,7 +195,7 @@ impl ScheduledTask {
         max_executions: Option<u64>,
         instruction: String,
         context: Option<serde_json::Value>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         Self::new_recurring(
             id,
             name,
@@ -195,6 +205,37 @@ impl ScheduledTask {
             instruction,
             context,
         )
+    }
+
+    /// Build a nested startup/update task before mutating its owner. Explicit
+    /// initial delays apply to recurring tasks too; omission starts them immediately.
+    pub fn from_definition(
+        definition: &crate::llm::actions::common::ServerTaskDefinition,
+        scope: TaskScope,
+    ) -> anyhow::Result<Self> {
+        let next_execution = checked_task_deadline(definition.delay_secs.unwrap_or(0))?;
+        let mut task = if definition.recurring {
+            Self::new_recurring(
+                TaskId::new(0),
+                definition.task_id.clone(),
+                scope,
+                definition.interval_secs.unwrap_or(60),
+                definition.max_executions,
+                definition.instruction.clone(),
+                definition.context.clone(),
+            )?
+        } else {
+            Self::new_one_shot(
+                TaskId::new(0),
+                definition.task_id.clone(),
+                scope,
+                definition.delay_secs.unwrap_or(0),
+                definition.instruction.clone(),
+                definition.context.clone(),
+            )?
+        };
+        task.next_execution = next_execution;
+        Ok(task)
     }
 
     /// Get the interval for recurring tasks
@@ -297,4 +338,28 @@ pub fn format_duration(duration: Duration) -> String {
     } else {
         format!("{}d", secs / 86400)
     }
+}
+
+/// Reject unrepresentable delays instead of panicking, clamping, or executing early.
+pub fn checked_task_deadline(seconds: u64) -> anyhow::Result<Instant> {
+    Instant::now()
+        .checked_add(Duration::from_secs(seconds))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "scheduled task delay/interval of {} seconds exceeds the supported clock range",
+                seconds
+            )
+        })
+}
+
+/// Validate and prepare a complete batch atomically, before any instance mutation.
+pub fn prepare_tasks(
+    definitions: Option<&[crate::llm::actions::common::ServerTaskDefinition]>,
+    scope: TaskScope,
+) -> anyhow::Result<Vec<ScheduledTask>> {
+    definitions
+        .unwrap_or_default()
+        .iter()
+        .map(|definition| ScheduledTask::from_definition(definition, scope.clone()))
+        .collect()
 }

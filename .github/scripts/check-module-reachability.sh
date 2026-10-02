@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fail if any tracked .rs file is unreachable from every cargo target root, and keep the
+# Fail if any repository .rs file is unreachable from every cargo target root, and keep the
 # stragglers formatted.
 #
 # Why this exists
@@ -70,7 +70,11 @@ fi
 # (examples/*/src/**) are separate cargo packages, outside this workspace's metadata, and are
 # covered by the rustfmt sweep in step 4 instead.
 # ---------------------------------------------------------------------------------------
-git ls-files '*.rs' | grep -E '^(src|tests)/' | sort -u > "$tmp/ondisk.txt"
+# Include new source files and exclude working-tree deletions before they are staged.
+# This makes the local check agree with the eventual committed module graph.
+git ls-files --cached --others --exclude-standard '*.rs' | grep -E '^(src|tests)/' \
+  | while IFS= read -r source; do [ ! -f "$source" ] || printf '%s\n' "$source"; done \
+  | sort -u > "$tmp/ondisk.txt"
 
 # ---------------------------------------------------------------------------------------
 # 3. Allowlist, and unreachable files that are not on it.
@@ -87,7 +91,7 @@ comm -23 "$tmp/unreachable.txt" "$tmp/allow.txt" > "$tmp/offenders.txt"
 status=0
 
 if [ -s "$tmp/offenders.txt" ]; then
-  err "Unreachable Rust file(s): present in git but declared by no 'mod' statement, so cargo \
+  err "Unreachable Rust file(s): present in the working tree but declared by no 'mod' statement, so cargo \
 never compiles them. Tests inside them never run; lints and rustfmt never see them."
   sed 's/^/    /' "$tmp/offenders.txt"
   echo
@@ -112,19 +116,21 @@ while IFS= read -r entry; do
 done < "$tmp/allow.txt"
 
 # ---------------------------------------------------------------------------------------
-# 4. rustfmt over every tracked file, allowlist excluded.
+# 4. rustfmt over every existing tracked/new file, allowlist excluded.
 #
-# `cargo fmt --check` covers the reachable set. This covers everything git knows about,
+# `cargo fmt --check` covers the reachable set. This covers the working tree,
 # including targets cargo metadata does not enumerate (nested example crates) — so a file can
 # never hide from formatting by being undeclared, only by being explicitly declared dead.
 # ---------------------------------------------------------------------------------------
-git ls-files '*.rs' | sort -u > "$tmp/tracked.txt"
+git ls-files --cached --others --exclude-standard '*.rs' \
+  | while IFS= read -r source; do [ ! -f "$source" ] || printf '%s\n' "$source"; done \
+  | sort -u > "$tmp/tracked.txt"
 comm -23 "$tmp/tracked.txt" "$tmp/allow.txt" > "$tmp/to_fmt.txt"
 
 if [ -s "$tmp/to_fmt.txt" ]; then
   # `xargs < file` rather than `xargs -a file`: BSD xargs (macOS) has no -a.
   if ! xargs rustfmt --edition "$EDITION" --check < "$tmp/to_fmt.txt" > "$tmp/fmt.txt" 2>&1; then
-    err "rustfmt --check failed on tracked file(s) (run 'cargo fmt', then rustfmt any file \
+    err "rustfmt --check failed on working-tree file(s) (run 'cargo fmt', then rustfmt any file \
 listed below by hand):"
     grep -oE '^Diff in [^:]+' "$tmp/fmt.txt" | sed "s|Diff in ${repo_root}/||" | sort -u \
       | sed 's/^/    /'
@@ -134,7 +140,7 @@ fi
 
 if [ "$status" = "0" ]; then
   echo "OK: $(wc -l < "$tmp/ondisk.txt" | tr -d ' ') files under src/ and tests/ are all reachable \
-($(wc -l < "$tmp/allow.txt" | tr -d ' ') allowlisted), and every tracked .rs file is formatted."
+($(wc -l < "$tmp/allow.txt" | tr -d ' ') allowlisted), and every working-tree .rs file is formatted."
 fi
 
 exit "$status"

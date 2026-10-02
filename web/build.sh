@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 
 profile=web
 profile_dir=web
+target_dir="${CARGO_TARGET_DIR:-target}"
 wasm_ar_env=()
 if [[ "${1:-}" == "--dev" ]]; then
     profile=dev
@@ -55,13 +56,13 @@ if [[ "$have" != "$locked" ]]; then
 fi
 
 echo "== cargo build (profile: $profile)"
-env "${wasm_ar_env[@]}" cargo build -p netget-web --target wasm32-unknown-unknown --profile "$profile"
+env "${wasm_ar_env[@]}" cargo build --locked -p netget-web --target wasm32-unknown-unknown --profile "$profile"
 
 out=site/demo/pkg
 mkdir -p "$out"
 echo "== wasm-bindgen -> $out"
 wasm-bindgen --target web --no-typescript --out-dir "$out" \
-    "target/wasm32-unknown-unknown/$profile_dir/netget_web.wasm"
+    "$target_dir/wasm32-unknown-unknown/$profile_dir/netget_web.wasm"
 
 if command -v wasm-opt >/dev/null 2>&1 && [[ "$profile" == "web" ]]; then
     echo "== wasm-opt -Oz"

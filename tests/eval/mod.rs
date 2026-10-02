@@ -50,4 +50,5 @@ pub mod probe;
 pub mod probe_check;
 pub mod report;
 pub mod runner;
+pub mod scoring;
 pub mod suites;

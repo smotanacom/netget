@@ -165,7 +165,8 @@ The hardcoded implementation eliminates most sources of flakiness found in LLM-d
 ### Dynamic Port Allocation
 
 ```rust
-let port = helpers::get_available_port().await?;
+// Request port 0 at startup; read the socket owned by the running server.
+let port = server.port;
 ```
 
 ### Timeout Wrapping

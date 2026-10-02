@@ -79,16 +79,17 @@ impl NetGetWrapper {
         // Setup pipes
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
 
         // Start process
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .with_context(|| format!("Failed to start NetGet binary at {:?}", self.binary_path))?;
 
-        if let Some(pid) = child.id() {
-            self.death_tie = child_guard::arm_death_tie(pid);
-        }
+        let (mut child, tie) = protect_child(child, child_guard::arm_death_tie).await?;
+        self.death_tie = Some(tie);
 
         // Take stdin
         self.stdin = child.stdin.take();
@@ -230,7 +231,18 @@ impl NetGetWrapper {
     /// Check if NetGet process is still running
     pub fn is_running(&mut self) -> bool {
         if let Some(ref mut process) = self.process {
-            matches!(process.try_wait(), Ok(None))
+            match process.try_wait() {
+                Ok(None) => true,
+                Ok(Some(_)) => {
+                    // try_wait reaps: do not retain an armed numeric PID after
+                    // the kernel is free to reuse it for an unrelated process.
+                    if let Some(mut tie) = self.death_tie.take() {
+                        tie.disarm();
+                    }
+                    false
+                }
+                Err(_) => false,
+            }
         } else {
             false
         }
@@ -238,32 +250,31 @@ impl NetGetWrapper {
 
     /// Stop NetGet gracefully
     pub async fn stop(&mut self) -> Result<()> {
-        if let Some(mut process) = self.process.take() {
-            // Try graceful shutdown first
-            if let Some(mut stdin) = self.stdin.take() {
-                let _ = stdin.write_all(b"exit\n").await;
-                let _ = stdin.flush().await;
-            }
-
-            // Wait briefly for graceful shutdown
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            // Force kill if still running
-            match process.try_wait() {
-                Ok(None) => {
-                    process
-                        .kill()
-                        .await
-                        .context("Failed to kill NetGet process")?;
+        // Keep the child in self across every await. Cancelling stop must not
+        // detach its only owner while leaving this wrapper alive.
+        if let Some(process) = self.process.as_mut() {
+            let stdin = self.stdin.take();
+            let graceful = async {
+                if let Some(mut stdin) = stdin {
+                    let _ = stdin.write_all(b"exit\n").await;
+                    let _ = stdin.flush().await;
                 }
-                _ => {} // Already stopped
+                process.wait().await
+            };
+            match tokio::time::timeout(Duration::from_secs(1), graceful).await {
+                Ok(result) => {
+                    result.context("Failed to reap NetGet process")?;
+                }
+                Err(_) => {
+                    signal_owned_process(process);
+                    tokio::time::timeout(Duration::from_secs(2), process.wait())
+                        .await
+                        .context("Timed out reaping NetGet after termination")?
+                        .context("Failed to reap NetGet process")?;
+                }
             }
-
-            process
-                .wait()
-                .await
-                .context("Failed to wait for process exit")?;
         }
+        self.process.take();
 
         // Released only once the process has been waited for.
         if let Some(mut tie) = self.death_tie.take() {
@@ -309,15 +320,55 @@ impl Drop for NetGetWrapper {
             handle.abort();
         }
 
-        // Try to clean up the process
+        let mut tie = self.death_tie.take();
         if let Some(mut process) = self.process.take() {
-            let _ = process.start_kill();
-        }
-        // After the kill, never before.
-        if let Some(mut tie) = self.death_tie.take() {
+            if matches!(process.try_wait(), Ok(Some(_))) {
+                if let Some(tie) = tie.as_mut() {
+                    tie.disarm();
+                }
+                return;
+            }
+            signal_owned_process(&mut process);
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if matches!(
+                        tokio::time::timeout(Duration::from_secs(2), process.wait()).await,
+                        Ok(Ok(_))
+                    ) {
+                        if let Some(tie) = tie.as_mut() {
+                            tie.disarm();
+                        }
+                    }
+                    // On failure/cancellation the armed tie remains a backstop.
+                });
+            }
+            // With no runtime, kill_on_drop and the armed OS tie still clean up.
+        } else if let Some(tie) = tie.as_mut() {
             tie.disarm();
         }
     }
+}
+
+fn signal_owned_process(child: &mut Child) {
+    // This wrapper creates a private process group at spawn, so no unrelated
+    // process shares its group. A reaped child's id is None and never signalled.
+    if let Some(pid) = child.id() {
+        unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        let _ = child.start_kill();
+    }
+}
+
+async fn protect_child(
+    mut child: Child,
+    arm: impl FnOnce(u32) -> Option<child_guard::DeathTie>,
+) -> Result<(Child, child_guard::DeathTie)> {
+    let pid = child.id().context("Spawned child has no process ID")?;
+    if let Some(tie) = arm(pid) {
+        return Ok((child, tie));
+    }
+    signal_owned_process(&mut child);
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    anyhow::bail!("Failed to arm parent-death cleanup for child {pid}");
 }
 
 #[cfg(test)]
@@ -333,5 +384,23 @@ mod tests {
         };
         assert_eq!(info.id, 1);
         assert_eq!(info.port, 8080);
+    }
+
+    #[tokio::test]
+    async fn failed_death_tie_arming_kills_and_reaps_child() {
+        let child = Command::new("/bin/sleep")
+            .arg("600")
+            .kill_on_drop(true)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let result = protect_child(child, |_| None).await;
+        assert!(result.is_err());
+        assert_ne!(
+            unsafe { libc::kill(pid as libc::pid_t, 0) },
+            0,
+            "failure to arm cannot leave a live or unreaped child"
+        );
     }
 }

@@ -71,17 +71,16 @@ fn a_probe_is_allowed_after_the_cooldown_and_a_failing_probe_reopens() {
     std::thread::sleep(Duration::from_millis(150));
 
     assert_eq!(breaker.status().state, BreakerState::HalfOpen);
-    assert!(breaker.acquire().is_ok(), "cooldown elapsed: probe allowed");
+    let probe = breaker.acquire().expect("cooldown elapsed: probe allowed");
 
     // A failing probe re-opens it for another cooldown.
-    breaker.record_failure("connection refused");
+    probe.record_failure("connection refused");
     assert!(breaker.acquire().is_err());
     assert_eq!(breaker.status().trips, 2);
 
     // A succeeding probe closes it.
     std::thread::sleep(Duration::from_millis(150));
-    assert!(breaker.acquire().is_ok());
-    breaker.record_success();
+    breaker.acquire().unwrap().record_success();
     assert_eq!(breaker.status().state, BreakerState::Closed);
     assert!(breaker.acquire().is_ok());
 }

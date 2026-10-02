@@ -124,6 +124,13 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Verify archives and build checksum manifest
+        run: |
+          cd artifacts
+          for checksum in *.sha256; do
+            sha256sum --check "$checksum"
+          done
+          cat ./*.sha256 | LC_ALL=C sort -k2 > SHA256SUMS
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,6 +157,12 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Verify downloaded archives
+        run: |
+          cd artifacts
+          for checksum in *.sha256; do
+            sha256sum --check "$checksum"
+          done
       - name: Extract binaries
         run: |
           mkdir -p binaries

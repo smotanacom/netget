@@ -8,6 +8,7 @@ pub mod event_handler;
 pub mod executor;
 pub mod highlight;
 pub mod manager;
+pub mod process_io;
 pub mod resident;
 pub mod types;
 

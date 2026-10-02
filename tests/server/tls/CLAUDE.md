@@ -16,6 +16,8 @@ Black-box testing approach:
 
 ## Test Files
 
+- `certificate_validation_test.rs` - four direct CPU-only checks for malformed SANs,
+  lifetime arithmetic, a valid wildcard certificate, and malformed SAN array entries.
 - `e2e_test.rs` - End-to-end tests with real TLS clients
 - `llm_failure_test.rs` - what the peer gets when the backend fails: a close_notify alert,
   then `Ok(0)` rather than `UnexpectedEof`

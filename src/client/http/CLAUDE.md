@@ -322,3 +322,23 @@ Rated against the four-condition client bar in the root `CLAUDE.md`, on the evid
 Not covered by that evidence: HTTPS, HTTP/2, redirects, compressed bodies, and the browser
 transport, which is proven against NetGet's own servers only (`transport_test.rs` natively,
 `web/test/smoke.mjs` in the bundle against the HLS server) — a chunked response among them.
+
+## Transport cancellation and extension methods (October 2026 review)
+
+The shared HTTP transport owns each spawned connection driver through an abort-on-drop
+guard. A timeout or dropped exchange cancels the driver too, on both HTTP/1 and HTTP/2.
+Method validation accepts any HTTP token, including WebDAV's PROPFIND, COPY, MOVE and
+MKCOL; a fixed GET/POST-style allowlist was inappropriate for a shared transport.
+Extension method casing is preserved; only the seven previously supported methods
+retain case-insensitive normalization (for example, `get` becomes `GET`).
+The CPU-only regressions in `tests/client_review_regression_test.rs::http` exercise
+in-memory wire requests and cancellation after the peer observes request bytes.
+
+## Native buffered response policy (October 2026 follow-up)
+
+Both FetchClient backends now apply `with_max_body` to buffered bytes/text/JSON (8 MiB default).
+Native streaming `chunk()` downloads retain their existing streaming behavior and caller limits.
+Native buffered reads check declared and received sizes, enforce a 30-second body deadline,
+and retain reqwest charset decoding. Shared `read_response_bytes/text/json` helpers apply the
+same policy to direct reqwest users (including MCP). Body-read failures propagate to callers.
+HTTP transport targets reject invalid explicit ports, userinfo, and unescaped whitespace.

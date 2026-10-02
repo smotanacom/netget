@@ -3,6 +3,8 @@
 pub mod bencode;
 pub mod bson_depth;
 pub mod clock;
+pub mod file_io;
+pub mod json_budget;
 pub mod line_reader;
 pub mod redact;
 pub mod resp;

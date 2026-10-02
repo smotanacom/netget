@@ -371,8 +371,7 @@ impl Fido2HidHandler {
                  denying",
                 details.operation, details.rp_id
             );
-            let packets = self.run_command(cid, cmd, data, UserPresence::Denied);
-            return packets;
+            return self.deny_presence_command(cid, cmd, data);
         };
 
         info!(
@@ -382,7 +381,7 @@ impl Fido2HidHandler {
 
         if tx.send(details).is_err() {
             warn!("FIDO2 approval channel closed; denying the request");
-            return self.run_command(cid, cmd, data, UserPresence::Denied);
+            return self.deny_presence_command(cid, cmd, data);
         }
 
         self.parked = Some(ParkedCommand {
@@ -395,6 +394,42 @@ impl Fido2HidHandler {
             cid,
             KeepaliveStatus::UpNeeded,
         )]
+    }
+
+    /// Replay a refused presence request exactly once, without entering dispatch/parking.
+    ///
+    /// Previously park called run_command again and relied on the CTAP handlers never
+    /// returning NeedsApproval for Denied. Keep their normal protocol errors, but refuse
+    /// explicitly if that invariant ever regresses; no handler outcome can recurse here.
+    fn deny_presence_command(
+        &mut self,
+        cid: u32,
+        cmd: CtapHidCommand,
+        data: &[u8],
+    ) -> Vec<Vec<u8>> {
+        let response = match cmd {
+            CtapHidCommand::Msg => match self.u2f.process_command(data, UserPresence::Denied) {
+                U2fOutcome::Response(bytes) => bytes,
+                U2fOutcome::NeedsApproval(_) => {
+                    error!("U2F requested approval after denial; refusing without replay");
+                    u2f::U2fResponse::error(u2f::SW_CONDITIONS_NOT_SATISFIED).to_bytes()
+                }
+            },
+            CtapHidCommand::Cbor => match self.ctap2.process_command(data, UserPresence::Denied) {
+                Ctap2Outcome::Response(bytes) => bytes,
+                Ctap2Outcome::NeedsApproval(_) => {
+                    error!("CTAP2 requested approval after denial; refusing without replay");
+                    ctap2::Ctap2Response::error(ctap2::Ctap2Status::OperationDenied).to_bytes()
+                }
+            },
+            _ => {
+                return vec![CtapHidPacket::build_error(
+                    cid,
+                    ctaphid::CtapHidError::InvalidCmd,
+                )];
+            }
+        };
+        self.ctaphid.fragment_response(cid, cmd, &response)
     }
 }
 

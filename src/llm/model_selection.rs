@@ -42,8 +42,7 @@ pub async fn query_available_models(ollama_url: &str) -> Result<Vec<ModelInfo>> 
             anyhow::bail!("Ollama API returned error status: {}", response.status());
         }
 
-        let body = response
-            .text()
+        let body = crate::client::http_fetch::read_response_text(response, 8 * 1024 * 1024)
             .await
             .context("Failed to read response from Ollama")?;
 

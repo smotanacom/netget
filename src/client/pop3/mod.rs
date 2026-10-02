@@ -13,12 +13,84 @@ use anyhow::Result;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 pub use actions::Pop3ClientProtocol;
+
+/// Serialized POP3 writes and their reply expectations share one lock. The reader
+/// cannot observe a written command without its corresponding framing expectation.
+pub struct CommandWriter<W> {
+    writer: W,
+    replies: std::collections::VecDeque<bool>,
+    failed: bool,
+}
+
+impl<W: tokio::io::AsyncWrite + Unpin> CommandWriter<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer,
+            replies: Default::default(),
+            failed: false,
+        }
+    }
+
+    pub async fn send(&mut self, command: &str) -> Result<usize> {
+        if self.failed {
+            anyhow::bail!("POP3 writer is unusable after an interrupted write");
+        }
+        if command.is_empty() || command.contains(['\r', '\n']) {
+            anyhow::bail!("POP3 command must be one nonempty line");
+        }
+        if self.replies.len() >= 1024 {
+            anyhow::bail!("too many outstanding POP3 commands");
+        }
+        let mut words = command.split_ascii_whitespace();
+        let verb = words
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("empty POP3 command"))?;
+        let multiline = match verb.to_ascii_uppercase().as_str() {
+            "RETR" | "TOP" | "CAPA" => true,
+            "LIST" | "UIDL" => words.next().is_none(),
+            _ => false,
+        };
+        self.failed = true;
+        self.replies.push_back(multiline);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            self.writer.write_all(command.as_bytes()).await?;
+            self.writer.write_all(b"\r\n").await?;
+            self.writer.flush().await
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("POP3 command write deadline exceeded"))??;
+        self.failed = false;
+        Ok(command.len() + 2)
+    }
+
+    pub fn next_response_is_multiline(&mut self, response: &str) -> Result<bool> {
+        if self.failed {
+            anyhow::bail!("POP3 command write failed before its reply");
+        }
+        let multiline = self
+            .replies
+            .pop_front()
+            .ok_or_else(|| anyhow::anyhow!("unsolicited POP3 response"))?;
+        if !(response == "+OK"
+            || response.starts_with("+OK ")
+            || response == "-ERR"
+            || response.starts_with("-ERR "))
+        {
+            anyhow::bail!("invalid POP3 response status");
+        }
+        Ok(multiline && response.starts_with("+OK"))
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        self.writer.shutdown().await
+    }
+}
 
 pub struct Pop3Client;
 
@@ -76,7 +148,7 @@ impl Pop3Client {
 
         let (read_half, write_half) = tokio::io::split(stream);
         let reader = BufReader::new(read_half);
-        let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
+        let write_half = Arc::new(tokio::sync::Mutex::new(CommandWriter::new(write_half)));
 
         let protocol = Arc::new(Pop3ClientProtocol);
 
@@ -110,7 +182,9 @@ impl Pop3Client {
         // dropping a JoinHandle only detaches it in Tokio.
         let task_registrar = app_state.clone();
         let task_handle = tokio::spawn(async move {
-            if let Err(e) = Self::read_loop(
+            let cleanup_state = app_state.clone();
+            let cleanup_status = status_tx.clone();
+            let result = Self::read_loop(
                 reader,
                 write_half,
                 llm_client,
@@ -120,10 +194,17 @@ impl Pop3Client {
                 protocol,
                 remote_addr,
             )
-            .await
-            {
-                error!("POP3 client {} read loop error: {}", client_id, e);
-            }
+            .await;
+            let status = match result {
+                Ok(()) => ClientStatus::Disconnected,
+                Err(e) => {
+                    error!("POP3 client {} read loop error: {}", client_id, e);
+                    ClientStatus::Error(e.to_string())
+                }
+            };
+            cleanup_state.update_client_status(client_id, status).await;
+            cleanup_state.remove_client_handle(client_id).await;
+            let _ = cleanup_status.send("__UPDATE_UI__".to_string());
         });
         task_registrar
             .register_client_task(client_id, task_handle)
@@ -142,7 +223,7 @@ impl Pop3Client {
     async fn command_loop<W>(
         mut command_rx: tokio::sync::mpsc::Receiver<crate::state::client_handles::ClientCommand>,
         protocol: Arc<Pop3ClientProtocol>,
-        write_half: Arc<tokio::sync::Mutex<W>>,
+        write_half: Arc<tokio::sync::Mutex<CommandWriter<W>>>,
         client_id: ClientId,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -207,7 +288,7 @@ impl Pop3Client {
 
     async fn read_loop<R, W>(
         mut reader: BufReader<R>,
-        write_half: Arc<tokio::sync::Mutex<W>>,
+        write_half: Arc<tokio::sync::Mutex<CommandWriter<W>>>,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -221,7 +302,12 @@ impl Pop3Client {
     {
         // Read greeting from server
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        if crate::client::response_reader::read_expected_response_line(&mut reader, &mut line)
+            .await?
+            == 0
+        {
+            anyhow::bail!("POP3 server closed before its greeting");
+        }
         let greeting = line.trim().to_string();
 
         debug!("POP3 client {} received greeting: {}", client_id, greeting);
@@ -270,7 +356,7 @@ impl Pop3Client {
         // Main read loop
         loop {
             line.clear();
-            match reader.read_line(&mut line).await {
+            match crate::client::response_reader::read_response_line(&mut reader, &mut line).await {
                 Ok(0) => {
                     debug!("POP3 client {} connection closed by server", client_id);
                     break;
@@ -284,22 +370,14 @@ impl Pop3Client {
                     debug!("POP3 client {} received response: {}", client_id, response);
 
                     // Check if this is a multiline response
-                    let is_multiline = response.starts_with("+OK")
-                        && !response.contains("octets")
-                        && !response.contains("messages");
+                    let is_multiline = write_half
+                        .lock()
+                        .await
+                        .next_response_is_multiline(&response)?;
 
                     let full_response = if is_multiline {
-                        // Read multiline response until "."
-                        let mut multiline = response.clone();
-                        loop {
-                            line.clear();
-                            reader.read_line(&mut line).await?;
-                            if line.trim() == "." {
-                                break;
-                            }
-                            multiline.push_str(&line);
-                        }
-                        multiline
+                        crate::client::response_reader::read_dot_response(&mut reader, response)
+                            .await?
                     } else {
                         response
                     };
@@ -343,8 +421,7 @@ impl Pop3Client {
                     }
                 }
                 Err(e) => {
-                    error!("POP3 client {} read error: {}", client_id, e);
-                    break;
+                    return Err(e.into());
                 }
             }
         }
@@ -360,7 +437,7 @@ impl Pop3Client {
         status_tx: &mpsc::UnboundedSender<String>,
         client_id: ClientId,
         protocol: &Arc<Pop3ClientProtocol>,
-        write_half: &Arc<tokio::sync::Mutex<W>>,
+        write_half: &Arc<tokio::sync::Mutex<CommandWriter<W>>>,
         instruction: &str,
         memory: &str,
     ) -> Result<()>
@@ -406,7 +483,7 @@ impl Pop3Client {
     /// the encoding of `send_pop3_command` exists exactly once.
     async fn apply_action<W>(
         action_result: crate::llm::actions::client_trait::ClientActionResult,
-        write_half: &Arc<tokio::sync::Mutex<W>>,
+        write_half: &Arc<tokio::sync::Mutex<CommandWriter<W>>>,
         client_id: ClientId,
     ) -> Result<Applied>
     where
@@ -426,17 +503,13 @@ impl Pop3Client {
                 debug!("POP3 client {} sending command: {}", client_id, command);
 
                 let mut writer = write_half.lock().await;
-                writer.write_all(command.as_bytes()).await?;
-                writer.write_all(b"\r\n").await?;
-                writer.flush().await?;
-                Ok(Applied::Sent(command.len() + 2))
+                Ok(Applied::Sent(writer.send(command).await?))
             }
             ClientActionResult::Disconnect => {
                 debug!("POP3 client {} disconnecting", client_id);
                 // Send QUIT command before closing
                 let mut writer = write_half.lock().await;
-                writer.write_all(b"QUIT\r\n").await?;
-                writer.flush().await?;
+                writer.send("QUIT").await?;
                 Ok(Applied::Disconnect)
             }
             // WaitForMore, NoAction, SendData (unused by this vocabulary), nested Multiple.
