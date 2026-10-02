@@ -638,3 +638,6 @@ pub mod dict;
 pub mod beanstalkd;
 #[cfg(feature = "graphite")]
 pub mod graphite;
+
+#[cfg(feature = "quic")]
+pub mod quic;
