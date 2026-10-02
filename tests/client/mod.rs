@@ -214,6 +214,9 @@ pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
 
+#[cfg(feature = "gemini")]
+mod gemini;
+
 #[cfg(feature = "dict")]
 mod dict;
 

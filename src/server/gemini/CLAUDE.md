@@ -176,3 +176,7 @@ lists `rustls`/`tokio_rustls` as circular — correct, and not what any rating r
 What Beta does not cover: one client (a second — `gemget`, or Go's `go-gemini` — is Stable's
 condition 1); the pcap oracle sees TLS records only, not the Gemini inside; no fuzz target;
 browser-style clients (Lagrange, amfora) have not been pointed at it by hand.
+
+File-backed certificate startup explicitly selects rustls ring before loading, so
+library callers with both crypto-provider features enabled do not panic. The
+Gemini client pair test covers this path with a temporary trusted certificate.

@@ -631,6 +631,9 @@ pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
 
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
 #[cfg(feature = "dict")]
 pub mod dict;
 

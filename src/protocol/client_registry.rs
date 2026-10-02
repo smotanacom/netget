@@ -375,6 +375,9 @@ impl ClientRegistry {
             crate::client::websocket::WebSocketClientProtocol::new(),
         ));
 
+        #[cfg(feature = "gemini")]
+        self.register(Arc::new(crate::client::gemini::GeminiClientProtocol::new()));
+
         #[cfg(feature = "dict")]
         self.register(Arc::new(crate::client::dict::DictClientProtocol::new()));
 
@@ -769,6 +772,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BitTorrent Tracker", "torrent-tracker"),
     ("TURN", "turn"),
     ("UDP", "udp"),
+    ("Gemini", "gemini"),
     ("DICT", "dict"),
     ("Beanstalkd", "beanstalkd"),
     ("NUT", "nut"),
