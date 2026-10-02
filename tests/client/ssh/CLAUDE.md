@@ -1,88 +1,60 @@
-# SSH Client E2E Tests
+# SSH client evidence
 
-Two files, declared in `tests/client/ssh/mod.rs`. Nothing is `#[ignore]`d.
+No tests skip or use `#[ignore]`. Run the SSH modules in the `client` target with the `ssh`
+feature; also run the existing SSH `server` target modules for neighboring behavior.
 
-| File | Peer | Tests | LLM calls |
-|---|---|---|---|
-| `real_server_test.rs` | **OpenSSH `sshd`**, run unprivileged | 3 | 12 |
-| `command_channel_test.rs` | NetGet's own SSH server | 2 | 0 |
+| File | Peer | Evidence |
+|---|---|---|
+| `real_server_test.rs` | Independent OpenSSH sshd | 3 prior command tests; 12 mocked model calls |
+| `command_channel_test.rs` | NetGet SSH server | 2 injected-action tests; no model calls |
+| `sftp_test.rs` | OpenSSH internal-sftp, NetGet pair, explicit malformed framing fixtures | Read-only SFTP, host authentication, resource and cancellation probes |
 
-## Running
+`start_sshd` generates ed25519 host/user/stranger keys using `ssh-keygen`, authorizes the user
+key and starts unprivileged `sshd -D -e` on loopback. The OS user is the only account an
+unprivileged daemon can authenticate. Private-key authentication is real. Missing sshd or
+ssh-keygen fails with an installation hint. The config disables PAM/password authentication,
+uses StrictModes no for the temporary fixture directory, and declares internal-sftp.
+Readiness waits for the listening log, not a fixed sleep. `start_sshd_with_subsystem` can
+replace internal-sftp with a deliberately malformed fixture; those probes are not counted as
+independent SFTP interoperability evidence. Test-only domain files live in the guard's temp
+folder; the production client creates none.
 
-`--test` names a **target**, not a module path:
+The existing command tests preserve their assertions: model-selected commands write a real
+file, including a command built from stdout/stderr/exit status shown to the model; a refused
+key never raises ssh_connected; a recursive model response runs exactly five commands before
+the four-level follow-up bound. Injected command/unknown-action behavior remains covered.
 
-```bash
-./cargo-isolated.sh test --no-default-features --features ssh \
-    --test client -- client::ssh --test-threads=100
-```
+The SFTP suite checks:
 
-## `real_server_test.rs` — the evidence the rating rests on
+- OpenSSH stat drives a script response into a chunked read of 120000 bytes, directory listing
+  reports file name/size, and an injected offset/length reads the selected text window.
+  A common set_memory action updates AppState before the follow-up script reads that memory.
+  A separately read host-key fingerprint is required, real local/peer addresses are recorded,
+  and disconnect appears in the peer log.
+- A wrong host pin fails key exchange, unpinned legacy sessions reject SFTP, and path/length,
+  offset overflow, NUL, argument types and command length are rejected before wire work.
+- Missing files, invalid UTF-8 file contents and a directory exceeding 1024 entries fail;
+  LSTAT identifies a symlink and a later read on the same SSH connection succeeds.
+- Sixteen parked handlers reserve all available slots. The next operation fails promptly and
+  disconnect cancels the intercepts and removes the command handle.
+- A valid packet prefix with a stalled body reaches the whole-operation deadline, its channel
+  closes, and a command on a new channel succeeds. Removal during a second active subsystem
+  request closes the socket and resolves the waiting injection; readiness counts both peer
+  subsystem-start logs so the removal actually interrupts active work.
+- A NetGet pair serves typed listing/stat/text decisions, including an empty directory batch
+  followed by EOF. The fixture reads its generated host key independently using ssh-keyscan;
+  production never establishes trust by scanning a key.
+- A stalled SSH handshake times out and its accepted TCP socket reaches EOF; an authenticated
+  OpenSSH connection reaches its configured idle deadline and closes.
+- A command producing more than 1 MiB fails and a later channel remains usable.
+- A russh wire fixture floods ignored extended-data type 2 or flow-control messages. The
+  transport handler must close SSH within four seconds, below the 30-second operation
+  deadline, proving those upstream queues cannot grow independently of the semantic reader.
+- Length/count bombs, wrong IDs and trailing bytes fail the bounded codec. An oversized length
+  prefix fails before waiting for any body. Large valid NAME batches hit the 2 MiB total reply
+  budget below the entry cap; seventeen empty batches hit the no-progress bound.
 
-`start_sshd` uses `tests/helpers/real_server.rs` setup commands to make three ed25519 keys with
-`ssh-keygen` in the guard's temp dir (host, user, stranger), authorises the user key, and runs
-`sshd -D -e -f <dir>/sshd_config` from the resolved absolute path (sshd re-executes itself and
-refuses a relative one). The config: `ListenAddress 127.0.0.1`, `Port <probed>`, the temp-dir
-`HostKey`, `PidFile` and `AuthorizedKeysFile`, `StrictModes no` (the temp dir's permissions are
-the harness's, not a home directory's), `UsePAM no`, password and keyboard-interactive off,
-`LogLevel VERBOSE`. Ready when it logs `Server listening on 127.0.0.1 port N`. **It fails, never
-skips,** when `sshd` or `ssh-keygen` is missing, naming `openssh-server` / `openssh-client`.
-
-**An unprivileged sshd can log in only the user it runs as**, so the client authenticates as
-the current OS user (`getpwuid(getuid())`) with the generated key through the
-`private_key_path` startup parameter. That parameter did not exist: the client supported
-password authentication only, and an unprivileged sshd cannot check a password. Public-key
-authentication is the feature this suite made necessary.
-
-Checked on macOS (Darwin 27) with OpenSSH 10.3p1: unprivileged `sshd` starts, accepts the key, runs
-commands and logs one harmless `BSM audit: … Operation not permitted` line per login.
-
-### `ssh_client_runs_the_models_commands_against_openssh` (4 calls)
-
-`ssh_connected` (matched on the username) → a command that `tee`s `hello from the model` into
-`out.txt`, writes `a warning` to stderr and exits 3; its `ssh_output_received` (matched on
-`exit_code` 3, the stdout and the stderr) → a command appending `the model saw: <stdout> (exit
-<code>, stderr: <stderr>)`, all three from the event; that output (`exit_code` 0) →
-`disconnect`. Then `out.txt` must hold exactly both lines, and sshd's log must show `Accepted
-publickey for <user>` and `Received disconnect from 127.0.0.1`.
-
-### `ssh_client_is_refused_with_an_unauthorised_key_by_openssh` (1 call)
-
-The client connects with the stranger's key. It must print `SSH authentication failed`, the
-model must be asked nothing after startup (there is no `ssh_connected` rule, so a connect event
-would be an unmatched request), and sshd must not log an accepted key.
-
-### `ssh_client_follow_up_chain_is_bounded_against_openssh` (7 calls)
-
-The model answers every output with `echo tick >> ticks.txt`. The connect event's command runs
-at depth 0; the output at `MAX_FOLLOWUP_DEPTH` (4) is shown and its answer dropped, so the file
-sshd's shell wrote must hold exactly five ticks.
-
-### What the real server found
-
-- **Every exit status was lost.** The read loop stopped at the channel's EOF, and OpenSSH sends
-  `exit-status` after EOF. NetGet's own SSH server never showed it. Verified by mutation:
-  stopping at EOF again fails the first and third tests (neither `exit_code` rule matches).
-- **Stderr was discarded**; it is now its own field. Verified by mutation.
-- **The chain had no bound.** Verified by removing it: the third test fails.
-
-### Why this is condition 4 of the client bar
-
-The file is written by sshd's shell running commands the model chose, one built from the
-output it was shown. Verified by mutation: dropping the actions the model returns for an
-output makes the first and third tests fail.
-
-## `command_channel_test.rs` (0 calls)
-
-An `execute_command` injected through `AppState::send_to_client` (the dashboard's `[ send ]`)
-runs against NetGet's own SSH server, and an unknown action is rejected rather than swallowed.
-
-The five `#[ignore]`d tests that needed an external password-auth SSH server (`e2e_test.rs`:
-connect-and-authenticate, execute-command, multiple-commands, auth-failure, disconnect) were
-deleted: the real-server suite covers each against an `sshd` it starts itself — with a key, not
-a password.
-
-## Not covered
-
-- Password authentication against a real server.
-- Host key verification (there is none).
-- PTY allocation, SFTP, forwarding, an SSH agent.
+OpenSSH is independent C code; NetGet's SSH transport is russh. The direct pair verifies the
+shared semantic surface but does not replace independent evidence. No pcap/fuzz/second-server
+claim is made, and the expanded client remains Experimental. Existing server SFTP evidence
+uses independent libssh2/ssh2 and OpenSSH paths; it remains in `tests/server/ssh`.
