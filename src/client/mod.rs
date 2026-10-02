@@ -654,3 +654,6 @@ pub mod gelf;
 pub mod fluent_forward;
 #[cfg(feature = "nsq")]
 pub mod nsq;
+
+#[cfg(feature = "gearman")]
+pub mod gearman;
