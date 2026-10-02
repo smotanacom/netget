@@ -1,8 +1,13 @@
 //! QUIC server implementation using Quinn
 pub mod actions;
 
+use crate::utils::quic::{
+    ConnectionGuard, EndpointGuard, EXCHANGE_TIMEOUT, HANDSHAKE_TIMEOUT, IDLE_TIMEOUT,
+    MAX_CONNECTIONS, MAX_STREAMS, RAW_ALPN,
+};
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use futures::{stream::FuturesUnordered, StreamExt};
 use quinn::{Endpoint, ServerConfig};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -49,32 +54,17 @@ struct StreamData {
 /// reads, so a megabyte is far past any legitimate use — and the merged buffer is what
 /// ends up in an LLM prompt, where it is useless long before that.
 ///
-/// Over the cap the stream is reset with `H3_EXCESSIVE_LOAD`, whose RFC 9114 meaning is
-/// exactly this ("the peer is exhibiting a behavior that might be generating excessive
-/// load"). The connection and its other streams are untouched.
+/// Over the cap the stream is reset with the raw application's overload code.
 pub const MAX_STREAM_QUEUE_BYTES: usize = 1024 * 1024;
+/// Application-local codes for netget-quic. These retain their historical numeric
+/// values for existing raw peers; they do not imply HTTP/3 framing or semantics.
+const RAW_INTERNAL_ERROR: u32 = 0x0102;
+const RAW_EXCESSIVE_LOAD: u32 = 0x0107;
 
-/// RFC 9114 `H3_INTERNAL_ERROR` — netget could not produce an answer.
-const H3_INTERNAL_ERROR: u32 = 0x0102;
-/// RFC 9114 `H3_EXCESSIVE_LOAD` — the backend is saturated; the peer should back off.
-const H3_EXCESSIVE_LOAD: u32 = 0x0107;
-
-/// The QUIC application error code a peer is given when netget itself cannot answer.
-///
-/// A raw QUIC stream has no error frame of its own, so the protocol-level signal is
-/// `RESET_STREAM` plus an application error code. This server negotiates ALPN `h3`, so the
-/// two RFC 9114 codes whose meaning matches are the honest choice, and they are deliberately
-/// **distinct**: `H3_EXCESSIVE_LOAD` is transient and invites a retry, `H3_INTERNAL_ERROR` is
-/// a permanent fault. A client can back off on one and give up on the other.
-///
-/// The error itself never travels: only this code does. Nothing derived from the
-/// `anyhow::Error` — the backend URL, the model name, a file path, a context chain — is
-/// allowed on the wire. It goes to the log and the status stream, where an operator looks.
-/// See `src/utils/wire_failure.rs`.
 fn wire_failure_code(failure: crate::utils::WireFailure) -> quinn::VarInt {
     quinn::VarInt::from_u32(match failure {
-        crate::utils::WireFailure::Overloaded => H3_EXCESSIVE_LOAD,
-        crate::utils::WireFailure::Unavailable => H3_INTERNAL_ERROR,
+        crate::utils::WireFailure::Overloaded => RAW_EXCESSIVE_LOAD,
+        crate::utils::WireFailure::Unavailable => RAW_INTERNAL_ERROR,
     })
 }
 
@@ -102,8 +92,9 @@ impl QuicServer {
             }
         };
 
-        // Ensure ALPN protocols include h3
-        server_crypto.alpn_protocols = vec![b"h3".to_vec()];
+        // Raw stream bytes must not advertise HTTP/3.
+        server_crypto.alpn_protocols = vec![RAW_ALPN.to_vec()];
+        server_crypto.max_early_data_size = 0;
 
         // Create QUIC server configuration
         let mut server_config = ServerConfig::with_crypto(Arc::new(
@@ -111,16 +102,20 @@ impl QuicServer {
                 .context("Failed to create QUIC crypto config")?,
         ));
 
-        // Configure transport parameters
-        let mut transport_config = quinn::TransportConfig::default();
-        transport_config.max_concurrent_bidi_streams(100_u32.into());
-        transport_config.max_concurrent_uni_streams(100_u32.into());
-        server_config.transport_config(Arc::new(transport_config));
+        server_config.transport_config(crate::utils::quic::transport(
+            IDLE_TIMEOUT,
+            MAX_STREAMS as u32,
+            0,
+        ));
+        server_config.migration(false);
 
         // Bind endpoint
-        let endpoint = Endpoint::server(server_config, listen_addr)
-            .context("Failed to create QUIC endpoint")?;
+        let endpoint = EndpointGuard(
+            Endpoint::server(server_config, listen_addr)
+                .context("Failed to create QUIC endpoint")?,
+        );
         let local_addr = endpoint
+            .0
             .local_addr()
             .context("Failed to get local address")?;
 
@@ -129,167 +124,107 @@ impl QuicServer {
             local_addr
         ));
 
-        let protocol = Arc::new(QuicProtocol::new());
-
-        // Spawn accept loop
         let task_registrar = app_state.clone();
         let accept_handle = tokio::spawn(async move {
-            while let Some(connecting) = endpoint.accept().await {
-                let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
-                let llm_client_clone = llm_client.clone();
-                let app_state_clone = app_state.clone();
-                let status_tx_clone = status_tx.clone();
-                let protocol_clone = protocol.clone();
-
-                // Tracked, not detached: stop_server must abort this task too.
-                let task_owner = app_state.clone();
-                task_owner
-                    .spawn_server_task(server_id, async move {
-                        match connecting.await {
-                            Ok(connection) => {
-                                let remote_addr = connection.remote_address();
-                                Log::new(Some(&status_tx_clone)).info(format!(
-                                    "Accepted QUIC connection {} from {}",
-                                    connection_id, remote_addr
-                                ));
-
-                                // Add connection to ServerInstance
-                                use crate::state::server::{
-                                    ConnectionState as ServerConnectionState, ConnectionStatus,
-                                    ProtocolConnectionInfo,
-                                };
-                                let now = crate::utils::clock::Instant::now();
-                                let conn_state = ServerConnectionState {
-                                    id: connection_id,
-                                    remote_addr,
-                                    local_addr,
-                                    bytes_sent: 0,
-                                    bytes_received: 0,
-                                    packets_sent: 0,
-                                    packets_received: 0,
-                                    last_activity: now,
-                                    status: ConnectionStatus::Active,
-                                    status_changed_at: now,
-                                    protocol_info: ProtocolConnectionInfo::new(serde_json::json!({
-                                        "stream_count": 0
-                                    })),
-                                };
-                                app_state_clone
-                                    .add_connection_to_server(server_id, conn_state)
-                                    .await;
-                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-
-                                // Notify LLM of new connection
-                                let event = Event::new(
-                                    &QUIC_CONNECTION_OPENED_EVENT,
-                                    serde_json::json!({}),
-                                );
-                                match call_llm(
-                                    &llm_client_clone,
-                                    &app_state_clone,
-                                    server_id,
-                                    Some(connection_id),
-                                    &event,
-                                    protocol_clone.as_ref(),
-                                )
-                                .await
-                                {
-                                    Ok(execution_result) => {
-                                        for msg in execution_result.messages {
-                                            let _ = status_tx_clone.send(msg);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // Non-fatal, and correctly silent on the wire:
-                                        // `quic_connection_opened` carries `.with_no_actions()`
-                                        // because no stream exists yet, so the model could not
-                                        // have put a byte anywhere even on success. The peer is
-                                        // waiting for nothing and will open its own stream.
-                                        Log::new(Some(&status_tx_clone)).warn(format!(
-                                            "LLM error on connection opened (decision=llm_error, \
-                                         no wire response possible before a stream exists): {}",
-                                            e
-                                        ));
-                                    }
-                                }
-
-                                // Handle streams on this connection
-                                let streams = Arc::new(Mutex::new(HashMap::new()));
-                                loop {
-                                    match connection.accept_bi().await {
-                                        Ok((send_stream, recv_stream)) => {
-                                            let stream_id = ConnectionId::new(
-                                                app_state_clone.get_next_unified_id().await,
-                                            );
-                                            Log::new(Some(&status_tx_clone)).info(format!(
-                                                "Accepted QUIC stream {} on connection {}",
-                                                stream_id, connection_id
-                                            ));
-
-                                            let llm_clone = llm_client_clone.clone();
-                                            let state_clone = app_state_clone.clone();
-                                            let status_clone = status_tx_clone.clone();
-                                            let streams_clone = streams.clone();
-                                            let protocol_clone = protocol_clone.clone();
-
-                                            // Tracked, not detached: stop_server must abort this task too.
-                                            let task_owner = app_state_clone.clone();
-                                            task_owner
-                                                .spawn_server_task(server_id, async move {
-                                                    Self::handle_stream_with_actions(
-                                                        stream_id,
-                                                        connection_id,
-                                                        server_id,
-                                                        send_stream,
-                                                        recv_stream,
-                                                        llm_clone,
-                                                        state_clone,
-                                                        status_clone,
-                                                        streams_clone,
-                                                        protocol_clone,
-                                                    )
-                                                    .await;
-                                                })
-                                                .await;
-                                        }
-                                        Err(quinn::ConnectionError::ApplicationClosed(_)) => {
-                                            Log::new(Some(&status_tx_clone)).info(format!(
-                                                "QUIC connection {} closed by peer",
-                                                connection_id
-                                            ));
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            Log::new(Some(&status_tx_clone)).error(format!(
-                                                "Error accepting stream on {}: {}",
-                                                connection_id, e
-                                            ));
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                // Connection closed
-                                app_state_clone
-                                    .close_connection_on_server(server_id, connection_id)
-                                    .await;
-                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                            }
-                            Err(e) => {
-                                Log::new(Some(&status_tx_clone))
-                                    .error(format!("Connection error on {}: {}", connection_id, e));
-                            }
-                        }
-                    })
-                    .await;
+            let mut sessions = FuturesUnordered::new();
+            loop {
+                tokio::select! {
+                    incoming=endpoint.0.accept()=>{
+                        let Some(incoming)=incoming else{break;};
+                        if sessions.len()>=MAX_CONNECTIONS {incoming.refuse();continue;}
+                        sessions.push(Self::session(incoming,local_addr,llm_client.clone(),app_state.clone(),status_tx.clone(),server_id));
+                    }
+                    _=sessions.next(),if !sessions.is_empty()=>{}
+                }
             }
         });
-
         task_registrar
             .register_server_task(server_id, accept_handle)
             .await;
-
         Ok(local_addr)
+    }
+
+    async fn session(
+        incoming: quinn::Incoming,
+        local_addr: SocketAddr,
+        llm_client: OllamaClient,
+        app_state: Arc<AppState>,
+        status_tx: mpsc::UnboundedSender<String>,
+        server_id: crate::state::ServerId,
+    ) {
+        let connection = match tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming).await {
+            Ok(Ok(c)) => ConnectionGuard(c),
+            _ => return,
+        };
+        let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
+        use crate::state::server::{ConnectionState, ConnectionStatus, ProtocolConnectionInfo};
+        let now = crate::utils::clock::Instant::now();
+        app_state
+            .add_connection_to_server(
+                server_id,
+                ConnectionState {
+                    id: connection_id,
+                    remote_addr: connection.0.remote_address(),
+                    local_addr,
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    packets_sent: 0,
+                    packets_received: 0,
+                    last_activity: now,
+                    status: ConnectionStatus::Active,
+                    status_changed_at: now,
+                    protocol_info: ProtocolConnectionInfo::new(
+                        serde_json::json!({"alpn":"netget-quic"}),
+                    ),
+                },
+            )
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".into());
+        let protocol = Arc::new(QuicProtocol::new());
+        let event = Event::new(&QUIC_CONNECTION_OPENED_EVENT, serde_json::json!({}));
+        // A slow connection notification must not consume a connection slot forever.
+        let _ = tokio::time::timeout(
+            EXCHANGE_TIMEOUT,
+            call_llm(
+                &llm_client,
+                &app_state,
+                server_id,
+                Some(connection_id),
+                &event,
+                protocol.as_ref(),
+            ),
+        )
+        .await;
+        let streams = Arc::new(Mutex::new(HashMap::new()));
+        let mut work = FuturesUnordered::new();
+        loop {
+            tokio::select! {
+                result=connection.0.accept_bi(),if work.len()<MAX_STREAMS=>{
+                    let Ok((send,recv))=result else{break;};
+                    let stream_id=ConnectionId::new(app_state.get_next_unified_id().await);
+                    let stream_map=streams.clone();let llm=llm_client.clone();let state=app_state.clone();let status=status_tx.clone();let proto=protocol.clone();
+                    let stopped=send.stopped();
+                    work.push(async move {
+                        tokio::select! {
+                            _=stopped=>{},
+                            _=tokio::time::timeout(EXCHANGE_TIMEOUT,Self::handle_stream_with_actions(stream_id,connection_id,server_id,send,recv,llm,state,status,stream_map.clone(),proto))=>{}
+                        }
+                        // A timed-out future may have inserted a stream before cancellation.
+                        if let Some(stream)=stream_map.lock().await.remove(&stream_id) {
+                            let _=stream.send_stream.lock().await.reset(quinn::VarInt::from_u32(3));
+                        }
+                    });
+                }
+                _=work.next(),if !work.is_empty()=>{}
+                _=connection.0.closed()=>break,
+            }
+        }
+        drop(work);
+        drop(streams);
+        app_state
+            .close_connection_on_server(server_id, connection_id)
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".into());
     }
 
     /// Handle a QUIC stream with LLM actions.
@@ -337,7 +272,7 @@ impl QuicServer {
             &llm_client,
             &app_state,
             server_id,
-            Some(stream_id),
+            Some(connection_id),
             &event,
             protocol.as_ref(),
         )
@@ -350,6 +285,12 @@ impl QuicServer {
 
                 // Handle any initial actions
                 for protocol_result in execution_result.protocol_results {
+                    if matches!(protocol_result, ActionResult::CloseConnection) {
+                        let _ = send_stream_arc.lock().await.finish();
+                        let _ = recv_stream.stop(0u32.into());
+                        streams.lock().await.remove(&stream_id);
+                        return;
+                    }
                     if let ActionResult::Output(output_data) = protocol_result {
                         let write_result = {
                             let mut send = send_stream_arc.lock().await;
@@ -453,6 +394,9 @@ impl QuicServer {
                         protocol.clone(),
                     )
                     .await;
+                    if !streams.lock().await.contains_key(&stream_id) {
+                        break;
+                    }
                 }
                 Ok(None) => {
                     // Stream finished
@@ -468,6 +412,7 @@ impl QuicServer {
                 }
             }
         }
+        let _ = send_stream_arc.lock().await.finish();
     }
 
     /// Handle data received on a stream with LLM actions
@@ -515,8 +460,8 @@ impl QuicServer {
             if over_limit {
                 let log = Log::new(Some(&status_tx));
                 log.warn(format!(
-                    "Stream {} queued more than {} bytes while an LLM call was in flight                      (decision=refused_queue_too_large, h3_error_code=0x{:x}); resetting",
-                    stream_id, MAX_STREAM_QUEUE_BYTES, H3_EXCESSIVE_LOAD
+                    "Stream {} queued more than {} bytes while an LLM call was in flight                      (decision=refused_queue_too_large, raw_error_code=0x{:x}); resetting",
+                    stream_id, MAX_STREAM_QUEUE_BYTES, RAW_EXCESSIVE_LOAD
                 ));
                 let send_stream = {
                     let streams_lock = streams.lock().await;
@@ -524,7 +469,7 @@ impl QuicServer {
                 };
                 if let Some(send_stream) = send_stream {
                     let mut send = send_stream.lock().await;
-                    let _ = send.reset(quinn::VarInt::from_u32(H3_EXCESSIVE_LOAD));
+                    let _ = send.reset(quinn::VarInt::from_u32(RAW_EXCESSIVE_LOAD));
                 }
                 streams.lock().await.remove(&stream_id);
                 return;
@@ -592,7 +537,7 @@ impl QuicServer {
                 &llm_client,
                 &app_state,
                 server_id,
-                Some(stream_id),
+                Some(connection_id),
                 &event,
                 protocol.as_ref(),
             )
@@ -758,14 +703,14 @@ impl QuicServer {
                     // had gone wrong.
                     //
                     // The category, and only the category, reaches the peer: a
-                    // RESET_STREAM carrying an RFC 9114 error code. `e` is logged and
+                    // RESET_STREAM carrying an application-local error code. `e` is logged and
                     // never rendered into anything the peer can read.
                     let failure = crate::utils::WireFailure::classify(&e);
                     let code = wire_failure_code(failure);
                     let log = Log::new(Some(&status_tx));
                     log.warn(format!(
                         "LLM error for QUIC data on stream {} (decision=llm_error, category={}, \
-                         h3_error_code=0x{:x}): {}",
+                         raw_error_code=0x{:x}): {}",
                         stream_id,
                         failure.text(),
                         code.into_inner(),

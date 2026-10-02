@@ -111,7 +111,7 @@ async fn test_quic_echo() -> E2EResult<()> {
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
 
-    client_crypto.alpn_protocols = vec![b"h3".to_vec()];
+    client_crypto.alpn_protocols = vec![b"netget-quic".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
@@ -251,7 +251,7 @@ async fn test_quic_custom_response() -> E2EResult<()> {
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
 
-    client_crypto.alpn_protocols = vec![b"h3".to_vec()];
+    client_crypto.alpn_protocols = vec![b"netget-quic".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
@@ -389,7 +389,7 @@ async fn test_quic_multiple_streams() -> E2EResult<()> {
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
 
-    client_crypto.alpn_protocols = vec![b"h3".to_vec()];
+    client_crypto.alpn_protocols = vec![b"netget-quic".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
@@ -593,7 +593,7 @@ async fn test_quic_binary_echo_round_trip() -> E2EResult<()> {
     client_crypto
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
-    client_crypto.alpn_protocols = vec![b"h3".to_vec()];
+    client_crypto.alpn_protocols = vec![b"netget-quic".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)

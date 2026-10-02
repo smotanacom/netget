@@ -209,3 +209,6 @@ pub mod zookeeper;
 
 #[cfg(feature = "doq")]
 pub mod doq;
+
+#[cfg(feature = "quic")]
+pub mod quic;

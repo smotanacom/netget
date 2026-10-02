@@ -626,3 +626,6 @@ pub use xmpp::actions::XmppClientProtocol;
 
 #[cfg(feature = "doq")]
 pub mod doq;
+
+#[cfg(feature = "quic")]
+pub mod quic;
