@@ -64,6 +64,7 @@ async fn multiplexing_fin_id_question_and_cleanup() {
     assert_eq!(second.queries(), aaaa.queries());
     assert_eq!(first.answers()[0].ttl(), 17);
     assert_eq!(second.answers()[0].ttl(), 23);
+    fixture.decision("decision=model_answer").await;
     fixture.close().await;
     tokio::time::timeout(Duration::from_secs(3), connection.closed())
         .await
@@ -175,11 +176,43 @@ async fn handler_failure_returns_servfail_and_xfr_is_explicitly_unsupported() {
         .await
         .unwrap();
     assert_eq!(response.response_code(), ResponseCode::ServFail);
+    fixture
+        .decision("decision=fail_closed_llm_error category=unavailable")
+        .await;
     let mut xfr = query("zone.example", "A");
     xfr.queries_mut()[0].set_query_type(hickory_proto::rr::RecordType::AXFR);
     let (response, _) = exchange(&c, &xfr, Duration::from_secs(3)).await.unwrap();
     assert_eq!(response.response_code(), ResponseCode::NotImp);
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn decision_logs_distinguish_silence_negative_answers_and_action_failure() {
+    for (actions, decision, expected) in [
+        (json!([]), "decision=model_silent", None),
+        (
+            json!([{"type":"send_dns_nxdomain","domain":"decision.example","query_type":"A"}]),
+            "decision=model_reject",
+            Some(ResponseCode::NXDomain),
+        ),
+        (
+            json!([{"type":"send_dns_a_response","domain":"decision.example","ip":"invalid"}]),
+            "decision=fail_closed_action_error",
+            Some(ResponseCode::ServFail),
+        ),
+    ] {
+        let fixture =
+            Fixture::new(json!({}), Some(json!({"type":"static","actions":actions}))).await;
+        let (_endpoint, c) = fixture.peer().await;
+        let result = exchange(&c, &query("decision.example", "A"), Duration::from_secs(3)).await;
+        if let Some(code) = expected {
+            assert_eq!(result.unwrap().0.response_code(), code);
+        } else {
+            assert!(result.is_err(), "silence resets the stream");
+        }
+        fixture.decision(decision).await;
+        fixture.close().await;
+    }
 }
 
 #[test]

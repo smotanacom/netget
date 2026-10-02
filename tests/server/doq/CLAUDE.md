@@ -12,13 +12,15 @@ This is an independent DNS encoder/decoder and transport implementation.
 Other tests use a Quinn transport peer with Hickory messages; these prove framing,
 parallel streams, zero IDs, question echo, FIN, bad length/truncation/extra-message
 rejection (including extra bytes inside the declared DNS length), oversize bounds, client cancellation, idle/connection limits, ALPN,
-SERVFAIL and explicit NOTIMP, server stop and UDP port release. This peer is not
+SERVFAIL and explicit NOTIMP, server stop and UDP port release. Decision tests assert
+operator status logs alongside wire outcomes for positive/negative answers, deliberate
+silence, invalid action and unavailable backend. This peer is not
 counted as independent DNS evidence. `support.rs` is shared with the client tests.
 
 Run using the programme's guarded build wrapper when working in the expansion:
 
 ```
-python3 /private/tmp/netget-protocol-expansion-20261001/run_cargo.py test --offline --no-default-features --features doq --test server -- doq:: --test-threads=4
+python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --offline --no-default-features --features doq --test server -- doq:: --test-threads=4
 ```
 
 For normal repository work use `./cargo-isolated.sh` in place of the wrapper.

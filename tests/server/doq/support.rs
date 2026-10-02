@@ -14,6 +14,7 @@ pub struct Fixture {
     pub cert: rustls::pki_types::CertificateDer<'static>,
     pub server: ServerId,
     pub addr: SocketAddr,
+    pub status_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>,
 }
 impl Fixture {
     pub async fn new(mut params: Value, handler: Option<Value>) -> Self {
@@ -32,7 +33,7 @@ impl Fixture {
         state
             .set_llm_client(OllamaClient::new("http://127.0.0.1:1"))
             .await;
-        let (tx, _) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         let server = ServerForm {
             protocol: "doq".into(),
             host: Some("127.0.0.1".into()),
@@ -66,7 +67,21 @@ impl Fixture {
             cert: issued.cert.der().clone(),
             server,
             addr,
+            status_rx: tokio::sync::Mutex::new(rx),
         }
+    }
+    pub async fn decision(&self, expected: &str) {
+        let mut rx = self.status_rx.lock().await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let line = rx.recv().await.expect("status channel must remain open");
+                if line.contains(expected) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("missing {expected}"));
     }
     pub async fn standard() -> Self {
         Self::new(json!({}),Some(json!({"type":"script","language":"python","code":"import json,sys\nevent=json.load(sys.stdin)['event']\ndef respond(actions):\n    print(json.dumps({'actions':actions}))\nkind=event['query_type']\nif kind == 'A':\n    respond([{'type':'send_dns_a_response','domain':event['domain'],'query_id':42,'ip':'192.0.2.19','ttl':17}])\nelif kind == 'AAAA':\n    respond([{'type':'send_dns_aaaa_response','domain':event['domain'],'ip':'2001:db8::19','ttl':23}])\nelse:\n    respond([{'type':'send_dns_nxdomain','domain':event['domain'],'query_type':kind}])"}))).await
