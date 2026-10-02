@@ -114,6 +114,9 @@ impl ServerRegistry {
         #[cfg(feature = "tftp")]
         self.register(Arc::new(crate::server::TftpProtocol::new()));
 
+        #[cfg(feature = "nut")]
+        self.register(Arc::new(crate::server::nut::actions::NutProtocol::new()));
+
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
 
@@ -1198,6 +1201,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("BOOTP", "bootp"),
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
+    ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("NDP", "ndp"),
     ("DHCPv6", "dhcpv6"),

@@ -55,6 +55,7 @@ portable-base = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -221,6 +222,7 @@ nats = []  # NATS text-protocol pub/sub server - hand-rolled, no extra deps
 stomp = []  # STOMP 1.2 text-frame messaging server - hand-rolled, no extra deps
 ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra deps
 gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+nut = [] # NUT UPS management client/server, pure Tokio
 dict = []  # DICT (RFC 2229) dictionary server - hand-rolled line protocol, no extra deps
 beanstalkd = []  # Beanstalkd work-queue server - hand-rolled text protocol, no extra deps
 zabbix = []  # Zabbix trapper (zabbix_sender) - hand-rolled ZBXD framing, serde_json only
@@ -462,6 +464,7 @@ dist-windows = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -604,6 +607,7 @@ all-protocols = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
