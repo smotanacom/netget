@@ -45,6 +45,7 @@ portable-base = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -55,6 +56,7 @@ portable-base = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -67,6 +69,8 @@ portable-base = [
     "snmp",
     "igmp",
     "syslog",
+    "statsd",
+    "graphite",
     "ssh",
     "ssh-agent",
     "svn",
@@ -190,6 +194,7 @@ eapol = ["pnet", "dep:pcap", "dep:md-5"]  # EAPOL / 802.1X authenticator - libpc
 wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
 dc = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # DC (Direct Connect) - supports TLS (DCCS)
 dns = ["hickory-server", "hickory-proto", "dep:hickory-client"]
+doq = ["dns", "dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # RFC 9250 DNS over QUIC server and client
 dot = ["dns", "hickory-server/dns-over-rustls", "hickory-proto/dns-over-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # DNS-over-TLS server
 doh = ["dns", "hickory-server/dns-over-https-rustls", "hickory-proto/dns-over-https-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:h2"]  # DNS-over-HTTPS server
 dhcp = ["dhcproto"]
@@ -220,7 +225,8 @@ whois = []  # WHOIS uses only TCP, no extra deps
 nats = []  # NATS text-protocol pub/sub server - hand-rolled, no extra deps
 stomp = []  # STOMP 1.2 text-frame messaging server - hand-rolled, no extra deps
 ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra deps
-gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+nut = [] # NUT UPS management client/server, pure Tokio
 dict = []  # DICT (RFC 2229) dictionary server - hand-rolled line protocol, no extra deps
 beanstalkd = []  # Beanstalkd work-queue server - hand-rolled text protocol, no extra deps
 zabbix = []  # Zabbix trapper (zabbix_sender) - hand-rolled ZBXD framing, serde_json only
@@ -234,6 +240,8 @@ netbios-ns = []  # NetBIOS Name Service (RFC 1002) - hand-rolled name encoding
 snmp = ["rasn-snmp", "rasn", "rasn-smi", "dep:snmp"]
 igmp = []  # IGMP multicast group management, no extra deps
 syslog = ["syslog_loose"]
+statsd = [] # StatsD / DogStatsD UDP collector and emitter; native codec
+graphite = [] # Carbon plaintext TCP collector and emitter; native codec
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -356,13 +364,13 @@ bolt = []  # Neo4j's Bolt protocol (graph database) - hand-written PackStream + 
 git = ["dep:git2"]  # Git client support
 mercurial = ["http", "urlencoding"]  # Mercurial HTTP server with LLM-controlled virtual repositories
 kafka = ["dep:kafka-protocol"]  # Apache Kafka broker and client, both pure Rust on kafka-protocol (rdkafka/librdkafka removed - aborted in malloc)
-# QUIC server (RFC 9000/9001): raw bidirectional QUIC streams under TLS 1.3. Deliberately
+# QUIC server and client (RFC 9000/9001): raw bidirectional QUIC streams under TLS 1.3. Deliberately
 # NOT HTTP/3 - no RFC 9114 framing, no QPACK - so it needs neither h3 nor h3-quinn. See
 # src/server/quic/CLAUDE.md.
 quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]
 # HTTP/3 client only (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
 # NOT build the QUIC server, and the two cannot talk to each other.
-http3 = ["dep:quinn", "dep:rustls", "dep:h3", "dep:h3-quinn"]
+http3 = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "dep:h3", "dep:h3-quinn"]
 torrent-tracker = ["dep:serde_bencode", "urlencoding"]  # BitTorrent Tracker (HTTP-based peer discovery with announce/scrape)
 torrent-dht = ["dep:serde_bencode"]  # BitTorrent DHT (Kademlia-based distributed peer discovery)
 torrent-peer = ["dep:serde_bencode"]  # BitTorrent Peer Wire Protocol (peer-to-peer data transfer)
@@ -450,6 +458,7 @@ dist-windows = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -462,6 +471,7 @@ dist-windows = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -474,6 +484,8 @@ dist-windows = [
     "snmp",
     # igmp excluded: raw libc sockets (AF_INET/SOCK_RAW), unix-only
     "syslog",
+    "statsd",
+    "graphite",
     "ssh",
     "svn",
     "irc",
@@ -578,6 +590,7 @@ all-protocols = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -604,6 +617,7 @@ all-protocols = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -616,6 +630,8 @@ all-protocols = [
     "snmp",
     "igmp",
     "syslog",
+    "statsd",
+    "graphite",
     "ssh",
     "ssh-agent",
     "svn",

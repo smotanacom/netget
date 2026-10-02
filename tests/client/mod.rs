@@ -206,3 +206,24 @@ pub mod xmlrpc;
 pub mod xmpp;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
+
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
+
+#[cfg(feature = "gemini")]
+mod gemini;
+
+#[cfg(feature = "dict")]
+mod dict;
+
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "quic")]
+pub mod quic;

@@ -623,3 +623,24 @@ pub use xmlrpc::actions::XmlRpcClientProtocol;
 pub mod xmpp;
 #[cfg(feature = "xmpp")]
 pub use xmpp::actions::XmppClientProtocol;
+
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
+
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
+#[cfg(feature = "dict")]
+pub mod dict;
+
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "quic")]
+pub mod quic;
