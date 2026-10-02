@@ -355,14 +355,21 @@ impl ClientRegistry {
             crate::client::websocket::WebSocketClientProtocol::new(),
         ));
 
+        #[cfg(feature = "gemini")]
+        self.register(Arc::new(crate::client::gemini::GeminiClientProtocol::new()));
+
         #[cfg(feature = "dict")]
         self.register(Arc::new(crate::client::dict::DictClientProtocol::new()));
 
         #[cfg(feature = "beanstalkd")]
-        self.register(Arc::new(crate::client::beanstalkd::BeanstalkdClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
+        ));
 
         #[cfg(feature = "nut")]
-        self.register(Arc::new(crate::client::nut::actions::NutClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::nut::actions::NutClientProtocol::new(),
+        ));
 
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::client::whois::WhoisClientProtocol::new()));
@@ -740,8 +747,9 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BitTorrent Tracker", "torrent-tracker"),
     ("TURN", "turn"),
     ("UDP", "udp"),
+    ("Gemini", "gemini"),
     ("DICT", "dict"),
-            ("Beanstalkd", "beanstalkd"),
+    ("Beanstalkd", "beanstalkd"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),

@@ -627,6 +627,9 @@ pub use xmpp::actions::XmppClientProtocol;
 #[cfg(feature = "nut")]
 pub mod nut;
 
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
 #[cfg(feature = "dict")]
 pub mod dict;
 

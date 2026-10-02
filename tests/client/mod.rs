@@ -210,6 +210,9 @@ pub mod zookeeper;
 #[cfg(feature = "nut")]
 pub mod nut;
 
+#[cfg(feature = "gemini")]
+mod gemini;
+
 #[cfg(feature = "dict")]
 mod dict;
 
