@@ -37,6 +37,12 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/client/http_fetch/transport.rs",
+        1,
+        "validator: parse_http_url rejects unescaped control characters and whitespace before \
+         URL parsing can normalize them; rewriting would request a different URL",
+    ),
+    (
         "src/client/nats/actions.rs",
         1,
         "validator: a NATS control line is space-delimited and CRLF-terminated, so check_token \
