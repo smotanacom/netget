@@ -10,6 +10,24 @@ use super::server::{ServerId, ServerInstance};
 use super::task::{ScheduledTask, TaskId};
 use crate::server::connection::ConnectionId;
 
+/// Own a started child until its handle reaches the task registry. Dropping a
+/// Tokio JoinHandle detaches; dropping an unfinished registration must abort.
+struct PendingTaskRegistration(Option<tokio::task::JoinHandle<()>>);
+
+impl PendingTaskRegistration {
+    fn into_handle(mut self) -> tokio::task::JoinHandle<()> {
+        self.0.take().expect("registration owns its task")
+    }
+}
+
+impl Drop for PendingTaskRegistration {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
+    }
+}
+
 /// Source of an LLM conversation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationSource {
@@ -752,15 +770,25 @@ impl AppState {
     ///
     /// If the server was already removed (raced with stop), the task is aborted
     /// immediately to avoid leaking the listener.
-    pub async fn register_server_task(&self, id: ServerId, handle: tokio::task::JoinHandle<()>) {
-        let mut inner = self.inner.write().await;
-        if !inner.servers.contains_key(&id) {
-            handle.abort();
-            return;
+    /// Cancellation, including dropping the returned future before its first
+    /// poll, aborts the child until ownership has transferred into the registry.
+    pub fn register_server_task(
+        &self,
+        id: ServerId,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+        // This guard must exist before the async block: an async fn would leave
+        // an unpolled future holding only the raw, detach-on-drop JoinHandle.
+        let pending = PendingTaskRegistration(Some(handle));
+        async move {
+            let mut inner = self.inner.write().await;
+            if !inner.servers.contains_key(&id) {
+                return;
+            }
+            let tasks = inner.server_tasks.entry(id).or_default();
+            tasks.retain(|h| !h.is_finished());
+            tasks.push(pending.into_handle());
         }
-        let tasks = inner.server_tasks.entry(id).or_default();
-        tasks.retain(|h| !h.is_finished());
-        tasks.push(handle);
     }
 
     /// Spawn a task the server owns and register it, in one call.
@@ -2225,22 +2253,29 @@ impl AppState {
     ///
     /// Client `connect()` implementations call this with the `JoinHandle` of every
     /// task they spawn — read loop, transport driver, in-flight request — right
-    /// after spawning it. Unlike `register_server_task`, handles ACCUMULATE: a
+    /// after spawning it. As with `register_server_task`, handles ACCUMULATE: a
     /// client that spawns three tasks gets all three aborted, none silently dropped.
     ///
     /// If the client is already gone (raced with `stop_client`), the task is aborted
     /// on the spot so it cannot outlive its owner.
-    pub async fn register_client_task(&self, id: ClientId, handle: tokio::task::JoinHandle<()>) {
-        let mut inner = self.inner.write().await;
-        if !inner.clients.contains_key(&id) {
-            handle.abort();
-            return;
+    /// Dropping its future, even before polling or while waiting for the state
+    /// lock, aborts the child until the registry has taken ownership.
+    pub fn register_client_task(
+        &self,
+        id: ClientId,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+        let pending = PendingTaskRegistration(Some(handle));
+        async move {
+            let mut inner = self.inner.write().await;
+            if !inner.clients.contains_key(&id) {
+                return;
+            }
+            let tasks = inner.client_tasks.entry(id).or_default();
+            // Prune completed per-request tasks without growing the registry.
+            tasks.retain(|h| !h.is_finished());
+            tasks.push(pending.into_handle());
         }
-        let tasks = inner.client_tasks.entry(id).or_default();
-        // Drop already-finished handles so protocols that register a task per request
-        // (HTTP, for instance) do not grow this vector without bound.
-        tasks.retain(|h| !h.is_finished());
-        tasks.push(handle);
     }
 
     /// Number of background tasks currently tracked for a client
