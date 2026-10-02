@@ -349,3 +349,6 @@ pub mod zookeeper;
 
 // Shared test helpers - re-export from top-level for backward compatibility
 pub use super::helpers;
+
+#[cfg(feature = "nut")]
+pub mod nut;
