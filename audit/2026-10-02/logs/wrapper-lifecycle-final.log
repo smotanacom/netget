@@ -1,0 +1,52 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+warning: field `protocol` is never read
+  --> tests/e2e/netget_wrapper.rs:23:9
+   |
+21 | pub struct ServerInfo {
+   |            ---------- field in this struct
+22 |     pub id: u32,
+23 |     pub protocol: String,
+   |         ^^^^^^^^
+   |
+   = note: `ServerInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `send_user_input`, `create_server`, `clear_output`, `get_server_port`, and `execute_command` are never used
+   --> tests/e2e/netget_wrapper.rs:43:12
+    |
+ 41 | impl NetGetWrapper {
+    | ------------------ associated items in this implementation
+ 42 |     /// Create a new NetGet wrapper
+ 43 |     pub fn new() -> Self {
+    |            ^^^
+...
+134 |     pub async fn send_user_input(&mut self, input: &str) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+158 |     pub async fn create_server(&mut self, prompt: &str) -> Result<ServerInfo> {
+    |                  ^^^^^^^^^^^^^
+...
+212 |     pub async fn clear_output(&self) {
+    |                  ^^^^^^^^^^^^
+...
+296 |     pub async fn get_server_port(&self, server_id: u32) -> Option<u16> {
+    |                  ^^^^^^^^^^^^^^^
+...
+305 |     pub async fn execute_command(&mut self, command: &str, wait_time: Duration) -> Result<String> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: `netget` (test "wrapper_lifecycle_test") generated 2 warnings
+    Finished `test` profile [unoptimized] target(s) in 4.54s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/wrapper_lifecycle_test.rs (/Users/matus/dev/netget/target/debug/deps/wrapper_lifecycle_test-1d579979aaed3b70)
+
+running 5 tests
+test netget_wrapper::tests::test_server_info ... ok
+test netget_wrapper::tests::failed_death_tie_arming_kills_and_reaps_child ... ok
+test hard_killed_e2e_parent_cannot_leave_child ... ok
+test cancelling_stop_keeps_child_owned_until_wrapper_drop ... ok
+test graceful_and_forced_stop_reap_the_exact_child ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.02s
+

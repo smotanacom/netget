@@ -1,0 +1,111 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+warning: field `protocol` is never read
+  --> tests/e2e/netget_wrapper.rs:23:9
+   |
+21 | pub struct ServerInfo {
+   |            ---------- field in this struct
+22 |     pub id: u32,
+23 |     pub protocol: String,
+   |         ^^^^^^^^
+   |
+   = note: `ServerInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `send_user_input`, `create_server`, `clear_output`, `get_server_port`, and `execute_command` are never used
+   --> tests/e2e/netget_wrapper.rs:43:12
+    |
+ 41 | impl NetGetWrapper {
+    | ------------------ associated items in this implementation
+ 42 |     /// Create a new NetGet wrapper
+ 43 |     pub fn new() -> Self {
+    |            ^^^
+...
+134 |     pub async fn send_user_input(&mut self, input: &str) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+158 |     pub async fn create_server(&mut self, prompt: &str) -> Result<ServerInfo> {
+    |                  ^^^^^^^^^^^^^
+...
+212 |     pub async fn clear_output(&self) {
+    |                  ^^^^^^^^^^^^
+...
+296 |     pub async fn get_server_port(&self, server_id: u32) -> Option<u16> {
+    |                  ^^^^^^^^^^^^^^^
+...
+305 |     pub async fn execute_command(&mut self, command: &str, wait_time: Duration) -> Result<String> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: `netget` (test "wrapper_lifecycle_test") generated 2 warnings
+    Finished `test` profile [unoptimized] target(s) in 2m 54s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/audit_server_decoder_bounds_test.rs (/Users/matus/dev/netget/target/debug/deps/audit_server_decoder_bounds_test-9e6d96683003667a)
+
+running 10 tests
+test dht::ordinary_bencode_preserves_text_binary_and_integer_values ... ok
+test dht::maximum_depth_converts_in_full_and_excess_returns_an_error ... ok
+test fido::attached_channel_preserves_approval_denial_and_busy_behavior ... ok
+test fido::framing_boundary_and_invalid_commands_still_return_exact_responses ... ok
+test ipp::ordinary_sets_and_json_object_numbers_preserve_their_representation ... ok
+test ipp::exact_depth_is_accepted_and_the_next_level_is_refused ... ok
+test fido::missing_or_closed_approval_channels_deny_both_protocols_without_parking ... ok
+test ipp::directly_constructed_deep_trees_are_refused_without_recursive_walking ... ok
+test ipp::json_fallback_checks_escaped_bytes_without_truncating_the_field ... ok
+test dht::in_memory_trees_cannot_bypass_the_depth_bound ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/grpc_value_bounds_test.rs (/Users/matus/dev/netget/target/debug/deps/grpc_value_bounds_test-b81c81d91cf31ec9)
+
+running 7 tests
+test programmatically_constructed_protobuf_trees_cannot_bypass_depth_checks ... ok
+test malformed_values_fail_instead_of_becoming_defaults_or_overwriting_fields ... ok
+test valid_nested_messages_lists_maps_and_bytes_round_trip_through_protobuf ... ok
+test request_conversion_errors_keep_resource_and_schema_statuses_distinct ... ok
+test byte_budget_checks_exact_size_aggregate_content_and_base64_expansion ... ok
+test message_list_and_map_depth_limits_are_explicit_at_the_exact_boundary ... ok
+test node_budget_is_shared_by_repeated_values_in_both_directions ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/recursive_decoder_depth_test.rs (/Users/matus/dev/netget/target/debug/deps/recursive_decoder_depth_test-487b15a3fe7a4466)
+
+running 3 tests
+test the_rule_flags_the_historical_defects_and_not_their_fixes ... ok
+test the_scan_sees_the_decoders_that_are_already_bounded ... ok
+test no_recursive_decoder_is_unbounded ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.31s
+
+     Running tests/spawned_netget_is_tied_test.rs (/Users/matus/dev/netget/target/debug/deps/spawned_netget_is_tied_test-39554567e45980e0)
+
+running 3 tests
+test both_guard_apis_are_recognized ... ok
+test process_spawns_are_distinguished_from_protocol_spawns ... ok
+test no_test_spawns_netget_without_a_death_tie ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+     Running tests/task_registration_cancellation_test.rs (/Users/matus/dev/netget/target/debug/deps/task_registration_cancellation_test-567d5d7ffcef1ff8)
+
+running 6 tests
+test dropping_unpolled_client_registration_aborts_started_child ... ok
+test dropping_unpolled_peer_registration_aborts_started_child ... ok
+test dropping_unpolled_server_registration_aborts_started_child ... ok
+test successful_server_registration_retains_child_until_owner_removal ... ok
+test successful_peer_registration_retains_child_until_connection_removal ... ok
+test successful_client_registration_retains_child_until_owner_removal ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/wrapper_lifecycle_test.rs (/Users/matus/dev/netget/target/debug/deps/wrapper_lifecycle_test-1d579979aaed3b70)
+
+running 5 tests
+test netget_wrapper::tests::test_server_info ... ok
+test netget_wrapper::tests::failed_death_tie_arming_kills_and_reaps_child ... ok
+test hard_killed_e2e_parent_cannot_leave_child ... ok
+test cancelling_stop_keeps_child_owned_until_wrapper_drop ... ok
+test graceful_and_forced_stop_reap_the_exact_child ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.04s
+

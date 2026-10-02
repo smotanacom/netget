@@ -1,0 +1,1 @@
+OK: 2371 files under src/ and tests/ are all reachable (0 allowlisted), and every working-tree .rs file is formatted.

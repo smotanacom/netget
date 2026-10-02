@@ -1,0 +1,65 @@
+     Locking 39 packages to highest compatible versions
+      Adding tempfile v3.23.0 (available: v3.27.0)
+      Adding tokio v1.48.0 (available: v1.53.1)
+      Adding tokio-macros v2.6.1 (available: v2.7.2)
+      Adding uuid v1.18.1 (available: v1.26.1)
+      Adding wasm-bindgen v0.2.128 (available: v0.2.129)
+      Adding wasm-bindgen-macro v0.2.128 (available: v0.2.129)
+      Adding wasm-bindgen-macro-support v0.2.128 (available: v0.2.129)
+      Adding wasm-bindgen-shared v0.2.128 (available: v0.2.129)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling getrandom v0.3.4
+    Checking windows-link v0.2.1
+    Checking windows-sys v0.61.2
+    Checking cfg-if v1.0.5
+   Compiling syn v2.0.119
+    Checking mio v1.2.3
+    Checking fastrand v2.5.0
+    Checking pin-project-lite v0.2.17
+    Checking bytes v1.12.1
+    Checking once_cell v1.21.4
+    Checking tempfile v3.23.0
+    Checking uuid v1.18.1
+   Compiling tokio-macros v2.6.1
+    Checking tokio v1.48.0
+    Checking netget-windows-runtime-fixture v0.0.0 (/private/tmp/netget-windows-runtime-fixture-20261002)
+warning: variable does not need to be mutable
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:153:13
+    |
+153 |         let mut builder = std::fs::DirBuilder::new();
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `read_line_bounded` is never used
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:116:21
+    |
+116 | pub(crate) async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
+    |                     ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ScriptDirectory` is never constructed
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:148:19
+    |
+148 | pub(crate) struct ScriptDirectory(std::path::PathBuf);
+    |                   ^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `script_path` are never used
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:151:19
+    |
+150 | impl ScriptDirectory {
+    | -------------------- associated items in this implementation
+151 |     pub(crate) fn new() -> io::Result<Self> {
+    |                   ^^^
+...
+163 |     pub(crate) fn script_path(&self) -> std::path::PathBuf {
+    |                   ^^^^^^^^^^^
+
+warning: `netget-windows-runtime-fixture` (lib test) generated 4 warnings (4 duplicates)
+warning: `netget-windows-runtime-fixture` (lib) generated 4 warnings (run `cargo fix --lib -p netget-windows-runtime-fixture` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized] target(s) in 3.86s

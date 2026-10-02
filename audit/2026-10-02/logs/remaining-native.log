@@ -1,0 +1,168 @@
+   Compiling rand v0.8.5
+   Compiling futures-executor v0.3.34
+   Compiling tokio-stream v0.1.17
+   Compiling libusb1-sys v0.7.0
+   Compiling futures v0.3.34
+   Compiling hashbrown v0.12.3
+   Compiling num-traits v0.2.19
+   Compiling io-kit-sys v0.5.0
+   Compiling webrtc-util v0.9.0
+   Compiling indexmap v1.9.3
+   Compiling num-bigint-dig v0.8.5
+   Compiling hickory-proto v0.24.4
+   Compiling tower v0.4.13
+   Compiling mach2 v0.5.0
+   Compiling rusb v0.9.4
+   Compiling smb-dtyp v0.10.3
+   Compiling rtp v0.11.0
+   Compiling stun v0.6.0
+   Compiling rtcp v0.11.0
+   Compiling turn v0.8.0
+   Compiling webrtc-srtp v0.13.0
+   Compiling webrtc-mdns v0.7.0
+   Compiling webrtc-sctp v0.10.0
+   Compiling rsa v0.9.8
+   Compiling reqwest v0.12.24
+   Compiling hyper-timeout v0.5.2
+   Compiling hickory-resolver v0.24.4
+   Compiling tonic v0.12.3
+   Compiling ssh-key v0.6.7
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+   Compiling sdp v0.6.2
+   Compiling enum-primitive-derive v0.3.0
+   Compiling webrtc-data v0.9.0
+   Compiling webrtc-dtls v0.10.0
+   Compiling nusb v0.2.7
+   Compiling webrtc-ice v0.11.0
+   Compiling interceptor v0.12.0
+   Compiling smb-fscc v0.10.3
+   Compiling webrtc-media v0.8.0
+   Compiling tungstenite v0.21.0
+   Compiling half v1.8.3
+   Compiling rmcp v1.2.0
+   Compiling serde_cbor v0.11.2
+   Compiling tokio-tungstenite v0.21.0
+   Compiling webrtc v0.11.0
+   Compiling ssh-agent-lib v0.5.1
+   Compiling http-mitm-proxy v0.16.0
+   Compiling smb-msg v0.10.3
+   Compiling usbip v0.9.0
+   Compiling ipp v5.3.2
+   Compiling tonic-reflection v0.12.3
+   Compiling hickory-server v0.24.4
+   Compiling ollama-rs v0.3.3
+   Compiling hickory-client v0.24.4
+   Compiling webrtc-util v0.8.1
+   Compiling nkeys v0.4.5
+   Compiling tokio-websockets v0.10.1
+   Compiling nuid v0.5.0
+   Compiling async-nats v0.50.0
+   Compiling async-stomp v0.6.3
+   Compiling axum-server v0.6.0
+   Compiling webrtc-dtls v0.8.0
+   Compiling tokio-test v0.4.4
+   Compiling coap v0.27.0
+warning: field `protocol` is never read
+  --> tests/e2e/netget_wrapper.rs:23:9
+   |
+21 | pub struct ServerInfo {
+   |            ---------- field in this struct
+22 |     pub id: u32,
+23 |     pub protocol: String,
+   |         ^^^^^^^^
+   |
+   = note: `ServerInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `send_user_input`, `create_server`, `clear_output`, `get_server_port`, and `execute_command` are never used
+   --> tests/e2e/netget_wrapper.rs:43:12
+    |
+ 41 | impl NetGetWrapper {
+    | ------------------ associated items in this implementation
+ 42 |     /// Create a new NetGet wrapper
+ 43 |     pub fn new() -> Self {
+    |            ^^^
+...
+134 |     pub async fn send_user_input(&mut self, input: &str) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+158 |     pub async fn create_server(&mut self, prompt: &str) -> Result<ServerInfo> {
+    |                  ^^^^^^^^^^^^^
+...
+212 |     pub async fn clear_output(&self) {
+    |                  ^^^^^^^^^^^^
+...
+296 |     pub async fn get_server_port(&self, server_id: u32) -> Option<u16> {
+    |                  ^^^^^^^^^^^^^^^
+...
+305 |     pub async fn execute_command(&mut self, command: &str, wait_time: Duration) -> Result<String> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: `netget` (test "wrapper_lifecycle_test") generated 2 warnings
+    Finished `test` profile [unoptimized] target(s) in 2m 05s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/audit_server_decoder_bounds_test.rs (/Users/matus/dev/netget/target/debug/deps/audit_server_decoder_bounds_test-9e6d96683003667a)
+
+running 10 tests
+test dht::ordinary_bencode_preserves_text_binary_and_integer_values ... ok
+test fido::framing_boundary_and_invalid_commands_still_return_exact_responses ... ok
+test ipp::ordinary_sets_and_json_object_numbers_preserve_their_representation ... ok
+test dht::maximum_depth_converts_in_full_and_excess_returns_an_error ... ok
+test fido::attached_channel_preserves_approval_denial_and_busy_behavior ... ok
+test ipp::exact_depth_is_accepted_and_the_next_level_is_refused ... ok
+test fido::missing_or_closed_approval_channels_deny_both_protocols_without_parking ... ok
+test dht::in_memory_trees_cannot_bypass_the_depth_bound ... ok
+test ipp::json_fallback_checks_escaped_bytes_without_truncating_the_field ... ok
+test ipp::directly_constructed_deep_trees_are_refused_without_recursive_walking ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/grpc_value_bounds_test.rs (/Users/matus/dev/netget/target/debug/deps/grpc_value_bounds_test-b81c81d91cf31ec9)
+
+running 7 tests
+test programmatically_constructed_protobuf_trees_cannot_bypass_depth_checks ... ok
+test valid_nested_messages_lists_maps_and_bytes_round_trip_through_protobuf ... ok
+test malformed_values_fail_instead_of_becoming_defaults_or_overwriting_fields ... ok
+test request_conversion_errors_keep_resource_and_schema_statuses_distinct ... ok
+test message_list_and_map_depth_limits_are_explicit_at_the_exact_boundary ... ok
+test byte_budget_checks_exact_size_aggregate_content_and_base64_expansion ... ok
+test node_budget_is_shared_by_repeated_values_in_both_directions ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/recursive_decoder_depth_test.rs (/Users/matus/dev/netget/target/debug/deps/recursive_decoder_depth_test-487b15a3fe7a4466)
+
+running 3 tests
+test the_rule_flags_the_historical_defects_and_not_their_fixes ... ok
+test no_recursive_decoder_is_unbounded ... ok
+test the_scan_sees_the_decoders_that_are_already_bounded ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.96s
+
+     Running tests/spawned_netget_is_tied_test.rs (/Users/matus/dev/netget/target/debug/deps/spawned_netget_is_tied_test-39554567e45980e0)
+
+running 2 tests
+test both_guard_apis_are_recognized ... ok
+test no_test_spawns_netget_without_a_death_tie ... FAILED
+
+failures:
+
+---- no_test_spawns_netget_without_a_death_tie stdout ----
+
+thread 'no_test_spawns_netget_without_a_death_tie' (872469) panicked at tests/spawned_netget_is_tied_test.rs:116:5:
+these test files spawn the `netget` binary without arming a death tie, so a run that is killed or aborted leaves the child alive at PPID 1 holding its ports:
+  tests/e2e/netget_wrapper.rs
+  tests/terminal_snapshot/mod.rs
+  tests/test_infrastructure_review_test.rs
+
+The fix is two lines: `child_guard::tie_child(pid)` right after `spawn()`, and `child_guard::untie_child(pid)` after the child has been signalled (never before — a tie released first leaves nothing watching).
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    no_test_spawns_netget_without_a_death_tie
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+error: test failed, to rerun pass `--test spawned_netget_is_tied_test`

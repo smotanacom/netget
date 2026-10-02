@@ -1,0 +1,12 @@
+{
+  "command": [
+    "env",
+    "CARGO_TARGET_DIR=/private/tmp/netget-audit-web-20261001",
+    "CARGO_NET_OFFLINE=true",
+    "./web/build.sh",
+    "--dev"
+  ],
+  "exit_code": 0,
+  "seconds": 311.08,
+  "log": "/Users/matus/dev/netget/tmp/audit-2026-10-02/integrated-wasm-build.log"
+}
