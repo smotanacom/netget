@@ -143,6 +143,7 @@ impl Protocol for DoqProtocol {
         };
         ProtocolMetadataV2::builder().state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(853)).well_known_udp_port(853)
+            .max_inbound_bytes(super::wire::MAX_FRAME_BYTES)
             .implementation("quinn 0.11, rustls 0.23 and existing hickory-proto 0.24 DNS codec")
             .llm_control("Typed A/AAAA/MX/TXT/CNAME/NXDOMAIN responses per QUIC query stream")
             .e2e_testing("Loopback framing, bounds, certificate validation, command/event and cleanup tests; independent-peer evidence recorded in tests/server/doq/CLAUDE.md")
@@ -151,9 +152,9 @@ impl Protocol for DoqProtocol {
     }
     fn get_startup_examples(&self) -> StartupExamples {
         StartupExamples::new(
-            json!({"type":"open_server","protocol":"doq","port":8853,"instruction":"Answer A queries for example.com with 192.0.2.1"}),
-            json!({"type":"open_server","protocol":"doq","port":8853,"event_handlers":[{"event_pattern":"doq_query","handler":{"type":"script","language":"python","code":"import json,sys\nevent=json.load(sys.stdin)['event']\ndef respond(actions):\n    print(json.dumps({'actions':actions}))\nrespond([{'type':'send_dns_a_response','query_id':0,'domain':event['domain'],'ip':'192.0.2.1'}])"}}]}),
-            json!({"type":"open_server","protocol":"doq","port":8853,"event_handlers":[{"event_pattern":"doq_query","handler":{"type":"static","actions":[{"type":"ignore_query"}]}}]}),
+            json!({"type":"open_server","base_stack":"doq","port":8853,"instruction":"Answer A queries for example.com with 192.0.2.1"}),
+            json!({"type":"open_server","base_stack":"doq","port":8853,"event_handlers":[{"event_pattern":"doq_query","handler":{"type":"script","language":"python","code":"import json,sys\nevent=json.load(sys.stdin)['event']\ndef respond(actions):\n    print(json.dumps({'actions':actions}))\nrespond([{'type':'send_dns_a_response','query_id':0,'domain':event['domain'],'ip':'192.0.2.1'}])"}}]}),
+            json!({"type":"open_server","base_stack":"doq","port":8853,"event_handlers":[{"event_pattern":"doq_query","handler":{"type":"static","actions":[{"type":"ignore_query"}]}}]}),
         )
     }
 }
