@@ -214,6 +214,9 @@ pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
 
+#[cfg(feature = "dict")]
+mod dict;
+
 #[cfg(feature = "beanstalkd")]
 pub mod beanstalkd;
 #[cfg(feature = "graphite")]
