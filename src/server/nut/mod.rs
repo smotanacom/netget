@@ -132,20 +132,44 @@ async fn decision(
         &event,
         &actions::NutProtocol,
     )
-    .await?;
+    .await
+    .inspect_err(|error| {
+        let decision = if crate::llm::is_overload_error(error) {
+            "fail_closed_llm_overload"
+        } else {
+            "fail_closed_llm_error"
+        };
+        Log::new(Some(&ctx.status_tx)).warn(format!("NUT handler decision={decision}: {error}"));
+    })?;
     let mut found = None;
     let mut pending = result.protocol_results;
     while let Some(result) = pending.pop() {
         match result {
             ActionResult::Custom { name, data } if name == expected => {
-                anyhow::ensure!(found.is_none(), "Multiple NUT replies");
+                if found.is_some() {
+                    Log::new(Some(&ctx.status_tx))
+                        .warn("NUT handler decision=fail_closed_multiple_actions");
+                    anyhow::bail!("Multiple NUT replies");
+                }
                 found = Some(data);
             }
             ActionResult::Multiple(items) => pending.extend(items),
             _ => {}
         }
     }
-    found.context("Handler did not answer NUT request")
+    let Some(reply) = found else {
+        Log::new(Some(&ctx.status_tx)).warn("NUT handler decision=fail_closed_no_action");
+        anyhow::bail!("Handler did not answer NUT request");
+    };
+    let decision = if (expected == "nut_auth_decision" && reply["allowed"] == false)
+        || reply.get("error").and_then(Value::as_str).is_some()
+    {
+        "model_reject"
+    } else {
+        "model_answer"
+    };
+    Log::new(Some(&ctx.status_tx)).debug(format!("NUT handler decision={decision}"));
+    Ok(reply)
 }
 async fn session(
     ctx: &SpawnContext,
@@ -256,8 +280,10 @@ async fn session(
         match result {
             Ok(reply) => write(ctx, id, &mut write_half, &reply).await?,
             Err(e) => {
-                Log::new(Some(&ctx.status_tx))
-                    .warn(format!("NUT handler failed for {}: {e}", request.operation));
+                Log::new(Some(&ctx.status_tx)).warn(format!(
+                    "NUT handler failed for {} decision=fail_closed_response_error: {e}",
+                    request.operation
+                ));
                 write(ctx, id, &mut write_half, "ERR DATA-STALE\n").await?;
                 return Ok(());
             }
