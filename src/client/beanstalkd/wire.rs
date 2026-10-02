@@ -289,8 +289,16 @@ pub fn parse_yaml(text: &str, list: bool) -> Result<Value> {
     if list {
         let mut out = Vec::new();
         for row in rows {
+            if row.trim().is_empty() {
+                continue;
+            }
             let text = row.strip_prefix("- ").context("Expected flat tube list")?;
-            let Scalar(value) = serde_yaml::from_str(text)?;
+            let value = if wire::valid_tube_name(text) {
+                json!(text)
+            } else {
+                let Scalar(value) = serde_yaml::from_str(text)?;
+                value
+            };
             let name = value.as_str().context("Tube name must be text")?;
             ensure!(wire::valid_tube_name(name), "Invalid tube name in list");
             out.push(value);
@@ -299,6 +307,9 @@ pub fn parse_yaml(text: &str, list: bool) -> Result<Value> {
     } else {
         let mut out = serde_json::Map::new();
         for row in rows {
+            if row.trim().is_empty() {
+                continue;
+            }
             let (key, text) = row
                 .split_once(": ")
                 .context("Expected flat stats mapping")?;
@@ -309,7 +320,19 @@ pub fn parse_yaml(text: &str, list: bool) -> Result<Value> {
                         .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
                 "Invalid stats key"
             );
-            let Scalar(value) = serde_yaml::from_str(text)?;
+            // v1.12 emits uname fields without YAML quoting: os starts with '#'
+            // on Linux and contains ': ' on Darwin. Treat only these protocol text
+            // fields as opaque strings, never deserialize arbitrary nested values.
+            let value = if matches!(key, "hostname" | "os" | "platform")
+                && !text.starts_with(['\"', '\''])
+            {
+                json!(text)
+            } else if matches!(key, "tube" | "name") && wire::valid_tube_name(text) {
+                json!(text)
+            } else {
+                let Scalar(value) = serde_yaml::from_str(text)?;
+                value
+            };
             ensure!(
                 out.insert(key.into(), value).is_none(),
                 "Duplicate stats key"
