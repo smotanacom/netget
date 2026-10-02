@@ -215,10 +215,10 @@ pub mod nut;
 pub mod statsd;
 
 #[cfg(feature = "gemini")]
-mod gemini;
+pub mod gemini;
 
 #[cfg(feature = "dict")]
-mod dict;
+pub mod dict;
 
 #[cfg(feature = "beanstalkd")]
 pub mod beanstalkd;
@@ -227,3 +227,11 @@ pub mod graphite;
 
 #[cfg(feature = "quic")]
 pub mod quic;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
+
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
+#[cfg(feature = "nsq")]
+pub mod nsq;

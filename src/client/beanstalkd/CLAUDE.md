@@ -21,6 +21,9 @@ bytes; counted payloads are capped at 1 MiB before allocation. YAML data is pars
 flat scalar mappings or tube-name lists, with a 512-entry bound and independently parsed
 scalar values through a scalar-only serde Visitor: collections are rejected before their
 children are visited. Aliases cannot refer across records. Duplicate keys fail.
+Blank YAML rows count against the row bound. Legacy 1.12 unquoted uname fields
+(hostname/os/platform) are opaque text; tube/name fields and list entries preserve
+valid unquoted tube names such as true or 123. Quoted 1.13 text remains YAML-decoded.
 
 At most one transaction is in flight because the protocol has no request IDs. A tracked
 I/O task owns the split socket. A separately tracked handler task allows injected actions

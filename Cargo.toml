@@ -71,6 +71,8 @@ portable-base = [
     "syslog",
     "statsd",
     "graphite",
+    "gelf",
+    "fluent-forward",
     "ssh",
     "ssh-agent",
     "svn",
@@ -242,6 +244,8 @@ igmp = []  # IGMP multicast group management, no extra deps
 syslog = ["syslog_loose"]
 statsd = [] # StatsD / DogStatsD UDP collector and emitter; native codec
 graphite = [] # Carbon plaintext TCP collector and emitter; native codec
+gelf = ["dep:flate2"] # GELF 1.1 UDP/TCP structured logging
+fluent-forward = ["dep:flate2"] # MessagePack Forward logs and ACKs
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -368,7 +372,7 @@ kafka = ["dep:kafka-protocol"]  # Apache Kafka broker and client, both pure Rust
 # NOT HTTP/3 - no RFC 9114 framing, no QPACK - so it needs neither h3 nor h3-quinn. See
 # src/server/quic/CLAUDE.md.
 quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]
-# HTTP/3 client only (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
+# HTTP/3 server and client (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
 # NOT build the QUIC server, and the two cannot talk to each other.
 http3 = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "dep:h3", "dep:h3-quinn"]
 torrent-tracker = ["dep:serde_bencode", "urlencoding"]  # BitTorrent Tracker (HTTP-based peer discovery with announce/scrape)
@@ -486,6 +490,8 @@ dist-windows = [
     "syslog",
     "statsd",
     "graphite",
+    "gelf",
+    "fluent-forward",
     "ssh",
     "svn",
     "irc",
@@ -632,6 +638,8 @@ all-protocols = [
     "syslog",
     "statsd",
     "graphite",
+    "gelf",
+    "fluent-forward",
     "ssh",
     "ssh-agent",
     "svn",
@@ -1302,3 +1310,4 @@ panic = "abort"
 # tests/vendored_hyper_patch_test.rs fails when Cargo.lock and the vendored copy disagree.
 [patch.crates-io]
 hyper = { path = "vendor/hyper" }
+h3-quinn = { path = "vendor/h3-quinn" }

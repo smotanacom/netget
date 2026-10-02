@@ -865,7 +865,7 @@ Requested 1 October 2026. This is the durable implementation checklist for the r
 
 ## Research findings that affect implementation
 
-The research counted 169 server registration sites and 103 client registration sites, including device profiles and partial implementations. These are source counts, not runtime counts or conformance claims. HTTP/3 currently has a real client but no matching server: the QUIC server handles raw streams. The generic gRPC server is unary-only and does not serve reflection. SSH already contains an SFTP server but its client lacks SFTP. Existing AMQP is 0-9-1, so AMQP 1.0 is distinct. OTLP currently has an HTTP receiver.
+The research counted 169 server registration sites and 103 client registration sites, including device profiles and partial implementations. These are source counts, not runtime counts or conformance claims. At that research snapshot, HTTP/3 had a real client but no matching server; the QUIC server handled raw streams. The generic gRPC server is unary-only and does not serve reflection. SSH already contains an SFTP server but its client lacks SFTP. Existing AMQP is 0-9-1, so AMQP 1.0 is distinct. OTLP currently has an HTTP receiver.
 
 Redfish was previously deferred on the assumption that suitable peers were Python-only. [Gofish](https://github.com/stmcginnis/gofish) supplies an independent Go client, so that rationale should not prevent implementing it. DNP3's prominent Rust library is commercial; dependency choice must be resolved before integration. Current repository pins (Hickory 0.24, russh 0.45, tonic 0.12/prost 0.13) make current-library compatibility an explicit check, not an assumption.
 
@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **8 / 72**. Checkboxes below are authoritative and are updated only from evidence.
-- Integration branch: `protocol-expansion-20261001`.
-- Agent `nut`: NUT, Beanstalkd, DICT and Gemini merged and validated. Gemini (`d9b6f492`, merge `e3a682bb`) passed all 32 protocol tests in the combined integration build. Now implementing NSQ, then Gearman.
-- Agent `doq`: DoQ and raw QUIC complete. Raw QUIC (`5a872651`, follow-up `7afc32e0`, merge `b7a2e7c6`) passed all 16 protocol tests, including direct NetGet pairing and encoded-input allocation limits. HTTP/3 implementation in progress, followed by SFTP and OTLP.
-- Agent `statsd`: StatsD and Graphite complete. Shared task-registration cancellation fix (`7916e859`) integrated and validated. GELF and Fluent Forward in progress, then InfluxDB and Loki.
-- Combined second-batch validation: 157 protocol tests and 71 shared checks passed. Gemini/raw QUIC follow-ups passed 48 protocol and 71 shared checks. Eight checklist entries complete. Three workers maximum; builds serialized.
+- Completed and published: **8 / 72**. Four more scopes (25 Forward, 26 GELF, 53 HTTP/3 and 64 NSQ) are merged and completing final integration verification. Checkboxes below are authoritative.
+- Integration branch: `protocol-expansion-20261001`; published master audit `314c819a` is preserved by merge `ad1802ca`.
+- Agent `queue_continue`: NSQ is merged, including the selected delivery after CLOSE_WAIT (`5002305d`) and observed heartbeat acknowledgements (`7a981923`). Gearman client (`2a095a08`) passed 47 protocol tests and awaits manager integration. Prometheus exporter scrape client is next.
+- Agent `http3_continue`: HTTP/3 server/client (`168b8e82`, merge `8d108906`) and TE validation (`c4ddd3df`, merge `4dd79504`) are merged. A shared independent-peer port race is fixed (`73292cbc`); final HTTP/3/raw-QUIC integration reruns are queued. SFTP extension of SSH is implemented and awaiting focused tests, followed by OTLP.
+- Agent `metrics_continue`: GELF (`daa80399`, handler-failure correction `d58a4c0c`) and Fluent Forward (`8342e85a`, merge `1d1b7a15`) are merged. InfluxDB write API implementation is awaiting tests with official emitter, decoder and real service peers; Loki follows.
+- All remaining items are assigned across three continuing queues: RPC/QUIC and streaming; service APIs and existing clients; collectors, industrial protocols and framed services. Three workers maximum, one build at a time. The coordinator rebalances future work, integrates independently validated signed scopes and publishes directly to master.
 
 ## New protocol checklist
 
@@ -1065,17 +1065,17 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 - [ ] **25. Fluent Forward** — B/M; proposed feature `fluent_forward`. [Specification/reference](https://docs.fluentd.org/input/forward).
   - Scope: MessagePack event/batch modes, acknowledgments, bounded compression and explicit secure-transport scope.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Documentation, honest metadata and integrated commit recorded.
 
 - [ ] **26. GELF** — B/M; proposed feature `gelf`. [Specification/reference](https://go2docs.graylog.org/current/getting_in_log_data/gelf_format.html).
   - Scope: Structured logs over TCP/UDP, framing, bounded UDP reassembly and compression.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Documentation, honest metadata and integrated commit recorded.
 
 - [ ] **27. Loki push API** — B/M; proposed feature `loki`. [Specification/reference](https://grafana.com/docs/loki/latest/reference/loki-http-api/).
   - Scope: Labeled log ingestion/emission, authentication/tenancy, batch validation, compression and failure responses.
@@ -1263,7 +1263,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 - [ ] **53. HTTP/3 server**.
   - Scope: Real HTTP/3 headers/data/control/QPACK using h3/quinn and existing HTTP/3 client interoperability.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
+  - [x] Missing functionality implemented and registered; existing side preserved.
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
@@ -1331,7 +1331,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 - [ ] **64. NSQ client**.
   - Scope: Publish/subscribe, negotiated readiness, acknowledgments, requeue and heartbeat.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
+  - [x] Missing functionality implemented and registered; existing side preserved.
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
@@ -1384,19 +1384,25 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Integrated validation evidence
 
-- Recovery on 2 October: temporary sources, logs and artifacts had been removed; committed implementations were restored from Git. Historical test counts below were recorded before cleanup. Original temporary log paths are no longer available. Uncommitted HTTP/3, GELF and NSQ work is being reconstructed; those items remain unchecked. Free space at recovery: approximately 148 GiB.
+- **Batch 4 integration verification, in progress:** GELF 22, NSQ 55, HTTP/3 13, Forward 24, NUT 20, DoQ 18, raw QUIC 17, Beanstalkd 41 and HTTP/3 cancellation/early-hints 2 tests passed with `tcp,nut,doq,gelf,beanstalkd,nsq,http3,quic,fluent-forward` together after incorporating published audit `314c819a`. HTTP/3 TE follow-up adds one server regression; all 16 HTTP/3 checks passed in the agent's focused run. The manager's subsequent rerun exposed an independent-peer UDP port reservation race, corrected by `73292cbc`; final combined reruns are queued behind the shared build slot.
+- Batch 4 shared checks: 130 checks across 31 targets pass after correcting two source-check entries. The clean published baseline reproduced the unclassified HTTP URL validator; it rejects malformed targets without rewriting them. The obsolete three-sleep HTTP/3 baseline was removed. Combined correctness/suspicious/unused-must-use lint, workflow YAML/shell syntax, test discovery and touched-source formatting pass. Guarded whole-package formatting and final peer reruns remain pending. Logs: `/Users/matus/dev/netget/.protocol-expansion-20261001/logs/batch4-*.log`; orchestration: `validate_batch4.py` in that programme directory. No new-scope completion is claimed from a skipped case.
+
+
+- Remote validation of `cf3f6a74`: [protocol pair run](https://github.com/smotanacom/netget/actions/runs/37015942511) passed NUT/DoQ/StatsD and Graphite, then failed Beanstalkd 1.12 interoperability. [General CI](https://github.com/smotanacom/netget/actions/runs/37015942450) found decision-tag, private-test discovery, peer-workflow evidence, silent failure declarations and Graphite validator declaration gaps. All four single-feature shards, browser build and blocking lint passed. Corrections are merged or in local verification; no claim of a green full CI run.
+
+- Recovery on 2 October: temporary sources, logs and artifacts had been removed; committed implementations were restored from Git. Historical test counts below were recorded before cleanup. Original temporary log paths are no longer available. Previously uncommitted HTTP/3, GELF and NSQ work was reconstructed and signed; their final integration evidence is tracked below. Free space at recovery: approximately 148 GiB.
 
 - **Batch 3 — 54 raw QUIC completion, 66 Gemini client:** all 48 protocol tests (16 QUIC, 32 Gemini) and 71 shared checks passed at merge `b7a2e7c6` with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic,gemini`. Same test command shape and shared targets as Batch 2; logs in `/private/tmp/netget-protocol-expansion-20261001/validation-third/`. No failed or ignored cases. Raw QUIC review is closed; the independent peers and direct NetGet pairing agree. CI's `stream-pairs` job now includes Gemini/Agate/ignition and tshark.
 
 - **Batch 2 — 24 Graphite, 63 Beanstalkd client, 67 DICT client; raw QUIC review in progress:** all 157 protocol tests passed with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic` together at merge `08584d20`. This includes the first three protocols after the shared task-registration fix and 14 raw QUIC tests; its direct NetGet pairing review remains open. No failed or ignored tests in the final protocol runs.
 - Batch 2 commands use the Batch 1 protocol command with that expanded feature set and each of `graphite`, `beanstalkd`, `dict`, `quic`, `nut`, `statsd`, `doq`. All 71 shared checks passed, adding `task_registration_cancellation_test`, `server_task_registry_test` and `client_stop_releases_socket_test` to Batch 1's targets. An obsolete QUIC server-only pairing assertion was updated to require the implemented client, then the shared checks passed.
 - Lifecycle fix `7916e859`: a started child is owned before the registration future is first polled, and cancelled if registration is dropped. Both regression tests failed before the fix; successful registration/owner removal also remain covered.
-- Batch 2 logs: `/private/tmp/netget-protocol-expansion-20261001/validation-second/`. CI's separate `stream-pairs` job installs Graphite, queue, dictionary and aioquic peers; remote execution has not yet run. Publication is authorized; the validated batch will be merged to master and pushed.
+- Batch 2 logs: `/private/tmp/netget-protocol-expansion-20261001/validation-second/`. CI's separate `stream-pairs` job installs Graphite, queue, dictionary and aioquic peers. The first remote run reproduced Beanstalkd 1.12 legacy statistics incompatibility; a focused correction is being validated. The eight-scope batch was merged to master and pushed as `cf3f6a74`.
 
 - **Batch 1 — 01 DoQ, 06 NUT, 23 StatsD/DogStatsD:** all 53 protocol tests and 62 shared checks passed with `tcp,nut,doq,statsd` enabled together at merge `07339b83`; no ignored tests in this combined run. All three remain Experimental, with their selected scope and missing maturity evidence documented in their source/test `CLAUDE.md` files.
 - Protocol command, once for each `PROTOCOL` in `nut`, `statsd`, `doq`: `cargo test --locked --offline --no-default-features --features tcp,nut,doq,statsd --test server --test client -- PROTOCOL:: --test-threads=4`. The programme runs Cargo through its serialized guard and provides the documented local peer paths.
 - Shared checks: `event_action_declarations_test`, `advertised_actions_test`, `well_known_port_declaration_test`, `startup_param_defaults_test`, `startup_param_drift_test`, `protocol_startup_examples_test`, `dual_protocol_test`, `dashboard_wireshark_test`, `client_event_wiring_test`, `event_emit_sites_test` with the same feature set.
-- Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the remote workflow has not yet run. Publication to master is explicitly authorized. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
+- Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the first remote NUT/DoQ/StatsD interoperability job passed on Linux. The eight-scope batch is published on master as `cf3f6a74`. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
 
 ## Implementation and independent peer plan
 

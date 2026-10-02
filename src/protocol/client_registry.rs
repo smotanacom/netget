@@ -128,9 +128,7 @@ impl ClientRegistry {
         #[cfg(feature = "http2")]
         self.register(Arc::new(crate::client::http2::Http2ClientProtocol::new()));
 
-        // Real RFC 9114 HTTP/3 (the `h3` crate), so it keeps the `http3` name.
-        // The `http3` feature no longer builds a server - NetGet's QUIC server
-        // lives behind `quic` and cannot be spoken to by this client.
+        // Raw QUIC and RFC 9114 HTTP/3 have distinct client/server registrations.
         #[cfg(feature = "quic")]
         self.register(Arc::new(
             crate::client::quic::actions::QuicClientProtocol::new(),
@@ -312,6 +310,16 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::client::fluent_forward::actions::FluentForwardClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(
+            crate::client::gelf::actions::GelfClientProtocol::new(),
+        ));
+
         #[cfg(feature = "graphite")]
         self.register(Arc::new(
             crate::client::graphite::actions::GraphiteClientProtocol::new(),
@@ -385,6 +393,9 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
         ));
+
+        #[cfg(feature = "nsq")]
+        self.register(Arc::new(crate::client::nsq::NsqClientProtocol::new()));
 
         #[cfg(feature = "nut")]
         self.register(Arc::new(
@@ -760,6 +771,9 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
     ("Graphite", "graphite"),
     ("StatsD", "statsd"),
     ("DogStatsD", "statsd"),
@@ -775,6 +789,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Gemini", "gemini"),
     ("DICT", "dict"),
     ("Beanstalkd", "beanstalkd"),
+    ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),

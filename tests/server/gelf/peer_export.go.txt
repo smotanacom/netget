@@ -1,0 +1,4 @@
+package gelf
+func NetgetTCPStart(addr string) (*TCPReader, error) { r, _, err := newTCPReader(addr); return r, err }
+func (r *TCPReader) NetgetAddr() string { return r.addr() }
+func (r *TCPReader) NetgetRead() (*Message, error) { return r.readMessage() }

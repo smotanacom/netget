@@ -86,3 +86,53 @@ fn scalar_parser_rejects_nested_and_single_value_alias_graphs() {
         assert!(parse_yaml(&format!("---\n- {scalar}\n"), true).is_err());
     }
 }
+
+#[tokio::test]
+async fn counted_yaml_blank_rows_do_not_consume_the_next_response() {
+    let request = Request::from_action(&json!({"operation":"stats_job","id":1})).unwrap();
+    // A valid YAML blank row remains inside the byte-counted body.
+    let body = "---\nid: 1\nstate: buried\nkicks: 0\n\r\n";
+    let bytes = format!("OK {}\r\n{}\r\nNOT_FOUND\r\n", body.len(), body);
+    let mut reader = BufReader::new(bytes.as_bytes());
+    assert_eq!(
+        response(&mut reader, &request).await.unwrap()["data"],
+        json!({"id":1,"state":"buried","kicks":0})
+    );
+    assert_eq!(
+        response(&mut reader, &request).await.unwrap()["status"],
+        "NOT_FOUND"
+    );
+    // Blank rows still count toward the existing row bound, and nested data is refused.
+    assert!(parse_yaml(&format!("---\n{}", "\n".repeat(513)), false).is_err());
+    assert!(parse_yaml("---\n\nvalue: [nested]\n\n", false).is_err());
+}
+
+#[test]
+fn legacy_1_12_unquoted_system_fields_and_tube_names_remain_text() {
+    // v1.12 STATS_FMT writes uname.version unquoted; Linux starts with '#',
+    // Darwin includes ': '. v1.13 quotes these fields.
+    for os in [
+        "#14-Ubuntu SMP Tue Sep 23 14:31:10 UTC 2025",
+        "Darwin Kernel Version 25.0.0: Tue Sep 23 14:31:10 PDT 2025",
+    ] {
+        let result = parse_yaml(
+            &format!("---\nhostname: host.local\nos: {os}\nplatform: arm64\n"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(result["os"], os);
+        assert_eq!(result["hostname"], "host.local");
+        assert_eq!(result["platform"], "arm64");
+    }
+    let quoted = "---\nhostname: \"host.local\"\nos: \"#14-Ubuntu SMP\"\nplatform: \"arm64\"\n";
+    assert_eq!(parse_yaml(quoted, false).unwrap()["os"], "#14-Ubuntu SMP");
+    assert_eq!(
+        parse_yaml("---\n- true\n- 123\n- \"null\"\n", true).unwrap(),
+        json!(["true", "123", "null"])
+    );
+    assert_eq!(
+        parse_yaml("---\nname: true\ntube: 123\nid: 9\n", false).unwrap(),
+        json!({"name":"true","tube":"123","id":9})
+    );
+    assert!(parse_yaml("---\nvalue: {nested: [1, 2]}\n", false).is_err());
+}

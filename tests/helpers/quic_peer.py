@@ -47,6 +47,26 @@ class H3Peer(QuicConnectionProtocol):
                                        "body": message["body"].decode()})
                 else:
                     headers = dict((k.decode(), v.decode()) for k, v in message["headers"])
+                    if headers.get(":path") == "/silent":
+                        continue
+                    if headers.get(":path") == "/oversized":
+                        self.http.send_headers(http_event.stream_id, [(b":status", b"200")])
+                        self.http.send_data(http_event.stream_id, b"x" * (MAX_BODY + 1), end_stream=True)
+                        self.transmit()
+                        continue
+                    if headers.get(":path") == "/large-header":
+                        self.http.send_headers(http_event.stream_id, [(b":status", b"200")] + [(b"accept", b"*/*") for i in range(900)], end_stream=True)
+                        self.transmit()
+                        continue
+                    if headers.get(":path") in ("/te-response", "/te-trailer"):
+                        bad = [(b"te", b"trailers")]
+                        self.http.send_headers(http_event.stream_id, [(b":status", b"200")] + (bad if headers[":path"] == "/te-response" else []))
+                        if headers[":path"] == "/te-trailer":
+                            self.http.send_headers(http_event.stream_id, bad, end_stream=True)
+                        else:
+                            self.http.send_data(http_event.stream_id, b"", end_stream=True)
+                        self.transmit()
+                        continue
                     body = json.dumps({"method": headers.get(":method"), "path": headers.get(":path"),
                                        "headers": headers, "body": message["body"].decode()}).encode()
                     self.http.send_headers(http_event.stream_id, [(b":status", b"200"),
@@ -63,10 +83,15 @@ class H3Peer(QuicConnectionProtocol):
         headers = [(b":method", request.get("method", "GET").encode()),
                    (b":scheme", b"https"), (b":authority", b"localhost"),
                    (b":path", request.get("path", "/").encode())]
-        headers += [(k.lower().encode(), v.encode()) for k, v in request.get("headers", {}).items()]
-        self.http.send_headers(stream, headers, end_stream=not body)
+        headers += [(k.lower().encode(), item.encode())
+                    for k, v in request.get("headers", {}).items()
+                    for item in (v if isinstance(v, list) else [v])]
+        self.http.send_headers(stream, headers, end_stream=not body and not request.get("trailers"))
+        trailers = request.get("trailers", {})
         if body:
-            self.http.send_data(stream, body, end_stream=True)
+            self.http.send_data(stream, body, end_stream=not trailers)
+        if trailers:
+            self.http.send_headers(stream, [(k.encode(), v.encode()) for k,v in trailers.items()], end_stream=True)
         self.transmit()
         return await asyncio.wait_for(future, 10)
 
@@ -109,7 +134,10 @@ async def main(args):
     if args.mode == "server":
         config.load_cert_chain(args.cert, args.key)
         server = await serve("127.0.0.1", args.port, configuration=config, create_protocol=protocol)
-        print(json.dumps({"ready": True, "port": args.port}), flush=True)
+        # aioquic 1.3.0's serve API does not expose the bound address. Read it
+        # from its live transport so port 0 is allocated only once, by the peer.
+        port = server._transport.get_extra_info("sockname")[1]
+        print(json.dumps({"ready": True, "port": port}), flush=True)
         try:
             await asyncio.Event().wait()
         finally:
