@@ -207,6 +207,8 @@ pub mod xmpp;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
 
+#[cfg(feature = "doq")]
+pub mod doq;
 #[cfg(feature = "nut")]
 pub mod nut;
 #[cfg(feature = "statsd")]

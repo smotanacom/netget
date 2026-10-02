@@ -624,6 +624,8 @@ pub mod xmpp;
 #[cfg(feature = "xmpp")]
 pub use xmpp::actions::XmppClientProtocol;
 
+#[cfg(feature = "doq")]
+pub mod doq;
 #[cfg(feature = "nut")]
 pub mod nut;
 #[cfg(feature = "statsd")]
