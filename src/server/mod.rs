@@ -51,6 +51,7 @@ pub mod http_common;
     feature = "http",
     feature = "http2",
     feature = "quic",
+    feature = "http3",
     feature = "smtp",
     feature = "pop3",
     feature = "tls",
@@ -1231,3 +1232,8 @@ pub mod graphite;
 
 #[cfg(feature = "gelf")]
 pub mod gelf;
+
+#[cfg(feature = "http3")]
+pub mod http3;
+#[cfg(feature = "http3")]
+pub use http3::actions::Http3Protocol;
