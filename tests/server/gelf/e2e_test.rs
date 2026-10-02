@@ -396,3 +396,47 @@ async fn tcp_connection_cap_refuses_excess_and_closed_peer_returns_slot() {
         0
     );
 }
+
+#[tokio::test]
+async fn mixed_valid_and_invalid_handler_actions_fail_closed_and_record_decision() {
+    for transport in ["tcp", "udp"] {
+        let handler = json!({"type":"script","language":"python","code":"import json\nprint(json.dumps({'actions':[{'type':'collect_gelf_message'},{'type':'unknown_gelf_action'}]}))"});
+        let (state, id, addr) = start(
+            Some(vec![
+                json!({"event_pattern":"gelf_message","handler":handler}),
+            ]),
+            Some(json!({"transport":transport})),
+        )
+        .await;
+        if transport == "tcp" {
+            let mut peer = TcpStream::connect(addr).await.unwrap();
+            peer.write_all(&[wire("handler fails"), vec![0]].concat())
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), peer.read(&mut [0; 1]))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        } else {
+            let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            peer.send_to(&wire("handler fails"), addr).await.unwrap();
+            logs(&state, id, 2).await;
+            peer.send_to(&wire("still alive"), addr).await.unwrap();
+            logs(&state, id, 4).await;
+        }
+        let logs = logs(&state, id, 2).await;
+        let failed: Vec<_> = logs
+            .iter()
+            .filter(|e| e.event_type == "gelf_handler_failed")
+            .collect();
+        assert_eq!(failed.len(), if transport == "udp" { 2 } else { 1 });
+        assert!(failed.iter().all(|e| e.response
+            == vec![
+                json!({"decision":"fail_closed_handler_action_error","failed_action_count":1})
+            ]));
+        state.remove_server(id).await;
+    }
+}

@@ -6,7 +6,7 @@ source+ID separation, expired/replayed IDs, malformed/truncated frames, gzip/zli
 trailing bytes, message/datagram/chunk/count/payload-memory/buffer limits. E2E tests cover
 UDP/TCP default model suppression, static/script/manual/model routing, standard memory
 across events, offending-peer isolation, receiver timestamp/level defaults, both-role pairing,
-manual-stop cancellation, socket release and the absolute TCP frame deadline.
+mixed valid/invalid action fail-closed decision logs, manual-stop cancellation, socket release and the absolute TCP frame deadline.
 
 Independent pygelf 0.4.3 emits gzip/chunked UDP and NUL-framed TCP; tests require actual
 structured observations. Missing peers fail. No ignored tests, optional-peer skips or
