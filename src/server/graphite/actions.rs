@@ -66,6 +66,7 @@ impl Protocol for GraphiteProtocol {
     fn metadata(&self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2::builder().deliberately_silent().state(DevelopmentState::Experimental).well_known_port(2003)
             .max_inbound_bytes(MAX_LINE_BYTES)
+            .request_only("Carbon plaintext is a one-way metric stream; the collector has no replies or unsolicited server messages")
             .implementation("Native bounded Carbon plaintext TCP codec, no added dependencies")
             .llm_control("Explicit handlers process bounded batches; llm_fallback=false collects unmatched batches without model calls")
             .e2e_testing("Structured codec, fragmented/coalesced stream and lifecycle tests; independent Graphyte and official Carbon peers")
