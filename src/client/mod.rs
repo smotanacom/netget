@@ -627,5 +627,8 @@ pub use xmpp::actions::XmppClientProtocol;
 #[cfg(feature = "nut")]
 pub mod nut;
 
+#[cfg(feature = "dict")]
+pub mod dict;
+
 #[cfg(feature = "beanstalkd")]
 pub mod beanstalkd;
