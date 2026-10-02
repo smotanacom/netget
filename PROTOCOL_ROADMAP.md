@@ -879,10 +879,10 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed and published: **8 / 72**. Four more scopes (25 Forward, 26 GELF, 53 HTTP/3 and 64 NSQ) are merged and completing final integration verification. Checkboxes below are authoritative.
+- Completed: **12 / 72**; **60 remain**. The implementations and CI fixes are published as master merge `313ad42e`; final verification below closes scopes 25, 26, 53 and 64. Checkboxes below are authoritative.
 - Integration branch: `protocol-expansion-20261001`; published master audit `314c819a` is preserved by merge `ad1802ca`.
 - Agent `queue_continue`: NSQ is merged, including the selected delivery after CLOSE_WAIT (`5002305d`) and observed heartbeat acknowledgements (`7a981923`). Gearman client (`2a095a08`) passed 47 protocol tests and awaits manager integration. Prometheus exporter scrape client is next.
-- Agent `http3_continue`: HTTP/3 server/client (`168b8e82`, merge `8d108906`) and TE validation (`c4ddd3df`, merge `4dd79504`) are merged. A shared independent-peer port race is fixed (`73292cbc`); final HTTP/3/raw-QUIC integration reruns are queued. SFTP extension of SSH is implemented and awaiting focused tests, followed by OTLP.
+- Agent `http3_continue`: HTTP/3 server/client (`168b8e82`, merge `8d108906`) and TE validation (`c4ddd3df`, merge `4dd79504`) are merged. A shared independent-peer port race is fixed (`73292cbc`); all 16 HTTP/3 and 17 raw-QUIC checks pass in the final combined build at 100 test threads. SFTP extension of SSH is implemented; focused tests found a legal OpenSSH control message that needs handling before completion. OTLP follows.
 - Agent `metrics_continue`: GELF (`daa80399`, handler-failure correction `d58a4c0c`) and Fluent Forward (`8342e85a`, merge `1d1b7a15`) are merged. InfluxDB write API implementation is awaiting tests with official emitter, decoder and real service peers; Loki follows.
 - All remaining items are assigned across three continuing queues: RPC/QUIC and streaming; service APIs and existing clients; collectors, industrial protocols and framed services. Three workers maximum, one build at a time. The coordinator rebalances future work, integrates independently validated signed scopes and publishes directly to master.
 
@@ -1063,19 +1063,23 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 13 server and 5 client tests passed with Graphyte 1.7.1 and official Carbon 1.1.10/Twisted 25.5.0 (Python 3.11), including the NetGet pair. Code `56ec664b`, merge `ea66427a`. Experimental; TCP plaintext with bounded batches, no Pickle, UDP, TLS or storage/query service.
 
-- [ ] **25. Fluent Forward** — B/M; proposed feature `fluent_forward`. [Specification/reference](https://docs.fluentd.org/input/forward).
+- [x] **25. Fluent Forward** — B/M; proposed feature `fluent_forward`. [Specification/reference](https://docs.fluentd.org/input/forward).
   - Scope: MessagePack event/batch modes, acknowledgments, bounded compression and explicit secure-transport scope.
   - [x] Server or listening/collector role implemented and registered.
   - [x] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [x] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **26. GELF** — B/M; proposed feature `gelf`. [Specification/reference](https://go2docs.graylog.org/current/getting_in_log_data/gelf_format.html).
+  - Validation: 17 server and 7 client tests passed with fluent-logger 0.11.1/msgpack 1.1.2 and official Fluentd 1.19.4. Code `8342e85a`, integration `1d1b7a15`, published master `313ad42e`. Four bounded carriers, EventTime and correlated ACKs; no secure-forward/TLS, durable storage or retry claim. Experimental.
+
+- [x] **26. GELF** — B/M; proposed feature `gelf`. [Specification/reference](https://go2docs.graylog.org/current/getting_in_log_data/gelf_format.html).
   - Scope: Structured logs over TCP/UDP, framing, bounded UDP reassembly and compression.
   - [x] Server or listening/collector role implemented and registered.
   - [x] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 17 server and 5 client tests passed with pygelf 0.4.3 and official Graylog Go reader sources pinned at `25db8704bc`; TCP/UDP, compressed/chunked framing, direct pairing, bounds and mixed handler failure are covered. Code `daa80399`, handler-failure fix `d58a4c0c`, published master `313ad42e`. Experimental; shared logs/memory, no collector persistence or acknowledgement invented.
 
 - [ ] **27. Loki push API** — B/M; proposed feature `loki`. [Specification/reference](https://grafana.com/docs/loki/latest/reference/loki-http-api/).
   - Scope: Labeled log ingestion/emission, authentication/tenancy, batch validation, compression and failure responses.
@@ -1261,11 +1265,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Existing protocol completion checklist
 
-- [ ] **53. HTTP/3 server**.
+- [x] **53. HTTP/3 server**.
   - Scope: Real HTTP/3 headers/data/control/QPACK using h3/quinn and existing HTTP/3 client interoperability.
   - [x] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 8 server, 6 client and 2 standalone cancellation/early-hints tests passed with aioquic 1.3.0 and direct NetGet pairing at 100 threads in the final combined build. Code `168b8e82`, TE correction `c4ddd3df`, peer-port fix `73292cbc`, published master `313ad42e`. Authenticated TLS, real h3/QPACK/control, bounded UTF-8 headers/bodies/trailers and owned stream cancellation; no push, DATAGRAM/WebTransport, migration or 0-RTT. Experimental. Vendored h3-quinn 0.0.10 contains the tested pending-read cancellation fix.
 
 - [x] **54. Raw QUIC client**.
   - Scope: Stream-oriented counterpart to existing raw QUIC server; explicit ALPN and stream lifecycle.
@@ -1329,11 +1335,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
   - Validation: 9 client and 30 existing server tests passed with beanstalkd 1.13 and greenstalk 2.1.1, including the NetGet pair. Code `5730ffeb`, scalar-only YAML hardening `222b0d74`, merges `492fc905`/`8ff3cda6`. Text jobs up to 65,535 bytes; bounded replies and responsive cancellation. Nested/recursive/expanding YAML rejected before traversal.
 
-- [ ] **64. NSQ client**.
+- [x] **64. NSQ client**.
   - Scope: Publish/subscribe, negotiated readiness, acknowledgments, requeue and heartbeat.
   - [x] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 20 client and 35 preserved server tests passed with nsqd, to_nsq and nsq_tail 1.3.0 and the NetGet pair. Code `9758dc00`, close-order fix `5002305d`, heartbeat test correction `7a981923`, published master `313ad42e`. PUB/MPUB/DPUB, subscription/RDY, heartbeat, FIN/REQ/TOUCH and graceful CLS correlation; no lookupd discovery, TLS/auth, compression, reconnect or binary outbound body claim. Experimental.
 
 - [ ] **65. Gearman client**.
   - Scope: Job submission and selected worker exchanges with correlation and errors.
@@ -1384,8 +1392,10 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Integrated validation evidence
 
-- **Batch 4 integration verification, in progress:** GELF 22, NSQ 55, HTTP/3 13, Forward 24, NUT 20, DoQ 18, raw QUIC 17, Beanstalkd 41 and HTTP/3 cancellation/early-hints 2 tests passed with `tcp,nut,doq,gelf,beanstalkd,nsq,http3,quic,fluent-forward` together after incorporating published audit `314c819a`. HTTP/3 TE follow-up adds one server regression; all 16 HTTP/3 checks passed in the agent's focused run. The manager's subsequent rerun exposed an independent-peer UDP port reservation race, corrected by `73292cbc`; final combined reruns are queued behind the shared build slot.
-- Batch 4 shared checks: 130 checks across 31 targets pass after correcting two source-check entries. The clean published baseline reproduced the unclassified HTTP URL validator; it rejects malformed targets without rewriting them. The obsolete three-sleep HTTP/3 baseline was removed. Combined correctness/suspicious/unused-must-use lint, workflow YAML/shell syntax, test discovery and touched-source formatting pass. Guarded whole-package formatting and final peer reruns remain pending. Logs: `/Users/matus/dev/netget/.protocol-expansion-20261001/logs/batch4-*.log`; orchestration: `validate_batch4.py` in that programme directory. No new-scope completion is claimed from a skipped case.
+- **Batch 4 — 25 Fluent Forward, 26 GELF, 53 HTTP/3 server/client, 64 NSQ client:** published master merge `313ad42e` preserves the separate codebase audit `314c819a`. Final evidence totals **213 protocol test executions**: GELF 22, NSQ 55, HTTP/3 16 including cancellation/early-hints, Forward 24, NUT 20, DoQ 18, raw QUIC 17 and Beanstalkd 41. Initial combined runs passed; after the TE and peer-port corrections, all 16 HTTP/3 and 17 raw-QUIC checks passed again at 100 test threads. No failed or ignored cases in those final runs.
+- Commands: `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --locked --offline --no-default-features --features tcp,nut,doq,gelf,beanstalkd,nsq,http3,quic,fluent-forward --test server --test client -- PROTOCOL:: --test-threads=4` for each named protocol. HTTP/3 final run additionally selects `--test http3_cancellation_test` with filter `http3` and `--test-threads=100`; raw QUIC reruns use `quic::` at 100 threads. Peer environments are specified in each protocol's test documentation and persistent `validate_batch4.py`.
+- Batch 4 shared checks: **130 checks across 31 targets** pass after two targeted source-check corrections. The clean published baseline reproduced the unclassified HTTP URL validator; its deliberate rejection is recorded without rewriting requested URLs. The obsolete three-sleep HTTP/3 baseline was removed. Combined correctness/suspicious/unused-must-use lint, workflow YAML/shell syntax, test discovery and guarded whole-package formatting pass. All Cargo commands use the serialized disk guard. Logs: `/Users/matus/dev/netget/.protocol-expansion-20261001/logs/batch4-*.log`.
+- The final HTTP/3 rerun exposed a fixture port reservation race before peer startup. `73292cbc` makes aioquic bind port zero itself and report its actual live socket; both affected suites pass at high concurrency. h3-quinn's pending-read cancellation panic is independently reproduced and corrected in the vendored adapter. The blocking pair workflow now includes HTTP/3, Forward, GELF and NSQ. Remote CI for this published batch is pending; local completion does not claim a green Linux run.
 
 
 - Remote validation of `cf3f6a74`: [protocol pair run](https://github.com/smotanacom/netget/actions/runs/37015942511) passed NUT/DoQ/StatsD and Graphite, then failed Beanstalkd 1.12 interoperability. [General CI](https://github.com/smotanacom/netget/actions/runs/37015942450) found decision-tag, private-test discovery, peer-workflow evidence, silent failure declarations and Graphite validator declaration gaps. All four single-feature shards, browser build and blocking lint passed. Corrections are merged or in local verification; no claim of a green full CI run.
