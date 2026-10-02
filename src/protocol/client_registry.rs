@@ -87,7 +87,9 @@ impl ClientRegistry {
         self.register(Arc::new(crate::client::doh::DohClientProtocol::new()));
 
         #[cfg(feature = "doq")]
-        self.register(Arc::new(crate::client::doq::actions::DoqClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::doq::actions::DoqClientProtocol::new(),
+        ));
 
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::client::dot::DotClientProtocol::new()));
@@ -364,7 +366,9 @@ impl ClientRegistry {
         ));
 
         #[cfg(feature = "nut")]
-        self.register(Arc::new(crate::client::nut::actions::NutClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::nut::actions::NutClientProtocol::new(),
+        ));
 
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::client::whois::WhoisClientProtocol::new()));

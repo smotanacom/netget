@@ -1,0 +1,78 @@
+name: Protocol pair interoperability
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-pairs-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_JOBS: '4'
+  PAIR_FEATURES: tcp,nut,doq,statsd
+
+jobs:
+  first-pairs:
+    name: NUT, DoQ and StatsD with independent peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+
+      - name: Install build prerequisites and QUIC-capable Knot tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libltdl-dev
+          # Ubuntu's image includes Homebrew outside PATH. Its Knot formula enables
+          # QUIC explicitly; merely installing an older distro kdig is insufficient.
+          /home/linuxbrew/.linuxbrew/bin/brew install knot
+          printf '%s\n' '/home/linuxbrew/.linuxbrew/bin' >> "$GITHUB_PATH"
+
+      - name: Prepare pinned independent peers in runner temporary storage
+        run: |
+          sh scripts/test-peers/build-nut.sh "$RUNNER_TEMP/nut-peer"
+          python3 tests/server/statsd/install_peers.py "$RUNNER_TEMP/statsd-peer"
+          sh scripts/test-peers/install-dnsproxy.sh "$RUNNER_TEMP/dnsproxy-peer"
+          {
+            printf 'NUT_UPSC_BIN=%s/nut-peer/nut-2.8.4/clients/upsc\n' "$RUNNER_TEMP"
+            printf 'NUT_UPSCMD_BIN=%s/nut-peer/nut-2.8.4/clients/upscmd\n' "$RUNNER_TEMP"
+            printf 'NUT_UPSD_BIN=%s/nut-peer/nut-2.8.4/server/upsd\n' "$RUNNER_TEMP"
+            printf 'NUT_DUMMY_BIN=%s/nut-peer/nut-2.8.4/drivers/dummy-ups\n' "$RUNNER_TEMP"
+            printf 'PYTHONPATH=%s/statsd-peer/statsd-python\n' "$RUNNER_TEMP"
+            printf 'NODE_PATH=%s/statsd-peer/statsd-node/node_modules\n' "$RUNNER_TEMP"
+            printf 'NETGET_DNSPROXY_BIN=%s/dnsproxy-peer/linux-amd64/dnsproxy\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Server and client suites including independent interoperability
+        run: |
+          for protocol in nut doq statsd; do
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test server --test client -- "$protocol::" --test-threads=4
+          done
+
+      - name: Protocol metadata and action wiring
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test well_known_port_declaration_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test

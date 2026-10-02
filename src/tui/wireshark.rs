@@ -204,8 +204,9 @@ pub fn wire_for(protocol: &str) -> Wire {
     match name.as_str() {
         // ---- transports --------------------------------------------------
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
-        "udp" => PLAIN_UDP,
+        "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
         "tls" | "dot" | "tor_relay" => tcp("tls"),
+        "doq" => udp("quic"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
         // The discovery family. All three are UDP and all three were falling through to the
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked

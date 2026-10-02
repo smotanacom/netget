@@ -879,21 +879,23 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **0 / 72**. Checkboxes below are authoritative and are updated only from evidence.
+- Completed: **3 / 72**. Checkboxes below are authoritative and are updated only from evidence.
 - Integration branch: `protocol-expansion-20261001`.
-- Agent `nut`: item 06, branch `protocol-expansion-nut`; implementing.
-- Agent `doq`: item 01, branch `protocol-expansion-doq`; implementing.
-- Agent `statsd`: item 23, branch `protocol-expansion-statsd`; implementing.
-- All other items: queued. Three workers maximum; builds serialized.
+- Agent `nut`: item 06 merged (`444dc681`, merge `b08302d9`); 18 protocol and 30 shared checks passed. Now implementing items 63/67/66 (Beanstalkd/DICT/Gemini clients).
+- Agent `doq`: item 01 merged (`e900e753`, merge `07339b83`); 17 protocol tests passed. Now implementing items 54/53 (raw QUIC client and HTTP/3 server/client fixes).
+- Agent `statsd`: item 23 merged (`643eef1f`, merge `79b98590`); 18 protocol tests passed. Now implementing items 24/26/25 (Graphite/GELF/Fluent Forward).
+- First three pairs passed combined integration validation. Other items remain queued. Three workers maximum; builds serialized.
 
 ## New protocol checklist
 
-- [ ] **01. DoQ** — A/M; proposed feature `doq`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9250.html).
+- [x] **01. DoQ** — A/M; proposed feature `doq`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9250.html).
   - Scope: RFC 9250 DNS queries over QUIC; correct ALPN, framing, TLS validation and stream lifecycle.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 9 server and 8 client tests passed with Knot `kdig 3.6.0` and AdGuard `dnsproxy 0.85.0`. Code `e900e753`, integration merge `07339b83`. Experimental; declared server DNS record subset and no AXFR/IXFR.
 
 - [ ] **02. NETCONF** — A/L; proposed feature `netconf`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6241.html).
   - Scope: SSH subsystem, hello/capabilities, NETCONF 1.0/1.1 framing, get/get-config/edit-config, errors and explicitly supported datastores.
@@ -923,12 +925,14 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **06. NUT UPS management** — A/S-M; proposed feature `nut`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9271.html).
+- [x] **06. NUT UPS management** — A/S-M; proposed feature `nut`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9271.html).
   - Scope: UPS discovery, variables, supported authenticated operations, errors and programmable power scenarios.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 13 server and 5 client tests passed with no skips. Official NUT 2.8.4 `upsc`/`upscmd` exercised discovery, variables and authenticated instant commands; the client read independent `upsd` + `dummy-ups`. Code `444dc681` and merge `b08302d9`; 30 shared checks also passed. Combined integration validation passed (see batch evidence below).
 
 - [ ] **07. TACACS+** — B/M; proposed feature `tacacs`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8907.html).
   - Scope: Authentication, authorization, accounting and deterministic session/secret processing.
@@ -1042,12 +1046,14 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **23. StatsD and DogStatsD** — A/S-M; proposed feature `statsd`. [Specification/reference](https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/).
+- [x] **23. StatsD and DogStatsD** — A/S-M; proposed feature `statsd`. [Specification/reference](https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/).
   - Scope: Collector/emitter, typed metrics, sample rates/tags, DogStatsD events/service checks and bounded datagram parsing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 13 server and 5 client tests passed with Python `statsd==4.0.1` / `datadog==0.52.0` and Node `statsd@0.9.0`. Code `643eef1f`, integration merge `79b98590`; shared metadata and combined integration checks passed (see batch evidence below). No external DogStatsD Agent receiver, fuzz or packet-capture coverage is claimed.
 
 - [ ] **24. Graphite Carbon plaintext** — B/S; proposed feature `graphite`. [Specification/reference](https://graphite.readthedocs.io/en/stable/feeding-carbon.html).
   - Scope: Timestamped metric collection/emission with bounded lines and numeric validation.
@@ -1370,6 +1376,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - Scope: Explicit subscription transport such as graphql-transport-ws; client/server lifecycle, typed execution and cancellation.
   - [ ] Implementation and all required server/client integration complete.
   - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+
+## Integrated validation evidence
+
+- **Batch 1 — 01 DoQ, 06 NUT, 23 StatsD/DogStatsD:** all 53 protocol tests and 62 shared checks passed with `tcp,nut,doq,statsd` enabled together at merge `07339b83`; no ignored tests in this combined run. All three remain Experimental, with their selected scope and missing maturity evidence documented in their source/test `CLAUDE.md` files.
+- Protocol command, once for each `PROTOCOL` in `nut`, `statsd`, `doq`: `cargo test --locked --offline --no-default-features --features tcp,nut,doq,statsd --test server --test client -- PROTOCOL:: --test-threads=4`. The programme runs Cargo through its serialized guard and provides the documented local peer paths.
+- Shared checks: `event_action_declarations_test`, `advertised_actions_test`, `well_known_port_declaration_test`, `startup_param_defaults_test`, `startup_param_drift_test`, `protocol_startup_examples_test`, `dual_protocol_test`, `dashboard_wireshark_test`, `client_event_wiring_test`, `event_emit_sites_test` with the same feature set.
+- Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the remote workflow has not run because publication approval is pending. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
 
 ## Implementation and independent peer plan
 
