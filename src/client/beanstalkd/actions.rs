@@ -4,6 +4,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::app_state::AppState;
 use anyhow::{bail, Result};
@@ -29,13 +30,14 @@ fn action(
     description: &str,
     parameters: Vec<Parameter>,
     example: Value,
+    log_template: LogTemplate,
 ) -> ActionDefinition {
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(log_template),
     }
 }
 fn request_action() -> ActionDefinition {
@@ -49,7 +51,7 @@ fn request_action() -> ActionDefinition {
         parameter("ttr","integer","put time to run in seconds, u32; default 60",false),
         parameter("timeout_secs","integer","reserve wait 0..=25 seconds; default 0. Encoded as reserve-with-timeout.",false),
         parameter("count","integer","Maximum jobs to kick; default 1",false),
-    ],json!({"type":"beanstalkd_request","operation":"stats"}))
+    ],json!({"type":"beanstalkd_request","operation":"stats"}), LogTemplate::new().with_info("-> Beanstalkd {operation}"))
 }
 fn disconnect_action() -> ActionDefinition {
     action(
@@ -57,6 +59,7 @@ fn disconnect_action() -> ActionDefinition {
         "Close the Beanstalkd connection",
         vec![],
         json!({"type":"disconnect"}),
+        LogTemplate::new().with_info("-> Beanstalkd disconnect"),
     )
 }
 fn actions() -> Vec<ActionDefinition> {
