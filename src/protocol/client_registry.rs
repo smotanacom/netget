@@ -366,6 +366,11 @@ impl ClientRegistry {
             crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
         ));
 
+        #[cfg(feature = "gearman")]
+        self.register(Arc::new(
+            crate::client::gearman::GearmanClientProtocol::new(),
+        ));
+
         #[cfg(feature = "nsq")]
         self.register(Arc::new(crate::client::nsq::NsqClientProtocol::new()));
 
@@ -753,6 +758,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Gemini", "gemini"),
     ("DICT", "dict"),
     ("Beanstalkd", "beanstalkd"),
+    ("Gearman", "gearman"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

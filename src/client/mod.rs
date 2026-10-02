@@ -638,3 +638,6 @@ pub mod beanstalkd;
 
 #[cfg(feature = "nsq")]
 pub mod nsq;
+
+#[cfg(feature = "gearman")]
+pub mod gearman;
