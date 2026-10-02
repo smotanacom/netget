@@ -20,7 +20,13 @@ record actions into one response. It echoes the wire question and recursion flag
 and sets ID zero independently of the action. Raw hexadecimal `send_dns_response`
 is deliberately absent and rejected. Handlers can return NXDOMAIN or ignore a
 query; ignore resets that stream with DOQ_NO_ERROR, releasing its resources.
-Failed handlers produce SERVFAIL, with internal error details confined to logs.
+Failed handlers and invalid actions produce SERVFAIL, with internal error details confined to logs.
+Terminal logs identify `decision=model_answer`, `model_reject` (explicit NXDOMAIN or
+REFUSED negative answer), `model_silent` (no usable response), `fail_closed_llm_error`
+(with `category=overloaded` or `unavailable` from shared WireFailure),
+`fail_closed_action_error`, `fail_closed_response_error`, `fail_closed_send_error`,
+`fail_closed_timeout`, and `peer_cancelled`. Negative DNS answers are distinguished
+from backend failures; these tags do not claim authorization semantics.
 
 Other record types (including NS, SOA, PTR, SRV, CAA, DS, DNSKEY, RRSIG, NSEC,
 AXFR and IXFR), non-IN classes and non-QUERY operations (UPDATE, NOTIFY, etc.)
