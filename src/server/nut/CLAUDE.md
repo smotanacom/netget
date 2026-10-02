@@ -10,6 +10,11 @@ HELP. LF framing is emitted; CRLF input is tolerated. Double quotes and backslas
 are escaped and decoded. Identities and list delimiters come from the parsed request,
 so a handler cannot reply to a different UPS or forge extra lines.
 
+The metadata declares `request_only`: `nut_reply` is rendered against the current parsed
+request, and SET/INSTCMD additionally depend on this connection's authentication state.
+There is no unsolicited reply operation. The dashboard and MCP peer-message actions show
+that reason instead of offering output without the request needed to correlate it.
+
 `nut_request` carries operation, optional ups/name/value, and the authenticated username
 for write-policy decisions. `nut_reply` supplies entries, value, types, explicit ok=true,
 or a recognized error. `nut_auth` carries credentials and only accepts

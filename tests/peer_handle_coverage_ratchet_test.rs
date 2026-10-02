@@ -113,6 +113,10 @@ enum Reason {
     Tunnel,
     /// The SSH transport is russh's; NetGet never holds the socket after the handshake.
     RusshOwnsSocket,
+    /// A Carbon plaintext collector receives metrics but has no server-message grammar.
+    OneWayMetricCollector,
+    /// NUT renders a reply against the current parsed request and authentication state.
+    CorrelatedRequestReplies,
     /// Reviewed by hand in the September 2026 peer-handle pass; see the table below.
     Reviewed,
     /// Not reviewed in that pass. Not a claim that a handle is impossible — a claim that
@@ -130,6 +134,8 @@ impl Reason {
             Reason::WebSocketFrames => Some("tokio_tungstenite"),
             Reason::Tunnel => Some("copy_bidirectional"),
             Reason::RusshOwnsSocket => Some("russh"),
+            Reason::OneWayMetricCollector => Some("GRAPHITE_BATCH_EVENT"),
+            Reason::CorrelatedRequestReplies => Some("wire::render(&request"),
             Reason::Reviewed | Reason::Unreviewed => None,
         }
     }
@@ -185,6 +191,8 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("elasticsearch", Reason::HyperOwnsSocket),
     ("etcd", Reason::HyperOwnsSocket),
     ("git", Reason::HyperOwnsSocket),
+    // Carbon plaintext defines no replies; collect_graphite_batch observes received metrics.
+    ("graphite", Reason::OneWayMetricCollector),
     ("grpc", Reason::HyperOwnsSocket),
     ("hls", Reason::Unreviewed),
     ("http", Reason::HyperOwnsSocket),
@@ -200,6 +208,8 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("nfc", Reason::Unreviewed),
     ("nfs", Reason::Reviewed),
     ("npm", Reason::HyperOwnsSocket),
+    // Replies get request identities from wire::render and writes require session auth.
+    ("nut", Reason::CorrelatedRequestReplies),
     ("oauth2", Reason::HyperOwnsSocket),
     ("oci_registry", Reason::HyperOwnsSocket),
     ("ollama", Reason::HyperOwnsSocket),
