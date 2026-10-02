@@ -159,7 +159,7 @@ impl Http3Server {
             done: false,
         };
         let exchange = async {
-            check_headers(request.headers())?;
+            check_request_headers(request.headers())?;
             let mut body = Vec::new();
             while let Some(mut chunk) = guard.stream.recv_data().await? {
                 ensure!(
@@ -182,7 +182,7 @@ impl Http3Server {
                 json!({
                     "method":request.method().as_str(),
                     "path":request.uri().path_and_query().map(|p|p.as_str()).unwrap_or("/"),
-                    "headers":header_json(request.headers())?, "body":text,
+                    "headers":request_header_json(request.headers())?, "body":text,
                     "trailers":header_json(&trailers)?, "stream_id":guard.stream.id().index(), "peer_addr":peer.to_string(),
                 }),
             );

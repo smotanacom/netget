@@ -9,7 +9,7 @@ async fn http3_client_get_post_headers_trailers_and_multiplexing() {
     let mut peer = Peer::start("http3").await;
     let state = state();
     let mut params = peer.cert.trust();
-    params["default_headers"] = json!({"x-default":"startup","x-replace":"old"});
+    params["default_headers"] = json!({"x-default":"startup","x-replace":"old","te":"trailers"});
     let id = client(
         &state,
         "http3",
@@ -68,6 +68,8 @@ async fn http3_client_enforces_headers_body_and_priority_bounds() {
         json!({"type":"send_http3_request","method":"GET","path":"/","headers":{"x-large":"x".repeat(32768-39)}}),
         json!({"type":"send_http3_request","method":"POST","path":"/","body":"x".repeat(8*1024*1024+1)}),
         json!({"type":"send_http3_request","method":"GET","path":"https://elsewhere.invalid/"}),
+        json!({"type":"send_http3_request","method":"GET","path":"/","headers":{"te":"gzip"}}),
+        json!({"type":"send_http3_request","method":"GET","path":"/","trailers":{"te":"trailers"}}),
     ] {
         assert!(state
             .send_to_client(id, action, Duration::from_secs(5))
@@ -88,6 +90,8 @@ async fn http3_client_enforces_headers_body_and_priority_bounds() {
     for (path, expected) in [
         ("/oversized", "response body exceeds"),
         ("/large-header", "Header too big"),
+        ("/te-response", "HTTP3 TE"),
+        ("/te-trailer", "HTTP3 TE"),
     ] {
         let error = state
             .send_to_client(

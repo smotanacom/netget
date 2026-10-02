@@ -10,7 +10,7 @@ async fn http3_server_independent_aioquic_client_and_netget_pair() {
     let state = state();
     let cert = Certificate::new();
     let (id, addr) = server(&state, "http3", &cert, json!({}), vec![echo()]).await;
-    let results=external_client("http3",addr.port(),&cert,json!([{"method":"GET","path":"/hello?q=1"},{"method":"POST","path":"/post","headers":{"x-test":"peer"},"body":"body"}])).await;
+    let results=external_client("http3",addr.port(),&cert,json!([{"method":"GET","path":"/hello?q=1"},{"method":"POST","path":"/post","headers":{"x-test":"peer","te":"trailers"},"body":"body"}])).await;
     assert_eq!(results.as_array().unwrap().len(), 2);
     for result in results.as_array().unwrap() {
         let headers = result["headers"].as_array().unwrap();
@@ -22,6 +22,7 @@ async fn http3_server_independent_aioquic_client_and_netget_pair() {
     assert_eq!(request["method"], "POST");
     assert_eq!(request["path"], "/post");
     assert_eq!(request["body"], "body");
+    assert_eq!(request["headers"]["te"], "trailers");
     let client = client(
         &state,
         "http3",
@@ -46,6 +47,77 @@ async fn http3_server_independent_aioquic_client_and_netget_pair() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn http3_invalid_incoming_te_resets_only_its_request() {
+    let state = state();
+    let cert = Certificate::new();
+    let (id, addr) = server(&state, "http3", &cert, json!({}), vec![echo()]).await;
+    let params = netget::protocol::StartupParams::new(
+        cert.trust(),
+        netget::utils::quic::client_parameters(),
+    )
+    .unwrap();
+    let (_endpoint, connection) =
+        netget::utils::quic::connect(&addr.to_string(), Some(&params), b"h3", 4)
+            .await
+            .unwrap();
+    let (_driver, mut sender) = h3::client::builder()
+        .send_grease(false)
+        .build::<_, _, bytes::Bytes>(h3_quinn::Connection::new(connection.0.clone()))
+        .await
+        .unwrap();
+    for trailers in [false, true] {
+        let mut request = http::Request::builder()
+            .uri("https://localhost/invalid-te")
+            .body(())
+            .unwrap();
+        if !trailers {
+            request
+                .headers_mut()
+                .insert("te", http::HeaderValue::from_static("gzip"));
+        }
+        let mut stream = sender.send_request(request).await.unwrap();
+        if trailers {
+            let mut fields = http::HeaderMap::new();
+            fields.insert("te", http::HeaderValue::from_static("trailers"));
+            stream.send_trailers(fields).await.unwrap();
+        }
+        stream.finish().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), stream.recv_response())
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert!(
+        state
+            .list_access_logs_for(
+                Some(netget::state::AccessLogOwner::Server(id.as_u32())),
+                None
+            )
+            .await
+            .is_empty(),
+        "invalid TE must not reach a handler"
+    );
+    let request = http::Request::builder()
+        .uri("https://localhost/valid-te")
+        .header("te", "Trailers")
+        .body(())
+        .unwrap();
+    let mut stream = sender.send_request(request).await.unwrap();
+    stream.finish().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), stream.recv_response())
+            .await
+            .unwrap()
+            .unwrap()
+            .status(),
+        201
+    );
+    state.remove_server(id).await;
 }
 
 #[tokio::test]
@@ -309,6 +381,8 @@ fn http3_response_semantic_bounds() {
         json!({"type":"send_http3_response","status":200,"headers":{"x-large":"x".repeat(32768-39-42+1)}}),
         json!({"type":"send_http3_response","status":200,"trailers":{"x-large":"x".repeat(32769)}}),
         json!({"type":"send_http3_response","status":200,"headers":{"connection":"close"}}),
+        json!({"type":"send_http3_response","status":200,"headers":{"te":"trailers"}}),
+        json!({"type":"send_http3_response","status":200,"trailers":{"te":"trailers"}}),
     ] {
         assert!(protocol.execute_action(action).is_err());
     }

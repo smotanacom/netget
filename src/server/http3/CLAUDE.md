@@ -12,6 +12,8 @@ trailers. `cancel_http3_request` resets this request, without closing unrelated
 streams. HEAD suppresses the response body; 204/205/304 require an empty body.
 No filesystem, database, routes or response store is implemented in the protocol.
 Static handlers, scripts, manual decisions and model actions supply responses.
+TE is accepted only in request headers with the token `trailers`; responses and
+both trailer sections reject TE before handlers or writes.
 
 Both PEM `cert_path` and `key_path` must be supplied together, or a localhost
 certificate is generated. Clients must explicitly trust self-signed certificates.
