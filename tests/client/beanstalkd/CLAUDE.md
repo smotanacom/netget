@@ -24,3 +24,9 @@ CRLF, EOF and non-UTF8 rejection, as well as flat YAML shape, aliases and entry 
 
 All handlers in these tests are deterministic. The LLM endpoint is deliberately unreachable;
 no test needs a live model or silent skip. No pcap/fuzz claim is made.
+
+The scalar parser regression includes 512-level nesting, same-value alias expansion and
+recursive aliases. Server peer tests use greenstalk 2.1.1: `python3 -m pip install
+--target /tmp/netget-python-peers --no-cache-dir greenstalk==2.1.1`, then set
+`PYTHONPATH=/tmp/netget-python-peers` for the existing server suite. Combined validation:
+9 client tests and 30 existing server tests passed, with no ignored or skipped cases.

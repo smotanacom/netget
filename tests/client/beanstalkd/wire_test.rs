@@ -73,3 +73,16 @@ async fn specific_job_replies_must_match_the_requested_id() {
             .is_err()
     );
 }
+
+#[test]
+fn scalar_parser_rejects_nested_and_single_value_alias_graphs() {
+    for scalar in [
+        format!("{}1{}", "[".repeat(512), "]".repeat(512)),
+        "[&a [1,2], &b [*a,*a,*a,*a], &c [*b,*b,*b,*b], *c]".into(),
+        "&recursive [*recursive]".into(),
+        "{deep: {nested: [1,2]}}".into(),
+    ] {
+        assert!(parse_yaml(&format!("---\nvalue: {scalar}\n"), false).is_err());
+        assert!(parse_yaml(&format!("---\n- {scalar}\n"), true).is_err());
+    }
+}
