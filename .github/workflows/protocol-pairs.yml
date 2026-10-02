@@ -262,3 +262,117 @@ jobs:
             --test server_task_registry_test \
             --test client_stop_releases_socket_test \
             --test detached_task_drift_test
+
+  http3-pairs:
+    name: HTTP3 with independent aioquic peers and pending-read cancellation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PAIR_FEATURES: tcp,http3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+
+      - name: Prepare pinned independent QUIC and HTTP3 peer
+        run: |
+          python3 -m venv "$RUNNER_TEMP/http3-peer"
+          "$RUNNER_TEMP/http3-peer/bin/python" -m pip install --no-cache-dir --only-binary=:all: -r tests/helpers/aioquic-requirements.txt
+          printf 'NETGET_AIOQUIC_PYTHON=%s/http3-peer/bin/python\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Server and client interoperability, authentication and lifecycle
+        run: |
+          for filter in \
+            http3:: client/http3:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test http3_cancellation_test
+
+      - name: Shared HTTP3 registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test
+
+  forward-pairs:
+    name: Fluent Forward with independent emitter and official Fluentd collector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PAIR_FEATURES: tcp,fluent-forward
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0.6'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+
+      - name: Prepare pinned independent Forward peers in temporary storage
+        run: |
+          python3 tests/server/fluent_forward/install_peers.py "$RUNNER_TEMP/forward-peers"
+          {
+            printf 'PYTHONPATH=%s/forward-peers/python\n' "$RUNNER_TEMP"
+            printf 'NETGET_FORWARD_PYTHON=python3\n'
+            printf 'NETGET_FORWARD_RUBY=%s\n' "$(command -v ruby)"
+            printf 'GEM_HOME=%s/forward-peers/ruby\n' "$RUNNER_TEMP"
+            printf 'GEM_PATH=%s/forward-peers/ruby\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Both directions, all carriers and correlated ACKs
+        run: |
+          for filter in \
+            fluent_forward:: client/fluent_forward:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared Forward registration, silence and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test failure_mode_declaration_test \
+            --test detached_task_drift_test

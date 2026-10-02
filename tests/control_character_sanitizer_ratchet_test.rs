@@ -37,6 +37,12 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/client/http_fetch/transport.rs",
+        1,
+        "validator: reject unescaped whitespace and controls before URL parsers can silently \
+         remove them and change the requested target; no URL bytes are filtered or rewritten",
+    ),
+    (
         "src/server/graphite/codec.rs",
         1,
         "validator: a Carbon metric path is a whitespace-delimited identifier; reject controls \

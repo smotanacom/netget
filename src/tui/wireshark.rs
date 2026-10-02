@@ -264,9 +264,15 @@ pub fn wire_for(protocol: &str) -> Wire {
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
-        // http3 is a client-only protocol name, and it reaches wire_for through
-        // CaptureTarget::client. Without an arm it defaulted to plain TCP; it is QUIC.
-        "http3" => with_display(udp("quic"), "http3 || quic"),
+        // Both HTTP/3 roles use QUIC. Application fields require TLS secrets.
+        "http3" | "http/3" | "h3" => with_note(
+            with_display(udp("quic"), "http3 || quic"),
+            "HTTP/3 uses ALPN h3 over UDP. Wireshark needs TLS session secrets to inspect HTTP/3 headers and data; otherwise the capture shows QUIC.",
+        ),
+        "fluentforward" | "fluent_forward" | "fluentd" => with_note(
+            PLAIN_TCP,
+            "Fluent Forward uses MessagePack over TCP. This Wireshark build has no Forward dissector; inspect the stream bytes and correlated ACKs.",
+        ),
         // ---- web ---------------------------------------------------------
         "http" | "websocket" | "proxy" | "webdav" | "jsonrpc" | "xmlrpc" | "openapi" | "openai"
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
