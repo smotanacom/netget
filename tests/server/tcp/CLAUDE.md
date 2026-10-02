@@ -2,6 +2,10 @@
 
 ## Test Overview
 
+`peer_lifecycle_test.rs` directly drives the shared peer-command helper with a writer that
+stays pending. Removing the server must drop the writer and cancel the command's reply,
+even when the command sender remains alive. This test uses neither a socket nor a model.
+
 Tests the raw TCP server implementation with FTP-like commands and custom protocols. Validates that the LLM can
 construct protocol responses from scratch using raw TCP byte streams.
 
@@ -213,3 +217,10 @@ This would reduce from 5 server spawns to 1, saving ~10-15 seconds of test time.
 
 - [RFC 959: File Transfer Protocol (FTP)](https://datatracker.ietf.org/doc/html/rfc959)
 - [Tokio TcpStream](https://docs.rs/tokio/latest/tokio/net/struct.TcpStream.html)
+
+### Individual peer cancellation
+
+`peer_lifecycle_test::individual_peer_close_cancels_a_blocked_write` keeps the
+command sender alive and stalls a fake writer, then removes just that peer. The
+writer and pending reply are dropped while the listener remains registered. The
+server-removal companion covers the broader ownership boundary. No model is used.

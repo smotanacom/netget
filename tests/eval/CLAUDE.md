@@ -32,7 +32,8 @@ and dispatched by hand rather than run on a cron.
 | `suites.rs` | the instruction sets, one function per protocol, feature-gated |
 | `probe.rs` | spawning the third-party client and reading it until idle |
 | `classify.rs` | turning a failed run into a named diagnosis with evidence |
-| `runner.rs` | the run loop, the repetitions, the scoring |
+| `runner.rs` | the run loop, repetitions and complete run records |
+| `scoring.rs` | pure outcome scoring, including harness-error precedence |
 | `report.rs` | the JSON and the Markdown |
 | `probe_check.rs` | each case's own probe and `Expect`, against a **mocked** model that answers correctly after 5 s — proves the harness before the model is blamed |
 
@@ -192,8 +193,13 @@ Each of these cost a debugging pass and every one presented as a model failure.
   because `run-eval.sh` runs the same binary with `NETGET_USE_OLLAMA=1`, which
   otherwise sends a mocked test to the real model.
 - **Never let a harness bug score against the model.** A bad regex in an
-  `Expect` returns `HARNESS: …` and is classified as `harness_error`, not as a
-  miss.
+  `Expect` returns `HARNESS: …` and receives verdict `error` with failure mode
+  `harness_error`. Captured probe output that exceeds its limit receives verdict
+  `error` with failure mode `probe_output_limit`, before checking even a matching
+  retained prefix. Both paths preserve captured model evidence and the runner
+  retains client output, command, exit status and executed-action diagnostics.
+  `eval_probe_classification_test` checks these paths without executing a probe
+  or contacting a model.
 
 ## The two findings the first sweep produced
 

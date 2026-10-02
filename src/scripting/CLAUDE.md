@@ -137,7 +137,7 @@ error, and the caller falls back to the LLM handler.
 `execute_script_async` is built on `tokio::process` and `tokio::time::timeout`.
 **No OS thread is parked while a script runs**, and the four halves of the
 interaction — stdin write, stdout drain, stderr drain, child wait — are driven
-concurrently by a single `tokio::join!`.
+concurrently by a single `tokio::try_join!` (BrokenPipe on stdin remains benign).
 
 Both properties are load-bearing, and both were previously absent:
 
@@ -229,9 +229,9 @@ script handler purely to copy one integer.
 
 ## Concurrency notes
 
-- Go temp files are named `netget_script_<pid>_<seq>.go` with a process-global
-  atomic sequence. The pid alone is *not* unique per invocation — several Go
-  scripts can be in flight at once inside one netget process.
+- Go sources live in independently created random private directories (0700 on
+  Unix). A RAII owner removes the directory and source on completion, failure or
+  cancellation. Concurrent invocations share no writable staging path.
 - **Default (per-event) scripts share nothing.** There is no cross-invocation
   state on that path, by design: per the root `CLAUDE.md`, protocols must not
   implement storage. Durable state belongs in server `memory`, which is passed
@@ -259,7 +259,9 @@ a parsed config, a connection map) persist across events. Implemented in
   `{"actions": [...]}` object, or `None`/`undefined` for no actions. A `handle`
   that raises emits `{"error": ...}` — parsed as a failed event (→ falls back to
   the LLM) while the **process stays alive** for the next event, so its state
-  survives.
+  survives. Unexpected return types also report an error instead of silently
+  acknowledging with no actions. JavaScript handlers may return a Promise;
+  the harness awaits it and handles rejection as a handler error.
 - **Language support.** Python, JavaScript, Perl only. **Go is not supported**
   (compiled per `go run`, no cheap persistent form) and a resident Go handler
   transparently falls back to the per-event executor. A resident handler for a
@@ -274,7 +276,10 @@ a parsed config, a connection map) persist across events. Implemented in
   `server_id` + optional `connection_id` + language + code hash); different code
   or a different connection gets its own.
 - **Lifetime & robustness.** Each round-trip runs under the same
-  `DEFAULT_SCRIPT_TIMEOUT` (30s) budget. On timeout or EOF-on-stdout (the process
+  `DEFAULT_SCRIPT_TIMEOUT` (30s) budget, including the time queued behind another
+  event on the same resident. Cancelling an in-flight round-trip kills its child
+  and leaves the registry slot dead; the next event replaces it, so a stale reply
+  cannot answer a different event. On timeout or EOF-on-stdout (the process
   died) the round-trip returns `Err`, the process is killed and evicted, the
   caller falls back to the LLM, and the next event respawns. Processes idle longer
   than `IDLE_TTL` (300s) are evicted on the next registry access; `kill_on_drop`
@@ -321,9 +326,9 @@ fix. It is worth considering if netget is ever exposed to a semi-trusted MCP
 peer, run as a shared service, or run with elevated privileges. Options, roughly
 in increasing order of cost:
 
-1. **Resource caps** — `setrlimit` for CPU/address space/file descriptors, and a
-   process-group kill on timeout so a script that forks cannot outlive it. Cheap,
-   contains runaway scripts, does not contain hostile ones.
+1. **OS resource limits** — `setrlimit` for CPU/address space/file descriptors.
+   Captured-output/source/interpolation caps and process-group/Job cleanup are
+   already implemented; they do not contain a deliberately hostile script.
 2. **Interpreter-level restriction** — Node's permission model
    (`--permission --allow-fs-read=...`), or a restricted Python builtin set.
    Partial, and easy to escape without care.
@@ -336,3 +341,43 @@ in increasing order of cost:
 
 Whatever is chosen, the boundary above should stay documented — a local tool
 that runs code as you is defensible; one that does so silently is not.
+
+## Bounded resources and process ownership
+
+Interpreter probes run concurrently, collect stdout/stderr concurrently, cap each
+pipe at 64 KiB and include pipe EOF in their five-second deadline. A subprocess
+that leaves inherited pipes open cannot hold startup indefinitely. Browser builds
+report no subprocess interpreters without spawning threads or probing the host.
+
+Per-event stdout is capped at 8 MiB and stderr at 1 MiB. An excess aborts the
+interaction immediately. Resident replies have the same 8 MiB cap; malformed EOF
+or an excess kills/evicts the process. Resident diagnostics retain/log at most
+1 MiB over the process lifetime, then keep draining into fixed scratch space.
+The stderr drain is owned by the resident, and is aborted with it.
+
+Native children start in independent Unix process groups, or are assigned to
+Windows kill-on-close Job Objects. Completion, timeout, cancellation and explicit
+shutdown terminate the owned group/job. This is cleanup of trusted code, not a
+sandbox: a Unix child deliberately creating another session can escape it, and
+Windows assignment occurs immediately after spawn rather than claiming an atomic
+security boundary. Windows runtime behavior requires Windows CI.
+
+Source files must be regular files, checked on the opened descriptor; Unix opens
+are nonblocking so FIFOs cannot trap the metadata check. Source is capped at
+4 MiB, loaded on Tokio's blocking pool, and included in the caller's deadline.
+Cancellation stops awaiting an in-flight filesystem operation; it cannot interrupt
+a kernel filesystem call already running on that pool. Inline source has the same
+size cap. Go staging and compilation are also inside the overall deadline.
+
+Static action interpolation has a shared 8 MiB expanded-text budget and a 65,536
+node budget, with 64-level input/reference trees validated iteratively. Resolved
+values are checked before cloning and JSON embedded in text is serialized into a
+bounded writer. Repeated references cannot amplify output without limit; keys
+that resolve to the same name are rejected rather than silently overwriting data.
+Entry-point checks tokenize language-specific comments/quoted literals, including
+Python triple strings, JavaScript templates/regexes and Perl quote operators, and
+recognize whitespace-separated declarations and arrow functions. These checks are
+configuration diagnostics, not an executable language parser or a sandbox.
+
+`tests/scripting_resources_test.rs` exercises noisy/inherited pipes, source bounds,
+FIFO rejection, descendant cleanup and Go staging cancellation without any model.

@@ -123,14 +123,14 @@ Tests UDP client can change target address:
 
 - `start_netget_server()` - Spawn NetGet server process
 - `start_netget_client()` - Spawn NetGet client process
-- `get_available_port()` - Find unused port for testing
+- `server.port` - Actual port retained by the running server
 - `NetGetInstance::output_contains()` - Check output for substring
 - `NetGetInstance::stop()` - Clean shutdown of process
 
 **Port Allocation:**
 
 - Tests use `{AVAILABLE_PORT}` placeholder in prompts
-- Automatically replaced with available port from `get_available_port()`
+- Automatically replaced with `0`, then the helper discovers the actual bound port
 - Prevents port conflicts between concurrent tests
 
 **Cleanup:**
@@ -153,7 +153,7 @@ Tests UDP client can change target address:
 
 3. **Port Conflicts:**
     - Tests bind to OS-assigned ports to avoid conflicts
-    - If conflicts occur, ensure `get_available_port()` is working correctly
+    - Keep local fixture sockets alive; use their `local_addr()` or the running server's `port`
 
 4. **Datagram Loss:**
     - UDP does not guarantee delivery

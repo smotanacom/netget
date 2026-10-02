@@ -46,6 +46,7 @@
 //! [`tokio::process`] and awaited asynchronously.
 
 use super::environment::ScriptingEnvironment;
+use super::process_io::{read_line_bounded, ProcessGroup, MAX_STDERR_BYTES, MAX_STDOUT_BYTES};
 use super::types::{
     parse_script_response, ScriptConfig, ScriptInput, ScriptLanguage, ScriptResponse,
 };
@@ -57,7 +58,7 @@ use std::hash::{Hash, Hasher};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -169,9 +170,18 @@ impl ScopeKey {
 /// the process is dead so a later round-trip fails fast instead of writing to a
 /// broken pipe.
 struct ResidentIo {
+    group: ProcessGroup,
+    stderr_task: tokio::task::JoinHandle<()>,
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+}
+
+impl Drop for ResidentIo {
+    fn drop(&mut self) {
+        self.group.kill();
+        self.stderr_task.abort();
+    }
 }
 
 /// A single resident process. Access to its pipes is serialized by the `io`
@@ -209,9 +219,11 @@ impl ResidentScript {
             // cancellation) make sure the interpreter dies with it.
             .kill_on_drop(true);
 
+        ProcessGroup::configure(&mut builder);
         let mut child = builder
             .spawn()
             .map_err(|e| spawn_error(language, command, e))?;
+        let group = ProcessGroup::new(&child)?;
 
         let stdin = child
             .stdin
@@ -231,11 +243,25 @@ impl ResidentScript {
         // Drain stderr in the background so the child never blocks on a full
         // stderr pipe, and so diagnostics reach the log.
         let describe_for_log = describe.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    warn!("resident script {}: {}", describe_for_log, line);
+        let stderr_task = tokio::spawn(async move {
+            let mut stderr = stderr;
+            let mut chunk = vec![0; 8192];
+            let mut logged = 0usize;
+            while let Ok(n) = stderr.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                let keep = n.min(MAX_STDERR_BYTES.saturating_sub(logged));
+                if keep > 0 {
+                    warn!(
+                        "resident script {}: {}",
+                        describe_for_log,
+                        String::from_utf8_lossy(&chunk[..keep])
+                    );
+                    logged += keep;
+                    if logged == MAX_STDERR_BYTES {
+                        warn!("resident script {}: stderr log cap reached; draining further diagnostics without logging", describe_for_log);
+                    }
                 }
             }
         });
@@ -249,6 +275,8 @@ impl ResidentScript {
         Ok(Arc::new(Self {
             language,
             io: Mutex::new(Some(ResidentIo {
+                group,
+                stderr_task,
                 child,
                 stdin,
                 stdout,
@@ -261,10 +289,28 @@ impl ResidentScript {
     /// process is killed and marked dead (`io` set to `None`), so the caller can
     /// evict it and the next event respawns.
     async fn round_trip(&self, input: &ScriptInput, timeout: Duration) -> Result<ScriptResponse> {
-        let mut guard = self.io.lock().await;
-        if guard.is_none() {
-            return Err(anyhow!("resident script process is not alive"));
-        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| {
+                anyhow!(
+                    "resident script timeout {:?} exceeds the clock range",
+                    timeout
+                )
+            })?;
+        let mut guard = tokio::time::timeout_at(deadline, self.io.lock())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "resident script event exceeded {:?} timeout waiting for its turn",
+                    timeout
+                )
+            })?;
+        // The interaction owns the child while in flight. If this future is cancelled,
+        // kill_on_drop terminates it and the slot stays empty; its unread reply cannot
+        // be mistaken for the next event's response.
+        let mut io = guard
+            .take()
+            .ok_or_else(|| anyhow!("resident script process is not alive"))?;
 
         // One newline-delimited JSON request. `to_string` (not pretty) keeps it
         // to a single line, which the child's readline-per-event loop requires.
@@ -272,25 +318,17 @@ impl ResidentScript {
         line.push('\n');
 
         let result: Result<String> = {
-            let io = guard.as_mut().expect("checked is_some above");
             let interaction = async {
                 io.stdin
                     .write_all(line.as_bytes())
                     .await
                     .context("resident: write event to stdin")?;
                 io.stdin.flush().await.context("resident: flush stdin")?;
-                let mut response = String::new();
-                let n = io
-                    .stdout
-                    .read_line(&mut response)
+                read_line_bounded(&mut io.stdout, MAX_STDOUT_BYTES)
                     .await
-                    .context("resident: read response line")?;
-                if n == 0 {
-                    return Err(anyhow!("resident script exited (EOF on stdout)"));
-                }
-                Ok(response)
+                    .context("resident: read response line")
             };
-            match tokio::time::timeout(timeout, interaction).await {
+            match tokio::time::timeout_at(deadline, interaction).await {
                 Ok(inner) => inner,
                 Err(_) => Err(anyhow!(
                     "resident script event exceeded {:?} timeout",
@@ -301,6 +339,7 @@ impl ResidentScript {
 
         match result {
             Ok(response) => {
+                *guard = Some(io);
                 // A `{"error": ...}` reply (a `handle()` exception in the child)
                 // has no `actions` field, so parsing fails here and the caller
                 // falls back to the LLM — while the process stays alive for the
@@ -310,10 +349,9 @@ impl ResidentScript {
             }
             Err(e) => {
                 // Kill and mark dead so a wedged/broken process is not reused.
-                if let Some(mut io) = guard.take() {
-                    let _ = io.child.start_kill();
-                    let _ = tokio::time::timeout(Duration::from_secs(2), io.child.wait()).await;
-                }
+                io.group.kill();
+                let _ = io.child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(2), io.child.wait()).await;
                 warn!("resident script {} failed: {}", self.describe, e);
                 Err(e)
             }
@@ -324,17 +362,20 @@ impl ResidentScript {
     async fn kill(&self) {
         let mut guard = self.io.lock().await;
         if let Some(mut io) = guard.take() {
+            io.group.kill();
             let _ = io.child.start_kill();
             let _ = tokio::time::timeout(Duration::from_secs(2), io.child.wait()).await;
             debug!("Killed resident script {}", self.describe);
         }
     }
 
-    /// Whether the process is still alive (pipes present). A per-event failure
+    /// Whether the process is dead (pipes absent). A per-event failure
     /// such as a `handle()` exception leaves the process alive; a wedge or crash
     /// marks it dead (`io == None`).
-    async fn is_alive(&self) -> bool {
-        self.io.lock().await.is_some()
+    fn is_dead(&self) -> bool {
+        // An occupied lock means another event is still using a live process. Never
+        // wait here: a request which expired in the queue must return promptly.
+        self.io.try_lock().is_ok_and(|io| io.is_none())
     }
 
     /// Language this resident runs (for diagnostics/tests).
@@ -395,9 +436,17 @@ impl ResidentScriptManager {
                 config.language.as_str()
             );
         }
-        let code = config
-            .source
-            .get_code()
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| {
+                anyhow!(
+                    "resident script timeout {:?} exceeds the clock range",
+                    timeout
+                )
+            })?;
+        let code = tokio::time::timeout_at(deadline, config.source.get_code_async())
+            .await
+            .context("resident: timed out loading script code")?
             .context("resident: failed to load script code")?;
         let key = ScopeKey::new(scope, input, config.language, &code);
 
@@ -405,8 +454,16 @@ impl ResidentScriptManager {
         // for this block — spawning does not await — and dropped before the
         // round-trip, so a slow event never blocks other scopes' lookups.
         let script = {
-            let mut registry = REGISTRY.lock().await;
+            let mut registry = tokio::time::timeout_at(deadline, REGISTRY.lock())
+                .await
+                .context("resident: timed out waiting for registry")?;
             evict_idle(&mut registry);
+            if registry
+                .get(&key)
+                .is_some_and(|entry| entry.script.is_dead())
+            {
+                registry.remove(&key);
+            }
             match registry.get_mut(&key) {
                 Some(entry) => {
                     entry.last_used = Instant::now();
@@ -426,7 +483,13 @@ impl ResidentScriptManager {
             }
         };
 
-        match script.round_trip(input, timeout).await {
+        match script
+            .round_trip(
+                input,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )
+            .await
+        {
             Ok(response) => {
                 debug!(
                     "resident script {} handled '{}' ({} actions)",
@@ -442,7 +505,7 @@ impl ResidentScriptManager {
                 // — a `handle()` exception, or an unparseable reply. The latter
                 // must stay resident so its in-process state survives; only the
                 // failed event is deferred to the LLM.
-                if !script.is_alive().await {
+                if script.is_dead() {
                     let mut registry = REGISTRY.lock().await;
                     if let Some(entry) = registry.get(&key) {
                         if Arc::ptr_eq(&entry.script, &script) {
@@ -609,7 +672,7 @@ for _ng_line in sys.stdin:
         _ng_emit({{"actions": []}})
     else:
         sys.stderr.write("resident handle() returned unexpected type; expected list or dict\n")
-        _ng_emit({{"actions": []}})
+        _ng_emit({{"error": "handle() returned an unexpected type"}})
 "#,
         user_code = user_code
     )
@@ -629,7 +692,7 @@ function _ngEmit(obj) {{
 // ===== end user code =====
 
 const _ngRl = readline.createInterface({{ input: process.stdin }});
-_ngRl.on('line', (line) => {{
+_ngRl.on('line', async (line) => {{
     line = line.trim();
     if (!line) return;
     let msg;
@@ -642,7 +705,7 @@ _ngRl.on('line', (line) => {{
     }}
     let result;
     try {{
-        result = handle(msg.event_type_id, msg.event, msg);
+        result = await handle(msg.event_type_id, msg.event, msg);
     }} catch (e) {{
         process.stderr.write("resident handle() raised: " + (e && e.stack ? e.stack : e) + "\n");
         _ngEmit({{ error: "handle() raised" }});
@@ -656,7 +719,7 @@ _ngRl.on('line', (line) => {{
         _ngEmit({{ actions: [] }});
     }} else {{
         process.stderr.write("resident handle() returned unexpected type; expected array or object\n");
-        _ngEmit({{ actions: [] }});
+        _ngEmit({{ error: "handle() returned an unexpected type" }});
     }}
 }});
 "#,
@@ -707,7 +770,7 @@ while (my $_ng_line = <STDIN>) {{
         _ng_emit({{ actions => [] }});
     }} else {{
         print STDERR "resident handle() returned unexpected type; expected array-ref or hash-ref\n";
-        _ng_emit({{ actions => [] }});
+        _ng_emit({{ error => "handle() returned an unexpected type" }});
     }}
 }}
 "#,

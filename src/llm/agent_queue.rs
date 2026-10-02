@@ -230,13 +230,26 @@ impl LlmRequestQueue {
         #[cfg(unix)]
         {
             use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
             match std::fs::OpenOptions::new()
                 .write(true)
-                .custom_flags(libc::O_NONBLOCK)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
                 .open(path)
             {
                 Ok(mut f) => {
+                    // Startup validates the path, but it may have been replaced since.
+                    // Check the opened descriptor before writing, so even a raced rename
+                    // cannot turn a best-effort FIFO notification into a file overwrite.
+                    if !f
+                        .metadata()
+                        .is_ok_and(|metadata| metadata.file_type().is_fifo())
+                    {
+                        debug!(
+                            "agent-queue: notification path is not a FIFO; skipping #{}",
+                            id
+                        );
+                        return;
+                    }
                     if let Err(e) = writeln!(f, "{}", id) {
                         debug!("agent-queue: FIFO write for #{} failed: {}", id, e);
                     }

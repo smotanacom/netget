@@ -8,6 +8,21 @@ use tokio::time::sleep;
 /// Result type for e2e tests
 pub type E2EResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// Real inference requires an explicit affirmative opt-in. Merely exporting an
+/// empty variable or `NETGET_USE_OLLAMA=0` must never select a live model.
+pub fn live_ollama_opt_in(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+pub fn real_ollama_requested() -> bool {
+    live_ollama_opt_in(std::env::var("NETGET_USE_OLLAMA").ok().as_deref())
+}
+
 /// How long an Ollama reachability or model-listing probe may take.
 ///
 /// It was 2 seconds in `check_ollama_available` and 5 in `ensure_model_available`,
@@ -88,13 +103,22 @@ where
     E: std::error::Error + 'static,
 {
     let start = std::time::Instant::now();
-    let mut delay = initial_delay;
+    let mut delay = initial_delay.min(max_delay);
     let mut attempts = 0;
 
     loop {
         attempts += 1;
 
-        match condition().await {
+        let remaining = timeout_duration.saturating_sub(start.elapsed());
+        let result = tokio::time::timeout(remaining, condition())
+            .await
+            .map_err(|_| {
+                format!(
+                    "Retry timeout after {:?} ({} attempts): condition did not complete",
+                    timeout_duration, attempts
+                )
+            })?;
+        match result {
             Ok(result) => {
                 if attempts > 1 {
                     println!(
@@ -115,8 +139,16 @@ where
                 }
 
                 // Sleep with exponential backoff
-                sleep(delay).await;
-                delay = (delay * 2).min(max_delay);
+                let remaining = timeout_duration.saturating_sub(start.elapsed());
+                sleep(delay.min(remaining)).await;
+                if start.elapsed() >= timeout_duration {
+                    return Err(format!(
+                        "Retry timeout after {:?} ({} attempts). Last error: {}",
+                        timeout_duration, attempts, e
+                    )
+                    .into());
+                }
+                delay = delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
             }
         }
     }
@@ -139,41 +171,11 @@ where
     .await
 }
 
-/// Get an available port for testing
-pub async fn get_available_port() -> E2EResult<u16> {
-    use tokio::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
-/// Replace {AVAILABLE_PORT} placeholders with actual available ports
+/// Ask the actual server to allocate its listening port atomically. The harness
+/// discovers the concrete address from the startup confirmation. A bind-and-drop
+/// probe never reserves the returned number and races every parallel fixture.
 pub async fn replace_port_placeholders(prompt: &str) -> E2EResult<String> {
-    const PLACEHOLDER: &str = "{AVAILABLE_PORT}";
-
-    // Count how many placeholders we need to replace
-    let placeholder_count = prompt.matches(PLACEHOLDER).count();
-
-    if placeholder_count == 0 {
-        // No placeholders to replace, return original prompt
-        return Ok(prompt.to_string());
-    }
-
-    // Allocate unique available ports
-    let mut ports = Vec::with_capacity(placeholder_count);
-    for _ in 0..placeholder_count {
-        let port = get_available_port().await?;
-        ports.push(port);
-    }
-
-    // Replace placeholders one by one
-    let mut result = prompt.to_string();
-    for port in ports {
-        result = result.replacen(PLACEHOLDER, &port.to_string(), 1);
-    }
-
-    Ok(result)
+    Ok(prompt.replace("{AVAILABLE_PORT}", "0"))
 }
 
 /// Get the path to the NetGet binary
@@ -188,6 +190,17 @@ pub fn get_netget_binary_path() -> E2EResult<PathBuf> {
         if path.exists() {
             return Ok(path);
         }
+    }
+
+    // Cargo supplies this to rustc when compiling integration tests; it does
+    // not have to survive in the test process's runtime environment. Falling
+    // through to the newest target binary can select a different feature set.
+    if let Some(bin_path) = option_env!("CARGO_BIN_EXE_netget") {
+        let path = PathBuf::from(bin_path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(format!("Cargo-built NetGet binary is missing at {}", path.display()).into());
     }
 
     // Fallback for manual runs (without cargo test)

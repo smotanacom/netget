@@ -1,0 +1,13 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+    Finished `test` profile [unoptimized] target(s) in 30.79s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/recursive_decoder_depth_test.rs (target/debug/deps/recursive_decoder_depth_test-b0255ca4147b579b)
+
+running 3 tests
+test the_rule_flags_the_historical_defects_and_not_their_fixes ... ok
+test no_recursive_decoder_is_unbounded ... ok
+test the_scan_sees_the_decoders_that_are_already_bounded ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.10s
+

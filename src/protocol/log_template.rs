@@ -139,32 +139,29 @@ static PLACEHOLDER_REGEX: LazyLock<Regex> =
 /// - `{preview(field)}` - First 100 chars
 /// - `{preview(field,N)}` - First N chars
 fn render_template(template: &str, data: &Value) -> String {
-    let mut result = template.to_string();
+    // Replace matches in the template once. Replacing on the already-rendered string
+    // would interpret placeholder-shaped text inside a peer's data as another field.
+    PLACEHOLDER_REGEX
+        .replace_all(template, |cap: &regex::Captures<'_>| {
+            let placeholder = &cap[1];
 
-    for cap in PLACEHOLDER_REGEX.captures_iter(template) {
-        let full_match = &cap[0];
-        let placeholder = &cap[1];
-
-        // The template is written by the protocol and is trusted. The *value* substituted into
-        // it is not: it comes from the model's action or from the wire, and this renderer is
-        // what puts it on a log line.
-        //
-        // A control character in it forges a log entry. `\r\nERROR forged` turns one line into
-        // two, and the second is indistinguishable from something NetGet wrote — which is the
-        // whole point of impersonating a device. LLDP, CDP and HSRP each fixed this locally in
-        // their own fields; this is the one place that covers all 140 servers, including the
-        // ones nobody has looked at yet.
-        //
-        // `line_field` substitutes a space rather than deleting, for the reason
-        // `utils::sanitize` documents: deleting joins the two sides into one word, which reads
-        // as a single legitimate value and is its own small lie. The JSON placeholder forms
-        // escape control characters already, so this is a no-op for them.
-        let replacement =
-            crate::utils::sanitize::line_field(&render_placeholder(placeholder, data));
-        result = result.replace(full_match, &replacement);
-    }
-
-    result
+            // The template is written by the protocol and is trusted. The *value* substituted into
+            // it is not: it comes from the model's action or from the wire, and this renderer is
+            // what puts it on a log line.
+            //
+            // A control character in it forges a log entry. `\r\nERROR forged` turns one line into
+            // two, and the second is indistinguishable from something NetGet wrote — which is the
+            // whole point of impersonating a device. LLDP, CDP and HSRP each fixed this locally in
+            // their own fields; this is the one place that covers all 140 servers, including the
+            // ones nobody has looked at yet.
+            //
+            // `line_field` substitutes a space rather than deleting, for the reason
+            // `utils::sanitize` documents: deleting joins the two sides into one word, which reads
+            // as a single legitimate value and is its own small lie. The JSON placeholder forms
+            // escape control characters already, so this is a no-op for them.
+            crate::utils::sanitize::line_field(&render_placeholder(placeholder, data))
+        })
+        .into_owned()
 }
 
 /// Render a single placeholder

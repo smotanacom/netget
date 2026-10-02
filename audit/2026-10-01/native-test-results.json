@@ -1,0 +1,170 @@
+[
+  {
+    "target": "tests/agent_queue_fifo_test.rs",
+    "status": "ok",
+    "passed": 2,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/audit_ci_coverage_test.rs",
+    "status": "ok",
+    "passed": 2,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/client_review_regression_test.rs",
+    "status": "ok",
+    "passed": 22,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/dashboard_frame_test.rs",
+    "status": "ok",
+    "passed": 17,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/display_rendering_test.rs",
+    "status": "ok",
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/llm_rate_limiter_test.rs",
+    "status": "ok",
+    "passed": 11,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/log_template_injection_test.rs",
+    "status": "ok",
+    "passed": 5,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/log_template_test.rs",
+    "status": "ok",
+    "passed": 10,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/management_test.rs",
+    "status": "ok",
+    "passed": 7,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/mcp_startup_config_test.rs",
+    "status": "ok",
+    "passed": 11,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/prompt_growth_test.rs",
+    "status": "ok",
+    "passed": 14,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/proxy_cert_cache_test.rs",
+    "status": "ok",
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/reference_parser_test.rs",
+    "status": "ok",
+    "passed": 12,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/scheduled_task_actions_test.rs",
+    "status": "ok",
+    "passed": 2,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/scheduled_task_claim_test.rs",
+    "status": "ok",
+    "passed": 8,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/scripting_highlight_test.rs",
+    "status": "ok",
+    "passed": 2,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/scripting_manager_test.rs",
+    "status": "ok",
+    "passed": 8,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/scripting_resident_test.rs",
+    "status": "ok",
+    "passed": 15,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/secret_redaction_test.rs",
+    "status": "ok",
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/server_stop_cleans_scheduled_tasks_test.rs",
+    "status": "ok",
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/sqlite_identifier_test.rs",
+    "status": "ok",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/startup_params_result_test.rs",
+    "status": "ok",
+    "passed": 10,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/test_infrastructure_review_test.rs",
+    "status": "ok",
+    "passed": 12,
+    "failed": 0,
+    "ignored": 0
+  },
+  {
+    "target": "tests/utils_save_load_test.rs",
+    "status": "ok",
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0
+  }
+]

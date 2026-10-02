@@ -215,32 +215,8 @@ impl Server for QuicProtocol {
             // `get_startup_parameters` above is read here.
             let tls_config = match ctx.startup_params.as_ref() {
                 Some(params) => {
-                    let cert_path = params.get_optional_string("cert_path")?;
-                    let key_path = params.get_optional_string("key_path")?;
-                    let common_name = params.get_optional_string("common_name")?;
-                    let san_dns_names = params.get_optional_array("san_dns_names")?.map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    });
-                    let validity_days = params.get_optional_i64("validity_days")?;
-                    let organization = params.get_optional_string("organization")?;
-                    let organizational_unit = params.get_optional_string("organizational_unit")?;
-
-                    // create_tls_config loads the files when both paths are given and
-                    // generates a self-signed certificate from the remaining fields
-                    // otherwise, so this covers both the operator-supplied and the
-                    // default case.
-                    crate::server::tls_cert_manager::create_tls_config(
-                        cert_path.as_deref(),
-                        key_path.as_deref(),
-                        common_name,
-                        san_dns_names,
-                        validity_days,
-                        organization,
-                        organizational_unit,
-                    )
-                    .map_err(|e| anyhow::anyhow!("Failed to create QUIC TLS config: {}", e))?
+                    crate::server::tls_cert_manager::extract_required_tls_config_from_params(params)
+                        .map_err(|e| anyhow::anyhow!("Failed to create QUIC TLS config: {}", e))?
                 }
                 None => crate::server::tls_cert_manager::generate_default_tls_config()
                     .map_err(|e| anyhow::anyhow!("Failed to generate default TLS config: {}", e))?,

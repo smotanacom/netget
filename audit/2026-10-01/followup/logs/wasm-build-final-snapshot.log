@@ -1,0 +1,196 @@
+== cargo build (profile: dev)
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+warning: unused import: `tracing::debug`
+ --> src/cli/theme.rs:4:5
+  |
+4 | use tracing::debug;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow::Result`
+  --> src/cli/mod.rs:28:5
+   |
+28 | use anyhow::Result;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `clap::Parser`
+  --> src/cli/mod.rs:30:5
+   |
+30 | use clap::Parser;
+   |     ^^^^^^^^^^^^
+
+warning: unused import: `tracing::debug`
+  --> src/cli/mod.rs:31:5
+   |
+31 | use tracing::debug;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::events::EventHandler`
+  --> src/cli/mod.rs:33:5
+   |
+33 | use crate::events::EventHandler;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::llm::OllamaClient`
+  --> src/cli/mod.rs:34:5
+   |
+34 | use crate::llm::OllamaClient;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::settings::Settings`
+  --> src/cli/mod.rs:35:5
+   |
+35 | use crate::settings::Settings;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::state::app_state::AppState`
+  --> src/cli/mod.rs:36:5
+   |
+36 | use crate::state::app_state::AppState;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::ui::App`
+  --> src/cli/mod.rs:37:5
+   |
+37 | use crate::ui::App;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::Command`
+ --> src/protocol/dependencies.rs:6:5
+  |
+6 | use std::process::Command;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> src/server/http2/h2_server.rs:197:14
+    |
+197 |             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+    |              ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+197 -             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+197 +             .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+    |
+
+warning: value assigned to `disconnect` is never read
+   --> src/client/tftp/mod.rs:576:75
+    |
+576 | ...                   Ok(ClientActionResult::Disconnect) => disconnect = true,
+    |                                                             ^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/scripting/process_io.rs:153:13
+    |
+153 |         let mut builder = std::fs::DirBuilder::new();
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_url` is never used
+   --> src/llm/actions/tools.rs:694:10
+    |
+694 | async fn fetch_url(url: &str) -> ToolResult {
+    |          ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `SearchResult` is never constructed
+   --> src/llm/actions/tools.rs:779:8
+    |
+779 | struct SearchResult {
+    |        ^^^^^^^^^^^^
+
+warning: function `parse_duckduckgo_results` is never used
+   --> src/llm/actions/tools.rs:786:4
+    |
+786 | fn parse_duckduckgo_results(html: &str) -> Vec<SearchResult> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_between` is never used
+   --> src/llm/actions/tools.rs:831:4
+    |
+831 | fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `decode_html_entities` is never used
+   --> src/llm/actions/tools.rs:839:4
+    |
+839 | fn decode_html_entities(text: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `format_search_results` is never used
+   --> src/llm/actions/tools.rs:849:4
+    |
+849 | fn format_search_results(results: &[SearchResult]) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `apply_to` is never used
+    --> src/llm/ollama_client.rs:1069:8
+     |
+1062 | impl SamplingOptions {
+     | -------------------- method in this implementation
+...
+1069 |     fn apply_to(&self, target: &mut serde_json::Value) {
+     |        ^^^^^^^^
+
+warning: function `is_running_as_root` is never used
+   --> src/privilege.rs:187:4
+    |
+187 | fn is_running_as_root() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `can_bind_privileged_port` is never used
+   --> src/privilege.rs:276:4
+    |
+276 | fn can_bind_privileged_port() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_raw_ip_socket_capability` is never used
+   --> src/privilege.rs:357:4
+    |
+357 | fn has_raw_ip_socket_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_packet_capture_capability` is never used
+   --> src/privilege.rs:402:4
+    |
+402 | fn has_packet_capture_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_bluetooth_capability` is never used
+   --> src/privilege.rs:508:4
+    |
+508 | fn has_bluetooth_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_usb_capability` is never used
+   --> src/privilege.rs:539:4
+    |
+539 | fn has_usb_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `has_nfc_capability` is never used
+   --> src/privilege.rs:561:4
+    |
+561 | fn has_nfc_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: `netget` (lib) generated 27 warnings (run `cargo fix --lib -p netget` to apply 12 suggestions)
+   Compiling netget-web v0.1.0 (/Users/matus/dev/netget/crates/netget-web)
+    Finished `dev` profile [unoptimized] target(s) in 22.38s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+== wasm-bindgen -> site/demo/pkg
+total 160504
+drwxr-xr-x  4 matus  staff       128 Sep 22 17:03 .
+drwxr-xr-x  3 matus  staff        96 Sep 22 17:03 ..
+-rw-r--r--@ 1 matus  staff     42767 Oct  1 22:48 netget_web.js
+-rw-r--r--@ 1 matus  staff  82131285 Oct  1 22:48 netget_web_bg.wasm

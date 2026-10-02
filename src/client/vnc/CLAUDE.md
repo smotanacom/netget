@@ -58,7 +58,7 @@ control mouse movement, keyboard input, request screen updates, and interact wit
 **Security Types Supported:**
 
 - **Type 1: None** - No authentication
-- **Type 2: VNC Authentication** - DES challenge-response (simplified)
+- **Type 2: VNC Authentication** - DES challenge-response
 
 **Client-to-Server Messages:**
 
@@ -154,10 +154,10 @@ status_tx.send("[CLIENT] VNC client connected");                    // → TUI
 
 - **Challenge-Response:** Server sends 16-byte challenge
 - **DES Encryption:** Client encrypts challenge with password
-- **Current Implementation:** Simplified (may not work with all servers)
+- **Current Implementation:** DES-ECB over both challenge blocks with the first eight password bytes, zero-padded and bit-reversed for VNC key order.
 - **Recommendation:** Use security type 1 (None) for testing
 
-**Future Enhancement:** Full DES encryption for VNC authentication.
+Authentication has a 30-second handshake deadline; clipboard and framebuffer body reads have bounded frame deadlines.
 
 ## Dashboard injection (`[ send_key_event ]`, `[ send_pointer_event ]`, `[ disconnect ]`)
 
@@ -179,7 +179,7 @@ on a dead client). Test: `tests/client/vnc/command_channel_test.rs` (zero LLM ca
 
 ## Limitations
 
-- **Simplified Authentication** - VNC auth uses placeholder, not full DES
+- **Transport security** - legacy VNC password authentication does not encrypt the session
     - Works with security type 1 (None)
     - May fail with strict VNC auth servers
 - **Raw Encoding Only** - Does not support RRE, Hextile, ZRLE, etc.
@@ -262,7 +262,6 @@ See `tests/client/vnc/CLAUDE.md` for E2E testing approach.
 
 ## Future Enhancements
 
-- **Full VNC Authentication** - Proper DES encryption
 - **Additional Encodings** - RRE, Hextile, ZRLE for efficiency
 - **Pixel Data Parsing** - Extract actual framebuffer content
 - **Screenshot Capability** - Convert framebuffer to image
@@ -271,3 +270,23 @@ See `tests/client/vnc/CLAUDE.md` for E2E testing approach.
 - **TLS Support** - VeNCrypt for encrypted connections
 - **Resize Events** - Handle dynamic resolution changes
 - **Extended Desktop Size** - Support for multi-monitor setups
+
+## Inbound framing bounds (October 2026 review)
+
+Server names, authentication failure reasons and clipboard text use `read_server_text`:
+1 MiB maximum, checked before allocation. Raw rectangles are streamed into a discard
+sink with bounded scratch storage rather than allocating width × height × 4 bytes;
+rectangles over 256 MiB are refused (an 8K display still fits). The client sends
+SetPixelFormat to negotiate the 32-bit true-color format its raw reader consumes.
+An unsupported encoding, truncated frame or other message parsing error terminates the
+reader and removes its command handle, instead of interpreting leftover payload as a
+new message. CPU-only decoder tests live in `tests/client_review_regression_test.rs::vnc`.
+The existing placeholder VNC authentication remains a separate limitation.
+
+## Follow-up verification (October 2026)
+
+VNC authentication now computes the response instead of echoing the challenge. A supplied
+password selects type 2 when offered. The pure regression uses an independently generated
+OpenSSL DES fixture, plus truncation/padding checks. Action coordinates and pointer masks are
+checked before Custom data is constructed, so the transport cannot receive already-wrapped
+values. `tests/client_followup_test.rs` covers those boundaries without a display or model.

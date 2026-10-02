@@ -307,7 +307,8 @@ impl Client for WireguardClientProtocol {
                         .unwrap_or_else(|| vec!["0.0.0.0/0".to_string()]),
                     keepalive: startup_params
                         .get_optional_u64("keepalive")?
-                        .map(|k| k as u16),
+                        .map(|k| u16::try_from(k).context("WireGuard keepalive exceeds u16"))
+                        .transpose()?,
                     private_key: startup_params.get_optional_string("private_key")?,
                 }
             } else {

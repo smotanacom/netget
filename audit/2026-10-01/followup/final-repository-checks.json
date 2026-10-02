@@ -1,0 +1,631 @@
+{
+  "started_utc": "2026-10-02T02:49:01.199093+00:00",
+  "finished_utc": "2026-10-02T02:52:33.287022+00:00",
+  "scope": "changed tracked/new shell, Python and JS files; all workflow YAML; full diff and module reachability",
+  "no_build_or_model_execution": true,
+  "module_reachability_uses_cargo_fmt_only": true,
+  "counts": {
+    "diff_whitespace": 1,
+    "module_reachability": 1,
+    "node_syntax": 8,
+    "python_ast": 3,
+    "shell_syntax": 8,
+    "workflow_yaml": 5
+  },
+  "total_checks": 26,
+  "passed": 26,
+  "failed": 0,
+  "results": [
+    {
+      "check": "shell_syntax",
+      "path": ".github/scripts/check-module-reachability.sh",
+      "command": [
+        "bash",
+        "-n",
+        ".github/scripts/check-module-reachability.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.009
+    },
+    {
+      "check": "shell_syntax",
+      "path": "cargo-isolated-kill.sh",
+      "command": [
+        "bash",
+        "-n",
+        "cargo-isolated-kill.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "shell_syntax",
+      "path": "cargo-isolated.sh",
+      "command": [
+        "bash",
+        "-n",
+        "cargo-isolated.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.013
+    },
+    {
+      "check": "shell_syntax",
+      "path": "cargo.sh",
+      "command": [
+        "bash",
+        "-n",
+        "cargo.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "shell_syntax",
+      "path": "scripts/sccache/cargo-sccache.sh",
+      "command": [
+        "bash",
+        "-n",
+        "scripts/sccache/cargo-sccache.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.014
+    },
+    {
+      "check": "shell_syntax",
+      "path": "scripts/sccache/setup-sccache-r2.sh",
+      "command": [
+        "bash",
+        "-n",
+        "scripts/sccache/setup-sccache-r2.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.009
+    },
+    {
+      "check": "shell_syntax",
+      "path": "scripts/sccache/setup-sccache-upstash.sh",
+      "command": [
+        "bash",
+        "-n",
+        "scripts/sccache/setup-sccache-upstash.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.018
+    },
+    {
+      "check": "shell_syntax",
+      "path": "web/build.sh",
+      "command": [
+        "bash",
+        "-n",
+        "web/build.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.024
+    },
+    {
+      "check": "python_ast",
+      "path": "scripts/cargo_session.py",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.002
+    },
+    {
+      "check": "python_ast",
+      "path": "tests/build_scripts_test.py",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.003
+    },
+    {
+      "check": "python_ast",
+      "path": "web/test/page_composer.py",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "node_syntax",
+      "path": "npm/netget/bin/netget.js",
+      "command": [
+        "node",
+        "--check",
+        "npm/netget/bin/netget.js"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.052
+    },
+    {
+      "check": "node_syntax",
+      "path": "site/js/composer.js",
+      "command": [
+        "node",
+        "--input-type=module",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.128
+    },
+    {
+      "check": "node_syntax",
+      "path": "site/js/demo.js",
+      "command": [
+        "node",
+        "--input-type=module",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.125
+    },
+    {
+      "check": "node_syntax",
+      "path": "site/js/telnet.js",
+      "command": [
+        "node",
+        "--input-type=module",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.097
+    },
+    {
+      "check": "node_syntax",
+      "path": "tests/npm_download_test.cjs",
+      "command": [
+        "node",
+        "--check",
+        "tests/npm_download_test.cjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.108
+    },
+    {
+      "check": "node_syntax",
+      "path": "tests/npm_launcher_test.cjs",
+      "command": [
+        "node",
+        "--check",
+        "tests/npm_launcher_test.cjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.072
+    },
+    {
+      "check": "node_syntax",
+      "path": "web/test/composer_model_test.mjs",
+      "command": [
+        "node",
+        "--check",
+        "web/test/composer_model_test.mjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.069
+    },
+    {
+      "check": "node_syntax",
+      "path": "web/test/telnet_test.mjs",
+      "command": [
+        "node",
+        "--check",
+        "web/test/telnet_test.mjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.082
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/ci.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.048
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/fuzz.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.041
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/nightly-eval.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.022
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/nightly-soak.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.016
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/release.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "diff_whitespace",
+      "path": ".",
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "HEAD"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.065
+    },
+    {
+      "check": "module_reachability",
+      "path": ".github/scripts/check-module-reachability.sh",
+      "command": [
+        "bash",
+        ".github/scripts/check-module-reachability.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "OK: 2283 files under src/ and tests/ are all reachable (0 allowlisted), and every working-tree .rs file is formatted.\n",
+      "stderr": "",
+      "elapsed_seconds": 26.318
+    }
+  ],
+  "initial_results": [
+    {
+      "check": "shell_syntax",
+      "path": ".github/scripts/check-module-reachability.sh",
+      "command": [
+        "bash",
+        "-n",
+        ".github/scripts/check-module-reachability.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.011
+    },
+    {
+      "check": "shell_syntax",
+      "path": "cargo-isolated-kill.sh",
+      "command": [
+        "bash",
+        "-n",
+        "cargo-isolated-kill.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "shell_syntax",
+      "path": "cargo-isolated.sh",
+      "command": [
+        "bash",
+        "-n",
+        "cargo-isolated.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.013
+    },
+    {
+      "check": "shell_syntax",
+      "path": "cargo.sh",
+      "command": [
+        "bash",
+        "-n",
+        "cargo.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "shell_syntax",
+      "path": "scripts/sccache/cargo-sccache.sh",
+      "command": [
+        "bash",
+        "-n",
+        "scripts/sccache/cargo-sccache.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.014
+    },
+    {
+      "check": "shell_syntax",
+      "path": "scripts/sccache/setup-sccache-r2.sh",
+      "command": [
+        "bash",
+        "-n",
+        "scripts/sccache/setup-sccache-r2.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.009
+    },
+    {
+      "check": "shell_syntax",
+      "path": "scripts/sccache/setup-sccache-upstash.sh",
+      "command": [
+        "bash",
+        "-n",
+        "scripts/sccache/setup-sccache-upstash.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.018
+    },
+    {
+      "check": "shell_syntax",
+      "path": "web/build.sh",
+      "command": [
+        "bash",
+        "-n",
+        "web/build.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.024
+    },
+    {
+      "check": "python_ast",
+      "path": "scripts/cargo_session.py",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.002
+    },
+    {
+      "check": "python_ast",
+      "path": "tests/build_scripts_test.py",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.003
+    },
+    {
+      "check": "python_ast",
+      "path": "web/test/page_composer.py",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "node_syntax",
+      "path": "npm/netget/bin/netget.js",
+      "command": [
+        "node",
+        "--check",
+        "npm/netget/bin/netget.js"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.052
+    },
+    {
+      "check": "node_syntax",
+      "path": "site/js/composer.js",
+      "command": [
+        "node",
+        "--input-type=module",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.128
+    },
+    {
+      "check": "node_syntax",
+      "path": "site/js/demo.js",
+      "command": [
+        "node",
+        "--input-type=module",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.125
+    },
+    {
+      "check": "node_syntax",
+      "path": "site/js/telnet.js",
+      "command": [
+        "node",
+        "--input-type=module",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.097
+    },
+    {
+      "check": "node_syntax",
+      "path": "tests/npm_download_test.cjs",
+      "command": [
+        "node",
+        "--check",
+        "tests/npm_download_test.cjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.108
+    },
+    {
+      "check": "node_syntax",
+      "path": "tests/npm_launcher_test.cjs",
+      "command": [
+        "node",
+        "--check",
+        "tests/npm_launcher_test.cjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.072
+    },
+    {
+      "check": "node_syntax",
+      "path": "web/test/composer_model_test.mjs",
+      "command": [
+        "node",
+        "--check",
+        "web/test/composer_model_test.mjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.069
+    },
+    {
+      "check": "node_syntax",
+      "path": "web/test/telnet_test.mjs",
+      "command": [
+        "node",
+        "--check",
+        "web/test/telnet_test.mjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.082
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/ci.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.048
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/fuzz.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.041
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/nightly-eval.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.022
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/nightly-soak.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.016
+    },
+    {
+      "check": "workflow_yaml",
+      "path": ".github/workflows/release.yml",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.01
+    },
+    {
+      "check": "diff_whitespace",
+      "path": ".",
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "HEAD"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_seconds": 0.066
+    },
+    {
+      "check": "module_reachability",
+      "path": ".github/scripts/check-module-reachability.sh",
+      "command": [
+        "bash",
+        ".github/scripts/check-module-reachability.sh"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "ERROR: rustfmt --check failed on tracked file(s) (run 'cargo fmt', then rustfmt any file listed below by hand):\n",
+      "elapsed_seconds": 49.844
+    }
+  ],
+  "correction": "Formatting file-list now includes existing tracked/new Rust files and excludes unstaged working-tree deletions; initial raw error retained in module-format-diagnostic.log.",
+  "module_graph": {
+    "source_and_test_rust_files": 2283,
+    "allowlisted": 0,
+    "unreachable": 0,
+    "working_tree_format_passed": true
+  },
+  "syntax_implementations": {
+    "shell": "bash -n for every changed/new .sh file",
+    "python": "ast.parse(source, filename=path), without imports or execution",
+    "node": "node --check; site/js files parsed via --input-type=module --check stdin",
+    "yaml": "PyYAML SafeLoader with duplicate mapping key rejection and required workflow jobs mapping"
+  }
+}

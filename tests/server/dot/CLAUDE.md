@@ -2,6 +2,10 @@
 
 ## Test Overview
 
+`connection_bounds_test.rs` also sends a complete length prefix followed by an incomplete
+DNS body. The server must close this session within the 10-second body deadline; no complete
+query is emitted and no model is called.
+
 Tests DoT server implementation with multiple DNS queries over a single TLS connection. Validates that DNS queries work
 correctly when delivered over TLS transport.
 

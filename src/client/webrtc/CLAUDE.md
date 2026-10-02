@@ -283,11 +283,10 @@ channel into `Accumulating` and every later message went onto a `Vec` nobody rea
 for the life of the connection. This section claimed "No message loss during LLM processing";
 it was total message loss after the first overlap.
 
-**What happens now**: a message arriving during an in-flight LLM call is dropped with a WARN
-naming the count and the channel, and the channel returns to `Idle` and keeps working. Both
-counts are strictly better than before — the same messages were already lost, and they used
-to take the channel with them. A real drain belongs here (the *server* does it properly in
-`PeerCtx::handle_peer_event`) and needs the `on_message` closure's body extracted first.
+**What happens now**: a bounded FIFO is drained in order by the active callback before the
+channel returns to Idle. Each inbound message is limited to 1 MiB; a queue over 128 messages or
+8 MiB closes the channel with a warning instead of silently losing data. Binary/text events use
+the data channel's message type flag rather than guessing from ASCII contents.
 
 **Benefits**:
 - Independent state per channel
@@ -296,7 +295,7 @@ to take the channel with them. A real drain belongs here (the *server* does it p
 ### Stored Data (protocol_data)
 
 - `sdp_offer`: Generated SDP offer (JSON)
-- `peer_connection_ptr`: Raw pointer to RTCPeerConnection (for lifecycle)
+- Peer ownership stays in Rust Arcs; no raw pointer is stored in JSON.
 
 **Safety note, and it is a real caveat rather than a reassurance.** This claimed "Pointers are
 cleaned up when client is removed". They are not, in the normal path: the only thing that
@@ -317,7 +316,7 @@ declaration is gone; the field on the client record still reflects the derived m
 - `memory`: LLM memory (shared across all channels)
 - `channels`: HashMap of channel_label → ChannelData
   - `state`: ConnectionState (Idle/Processing/Accumulating)
-  - `queued_messages`: Vec<(message, is_binary)>
+  - `queued_messages`: VecDeque<(message, is_binary)>
   - `channel`: Arc<RTCDataChannel>
 
 ## Signaling Strategy
@@ -543,7 +542,7 @@ parameter it declares, so the command loop reads `channel` from the action itsel
 `netget`, the channel `connect()` always creates.
 
 **Gap: `send_offer` is not executed.** It answers
-`Executed { detail: "send_offer was NOT sent: …" }` and says so. The signaling WebSocket sink is
+`Rejected { error: "send_offer cannot be injected: …" }`; it never reports success. The signaling WebSocket sink is
 owned by `websocket_signaling`'s own task and is unreachable from the command loop, and in manual
 mode there is no signaling connection at all. It has never worked from the LLM path either — the
 `Custom` result was dropped on the floor there — so this is a pre-existing gap now made visible
@@ -552,3 +551,12 @@ rather than a new one.
 **What the test does not cover.** A data channel carrying bytes needs a real second peer and
 there is none in-tree, so `Sent { bytes_sent }` is exercised by no test; what is pinned is that
 the failure to send is reported rather than faked.
+
+## Lifecycle follow-up (October 2026)
+
+`PeerConnectionGuard` starts async peer closure when the last owning task is dropped, including
+AppState task abortion. Its cancellation token interrupts pending channel callbacks before close.
+Callbacks retain weak references to their channel/client data, breaking self-cycles. Signaling
+setup failures close the connection and remove the command handle. The CPU regression creates
+an ICE-server-free peer, aborts its owner, and waits for the real Closed state. Real NAT traversal,
+remote signaling servers, and browser transport execution remain environment-specific validation.

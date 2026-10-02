@@ -139,7 +139,9 @@ impl DcClient {
             .map(|p| p.get_optional_u64("max_reconnect_attempts"))
             .transpose()?
             .flatten()
-            .unwrap_or(5) as u32;
+            .unwrap_or(5);
+        let max_reconnect_attempts =
+            u32::try_from(max_reconnect_attempts).context("max_reconnect_attempts exceeds u32")?;
         let initial_reconnect_delay_secs = startup_params
             .as_ref()
             .map(|p| p.get_optional_u64("initial_reconnect_delay_secs"))

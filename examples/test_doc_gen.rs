@@ -1,7 +1,7 @@
 use netget::llm::actions::common::generate_single_protocol_doc_data;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     // Test generating documentation for TCP protocol (simpler protocol)
     match generate_single_protocol_doc_data("tcp") {
         Ok(doc_data) => {
@@ -48,12 +48,13 @@ async fn main() {
                     println!("{}", rendered);
                 }
                 Err(e) => {
-                    eprintln!("Error rendering template: {}", e);
+                    return Err(e.into());
                 }
             }
         }
         Err(e) => {
-            eprintln!("Error generating documentation: {}", e);
+            return Err(e.into());
         }
     }
+    Ok(())
 }

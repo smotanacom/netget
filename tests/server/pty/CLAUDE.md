@@ -2,7 +2,7 @@
 
 ## Strategy
 
-**One file, `e2e_test.rs`, 1 test** — covering the pseudo-terminal server.
+**Two files, two tests** — covering the pseudo-terminal server.
 This doc did not name it until 22 September 2026, which is the starkest form of a test
 directory's doc drifting: a single file, and the doc describing it without ever saying so.
 
@@ -40,8 +40,8 @@ until the client reads it.
 
 ## LLM call budget
 
-1 test x 3 mocked LLM calls (startup + pty_opened + one input) = **3 calls**, under the 10-call
-budget.
+The prompt-and-command test makes **3 mocked LLM calls** (startup + pty_opened + one input).
+The startup-cleanup test makes none, so the suite remains under the 10-call budget.
 
 ## Running
 
@@ -51,6 +51,9 @@ budget.
 
 ## Notes / known limitations
 
+- `startup_cleanup_test.rs` invokes 16 failed startups against an existing regular file,
+  asserting its contents survive and `/dev/fd` has the same count afterwards. An isolated
+  subprocess avoids interference from other tests opening descriptors; there are no model calls.
 - `link_path` is `./tmp/netget-test.pty` relative to the NetGet process cwd. The test
   `mkdir -p ./tmp` and removes the stale symlink before/after.
 - Not covered: window-size / SIGWINCH, ANSI escape sequences via hex encoding, multiple concurrent

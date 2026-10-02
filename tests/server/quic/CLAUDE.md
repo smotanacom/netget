@@ -171,8 +171,9 @@ to absorb it.
 5. **Large payloads** (multi-MB) — untested
 6. **Half-close semantics** — no explicit test
 7. **`wait_for_more`** — declared, never exercised
-8. **Startup parameters** — `cert_path`/`key_path` and the self-signed fields are
-   read but no test supplies them
+8. **Startup parameters** — `certificate_validation_test.rs` rejects numeric, null
+   and object SAN entries before binding. Custom certificate handshake interoperability
+   remains outside this pure validation test.
 9. **`stream_count`** in `ProtocolConnectionInfo` — known to be permanently 0,
    so there is nothing to assert yet
 

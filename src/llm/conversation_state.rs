@@ -78,12 +78,23 @@ impl ConversationState {
     /// each message at half the window guarantees at least two messages of history survive
     /// and that `current_size` can never exceed `max_token_size`.
     const MESSAGE_FRACTION: usize = 2;
+    const MAX_MESSAGES: usize = 1024;
+    pub const MAX_DOCUMENTED_PROTOCOLS: usize = 1024;
 
     /// Truncate a message payload to the per-message cap, char-safe, marking the cut so the
     /// model is not shown a silently amputated value.
     fn bound_message(&self, content: String) -> String {
-        let cap = (self.max_token_size / Self::MESSAGE_FRACTION).max(256);
-        crate::utils::truncate_for_llm(&content, cap)
+        let cap = (self.max_token_size / Self::MESSAGE_FRACTION)
+            .max(1)
+            .min(self.max_token_size);
+        if content.len() <= cap {
+            return content;
+        }
+        let marker = crate::utils::truncate::TRUNCATION_MARKER;
+        if cap < marker.len() {
+            return crate::utils::truncate_str(&content, cap).to_string();
+        }
+        crate::utils::truncate_with_suffix(&content, cap - marker.len(), marker)
     }
 
     /// Create a new conversation state with token size limit
@@ -117,6 +128,17 @@ impl ConversationState {
     /// Add an LLM response message
     pub fn add_llm_response(&mut self, response: String, parsed_action: Option<serde_json::Value>) {
         let response = self.bound_message(response);
+        // Parsed metadata is optional context, never a second unlimited history.
+        // Drop rejected structures iteratively so a programmatically built deeply
+        // nested Value cannot overflow the stack even during rejection.
+        let parsed_action = parsed_action.and_then(|value| {
+            if crate::utils::json_budget::within_budget(&value, self.max_token_size / 2, 4096, 64) {
+                Some(value)
+            } else {
+                crate::utils::json_budget::drop_iteratively(value);
+                None
+            }
+        });
         let message = ConversationMessage {
             timestamp: Utc::now(),
             role: MessageRole::Assistant,
@@ -143,6 +165,8 @@ impl ConversationState {
 
     /// Add a tool call reference
     pub fn add_tool_call(&mut self, tool_name: String, brief_description: String) {
+        let tool_name =
+            crate::utils::truncate_str(&tool_name, 128.min(self.max_token_size)).to_owned();
         let brief_description = self.bound_message(brief_description);
         let content =
             self.bound_message(format!("Tool Call - {} ({})", tool_name, brief_description));
@@ -162,8 +186,17 @@ impl ConversationState {
     fn add_message(&mut self, message: ConversationMessage) {
         let message_size = message.content.len();
 
+        // Empty entries consume no byte budget and would otherwise accumulate forever.
+        // A zero-sized history disables storage rather than retaining one oversized entry.
+        if message_size == 0 {
+            return;
+        }
+
         // Remove oldest messages if needed to stay under token limit
-        while self.current_size + message_size > self.max_token_size && !self.messages.is_empty() {
+        while (self.current_size.saturating_add(message_size) > self.max_token_size
+            || self.messages.len() >= Self::MAX_MESSAGES)
+            && !self.messages.is_empty()
+        {
             if let Some(removed) = self.messages.pop_front() {
                 self.current_size = self.current_size.saturating_sub(removed.content.len());
                 self.truncated = true;
@@ -257,15 +290,32 @@ impl ConversationState {
     /// Mark server protocols as documented in this conversation
     pub fn mark_server_protocols_documented(&mut self, protocols: &[String]) {
         for protocol in protocols {
-            self.documented_server_protocols.insert(protocol.clone());
+            if Self::valid_documented_protocol(protocol)
+                && self.documented_server_protocols.len() < Self::MAX_DOCUMENTED_PROTOCOLS
+            {
+                self.documented_server_protocols.insert(protocol.clone());
+            }
         }
     }
 
     /// Mark client protocols as documented in this conversation
     pub fn mark_client_protocols_documented(&mut self, protocols: &[String]) {
         for protocol in protocols {
-            self.documented_client_protocols.insert(protocol.clone());
+            if Self::valid_documented_protocol(protocol)
+                && self.documented_client_protocols.len() < Self::MAX_DOCUMENTED_PROTOCOLS
+            {
+                self.documented_client_protocols.insert(protocol.clone());
+            }
         }
+    }
+
+    /// Protocol identifiers carry neither markup nor arbitrary document content.
+    pub fn valid_documented_protocol(protocol: &str) -> bool {
+        !protocol.is_empty()
+            && protocol.len() <= 128
+            && protocol
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     }
 
     /// Check if any server protocols have been documented

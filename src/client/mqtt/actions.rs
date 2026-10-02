@@ -443,7 +443,10 @@ impl Client for MqttClientProtocol {
                     return Err(anyhow::anyhow!("No valid topics provided"));
                 }
 
-                let qos = action.get("qos").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+                let qos: u8 = crate::client::wire_values::number(&action, "qos", 0)?;
+                if qos > 2 {
+                    anyhow::bail!("MQTT qos must be 0, 1 or 2");
+                }
 
                 Ok(ClientActionResult::Custom {
                     name: "mqtt_subscribe".to_string(),
@@ -466,7 +469,10 @@ impl Client for MqttClientProtocol {
                     .context("Missing 'payload' field")?
                     .to_string();
 
-                let qos = action.get("qos").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+                let qos: u8 = crate::client::wire_values::number(&action, "qos", 0)?;
+                if qos > 2 {
+                    anyhow::bail!("MQTT qos must be 0, 1 or 2");
+                }
 
                 let retain = action
                     .get("retain")

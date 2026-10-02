@@ -1,0 +1,61 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+    Checking rusqlite v0.37.0
+warning: use of deprecated struct `des::cipher::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:148:32
+    |
+148 |     let cipher = des::Des::new(GenericArray::from_slice(&key));
+    |                                ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `des::cipher::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:150:30
+    |
+150 |         cipher.encrypt_block(GenericArray::from_mut_slice(block));
+    |                              ^^^^^^^^^^^^
+
+warning: use of deprecated struct `des::cipher::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:143:38
+    |
+143 |     use des::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
+    |                                      ^^^^^^^^^^^^
+
+error[E0609]: no field `seq` on type `&u64`
+   --> src/tui/keymap.rs:436:37
+    |
+436 |                 .find(|entry| entry.seq == cursor)
+    |                                     ^^^ unknown field
+
+error[E0599]: no method named `copied` found for enum `std::option::Option<u64>` in the current scope
+   --> src/tui/keymap.rs:437:18
+    |
+434 |                app.activity.cursor = sequences
+    |  ____________________________________-
+435 | |                  .into_iter()
+436 | |                  .find(|entry| entry.seq == cursor)
+    | | ___________________________________________________-
+437 | ||                 .copied();
+    | ||_________________-^^^^^^_- help: consider removing the `.copied()` call
+    | |                  ||
+    | |__________________|this method is only available on `Option<&_>`
+    |
+
+warning: use of deprecated associated function `des::cipher::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:148:46
+    |
+148 |     let cipher = des::Des::new(GenericArray::from_slice(&key));
+    |                                              ^^^^^^^^^^
+
+warning: use of deprecated associated function `des::cipher::generic_array::GenericArray::<T, N>::from_mut_slice`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:150:44
+    |
+150 |         cipher.encrypt_block(GenericArray::from_mut_slice(block));
+    |                                            ^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0599, E0609.
+For more information about an error, try `rustc --explain E0599`.
+warning: `netget` (lib) generated 5 warnings (3 duplicates)
+error: could not compile `netget` (lib) due to 2 previous errors; 5 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `netget` (lib test) generated 5 warnings (2 duplicates)
+error: could not compile `netget` (lib test) due to 2 previous errors; 5 warnings emitted

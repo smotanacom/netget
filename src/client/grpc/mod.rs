@@ -651,7 +651,11 @@ fn make_grpc_call<'a>(
         // Encode gRPC message with 5-byte header (compression flag + length)
         let mut grpc_message = Vec::with_capacity(5 + request_bytes.len());
         grpc_message.push(0); // No compression
-        grpc_message.extend_from_slice(&(request_bytes.len() as u32).to_be_bytes());
+        grpc_message.extend_from_slice(
+            &u32::try_from(request_bytes.len())
+                .context("gRPC request length exceeds u32")?
+                .to_be_bytes(),
+        );
         grpc_message.extend_from_slice(&request_bytes);
 
         // Create body using UnsyncBoxBody which is compatible with tonic

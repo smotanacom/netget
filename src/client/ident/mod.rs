@@ -910,14 +910,18 @@ impl IdentClient {
     {
         match result {
             ClientActionResult::Custom { name, data } if name == "ident_query" => {
+                let server_port = data
+                    .get("server_port")
+                    .and_then(|v| v.as_u64())
+                    .context("ident_query without a server_port")?;
                 let server_port =
-                    data.get("server_port")
-                        .and_then(|v| v.as_u64())
-                        .context("ident_query without a server_port")? as u16;
+                    u16::try_from(server_port).context("ident server_port exceeds u16")?;
+                let client_port = data
+                    .get("client_port")
+                    .and_then(|v| v.as_u64())
+                    .context("ident_query without a client_port")?;
                 let client_port =
-                    data.get("client_port")
-                        .and_then(|v| v.as_u64())
-                        .context("ident_query without a client_port")? as u16;
+                    u16::try_from(client_port).context("ident client_port exceeds u16")?;
 
                 let query = format!("{server_port} , {client_port}\r\n");
                 {

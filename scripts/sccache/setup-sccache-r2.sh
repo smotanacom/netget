@@ -24,10 +24,10 @@ echo
 echo "Please enter your Cloudflare R2 credentials:"
 echo
 
-read -p "Account ID: " ACCOUNT_ID
-read -p "Bucket name: " BUCKET_NAME
-read -p "R2 Access Key ID: " ACCESS_KEY
-read -s -p "R2 Secret Access Key: " SECRET_KEY
+read -r -p "Account ID: " ACCOUNT_ID
+read -r -p "Bucket name: " BUCKET_NAME
+read -r -p "R2 Access Key ID: " ACCESS_KEY
+read -r -s -p "R2 Secret Access Key: " SECRET_KEY
 echo
 echo
 
@@ -42,17 +42,17 @@ echo
 
 # Create configuration script
 CONFIG_FILE="$HOME/.sccache-r2-env"
-cat > "$CONFIG_FILE" << EOF
-# sccache with Cloudflare R2 configuration
-# Generated: $(date)
-export SCCACHE_BUCKET="$BUCKET_NAME"
-export SCCACHE_REGION="auto"
-export SCCACHE_ENDPOINT="$ENDPOINT"
-export AWS_ACCESS_KEY_ID="$ACCESS_KEY"
-export AWS_SECRET_ACCESS_KEY="$SECRET_KEY"
-export SCCACHE_S3_KEY_PREFIX="netget/"
-export RUSTC_WRAPPER=sccache
-EOF
+(umask 077
+    {
+        printf '# sccache with Cloudflare R2 configuration\n'
+        printf 'export SCCACHE_BUCKET=%q\n' "$BUCKET_NAME"
+        printf 'export SCCACHE_REGION=auto\n'
+        printf 'export SCCACHE_ENDPOINT=%q\n' "$ENDPOINT"
+        printf 'export AWS_ACCESS_KEY_ID=%q\n' "$ACCESS_KEY"
+        printf 'export AWS_SECRET_ACCESS_KEY=%q\n' "$SECRET_KEY"
+        printf 'export SCCACHE_S3_KEY_PREFIX=netget/\nexport RUSTC_WRAPPER=sccache\n'
+    } > "$CONFIG_FILE"
+)
 
 chmod 600 "$CONFIG_FILE"
 
