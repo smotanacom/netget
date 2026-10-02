@@ -56,6 +56,7 @@ fn golden_duals_map() {
         "StatsD",
         "Graphite",
         "GELF",
+        "NSQ",
         "Beanstalkd",
         "DICT",
         "Gemini",

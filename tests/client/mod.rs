@@ -233,4 +233,3 @@ pub mod gelf;
 
 #[cfg(feature = "nsq")]
 pub mod nsq;
-
