@@ -12,7 +12,9 @@ available through the separate raw QUIC client.
 
 Payloads have explicit encoding: utf8 by default, hex or base64. Received printable
 ASCII is represented as utf8; other bytes use hex. Echo scripts must preserve both
-`data` and `encoding`. Each response action is capped at 1 MiB. `wait_for_more`
+`data` and `encoding`. Encoded action text is capped at 4 MiB before cleaning or
+decoding; each decoded response action is capped at 1 MiB. Decode errors do not
+include the full submitted payload. `wait_for_more`
 does not replay its input; a handler can retain partial application messages in
 memory. Stream data events follow transport reads, not application records.
 
