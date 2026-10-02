@@ -355,3 +355,6 @@ pub mod statsd;
 
 #[cfg(feature = "graphite")]
 pub mod graphite;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
