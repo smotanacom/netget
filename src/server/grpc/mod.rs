@@ -4,6 +4,8 @@
 //! and controls RPC request/response handling through JSON.
 
 pub mod actions;
+pub mod value_codec;
+pub use value_codec::{dynamic_message_to_json, json_to_dynamic_message, proto_value_to_json};
 
 use anyhow::{bail, Context, Result};
 use std::net::SocketAddr;
@@ -37,7 +39,7 @@ use hyper::{body::Incoming, header::HeaderValue, Request, Response, StatusCode};
 #[cfg(feature = "grpc")]
 use prost::Message;
 #[cfg(feature = "grpc")]
-use prost_reflect::{DescriptorPool, DynamicMessage, ReflectMessage};
+use prost_reflect::{DescriptorPool, DynamicMessage};
 #[cfg(feature = "grpc")]
 use prost_types::FileDescriptorSet;
 #[cfg(feature = "grpc")]
@@ -198,6 +200,19 @@ pub fn grpc_status_for_llm_failure(err: &anyhow::Error) -> GrpcStatus {
         GrpcStatus::Unavailable
     } else {
         GrpcStatus::Internal
+    }
+}
+
+/// Classify a peer value conversion refusal without exposing its data in an error header.
+#[cfg(feature = "grpc")]
+pub fn grpc_status_for_value_failure(error: &anyhow::Error) -> GrpcStatus {
+    if error
+        .downcast_ref::<value_codec::ValueLimitExceeded>()
+        .is_some()
+    {
+        GrpcStatus::ResourceExhausted
+    } else {
+        GrpcStatus::InvalidArgument
     }
 }
 
@@ -1008,8 +1023,14 @@ impl DynamicGrpcService {
                 )
             })?;
 
-        // Convert DynamicMessage to JSON using prost-reflect's JSON serialization
-        let request_json = Self::dynamic_message_to_json(&request_msg)?;
+        // Convert through the shared bounded field-name JSON codec.
+        let request_json = dynamic_message_to_json(&request_msg).map_err(|error| {
+            debug!("gRPC request value conversion failed: {error:#}");
+            GrpcFailure::new(
+                grpc_status_for_value_failure(&error),
+                "request value exceeds conversion limits or does not fit field-name JSON",
+            )
+        })?;
 
         Log::new(Some(&self.status_tx)).trace(format!(
             "gRPC request JSON: {}",
@@ -1073,14 +1094,14 @@ impl DynamicGrpcService {
                         .context("Missing 'message' in grpc_unary_response")?;
 
                     // Convert JSON to DynamicMessage
-                    let response_msg = Self::json_to_dynamic_message(response_json, &output_desc)
+                    let response_msg = json_to_dynamic_message(response_json, &output_desc)
                         .map_err(|e| {
-                        debug!("gRPC handler response did not fit the schema: {e}");
-                        GrpcFailure::new(
-                            GrpcStatus::Internal,
-                            "handler's response does not fit the schema",
-                        )
-                    })?;
+                            debug!("gRPC handler response did not fit the schema: {e}");
+                            GrpcFailure::new(
+                                GrpcStatus::Internal,
+                                "handler's response does not fit the schema",
+                            )
+                        })?;
 
                     // Encode to protobuf bytes
                     let mut response_bytes = Vec::new();
@@ -1161,255 +1182,6 @@ impl DynamicGrpcService {
                 service_name, method_name
             ),
         ))
-    }
-
-    /// Convert DynamicMessage to JSON
-    fn dynamic_message_to_json(msg: &DynamicMessage) -> Result<serde_json::Value> {
-        // For now, create a basic JSON representation by iterating fields
-        // TODO: Use proper protobuf JSON serialization when available
-        let desc = msg.descriptor();
-        let mut map = serde_json::Map::new();
-
-        for field in desc.fields() {
-            // get_field returns Cow<Value>, check if field has a value first
-            if msg.has_field(&field) {
-                let value = msg.get_field(&field);
-                // Convert protobuf Value to JSON
-                let json_value = Self::proto_value_to_json(&value)?;
-                map.insert(field.name().to_string(), json_value);
-            }
-        }
-
-        Ok(serde_json::Value::Object(map))
-    }
-
-    /// Convert protobuf Value to JSON
-    fn proto_value_to_json(value: &prost_reflect::Value) -> Result<serde_json::Value> {
-        use prost_reflect::Value;
-
-        Ok(match value {
-            Value::Bool(b) => json!(*b),
-            Value::I32(i) => json!(*i),
-            Value::I64(i) => json!(*i),
-            Value::U32(u) => json!(*u),
-            Value::U64(u) => json!(*u),
-            Value::F32(f) => json!(*f),
-            Value::F64(f) => json!(*f),
-            Value::String(s) => json!(s),
-            Value::Bytes(b) => {
-                use base64::engine::general_purpose::STANDARD;
-                use base64::Engine;
-                json!(STANDARD.encode(b))
-            }
-            Value::EnumNumber(e) => json!(*e),
-            Value::Message(m) => Self::dynamic_message_to_json(m)?,
-            Value::List(l) => {
-                let items: Result<Vec<_>> =
-                    l.iter().map(|v| Self::proto_value_to_json(v)).collect();
-                json!(items?)
-            }
-            Value::Map(m) => {
-                let mut map = serde_json::Map::new();
-                for (k, v) in m.iter() {
-                    let key = Self::map_key_to_string(k)?;
-                    let value = Self::proto_value_to_json(v)?;
-                    map.insert(key, value);
-                }
-                json!(map)
-            }
-        })
-    }
-
-    /// Convert map key to string
-    fn map_key_to_string(key: &prost_reflect::MapKey) -> Result<String> {
-        use prost_reflect::MapKey;
-
-        Ok(match key {
-            MapKey::Bool(b) => b.to_string(),
-            MapKey::I32(i) => i.to_string(),
-            MapKey::I64(i) => i.to_string(),
-            MapKey::U32(u) => u.to_string(),
-            MapKey::U64(u) => u.to_string(),
-            MapKey::String(s) => s.clone(),
-        })
-    }
-
-    /// Convert JSON to DynamicMessage
-    fn json_to_dynamic_message(
-        json: &serde_json::Value,
-        message_desc: &prost_reflect::MessageDescriptor,
-    ) -> Result<DynamicMessage> {
-        // Create a new dynamic message
-        let mut msg = DynamicMessage::new(message_desc.clone());
-
-        // Populate fields from JSON
-        if let Some(obj) = json.as_object() {
-            for (field_name, value) in obj {
-                match message_desc.get_field_by_name(field_name) {
-                    Some(field) => {
-                        let proto_value = Self::json_to_field_value(value, &field)?;
-                        msg.set_field(&field, proto_value);
-                    }
-                    // Silently dropping an unknown key made a hallucinated field name look
-                    // like success: the response encoded without it and the client saw a
-                    // default value with no indication anything was wrong.
-                    None => {
-                        warn!(
-                            "handler returned field '{}' which is not in message {}; ignoring",
-                            field_name,
-                            message_desc.full_name()
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(msg)
-    }
-
-    /// Convert a JSON value to the protobuf value for a field, honoring its cardinality.
-    ///
-    /// `json_to_proto_value` looks only at `field.kind()`, which is the type of a single
-    /// element. For a `repeated string` that is `Kind::String`, so a handler returning
-    /// `{"tags": ["a", "b"]}` used to fail with `Expected string` and the whole RPC came back
-    /// as an error — repeated and map fields could not be produced by a handler at all,
-    /// despite `build_message_schema` telling it the cardinality was `repeated`.
-    fn json_to_field_value(
-        json: &serde_json::Value,
-        field: &prost_reflect::FieldDescriptor,
-    ) -> Result<prost_reflect::Value> {
-        use prost_reflect::{MapKey, Value};
-
-        // Maps are checked first: a protobuf map field is also "repeated" (of its synthetic
-        // entry message), so testing is_list() first would take the wrong branch.
-        if field.is_map() {
-            let entry = match field.kind() {
-                prost_reflect::Kind::Message(m) => m,
-                _ => bail!("map field {} has no entry message", field.name()),
-            };
-            let key_field = entry.get_field(1).context("map entry has no key field")?;
-            let value_field = entry.get_field(2).context("map entry has no value field")?;
-
-            let obj = json.as_object().with_context(|| {
-                format!("field {} is a map; expected a JSON object", field.name())
-            })?;
-
-            let mut map = std::collections::HashMap::new();
-            for (k, v) in obj {
-                let key = match key_field.kind() {
-                    prost_reflect::Kind::String => MapKey::String(k.clone()),
-                    prost_reflect::Kind::Bool => MapKey::Bool(
-                        k.parse()
-                            .with_context(|| format!("map key '{}' is not a boolean", k))?,
-                    ),
-                    prost_reflect::Kind::Int32
-                    | prost_reflect::Kind::Sint32
-                    | prost_reflect::Kind::Sfixed32 => MapKey::I32(
-                        k.parse()
-                            .with_context(|| format!("map key '{}' is not an int32", k))?,
-                    ),
-                    prost_reflect::Kind::Int64
-                    | prost_reflect::Kind::Sint64
-                    | prost_reflect::Kind::Sfixed64 => MapKey::I64(
-                        k.parse()
-                            .with_context(|| format!("map key '{}' is not an int64", k))?,
-                    ),
-                    prost_reflect::Kind::Uint32 | prost_reflect::Kind::Fixed32 => MapKey::U32(
-                        k.parse()
-                            .with_context(|| format!("map key '{}' is not a uint32", k))?,
-                    ),
-                    prost_reflect::Kind::Uint64 | prost_reflect::Kind::Fixed64 => MapKey::U64(
-                        k.parse()
-                            .with_context(|| format!("map key '{}' is not a uint64", k))?,
-                    ),
-                    other => bail!("unsupported protobuf map key type: {:?}", other),
-                };
-                map.insert(key, Self::json_to_proto_value(v, &value_field)?);
-            }
-            return Ok(Value::Map(map));
-        }
-
-        if field.is_list() {
-            let arr = json.as_array().with_context(|| {
-                format!("field {} is repeated; expected a JSON array", field.name())
-            })?;
-            let mut list = Vec::with_capacity(arr.len());
-            for item in arr {
-                list.push(Self::json_to_proto_value(item, field)?);
-            }
-            return Ok(Value::List(list));
-        }
-
-        Self::json_to_proto_value(json, field)
-    }
-
-    /// Convert a single JSON value to a protobuf Value of the field's element type.
-    fn json_to_proto_value(
-        json: &serde_json::Value,
-        field: &prost_reflect::FieldDescriptor,
-    ) -> Result<prost_reflect::Value> {
-        use prost_reflect::{Kind, Value};
-
-        Ok(match field.kind() {
-            Kind::Bool => Value::Bool(json.as_bool().context("Expected boolean")?),
-            // Range is checked rather than truncated with `as`: silently wrapping an
-            // out-of-range value puts a different number on the wire than the handler asked
-            // for, and the client has no way to tell.
-            Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => {
-                let n = json.as_i64().context("Expected integer")?;
-                Value::I32(
-                    i32::try_from(n).with_context(|| format!("{} does not fit in an int32", n))?,
-                )
-            }
-            Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
-                Value::I64(json.as_i64().context("Expected integer")?)
-            }
-            Kind::Uint32 | Kind::Fixed32 => {
-                let n = json.as_u64().context("Expected unsigned integer")?;
-                Value::U32(
-                    u32::try_from(n).with_context(|| format!("{} does not fit in a uint32", n))?,
-                )
-            }
-            Kind::Uint64 | Kind::Fixed64 => {
-                Value::U64(json.as_u64().context("Expected unsigned integer")?)
-            }
-            Kind::Float => Value::F32(json.as_f64().context("Expected number")? as f32),
-            Kind::Double => Value::F64(json.as_f64().context("Expected number")?),
-            Kind::String => Value::String(json.as_str().context("Expected string")?.to_string()),
-            Kind::Bytes => {
-                use base64::engine::general_purpose::STANDARD;
-                use base64::Engine;
-                let s = json.as_str().context("Expected base64 string")?;
-                let bytes = STANDARD.decode(s).context("Invalid base64")?;
-                Value::Bytes(bytes.into())
-            }
-            Kind::Message(msg_desc) => {
-                let msg = Self::json_to_dynamic_message(json, &msg_desc)?;
-                Value::Message(msg)
-            }
-            Kind::Enum(enum_desc) => {
-                if let Some(n) = json.as_i64() {
-                    // Validate the number against the enum, matching what the string branch
-                    // already did. `n as i32` accepted any integer and wrapped out-of-range
-                    // ones into a valid-looking but wrong variant.
-                    let n = i32::try_from(n)
-                        .with_context(|| format!("{} is not a valid enum number", n))?;
-                    if enum_desc.get_value(n).is_none() {
-                        bail!("{} is not a value of enum {}", n, enum_desc.full_name());
-                    }
-                    Value::EnumNumber(n)
-                } else if let Some(s) = json.as_str() {
-                    // Try to find enum value by name
-                    if let Some(val) = enum_desc.get_value_by_name(s) {
-                        Value::EnumNumber(val.number())
-                    } else {
-                        bail!("Unknown enum value: {}", s);
-                    }
-                } else {
-                    bail!("Expected enum number or string");
-                }
-            }
-        })
     }
 
     /// Build a JSON schema description of a message type

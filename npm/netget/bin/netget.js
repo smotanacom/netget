@@ -16,6 +16,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const { Readable, Transform } = require('stream');
+const crypto = require('crypto');
+const { pipeline } = require('stream/promises');
 
 const pkg = require('../package.json');
 const VERSION = pkg.version;
@@ -73,58 +76,91 @@ function resolveOptionalDep(key) {
   }
 }
 
-function cacheDir() {
+function cacheDir(key) {
   if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, 'netget', 'bin', VERSION);
+    return path.join(process.env.LOCALAPPDATA, 'netget', 'bin', VERSION, key);
   }
   const base =
     process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
-  return path.join(base, 'netget', VERSION);
+  return path.join(base, 'netget', VERSION, key);
 }
 
-async function download(url, dest) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) {
-    throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  fs.writeFileSync(dest, buf);
+async function download(url, dest, { timeoutMs = 120_000, maxBytes = 512 * 1024 * 1024, fetchImpl = fetch } = {}) {
+  const signal = AbortSignal.timeout(timeoutMs);
+  const res = await fetchImpl(url, { redirect: 'follow', signal });
+  if (!res.ok) throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
+  if (!res.body) throw new Error(`download had no body (${url})`);
+  const hash = crypto.createHash('sha256');
+  let received = 0;
+  const digest = new Transform({
+    transform(chunk, encoding, callback) {
+      received += chunk.length;
+      if (received > maxBytes) return callback(new Error(`download exceeds ${maxBytes} bytes`));
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  await pipeline(Readable.fromWeb(res.body), digest, fs.createWriteStream(dest, { flags: 'wx' }), { signal });
+  return hash.digest('hex');
 }
 
-async function fetchBinary(key) {
+function expectedChecksum(manifest, archiveName) {
+  const matches = manifest.split(/\r?\n/).flatMap(line => {
+    const match = /^([a-fA-F0-9]{64}) [ *](.+)$/.exec(line);
+    return match && match[2] === archiveName ? [match[1].toLowerCase()] : [];
+  });
+  if (matches.length !== 1) throw new Error(`SHA256SUMS must contain exactly one checksum for ${archiveName}; install the platform package or use a release with a checksum manifest`);
+  return matches[0];
+}
+
+async function fetchBinary(key, { base = DOWNLOAD_BASE, timeoutMs = 120_000, cache = cacheDir(key), temporaryRoot = os.tmpdir(), fetchImpl = fetch } = {}) {
   const { triple, ext } = PLATFORMS[key];
-  const dir = cacheDir();
+  const dir = cache;
   const cached = path.join(dir, binName());
-  if (fs.existsSync(cached)) return cached;
+  if (fs.existsSync(cached)) {
+    if (!fs.lstatSync(cached).isFile()) throw new Error(`cached binary is not a regular file: ${cached}`);
+    return cached;
+  }
 
   const archiveName = `netget-${triple}.${ext}`;
-  const url = `${DOWNLOAD_BASE}/v${VERSION}/${archiveName}`;
+  const url = `${base}/v${VERSION}/${archiveName}`;
   process.stderr.write(`netget: downloading ${url}\n`);
 
   fs.mkdirSync(dir, { recursive: true });
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'netget-'));
+  const tmp = fs.mkdtempSync(path.join(temporaryRoot, 'netget-'));
+  const staging = path.join(dir, `.${binName()}.tmp-${crypto.randomUUID()}`);
   try {
     const archive = path.join(tmp, archiveName);
-    await download(url, archive);
+    const manifestPath = path.join(tmp, 'SHA256SUMS');
+    try {
+      await download(`${base}/v${VERSION}/SHA256SUMS`, manifestPath, { timeoutMs, maxBytes: 128 * 1024, fetchImpl });
+    } catch (error) {
+      throw new Error(`release checksum manifest unavailable (${error.message}); install the platform package or use a release with SHA256SUMS`);
+    }
+    const expected = expectedChecksum(fs.readFileSync(manifestPath, 'utf8'), archiveName);
+    const actual = await download(url, archive, { timeoutMs, fetchImpl });
+    if (actual !== expected) throw new Error(`SHA-256 mismatch for ${archiveName}; refusing to extract or execute it`);
     // System tar handles .tar.gz everywhere and .zip on Windows (bsdtar).
-    const tar = spawnSync('tar', ['-xf', archive, '-C', tmp], {
+    const tar = spawnSync('tar', ['-xf', archive, '-C', tmp, '--', binName()], {
       stdio: ['ignore', 'ignore', 'inherit'],
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
     });
     if (tar.status !== 0) throw new Error('failed to extract archive');
     const extracted = path.join(tmp, binName());
-    if (!fs.existsSync(extracted)) {
-      throw new Error(`archive did not contain ${binName()}`);
+    if (!fs.existsSync(extracted) || !fs.lstatSync(extracted).isFile()) {
+      throw new Error(`archive did not contain a regular ${binName()} file`);
     }
     if (process.platform !== 'win32') fs.chmodSync(extracted, 0o755);
     // Atomic within the same filesystem is not guaranteed across tmp -> cache,
     // so copy to a temp name inside the cache dir, then rename.
-    const staging = path.join(dir, `.${binName()}.tmp-${process.pid}`);
     fs.copyFileSync(extracted, staging);
     if (process.platform !== 'win32') fs.chmodSync(staging, 0o755);
     fs.renameSync(staging, cached);
     return cached;
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    try { fs.rmSync(staging, { force: true }); }
+    finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   }
 }
 
@@ -160,7 +196,7 @@ async function main() {
   // exit cleanly when the client (e.g. Claude Code) stops them.
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(sig, () => {
-      if (!child.killed) child.kill(sig);
+      if (child.exitCode === null && child.signalCode === null) child.kill(sig);
     });
   }
 
@@ -176,4 +212,5 @@ async function main() {
   });
 }
 
-main().catch((err) => fail(err.message));
+if (require.main === module) main().catch((err) => fail(err.message));
+module.exports = { download, fetchBinary, expectedChecksum, platformKey };

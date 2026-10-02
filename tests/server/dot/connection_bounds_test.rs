@@ -47,6 +47,7 @@ use netget::cli::management::ServerForm;
 use netget::state::app_state::AppState;
 use netget::state::ServerId;
 use rustls::{ClientConfig, RootCertStore};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_rustls::client::TlsStream;
@@ -181,4 +182,35 @@ async fn the_handshake_past_the_cap_is_refused_before_it_starts_and_the_slot_com
         "the cap never freed its slot after an admitted connection ended — the permit is being \
          held past the life of the connection, which wedges the server shut"
     );
+}
+
+#[tokio::test]
+async fn an_incomplete_dns_body_releases_its_connection() {
+    let state = new_state().await;
+    let (server_id, port) = start_server(&state).await;
+    let mut stream = handshake(port, &connector()).await.expect("TLS handshake");
+    // A full prefix and one body byte bypassed the between-query idle timeout and
+    // pinned the session forever. No complete DNS query is sent, so no model is called.
+    stream
+        .write_all(&[0, 12, 0])
+        .await
+        .expect("partial DNS message");
+    stream.flush().await.expect("flush partial message");
+    let mut byte = [0];
+    let result = tokio::time::timeout(Duration::from_secs(15), stream.read(&mut byte))
+        .await
+        .expect("incomplete DNS body kept its connection past the 10-second deadline");
+    match result {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+            ) => {}
+        other => panic!("expected a closed incomplete DNS session, got {other:?}"),
+    }
+    state
+        .remove_server(server_id)
+        .await
+        .expect("remove DoT server");
 }

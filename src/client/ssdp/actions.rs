@@ -748,7 +748,7 @@ impl Client for SsdpClientProtocol {
                                 "'mx' must be a number of seconds (1..={MAX_MX_SECONDS}), got {v}"
                             )
                         })?;
-                        (n.max(1) as u32).min(MAX_MX_SECONDS)
+                        n.clamp(1, u64::from(MAX_MX_SECONDS)) as u32
                     }
                 };
 

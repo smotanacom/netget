@@ -145,6 +145,42 @@ fn a_short_conversation_is_left_alone() {
 // --- ConversationState: the cross-call window ------------------------------
 
 #[test]
+fn tiny_history_windows_include_truncation_markers_in_their_budget() {
+    for limit in [0, 1, 3, 10, 30, 255, 256, 512] {
+        let mut state = ConversationState::new(limit);
+        for _ in 0..10 {
+            state.add_user_input("界🦀abc".repeat(100));
+            state.add_llm_response("large response".repeat(100), None);
+            assert!(
+                state.current_size <= limit,
+                "limit {limit}: {} bytes",
+                state.current_size
+            );
+        }
+        assert_eq!(
+            state.current_size,
+            state
+                .messages
+                .iter()
+                .map(|m| m.content.len())
+                .sum::<usize>()
+        );
+    }
+}
+
+#[test]
+fn empty_messages_do_not_accumulate_outside_the_history_byte_budget() {
+    let mut state = ConversationState::new(8000);
+    for _ in 0..1000 {
+        state.add_user_input(String::new());
+        state.add_llm_response(String::new(), None);
+        state.add_retry_instruction(String::new());
+    }
+    assert!(state.is_empty());
+    assert_eq!(state.current_size, 0);
+}
+
+#[test]
 fn a_single_oversized_message_cannot_exceed_the_window() {
     let mut state = ConversationState::new(8000);
 

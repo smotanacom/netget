@@ -111,16 +111,7 @@ pub struct NetGetInstance {
     pub(crate) stderr_reader_handle: AbortOnDrop,
 }
 
-/// Information about a server that was started
-#[derive(Clone, Debug)]
-pub struct NetGetServer {
-    /// Server ID (e.g., "1")
-    pub id: String,
-    /// The port the server is listening on
-    pub port: u16,
-    /// The actual protocol stack that was started
-    pub stack: String,
-}
+pub use super::startup_ports::ServerStartup as NetGetServer;
 
 /// Information about a client that was started
 #[derive(Clone, Debug)]
@@ -202,7 +193,7 @@ pub struct NetGetConfig {
 ///
 /// The arg scan is kept only for a custom harness that forwards unknown flags.
 fn should_use_ollama() -> bool {
-    if std::env::var("NETGET_USE_OLLAMA").is_ok() {
+    if real_ollama_requested() {
         return true;
     }
 
@@ -458,7 +449,7 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
     // Get the path to the binary
     let binary_path = get_netget_binary_path()?;
 
-    // Replace {AVAILABLE_PORT} placeholders with actual available ports
+    // Replace {AVAILABLE_PORT} with port 0; discover the bound port below.
     let processed_prompt = replace_port_placeholders(&config.prompt).await?;
 
     // Build command arguments
@@ -605,82 +596,11 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
     })
 }
 
-/// Parse server startup line and extract information
-fn parse_server_startup(line: &str) -> Option<(String, String, u16)> {
-    // Direct-start pattern (--server PROTOCOL): the model is never asked, and
-    // the line is "Server #N (STACK) started, skipping the initial model call."
-    // The port arrives separately via the "listening on ADDR:PORT" confirmation,
-    // which the startup loop already applies to port-0 servers.
-    if line.contains("started, skipping the initial model call") {
-        let id = line.split("Server #").nth(1).map(|rest| {
-            rest.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-        })?;
-        let stack_raw = line.split('(').nth(1)?.split(')').next()?;
-        let stack = server_registry::registry().parse_from_str(stack_raw)?;
-        if id.is_empty() {
-            return None;
-        }
-        return Some((id, stack, 0));
-    }
-
-    // Look for pattern: "[SERVER] Starting server #N (STACK) on ADDR:PORT"
-    if !line.contains("[SERVER]") || !line.contains("Starting server") {
-        return None;
-    }
-
-    let mut server_id = String::new();
-    let mut stack = String::new();
-    let mut port = 0u16;
-
-    // Extract server ID from "server #N"
-    if let Some(idx_start) = line.find("server #") {
-        let after_hash = &line[idx_start + 8..];
-        let id_str: String = after_hash
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if !id_str.is_empty() {
-            server_id = id_str;
-        }
-    }
-
-    // Extract stack from parentheses
-    if let Some(start_paren) = line.find('(') {
-        if let Some(end_paren) = line.find(')') {
-            if start_paren < end_paren {
-                let stack_str = &line[start_paren + 1..end_paren];
-                // Parse using the protocol registry
-                if let Some(parsed_protocol) = server_registry::registry().parse_from_str(stack_str)
-                {
-                    stack = parsed_protocol;
-                }
-            }
-        }
-    }
-
-    // Extract port from "on ADDR:PORT"
-    if let Some(addr_start) = line.rfind("on ") {
-        let addr_part = &line[addr_start + 3..];
-        if let Some(colon_pos) = addr_part.find(':') {
-            let port_part = &addr_part[colon_pos + 1..];
-            let port_str: String = port_part
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(p) = port_str.parse::<u16>() {
-                port = p;
-            }
-        }
-    }
-
-    // Allow port 0 (server will bind to an available port)
-    if !server_id.is_empty() && !stack.is_empty() {
-        Some((server_id, stack, port))
-    } else {
-        None
-    }
+/// Parse canonical startup and bound-address messages by server identity.
+fn parse_server_startup(line: &str) -> Option<NetGetServer> {
+    let mut server = super::startup_ports::parse_server_startup(line)?;
+    server.stack = server_registry::registry().parse_from_str(&server.stack)?;
+    Some(server)
 }
 
 /// Parse client startup line and extract initial information
@@ -782,17 +702,8 @@ async fn wait_for_netget_startup_with_capture(
             println!("[DEBUG] NetGet output: {}", line);
             output_lines.lock().await.push(line.clone());
 
-            // Parse server startup
-            if let Some((id, stack, port)) = parse_server_startup(&line) {
-                println!(
-                    "[DEBUG] Parsed server startup: id={}, stack={}, port={}",
-                    id, stack, port
-                );
-                servers.push(NetGetServer {
-                    id: id.clone(),
-                    port,
-                    stack,
-                });
+            if let Some(server) = parse_server_startup(&line) {
+                super::startup_ports::record_server_startup(&mut servers, server);
                 had_any_startup = true;
             }
 
@@ -838,16 +749,6 @@ async fn wait_for_netget_startup_with_capture(
                         if let Ok(port) = port_str.parse::<u16>() {
                             println!("[DEBUG] Parsed listening confirmation: port={}", port);
                             server_confirmations.insert(port.to_string());
-
-                            // Update the most recent server with port 0
-                            // Find the last server that has port 0 (requested ephemeral port)
-                            if let Some(server) = servers.iter_mut().rev().find(|s| s.port == 0) {
-                                println!(
-                                    "[DEBUG] Updating server #{} port from 0 to {}",
-                                    server.id, port
-                                );
-                                server.port = port;
-                            }
                         }
                     }
                 }
@@ -896,35 +797,11 @@ async fn wait_for_netget_startup_with_capture(
                                     println!("[DEBUG] NetGet output (extended): {}", line);
                                     output_lines.lock().await.push(line.clone());
 
-                                    // Try to parse "listening on" or "ready on" message
-                                    if line.contains("listening on") || line.contains("ready on") {
-                                        if let Some(addr_start) = line.rfind("on ") {
-                                            let addr_part = &line[addr_start + 3..];
-                                            if let Some(colon_pos) = addr_part.rfind(':') {
-                                                let port_str: String = addr_part[colon_pos + 1..]
-                                                    .chars()
-                                                    .take_while(|c| c.is_ascii_digit())
-                                                    .collect();
-                                                if let Ok(port) = port_str.parse::<u16>() {
-                                                    println!(
-                                                        "[DEBUG] Parsed listening confirmation: port={}",
-                                                        port
-                                                    );
-                                                    // Update the most recent server with port 0
-                                                    if let Some(server) = servers
-                                                        .iter_mut()
-                                                        .rev()
-                                                        .find(|s| s.port == 0)
-                                                    {
-                                                        println!(
-                                                            "[DEBUG] Updating server #{} port from 0 to {}",
-                                                            server.id, port
-                                                        );
-                                                        server.port = port;
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    if let Some(server) = parse_server_startup(&line) {
+                                        super::startup_ports::record_server_startup(
+                                            &mut servers,
+                                            server,
+                                        );
                                     }
 
                                     // Break early if all port-0 servers are updated

@@ -62,6 +62,8 @@ TLS configuration:
 - Self-signed for testing/development
 - Default CN: "netget-dns-server", SAN: localhost, *.local
 - 365-day validity period
+- Custom certificate generation rejects non-ASCII DNS SANs, nonpositive or overflowing
+  validity periods, and non-string SAN array entries with an error before signing.
 - Clients must disable certificate verification for testing
 - Production usage would require proper CA-signed certificates
 
@@ -288,7 +290,8 @@ entry. Dropping only the map entry left the peer drawn as Active for the life of
 
 - Multiple connections handled independently
 - Each connection has separate tokio tasks for reading
-- No connection limits or rate limiting (bounded by system resources)
+- The shared connection limiter caps live sessions at `DEFAULT_MAX_CONNECTIONS` (256).
+- Handshake and read deadlines release idle sessions; this is separate from request-rate limiting.
 
 ## Known Limitations
 

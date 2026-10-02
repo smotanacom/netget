@@ -1,0 +1,52 @@
+     Locking 32 packages to highest compatible versions
+      Adding tokio v1.48.0 (available: v1.53.1)
+      Adding uuid v1.18.1 (available: v1.26.1)
+      Adding wasm-bindgen v0.2.128 (available: v0.2.129)
+      Adding wasm-bindgen-macro v0.2.128 (available: v0.2.129)
+      Adding wasm-bindgen-macro-support v0.2.128 (available: v0.2.129)
+      Adding wasm-bindgen-shared v0.2.128 (available: v0.2.129)
+   Compiling getrandom v0.3.4
+    Checking windows-sys v0.61.2
+    Checking cfg-if v1.0.5
+    Checking pin-project-lite v0.2.17
+    Checking uuid v1.18.1
+    Checking mio v1.2.3
+    Checking tokio v1.48.0
+    Checking netget-windows-process-fixture v0.0.0 (/private/tmp/netget-windows-process-fixture-20261001)
+warning: variable does not need to be mutable
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:153:13
+    |
+153 |         let mut builder = std::fs::DirBuilder::new();
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `read_line_bounded` is never used
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:116:21
+    |
+116 | pub(crate) async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
+    |                     ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `ScriptDirectory` is never constructed
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:148:19
+    |
+148 | pub(crate) struct ScriptDirectory(std::path::PathBuf);
+    |                   ^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `script_path` are never used
+   --> /Users/matus/dev/netget/src/scripting/process_io.rs:151:19
+    |
+150 | impl ScriptDirectory {
+    | -------------------- associated items in this implementation
+151 |     pub(crate) fn new() -> io::Result<Self> {
+    |                   ^^^
+...
+163 |     pub(crate) fn script_path(&self) -> std::path::PathBuf {
+    |                   ^^^^^^^^^^^
+
+warning: `netget-windows-process-fixture` (lib) generated 4 warnings (run `cargo fix --lib -p netget-windows-process-fixture` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized] target(s) in 6.89s

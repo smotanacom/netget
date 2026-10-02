@@ -1,0 +1,1804 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+warning: field `0` is never read
+  --> src/client/webrtc/mod.rs:83:32
+   |
+83 | pub struct PeerConnectionGuard(Arc<PeerCleanup>);
+   |            ------------------- ^^^^^^^^^^^^^^^^
+   |            |
+   |            field in this struct
+   |
+   = help: consider removing this field
+   = note: `PeerConnectionGuard` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused `Result` that must be used
+   --> src/state/sqlite.rs:304:9
+    |
+304 | /         conn.set_limit(
+305 | |             rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+306 | |             MAX_QUERY_VALUE_BYTES,
+307 | |         );
+    | |_________^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+304 |         let _ = conn.set_limit(
+    |         +++++++
+
+warning: unused `Result` that must be used
+   --> src/state/sqlite.rs:308:9
+    |
+308 | /         conn.set_limit(
+309 | |             rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH,
+310 | |             MAX_QUERY_SQL_BYTES,
+311 | |         );
+    | |_________^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+308 |         let _ = conn.set_limit(
+    |         +++++++
+
+warning: `netget` (lib test) generated 3 warnings
+warning: `netget` (lib) generated 3 warnings (3 duplicates)
+warning: unused imports: `start_netget_client` and `wait_for_client_startup`
+  --> tests/helpers/mod.rs:28:18
+   |
+28 | pub use client::{start_netget_client, wait_for_client_startup};
+   |                  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `get_available_port`, `retry_with_backoff`, `retry`, `wait_for_server_listening`, `with_aws_sdk_timeout`, `with_cassandra_timeout`, `with_client_timeout`, and `with_timeout`
+  --> tests/helpers/mod.rs:30:5
+   |
+30 |     get_available_port, retry, retry_with_backoff, wait_for_server_listening, with_aws_sdk_timeout,
+   |     ^^^^^^^^^^^^^^^^^^  ^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+31 |     with_cassandra_timeout, with_client_timeout, with_timeout, E2EResult,
+   |     ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `event_trigger::EventTrigger`
+  --> tests/helpers/mod.rs:33:9
+   |
+33 | pub use event_trigger::EventTrigger;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ProtocolExampleTest` and `TestReport`
+  --> tests/helpers/mod.rs:34:34
+   |
+34 | pub use example_test_framework::{ProtocolExampleTest, TestReport};
+   |                                  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `MockLlmConfig`, `MockResponse`, `MockRule`, `ResponseGenerator`, and `SerializedMockRule`
+  --> tests/helpers/mod.rs:36:5
+   |
+36 |     MockLlmConfig, MockResponse, MockRule, ResponseGenerator, SerializedMockRule,
+   |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LlmContext` and `MockMatcher`
+  --> tests/helpers/mod.rs:38:24
+   |
+38 | pub use mock_matcher::{LlmContext, MockMatcher};
+   |                        ^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused import: `ollama_test_builder::OllamaTestBuilder`
+  --> tests/helpers/mod.rs:39:9
+   |
+39 | pub use ollama_test_builder::OllamaTestBuilder;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `wait_for_server_startup`
+  --> tests/helpers/mod.rs:40:39
+   |
+40 | pub use server::{start_netget_server, wait_for_server_startup};
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AsyncBufReadExt`, `AsyncWriteExt`, and `BufReader`
+  --> tests/client/pop3/e2e_test.rs:14:21
+   |
+14 |     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+   |                     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `tokio::net::TcpListener`
+  --> tests/client/pop3/e2e_test.rs:15:9
+   |
+15 |     use tokio::net::TcpListener;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:461:9
+    |
+461 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:553:9
+    |
+553 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `check`
+  --> tests/protocol_dependencies_test.rs:83:9
+   |
+83 |     let check = |protocol: &str, want: ProtocolDependency| {
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_check`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "protocol_dependencies_test") generated 1 warning (run `cargo fix --test "protocol_dependencies_test" -p netget` to apply 1 suggestion)
+warning: unused variable: `expected_value`
+   --> tests/helpers/ollama_test_builder.rs:884:36
+    |
+884 |         Expectation::StaticHandler(expected_value) => {
+    |                                    ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_expected_value`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `AsyncReadExt` and `AsyncWriteExt`
+  --> tests/mock_server_test.rs:14:21
+   |
+14 |     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+   |                     ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `start_netget_client` and `wait_for_client_startup`
+  --> tests/helpers/mod.rs:28:18
+   |
+28 | pub use client::{start_netget_client, wait_for_client_startup};
+   |                  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `available_actions`
+   --> tests/ollama_model_test.rs:525:9
+    |
+525 |     let available_actions = vec![
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_available_actions`
+
+warning: unused variable: `available_actions`
+   --> tests/ollama_model_test.rs:596:9
+    |
+596 |     let available_actions = vec![
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_available_actions`
+
+warning: unused variable: `available_actions`
+   --> tests/ollama_model_test.rs:655:9
+    |
+655 |     let available_actions = vec![
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_available_actions`
+
+warning: unused variable: `action`
+   --> tests/ollama_model_test.rs:778:45
+    |
+778 |         .expect_custom("multiple servers", |action| {
+    |                                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_action`
+
+warning: static `INIT` is never used
+  --> tests/ollama_model_test.rs:96:8
+   |
+96 | static INIT: Once = Once::new();
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `init_tracing` is never used
+  --> tests/ollama_model_test.rs:98:4
+   |
+98 | fn init_tracing() {
+   |    ^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> tests/helpers/client.rs:77:18
+    |
+ 45 | impl NetGetClient {
+    | ----------------- methods in this implementation
+...
+ 77 |     pub async fn stop(mut self) -> E2EResult<()> {
+    |                  ^^^^
+...
+125 |     pub fn is_running(&mut self) -> bool {
+    |            ^^^^^^^^^^
+...
+164 |     pub async fn count_in_output(&self, needle: &str) -> usize {
+    |                  ^^^^^^^^^^^^^^^
+...
+196 |     pub async fn verify_mocks(&self) -> E2EResult<()> {
+    |                  ^^^^^^^^^^^^
+...
+279 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+310 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+333 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: type alias `TriggerResult` is never used
+  --> tests/helpers/event_trigger.rs:15:10
+   |
+15 | pub type TriggerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+   |          ^^^^^^^^^^^^^
+
+warning: fields `body` and `headers` are never read
+  --> tests/helpers/event_trigger.rs:60:9
+   |
+54 |     HttpRequest {
+   |     ----------- fields in this variant
+...
+60 |         body: Option<Vec<u8>>,
+   |         ^^^^
+61 |         /// Optional headers
+62 |         headers: Vec<(String, String)>,
+   |         ^^^^^^^
+   |
+   = note: `EventTrigger` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: methods `is_available` and `execute` are never used
+   --> tests/helpers/event_trigger.rs:83:12
+    |
+ 81 | impl EventTrigger {
+    | ----------------- methods in this implementation
+ 82 |     /// Check if this trigger type is available in the current environment
+ 83 |     pub fn is_available(&self) -> bool {
+    |            ^^^^^^^^^^^^
+...
+123 |     pub fn execute(
+    |            ^^^^^^^
+
+warning: function `build_ntp_request` is never used
+   --> tests/helpers/event_trigger.rs:252:8
+    |
+252 | pub fn build_ntp_request() -> (Vec<u8>, u64) {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: struct `ProtocolExampleTest` is never constructed
+  --> tests/helpers/example_test_framework.rs:34:12
+   |
+34 | pub struct ProtocolExampleTest {
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> tests/helpers/example_test_framework.rs:51:12
+    |
+ 49 | impl ProtocolExampleTest {
+    | ------------------------ associated items in this implementation
+ 50 |     /// Create a new test builder for a specific protocol
+ 51 |     pub fn new(protocol_name: &str) -> Self {
+    |            ^^^
+...
+ 66 |     pub fn with_response_examples(mut self) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 80 |     pub fn with_dynamic_udp_mocking(mut self, event_id: &str, correlation_field: &str) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 89 |     pub fn with_event_trigger(mut self, event_id: &str, trigger: EventTrigger) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+ 95 |     pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    |            ^^^^^^^^^^^^
+...
+101 |     pub fn with_log_level(mut self, level: &str) -> Self {
+    |            ^^^^^^^^^^^^^^
+...
+114 |     pub async fn run(self) -> E2EResult<TestReport> {
+    |                  ^^^
+...
+227 |     fn build_mock_config(
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: struct `TestReport` is never constructed
+   --> tests/helpers/example_test_framework.rs:297:12
+    |
+297 | pub struct TestReport {
+    |            ^^^^^^^^^^
+
+warning: methods `passed` and `summary` are never used
+   --> tests/helpers/example_test_framework.rs:310:12
+    |
+308 | impl TestReport {
+    | --------------- methods in this implementation
+309 |     /// Check if the test passed (no errors)
+310 |     pub fn passed(&self) -> bool {
+    |            ^^^^^^
+...
+315 |     pub fn summary(&self) -> String {
+    |            ^^^^^^^
+
+warning: function `run_protocol_example_tests` is never used
+   --> tests/helpers/example_test_framework.rs:330:14
+    |
+330 | pub async fn run_protocol_example_tests(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_protocols_with_examples` is never used
+   --> tests/helpers/example_test_framework.rs:378:8
+    |
+378 | pub fn get_protocols_with_examples() -> Vec<String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `HttpBounds` is never constructed
+   --> tests/helpers/http_bounds.rs:108:12
+    |
+108 | pub struct HttpBounds {
+    |            ^^^^^^^^^^
+
+warning: associated items `state`, `start`, `silent_peer_is_closed_at_the_first_byte_bound`, `an_answered_connection_outlives_the_first_byte_bound`, `the_connection_past_the_cap_is_refused_and_the_slot_comes_back`, and `exchange` are never used
+   --> tests/helpers/http_bounds.rs:124:14
+    |
+123 | impl HttpBounds {
+    | --------------- associated items in this implementation
+124 |     async fn state() -> AppState {
+    |              ^^^^^
+...
+136 |     async fn start(&self) -> (AppState, ServerId, u16) {
+    |              ^^^^^
+...
+163 |     pub async fn silent_peer_is_closed_at_the_first_byte_bound(&self) {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+211 |     pub async fn an_answered_connection_outlives_the_first_byte_bound(&self) {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+254 |     pub async fn the_connection_past_the_cap_is_refused_and_the_slot_comes_back(&self) {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+335 |     async fn exchange(&self, peer: &mut TcpStream) -> String {
+    |              ^^^^^^^^
+
+warning: constant `FIRST_BYTE_SECS` is never used
+   --> tests/helpers/http_bounds.rs:375:11
+    |
+375 | pub const FIRST_BYTE_SECS: u64 = 30;
+    |           ^^^^^^^^^^^^^^^
+
+warning: struct `HttpBoundsCase` is never constructed
+   --> tests/helpers/http_bounds.rs:378:12
+    |
+378 | pub struct HttpBoundsCase {
+    |            ^^^^^^^^^^^^^^
+
+warning: function `config` is never used
+   --> tests/helpers/http_bounds.rs:400:4
+    |
+400 | fn config(case: &HttpBoundsCase) -> NetGetConfig {
+    |    ^^^^^^
+
+warning: function `closed_by_peer` is never used
+   --> tests/helpers/http_bounds.rs:431:10
+    |
+431 | async fn closed_by_peer(stream: &mut TcpStream, secs: u64) -> bool {
+    |          ^^^^^^^^^^^^^^
+
+warning: function `wait_for_close` is never used
+   --> tests/helpers/http_bounds.rs:445:10
+    |
+445 | async fn wait_for_close(stream: &mut TcpStream, secs: u64) -> Option<Duration> {
+    |          ^^^^^^^^^^^^^^
+
+warning: function `assert_connection_cap` is never used
+   --> tests/helpers/http_bounds.rs:460:14
+    |
+460 | pub async fn assert_connection_cap(case: &HttpBoundsCase) -> E2EResult<()> {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `assert_read_deadlines` is never used
+   --> tests/helpers/http_bounds.rs:552:14
+    |
+552 | pub async fn assert_read_deadlines(case: &HttpBoundsCase) -> E2EResult<()> {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `assert_all_bounds` is never used
+   --> tests/helpers/http_bounds.rs:658:14
+    |
+658 | pub async fn assert_all_bounds(case: &HttpBoundsCase) -> E2EResult<()> {
+    |              ^^^^^^^^^^^^^^^^^
+
+warning: struct `ParamCheck` is never constructed
+  --> tests/helpers/llm_live_case.rs:40:12
+   |
+40 | pub struct ParamCheck {
+   |            ^^^^^^^^^^
+
+warning: associated functions `contains`, `equals`, `non_empty`, and `custom` are never used
+   --> tests/helpers/llm_live_case.rs:49:12
+    |
+ 46 | impl ParamCheck {
+    | --------------- associated functions in this implementation
+...
+ 49 |     pub fn contains(name: &'static str, needle: &'static str) -> Self {
+    |            ^^^^^^^^
+...
+ 69 |     pub fn equals(name: &'static str, expected: Value) -> Self {
+    |            ^^^^^^
+...
+ 90 |     pub fn non_empty(name: &'static str) -> Self {
+    |            ^^^^^^^^^
+...
+112 |     pub fn custom(
+    |            ^^^^^^
+
+warning: struct `EventCase` is never constructed
+   --> tests/helpers/llm_live_case.rs:126:12
+    |
+126 | pub struct EventCase {
+    |            ^^^^^^^^^
+
+warning: associated items `new`, `expect_action`, `or_action`, `check`, `check_action`, and `run` are never used
+   --> tests/helpers/llm_live_case.rs:150:12
+    |
+145 | impl EventCase {
+    | -------------- associated items in this implementation
+...
+150 |     pub fn new(
+    |            ^^^
+...
+169 |     pub fn expect_action(mut self, action: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+176 |     pub fn or_action(mut self, action: impl Into<String>) -> Self {
+    |            ^^^^^^^^^
+...
+182 |     pub fn check(mut self, check: ParamCheck) -> Self {
+    |            ^^^^^
+...
+189 |     pub fn check_action(
+    |            ^^^^^^^^^^^^
+...
+200 |     pub async fn run(self) -> E2EResult<()> {
+    |                  ^^^
+
+warning: methods `on_event`, `on_instruction_containing`, `on_instruction_regex`, `on_prompt_containing`, and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:24:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+24 |     pub fn on_event(self, event_type: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^
+...
+37 |     pub fn on_instruction_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+63 |     pub fn on_prompt_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: multiple methods are never used
+   --> tests/helpers/mock_builder.rs:140:12
+    |
+126 | impl MockRuleBuilder {
+    | -------------------- methods in this implementation
+...
+140 |     pub fn and_instruction_containing(mut self, substring: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+155 |     pub fn and_prompt_containing(mut self, substring: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+170 |     pub fn and_event_data_contains(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+192 |     pub fn and_iteration(mut self, iteration: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+205 |     pub fn and_message_role(mut self, role: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+261 |     pub fn respond_with_actions_from_event<F>(self, generator: F) -> MockResponseBuilder
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+288 |     pub fn respond_with_raw(self, raw: impl Into<String>) -> MockResponseBuilder {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: methods `after_delay`, `expect_calls`, and `expect_at_most` are never used
+   --> tests/helpers/mock_builder.rs:324:12
+    |
+308 | impl MockResponseBuilder {
+    | ------------------------ methods in this implementation
+...
+324 |     pub fn after_delay(mut self, delay: std::time::Duration) -> Self {
+    |            ^^^^^^^^^^^
+...
+330 |     pub fn expect_calls(mut self, count: usize) -> Self {
+    |            ^^^^^^^^^^^^
+...
+342 |     pub fn expect_at_most(mut self, count: usize) -> Self {
+    |            ^^^^^^^^^^^^^^
+
+warning: associated items `from_serialized` and `find_match` are never used
+   --> tests/helpers/mock_config.rs:75:12
+    |
+ 59 | impl MockLlmConfig {
+    | ------------------ associated items in this implementation
+...
+ 75 |     pub fn from_serialized(serialized: Vec<SerializedMockRule>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+125 |     pub async fn find_match(&self, context: &LlmContext) -> Option<(usize, MockResponse)> {
+    |                  ^^^^^^^^^^
+
+warning: associated function `from_serialized` is never used
+   --> tests/helpers/mock_config.rs:273:12
+    |
+204 | impl MockRule {
+    | ------------- associated function in this implementation
+...
+273 |     pub fn from_serialized(s: SerializedMockRule) -> Self {
+    |            ^^^^^^^^^^^^^^^
+
+warning: variant `DynamicActions` is never constructed
+   --> tests/helpers/mock_config.rs:521:5
+    |
+512 | pub enum MockResponse {
+    |          ------------ variant in this enum
+...
+521 |     DynamicActions { generator: ResponseGenerator },
+    |     ^^^^^^^^^^^^^^
+
+warning: methods `with_event_type`, `with_instruction`, `with_event_data`, `with_iteration`, and `with_message_role` are never used
+   --> tests/helpers/mock_matcher.rs:103:12
+    |
+ 82 | impl LlmContext {
+    | --------------- methods in this implementation
+...
+103 |     pub fn with_event_type(mut self, event_type: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+109 |     pub fn with_instruction(mut self, instruction: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+115 |     pub fn with_event_data(mut self, data: serde_json::Value) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+121 |     pub fn with_iteration(mut self, iteration: usize) -> Self {
+    |            ^^^^^^^^^^^^^^
+...
+127 |     pub fn with_message_role(mut self, role: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `EventTypeMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:143:12
+    |
+143 | pub struct EventTypeMatcher {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:148:12
+    |
+147 | impl EventTypeMatcher {
+    | --------------------- associated function in this implementation
+148 |     pub fn new(event_type: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `InstructionContainsMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:182:12
+    |
+182 | pub struct InstructionContainsMatcher {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:187:12
+    |
+186 | impl InstructionContainsMatcher {
+    | ------------------------------- associated function in this implementation
+187 |     pub fn new(substring: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `InstructionRegexMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:205:12
+    |
+205 | pub struct InstructionRegexMatcher {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:211:12
+    |
+210 | impl InstructionRegexMatcher {
+    | ---------------------------- associated function in this implementation
+211 |     pub fn new(pattern: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `PromptContainsMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:229:12
+    |
+229 | pub struct PromptContainsMatcher {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:234:12
+    |
+233 | impl PromptContainsMatcher {
+    | -------------------------- associated function in this implementation
+234 |     pub fn new(substring: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `EventDataMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:252:12
+    |
+252 | pub struct EventDataMatcher {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:258:12
+    |
+257 | impl EventDataMatcher {
+    | --------------------- associated function in this implementation
+258 |     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `IterationMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:294:12
+    |
+294 | pub struct IterationMatcher {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:299:12
+    |
+298 | impl IterationMatcher {
+    | --------------------- associated function in this implementation
+299 |     pub fn new(iteration: usize) -> Self {
+    |            ^^^
+
+warning: struct `MessageRoleMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:315:12
+    |
+315 | pub struct MessageRoleMatcher {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:320:12
+    |
+319 | impl MessageRoleMatcher {
+    | ----------------------- associated function in this implementation
+320 |     pub fn new(role: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `CustomMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:336:12
+    |
+336 | pub struct CustomMatcher<F>
+    |            ^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:347:12
+    |
+343 | / impl<F> CustomMatcher<F>
+344 | | where
+345 | |     F: Fn(&LlmContext) -> bool + Send + Sync,
+    | |_____________________________________________- associated function in this implementation
+346 |   {
+347 |       pub fn new(matcher_fn: F) -> Self {
+    |              ^^^
+
+warning: struct `CombinedMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:379:12
+    |
+379 | pub struct CombinedMatcher {
+    |            ^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `add` are never used
+   --> tests/helpers/mock_matcher.rs:384:12
+    |
+383 | impl CombinedMatcher {
+    | -------------------- associated items in this implementation
+384 |     pub fn new(matchers: Vec<Box<dyn MockMatcher>>) -> Self {
+    |            ^^^
+...
+388 |     pub fn add(&mut self, matcher: Box<dyn MockMatcher>) {
+    |            ^^^
+
+warning: field `tags_hits` is never read
+  --> tests/helpers/mock_ollama.rs:36:5
+   |
+30 | pub struct MockOllamaServer {
+   |            ---------------- field in this struct
+...
+36 |     tags_hits: Arc<AtomicUsize>,
+   |     ^^^^^^^^^
+
+warning: method `tags_request_count` is never used
+   --> tests/helpers/mock_ollama.rs:406:12
+    |
+331 | impl MockOllamaServer {
+    | --------------------- method in this implementation
+...
+406 |     pub fn tags_request_count(&self) -> usize {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: method `with_mock` is never used
+   --> tests/helpers/netget.rs:335:12
+    |
+212 | impl NetGetConfig {
+    | ----------------- method in this implementation
+...
+335 |     pub fn with_mock<F>(mut self, builder_fn: F) -> Self
+    |            ^^^^^^^^^
+
+warning: function `event_to_json` is never used
+  --> tests/helpers/ollama_test_builder.rs:14:4
+   |
+14 | fn event_to_json(event: &Event) -> Result<Value> {
+   |    ^^^^^^^^^^^^^
+
+warning: variant `ScriptWithLanguage` is never constructed
+  --> tests/helpers/ollama_test_builder.rs:95:5
+   |
+72 | pub enum Expectation {
+   |          ----------- variant in this enum
+...
+95 |     ScriptWithLanguage(String),
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: methods `with_model` and `expect_script_with_language` are never used
+   --> tests/helpers/ollama_test_builder.rs:228:12
+    |
+110 | impl OllamaTestBuilder {
+    | ---------------------- methods in this implementation
+...
+228 |     pub fn with_model(mut self, model: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^
+...
+295 |     pub fn expect_script_with_language(mut self, language: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `model`, `prompt`, `response`, and `passed` are never read
+   --> tests/helpers/ollama_test_builder.rs:497:9
+    |
+496 | pub struct TestResult {
+    |            ---------- fields in this struct
+497 |     pub model: String,
+    |         ^^^^^
+498 |     pub prompt: String,
+    |         ^^^^^^
+499 |     pub response: String,
+    |         ^^^^^^^^
+500 |     pub actions: Vec<Value>,
+501 |     pub passed: Vec<String>,
+    |         ^^^^^^
+
+warning: function `get_primary_action` is never used
+   --> tests/helpers/ollama_test_builder.rs:705:4
+    |
+705 | fn get_primary_action<'a>(actions: &'a [Value], expected_type: Option<&str>) -> Option<&'a Value> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: fields `port`, `stdout_reader_handle`, and `stderr_reader_handle` are never read
+  --> tests/helpers/server.rs:16:9
+   |
+11 | pub struct NetGetServer {
+   |            ------------ fields in this struct
+...
+16 |     pub port: u16,
+   |         ^^^^
+...
+33 |     stdout_reader_handle: AbortOnDrop,
+   |     ^^^^^^^^^^^^^^^^^^^^
+34 |     stderr_reader_handle: AbortOnDrop,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `stop`, `verify_mocks`, `wait_for_pattern`, `wait_for_regex`, and `wait_for_patterns` are never used
+   --> tests/helpers/server.rs:39:19
+    |
+ 37 | impl NetGetServer {
+    | ----------------- associated items in this implementation
+ 38 |     /// Create a new NetGetServer instance
+ 39 |     pub(crate) fn new(
+    |                   ^^^
+...
+ 64 |     pub async fn stop(mut self) -> E2EResult<()> {
+    |                  ^^^^
+...
+324 |     pub async fn verify_mocks(&self) -> E2EResult<()> {
+    |                  ^^^^^^^^^^^^
+...
+415 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+446 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+469 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: function `start_netget_server` is never used
+   --> tests/helpers/server.rs:502:14
+    |
+502 | pub async fn start_netget_server(config: ServerConfig) -> E2EResult<NetGetServer> {
+    |              ^^^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "ollama_model_test") generated 78 warnings (run `cargo fix --test "ollama_model_test" -p netget` to apply 15 suggestions)
+warning: variable does not need to be mutable
+  --> tests/client/dns/e2e_test.rs:95:13
+   |
+95 |         let mut server = start_netget_server(server_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/dns/e2e_test.rs:98:13
+   |
+98 |         let mut client = start_netget_client(querying_client(
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/dns/e2e_test.rs:153:13
+    |
+153 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/dns/e2e_test.rs:156:13
+    |
+156 |         let mut client = start_netget_client(querying_client(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/dns/e2e_test.rs:205:13
+    |
+205 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/dns/e2e_test.rs:210:13
+    |
+210 |         let mut client = start_netget_client(querying_client(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/dns/e2e_test.rs:280:13
+    |
+280 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/dns/e2e_test.rs:312:13
+    |
+312 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/dot/e2e_test.rs:61:9
+   |
+61 |     let mut client = crate::helpers::netget::start_netget(client_config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: multiple methods are never used
+   --> tests/helpers/client.rs:77:18
+    |
+ 45 | impl NetGetClient {
+    | ----------------- methods in this implementation
+...
+ 77 |     pub async fn stop(mut self) -> E2EResult<()> {
+    |                  ^^^^
+...
+125 |     pub fn is_running(&mut self) -> bool {
+    |            ^^^^^^^^^^
+...
+164 |     pub async fn count_in_output(&self, needle: &str) -> usize {
+    |                  ^^^^^^^^^^^^^^^
+...
+196 |     pub async fn verify_mocks(&self) -> E2EResult<()> {
+    |                  ^^^^^^^^^^^^
+...
+279 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+310 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+333 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `json_contains_expected` is never used
+  --> tests/helpers/ollama_test_builder.rs:23:4
+   |
+23 | fn json_contains_expected(expected: &Value, actual: &Value) -> bool {
+   |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `OllamaTestBuilder` is never constructed
+  --> tests/helpers/ollama_test_builder.rs:47:12
+   |
+47 | pub struct OllamaTestBuilder {
+   |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `PromptContext` is never used
+  --> tests/helpers/ollama_test_builder.rs:54:10
+   |
+54 | pub enum PromptContext {
+   |          ^^^^^^^^^^^^^
+
+warning: enum `Expectation` is never used
+  --> tests/helpers/ollama_test_builder.rs:72:10
+   |
+72 | pub enum Expectation {
+   |          ^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> tests/helpers/ollama_test_builder.rs:112:12
+    |
+110 | impl OllamaTestBuilder {
+    | ---------------------- associated items in this implementation
+111 |     /// Create a new test builder
+112 |     pub fn new() -> Self {
+    |            ^^^
+...
+121 |     pub fn with_user_input(mut self, user_message: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+134 |     pub fn with_server_documentation(mut self, protocol: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+175 |     pub fn with_client_documentation(mut self, protocol: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+213 |     pub fn with_network_request(
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+228 |     pub fn with_model(mut self, model: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^
+...
+234 |     pub fn expect_action_type(mut self, action_type: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+241 |     pub fn expect_field_exact(mut self, field: impl Into<String>, value: Value) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+250 |     pub fn expect_field_contains(
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+263 |     pub fn expect_field_matches(
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+276 |     pub fn expect_protocol(mut self, protocol: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+283 |     pub fn expect_static_handler(mut self, value: Value) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+289 |     pub fn expect_script_handler(mut self) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+295 |     pub fn expect_script_with_language(mut self, language: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+307 |     pub fn expect_script_execution(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+320 |     pub fn expect_custom<F>(mut self, name: impl Into<String>, validator: F) -> Self
+    |            ^^^^^^^^^^^^^
+...
+332 |     pub async fn run(self) -> Result<TestResult> {
+    |                  ^^^
+
+warning: struct `TestResult` is never constructed
+   --> tests/helpers/ollama_test_builder.rs:496:12
+    |
+496 | pub struct TestResult {
+    |            ^^^^^^^^^^
+
+warning: methods `is_success` and `assert_success` are never used
+   --> tests/helpers/ollama_test_builder.rs:507:12
+    |
+505 | impl TestResult {
+    | --------------- methods in this implementation
+506 |     /// Check if all expectations passed
+507 |     pub fn is_success(&self) -> bool {
+    |            ^^^^^^^^^^
+...
+512 |     pub fn assert_success(&self) -> Result<()> {
+    |            ^^^^^^^^^^^^^^
+
+warning: function `parse_actions_from_response` is never used
+   --> tests/helpers/ollama_test_builder.rs:532:8
+    |
+532 | pub fn parse_actions_from_response(response: &str) -> Result<Vec<Value>> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `values_are_equivalent` is never used
+   --> tests/helpers/ollama_test_builder.rs:646:4
+    |
+646 | fn values_are_equivalent(expected: &Value, actual: &Value) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_json_from_markdown` is never used
+   --> tests/helpers/ollama_test_builder.rs:675:4
+    |
+675 | fn extract_json_from_markdown(text: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `find_action_by_type` is never used
+   --> tests/helpers/ollama_test_builder.rs:698:4
+    |
+698 | fn find_action_by_type<'a>(actions: &'a [Value], expected_type: &str) -> Option<&'a Value> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_expectation` is never used
+   --> tests/helpers/ollama_test_builder.rs:716:10
+    |
+716 | async fn validate_expectation(expectation: &Expectation, actions: &[Value]) -> Result<()> {
+    |          ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `expectation_description` is never used
+    --> tests/helpers/ollama_test_builder.rs:1187:4
+     |
+1187 | fn expectation_description(expectation: &Expectation) -> String {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> tests/client/dot/e2e_test.rs:167:9
+    |
+167 |     let mut client = crate::helpers::netget::start_netget(client_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: `netget` (test "empty_static_handler_test") generated 82 warnings (68 duplicates)
+warning: variable does not need to be mutable
+  --> tests/client/http_proxy/e2e_test.rs:23:13
+   |
+23 |         let mut proxy_server = start_netget_server(proxy_config).await?;
+   |             ----^^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/http_proxy/e2e_test.rs:31:13
+   |
+31 |         let mut target_server = start_netget_server(target_config).await?;
+   |             ----^^^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/http_proxy/e2e_test.rs:40:13
+   |
+40 |         let mut client = start_netget_client(client_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/http_proxy/e2e_test.rs:88:13
+   |
+88 |         let mut server = start_netget_server(server_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/http_proxy/e2e_test.rs:97:13
+   |
+97 |         let mut client = start_netget_client(client_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/http_proxy/e2e_test.rs:135:13
+    |
+135 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/http_proxy/e2e_test.rs:144:13
+    |
+144 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/nntp/e2e_test.rs:64:13
+   |
+64 |         let mut server = start_netget_server(server_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/nntp/e2e_test.rs:109:13
+    |
+109 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/nntp/e2e_test.rs:186:13
+    |
+186 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/nntp/e2e_test.rs:231:13
+    |
+231 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/nntp/e2e_test.rs:309:13
+    |
+309 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/nntp/e2e_test.rs:354:13
+    |
+354 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/pop3/e2e_test.rs:51:13
+   |
+51 |         let mut client = start_netget_client(client_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/pop3/e2e_test.rs:106:13
+    |
+106 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/pop3/e2e_test.rs:171:13
+    |
+171 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/udp/e2e_test.rs:47:13
+   |
+47 |         let mut server = start_netget_server(server_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/udp/e2e_test.rs:70:13
+   |
+70 |         let mut client = start_netget_client(client_config).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:131:13
+    |
+131 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:160:13
+    |
+160 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:216:13
+    |
+216 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:253:13
+    |
+253 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:312:13
+    |
+312 |         let mut server1 = start_netget_server(server1_config).await?;
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:337:13
+    |
+337 |         let mut server2 = start_netget_server(server2_config).await?;
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/udp/e2e_test.rs:372:13
+    |
+372 |         let mut client = start_netget_client(client_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/client/vnc/e2e_test.rs:90:13
+   |
+90 |         let mut server = start_netget_server(server_awaiting(
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/vnc/e2e_test.rs:103:13
+    |
+103 |         let mut client = start_netget_client(connecting_client(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/vnc/e2e_test.rs:128:13
+    |
+128 |         let mut server = start_netget_server(server_awaiting(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/vnc/e2e_test.rs:135:13
+    |
+135 |         let mut client = start_netget_client(connecting_client(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/vnc/e2e_test.rs:162:13
+    |
+162 |         let mut server = start_netget_server(server_awaiting(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/client/vnc/e2e_test.rs:169:13
+    |
+169 |         let mut client = start_netget_client(connecting_client(
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: function `event_to_json` is never used
+  --> tests/helpers/ollama_test_builder.rs:14:4
+   |
+14 | fn event_to_json(event: &Event) -> Result<Value> {
+   |    ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "client") generated 48 warnings (4 duplicates) (run `cargo fix --test "client" -p netget` to apply 43 suggestions)
+warning: methods `on_event`, `on_instruction_regex`, `on_prompt_containing`, and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:24:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+24 |     pub fn on_event(self, event_type: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+63 |     pub fn on_prompt_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: methods `and_prompt_containing`, `and_event_data_contains`, `and_iteration`, `and_message_role`, `respond_with_actions_from_event`, and `respond_with_raw` are never used
+   --> tests/helpers/mock_builder.rs:155:12
+    |
+126 | impl MockRuleBuilder {
+    | -------------------- methods in this implementation
+...
+155 |     pub fn and_prompt_containing(mut self, substring: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+170 |     pub fn and_event_data_contains(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+192 |     pub fn and_iteration(mut self, iteration: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+205 |     pub fn and_message_role(mut self, role: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+261 |     pub fn respond_with_actions_from_event<F>(self, generator: F) -> MockResponseBuilder
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+288 |     pub fn respond_with_raw(self, raw: impl Into<String>) -> MockResponseBuilder {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: methods `after_delay` and `expect_at_most` are never used
+   --> tests/helpers/mock_builder.rs:324:12
+    |
+308 | impl MockResponseBuilder {
+    | ------------------------ methods in this implementation
+...
+324 |     pub fn after_delay(mut self, delay: std::time::Duration) -> Self {
+    |            ^^^^^^^^^^^
+...
+342 |     pub fn expect_at_most(mut self, count: usize) -> Self {
+    |            ^^^^^^^^^^^^^^
+
+warning: `netget` (test "mock_server_test") generated 78 warnings (73 duplicates) (run `cargo fix --test "mock_server_test" -p netget` to apply 2 suggestions)
+warning: `netget` (test "logging_integration_test") generated 81 warnings (81 duplicates)
+warning: field `line` is never read
+   --> tests/affirmative_default_drift_test.rs:356:5
+    |
+355 | struct Site {
+    |        ---- field in this struct
+356 |     line: usize,
+    |     ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "affirmative_default_drift_test") generated 1 warning
+warning: methods `on_instruction_regex` and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:50:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: methods `wait_for_pattern`, `wait_for_regex`, and `wait_for_patterns` are never used
+   --> tests/helpers/server.rs:415:18
+    |
+ 37 | impl NetGetServer {
+    | ----------------- methods in this implementation
+...
+415 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+446 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+469 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "event_handler_llm_instruction_test") generated 73 warnings (71 duplicates)
+warning: `netget` (test "llm_live") generated 5 warnings (5 duplicates)
+warning: `netget` (test "llm_sampling_options_test") generated 3 warnings (3 duplicates)
+warning: unused import: `netget::llm::actions::protocol_trait::Protocol`
+   --> tests/dashboard_create_flow_test.rs:415:9
+    |
+415 |     use netget::llm::actions::protocol_trait::Protocol;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "dashboard_create_flow_test") generated 1 warning
+warning: `netget` (test "test_infrastructure_review_test") generated 3 warnings (3 duplicates)
+warning: unused import: `netget::llm::actions::protocol_trait::Protocol`
+  --> tests/connectionless_audit_test.rs:32:5
+   |
+32 | use netget::llm::actions::protocol_trait::Protocol;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "connectionless_audit_test") generated 1 warning
+warning: unused import: `netget::llm::actions::Server`
+  --> tests/examples/protocol_examples_test.rs:14:5
+   |
+14 | use netget::llm::actions::Server;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "startup_examples_actually_start_test") generated 82 warnings (82 duplicates)
+warning: `netget` (test "minimal_mock_test") generated 77 warnings (77 duplicates)
+warning: `netget` (test "examples") generated 6 warnings (5 duplicates) (run `cargo fix --test "examples" -p netget` to apply 1 suggestion)
+warning: unused import: `netget::llm::actions::protocol_trait::Protocol`
+  --> tests/executable_examples_test.rs:36:5
+   |
+36 | use netget::llm::actions::protocol_trait::Protocol as _;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Client`
+  --> tests/executable_examples_test.rs:35:65
+   |
+35 | use netget::llm::actions::client_trait::{client_llm_action_set, Client};
+   |                                                                 ^^^^^^
+
+warning: `netget` (test "executable_examples_test") generated 2 warnings
+warning: `netget` (test "mcp_scheduled_task_timer_test") generated 3 warnings (3 duplicates)
+warning: unexpected `cfg` condition value: `scripting`
+   --> tests/e2e/http_test.rs:155:11
+    |
+155 |     #[cfg(feature = "scripting")]
+    |           ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: expected values for `feature` are: `all-protocols`, `amqp`, `android-termux`, `arp`, `async-openai`, `aws-config`, `aws-sdk-dynamodb`, `aws-sdk-sqs`, `aws-smithy-types`, `beanstalkd`, `bgp`, `bitcoin`, `ble-peripheral-rust`, `bluetooth-ble`, `bluetooth-ble-battery`, `bluetooth-ble-beacon`, `bluetooth-ble-client`, `bluetooth-ble-cycling`, `bluetooth-ble-data-stream`, `bluetooth-ble-environmental`, `bluetooth-ble-file-transfer`, `bluetooth-ble-gamepad`, `bluetooth-ble-heart-rate`, `bluetooth-ble-keyboard`, `bluetooth-ble-mouse`, `bluetooth-ble-presenter`, `bluetooth-ble-proximity`, `bluetooth-ble-remote`, `bluetooth-ble-running`, `bluetooth-ble-thermometer`, `bluetooth-ble-weight-scale`, `bolt`, `bootp`, `btleplug`, and `can` and 196 more
+    = help: consider adding `scripting` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused import: `ServerInfo`
+  --> tests/e2e/http_test.rs:11:53
+   |
+11 |     use crate::e2e::netget_wrapper::{NetGetWrapper, ServerInfo};
+   |                                                     ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::time::Duration`
+ --> tests/e2e/tcp_test.rs:6:9
+  |
+6 |     use std::time::Duration;
+  |         ^^^^^^^^^^^^^^^^^^^
+
+warning: field `protocol` is never read
+  --> tests/e2e/netget_wrapper.rs:23:9
+   |
+21 | pub struct ServerInfo {
+   |            ---------- field in this struct
+22 |     pub id: u32,
+23 |     pub protocol: String,
+   |         ^^^^^^^^
+   |
+   = note: `ServerInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `clear_output`, `wait_for_output`, `is_running`, `get_server_port`, and `execute_command` are never used
+   --> tests/e2e/netget_wrapper.rs:211:18
+    |
+ 41 | impl NetGetWrapper {
+    | ------------------ methods in this implementation
+...
+211 |     pub async fn clear_output(&self) {
+    |                  ^^^^^^^^^^^^
+...
+216 |     pub async fn wait_for_output(&self, text: &str, timeout: Duration) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+231 |     pub fn is_running(&mut self) -> bool {
+    |            ^^^^^^^^^^
+...
+285 |     pub async fn get_server_port(&self, server_id: u32) -> Option<u16> {
+    |                  ^^^^^^^^^^^^^^^
+...
+294 |     pub async fn execute_command(&mut self, command: &str, wait_time: Duration) -> Result<String> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: associated items `with_client` and `post_json` are never used
+  --> tests/validators/http_validator.rs:30:12
+   |
+14 | impl HttpValidator {
+   | ------------------ associated items in this implementation
+...
+30 |     pub fn with_client(port: u16, client: Client) -> Self {
+   |            ^^^^^^^^^^^
+...
+48 |     pub async fn post_json(&self, path: &str, json: &Value) -> Result<Response> {
+   |                  ^^^^^^^^^
+
+warning: `netget` (test "e2e") generated 6 warnings (run `cargo fix --test "e2e" -p netget` to apply 2 suggestions)
+warning: `netget` (test "e2e_footer_test") generated 77 warnings (77 duplicates)
+warning: `netget` (test "scheduled_task_claim_test") generated 3 warnings (3 duplicates)
+warning: `netget` (test "model_selection_endpoint_test") generated 80 warnings (80 duplicates)
+warning: methods `on_instruction_regex`, `on_prompt_containing`, and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:50:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+63 |     pub fn on_prompt_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: `netget` (test "broken_stdout_pipe_test") generated 78 warnings (77 duplicates)
+warning: `netget` (test "max_inbound_bytes_bound_plus_one_test") generated 82 warnings (82 duplicates)
+warning: `netget` (test "orphan_reaper_test") generated 82 warnings (82 duplicates)
+warning: `netget` (test "real_server_helper_test") generated 2 warnings (2 duplicates)
+warning: `netget` (test "feedback_loop_test") generated 3 warnings (3 duplicates)
+warning: unused import: `std::time::Duration`
+  --> tests/server/dot/e2e_test.rs:15:5
+   |
+15 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "llm_concurrency_default_test") generated 3 warnings (3 duplicates)
+warning: `netget` (test "eval") generated 5 warnings (5 duplicates)
+warning: use of deprecated field `netget::protocol::SpawnContext::listen_addr`: Use host/port fields instead
+  --> tests/server/quic/certificate_validation_test.rs:19:17
+   |
+19 |                 listen_addr: "127.0.0.1:0".parse().unwrap(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: variable does not need to be mutable
+   --> tests/server/nntp/e2e_test.rs:115:9
+    |
+115 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/nntp/e2e_test.rs:302:9
+    |
+302 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/pop3/test.rs:51:9
+   |
+51 |     let mut server = helpers::start_netget_server(config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:158:9
+    |
+158 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:287:9
+    |
+287 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:399:9
+    |
+399 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:211:13
+    |
+211 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:273:13
+    |
+273 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:340:13
+    |
+340 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:401:13
+    |
+401 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:463:13
+    |
+463 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:527:13
+    |
+527 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:574:13
+    |
+574 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:205:9
+    |
+205 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:295:9
+    |
+295 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:384:9
+    |
+384 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:490:9
+    |
+490 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:601:9
+    |
+601 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/torrent_peer/e2e_test.rs:67:9
+   |
+67 |     let mut server = start_netget_server(server_config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/torrent_peer/e2e_test.rs:244:9
+    |
+244 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/webrtc_signaling/e2e_test.rs:90:13
+   |
+90 |         let mut server = start_netget_server(signaling_server(1)).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:109:13
+    |
+109 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:152:13
+    |
+152 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:195:13
+    |
+195 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:101:13
+    |
+101 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:153:13
+    |
+153 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:202:13
+    |
+202 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: `netget` (test "server") generated 34 warnings (5 duplicates) (run `cargo fix --test "server" -p netget` to apply 28 suggestions)
+    Finished `dev` profile [unoptimized] target(s) in 1m 12s
+warning: the following packages contain code that will be rejected by a future version of Rust: num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

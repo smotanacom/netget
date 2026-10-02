@@ -1,0 +1,7 @@
+{
+  "format_check": "passed: cargo fmt --all -- --check",
+  "diff_check": "passed: git diff --check",
+  "report_links": "all local links resolve",
+  "implementation_hashes": "239 current file hashes match followup-changed-files.json",
+  "gpu_or_real_model_execution": false
+}

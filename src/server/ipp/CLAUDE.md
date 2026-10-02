@@ -209,10 +209,19 @@ The `decision=fail_closed_body_too_large` line carries how much was drained and 
 peer finished writing, which is the difference between "it read the refusal" and "it got a
 reset and we could not help it".
 
-Nothing recursive is decoded here, which is why there is no depth bound: only the 8-byte header
-is parsed. If request attribute groups are ever decoded, the walk must stay iterative — a Rust
-stack overflow is a `SIGSEGV`, not a panic, so `tokio::spawn` cannot contain it and the whole
-process dies.
+The inbound IPP parser reads only the 8-byte header. Model-supplied response attributes are
+different: their JSON arrays and objects are checked iteratively against
+`MAX_IPP_ATTRIBUTE_DEPTH` (32 container levels, excluding the attribute map) before any
+serialization. This also covers values constructed directly in memory, independently of
+serde_json's parser limit. JSON fallback fields are counted after escaping and refused if
+their complete representation exceeds the two-byte value-length field; they are never
+silently truncated. The range checks on ordinary IPP integers and sets still apply, while
+numbers inside JSON objects retain their JSON representation.
+
+`tests/audit_server_decoder_bounds_test.rs` tests the exact limit, the next level, 20,000-level
+in-memory trees with iterative teardown, and the serialized-length boundary without any model
+or network access. If request attribute groups are ever decoded, their walk must also stay
+bounded: a Rust stack overflow aborts the process rather than producing a catchable panic.
 
 ## Failure behaviour
 

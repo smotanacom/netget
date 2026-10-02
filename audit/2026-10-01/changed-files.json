@@ -1,0 +1,835 @@
+[
+  {
+    "path": ".github/workflows/ci.yml",
+    "change": "modified",
+    "lines": 1401,
+    "bytes": 81967,
+    "sha256_final": "18b5465b11dd9c624de91eb82aff5a9016d330998625d042cf6b1506b9c71430"
+  },
+  {
+    "path": ".github/workflows/fuzz.yml",
+    "change": "modified",
+    "lines": 155,
+    "bytes": 6350,
+    "sha256_final": "19fdeb7f28c2229ee9c364cedb25b0d50732d12e0ff43dfa9c28a8a044715466"
+  },
+  {
+    "path": ".github/workflows/nightly-eval.yml",
+    "change": "modified",
+    "lines": 131,
+    "bytes": 5391,
+    "sha256_final": "076ba9bcba8a29abf632df79e165e9f33e77378b908aa1b0f8edf1df5d853abf"
+  },
+  {
+    "path": ".github/workflows/nightly-soak.yml",
+    "change": "modified",
+    "lines": 115,
+    "bytes": 4328,
+    "sha256_final": "bee5aac34e08e653fcf07f1217ce1b94c08c99637540e68da8b7a12e7388329b"
+  },
+  {
+    "path": "cargo-isolated.sh",
+    "change": "modified",
+    "lines": 77,
+    "bytes": 2655,
+    "sha256_final": "5427bef5285663590ed7c93b79562f9244141202dbc4c63779ab40edcde55b32"
+  },
+  {
+    "path": "cargo.sh",
+    "change": "modified",
+    "lines": 148,
+    "bytes": 5182,
+    "sha256_final": "3cb0ec74d76bc1a143b84433664e5dc8ecc8986ca2fbbfbcb2804ce91938a1d7"
+  },
+  {
+    "path": "crates/netget-tokio-wasm/src/net.rs",
+    "change": "modified",
+    "lines": 816,
+    "bytes": 27296,
+    "sha256_final": "0104bc93c5bce76c3cf2b0cb2ce849a4c79a35581c2280c152db3e2c0aa996ee"
+  },
+  {
+    "path": "crates/netget-tokio-wasm/src/time.rs",
+    "change": "modified",
+    "lines": 348,
+    "bytes": 10117,
+    "sha256_final": "e3b96dce12b981249f44d6a2c2b88b5a52a6a492a287896ffe57ba6f2ce080ec"
+  },
+  {
+    "path": "crates/netget-tokio-wasm/src/time_math.rs",
+    "change": "added",
+    "lines": 22,
+    "bytes": 809,
+    "sha256_final": "1b507ca55ad15cddcd95ed20419e8a95182f32136e93e5e32d15c146a053b4cb"
+  },
+  {
+    "path": "crates/netget-tokio-wasm/tests/time_math_test.rs",
+    "change": "added",
+    "lines": 38,
+    "bytes": 1268,
+    "sha256_final": "33fb61d2e0e08354b7885355973adb115dfa62b634db7d5672ed8bc2654d1125"
+  },
+  {
+    "path": "crates/netget-tokio-wasm/tests/udp_receive_test.rs",
+    "change": "added",
+    "lines": 68,
+    "bytes": 2467,
+    "sha256_final": "a1727f0eda14d5c1a485ada5120005e9b2c680c572f05526d2fb5855cef6a5fa"
+  },
+  {
+    "path": "examples/external_protocol/Cargo.toml",
+    "change": "modified",
+    "lines": 18,
+    "bytes": 358,
+    "sha256_final": "d96f012d01b8772c8aff280e7e7939e6dfb2ae7845922bfd014e6ed4c4b0c7b4"
+  },
+  {
+    "path": "examples/external_protocol/README.md",
+    "change": "modified",
+    "lines": 41,
+    "bytes": 2037,
+    "sha256_final": "c50454cfd8867c4e8cfd112e7c746812b345a140e527e7491ba974c6a0dc092d"
+  },
+  {
+    "path": "examples/external_protocol/src/lib.rs",
+    "change": "modified",
+    "lines": 151,
+    "bytes": 6101,
+    "sha256_final": "831606aa5e4856c8ad80188f60331c156a92f685f69880694342be1e860e3b3f"
+  },
+  {
+    "path": "examples/test_doc_gen.rs",
+    "change": "modified",
+    "lines": 60,
+    "bytes": 2533,
+    "sha256_final": "3a0ce3adaf1bf94bfed29649cfbb785310cc3b1e22e6d6004cde2897f6509fb4"
+  },
+  {
+    "path": "npm/netget/bin/netget.js",
+    "change": "modified",
+    "lines": 183,
+    "bytes": 6311,
+    "sha256_final": "925628661ea8e434ad19c23fb0cba9108753dcb91d8fb9767156371f27a13e30"
+  },
+  {
+    "path": "scripts/sccache/cargo-sccache.sh",
+    "change": "modified",
+    "lines": 47,
+    "bytes": 1657,
+    "sha256_final": "31ace62fef88e9c94cda206dcb1416c6c766e9699e59cc4327c672ba1721ac27"
+  },
+  {
+    "path": "scripts/sccache/setup-sccache-r2.sh",
+    "change": "modified",
+    "lines": 88,
+    "bytes": 2429,
+    "sha256_final": "0185ab0a34f8bbfa4cb525b463cfaad82cd262edcdf5d106a8404a4c48b917b9"
+  },
+  {
+    "path": "scripts/sccache/setup-sccache-upstash.sh",
+    "change": "modified",
+    "lines": 79,
+    "bytes": 2235,
+    "sha256_final": "10f02c891c1654d57db9d1b63832fe88e253210b535f418e000118e642b90ebb"
+  },
+  {
+    "path": "site/js/composer.js",
+    "change": "modified",
+    "lines": 503,
+    "bytes": 24612,
+    "sha256_final": "53158a559210c58ec4696bc7b621ea24ba87e9d3e7d190d8ac4f354343f1888c"
+  },
+  {
+    "path": "site/js/demo.js",
+    "change": "modified",
+    "lines": 1383,
+    "bytes": 63042,
+    "sha256_final": "06207a6f765643132f9c75f7e24f9b00df66cab1e7648ff3fb18dd7f0bc50002"
+  },
+  {
+    "path": "site/js/telnet.js",
+    "change": "added",
+    "lines": 63,
+    "bytes": 2264,
+    "sha256_final": "3ac3e24953a16e3b3d5691f07d88f68511b75c65d08f5ff77391f5df06f41bec"
+  },
+  {
+    "path": "src/cli/management.rs",
+    "change": "modified",
+    "lines": 1355,
+    "bytes": 49870,
+    "sha256_final": "939a193945371cf45f36a1d7162539f6f5455acae67b0c2a2af1d298cf1f2684"
+  },
+  {
+    "path": "src/cli/mod.rs",
+    "change": "modified",
+    "lines": 780,
+    "bytes": 30066,
+    "sha256_final": "55afa7301cfc226b9390b0491726cf9572f71e62cbb19d878c1a5134c39f6a4b"
+  },
+  {
+    "path": "src/cli/tasks.rs",
+    "change": "modified",
+    "lines": 410,
+    "bytes": 15451,
+    "sha256_final": "8c790cc85f80fe8b341577d64a7fe6bf0003e2b5f305cead9c4da31f1eaf329c"
+  },
+  {
+    "path": "src/client/ftp/CLAUDE.md",
+    "change": "modified",
+    "lines": 133,
+    "bytes": 4962,
+    "sha256_final": "5438adce25a6310bd742402961ac627eed7d0af5de2e93b014ed22176fcdc3a1"
+  },
+  {
+    "path": "src/client/ftp/mod.rs",
+    "change": "modified",
+    "lines": 337,
+    "bytes": 15629,
+    "sha256_final": "9a14df059b89da1e7f33d6a4396662fee90d554d08bce2fbf88cdfb8300f1028"
+  },
+  {
+    "path": "src/client/http/CLAUDE.md",
+    "change": "modified",
+    "lines": 335,
+    "bytes": 13671,
+    "sha256_final": "9f570dae82c7cdb0cab8aaf84fe114b597e46047011718176538bfa87b5acd34"
+  },
+  {
+    "path": "src/client/http_fetch/transport.rs",
+    "change": "modified",
+    "lines": 382,
+    "bytes": 14772,
+    "sha256_final": "43894740d646381d24ea464d62cd89eda615233446cc6bc654c7c1c2c7bb214d"
+  },
+  {
+    "path": "src/client/http_proxy/CLAUDE.md",
+    "change": "modified",
+    "lines": 226,
+    "bytes": 8277,
+    "sha256_final": "c625d50e7af71a31194a9385baefedd54cf4515e34e4036bd4d972d3854c0b43"
+  },
+  {
+    "path": "src/client/http_proxy/mod.rs",
+    "change": "modified",
+    "lines": 802,
+    "bytes": 38277,
+    "sha256_final": "881a6c4cec1d8dd774c574921c4781153bcdc8e5398b3cba175b4b96b0f6da0b"
+  },
+  {
+    "path": "src/client/llm_budget.rs",
+    "change": "modified",
+    "lines": 210,
+    "bytes": 8276,
+    "sha256_final": "5a7743a989b248ceaa0ce8b03694ccaf0f321794cc02fd4bc006a23b44fb72cf"
+  },
+  {
+    "path": "src/client/mod.rs",
+    "change": "modified",
+    "lines": 626,
+    "bytes": 14414,
+    "sha256_final": "82354860ba5671f1a7362e781382f1b658caad56d5ce9938b0c2eb2d7ac7a90d"
+  },
+  {
+    "path": "src/client/nntp/CLAUDE.md",
+    "change": "modified",
+    "lines": 243,
+    "bytes": 9242,
+    "sha256_final": "091b46dbbf47b3863db6c3ccaf2ab951c65be097ebf3c6a26221bee0a0fd63ce"
+  },
+  {
+    "path": "src/client/nntp/mod.rs",
+    "change": "modified",
+    "lines": 645,
+    "bytes": 30222,
+    "sha256_final": "fd89103a277ca822220bd6a7fce10a369ee09e314d6e625c889a3f7f4f2c888f"
+  },
+  {
+    "path": "src/client/pop3/CLAUDE.md",
+    "change": "modified",
+    "lines": 237,
+    "bytes": 8807,
+    "sha256_final": "e9109138362ffc6a6747ccb85fbb69f3d8f20dbd9e2db2f0aec7426779ccc739"
+  },
+  {
+    "path": "src/client/pop3/mod.rs",
+    "change": "modified",
+    "lines": 456,
+    "bytes": 17178,
+    "sha256_final": "f8028b9fec4bc773e0769c24203fedbcfbd06f091d0cb0e33a66ed14d8a9f70f"
+  },
+  {
+    "path": "src/client/response_reader.rs",
+    "change": "added",
+    "lines": 76,
+    "bytes": 2890,
+    "sha256_final": "0676653e426c49377e16dca369a7ad5d1768ca3ed5ca968cf03104cb7d5949a6"
+  },
+  {
+    "path": "src/client/ssh_agent/CLAUDE.md",
+    "change": "modified",
+    "lines": 247,
+    "bytes": 7344,
+    "sha256_final": "224a1e8283bc2a25bef36e8ddd7a23d29c9fc36e43c7e32865c8a89536c75ed6"
+  },
+  {
+    "path": "src/client/ssh_agent/mod.rs",
+    "change": "modified",
+    "lines": 633,
+    "bytes": 29696,
+    "sha256_final": "ea9ad85441c705555dcdfc7f41483a4514b3c411dcbb5855c972bb7b10494c0b"
+  },
+  {
+    "path": "src/client/torrent_peer/CLAUDE.md",
+    "change": "modified",
+    "lines": 177,
+    "bytes": 6252,
+    "sha256_final": "468800fe23139a36f840221724b94429be608fbb3c6d81c12ace3f489fd1affc"
+  },
+  {
+    "path": "src/client/torrent_peer/mod.rs",
+    "change": "modified",
+    "lines": 532,
+    "bytes": 23268,
+    "sha256_final": "3ed05fefda78d5ec7367469d92610970a11abe65b41c638b98c14d1278366b27"
+  },
+  {
+    "path": "src/client/vnc/CLAUDE.md",
+    "change": "modified",
+    "lines": 285,
+    "bytes": 10831,
+    "sha256_final": "a2bd8b73c54491de8b7fe2fa66fd812e290efc794ed9e5b6434cbad280030dd3"
+  },
+  {
+    "path": "src/client/vnc/mod.rs",
+    "change": "modified",
+    "lines": 1046,
+    "bytes": 39366,
+    "sha256_final": "20d833b6c08d3a7e48b812b7f9c05c74e9b37334d7ef945747cfc6a052c3f74c"
+  },
+  {
+    "path": "src/client/webrtc/mod.rs",
+    "change": "modified",
+    "lines": 1141,
+    "bytes": 52723,
+    "sha256_final": "2c5c1bfc1686671b26b59bdf7c324ef7b38842646fd871a1564d5351f6bf75db"
+  },
+  {
+    "path": "src/display/ascii.rs",
+    "change": "modified",
+    "lines": 68,
+    "bytes": 1785,
+    "sha256_final": "ccd41949b0aeebd2e6293e656d134ce3c94902d7b96fa149792cc30a0a250738"
+  },
+  {
+    "path": "src/display/canvas.rs",
+    "change": "modified",
+    "lines": 506,
+    "bytes": 14805,
+    "sha256_final": "649c25ec5f8556c0101ee15c6e8d6c59e5d705a68007f9cfd3a21f1ed5241890"
+  },
+  {
+    "path": "src/display/text.rs",
+    "change": "modified",
+    "lines": 113,
+    "bytes": 3643,
+    "sha256_final": "19755ab41a5ddecc4e9886cff354b246eb565d635c8a670859b5de140c5fefd0"
+  },
+  {
+    "path": "src/easy/http/actions.rs",
+    "change": "modified",
+    "lines": 439,
+    "bytes": 14585,
+    "sha256_final": "cbc3cc61e4340ba3feaa4e3b6610284be6589d24ab7d6e84b9d57aaa2511383b"
+  },
+  {
+    "path": "src/llm/agent_queue.rs",
+    "change": "modified",
+    "lines": 270,
+    "bytes": 10027,
+    "sha256_final": "1fcb19ec74d71b047b9aacad0ec9b588172fb14bd53bd27301691d3073c3cf31"
+  },
+  {
+    "path": "src/llm/conversation_state.rs",
+    "change": "modified",
+    "lines": 323,
+    "bytes": 11515,
+    "sha256_final": "0fde33a7b963f3ef3dd3afc08f9e8f8ee982cc866e5aac41f70946204420dcfc"
+  },
+  {
+    "path": "src/llm/rate_limiter.rs",
+    "change": "modified",
+    "lines": 610,
+    "bytes": 24899,
+    "sha256_final": "1553bc392e13dacd47dbffebc88484161689331276179dc75bd3a6e0ee67f91e"
+  },
+  {
+    "path": "src/llm/reference_parser.rs",
+    "change": "modified",
+    "lines": 203,
+    "bytes": 7651,
+    "sha256_final": "b2e40488586d653cb4f2a8277718f0425a119e97a7d681d1304f85e026b5745a"
+  },
+  {
+    "path": "src/mcp_stdio/CLAUDE.md",
+    "change": "modified",
+    "lines": 417,
+    "bytes": 24950,
+    "sha256_final": "37b94f207411651cf08188cb428e939b943e85a96f22255eda057aba86a0c5f5"
+  },
+  {
+    "path": "src/mcp_stdio/mod.rs",
+    "change": "modified",
+    "lines": 82,
+    "bytes": 2912,
+    "sha256_final": "862dfd7e641a174839968d3008ee2efd464c7b9fb39e1933218244c0d99d1318"
+  },
+  {
+    "path": "src/mcp_stdio/tools.rs",
+    "change": "modified",
+    "lines": 2255,
+    "bytes": 97883,
+    "sha256_final": "b8339b4c17d9bfd073d453e2d55b23ba10ba5d15b3c9c4bb73ef1419a949714e"
+  },
+  {
+    "path": "src/pipe/mod.rs",
+    "change": "modified",
+    "lines": 419,
+    "bytes": 16803,
+    "sha256_final": "338b87c3f35a14c7b4898723e3c40fa88de74e8ebff8462b68e1efd37d46ce56"
+  },
+  {
+    "path": "src/protocol/log_template.rs",
+    "change": "modified",
+    "lines": 285,
+    "bytes": 10633,
+    "sha256_final": "330e113c7499a4de23d123a690effecdc6fc25a9bbefdcddf965681fe89aa8a8"
+  },
+  {
+    "path": "src/protocol/spawn_context.rs",
+    "change": "modified",
+    "lines": 611,
+    "bytes": 21548,
+    "sha256_final": "4aeaff5d9580e77ff09b28e1522774f198a5e2beb81811247faceff15ad97c31"
+  },
+  {
+    "path": "src/scripting/CLAUDE.md",
+    "change": "modified",
+    "lines": 343,
+    "bytes": 19220,
+    "sha256_final": "5156fd0cd658a930dd261a22c5345d5822483cecbbd2ff235b50a889ddba29a8"
+  },
+  {
+    "path": "src/scripting/highlight.rs",
+    "change": "modified",
+    "lines": 64,
+    "bytes": 2492,
+    "sha256_final": "4cbd891f46225c4af28943cc93c19432181652df91aff4a3d6a4dd0ddbfda40f"
+  },
+  {
+    "path": "src/scripting/resident.rs",
+    "change": "modified",
+    "lines": 760,
+    "bytes": 29176,
+    "sha256_final": "bb1ac102ec8d429d5af9e2beea1c0249a6dfefbdbceadc42896133d0b699fc49"
+  },
+  {
+    "path": "src/scripting/types.rs",
+    "change": "modified",
+    "lines": 281,
+    "bytes": 8399,
+    "sha256_final": "8e71863e300bd666118cd1cb804f692674a5d2ca9000476ac5698f19d81dd37f"
+  },
+  {
+    "path": "src/server/dot/CLAUDE.md",
+    "change": "modified",
+    "lines": 402,
+    "bytes": 15994,
+    "sha256_final": "cdab646ed5c4f44b0231bbdbea4a6c8c76dbc26ab1615c1009b131854c360c32"
+  },
+  {
+    "path": "src/server/dot/mod.rs",
+    "change": "modified",
+    "lines": 621,
+    "bytes": 27536,
+    "sha256_final": "aaf9d576b2f2bf1a864b5d616d5d16d8919719bdf8fe83c260b187b4a3b2decd"
+  },
+  {
+    "path": "src/server/peer_support.rs",
+    "change": "modified",
+    "lines": 240,
+    "bytes": 9020,
+    "sha256_final": "f80ef331a1030cd736d0a29e29cdc8569f18e50abefee8dbd9d858a38d1f4648"
+  },
+  {
+    "path": "src/server/proxy/CLAUDE.md",
+    "change": "modified",
+    "lines": 513,
+    "bytes": 22639,
+    "sha256_final": "4f0c98b91a8795788496ad4c19c2a522b9c598e339fd1b528687e85239984daf"
+  },
+  {
+    "path": "src/server/proxy/cert_cache.rs",
+    "change": "modified",
+    "lines": 312,
+    "bytes": 12216,
+    "sha256_final": "03ac09c8457c5727596256300ebc1527a9b8c2a918b318b9de8daffa9030994a"
+  },
+  {
+    "path": "src/server/pty/CLAUDE.md",
+    "change": "modified",
+    "lines": 102,
+    "bytes": 5978,
+    "sha256_final": "c61b902a2cdd3d8f0b185bbc7f52e1072d8a3ec140063ebfb688735c9b92c33f"
+  },
+  {
+    "path": "src/server/pty/mod.rs",
+    "change": "modified",
+    "lines": 360,
+    "bytes": 15082,
+    "sha256_final": "7428671719a3cf04752bcc8b22dabb33cc5bb7d7c265705277743ec34042ed95"
+  },
+  {
+    "path": "src/server/tls/CLAUDE.md",
+    "change": "modified",
+    "lines": 577,
+    "bytes": 26273,
+    "sha256_final": "bc0517f16d5e96328f33a2608d740ad788ea6e88befc788432cd2340bbbc62c5"
+  },
+  {
+    "path": "src/server/tls_cert_manager.rs",
+    "change": "modified",
+    "lines": 399,
+    "bytes": 15015,
+    "sha256_final": "c82bf37a0b95f1b59d8b7f03f9c1659d7adb66f791c233b7dfb02e50753b25c0"
+  },
+  {
+    "path": "src/state/app_state.rs",
+    "change": "modified",
+    "lines": 3302,
+    "bytes": 124954,
+    "sha256_final": "9982fbfbde3e004afb7cda07dd00704f03d9899f479140177ad730179b6ac543"
+  },
+  {
+    "path": "src/state/sqlite.rs",
+    "change": "modified",
+    "lines": 612,
+    "bytes": 20536,
+    "sha256_final": "ecf08fc40c07b3fd3fa8fcc7a278ad11f9477c87ecd9d002b53645a2c09f7f4e"
+  },
+  {
+    "path": "src/tui/event_loop.rs",
+    "change": "modified",
+    "lines": 268,
+    "bytes": 10596,
+    "sha256_final": "0f548aff7d6c7a0e3a37ed4a014c0089b2ea632a10b0f9e5ade861fbd6e839b9"
+  },
+  {
+    "path": "src/tui/modal/text_editor.rs",
+    "change": "modified",
+    "lines": 104,
+    "bytes": 3335,
+    "sha256_final": "0475b19b1c192ead3f46bc0fc5a2a37c0a93dd43a54641383b959bcdc70e956b"
+  },
+  {
+    "path": "src/tui/render/chat.rs",
+    "change": "modified",
+    "lines": 131,
+    "bytes": 4391,
+    "sha256_final": "5dad094a1ad312766a2a3885a5d4c47c8f6bf2633aea6a16844333c6fbb35a9e"
+  },
+  {
+    "path": "src/tui/render/stream.rs",
+    "change": "modified",
+    "lines": 261,
+    "bytes": 9613,
+    "sha256_final": "50759177edcbe2a701a8d3cb442fcba98f81e73d3f7119dbb49e41e33abc1e25"
+  },
+  {
+    "path": "src/utils/redact.rs",
+    "change": "modified",
+    "lines": 80,
+    "bytes": 2780,
+    "sha256_final": "7dc9dfdd356a8aaeafb5085280ae80d1c1b5b070931e9bc8dd4185114b4d86c2"
+  },
+  {
+    "path": "src/utils/save_load.rs",
+    "change": "modified",
+    "lines": 209,
+    "bytes": 6603,
+    "sha256_final": "d447c818a8f8e9d6f0f4867ccd1bbb2d527d5fdec9eca5584f9a80e264a22df0"
+  },
+  {
+    "path": "tests/agent_queue_fifo_test.rs",
+    "change": "added",
+    "lines": 59,
+    "bytes": 2071,
+    "sha256_final": "794563c86ee592a053f9b0f1c4e005b426aac279dd1efb01d6bf01daea49e472"
+  },
+  {
+    "path": "tests/audit_ci_coverage_test.rs",
+    "change": "added",
+    "lines": 58,
+    "bytes": 2140,
+    "sha256_final": "82663d01cd8ea4c056e9376b6136d1a6fcd9b58bd353a4eccf1a36e6d86c099e"
+  },
+  {
+    "path": "tests/build_scripts_test.py",
+    "change": "added",
+    "lines": 91,
+    "bytes": 4437,
+    "sha256_final": "cf7bc1f6893473e1815b7e26de8299a419d20f22a268d548cd97afc68a1ed84f"
+  },
+  {
+    "path": "tests/client_review_regression_test.rs",
+    "change": "added",
+    "lines": 411,
+    "bytes": 15859,
+    "sha256_final": "c510e2589df9621e046f66357b049dbc0353241980e6c66fdb57ac7538834f93"
+  },
+  {
+    "path": "tests/dashboard_frame_test.rs",
+    "change": "modified",
+    "lines": 652,
+    "bytes": 23359,
+    "sha256_final": "92068e8b00a05058401e827c8c0757a193696489ea4a17fe3243b3fc925677ff"
+  },
+  {
+    "path": "tests/display_rendering_test.rs",
+    "change": "added",
+    "lines": 107,
+    "bytes": 3200,
+    "sha256_final": "4f4167991c9728516f3b94b2aee90fc784e918e4bf50d17154f21235cc0d6673"
+  },
+  {
+    "path": "tests/helpers/common.rs",
+    "change": "modified",
+    "lines": 527,
+    "bytes": 19613,
+    "sha256_final": "2d16c238fe6b0ce2ddad08e84fa0566b408deff236180a2b6d53ebf5e137c829"
+  },
+  {
+    "path": "tests/helpers/llm_live.rs",
+    "change": "modified",
+    "lines": 691,
+    "bytes": 26463,
+    "sha256_final": "16a2642915aa4bcb58cbf758ffc20f4df7d34421b73c5cfcbaac459b497c62bf"
+  },
+  {
+    "path": "tests/helpers/netget.rs",
+    "change": "modified",
+    "lines": 1449,
+    "bytes": 55916,
+    "sha256_final": "ee4a39303dec5737bfcd5daf180a601d4eb4d855385d574d4d20114239c2cb67"
+  },
+  {
+    "path": "tests/llm_rate_limiter_test.rs",
+    "change": "modified",
+    "lines": 407,
+    "bytes": 13499,
+    "sha256_final": "7c6ed8949405758010c5376a9a449887f633afa470fbf73d11bba47a96c8cb11"
+  },
+  {
+    "path": "tests/log_template_test.rs",
+    "change": "modified",
+    "lines": 127,
+    "bytes": 3643,
+    "sha256_final": "534d0bd912e1887609e40de5fe4d2fa013039d3127f13c66e910091f157d1280"
+  },
+  {
+    "path": "tests/management_test.rs",
+    "change": "modified",
+    "lines": 319,
+    "bytes": 12085,
+    "sha256_final": "0e3a37ed80eff14fafb856f5f9c41f4c53a6798ef52260138b79de95344f4839"
+  },
+  {
+    "path": "tests/mcp_startup_config_test.rs",
+    "change": "modified",
+    "lines": 189,
+    "bytes": 6508,
+    "sha256_final": "0acef5c982993423263e0312d392481dddf93c0619d7fb6315ac5321ff24c24c"
+  },
+  {
+    "path": "tests/npm_launcher_test.cjs",
+    "change": "added",
+    "lines": 39,
+    "bytes": 2148,
+    "sha256_final": "99a11880764926f3cb1688634630213c3765aa73fac8acd7cb63a2505411fd0c"
+  },
+  {
+    "path": "tests/prompt_growth_test.rs",
+    "change": "modified",
+    "lines": 286,
+    "bytes": 8622,
+    "sha256_final": "762e9590e4309f9fd8776b558991142c99dd573da4008255b8a382c95c14cde6"
+  },
+  {
+    "path": "tests/reference_parser_test.rs",
+    "change": "modified",
+    "lines": 185,
+    "bytes": 5905,
+    "sha256_final": "9fa2b9a0f9f9d37a6ec52c8a7eb73eab3b3b56a09e2795803862636bb8de4751"
+  },
+  {
+    "path": "tests/scheduled_task_claim_test.rs",
+    "change": "added",
+    "lines": 138,
+    "bytes": 4783,
+    "sha256_final": "f0202a39561dd9728e10dbf7fa637f1727aa66134e647e3e16acab47ecbc44bd"
+  },
+  {
+    "path": "tests/scripting_resident_test.rs",
+    "change": "modified",
+    "lines": 674,
+    "bytes": 22494,
+    "sha256_final": "3c9894457c4bc4a8dbfa24b5359772dcc67d0d0a7251c1704f50a35c9b343aa9"
+  },
+  {
+    "path": "tests/secret_redaction_test.rs",
+    "change": "modified",
+    "lines": 90,
+    "bytes": 3238,
+    "sha256_final": "e7ec163c8db9a6112ca38b741610433ddbdd4db425e8dd4e4320ffb986fdb210"
+  },
+  {
+    "path": "tests/server/dot/CLAUDE.md",
+    "change": "modified",
+    "lines": 272,
+    "bytes": 9754,
+    "sha256_final": "41e559d4e61b1ada7b6a75f001deced134ba9eaaca9a7de98babe45ce2aa0585"
+  },
+  {
+    "path": "tests/server/dot/connection_bounds_test.rs",
+    "change": "modified",
+    "lines": 216,
+    "bytes": 9271,
+    "sha256_final": "4cd85590f7de3732c6a2f7d5d7724aad14eaf280924a21b5ac785d9365b8645f"
+  },
+  {
+    "path": "tests/server/proxy/CLAUDE.md",
+    "change": "modified",
+    "lines": 300,
+    "bytes": 12230,
+    "sha256_final": "de06b0ce2c0a7d1ac074cfc0b5cd2c71778219b30dbbeed61abc4e38d0140826"
+  },
+  {
+    "path": "tests/server/proxy/certificate_cache_bound_test.rs",
+    "change": "added",
+    "lines": 57,
+    "bytes": 2028,
+    "sha256_final": "43672620ba7f668ec82ce45d4d73d6da536b38a4b22dd1b4e8ebcd18f5a04714"
+  },
+  {
+    "path": "tests/server/proxy/mod.rs",
+    "change": "modified",
+    "lines": 16,
+    "bytes": 543,
+    "sha256_final": "0fb65a2d38d4dac129ebbb5ddd634c5a394c63c88468fad1f13d777192f5b4da"
+  },
+  {
+    "path": "tests/server/pty/CLAUDE.md",
+    "change": "modified",
+    "lines": 61,
+    "bytes": 3035,
+    "sha256_final": "6462c8383834e1fae02e6df688408a697bf6d58f3ee529e12ce8fb1c3a05a190"
+  },
+  {
+    "path": "tests/server/pty/mod.rs",
+    "change": "modified",
+    "lines": 7,
+    "bytes": 166,
+    "sha256_final": "5a492ba7374f6fd4b15ba3b0d2f97a27fc987c78359ecae903669cb48181b77a"
+  },
+  {
+    "path": "tests/server/pty/startup_cleanup_test.rs",
+    "change": "added",
+    "lines": 74,
+    "bytes": 2784,
+    "sha256_final": "74915005e4b3134543cde2c6eb9ed74c69678153ad2231bcb9ba291111ab7aac"
+  },
+  {
+    "path": "tests/server/tcp/CLAUDE.md",
+    "change": "modified",
+    "lines": 219,
+    "bytes": 9515,
+    "sha256_final": "b7aed89b28675ba68fd07dd11446d7475cc4829ad579784f6a466b3ed8190dde"
+  },
+  {
+    "path": "tests/server/tcp/mod.rs",
+    "change": "modified",
+    "lines": 6,
+    "bytes": 168,
+    "sha256_final": "430a13189405cf2ba454b12665713a607f9a624ff1b72837c46010d753b5cc1a"
+  },
+  {
+    "path": "tests/server/tcp/peer_lifecycle_test.rs",
+    "change": "added",
+    "lines": 102,
+    "bytes": 3147,
+    "sha256_final": "6ac1a69f5b3a930dc2eda5138a7272a953a1a340173cf0d40b8cc866406b4b5f"
+  },
+  {
+    "path": "tests/server/tls/CLAUDE.md",
+    "change": "modified",
+    "lines": 320,
+    "bytes": 10561,
+    "sha256_final": "1eea114584c109269bfee1696ed3e1d2c151143892946652ba2e133529205adc"
+  },
+  {
+    "path": "tests/server/tls/certificate_validation_test.rs",
+    "change": "added",
+    "lines": 63,
+    "bytes": 2325,
+    "sha256_final": "34ec1e20b570828caf3894264b00edf07cdc51dc1366b95114a76bd355e0e7b8"
+  },
+  {
+    "path": "tests/server/tls/mod.rs",
+    "change": "modified",
+    "lines": 12,
+    "bytes": 351,
+    "sha256_final": "50691ec92b3c2ebcf8bd0d46ba65b2493e4438b843c629aed99fa745bf5cef24"
+  },
+  {
+    "path": "tests/sqlite_identifier_test.rs",
+    "change": "added",
+    "lines": 51,
+    "bytes": 1921,
+    "sha256_final": "b6befcf2de1650d13c2026e78222c2a0eb9555f830b743e60e32c9410bb4eb09"
+  },
+  {
+    "path": "tests/startup_params_result_test.rs",
+    "change": "modified",
+    "lines": 184,
+    "bytes": 6323,
+    "sha256_final": "3cf0f9fcaa63fab82bb28afb2cf08d0885a8910984b01c45d52bf7971e27ee76"
+  },
+  {
+    "path": "tests/test_infrastructure_review_test.rs",
+    "change": "added",
+    "lines": 178,
+    "bytes": 5691,
+    "sha256_final": "f20fc4958323639ffc45d26ffe7475928c053d70df4c02d1d0bec67ab1e196d2"
+  },
+  {
+    "path": "tests/utils_save_load_test.rs",
+    "change": "modified",
+    "lines": 110,
+    "bytes": 4380,
+    "sha256_final": "d45abb3c2e1fbf53ed5e149d12146a9a9ecf7dcd6bd703623a390f6959a179ab"
+  },
+  {
+    "path": "web/test/composer_model_test.mjs",
+    "change": "added",
+    "lines": 44,
+    "bytes": 2157,
+    "sha256_final": "fdb4755d49455132a95e56dae50f3526b110e84c8450fd22a35efefae57489df"
+  },
+  {
+    "path": "web/test/telnet_test.mjs",
+    "change": "added",
+    "lines": 41,
+    "bytes": 1777,
+    "sha256_final": "0711317a55c23f6fbd9afda0ccbb75e8a79e2acb51b0557ddb5d7300fe20ee4e"
+  }
+]

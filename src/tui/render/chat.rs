@@ -13,7 +13,7 @@ const INPUT_MAX_ROWS: u16 = 5;
 
 /// Rows the input box needs, borders included.
 pub fn input_height(app: &DashboardApp) -> u16 {
-    (app.input.lines().len() as u16).clamp(1, INPUT_MAX_ROWS) + 2
+    app.input.lines().len().clamp(1, INPUT_MAX_ROWS as usize) as u16 + 2
 }
 
 pub fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
@@ -41,16 +41,28 @@ pub fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     frame.render_widget(block, area);
     app.hits.push(inner, HitTarget::ChatInput);
 
+    if inner.width <= 2 || inner.height == 0 {
+        return;
+    }
+    let (row, col) = app.input.cursor_position();
+    // InputState counts Unicode scalars; the terminal cursor counts display cells.
+    let prefix: String = app.input.lines()[row].chars().take(col).collect();
+    let cursor_column = Span::raw(prefix).width();
+    let first_row = row.saturating_sub(inner.height as usize - 1);
+    let first_column = cursor_column.saturating_sub(inner.width as usize - 3);
+
     let lines: Vec<Line> = app
         .input
         .lines()
         .iter()
         .enumerate()
+        .skip(first_row)
+        .take(inner.height as usize)
         .map(|(i, l)| {
             let prompt = if i == 0 { "> " } else { "  " };
             Line::from(vec![
                 Span::styled(prompt, app.styles.accent),
-                Span::styled(l.clone(), app.styles.normal),
+                Span::styled(scroll_line(l, first_column), app.styles.normal),
             ])
         })
         .collect();
@@ -61,13 +73,30 @@ pub fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     }
 
     if focused {
-        let (row, col) = app.input.cursor_position();
-        let x = inner.x + 2 + col as u16;
-        let y = inner.y + row as u16;
-        if x < inner.x + inner.width && y < inner.y + inner.height {
-            frame.set_cursor_position((x, y));
+        let x = inner.x + 2 + (cursor_column - first_column) as u16;
+        let y = inner.y + (row - first_row) as u16;
+        frame.set_cursor_position((x, y));
+    }
+}
+
+/// Clip whole graphemes by terminal columns, padding a partially clipped wide glyph.
+/// This also keeps very long pasted lines independent of Paragraph's u16 scroll limit.
+fn scroll_line(line: &str, columns: usize) -> String {
+    let span = Span::raw(line);
+    let mut skipped = 0;
+    let mut out = String::new();
+    for grapheme in span.styled_graphemes(ratatui::style::Style::default()) {
+        let width = Span::raw(grapheme.symbol).width();
+        if skipped < columns {
+            skipped += width;
+            if skipped > columns {
+                out.push_str(&" ".repeat(skipped - columns));
+            }
+        } else {
+            out.push_str(grapheme.symbol);
         }
     }
+    out
 }
 
 fn draw_suggestions(frame: &mut Frame, app: &DashboardApp, input_area: Rect) {

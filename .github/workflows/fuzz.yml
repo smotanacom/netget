@@ -36,8 +36,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Per-target budget. A default dispatch is 300s x 22 targets ~= 110 minutes of fuzzing
-  # plus the build; a dispatch can ask for more.
+  # Per-target budget. Each matrix job gets its own budget; a dispatch can ask for more.
   SECONDS_PER_TARGET: ${{ github.event.inputs.seconds_per_target || '300' }}
 
 jobs:
@@ -76,6 +75,9 @@ jobs:
           - nsq_frame
           - smb2_request
           - ntlmssp_token
+          - zabbix_packet
+          - gearman_packet
+          - nostr_message
     steps:
       - uses: actions/checkout@v4
 
@@ -118,8 +120,12 @@ jobs:
       - name: Fuzz ${{ matrix.target }}
         working-directory: fuzz
         run: |
+          if [[ ! "$SECONDS_PER_TARGET" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::seconds_per_target must be a positive integer"
+            exit 1
+          fi
           cargo fuzz run ${{ matrix.target }} -- \
-            -max_total_time=${{ env.SECONDS_PER_TARGET }} \
+            "-max_total_time=$SECONDS_PER_TARGET" \
             -timeout=25 \
             -rss_limit_mb=2048 \
             -print_final_stats=1

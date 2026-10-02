@@ -74,10 +74,11 @@ fn parse_startup_params(params: Option<crate::protocol::StartupParams>) -> Resul
             };
         }
         if let Some(timeout) = params.get_optional_i64("timeout_ms")? {
-            config.timeout_ms = timeout as u64;
+            config.timeout_ms =
+                u64::try_from(timeout).context("SNMP timeout_ms must be nonnegative")?;
         }
         if let Some(retries) = params.get_optional_i64("retries")? {
-            config.retries = retries as u32;
+            config.retries = u32::try_from(retries).context("SNMP retries must fit u32")?;
         }
     }
 
@@ -364,14 +365,10 @@ impl SnmpClient {
                 if matches!(config.version, SnmpVersion::V1) {
                     return Err(anyhow::anyhow!("GETBULK is only supported in SNMPv2c"));
                 }
-                let non_repeaters = data
-                    .get("non_repeaters")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as i32;
-                let max_repetitions = data
-                    .get("max_repetitions")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(10) as i32;
+                let non_repeaters =
+                    crate::client::wire_values::number::<u32>(&data, "non_repeaters", 0)?;
+                let max_repetitions =
+                    crate::client::wire_values::number::<u32>(&data, "max_repetitions", 10)?;
                 let bytes = Self::build_v2c_getbulk_request(
                     &oids,
                     &config.community,
@@ -875,8 +872,8 @@ impl SnmpClient {
         oids: &[String],
         community: &str,
         request_id: i32,
-        non_repeaters: i32,
-        max_repetitions: i32,
+        non_repeaters: u32,
+        max_repetitions: u32,
     ) -> Result<Vec<u8>> {
         let var_binds: Vec<v2::VarBind> = oids
             .iter()
@@ -888,8 +885,8 @@ impl SnmpClient {
 
         let pdu = v2::Pdus::GetBulkRequest(v2::GetBulkRequest(v2::BulkPdu {
             request_id,
-            non_repeaters: non_repeaters as u32,
-            max_repetitions: max_repetitions as u32,
+            non_repeaters,
+            max_repetitions,
             variable_bindings: var_binds,
         }));
 
