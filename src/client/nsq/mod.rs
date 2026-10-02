@@ -147,6 +147,7 @@ struct Flow {
     identified: bool,
     subscription: Option<(String, String)>,
     closing: bool,
+    late_message_seen: bool,
     ready_high_water: u64,
     in_flight: HashSet<String>,
     pending: Option<Pending>,
@@ -237,6 +238,7 @@ async fn session(
         identified: false,
         subscription: None,
         closing: false,
+        late_message_seen: false,
         ready_high_water: 0,
         in_flight: HashSet::new(),
         pending: None,
@@ -314,7 +316,12 @@ async fn session(
                         // RDY reductions cannot retract deliveries already selected by the
                         // daemon or travelling in the opposite TCP direction. Retain a
                         // bounded admission ceiling from the largest grant on this socket.
-                        anyhow::ensure!(!flow.closing && flow.in_flight.len()<(flow.ready_high_water as usize),"NSQ message exceeds granted RDY concurrency or follows CLOSE_WAIT");
+                        anyhow::ensure!(flow.in_flight.len()<(flow.ready_high_water as usize),"NSQ message exceeds granted RDY concurrency");
+                        // nsqd 1.3.0's command and message loops share only the writer
+                        // lock. A pump iteration selected before StartClose may send
+                        // one message after CLOSE_WAIT; its next iteration sees RDY0.
+                        anyhow::ensure!(!flow.closing || !flow.late_message_seen,"NSQ delivered more than one message after CLOSE_WAIT");
+                        if flow.closing { flow.late_message_seen=true; }
                         let msg=nsq::parse_message(&frame.data).context("NSQ truncated message")?;
                         let id=std::str::from_utf8(&msg.id).context("NSQ message id not ASCII")?;
                         anyhow::ensure!(id.bytes().all(|b|b.is_ascii_hexdigit()),"NSQ message id must be hexadecimal");

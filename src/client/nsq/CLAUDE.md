@@ -31,8 +31,12 @@ have no success reply. Error frames for FIN/REQ/TOUCH are asynchronous and may b
 uncorrelated; all other errors close. There is no automatic FIN. Binary incoming
 messages have null body, body_utf8=false and an exact body_bytes count; the model can
 still decide FIN/REQ/TOUCH by ID. Outbound binary payloads are outside the action scope.
-CLS returns CLOSE_WAIT and stops delivery; it leaves the socket available to acknowledge
-messages already in flight until an explicit disconnect.
+CLS returns CLOSE_WAIT and stops new selections; it leaves the socket available to
+acknowledge messages already in flight until an explicit disconnect. In nsqd 1.3.0,
+StartClose changes RDY/state without synchronizing the message pump's selected branch
+with the writer lock. One already-selected delivery can therefore follow CLOSE_WAIT.
+The client admits at most one such late message within the prior RDY concurrency bound;
+a second late delivery is refused even if FIN freed a slot.
 
 The command handle is registered before IDENTIFY and before a manual connected handler.
 Three owned tasks: one continuous frame reader, one I/O session, one event dispatcher.

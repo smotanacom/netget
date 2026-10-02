@@ -32,7 +32,11 @@ three daemon heartbeat intervals and remains controllable through injected disco
 survives EOF; explicit unsupported negotiation; disconnect/stop during stalled IDENTIFY;
 all three tasks tracked; followup bound, blocked-write cancellation/deadline and stalled-handler
 queue bound. The RDY reduction fixture preserves legal deliveries already in transit when
-RDY0 is sent. `wire_test.rs`: names/IDs/numbers/body/MPUB bounds, frame size/type bounds before allocation, exact largest frame and partial-frame
+RDY0 is sent. The CLOSE_WAIT ordering fixture admits one message already selected by
+the daemon and proves FIN works, then rejects a second late delivery even after FIN.
+This matches the independent command/message loops and StartClose in the pinned
+nsqd 1.3.0 source, rather than assuming CLOSE_WAIT synchronizes both loops.
+`wire_test.rs`: names/IDs/numbers/body/MPUB bounds, frame size/type bounds before allocation, exact largest frame and partial-frame
 read deadlines. Source tests stay outside src. No ignore or skip gates.
 
 NSQ has no supported tshark/Wireshark dissector in this environment. Capture transport
