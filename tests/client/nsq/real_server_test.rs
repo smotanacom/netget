@@ -11,6 +11,7 @@ async fn daemon() -> crate::helpers::E2EResult<RealServer> {
         },
     )
     .args([
+        "--log-level=debug",
         "--tcp-address=127.0.0.1:{port}",
         "--http-address=127.0.0.1:{port1}",
         "--data-path={dir}",
@@ -214,7 +215,28 @@ async fn independent_nsqd_heartbeats_keep_manual_connected_event_alive(
         vec![json!({"event_pattern":"*","handler":{"type":"manual","timeout_secs":60}})],
     )
     .await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // nsqd logs each parsed NOP at debug level. Three observed commands prove
+    // three heartbeat exchanges completed while the connected handler is parked.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let heartbeats = server
+                .log()
+                .lines()
+                .filter(|line| line.contains("PROTOCOL(V2):") && line.ends_with("[NOP]"))
+                .count();
+            if heartbeats >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "nsqd did not observe three heartbeat NOP replies: {}",
+            server.log()
+        )
+    })?;
     assert!(matches!(
         state.get_client(id).await.unwrap().status,
         netget::state::ClientStatus::Connected
