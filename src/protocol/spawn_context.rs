@@ -98,23 +98,28 @@ impl StartupParams {
     ///
     /// # Errors
     /// Returns [`StartupParamError::Undeclared`] if any key in `params` is not
-    /// defined in `schema`.
+    /// defined in `schema`, or [`StartupParamError::Invalid`] if `params` is not
+    /// an object. An absent parameter set should be represented by `None` at the caller.
     pub fn new(
         params: serde_json::Value,
         schema: Vec<ParameterDefinition>,
     ) -> StartupParamResult<Self> {
         let allowed_params: HashSet<String> = schema.iter().map(|p| p.name.clone()).collect();
 
-        // Validate that all provided parameters are in the schema
-        if let Some(obj) = params.as_object() {
-            for key in obj.keys() {
-                if !allowed_params.contains(key) {
-                    return Err(StartupParamError::Undeclared {
-                        key: key.clone(),
-                        allowed: sorted(&allowed_params),
-                        accessed_by_protocol: false,
-                    });
-                }
+        let obj = params
+            .as_object()
+            .ok_or_else(|| StartupParamError::Invalid {
+                key: "startup_params".to_string(),
+                detail: "startup_params must be a JSON object".to_string(),
+            })?;
+        // Validate that all provided parameters are in the schema.
+        for key in obj.keys() {
+            if !allowed_params.contains(key) {
+                return Err(StartupParamError::Undeclared {
+                    key: key.clone(),
+                    allowed: sorted(&allowed_params),
+                    accessed_by_protocol: false,
+                });
             }
         }
 
@@ -122,6 +127,39 @@ impl StartupParams {
             params,
             allowed_params,
         })
+    }
+
+    /// Validate declared JSON shapes and required fields before any resource is
+    /// stopped or registered. Protocol-specific I/O checks still occur at spawn.
+    pub fn new_validated(
+        params: serde_json::Value,
+        schema: Vec<ParameterDefinition>,
+    ) -> StartupParamResult<Self> {
+        let result = Self::new(params, schema.clone())?;
+        for parameter in &schema {
+            let value = result.params.get(&parameter.name);
+            if value.is_none_or(serde_json::Value::is_null) {
+                if parameter.required {
+                    return Err(result.invalid(
+                        &parameter.name,
+                        "required parameter is missing or null".into(),
+                    ));
+                }
+                continue;
+            }
+            let value = value.expect("present above");
+            let hint = parameter.type_hint.replace(" or ", "|");
+            if !hint
+                .split('|')
+                .any(|kind| parameter_type_matches(value, kind.trim()))
+            {
+                return Err(result.invalid(
+                    &parameter.name,
+                    format!("expected {}, got {}", parameter.type_hint, value),
+                ));
+            }
+        }
+        Ok(result)
     }
 
     /// Names of the parameters this protocol declares, sorted.
@@ -602,5 +640,32 @@ impl SpawnContext {
     #[allow(deprecated)]
     pub fn legacy_listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+}
+
+/// Type hints intentionally admit unions and typed arrays. Unknown descriptive
+/// hints retain protocol validation rather than inventing an interpretation.
+fn parameter_type_matches(value: &serde_json::Value, kind: &str) -> bool {
+    match kind {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "null" => value.is_null(),
+        "array of strings" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item.is_string())),
+        "array of objects" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item.is_object())),
+        "array of integers" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item.is_i64() || item.is_u64())),
+        "array of booleans" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item.is_boolean())),
+        _ => true,
     }
 }

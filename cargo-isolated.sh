@@ -50,7 +50,7 @@ TARGET_DIR="${SCRIPT_DIR}/target"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$TARGET_DIR}"
 
 # Ensure sccache is used and consistent
-export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
+export RUSTC_WRAPPER="${RUSTC_WRAPPER-sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-30G}"
 
 # Disable incremental; env overrides profiles
@@ -72,6 +72,9 @@ export CARGO_ENCODED_RUSTFLAGS="$ENCODED"               # recommended for multi-
 
 # Optional: strip debuginfo in dev to further stabilize keys
 # export CARGO_PROFILE_DEV_DEBUG=0                       # fewer path embeddings
+
+# Supervision records the calling session; target directories remain shared.
+export CARGO_SESSION_PID="${CARGO_SESSION_PID:-$PPID}"
 
 # Use shared target directory (no longer isolated per-session)
 CARGO_USE_ISOLATION=false exec "${SCRIPT_DIR}/cargo.sh" "$@"

@@ -1,0 +1,189 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+warning: field `line` is never read
+   --> tests/affirmative_default_drift_test.rs:356:5
+    |
+355 | struct Site {
+    |        ---- field in this struct
+356 |     line: usize,
+    |     ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "affirmative_default_drift_test") generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 2.21s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/affirmative_default_drift_test.rs (target/debug/deps/affirmative_default_drift_test-9f0dd7746f363168)
+
+running 4 tests
+test the_comment_stripper_preserves_lines_and_quote_parity ... ok
+test the_rule_flags_the_historical_defects_and_not_their_neighbours ... ok
+test no_new_affirmative_default_on_a_verdict_field ... ok
+test the_scan_is_reading_real_source ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.68s
+
+     Running tests/client_event_wiring_test.rs (target/debug/deps/client_event_wiring_test-7027e9ab967818e9)
+
+running 3 tests
+test no_new_client_declares_an_event_nothing_emits ... ok
+test no_new_client_discards_the_models_answer ... ok
+test no_new_client_drops_the_models_answer_structurally ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/decision_tag_ratchet_test.rs (target/debug/deps/decision_tag_ratchet_test-5b32f83bb0adfc82)
+
+running 4 tests
+test comment_stripping_ignores_prose_but_keeps_code ... ok
+test the_reference_protocol_is_tagged ... ok
+test every_server_with_an_llm_path_logs_a_decision_tag ... ok
+test the_scan_covers_the_server_tree ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/doc_paths_exist_test.rs (target/debug/deps/doc_paths_exist_test-9d32a60d658f5625)
+
+running 1 test
+test every_backticked_path_in_a_protocol_doc_exists ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+     Running tests/doc_test_counts_test.rs (target/debug/deps/doc_test_counts_test-e1124ac9b089a9c6)
+
+running 1 test
+test every_scoped_test_count_in_a_doc_matches_the_source ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/event_emit_sites_test.rs (target/debug/deps/event_emit_sites_test-ca8b8fc6dc6e5d8e)
+
+running 4 tests
+test reference_detection_accepts_every_spelling_in_the_tree ... ok
+test every_client_event_type_has_an_emit_site ... ok
+test the_scan_covers_both_trees ... ok
+test every_server_event_type_has_an_emit_site ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/example_hex_drift_test.rs (target/debug/deps/example_hex_drift_test-5c94eb81c0fe125f)
+
+running 3 tests
+test the_rule_flags_the_historical_defect_and_not_its_fix ... ok
+test the_scan_is_reading_real_source ... ok
+test no_long_hex_literal_in_what_the_model_copies ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.27s
+
+     Running tests/failure_mode_declaration_test.rs (target/debug/deps/failure_mode_declaration_test-8e74ac2a4ab419a6)
+
+running 6 tests
+test a_comment_is_not_a_declaration ... ok
+test the_scan_reaches_nested_protocols ... ok
+test every_deliberately_silent_protocol_declares_it ... ok
+test a_protocol_that_answers_is_not_declared_silent ... ok
+test every_connectionless_server_declares_its_failure_mode ... ok
+test a_silent_protocol_still_tags_its_failures_in_the_log ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/handler_result_decides_the_bound_test.rs (target/debug/deps/handler_result_decides_the_bound_test-f45028d5478e0287)
+
+running 3 tests
+test the_rule_flags_the_historical_defect_and_not_its_fix ... ok
+test no_budget_is_gated_on_handler_configuration ... ok
+test the_scan_sees_the_protocols_that_get_this_right ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/narrowing_cast_drift_test.rs (target/debug/deps/narrowing_cast_drift_test-e0dc8eb93f5664de)
+
+running 3 tests
+test the_rule_flags_the_defect_and_not_its_fix ... ok
+test no_model_supplied_code_is_narrowed_without_a_range_check_first ... ok
+test the_scan_finds_narrowing_casts_to_check ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/no_protocol_is_hidden_from_the_model_test.rs (target/debug/deps/no_protocol_is_hidden_from_the_model_test-37abc50b1c6f5d25)
+
+running 1 test
+test no_protocol_declares_itself_incomplete ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/real_client_evidence_is_run_test.rs (target/debug/deps/real_client_evidence_is_run_test-de30738380710a10)
+
+running 3 tests
+test the_scan_finds_real_client_tests ... ok
+test ci_feature_clients_are_installed ... ok
+test every_real_client_test_is_named_in_the_ci_evidence_loop ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/recursive_decoder_depth_test.rs (target/debug/deps/recursive_decoder_depth_test-b0255ca4147b579b)
+
+running 3 tests
+test the_rule_flags_the_historical_defects_and_not_their_fixes ... ok
+test no_recursive_decoder_is_unbounded ... FAILED
+test the_scan_sees_the_decoders_that_are_already_bounded ... ok
+
+failures:
+
+---- no_recursive_decoder_is_unbounded stdout ----
+
+thread 'no_recursive_decoder_is_unbounded' (86851984) panicked at tests/recursive_decoder_depth_test.rs:879:5:
+these are bounded now, or moved — update UNBOUNDED_RECURSIVE_DECODER_BASELINE: ["scripting::contains_event_reference", "scripting::interpolate_value", "scripting::validate_event_references"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    no_recursive_decoder_is_unbounded
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.81s
+
+error: test failed, to rerun pass `--test recursive_decoder_depth_test`
+     Running tests/request_only_declaration_test.rs (target/debug/deps/request_only_declaration_test-c0721311ac68de27)
+
+running 1 test
+test no_protocol_is_request_only_and_messageable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/startup_param_drift_test.rs (target/debug/deps/startup_param_drift_test-22213829c0f52d5a)
+
+running 2 tests
+test the_scan_finds_startup_parameters_to_check ... ok
+test no_new_declared_startup_parameter_goes_unread ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/tcp_server_bounds_ratchet_test.rs (target/debug/deps/tcp_server_bounds_ratchet_test-e288d0f0636dccd5)
+
+running 4 tests
+test every_tcp_accept_loop_goes_through_the_shared_connection_cap ... ok
+test every_tcp_accept_loop_declares_a_read_deadline ... ok
+test the_protocols_these_sweeps_covered_have_both_bounds ... ok
+test no_accept_loop_bounds_only_its_handshake ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/test_suite_hygiene_test.rs (target/debug/deps/test_suite_hygiene_test-f953a24f554b3715)
+
+running 3 tests
+test protocol_suites_do_not_wait_on_a_fixed_number_of_seconds ... ok
+test a_file_that_configures_a_mock_also_verifies_it ... ok
+test every_ignore_attribute_carries_a_reason ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/vendored_hyper_patch_test.rs (target/debug/deps/vendored_hyper_patch_test-ddaf84af0c0ea6a9)
+
+running 2 tests
+test the_vendored_date_cache_never_calls_system_time_now_on_wasm32 ... ok
+test cargo_builds_the_vendored_hyper_at_the_vendored_version ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `--test recursive_decoder_depth_test`

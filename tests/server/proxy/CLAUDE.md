@@ -2,6 +2,10 @@
 
 ## Test Overview
 
+`certificate_cache_bound_test.rs` fills the MITM cache past its 1,024-entry bound using
+CPU-only certificate generation. It asserts the bound, oldest-pair eviction, identity reuse
+on cache hits, and retention of the newest certificate with its matching private key.
+
 Comprehensive end-to-end tests for HTTP/HTTPS proxy functionality. Tests spawn real HTTP/HTTPS target servers and NetGet
 proxy, then validate behavior using `reqwest` HTTP client configured to route through the proxy.
 
@@ -220,7 +224,7 @@ necessary.
 let (target_port, _handle) = start_test_http_server().await?;
 
 // 2. Start NetGet proxy with behavior prompt
-let proxy_port = helpers::get_available_port().await?;
+let proxy_port = 0; // discover the bound port from server.port below
 let prompt = format!("listen on port {} using proxy stack. <behavior>", proxy_port);
 let server = helpers::start_netget_server(ServerConfig::new(prompt)).await?;
 

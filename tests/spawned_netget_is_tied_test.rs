@@ -25,35 +25,48 @@
 
 use std::path::{Path, PathBuf};
 
-/// Files that spawn the binary and are **not** tied, each with the reason it is still here.
-///
-/// **Shrink only.** Adding an entry means accepting that a killed test run can leave a `netget`
-/// behind; do that only with a reason better than "it was easier".
-const BASELINE: &[(&str, &str)] = &[
-    (
-        "tests/e2e/netget_wrapper.rs",
-        "has a `Drop` guard (`start_kill`) but no OS-level tie. Same class as the four fixed \
-         here and a genuine gap; left alone because it was outside the task boundary that \
-         landed this ratchet, not because it is safe.",
-    ),
-    (
-        "tests/terminal_snapshot/mod.rs",
-        "spawns netget inside a pty, with a `Drop` guard whose comments record that `kill()` + \
-         `wait()` once hung on the success path — so adopting the tie here needs the pty \
-         teardown re-read rather than a two-line edit. Also outside that task's boundary.",
-    ),
-];
+/// All known wrappers now arm a death tie. Keep the empty exception list as a ratchet.
+const BASELINE: &[(&str, &str)] = &[];
+
+fn arms_death_tie(source: &str) -> bool {
+    source.contains("::tie_child") || source.contains("::arm_death_tie")
+}
+
+#[test]
+fn both_guard_apis_are_recognized() {
+    assert!(arms_death_tie("child_guard::tie_child(pid)"));
+    assert!(arms_death_tie("child_guard::arm_death_tie(pid)"));
+    assert!(arms_death_tie(
+        "protect_child(child, child_guard::arm_death_tie)"
+    ));
+    assert!(!arms_death_tie("child.kill_on_drop(true)"));
+    assert!(!arms_death_tie("child_guard::untie_child(pid)"));
+}
 
 /// Does this file spawn the netget binary?
 ///
 /// Deliberately crude: naming the binary and calling `spawn` is what every such site looks
-/// like. A false positive is a file that must then say `tie_child`, which is harmless; a false
+/// like. Require a process Command too: protocol and Tokio task spawn methods do not
+/// start application executables. A false
 /// negative is a file that spawns netget by some route nobody has used yet.
 fn spawns_netget(source: &str) -> bool {
     let names_binary = source.contains("CARGO_BIN_EXE_netget")
         || source.contains("get_netget_binary")
         || source.contains("netget_binary_path");
-    names_binary && source.contains("spawn(")
+    names_binary && source.contains("Command") && source.contains("spawn(")
+}
+
+#[test]
+fn process_spawns_are_distinguished_from_protocol_spawns() {
+    assert!(spawns_netget(
+        "Command::new(env!(\"CARGO_BIN_EXE_netget\")).spawn()"
+    ));
+    assert!(spawns_netget(
+        "use tokio::process::Command as Child; Child::new(get_netget_binary()).spawn()"
+    ));
+    assert!(!spawns_netget(
+        "env!(\"CARGO_BIN_EXE_netget\"); protocol.spawn(ctx)"
+    ));
 }
 
 fn tests_dir() -> PathBuf {
@@ -105,7 +118,7 @@ fn no_test_spawns_netget_without_a_death_tie() {
         if !spawns_netget(&source) {
             continue;
         }
-        if source.contains("tie_child") {
+        if arms_death_tie(&source) {
             if baselined.contains(&relative.as_str()) {
                 baseline_still_needed.push(relative);
             }

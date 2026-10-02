@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--no-default-features",
+    "--features",
+    "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite,quic,smb-client",
+    "--test",
+    "task_registration_cancellation_test",
+    "--",
+    "--test-threads=32"
+  ],
+  "exit_code": 101,
+  "seconds": 46.28,
+  "log": "/Users/matus/dev/netget/tmp/audit-2026-10-02/peer-registration-before.log",
+  "expected_failure": "dropping_unpolled_peer_registration_aborts_started_child"
+}

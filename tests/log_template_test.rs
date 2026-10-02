@@ -7,6 +7,16 @@ use netget::protocol::log_template::{LogLevel, LogTemplate};
 use serde_json::json;
 
 #[test]
+fn field_values_containing_placeholders_remain_literal() {
+    let template = LogTemplate::new().with_info("peer={peer}; message={message}; peer={peer}");
+    let data = json!({"peer": "{message}", "message": "$1 {peer}\r\nforged"});
+    assert_eq!(
+        template.render(LogLevel::Info, &data),
+        Some("peer={message}; message=$1 {peer}  forged; peer={message}".into())
+    );
+}
+
+#[test]
 fn test_simple_field_access() {
     let data = json!({
         "method": "GET",

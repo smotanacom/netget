@@ -292,7 +292,7 @@ impl DcServer {
     /// the one cleanup path.
     #[allow(clippy::too_many_arguments)]
     async fn run_connection<R, W>(
-        mut read_half: R,
+        read_half: R,
         write_half_arc: &Arc<tokio::sync::Mutex<W>>,
         connection_id: ConnectionId,
         server_id: crate::state::ServerId,

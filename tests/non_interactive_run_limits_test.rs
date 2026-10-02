@@ -233,8 +233,16 @@ fn run_for_exits_zero_when_the_duration_elapses() {
         &["--run-for", "2"],
     );
     netget.wait_line("is running on 127.0.0.1:", Duration::from_secs(20));
-    let status = netget.wait_exit(Duration::from_secs(20));
+    // The CLI constructs RunLimits after argument/settings initialization. Its
+    // timer already runs by this readiness line, whereas `began` also measures
+    // process loading and startup. Bound serving time without charging startup
+    // contention against the same two-second shutdown tolerance.
+    let ready = Instant::now();
+    let startup = began.elapsed();
+    let status = netget.wait_exit(Duration::from_secs(4));
+    let serving = ready.elapsed();
     let took = began.elapsed();
+    println!("run-for timing: startup={startup:?}, after_ready={serving:?}, total={took:?}");
     assert!(status.success(), "exit status {status}");
     assert!(
         !netget.lines_containing("--run-for 2s elapsed").is_empty(),
@@ -242,9 +250,46 @@ fn run_for_exits_zero_when_the_duration_elapses() {
         netget.seen
     );
     assert!(
-        took >= Duration::from_secs(2) && took < Duration::from_secs(4),
-        "--run-for 2 must end the run at ~2s, took {took:?}"
+        took >= Duration::from_secs(2),
+        "--run-for 2 must not stop before two seconds, took {took:?}"
     );
+    assert!(
+        serving < Duration::from_secs(4),
+        "--run-for 2 must stop promptly after readiness, served for {serving:?} (startup {startup:?})"
+    );
+}
+
+#[test]
+fn restored_global_task_keeps_cli_alive_and_reaches_the_task_ticker() {
+    let mut netget = Netget::spawn(
+        "global-task-only",
+        serde_json::json!([{
+            "type": "restore_session",
+            "session": {
+                "version": 2,
+                "resources": [],
+                "global_tasks": [{
+                    "task_id": "restored-global-fixture",
+                    "recurring": false,
+                    "delay_secs": 1,
+                    "instruction": "model availability failure is expected in this fixture"
+                }]
+            }
+        }]),
+        &["--run-for", "3"],
+    );
+    netget.wait_line("Configuration loaded successfully", Duration::from_secs(20));
+    netget.assert_alive_for(
+        Duration::from_millis(200),
+        "a future global task keeps the run alive",
+    );
+    // The fixture endpoint is 127.0.0.1:1. Observing dispatch proves the ticker
+    // runs; model availability can fail without contacting an actual model.
+    netget.wait_line(
+        "[TASK] Executing task 'restored-global-fixture'",
+        Duration::from_secs(10),
+    );
+    assert!(netget.wait_exit(Duration::from_secs(10)).success());
 }
 
 /// Two servers, `--exit-after-events 2`: both are reported and served, the first exchange does

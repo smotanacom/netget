@@ -22,6 +22,22 @@ pub const MEMORY_DATABASE_PATH: &str = ":memory:";
 /// Longest accepted database name.
 pub const MAX_DATABASE_NAME_LEN: usize = 64;
 
+/// Hard limits apply before copying query output into JSON.
+pub const MAX_QUERY_ROWS: usize = 10_000;
+pub const MAX_QUERY_RESULT_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_QUERY_VALUE_BYTES: i32 = 8 * 1024 * 1024;
+pub const MAX_QUERY_SQL_BYTES: i32 = 1024 * 1024;
+/// Bound CPU work as well as output size (e.g. recursive CTEs with no output).
+pub const MAX_QUERY_VM_STEPS: usize = 10_000_000;
+pub const MAX_QUERY_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// SQLite identifiers may contain quotes and punctuation. Quote names read from
+/// sqlite_master before interpolating them into introspection/count statements.
+#[cfg(feature = "sqlite")]
+fn quoted_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// Validate a database name supplied by the model.
 ///
 /// The name is not just a label: `create_database` turns it into a filesystem path
@@ -194,7 +210,8 @@ impl DatabaseInstance {
             let mut columns = Vec::new();
 
             // Get column information
-            let mut stmt = conn.prepare(&format!("PRAGMA table_info('{}')", table_name))?;
+            let quoted_name = quoted_identifier(&table_name);
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({quoted_name})"))?;
             let rows = stmt.query_map([], |row| {
                 let name: String = row.get(1)?;
                 let type_name: String = row.get(2)?;
@@ -216,11 +233,10 @@ impl DatabaseInstance {
             }
 
             // Get row count
-            let row_count: u64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM '{}'", table_name),
-                [],
-                |row| row.get(0),
-            )?;
+            let row_count: u64 =
+                conn.query_row(&format!("SELECT COUNT(*) FROM {quoted_name}"), [], |row| {
+                    row.get(0)
+                })?;
 
             self.tables.push(TableSchema {
                 name: table_name,
@@ -260,7 +276,7 @@ impl DatabaseInstance {
     pub fn update_row_counts(&mut self, conn: &Connection) -> Result<()> {
         for table in &mut self.tables {
             table.row_count = conn.query_row(
-                &format!("SELECT COUNT(*) FROM '{}'", table.name),
+                &format!("SELECT COUNT(*) FROM {}", quoted_identifier(&table.name)),
                 [],
                 |row| row.get(0),
             )?;
@@ -285,6 +301,16 @@ impl DatabaseConnection {
         let conn =
             Connection::open(&instance.path).context("Failed to open database connection")?;
 
+        conn.set_limit(
+            rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+            MAX_QUERY_VALUE_BYTES,
+        )
+        .context("Failed to set SQLite value size limit")?;
+        conn.set_limit(
+            rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH,
+            MAX_QUERY_SQL_BYTES,
+        )
+        .context("Failed to set SQLite SQL size limit")?;
         Ok(Self {
             conn: Mutex::new(conn),
             instance,
@@ -313,69 +339,81 @@ impl DatabaseConnection {
         // Record query execution
         self.instance.record_query();
 
-        // Check if this is a SELECT query (read-only)
-        let sql_upper = sql.trim().to_uppercase();
-        let is_select = sql_upper.starts_with("SELECT")
-            || sql_upper.starts_with("PRAGMA")
-            || sql_upper.starts_with("EXPLAIN");
-
-        if is_select {
-            // Execute SELECT query
-            let mut stmt = conn.prepare(sql)?;
-            let column_names: Vec<String> =
-                stmt.column_names().iter().map(|s| s.to_string()).collect();
-
-            let mut rows = Vec::new();
-            let mut query_rows = stmt.query([])?;
-
-            while let Some(row) = query_rows.next()? {
-                let mut row_values = Vec::new();
-                for i in 0..column_names.len() {
-                    let value: serde_json::Value = match row.get_ref(i)? {
-                        rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                        rusqlite::types::ValueRef::Integer(i) => {
-                            serde_json::Value::Number(i.into())
-                        }
-                        rusqlite::types::ValueRef::Real(f) => serde_json::Value::Number(
-                            serde_json::Number::from_f64(f)
-                                .unwrap_or_else(|| serde_json::Number::from(0)),
-                        ),
-                        rusqlite::types::ValueRef::Text(t) => {
-                            serde_json::Value::String(String::from_utf8_lossy(t).to_string())
-                        }
-                        rusqlite::types::ValueRef::Blob(b) => {
-                            serde_json::Value::String(hex::encode(b))
-                        }
-                    };
-                    row_values.push(value);
+        let started = std::time::Instant::now();
+        let mut steps = 0usize;
+        conn.progress_handler(
+            1000,
+            Some(move || {
+                steps += 1000;
+                steps >= MAX_QUERY_VM_STEPS || started.elapsed() >= MAX_QUERY_DURATION
+            }),
+        );
+        let result = (|| -> Result<QueryResult> {
+            use rusqlite::fallible_iterator::FallibleIterator;
+            let mut batch = rusqlite::Batch::new(&conn, sql);
+            let mut stmt = batch.next()?.context("query contains no SQL statement")?;
+            anyhow::ensure!(
+                batch.next()?.is_none(),
+                "execute_query accepts exactly one SQL statement"
+            );
+            let readonly = stmt.readonly();
+            let result = if stmt.column_count() > 0 {
+                let column_names: Vec<String> = stmt
+                    .column_names()
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect();
+                let mut bytes: usize = column_names
+                    .iter()
+                    .map(|name| name.len().saturating_mul(6).saturating_add(3))
+                    .sum();
+                let mut rows = Vec::new();
+                let mut query_rows = stmt.query([])?;
+                while let Some(row) = query_rows.next()? {
+                    anyhow::ensure!(rows.len() < MAX_QUERY_ROWS, "query result exceeds {} rows; use LIMIT (a modifying statement may already have executed)", MAX_QUERY_ROWS);
+                    let mut values = Vec::with_capacity(column_names.len());
+                    bytes = bytes.saturating_add(2);
+                    for i in 0..column_names.len() {
+                        use rusqlite::types::ValueRef;
+                        let value = row.get_ref(i)?;
+                        let cost = match value {
+                            ValueRef::Text(text) => text.len().saturating_mul(6).saturating_add(3),
+                            ValueRef::Blob(blob) => blob.len().saturating_mul(2).saturating_add(3),
+                            _ => 32,
+                        };
+                        bytes = bytes.saturating_add(cost);
+                        anyhow::ensure!(bytes <= MAX_QUERY_RESULT_BYTES, "query result exceeds {} bytes; select fewer/smaller values (a modifying statement may already have executed)", MAX_QUERY_RESULT_BYTES);
+                        values.push(match value {
+                            ValueRef::Null => serde_json::Value::Null,
+                            ValueRef::Integer(value) => serde_json::json!(value),
+                            ValueRef::Real(value) => serde_json::json!(value),
+                            ValueRef::Text(value) => serde_json::Value::String(
+                                String::from_utf8_lossy(value).into_owned(),
+                            ),
+                            ValueRef::Blob(value) => serde_json::Value::String(hex::encode(value)),
+                        });
+                    }
+                    rows.push(values);
                 }
-                rows.push(row_values);
-            }
-
-            Ok(QueryResult::Select {
-                columns: column_names,
-                rows,
-            })
-        } else {
-            // Execute DML/DDL query (INSERT, UPDATE, DELETE, CREATE, etc.)
-            let affected_rows = conn.execute(sql, [])?;
-
-            // Refresh schema if this was a DDL statement
-            if sql_upper.starts_with("CREATE")
-                || sql_upper.starts_with("DROP")
-                || sql_upper.starts_with("ALTER")
-            {
+                QueryResult::Select {
+                    columns: column_names,
+                    rows,
+                }
+            } else {
+                QueryResult::Modified {
+                    affected_rows: stmt.execute([])?,
+                }
+            };
+            drop(stmt);
+            // The prepared statement classifies WITH, comments, REPLACE, RETURNING,
+            // PRAGMA and DDL reliably; textual prefix checks do not.
+            if !readonly {
                 self.instance.refresh_schema(&conn)?;
-            } else if sql_upper.starts_with("INSERT")
-                || sql_upper.starts_with("UPDATE")
-                || sql_upper.starts_with("DELETE")
-            {
-                // For DML operations, just update row counts (more efficient than full schema refresh)
-                self.instance.update_row_counts(&conn)?;
             }
-
-            Ok(QueryResult::Modified { affected_rows })
-        }
+            Ok(result)
+        })();
+        conn.progress_handler(0, None::<fn() -> bool>);
+        result.map_err(|error| anyhow::anyhow!("SQLite query failed: {error:#}"))
     }
 
     /// Refresh table schemas

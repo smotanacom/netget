@@ -42,6 +42,14 @@ npx @smotana/netget
 ## Notes
 
 - Prebuilt binaries use a portable feature set (no BLE/NFC/packet-capture on Linux, no SMB client). Build from source for `all-protocols`: https://github.com/smotanacom/netget
+- Fallback downloads require the release's `SHA256SUMS`; the matching SHA-256 is
+  verified while streaming before extracting the expected executable. Missing or
+  ambiguous manifests and mismatches fail closed. Older releases without a manifest
+  can still be installed through their platform package or `NETGET_BINARY`.
+- Archives are capped at 512 MiB and downloads/extraction at two minutes; caches are
+  separated by version, platform, architecture and libc. A mirror must publish the
+  same manifest format. The manifest authenticates bytes relative to the trusted
+  release/mirror source; it is not an independent publisher signature.
 - Env overrides: `NETGET_BINARY` (use a specific binary), `NETGET_DOWNLOAD_BASE` (alternate download mirror).
 
 ## License

@@ -68,6 +68,8 @@ an `EIO` (or a `read()==0`) would have spun in exactly the way this heading call
 
 ## Failure and lifecycle
 
+- Both descriptors become Rust-owned immediately after `openpty`. Failures during raw-mode,
+  symlink, or async registration setup therefore release the master as well as the slave.
 - **`spawn()` awaits readiness** (PTY allocated, slave set raw, symlink created, master registered
   with the runtime) and returns `Err` on any failure → `ServerStatus::Error`.
 - **Fail closed, but not silent**, on LLM error. A terminal client has no timeout of its own — it

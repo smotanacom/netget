@@ -23,8 +23,4 @@
 # compiling against nothing. They were repaired and re-declared in 6ce2c30d, so their entries
 # are gone. That is what an entry being resolved looks like.
 
-# --- Dead TUI modules ------------------------------------------------------------------
-# `src/ui/mod.rs` declares only `pub mod app;`. These two predate the rolling TUI and
-# nothing references `ui::events` or `ui::layout`. Delete them or wire them back in.
-src/ui/events.rs
-src/ui/layout.rs
+# The two obsolete ui modules were removed in the October 2026 follow-up.

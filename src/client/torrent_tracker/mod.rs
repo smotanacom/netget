@@ -720,7 +720,8 @@ impl TorrentTrackerClient {
                     let port = data
                         .get("port")
                         .and_then(|v| v.as_u64())
-                        .context("Missing port")? as u16;
+                        .context("Missing port")?;
+                    let port = u16::try_from(port).context("tracker port exceeds u16")?;
                     let uploaded = data.get("uploaded").and_then(|v| v.as_u64()).unwrap_or(0);
                     let downloaded = data.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
                     // `left` is not a neutral counter: BEP 3 defines `left=0` as "I have the

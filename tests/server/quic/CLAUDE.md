@@ -22,3 +22,9 @@ at its unchanged five-second read deadline. It passed isolated, alongside all
 interfering mocked tests at four workers, and in the final complete four-worker
 run. The initial trace stopped after connection notification; its cause was not
 established, so these passes do not establish that the transient cannot recur.
+
+## Certificate parameter regression
+
+`certificate_validation_test.rs` verifies that numeric, null and object SAN
+entries are rejected before binding. It uses no peer or model. This audit
+regression runs alongside the existing stream and independent-peer suites.

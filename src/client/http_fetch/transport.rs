@@ -78,8 +78,27 @@ pub const HTTPS_UNSUPPORTED: &str =
      no server on the page's virtual network holds a certificate a client could verify. Use \
      http:// (NetGet's own servers in the page speak plain HTTP)";
 
-/// The methods the transport sends: the `http` client's set, plus `OPTIONS`.
-const METHODS: [&str; 7] = ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS"];
+/// The connection driver must end even when a caller drops or times out the exchange.
+/// A plain JoinHandle detaches on drop, leaving an unanswered request's socket alive.
+struct ConnectionDriver(tokio::task::JoinHandle<()>);
+
+impl Drop for ConnectionDriver {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn parse_method(method: &str) -> Result<hyper::Method> {
+    // Retain case-insensitive convenience for the previously supported methods.
+    // Extension methods are case-sensitive and must reach the peer unchanged.
+    const STANDARD_METHODS: [&str; 7] =
+        ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH", "OPTIONS"];
+    let method = STANDARD_METHODS
+        .into_iter()
+        .find(|standard| method.eq_ignore_ascii_case(standard))
+        .unwrap_or(method);
+    hyper::Method::from_bytes(method.as_bytes()).context("invalid HTTP method")
+}
 
 /// Where an `http://` URL points: the host and port to dial, the `Host` header, and the
 /// origin-form request target.
@@ -94,6 +113,16 @@ pub struct HttpTarget {
 /// Parse an absolute `http://` URL. `https://` is refused with [`HTTPS_UNSUPPORTED`]; any other
 /// scheme, or no host, is an error naming the URL.
 pub fn parse_http_url(url: &str) -> Result<HttpTarget> {
+    if url
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        bail!("HTTP URL contains unescaped whitespace or control characters");
+    }
+    let parsed = url::Url::parse(url).context("invalid HTTP URL")?;
+    if parsed.host_str().is_none() {
+        bail!("HTTP URL requires a host");
+    }
     let uri: hyper::Uri = url.parse().with_context(|| format!("not a URL: {url}"))?;
     match uri.scheme_str() {
         Some("http") => {}
@@ -109,7 +138,20 @@ pub fn parse_http_url(url: &str) -> Result<HttpTarget> {
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_string();
-    let port = authority.port_u16().unwrap_or(80);
+    if authority.as_str().contains('@') {
+        bail!("HTTP URL userinfo is unsupported; use an explicit Authorization header");
+    }
+    if host.is_empty() {
+        bail!("HTTP URL requires a nonempty host");
+    }
+    let port = match authority.port() {
+        Some(port) => port
+            .as_str()
+            .parse::<u16>()
+            .context("invalid HTTP URL port")?,
+        None if authority.as_str().ends_with(':') => bail!("HTTP URL port is empty"),
+        None => 80,
+    };
     let path_and_query = uri
         .path_and_query()
         .map(|p| p.as_str().to_string())
@@ -245,10 +287,7 @@ pub async fn exchange_response<S>(
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    let method = method.to_ascii_uppercase();
-    if !METHODS.contains(&method.as_str()) {
-        bail!("Unsupported HTTP method: {method}");
-    }
+    let method = parse_method(method)?;
 
     let mut builder = hyper::Request::builder()
         .method(method.as_str())
@@ -277,9 +316,9 @@ where
         .context("HTTP/1.1 handshake")?;
     // The connection future drives the socket; it ends when the response is read and the
     // sender dropped. Aborted on every exit so an abandoned exchange cannot keep the socket.
-    let driver = tokio::spawn(async move {
+    let _driver = ConnectionDriver(tokio::spawn(async move {
         let _ = connection.await;
-    });
+    }));
     let result = async {
         let response = sender
             .send_request(request)
@@ -298,7 +337,6 @@ where
         Ok(hyper::Response::from_parts(parts, collected.to_bytes()))
     }
     .await;
-    driver.abort();
     result
 }
 
@@ -317,10 +355,7 @@ pub async fn exchange_response_h2<S>(
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    let method = method.to_ascii_uppercase();
-    if !METHODS.contains(&method.as_str()) {
-        bail!("Unsupported HTTP method: {method}");
-    }
+    let method = parse_method(method)?;
 
     let uri = format!("http://{}{}", target.authority, target.path_and_query);
     let mut builder = hyper::Request::builder()
@@ -345,9 +380,9 @@ where
         hyper::client::conn::http2::handshake(SpawnExecutor, TokioIo::new(io))
             .await
             .context("HTTP/2 handshake (prior knowledge)")?;
-    let driver = tokio::spawn(async move {
+    let _driver = ConnectionDriver(tokio::spawn(async move {
         let _ = connection.await;
-    });
+    }));
     let result = async {
         let response = sender
             .send_request(request)
@@ -366,6 +401,5 @@ where
         Ok(hyper::Response::from_parts(parts, collected.to_bytes()))
     }
     .await;
-    driver.abort();
     result
 }

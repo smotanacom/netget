@@ -1,0 +1,28 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--no-default-features",
+    "--features",
+    "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite,quic,smb-client,grpc,ipp,torrent-dht,usb-fido2,terminal-snapshot",
+    "--test",
+    "task_registration_cancellation_test",
+    "--test",
+    "grpc_value_bounds_test",
+    "--test",
+    "audit_server_decoder_bounds_test",
+    "--test",
+    "wrapper_lifecycle_test",
+    "--test",
+    "spawned_netget_is_tied_test",
+    "--test",
+    "recursive_decoder_depth_test",
+    "--",
+    "--test-threads=32"
+  ],
+  "exit_code": 0,
+  "seconds": 233.33,
+  "log": "/Users/matus/dev/netget/tmp/audit-2026-10-02/remaining-native-final.log"
+}

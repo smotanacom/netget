@@ -220,6 +220,11 @@ impl EventHandlerType {
     /// in `src/events/handler.rs`) should call this so a typo is reported to the MCP
     /// caller at `start_server` time rather than silently at the first packet.
     pub fn validate(&self) -> Result<(), InterpolationError> {
+        if let EventHandlerType::Script { code, .. } = self {
+            if code.len() > super::types::ScriptSource::MAX_CODE_BYTES {
+                return Err(budget_error());
+            }
+        }
         match self {
             EventHandlerType::Static { actions } => {
                 for action in actions {
@@ -474,7 +479,11 @@ fn describe_available(value: &Value) -> String {
         Value::Object(map) if map.is_empty() => "this object is empty".to_string(),
         Value::Object(map) => format!(
             "available fields: {}",
-            map.keys().cloned().collect::<Vec<_>>().join(", ")
+            map.keys()
+                .take(16)
+                .map(|key| key.chars().take(64).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         Value::Array(items) if items.is_empty() => "this array is empty".to_string(),
         Value::Array(items) => format!("available indices: 0..{}", items.len() - 1),
@@ -524,15 +533,118 @@ fn resolve<'a>(
     Ok(current)
 }
 
-/// Render a resolved value for embedding inside a larger string.
-///
-/// Strings embed as their contents (no quotes); everything else embeds as its JSON form,
-/// so a number stays `42`, a boolean `true`, an absent-but-present field `null`.
-fn value_to_display(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
+/// Maximum resources for one static action expansion (including all actions).
+pub const MAX_INTERPOLATION_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_INTERPOLATION_NODES: usize = 65_536;
+pub const MAX_INTERPOLATION_DEPTH: usize = 64;
+
+fn budget_error() -> InterpolationError {
+    InterpolationError::new(
+        "event",
+        "static handler exceeds the 8 MiB, 65536-node or 64-level interpolation budget",
+    )
+}
+
+fn check_tree(value: &Value) -> Result<(), InterpolationError> {
+    if crate::utils::json_budget::within_budget(
+        value,
+        MAX_INTERPOLATION_BYTES,
+        MAX_INTERPOLATION_NODES,
+        MAX_INTERPOLATION_DEPTH,
+    ) {
+        Ok(())
+    } else {
+        Err(budget_error())
     }
+}
+
+/// A shared serialization budget bounds expansion before any large intermediate
+/// String is allocated. It also catches JSON escaping expansion.
+struct ExpansionBudget {
+    bytes: usize,
+    nodes: usize,
+}
+impl ExpansionBudget {
+    fn append(&mut self, out: &mut String, text: &str) -> Result<(), InterpolationError> {
+        if text.len() > MAX_INTERPOLATION_BYTES.saturating_sub(self.bytes) {
+            return Err(budget_error());
+        }
+        self.bytes += text.len();
+        out.push_str(text);
+        Ok(())
+    }
+    fn visit(&mut self) -> Result<(), InterpolationError> {
+        self.nodes += 1;
+        if self.nodes > MAX_INTERPOLATION_NODES {
+            return Err(budget_error());
+        }
+        Ok(())
+    }
+}
+
+fn bounded_display(
+    value: &Value,
+    budget: &mut ExpansionBudget,
+) -> Result<String, InterpolationError> {
+    check_tree(value)?;
+    if let Value::String(text) = value {
+        let mut result = String::new();
+        budget.append(&mut result, text)?;
+        return Ok(result);
+    }
+    struct Writer<'a> {
+        data: Vec<u8>,
+        budget: &'a mut ExpansionBudget,
+    }
+    impl std::io::Write for Writer<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_INTERPOLATION_BYTES.saturating_sub(self.budget.bytes) {
+                return Err(std::io::Error::other("interpolation byte cap"));
+            }
+            self.budget.bytes += bytes.len();
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Writer {
+        data: Vec::new(),
+        budget,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|_| budget_error())?;
+    String::from_utf8(writer.data).map_err(|_| budget_error())
+}
+
+fn clone_bounded(value: &Value, budget: &mut ExpansionBudget) -> Result<Value, InterpolationError> {
+    check_tree(value)?;
+    fn copy(value: &Value, budget: &mut ExpansionBudget) -> Result<Value, InterpolationError> {
+        budget.visit()?;
+        match value {
+            Value::String(text) => {
+                let mut out = String::new();
+                budget.append(&mut out, text)?;
+                Ok(Value::String(out))
+            }
+            Value::Array(items) => items
+                .iter()
+                .map(|v| copy(v, budget))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            Value::Object(map) => {
+                let mut out = serde_json::Map::new();
+                for (key, value) in map {
+                    let mut owned = String::new();
+                    budget.append(&mut owned, key)?;
+                    out.insert(owned, copy(value, budget)?);
+                }
+                Ok(Value::Object(out))
+            }
+            other => Ok(other.clone()),
+        }
+    }
+    copy(value, budget)
 }
 
 /// The event payload was absent, but a reference needed it.
@@ -544,32 +656,38 @@ fn missing_event_error(raw: &str) -> InterpolationError {
 }
 
 /// Interpolate one string, returning a `Value` so a whole-string reference keeps its type.
-fn interpolate_string(s: &str, event: Option<&Value>) -> Result<Value, InterpolationError> {
+fn interpolate_string(
+    s: &str,
+    event: Option<&Value>,
+    budget: &mut ExpansionBudget,
+) -> Result<Value, InterpolationError> {
     let Some(first) = find_reference(s, 0) else {
         // No reference at all: byte-identical pass-through.
-        return Ok(Value::String(s.to_string()));
+        let mut out = String::new();
+        budget.append(&mut out, s)?;
+        return Ok(Value::String(out));
     };
 
     // Rule 1: the string is exactly one reference -> substitute the JSON value itself.
     if first.start == 0 && first.end == s.len() {
         let segments = parse_path(&first)?;
         let event = event.ok_or_else(|| missing_event_error(first.raw))?;
-        return Ok(resolve(event, &segments, first.raw)?.clone());
+        return clone_bounded(resolve(event, &segments, first.raw)?, budget);
     }
 
     // Rule 2: one or more references embedded in surrounding text -> string splice.
-    let mut out = String::with_capacity(s.len());
+    let mut out = String::new();
     let mut cursor = 0usize;
     let mut found = Some(first);
     while let Some(f) = found {
-        out.push_str(&s[cursor..f.start]);
+        budget.append(&mut out, &s[cursor..f.start])?;
         let segments = parse_path(&f)?;
         let event = event.ok_or_else(|| missing_event_error(f.raw))?;
-        out.push_str(&value_to_display(resolve(event, &segments, f.raw)?));
+        out.push_str(&bounded_display(resolve(event, &segments, f.raw)?, budget)?);
         cursor = f.end;
         found = find_reference(s, cursor);
     }
-    out.push_str(&s[cursor..]);
+    budget.append(&mut out, &s[cursor..])?;
     Ok(Value::String(out))
 }
 
@@ -581,61 +699,97 @@ pub fn interpolate_value(
     value: &Value,
     event_data: Option<&Value>,
 ) -> Result<Value, InterpolationError> {
+    check_tree(value)?;
+    let result = interpolate_inner(
+        value,
+        event_data,
+        &mut ExpansionBudget { bytes: 0, nodes: 0 },
+    )?;
+    if check_tree(&result).is_err() {
+        crate::utils::json_budget::drop_iteratively(result);
+        return Err(budget_error());
+    }
+    Ok(result)
+}
+
+fn interpolate_inner(
+    value: &Value,
+    event_data: Option<&Value>,
+    budget: &mut ExpansionBudget,
+) -> Result<Value, InterpolationError> {
+    budget.visit()?;
     match value {
-        Value::String(s) => interpolate_string(s, event_data),
+        Value::String(s) => interpolate_string(s, event_data, budget),
         Value::Array(items) => items
             .iter()
-            .map(|item| interpolate_value(item, event_data))
+            .map(|item| interpolate_inner(item, event_data, budget))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
         Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
+            let mut out = serde_json::Map::new();
             for (key, val) in map {
-                let key = match interpolate_string(key, event_data)? {
+                let key = match interpolate_string(key, event_data, budget)? {
                     Value::String(s) => s,
-                    other => value_to_display(&other),
+                    other => bounded_display(&other, budget)?,
                 };
-                out.insert(key, interpolate_value(val, event_data)?);
+                if out.contains_key(&key) {
+                    return Err(InterpolationError::new(key, "interpolated keys collide"));
+                }
+                out.insert(key, interpolate_inner(val, event_data, budget)?);
             }
             Ok(Value::Object(out))
         }
-        // Numbers, booleans and null cannot contain references.
         other => Ok(other.clone()),
     }
 }
 
-/// Substitute `{{event.…}}` references across a static handler's action list.
-///
-/// Returns the actions unchanged (and never errors) when none of them contains a
-/// reference, so pre-existing handlers are unaffected — including handlers whose payloads
-/// contain literal braces.
-///
-/// # Errors
-/// [`InterpolationError`] if a reference is malformed, names a field the event does not
-/// have, or needs event data that this event did not carry.
+/// Expand all actions under one shared byte/node budget.
 pub fn interpolate_actions(
     actions: &[Value],
     event_data: Option<&Value>,
 ) -> Result<Vec<Value>, InterpolationError> {
-    if !actions.iter().any(contains_event_reference) {
-        return Ok(actions.to_vec());
+    if actions.len() > MAX_INTERPOLATION_NODES {
+        return Err(budget_error());
     }
-    actions
+    let mut budget = ExpansionBudget { bytes: 0, nodes: 0 };
+    let expanded = actions
         .iter()
-        .map(|action| interpolate_value(action, event_data))
-        .collect()
+        .map(|action| {
+            check_tree(action)?;
+            interpolate_inner(action, event_data, &mut budget)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let combined = Value::Array(expanded);
+    if check_tree(&combined).is_err() {
+        crate::utils::json_budget::drop_iteratively(combined);
+        return Err(budget_error());
+    }
+    let Value::Array(expanded) = combined else {
+        unreachable!()
+    };
+    Ok(expanded)
 }
 
-/// Whether a value tree contains at least one `{{event…}}` reference.
+/// Iterative inspection is also safe for programmatically constructed JSON.
 pub fn contains_event_reference(value: &Value) -> bool {
-    match value {
-        Value::String(s) => find_reference(s, 0).is_some(),
-        Value::Array(items) => items.iter().any(contains_event_reference),
-        Value::Object(map) => map
-            .iter()
-            .any(|(k, v)| find_reference(k, 0).is_some() || contains_event_reference(v)),
-        _ => false,
+    if check_tree(value).is_err() {
+        return false;
     }
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::String(s) if find_reference(s, 0).is_some() => return true,
+            Value::Array(items) => pending.extend(items),
+            Value::Object(map) => {
+                if map.keys().any(|key| find_reference(key, 0).is_some()) {
+                    return true;
+                }
+                pending.extend(map.values());
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether a script defines the resident entry point `handle(...)`.
@@ -643,19 +797,194 @@ pub fn contains_event_reference(value: &Value) -> bool {
 /// Deliberately syntactic and conservative: it looks for a definition, not a call, so a
 /// script that merely mentions the word is not flagged.
 fn defines_handle(language: &str, code: &str) -> bool {
-    let needles: &[&str] = match language.to_ascii_lowercase().as_str() {
-        "python" => &["def handle("],
-        "javascript" | "js" | "node" => &["function handle(", "handle = function(", "handle = ("],
-        "go" => &["func handle("],
-        "perl" => &["sub handle "],
-        _ => return false,
-    };
-    let code = code
-        .lines()
-        .map(|l| l.split('#').next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    needles.iter().any(|n| code.contains(n))
+    let language = language.to_ascii_lowercase();
+    let python = matches!(language.as_str(), "python" | "python3");
+    let perl = language == "perl";
+    let javascript = matches!(language.as_str(), "javascript" | "js" | "node");
+    if !python && !perl && !javascript && language != "go" {
+        return false;
+    }
+    // Ignore comments and string literals using each language's delimiters.
+    // Tokenization makes whitespace/newlines irrelevant without executing code.
+    let bytes = code.as_bytes();
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if ((python || perl) && bytes[i] == b'#')
+            || (!python && !perl && bytes[i..].starts_with(b"//"))
+        {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if !python && !perl && bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        // Perl's q/qq/qw/qx/qr operators are strings/regexes too, not code.
+        if perl && bytes[i] == b'q' {
+            let mut delimiter = i + 1;
+            if bytes
+                .get(delimiter)
+                .is_some_and(|b| matches!(*b, b'q' | b'w' | b'x' | b'r'))
+            {
+                delimiter += 1;
+            }
+            while bytes.get(delimiter).is_some_and(u8::is_ascii_whitespace) {
+                delimiter += 1;
+            }
+            if let Some(&open) = bytes
+                .get(delimiter)
+                .filter(|b| !b.is_ascii_alphanumeric() && **b != b'_')
+            {
+                let close = match open {
+                    b'{' => b'}',
+                    b'[' => b']',
+                    b'(' => b')',
+                    b'<' => b'>',
+                    other => other,
+                };
+                let mut depth = 1;
+                i = delimiter + 1;
+                while i < bytes.len() && depth > 0 {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[i] == close {
+                        depth -= 1;
+                    } else if open != close && bytes[i] == open {
+                        depth += 1;
+                    }
+                    i += 1;
+                }
+                tokens.push("<literal>");
+                continue;
+            }
+        }
+        if matches!(bytes[i], b'\'' | b'"' | b'`') {
+            let quote = bytes[i];
+            let triple = python && bytes[i..].starts_with(&[quote; 3]);
+            let size = if triple { 3 } else { 1 };
+            i += size;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == quote && (!triple || bytes[i..].starts_with(&[quote; 3])) {
+                    i += size;
+                    break;
+                }
+                i += 1;
+            }
+            // Keep a boundary so tokens on either side cannot form a declaration.
+            tokens.push("<literal>");
+            continue;
+        }
+        // Regex literals can contain text resembling a function declaration.
+        if javascript
+            && bytes[i] == b'/'
+            && tokens
+                .last()
+                .is_none_or(|t| matches!(*t, "=" | "(" | "," | ":" | "return"))
+        {
+            i += 1;
+            let mut class = false;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                    b'[' => class = true,
+                    b']' => class = false,
+                    b'/' if !class => {
+                        i += 1;
+                        break;
+                    }
+                    b'\n' => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+            tokens.push("<literal>");
+            continue;
+        }
+        let start = i;
+        if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$' {
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'$'))
+            {
+                i += 1;
+            }
+        } else {
+            // Advance by a complete UTF-8 character before slicing.
+            i += code[i..].chars().next().unwrap().len_utf8();
+        }
+        tokens.push(&code[start..i]);
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        if *token != "handle" {
+            continue;
+        }
+        let before = index.checked_sub(1).and_then(|n| tokens.get(n)).copied();
+        let after = tokens.get(index + 1).copied();
+        if python && before == Some("def") && after == Some("(") {
+            return true;
+        }
+        if perl && before == Some("sub") && matches!(after, Some("{" | "(" | ":")) {
+            return true;
+        }
+        if language == "go" && before == Some("func") && after == Some("(") {
+            return true;
+        }
+        if javascript {
+            if before == Some("function") && after == Some("(") {
+                return true;
+            }
+            if after != Some("=") {
+                continue;
+            }
+            let mut next = index + 2;
+            if tokens.get(next) == Some(&"async") {
+                next += 1;
+            }
+            if tokens.get(next) == Some(&"function") {
+                return true;
+            }
+            if tokens.get(next) == Some(&"(") {
+                let mut depth = 0;
+                while let Some(token) = tokens.get(next) {
+                    match *token {
+                        "(" => depth += 1,
+                        ")" => depth -= 1,
+                        _ => {}
+                    }
+                    next += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            } else {
+                next += 1;
+            } // one unparenthesized arrow parameter
+            if tokens.get(next..next.saturating_add(2)) == Some(&["=", ">"][..]) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Check every reference in a value tree for syntactic validity, without an event.
@@ -663,20 +992,28 @@ fn defines_handle(language: &str, code: &str) -> bool {
 /// Catches malformed paths (`{{event.}}`, `{{event..x}}`) that are wrong for any event.
 /// Field existence is deliberately *not* checked here: it depends on the payload.
 pub fn validate_event_references(value: &Value) -> Result<(), InterpolationError> {
-    match value {
-        Value::String(s) => {
-            let mut cursor = 0usize;
-            while let Some(found) = find_reference(s, cursor) {
-                parse_path(&found)?;
-                cursor = found.end;
-            }
-            Ok(())
+    check_tree(value)?;
+    fn check_string(s: &str) -> Result<(), InterpolationError> {
+        let mut cursor = 0;
+        while let Some(found) = find_reference(s, cursor) {
+            parse_path(&found)?;
+            cursor = found.end;
         }
-        Value::Array(items) => items.iter().try_for_each(validate_event_references),
-        Value::Object(map) => map.iter().try_for_each(|(k, v)| {
-            validate_event_references(&Value::String(k.clone()))?;
-            validate_event_references(v)
-        }),
-        _ => Ok(()),
+        Ok(())
     }
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::String(s) => check_string(s)?,
+            Value::Array(items) => pending.extend(items),
+            Value::Object(map) => {
+                for key in map.keys() {
+                    check_string(key)?;
+                }
+                pending.extend(map.values());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

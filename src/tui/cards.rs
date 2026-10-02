@@ -203,6 +203,57 @@ impl CardState {
         self.show_all.insert(node.clone());
     }
 
+    /// Forget folds for removed instances, evicted peers and old attempts.
+    pub fn retain_snapshot(&mut self, snapshot: &RailSnapshot) {
+        let mut valid = HashSet::new();
+        for server in &snapshot.servers {
+            let key = UiKey::Server(server.id);
+            valid.insert(NodeId::Card(key));
+            for group in [
+                Group::Peers,
+                Group::Connections,
+                Group::Send,
+                Group::Rules,
+                Group::Config,
+            ] {
+                valid.insert(NodeId::Group(key, group));
+            }
+            for id in server
+                .conns
+                .iter()
+                .map(|c| c.id)
+                .chain(server.recent.iter().map(|c| c.id))
+            {
+                valid.insert(NodeId::Peer(key, Some(id)));
+            }
+            if server.requests.iter().any(|r| r.connection_id.is_none()) {
+                valid.insert(NodeId::Peer(key, None));
+            }
+        }
+        for client in &snapshot.clients {
+            let key = UiKey::Client(client.id);
+            valid.insert(NodeId::Card(key));
+            for group in [
+                Group::Peers,
+                Group::Connections,
+                Group::Send,
+                Group::Rules,
+                Group::Config,
+            ] {
+                valid.insert(NodeId::Group(key, group));
+            }
+            if client.history.is_empty() && client.connection.is_some() {
+                valid.insert(NodeId::Attempt(key, 0));
+            }
+            for attempt in &client.history {
+                valid.insert(NodeId::Attempt(key, attempt.started_unix_ms));
+            }
+        }
+        self.collapsed.retain(|node| valid.contains(node));
+        self.opened.retain(|node| valid.contains(node));
+        self.show_all.retain(|node| valid.contains(node));
+    }
+
     fn limit_for(&self, node: &NodeId) -> usize {
         if self.show_all.contains(node) {
             usize::MAX

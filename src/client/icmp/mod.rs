@@ -634,10 +634,11 @@ impl IcmpClient {
                         .as_str()
                         .unwrap_or(&target_ip.to_string())
                         .parse()?;
-                    let identifier = data["identifier"].as_u64().unwrap_or(1234) as u16;
-                    let sequence = data["sequence"].as_u64().unwrap_or(1) as u16;
+                    let identifier =
+                        crate::client::wire_values::number::<u16>(&data, "identifier", 1234)?;
+                    let sequence = crate::client::wire_values::number::<u16>(&data, "sequence", 1)?;
                     let payload_hex = data["payload_hex"].as_str().unwrap_or("");
-                    let ttl = data["ttl"].as_u64().unwrap_or(64) as u8;
+                    let ttl = crate::client::wire_values::number::<u8>(&data, "ttl", 64)?;
 
                     let payload = if payload_hex.is_empty() {
                         Vec::new()

@@ -3,6 +3,7 @@
 //! vocabulary its scope allows.
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::llm::OllamaClient;
 use crate::state::app_state::AppState;
@@ -13,7 +14,18 @@ pub async fn execute_due_tasks_public(
     llm_client: &OllamaClient,
     status_tx: &mpsc::UnboundedSender<String>,
 ) {
-    execute_due_tasks(state, llm_client, status_tx).await
+    execute_due_tasks(state, llm_client, status_tx, None).await
+}
+
+/// Execute due tasks owned by a service. Closing that service cancels only the
+/// executions it launched, retaining task definitions for other AppState owners.
+pub async fn execute_due_tasks_owned_public(
+    state: &AppState,
+    llm_client: &OllamaClient,
+    status_tx: &mpsc::UnboundedSender<String>,
+    owner: CancellationToken,
+) {
+    execute_due_tasks(state, llm_client, status_tx, Some(owner)).await
 }
 
 /// Execute all tasks that are due
@@ -21,37 +33,33 @@ async fn execute_due_tasks(
     state: &AppState,
     llm_client: &OllamaClient,
     status_tx: &mpsc::UnboundedSender<String>,
+    owner: Option<CancellationToken>,
 ) {
-    use crate::state::task::TaskStatus;
-    use crate::utils::clock::Instant;
-
-    let now = Instant::now();
-    let tasks = state.get_all_tasks().await;
-
-    for task in tasks {
-        // Skip if not scheduled or not yet due
-        if task.status != TaskStatus::Scheduled {
-            continue;
-        }
-
-        if task.next_execution > now {
-            continue;
-        }
-
-        // Mark as executing
-        state
-            .update_task_status(task.id, TaskStatus::Executing)
-            .await;
-
+    for task in state.claim_due_tasks().await {
         // Spawn task execution to avoid blocking
         let state_clone = state.clone();
         let llm_clone = llm_client.clone();
         let status_tx_clone = status_tx.clone();
         let task_clone = task.clone();
+        let owner = owner.clone();
 
-        tokio::spawn(async move {
-            execute_single_task(state_clone, llm_clone, status_tx_clone, task_clone).await
-        });
+        state
+            .spawn_scheduled_task(task.id, async move {
+                if let Some(owner) = owner {
+                    let cancelled_state = state_clone.clone();
+                    let id = task_clone.id;
+                    tokio::select! {
+                        biased;
+                        _ = owner.cancelled() => {
+                            cancelled_state.update_task_status(id, crate::state::task::TaskStatus::Failed("execution owner closed".into())).await;
+                        }
+                        _ = execute_single_task(state_clone, llm_clone, status_tx_clone, task_clone) => {}
+                    }
+                } else {
+                    execute_single_task(state_clone, llm_clone, status_tx_clone, task_clone).await;
+                }
+            })
+            .await;
     }
 }
 
@@ -331,8 +339,6 @@ async fn handle_task_success(
     result: crate::state::TaskExecutionResult,
 ) {
     use crate::state::task::{TaskStatus, TaskType};
-    use crate::utils::clock::Instant;
-    use std::time::Duration;
 
     // Record execution
     state.record_task_execution(task.id, &result).await;
@@ -354,9 +360,10 @@ async fn handle_task_success(
             max_executions,
             executions_count,
         } => {
-            // Check if max executions reached
+            // This snapshot predates record_task_execution above. Include the run
+            // that just completed, or max_executions=1 schedules a second run.
             if let Some(max) = max_executions {
-                if *executions_count >= *max {
+                if executions_count.saturating_add(1) >= *max {
                     state
                         .update_task_status(task.id, TaskStatus::Completed)
                         .await;
@@ -370,7 +377,16 @@ async fn handle_task_success(
             }
 
             // Schedule next execution
-            let next = Instant::now() + Duration::from_secs(*interval_secs);
+            let next = match crate::state::task::checked_task_deadline(*interval_secs) {
+                Ok(next) => next,
+                Err(error) => {
+                    state
+                        .update_task_status(task.id, TaskStatus::Failed(error.to_string()))
+                        .await;
+                    let _ = status_tx.send(format!("[ERROR] Task '{}': {}", task.name, error));
+                    return;
+                }
+            };
             state.update_task_next_execution(task.id, next).await;
             state
                 .update_task_status(task.id, TaskStatus::Scheduled)
@@ -387,8 +403,6 @@ async fn handle_task_failure(
     result: crate::state::TaskExecutionResult,
 ) {
     use crate::state::task::TaskStatus;
-    use crate::utils::clock::Instant;
-    use std::time::Duration;
 
     const MAX_FAILURES: u64 = 5;
     const BACKOFF_BASE_SECS: u64 = 60; // 1 minute base backoff
@@ -396,7 +410,7 @@ async fn handle_task_failure(
     // Record execution
     state.record_task_execution(task.id, &result).await;
 
-    let failure_count = task.failure_count + 1;
+    let failure_count = task.failure_count.saturating_add(1);
 
     if failure_count >= MAX_FAILURES {
         // Too many failures, disable task
@@ -414,7 +428,15 @@ async fn handle_task_failure(
     } else {
         // Retry with exponential backoff
         let backoff_secs = BACKOFF_BASE_SECS * 2u64.pow((failure_count - 1) as u32);
-        let next = Instant::now() + Duration::from_secs(backoff_secs);
+        let next = match crate::state::task::checked_task_deadline(backoff_secs) {
+            Ok(next) => next,
+            Err(error) => {
+                state
+                    .update_task_status(task.id, TaskStatus::Failed(error.to_string()))
+                    .await;
+                return;
+            }
+        };
 
         state.update_task_next_execution(task.id, next).await;
         state

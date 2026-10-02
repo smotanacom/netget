@@ -99,13 +99,13 @@ pub fn live_model() -> String {
 }
 
 /// Gate for live-model tests. Returns `false` (after printing a skip notice)
-/// unless `NETGET_USE_OLLAMA` is set. Call first in every test:
+/// unless `NETGET_USE_OLLAMA` is explicitly affirmative (`1`, `true`, `yes`, `on`). Call first in every test:
 ///
 /// ```ignore
 /// if !live_llm_enabled() { return Ok(()); }
 /// ```
 pub fn live_llm_enabled() -> bool {
-    if std::env::var("NETGET_USE_OLLAMA").is_ok() {
+    if super::common::real_ollama_requested() {
         true
     } else {
         eprintln!(
@@ -355,12 +355,9 @@ impl LiveRequestTest {
             self.protocol, model, self.instruction
         );
 
-        // Allocate the port ourselves and treat it as authoritative: the
-        // "listening on ADDR:PORT" status line races with the "Server #N
-        // started" line (the status forwarder is a separate task), so the
-        // startup parser cannot be relied on to learn the port. If the bind
-        // fails, run_server_direct errors and no server line appears at all.
-        let port = super::common::get_available_port().await?;
+        // Keep ownership with the listener: the common startup parser discovers
+        // the actual bound port even when confirmation arrives before the start row.
+        let port = 0;
 
         let mut extra_args = vec![
             "--server".to_string(),
@@ -408,6 +405,10 @@ impl LiveRequestTest {
                         .collect::<Vec<_>>()
                 )
             })?;
+        let port = server.port;
+        if port == 0 {
+            return Err("direct server startup did not report its bound port".into());
+        }
         println!(
             "✅ direct start: {} server #{} on port {} (no model call)",
             server.stack, server.id, port

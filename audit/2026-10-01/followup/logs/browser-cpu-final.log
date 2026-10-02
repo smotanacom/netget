@@ -1,0 +1,14 @@
+browser: 154.0.8037.93; xterm: stub
+ok: with no clicks the Telnet server opened 1.9s and the client connected 2.7s after the bundle was ready; the terminal read as a telnet session; you answered through the composer and the answers reached the Telnet terminal; a hang-up printed telnet's line and Enter at the prompt reconnected; the machines laid out and no scrollbars at 1280x800, 1440x900, 1920x1080, 390x844
+ok: a stub LanguageModel ('available') loaded by itself and answered with no composer, constrained to the offered actions; an unparseable answer fell back to the composer
+ok: a streaming LanguageModel's answer showed in the panel before it reached Telnet, with no Thinking block, whether its chunks were deltas or the whole text so far
+ok: Qwen3's <think> text showed in the Thinking block before any answer, folded to 'Thought for N s' once answered and opened on a click; only the answer reached Telnet
+ok: with neither a built-in model nor WebGPU the WebLLM models were listed disabled
+ok: switching from Gemini Nano to an uncached WebLLM model showed its sized download button and downloaded nothing until clicked; back to Gemini Nano re-used its session; the WebLLM model again loaded from the cache with no click; the choice survived a reload
+ok: a stub LanguageModel ('downloadable') waited for the first keypress, showed the button and progress, then took over the untouched request
+ok: while the built-in model's create() ran (8.4s), the connect request waited for it, named, and no composer ever opened; the model answered it once create() resolved
+ok: when create() failed, the request that waited went to the composer with the reason
+ok: 'You are the model' made the next request the composer's with the model loaded; choosing the model again handed requests back with no new session; the choice survived a reload
+ok: the adventure kept its place across lines through the server's memory with a stub model that follows the rule and remembers nothing: "look" after "go north" named the Hall
+ok: at 390x844 the select showed the short labels, each fitting the select, and the full ones again at 1280
+real Prompt API in this browser: availability() = 'not probed (CPU-only mode)'

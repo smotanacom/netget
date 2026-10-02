@@ -1214,7 +1214,7 @@ impl EventHandler {
                     delay_secs.unwrap_or(0)
                 };
 
-                let task = if recurring {
+                let mut task = if recurring {
                     let interval = interval_secs.unwrap_or(delay);
                     ScheduledTask::new_recurring(
                         crate::state::TaskId::new(0), // Temporary, will be assigned by add_task
@@ -1234,7 +1234,9 @@ impl EventHandler {
                         instruction,
                         context,
                     )
-                };
+                }?;
+
+                task.next_execution = crate::state::task::checked_task_deadline(delay)?;
 
                 let task_id_num = self.state.add_task(task).await;
 
@@ -1337,6 +1339,11 @@ impl EventHandler {
                         ));
                     }
                 }
+
+                let prepared_tasks = crate::state::task::prepare_tasks(
+                    scheduled_tasks.as_deref(),
+                    crate::state::task::TaskScope::Global,
+                )?;
 
                 // Log detailed summary of the open_client action
                 log_open_client_summary(
@@ -1456,51 +1463,16 @@ impl EventHandler {
                             client_id.as_u32()
                         ));
 
-                        // Create scheduled tasks if provided
-                        if let Some(task_defs) = scheduled_tasks {
-                            for task_def in task_defs {
-                                let delay = if task_def.recurring {
-                                    task_def.delay_secs.or(task_def.interval_secs).unwrap_or(0)
-                                } else {
-                                    task_def.delay_secs.unwrap_or(0)
-                                };
-
-                                let task = if task_def.recurring {
-                                    let interval_secs = task_def.interval_secs.unwrap_or(delay);
-                                    crate::state::task::ScheduledTask::new_recurring(
-                                        crate::state::TaskId::new(0),
-                                        task_def.task_id.clone(),
-                                        crate::state::task::TaskScope::Client(client_id),
-                                        interval_secs,
-                                        task_def.max_executions,
-                                        task_def.instruction,
-                                        task_def.context,
-                                    )
-                                } else {
-                                    crate::state::task::ScheduledTask::new_one_shot(
-                                        crate::state::TaskId::new(0),
-                                        task_def.task_id.clone(),
-                                        crate::state::task::TaskScope::Client(client_id),
-                                        delay,
-                                        task_def.instruction,
-                                        task_def.context,
-                                    )
-                                };
-
-                                let task_id_num = self.state.add_task(task).await;
-
-                                let _ = status_tx.send(format!(
-                                    "[TASK] Created {} task '{}' (ID: {}) for client #{}",
-                                    if task_def.recurring {
-                                        "recurring"
-                                    } else {
-                                        "one-shot"
-                                    },
-                                    task_def.task_id,
-                                    task_id_num,
-                                    client_id.as_u32()
-                                ));
-                            }
+                        for mut task in prepared_tasks {
+                            task.scope = crate::state::task::TaskScope::Client(client_id);
+                            let task_name = task.name.clone();
+                            let task_id_num = self.state.add_task(task).await;
+                            let _ = status_tx.send(format!(
+                                "[TASK] Created task '{}' (ID: {}) for client #{}",
+                                task_name,
+                                task_id_num,
+                                client_id.as_u32()
+                            ));
                         }
                     }
                     Err(e) => {
@@ -2528,6 +2500,16 @@ impl EventHandler {
 
         // Execute each action
         for (i, action) in actions.iter().enumerate() {
+            if action.get("type").and_then(serde_json::Value::as_str) == Some("restore_session") {
+                match save_load::restore_session(&self.state, &self.llm, &action["session"]).await {
+                    Ok(()) => ui.add_llm_message("[LOAD] Restored session relationships".into()),
+                    Err(error) => {
+                        ui.add_llm_message(format!("[ERROR] Session restoration failed: {error:#}"))
+                    }
+                }
+                continue;
+            }
+
             // Try to parse as common action
             if let Ok(common_action) = crate::llm::actions::common::CommonAction::from_json(action)
             {

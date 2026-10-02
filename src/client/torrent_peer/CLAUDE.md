@@ -166,3 +166,12 @@ Common extensions (not fully implemented):
 - [BEP 3: The BitTorrent Protocol Specification](http://www.bittorrent.org/beps/bep_0003.html)
 - [BEP 10: Extension Protocol](http://www.bittorrent.org/beps/bep_0010.html)
 - [Peer Wire Protocol Specification](https://wiki.theory.org/BitTorrentSpecification#Peer_wire_protocol_.28TCP.29)
+
+## Inbound frame bound (October 2026 review)
+
+`read_peer_message` limits the length prefix to `MAX_PEER_MESSAGE_BYTES` (8 MiB,
+including the message ID), before allocating or reading a body. Zero is a keepalive;
+truncated or oversized messages end the session and remove its command handle. The
+bound permits ordinary block messages and large bitfields/extensions but intentionally
+refuses larger extensions. CPU-only regression coverage is in
+`tests/client_review_regression_test.rs::torrent_peer`.

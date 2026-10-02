@@ -425,3 +425,20 @@ its dependency does.
    holds what it read in a pushback buffer, and the next read returns those bytes first. See
    `crates/netget-tokio-wasm/tests/tcp_peek_test.rs`.
 5. Build, then extend `web/test/smoke.mjs` or the page with a client for it.
+
+### CPU-only browser regression mode
+
+`NETGET_CPU_ONLY=1 python3 web/test/page_composer.py` disables Chromium GPU,
+compositing, software rasterizer, WebGPU and on-device-model features. Every page
+starts with unavailable real GPU/model APIs before installing plain-JavaScript
+scenario fixtures. External page requests are intercepted, and the real Prompt
+API probe is skipped. This validates DOM/composer/model-selection behavior without
+GPU discovery, inference or model downloads. Build the current WASM first for
+Rust/browser integration coverage; `CARGO_TARGET_DIR` is supported by `web/build.sh`.
+
+The virtual network bounds TCP pending accepts at 128; connecting waits for a
+slot before allocating a duplex pair. UDP retains at most 128 queued datagrams
+plus a peeked datagram and drops new arrivals at capacity. Its receive/peek/
+readiness state is serialized under one lock, and all receive variants honor a
+connected peer. The shim's native integration tests need neither a browser nor
+real sockets.

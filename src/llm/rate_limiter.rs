@@ -42,10 +42,14 @@
 
 use crate::utils::clock::Instant;
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 /// Default bound on how long a network-sourced request waits for a concurrency
@@ -183,8 +187,8 @@ impl Default for RateLimiterConfig {
 /// LLM rate limiter with concurrency and token-based throttling
 #[derive(Clone)]
 pub struct RateLimiter {
-    /// Concurrency control (wrapped in RwLock to allow semaphore replacement)
-    semaphore: Arc<RwLock<Arc<Semaphore>>>,
+    /// One resizable gate shared by old permits and new waiters.
+    semaphore: Arc<ConcurrencyGate>,
 
     /// Configuration (can be updated at runtime)
     config: Arc<RwLock<RateLimiterConfig>>,
@@ -196,6 +200,7 @@ pub struct RateLimiter {
     /// Kept outside `stats` so the queue-depth check on the hot path never
     /// contends with the stats mutex.
     queued_network: Arc<AtomicUsize>,
+    waiting_users: Arc<AtomicUsize>,
 
     /// Statistics
     stats: Arc<Mutex<RateLimiterStats>>,
@@ -256,10 +261,11 @@ impl RateLimiter {
         let max_concurrent = config.max_concurrent;
 
         Self {
-            semaphore: Arc::new(RwLock::new(Arc::new(Semaphore::new(max_concurrent)))),
+            semaphore: Arc::new(ConcurrencyGate::new(max_concurrent)),
             config: Arc::new(RwLock::new(config)),
             token_usage: Arc::new(Mutex::new(Vec::new())),
             queued_network: Arc::new(AtomicUsize::new(0)),
+            waiting_users: Arc::new(AtomicUsize::new(0)),
             stats: Arc::new(Mutex::new(RateLimiterStats::default())),
         }
     }
@@ -268,19 +274,9 @@ impl RateLimiter {
     pub async fn update_config(&self, config: RateLimiterConfig) -> Result<()> {
         let mut current_config = self.config.write().await;
 
-        // If max_concurrent changed, recreate the semaphore
-        if config.max_concurrent != current_config.max_concurrent {
-            info!(
-                "Concurrency limit changed from {} to {} - recreating semaphore",
-                current_config.max_concurrent, config.max_concurrent
-            );
-
-            // Replace the semaphore with a new one
-            let mut semaphore = self.semaphore.write().await;
-            *semaphore = Arc::new(Semaphore::new(config.max_concurrent));
-
-            debug!("Semaphore recreated with {} permits", config.max_concurrent);
-        }
+        // Existing requests count against the new limit. Shrinking never revokes a
+        // running request; new admission waits for the excess requests to finish.
+        self.semaphore.resize(config.max_concurrent);
 
         *current_config = config;
         info!(
@@ -303,20 +299,25 @@ impl RateLimiter {
     /// Get current statistics
     pub async fn get_stats(&self) -> RateLimiterStats {
         // Update current window tokens before returning stats
-        let config = self.config.read().await;
-        let mut stats = self.stats.lock().await;
+        let window = Duration::from_secs(self.config.read().await.token_window_secs);
 
-        // Calculate tokens in current window
-        let cutoff = Instant::now() - Duration::from_secs(config.token_window_secs);
+        // Snapshot usage before locking statistics. Never nest the config and stats
+        // guards: a pending config writer can otherwise deadlock concurrent readers.
+        // Compare ages rather than subtracting an arbitrary user-supplied window from
+        // Instant, which panics when the duration cannot be represented by the clock.
         let token_usage = self.token_usage.lock().await;
         let window_tokens: u64 = token_usage
             .iter()
-            .filter(|usage| usage.timestamp >= cutoff)
-            .map(|usage| usage.input_tokens + usage.output_tokens)
-            .sum();
+            .filter(|usage| usage.timestamp.elapsed() <= window)
+            .fold(0u64, |total, usage| {
+                total.saturating_add(usage.input_tokens.saturating_add(usage.output_tokens))
+            });
+        drop(token_usage);
 
+        let mut stats = self.stats.lock().await;
         stats.current_window_tokens = window_tokens;
         stats.currently_queued = self.queued_network.load(Ordering::Acquire) as u64;
+        stats.requests_waiting = self.waiting_users.load(Ordering::Acquire) as u64;
         stats.clone()
     }
 
@@ -328,16 +329,16 @@ impl RateLimiter {
     /// `netget --mcp` runs — grew the vector for the life of the process and made
     /// `get_stats()` scan all of it.
     async fn prune_token_usage(&self, window_secs: u64) {
-        let cutoff = Instant::now() - Duration::from_secs(window_secs);
+        let window = Duration::from_secs(window_secs);
         self.token_usage
             .lock()
             .await
-            .retain(|usage| usage.timestamp >= cutoff);
+            .retain(|usage| usage.timestamp.elapsed() <= window);
     }
 
     /// Check if we have token capacity available
     async fn check_token_capacity(&self) -> Result<bool> {
-        let config = self.config.read().await;
+        let config = self.config.read().await.clone();
         let window_secs = config.token_window_secs;
 
         // Prune before the early return, not after it.
@@ -351,10 +352,9 @@ impl RateLimiter {
         let token_usage = self.token_usage.lock().await;
 
         // Calculate total tokens in current window
-        let window_tokens: u64 = token_usage
-            .iter()
-            .map(|usage| usage.input_tokens + usage.output_tokens)
-            .sum();
+        let window_tokens: u64 = token_usage.iter().fold(0u64, |total, usage| {
+            total.saturating_add(usage.input_tokens.saturating_add(usage.output_tokens))
+        });
 
         debug!(
             "Token usage check: {}/{} tokens in {}s window",
@@ -382,8 +382,8 @@ impl RateLimiter {
 
         // Update stats
         let mut stats = self.stats.lock().await;
-        stats.total_input_tokens += input_tokens;
-        stats.total_output_tokens += output_tokens;
+        stats.total_input_tokens = stats.total_input_tokens.saturating_add(input_tokens);
+        stats.total_output_tokens = stats.total_output_tokens.saturating_add(output_tokens);
         stats.requests_completed += 1;
 
         debug!(
@@ -400,29 +400,8 @@ impl RateLimiter {
         self.token_usage.lock().await.len()
     }
 
-    /// Acquire a permit for an LLM request
-    ///
-    /// - For `RequestSource::User`: waits until capacity is available, without a
-    ///   deadline. A human sitting at the TUI would rather wait than be refused.
-    /// - For `RequestSource::Network`: waits for a concurrency permit within the
-    ///   configured queue bounds, so `max_concurrent: 1` serializes requests
-    ///   instead of dropping them. Refused with a [`RateLimitError`] when the
-    ///   queue is full, the wait times out, or the token budget is exhausted.
-    ///
-    /// Returns a permit guard that must be held for the duration of the LLM call.
-    /// The permit is automatically released when the guard is dropped.
-    pub async fn acquire_permit(&self, source: RequestSource) -> Result<RateLimiterPermit> {
-        // Update stats
-        {
-            let mut stats = self.stats.lock().await;
-            stats.total_requests += 1;
-            if source == RequestSource::User {
-                stats.requests_waiting += 1;
-            }
-        }
-
-        debug!("Acquiring rate limiter permit for {:?} request", source);
-
+    /// Enforce the token budget both before queueing and after a permit frees.
+    async fn wait_for_token_capacity(&self, source: RequestSource) -> Result<()> {
         // Check token capacity
         let has_token_capacity = self.check_token_capacity().await?;
 
@@ -445,18 +424,19 @@ impl RateLimiter {
                     // Token exhaustion is a budget, not congestion: it will not
                     // clear on the timescale of one request, so waiting would
                     // only turn a fast refusal into a slow one.
-                    let mut stats = self.stats.lock().await;
-                    stats.requests_discarded += 1;
-
-                    let config = self.config.read().await;
+                    self.stats.lock().await.requests_discarded += 1;
+                    let config = self.config.read().await.clone();
                     warn!(
                         "Discarding network event: Token limit ({}/{} tokens in {}s window)",
                         self.token_usage
                             .lock()
                             .await
                             .iter()
-                            .map(|u| u.input_tokens + u.output_tokens)
-                            .sum::<u64>(),
+                            .fold(0u64, |total, usage| {
+                                total.saturating_add(
+                                    usage.input_tokens.saturating_add(usage.output_tokens),
+                                )
+                            }),
                         config.token_limit.unwrap_or(0),
                         config.token_window_secs
                     );
@@ -469,14 +449,38 @@ impl RateLimiter {
             }
         }
 
-        // Snapshot the semaphore and the queue bounds, then drop both guards
-        // before awaiting: holding the config/semaphore RwLock across the wait
-        // would block `update_config` (and every other reader) for the whole
-        // duration of an LLM call.
-        let semaphore = {
-            let guard = self.semaphore.read().await;
-            Arc::clone(&guard)
-        };
+        Ok(())
+    }
+
+    /// Acquire a permit for an LLM request
+    ///
+    /// - For `RequestSource::User`: waits until capacity is available, without a
+    ///   deadline. A human sitting at the TUI would rather wait than be refused.
+    /// - For `RequestSource::Network`: waits for a concurrency permit within the
+    ///   configured queue bounds, so `max_concurrent: 1` serializes requests
+    ///   instead of dropping them. Refused with a [`RateLimitError`] when the
+    ///   queue is full, the wait times out, or the token budget is exhausted.
+    ///
+    /// Returns a permit guard that must be held for the duration of the LLM call.
+    /// The permit is automatically released when the guard is dropped.
+    pub async fn acquire_permit(&self, source: RequestSource) -> Result<RateLimiterPermit> {
+        // Update stats
+        {
+            let mut stats = self.stats.lock().await;
+            stats.total_requests += 1;
+        }
+
+        let _user_wait = (source == RequestSource::User).then(|| {
+            self.waiting_users.fetch_add(1, Ordering::AcqRel);
+            QueueSlot(Arc::clone(&self.waiting_users))
+        });
+        debug!("Acquiring rate limiter permit for {:?} request", source);
+
+        self.wait_for_token_capacity(source).await?;
+
+        // Queue policy is snapshotted for this wait; concurrency admission always
+        // uses the live gate so reconfiguration cannot create overlapping pools.
+        let semaphore = Arc::clone(&self.semaphore);
         let (queue_timeout_secs, max_queued, max_concurrent) = {
             let config = self.config.read().await;
             (
@@ -560,13 +564,9 @@ impl RateLimiter {
             }
         };
 
-        // Update stats
-        {
-            let mut stats = self.stats.lock().await;
-            if source == RequestSource::User {
-                stats.requests_waiting = stats.requests_waiting.saturating_sub(1);
-            }
-        }
+        // An earlier request may have spent the remaining budget while this one
+        // waited for its concurrency permit. Its pre-queue check is no longer enough.
+        self.wait_for_token_capacity(source).await?;
 
         debug!("Rate limiter permit acquired for {:?} request", source);
 
@@ -581,7 +581,7 @@ impl RateLimiter {
 ///
 /// Automatically releases the concurrency permit when dropped.
 pub struct RateLimiterPermit {
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    _permit: ConcurrencyPermit,
     rate_limiter: RateLimiter,
 }
 
@@ -591,5 +591,127 @@ impl RateLimiterPermit {
         self.rate_limiter
             .record_token_usage(input_tokens, output_tokens)
             .await;
+    }
+}
+
+// A FIFO gate keeps resize, release and cancellation synchronous. Awaiting tasks
+// hold no lock; dropping a queued future removes its slot and wakes its successor.
+struct ConcurrencyGate {
+    state: std::sync::Mutex<ConcurrencyState>,
+}
+struct ConcurrencyState {
+    limit: usize,
+    active: usize,
+    next_id: u64,
+    queue: VecDeque<(u64, Waker)>,
+}
+impl ConcurrencyGate {
+    fn new(limit: usize) -> Self {
+        Self {
+            state: std::sync::Mutex::new(ConcurrencyState {
+                limit,
+                active: 0,
+                next_id: 0,
+                queue: VecDeque::new(),
+            }),
+        }
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, ConcurrencyState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn resize(&self, limit: usize) {
+        let wake = {
+            let mut state = self.lock();
+            state.limit = limit;
+            state.queue.front().map(|(_, w)| w.clone())
+        };
+        if let Some(w) = wake {
+            w.wake();
+        }
+    }
+    fn try_acquire_owned(self: Arc<Self>) -> Result<ConcurrencyPermit, ()> {
+        {
+            let mut state = self.lock();
+            if state.active >= state.limit || !state.queue.is_empty() {
+                return Err(());
+            }
+            state.active += 1;
+        }
+        Ok(ConcurrencyPermit(self))
+    }
+    fn acquire_owned(self: Arc<Self>) -> ConcurrencyWait {
+        ConcurrencyWait {
+            gate: self,
+            id: None,
+        }
+    }
+}
+struct ConcurrencyWait {
+    gate: Arc<ConcurrencyGate>,
+    id: Option<u64>,
+}
+impl Future for ConcurrencyWait {
+    type Output = Result<ConcurrencyPermit>;
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let gate = Arc::clone(&this.gate);
+        let mut state = gate.lock();
+        let first = this.id.map_or(state.queue.is_empty(), |id| {
+            state.queue.front().is_some_and(|(front, _)| *front == id)
+        });
+        if first && state.active < state.limit {
+            if this.id.take().is_some() {
+                state.queue.pop_front();
+            }
+            state.active += 1;
+            let wake = if state.active < state.limit {
+                state.queue.front().map(|(_, w)| w.clone())
+            } else {
+                None
+            };
+            drop(state);
+            if let Some(w) = wake {
+                w.wake();
+            }
+            return Poll::Ready(Ok(ConcurrencyPermit(gate)));
+        }
+        if let Some(id) = this.id {
+            if let Some((_, w)) = state.queue.iter_mut().find(|(entry, _)| *entry == id) {
+                w.clone_from(cx.waker());
+            }
+        } else {
+            let id = state.next_id;
+            state.next_id = state.next_id.wrapping_add(1);
+            state.queue.push_back((id, cx.waker().clone()));
+            this.id = Some(id);
+        }
+        Poll::Pending
+    }
+}
+impl Drop for ConcurrencyWait {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            let wake = {
+                let mut state = self.gate.lock();
+                state.queue.retain(|(entry, _)| *entry != id);
+                state.queue.front().map(|(_, w)| w.clone())
+            };
+            if let Some(w) = wake {
+                w.wake();
+            }
+        }
+    }
+}
+struct ConcurrencyPermit(Arc<ConcurrencyGate>);
+impl Drop for ConcurrencyPermit {
+    fn drop(&mut self) {
+        let wake = {
+            let mut state = self.0.lock();
+            state.active -= 1;
+            state.queue.front().map(|(_, w)| w.clone())
+        };
+        if let Some(w) = wake {
+            w.wake();
+        }
     }
 }

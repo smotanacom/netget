@@ -230,3 +230,22 @@ See `tests/client/nntp/CLAUDE.md` for testing strategy.
 - RFC 3977: Network News Transfer Protocol (NNTP)
 - RFC 2980: Common NNTP Extensions
 - RFC 977: Original NNTP specification (obsoleted by RFC 3977)
+
+## Bounded response reading (October 2026 review)
+
+Response lines now use `client::response_reader::read_response_line`, sharing the
+existing bounded line decoder. The 64 KiB cap includes the line terminator; a partial
+line at EOF is an error. Oversized or incomplete replies are not forwarded as successful
+responses.
+Dot-terminated responses additionally have an 8 MiB aggregate cap, require an exact
+`.` terminator and undo dot stuffing. A peer closing before that terminator is a
+framing failure, avoiding POP3's former EOF loop and NNTP's partial-success result.
+Pure decoder tests are in `tests/client_review_regression_test.rs::text_responses`.
+
+## Response completion deadlines (October 2026 follow-up)
+
+Shared text readers allow an idle established connection to wait for its first response byte,
+then enforce a 30-second absolute line-completion deadline. Dot-terminated bodies have a
+30-second whole-response deadline in addition to their byte cap. NNTP greetings are bounded
+from the first wait; HTTP CONNECT has a single deadline spanning status and headers. A framing
+timeout is terminal because resuming an interrupted parse would misalign the stream.

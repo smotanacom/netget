@@ -101,7 +101,7 @@ fn decode_response(buf: &[u8]) -> Option<(i64, i64)> {
 
 #[tokio::test]
 async fn test_snmp_answers_gen_err_when_llm_fails() -> E2EResult<()> {
-    let port = crate::server::helpers::get_available_port().await?;
+    let port = 0u16;
     let prompt = format!("listen on port {port} via snmp. Answer sysDescr");
 
     let config = NetGetConfig::new_no_scripts(&prompt).with_mock(|mock| {
@@ -123,7 +123,7 @@ async fn test_snmp_answers_gen_err_when_llm_fails() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_millis(800)).await;
 
     let socket = UdpSocket::bind("127.0.0.1:0").await?;
-    socket.connect(format!("127.0.0.1:{port}")).await?;
+    socket.connect(format!("127.0.0.1:{}", server.port)).await?;
 
     const REQUEST_ID: i32 = 0x1234_5678;
     socket.send(&build_get_request(REQUEST_ID)).await?;

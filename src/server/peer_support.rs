@@ -51,8 +51,8 @@ pub async fn register_peer_channel(
     command_rx
 }
 
-/// Drive a connection's command channel until it closes (the handle is dropped
-/// by the connection's close path or by server teardown).
+/// Drive a connection's command channel until it closes. The worker is also owned by
+/// its connection, so either peer close or server teardown cancels blocked work.
 ///
 /// Runs as its own task: unlike the client loops, a server connection task
 /// blocks in `read()` without a select, and injected sends must not wait for
@@ -69,7 +69,8 @@ pub fn spawn_peer_command_task<W>(
 ) where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    let task_registrar = state.clone();
+    let worker = tokio::spawn(async move {
         while let Some(command) = command_rx.recv().await {
             handle_peer_command(
                 protocol.as_ref(),
@@ -87,6 +88,14 @@ pub fn spawn_peer_command_task<W>(
             server_id.as_u32(),
             connection_id
         );
+    });
+    // This API is synchronous and is shared by many protocol loops. Registration only
+    // needs the state lock; it never waits for the worker. If removal wins the race,
+    // register_peer_task aborts the worker instead of resurrecting a closed peer.
+    tokio::spawn(async move {
+        task_registrar
+            .register_peer_task(server_id, connection_id, worker)
+            .await;
     });
 }
 

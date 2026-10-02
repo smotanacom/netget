@@ -134,15 +134,18 @@ async fn task_names(state: &AppState) -> Vec<String> {
 /// runtime. A connection cannot outlive its server, so neither may its tasks.
 async fn add_connection_task(state: &AppState, name: &str, server_id: ServerId) {
     state
-        .add_task(ScheduledTask::new_recurring(
-            TaskId::new(0),
-            name.to_string(),
-            TaskScope::Connection(server_id, ConnectionId::new(7)),
-            3600,
-            None,
-            "tick".to_string(),
-            None,
-        ))
+        .add_task(
+            ScheduledTask::new_recurring(
+                TaskId::new(0),
+                name.to_string(),
+                TaskScope::Connection(server_id, ConnectionId::new(7)),
+                3600,
+                None,
+                "tick".to_string(),
+                None,
+            )
+            .unwrap(),
+        )
         .await;
 }
 
@@ -196,15 +199,18 @@ async fn mcp_stop_server_leaves_other_servers_tasks_alone() {
 
     // A global task belongs to no server and must survive any stop.
     state
-        .add_task(ScheduledTask::new_recurring(
-            TaskId::new(0),
-            "global-task".to_string(),
-            TaskScope::Global,
-            3600,
-            None,
-            "tick".to_string(),
-            None,
-        ))
+        .add_task(
+            ScheduledTask::new_recurring(
+                TaskId::new(0),
+                "global-task".to_string(),
+                TaskScope::Global,
+                3600,
+                None,
+                "tick".to_string(),
+                None,
+            )
+            .unwrap(),
+        )
         .await;
 
     let stopped = call(

@@ -42,7 +42,7 @@ pub struct FetchClient {
 #[derive(Clone)]
 enum Backend {
     #[cfg(not(target_arch = "wasm32"))]
-    Reqwest(reqwest::Client),
+    Reqwest(reqwest::Client, usize),
     Transport {
         timeout: Duration,
         max_body: usize,
@@ -52,11 +52,11 @@ enum Backend {
 }
 
 impl FetchClient {
-    /// Wrap a reqwest client. Every request is reqwest's, unchanged.
+    /// Wrap a reqwest client with the shared buffered-response bound.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_reqwest(client: reqwest::Client) -> Self {
         Self {
-            backend: Backend::Reqwest(client),
+            backend: Backend::Reqwest(client, transport::MAX_RESPONSE_BODY_BYTES),
         }
     }
 
@@ -73,15 +73,15 @@ impl FetchClient {
         }
     }
 
-    /// Bound the transport's response body at `max_body` bytes instead. A reqwest-backed
-    /// client is unchanged: its callers bound what they read themselves.
-    #[allow(irrefutable_let_patterns)]
+    /// Bound buffered `bytes`, `text` and `json` responses on both backends.
+    /// Native `chunk()` consumers still stream without an aggregate download cap.
     pub fn with_max_body(mut self, max_body: usize) -> Self {
-        if let Backend::Transport {
-            max_body: bound, ..
-        } = &mut self.backend
-        {
-            *bound = max_body;
+        match &mut self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
+            Backend::Reqwest(_, bound) => *bound = max_body,
+            Backend::Transport {
+                max_body: bound, ..
+            } => *bound = max_body,
         }
         self
     }
@@ -111,8 +111,8 @@ impl FetchClient {
     pub fn request(&self, method: Method, url: &str) -> FetchRequest {
         match &self.backend {
             #[cfg(not(target_arch = "wasm32"))]
-            Backend::Reqwest(client) => FetchRequest {
-                inner: RequestInner::Reqwest(client.request(method, url)),
+            Backend::Reqwest(client, max_body) => FetchRequest {
+                inner: RequestInner::Reqwest(client.request(method, url), *max_body),
             },
             Backend::Transport {
                 timeout,
@@ -179,7 +179,7 @@ pub struct FetchRequest {
 
 enum RequestInner {
     #[cfg(not(target_arch = "wasm32"))]
-    Reqwest(reqwest::RequestBuilder),
+    Reqwest(reqwest::RequestBuilder, usize),
     Transport(TransportRequest),
 }
 
@@ -214,8 +214,11 @@ impl FetchRequest {
     pub fn header(self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.header(name.as_ref(), value.as_ref())),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(
+                    builder.header(name.as_ref(), value.as_ref()),
+                    max_body,
+                ),
             },
             RequestInner::Transport(mut req) => {
                 req.headers
@@ -232,8 +235,8 @@ impl FetchRequest {
     pub fn json<T: Serialize + ?Sized>(self, value: &T) -> Self {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.json(value)),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(builder.json(value), max_body),
             },
             RequestInner::Transport(mut req) => {
                 match serde_json::to_vec(value) {
@@ -260,8 +263,8 @@ impl FetchRequest {
     pub fn query<T: Serialize + ?Sized>(self, query: &T) -> Self {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.query(query)),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(builder.query(query), max_body),
             },
             RequestInner::Transport(mut req) => {
                 match serde_urlencoded::to_string(query) {
@@ -283,8 +286,8 @@ impl FetchRequest {
     pub fn form<T: Serialize + ?Sized>(self, value: &T) -> Self {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.form(value)),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(builder.form(value), max_body),
             },
             RequestInner::Transport(mut req) => {
                 match serde_urlencoded::to_string(value) {
@@ -311,8 +314,8 @@ impl FetchRequest {
         let body = body.into();
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.body(body)),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(builder.body(body), max_body),
             },
             RequestInner::Transport(mut req) => {
                 req.body = Some(body);
@@ -332,8 +335,8 @@ impl FetchRequest {
     ) -> Self {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.basic_auth(user, password)),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(builder.basic_auth(user, password), max_body),
             },
             RequestInner::Transport(mut req) => {
                 use base64::Engine;
@@ -357,8 +360,8 @@ impl FetchRequest {
     pub fn timeout(self, timeout: Duration) -> Self {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Self {
-                inner: RequestInner::Reqwest(builder.timeout(timeout)),
+            RequestInner::Reqwest(builder, max_body) => Self {
+                inner: RequestInner::Reqwest(builder.timeout(timeout), max_body),
             },
             RequestInner::Transport(mut req) => {
                 req.timeout = timeout;
@@ -374,8 +377,8 @@ impl FetchRequest {
     pub async fn send(self) -> Result<FetchResponse> {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            RequestInner::Reqwest(builder) => Ok(FetchResponse {
-                inner: ResponseInner::Reqwest(builder.send().await?),
+            RequestInner::Reqwest(builder, max_body) => Ok(FetchResponse {
+                inner: ResponseInner::Reqwest(builder.send().await?, max_body),
             }),
             RequestInner::Transport(mut req) => {
                 if let Some(error) = req.error.take() {
@@ -419,7 +422,7 @@ pub struct FetchResponse {
 
 enum ResponseInner {
     #[cfg(not(target_arch = "wasm32"))]
-    Reqwest(reqwest::Response),
+    Reqwest(reqwest::Response, usize),
     Transport {
         status: StatusCode,
         version: hyper::Version,
@@ -432,7 +435,7 @@ impl FetchResponse {
     pub fn status(&self) -> StatusCode {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => response.status(),
+            ResponseInner::Reqwest(response, _) => response.status(),
             ResponseInner::Transport { status, .. } => *status,
         }
     }
@@ -441,7 +444,7 @@ impl FetchResponse {
     pub fn version(&self) -> hyper::Version {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => response.version(),
+            ResponseInner::Reqwest(response, _) => response.version(),
             ResponseInner::Transport { version, .. } => *version,
         }
     }
@@ -449,7 +452,7 @@ impl FetchResponse {
     pub fn headers(&self) -> &HeaderMap {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => response.headers(),
+            ResponseInner::Reqwest(response, _) => response.headers(),
             ResponseInner::Transport { headers, .. } => headers,
         }
     }
@@ -458,7 +461,7 @@ impl FetchResponse {
     pub fn content_length(&self) -> Option<u64> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => response.content_length(),
+            ResponseInner::Reqwest(response, _) => response.content_length(),
             ResponseInner::Transport { body, headers, .. } => {
                 body.as_ref().map(|b| b.len() as u64).or_else(|| {
                     headers
@@ -474,7 +477,7 @@ impl FetchResponse {
     pub async fn chunk(&mut self) -> Result<Option<Bytes>> {
         match &mut self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => Ok(response.chunk().await?),
+            ResponseInner::Reqwest(response, _) => Ok(response.chunk().await?),
             ResponseInner::Transport { body, .. } => Ok(body.take().filter(|b| !b.is_empty())),
         }
     }
@@ -483,7 +486,7 @@ impl FetchResponse {
     pub async fn bytes(self) -> Result<Bytes> {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => Ok(response.bytes().await?),
+            ResponseInner::Reqwest(response, limit) => read_response_bytes(response, limit).await,
             ResponseInner::Transport { body, .. } => Ok(body.unwrap_or_default()),
         }
     }
@@ -493,7 +496,7 @@ impl FetchResponse {
     pub async fn text(self) -> Result<String> {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => Ok(response.text().await?),
+            ResponseInner::Reqwest(response, limit) => read_response_text(response, limit).await,
             ResponseInner::Transport { body, .. } => {
                 Ok(String::from_utf8_lossy(&body.unwrap_or_default()).into_owned())
             }
@@ -504,7 +507,7 @@ impl FetchResponse {
     pub async fn json<T: DeserializeOwned>(self) -> Result<T> {
         match self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            ResponseInner::Reqwest(response) => Ok(response.json().await?),
+            ResponseInner::Reqwest(response, limit) => read_response_json(response, limit).await,
             ResponseInner::Transport { body, .. } => {
                 serde_json::from_slice(&body.unwrap_or_default())
                     .context("decode the response body as JSON")
@@ -556,4 +559,50 @@ pub async fn round_trip_parts(
         .collect();
     let body = response.bytes().await.map_err(FetchError)?;
     Ok((status, headers, body))
+}
+
+/// Read a native buffered response without trusting Content-Length. Streaming callers
+/// use `chunk()` directly; buffered model events have a byte cap and whole-read deadline.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn read_response_bytes(mut response: reqwest::Response, limit: usize) -> Result<Bytes> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        anyhow::bail!("HTTP response body exceeds the {limit}-byte cap");
+    }
+    tokio::time::timeout(transport::REQUEST_TIMEOUT, async move {
+        let mut body = bytes::BytesMut::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > limit.saturating_sub(body.len()) {
+                anyhow::bail!("HTTP response body exceeds the {limit}-byte cap");
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body.freeze())
+    })
+    .await
+    .context("HTTP response body deadline exceeded")?
+}
+
+/// Read bounded text while preserving reqwest's Content-Type charset/BOM decoding.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn read_response_text(response: reqwest::Response, limit: usize) -> Result<String> {
+    let headers = response.headers().clone();
+    let status = response.status();
+    let body = read_response_bytes(response, limit).await?;
+    let mut buffered = hyper::Response::new(body);
+    *buffered.headers_mut() = headers;
+    *buffered.status_mut() = status;
+    Ok(reqwest::Response::from(buffered).text().await?)
+}
+
+/// Parse JSON only after the complete response meets the byte and time bounds.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn read_response_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<T> {
+    serde_json::from_slice(&read_response_bytes(response, limit).await?)
+        .context("decode the response body as JSON")
 }
