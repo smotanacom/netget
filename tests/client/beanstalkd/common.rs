@@ -28,6 +28,12 @@ pub async fn response(state: &AppState, id: ClientId, after: u64) -> Value {
                     return e.request["response"].clone();
                 }
             }
+            if let Some(client) = state.get_client(id).await {
+                if let netget::state::ClientStatus::Error(error) = client.status {
+                    let logs = state.list_access_logs_for(Some(AccessLogOwner::Client(id.as_u32())), None).await;
+                    panic!("Beanstalkd client failed before response event: {error}; last action: {:?}", logs.iter().filter(|entry| entry.event_type == "injected_action").max_by_key(|entry| entry.id).map(|entry| &entry.request));
+                }
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
