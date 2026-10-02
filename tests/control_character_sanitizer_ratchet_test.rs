@@ -37,6 +37,12 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/server/graphite/codec.rs",
+        1,
+        "validator: a Carbon metric path is a whitespace-delimited identifier; reject controls \
+         rather than changing the identity of the metric the caller requested",
+    ),
+    (
         "src/client/nats/actions.rs",
         1,
         "validator: a NATS control line is space-delimited and CRLF-terminated, so check_token \

@@ -205,6 +205,12 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ---- transports --------------------------------------------------
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
         "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
+        "gelf" | "graylog" => Wire {
+            transport: Transport::TcpOrUdp,
+            decode_as: None,
+            display: None,
+            note: Some("GELF supports UDP and TCP on this port. For UDP add `-d udp.port==PORT,gelf`; the GELF dissector does not accept TCP decode-as. TCP messages are NUL-delimited JSON."),
+        },
         "tls" | "dot" | "tor_relay" => tcp("tls"),
         "doq" => udp("quic"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),

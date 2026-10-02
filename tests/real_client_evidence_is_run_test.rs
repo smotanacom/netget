@@ -178,7 +178,12 @@ fn evidence_loop() -> String {
     let mut paths: Vec<_> = std::fs::read_dir(&directory)
         .expect("read workflow directory")
         .map(|entry| entry.expect("workflow entry").path())
-        .filter(|path| matches!(path.extension().and_then(|s| s.to_str()), Some("yml" | "yaml")))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
         .collect();
     paths.sort();
     let mut filters = String::new();

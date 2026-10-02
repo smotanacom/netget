@@ -72,6 +72,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "cdp",
     "datalink",
     "dhcp",
+    // GELF TCP and UDP collectors define no application acknowledgement or negative reply.
+    "gelf",
     // One-way Carbon metrics have no application acknowledgement or negative reply.
     "graphite",
     "hsrp",

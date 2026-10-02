@@ -313,7 +313,9 @@ impl ClientRegistry {
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
         #[cfg(feature = "gelf")]
-        self.register(Arc::new(crate::client::gelf::actions::GelfClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::gelf::actions::GelfClientProtocol::new(),
+        ));
 
         #[cfg(feature = "graphite")]
         self.register(Arc::new(
