@@ -323,6 +323,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Carbon 1.1.10 uses APIs removed in Python 3.12. Pin the interpreter used
+      # by every Python peer so Graphite shares the same runtime as its pair job.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: registry-audit
@@ -335,7 +341,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             protobuf-compiler libpcap-dev libdbus-1-dev libusb-1.0-0-dev libpcsclite-dev \
-            libsmbclient-dev
+            libsmbclient-dev libltdl-dev
           # Not decoration. `--all-features` turns on `smb-client`, whose `pavao-sys` build
           # script shells out to pkg-config for `smbclient` and *panics* when it is absent —
           # so the whole feature set fails to build and every step below this one dies in
@@ -466,13 +472,68 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo -E apt-get install -y --no-install-recommends \
-            aria2 awscli curl bind9-dnsutils dict ffmpeg freeradius-utils \
+            aria2 awscli curl bind9-dnsutils dict dictd dictfmt beanstalkd ffmpeg freeradius-utils \
             libcoap2-bin libmemcached-tools mbpoll mercurial \
             knot-dnsutils ldap-utils mosquitto-clients mysql-client npm openssh-client \
             postgresql-client python3-pip redis-tools sipsak smbclient \
             subversion tor wakeonlan zabbix-sender gearman-tools \
             mosquitto nginx redis-server postgresql mysql-server slapd openssh-server memcached \
             freeradius
+
+      # Reuse the pinned independent peers from protocol-pairs.yml. Their files
+      # and runtime paths stay outside the checkout to preserve the precompiled
+      # all-feature evidence binaries between groups.
+      - name: Install QUIC-capable Knot for DoQ evidence
+        continue-on-error: true
+        run: |
+          /home/linuxbrew/.linuxbrew/bin/brew install knot
+          printf '%s\n' '/home/linuxbrew/.linuxbrew/bin' >> "$GITHUB_PATH"
+
+      - name: Prepare the independent NUT server and clients
+        continue-on-error: true
+        run: |
+          sh scripts/test-peers/build-nut.sh "$RUNNER_TEMP/netget-pair-peers/nut"
+          {
+            printf 'NUT_UPSC_BIN=%s/netget-pair-peers/nut/nut-2.8.4/clients/upsc\n' "$RUNNER_TEMP"
+            printf 'NUT_UPSCMD_BIN=%s/netget-pair-peers/nut/nut-2.8.4/clients/upscmd\n' "$RUNNER_TEMP"
+            printf 'NUT_UPSD_BIN=%s/netget-pair-peers/nut/nut-2.8.4/server/upsd\n' "$RUNNER_TEMP"
+            printf 'NUT_DUMMY_BIN=%s/netget-pair-peers/nut/nut-2.8.4/drivers/dummy-ups\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure isolated StatsD and Graphite peer paths
+        run: |
+          {
+            printf 'PYTHONPATH=%s/netget-pair-peers/statsd-python:%s/netget-pair-peers/graphite-python:%s/netget-pair-peers/graphite-python/opt/graphite/lib\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP"
+            printf 'NODE_PATH=%s/netget-pair-peers/statsd-node/node_modules\n' "$RUNNER_TEMP"
+            printf 'NETGET_GRAPHITE_PYTHON=python3\n'
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare the independent StatsD emitters and collector
+        continue-on-error: true
+        run: python3 tests/server/statsd/install_peers.py "$RUNNER_TEMP/netget-pair-peers"
+
+      - name: Prepare the independent Graphite emitter and Carbon collector
+        continue-on-error: true
+        run: python3 tests/server/graphite/install_peers.py "$RUNNER_TEMP/netget-pair-peers"
+
+      - name: Prepare the independent DoQ server
+        continue-on-error: true
+        run: |
+          sh scripts/test-peers/install-dnsproxy.sh "$RUNNER_TEMP/netget-pair-peers/dnsproxy"
+          printf 'NETGET_DNSPROXY_BIN=%s/netget-pair-peers/dnsproxy/linux-amd64/dnsproxy\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Prepare the independent Gemini server
+        continue-on-error: true
+        run: |
+          sh scripts/test-peers/fetch-agate.sh "$RUNNER_TEMP/netget-pair-peers/agate"
+          printf 'NETGET_TEST_AGATE=%s/netget-pair-peers/agate/agate-3.3.24\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Prepare the independent raw QUIC peer
+        continue-on-error: true
+        run: |
+          python3 -m venv "$RUNNER_TEMP/netget-pair-peers/aioquic"
+          "$RUNNER_TEMP/netget-pair-peers/aioquic/bin/pip" install --no-cache-dir --only-binary=:all: aioquic==1.3.0
+          printf 'NETGET_AIOQUIC_PYTHON=%s/netget-pair-peers/aioquic/bin/python\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       # jammy's libcoap2-bin is 4.2.1, whose example coap-server has no `example_data`
       # resource (it arrived in 4.3), so client/coap::real_server_test got 4.04 for every PUT
@@ -1004,34 +1065,37 @@ jobs:
             coap::real_client_test dict::real_client_test dns::dig_test dns::kdig_test \
             gemini::real_client_test beanstalkd::real_client_test zabbix::real_client_test \
             gearman::real_client_test nsq::real_client_test nostr::real_client_test \
-            docker::real_client_test doh::real_client_test dot::real_client_test dynamo::real_client_test \
+            docker::real_client_test doh::real_client_test dot::real_client_test doq::e2e_test dynamo::real_client_test \
             etcd::real_client_test git::e2e_test gopher::e2e_test grpc::real_client_test \
             hls::curl_test http::real_client_test imap::real_client_test \
             kafka::real_client_test kubernetes::e2e_test ldap::real_client_test \
             maven::e2e_test \
             memcached::real_client_test modbus::real_client_test \
             mongodb::real_client_test mqtt::real_client_test \
-            mercurial::real_client_test mysql::real_client_test npm::e2e_test \
+            mercurial::real_client_test mysql::real_client_test npm::e2e_test nut::real_client_test \
             oci_registry::e2e_test ollama::real_client_test openvpn:: \
             postgresql::real_client_test \
             prometheus::real_client_test otlp::real_client_test \
-            pypi::e2e_test radius::real_client_test redis::real_client_test \
+            pypi::e2e_test quic::independent_peer_test radius::real_client_test redis::real_client_test \
             rtsp::ffprobe_test s3::real_client_test sip::real_client_test \
-            smb::real_client_test \
+            smb::real_client_test statsd::real_client_test graphite::real_client_test \
             sqs::real_client_test ssh::real_client_test stun::real_client_test \
             svn::real_client_test \
             torrent_tracker::real_client_test vault::real_client_test webdav::real_client_test \
             websocket::e2e_test \
             wol::real_client_test \
-            client/etcd::real_server_test client/http::real_server_test \
+            client/beanstalkd::real_server_test client/dict::real_server_test \
+            client/doq::real_server_test client/etcd::real_server_test \
+            client/gemini::real_server_test client/graphite::real_server_test client/http::real_server_test \
             client/ldap::real_server_test \
             client/coap::real_server_test \
             client/memcached::real_server_test client/modbus::real_server_test \
             client/radius::real_server_test \
             client/mqtt::keepalive_test client/mqtt::real_server_test \
-            client/mysql::real_server_test client/nats::e2e_test \
+            client/mysql::real_server_test client/nats::e2e_test client/nut::real_server_test \
             client/postgresql::real_server_test \
-            client/redis::real_server_test client/ssh::real_server_test ; do
+            client/quic::real_server_test client/redis::real_server_test \
+            client/ssh::real_server_test client/statsd::real_server_test ; do
             echo "::group::$filter"
             # `client/<p>::<file>` is a NetGet CLIENT against a real third-party server, run
             # from the `client` test target; everything else is a real client against a
