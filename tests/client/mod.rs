@@ -206,3 +206,6 @@ pub mod xmlrpc;
 pub mod xmpp;
 #[cfg(feature = "zookeeper")]
 pub mod zookeeper;
+
+#[cfg(feature = "statsd")]
+pub mod statsd;

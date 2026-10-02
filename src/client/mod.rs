@@ -623,3 +623,6 @@ pub use xmlrpc::actions::XmlRpcClientProtocol;
 pub mod xmpp;
 #[cfg(feature = "xmpp")]
 pub use xmpp::actions::XmppClientProtocol;
+
+#[cfg(feature = "statsd")]
+pub mod statsd;

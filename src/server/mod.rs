@@ -1217,3 +1217,6 @@ pub use bluetooth_ble_weight_scale::actions::BluetoothBleWeightScaleProtocol;
 pub use bluetooth_ble_weight_scale::BluetoothBleWeightScale;
 
 pub use connection::{Connection, ConnectionId};
+
+#[cfg(feature = "statsd")]
+pub mod statsd;
