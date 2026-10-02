@@ -218,3 +218,6 @@ mod dict;
 
 #[cfg(feature = "beanstalkd")]
 pub mod beanstalkd;
+
+#[cfg(feature = "nsq")]
+pub mod nsq;
