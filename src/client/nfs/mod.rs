@@ -666,7 +666,7 @@ impl NfsClient {
     ) -> Result<serde_json::Value> {
         let path = data["path"].as_str().context("Missing 'path' parameter")?;
         let offset = data["offset"].as_u64().unwrap_or(0);
-        let count = data["count"].as_u64().unwrap_or(4096) as u32;
+        let count = crate::client::wire_values::number::<u32>(&data, "count", 4096)?;
 
         let fh = Self::resolve_path(connection, fh_cache, path).await?;
 
@@ -709,7 +709,7 @@ impl NfsClient {
         let write_args = WRITE3args {
             file: fh,
             offset,
-            count: write_data.len() as u32,
+            count: u32::try_from(write_data.len()).context("NFS write exceeds u32 length")?,
             stable: stable_how::FILE_SYNC,
             data: write_data.as_bytes().into(),
         };
@@ -801,7 +801,7 @@ impl NfsClient {
         data: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let path = data["path"].as_str().context("Missing 'path' parameter")?;
-        let mode = data["mode"].as_u64().unwrap_or(0o644) as u32;
+        let mode = crate::client::wire_values::number::<u32>(&data, "mode", 0o644)?;
 
         let (dir_path, filename) = path.rsplit_once('/').unwrap_or(("/", path));
         let dir_fh = Self::resolve_path(connection, fh_cache, dir_path).await?;
@@ -846,7 +846,7 @@ impl NfsClient {
         data: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let path = data["path"].as_str().context("Missing 'path' parameter")?;
-        let mode = data["mode"].as_u64().unwrap_or(0o755) as u32;
+        let mode = crate::client::wire_values::number::<u32>(&data, "mode", 0o755)?;
 
         let (dir_path, dirname) = path.rsplit_once('/').unwrap_or(("/", path));
         let dir_fh = Self::resolve_path(connection, fh_cache, dir_path).await?;

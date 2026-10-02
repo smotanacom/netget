@@ -34,6 +34,10 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 /// Bytes buffered per direction before a writer has to wait for the reader.
 const PIPE_CAPACITY: usize = 256 * 1024;
+/// Pending accepts apply backpressure before allocating a duplex pair.
+pub const TCP_BACKLOG: usize = 128;
+/// UDP drops newly arriving datagrams when this queue is full, like a receive buffer.
+pub const UDP_QUEUE_CAPACITY: usize = 128;
 
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 const FIRST_EPHEMERAL: u16 = 49152;
@@ -41,8 +45,8 @@ const FIRST_EPHEMERAL: u16 = 49152;
 type Incoming = (TcpStream, SocketAddr);
 
 struct Registry {
-    listeners: HashMap<u16, mpsc::UnboundedSender<Incoming>>,
-    udp: HashMap<u16, mpsc::UnboundedSender<Datagram>>,
+    listeners: HashMap<u16, mpsc::Sender<Incoming>>,
+    udp: HashMap<u16, mpsc::Sender<Datagram>>,
     next_ephemeral: u16,
     next_peer_port: u16,
 }
@@ -155,13 +159,13 @@ pub async fn lookup_host<T: ToSocketAddrs>(
 /// A listening port on the virtual network.
 pub struct TcpListener {
     local: SocketAddr,
-    rx: AsyncMutex<mpsc::UnboundedReceiver<Incoming>>,
+    rx: AsyncMutex<mpsc::Receiver<Incoming>>,
 }
 
 impl TcpListener {
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
         let requested = addr.to_socket_addr()?;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(TCP_BACKLOG);
         let port = {
             let mut reg = registry().lock().expect("registry lock");
             let port = if requested.port() == 0 {
@@ -275,7 +279,7 @@ impl PeekableRead {
             return Ok(0);
         }
         if self.pushback.is_empty() {
-            let mut scratch = vec![0u8; buf.len()];
+            let mut scratch = vec![0u8; buf.len().min(PIPE_CAPACITY)];
             // `read` resolves on the first byte available and returns 0 only at EOF, which is
             // the shape `peek` promises; a closed pipe therefore answers rather than hanging.
             let n = tokio::io::AsyncReadExt::read(&mut self.inner, &mut scratch).await?;
@@ -346,14 +350,15 @@ impl TcpStream {
         };
         let server_addr = SocketAddr::new(LOOPBACK, target.port());
         let client_addr = SocketAddr::new(LOOPBACK, peer_port);
-        let (client_end, server_end) = tokio::io::duplex(PIPE_CAPACITY);
-        let server_stream = TcpStream::from_duplex(server_end, server_addr, client_addr);
-        tx.send((server_stream, client_addr)).map_err(|_| {
+        let permit = tx.reserve().await.map_err(|_| {
             io::Error::new(
                 io::ErrorKind::ConnectionRefused,
-                format!("listener on port {} is gone", target.port()),
+                "listener closed while waiting for an accept slot",
             )
         })?;
+        let (client_end, server_end) = tokio::io::duplex(PIPE_CAPACITY);
+        let server_stream = TcpStream::from_duplex(server_end, server_addr, client_addr);
+        permit.send((server_stream, client_addr));
         Ok(TcpStream::from_duplex(client_end, client_addr, server_addr))
     }
 
@@ -535,18 +540,20 @@ pub mod tcp {
 ///
 /// Bound ports live in the same table as listeners, keyed separately. `send_to` looks the
 /// destination port up and delivers the datagram to that socket's queue with the sender's
-/// address attached; nothing is fragmented, reordered or lost. Multicast and broadcast
+/// address attached; packets arriving at a full bounded receive queue are dropped. Multicast and broadcast
 /// addresses deliver to the socket bound on that port, if any — there is one host, so that is
 /// what "everyone on the link" means here. Multicast joins and TTLs are accepted and ignored.
 pub struct UdpSocket {
     local: SocketAddr,
-    rx: AsyncMutex<mpsc::UnboundedReceiver<Datagram>>,
+    inbox: AsyncMutex<UdpInbox>,
     peer: Mutex<Option<SocketAddr>>,
-    /// A datagram taken off the queue by `readable` and not yet handed out.
-    peeked: Mutex<Option<Datagram>>,
 }
 
 type Datagram = (Vec<u8>, SocketAddr);
+struct UdpInbox {
+    rx: mpsc::Receiver<Datagram>,
+    peeked: Option<Datagram>,
+}
 
 /// Largest datagram the virtual network carries; the wire limit, so a server that sizes
 /// its buffer for the wire is never surprised.
@@ -562,7 +569,7 @@ fn udp_unsupported(what: &str) -> io::Error {
 impl UdpSocket {
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
         let requested = addr.to_socket_addr()?;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(UDP_QUEUE_CAPACITY);
         let port = {
             let mut reg = registry().lock().expect("registry lock");
             let port = if requested.port() == 0 {
@@ -598,9 +605,8 @@ impl UdpSocket {
         };
         Ok(UdpSocket {
             local: SocketAddr::new(ip, port),
-            rx: AsyncMutex::new(rx),
+            inbox: AsyncMutex::new(UdpInbox { rx, peeked: None }),
             peer: Mutex::new(None),
-            peeked: Mutex::new(None),
         })
     }
 
@@ -636,7 +642,9 @@ impl UdpSocket {
             .cloned();
         // As on a real host, a datagram to a port nobody listens on is silently dropped.
         if let Some(tx) = tx {
-            let _ = tx.send((buf.to_vec(), self.local));
+            if let Ok(permit) = tx.try_reserve() {
+                permit.send((buf.to_vec(), self.local));
+            }
         }
         Ok(buf.len())
     }
@@ -659,53 +667,61 @@ impl UdpSocket {
         self.deliver(buf, peer)
     }
 
-    async fn next_datagram(&self) -> io::Result<Datagram> {
-        if let Some(d) = self.peeked.lock().expect("peek lock").take() {
-            return Ok(d);
+    fn accepts(&self, from: SocketAddr) -> bool {
+        self.peer
+            .lock()
+            .expect("peer lock")
+            .is_none_or(|peer| peer.port() == from.port())
+    }
+
+    /// Hold queue and peek storage under one lock: concurrent peek/readable
+    /// calls cannot remove separate packets then overwrite each other's cache.
+    async fn fill_peeked(&self, inbox: &mut UdpInbox) -> io::Result<()> {
+        loop {
+            if let Some((_, from)) = &inbox.peeked {
+                if self.accepts(*from) {
+                    return Ok(());
+                }
+                inbox.peeked = None;
+            }
+            let packet = inbox.rx.recv().await.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "socket was unregistered")
+            })?;
+            if self.accepts(packet.1) {
+                inbox.peeked = Some(packet);
+                return Ok(());
+            }
         }
-        let mut rx = self.rx.lock().await;
-        rx.recv()
-            .await
-            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "socket was unregistered"))
     }
 
     fn copy_out(buf: &mut [u8], data: &[u8]) -> usize {
-        // A datagram larger than the buffer is truncated, as recvfrom(2) does.
         let n = data.len().min(buf.len());
         buf[..n].copy_from_slice(&data[..n]);
         n
     }
 
     pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        let (data, from) = self.next_datagram().await?;
+        let mut inbox = self.inbox.lock().await;
+        self.fill_peeked(&mut inbox).await?;
+        let (data, from) = inbox.peeked.take().expect("filled peek slot");
         Ok((Self::copy_out(buf, &data), from))
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let peer = self.peer_addr()?;
-        loop {
-            let (data, from) = self.next_datagram().await?;
-            if from.port() == peer.port() {
-                return Ok(Self::copy_out(buf, &data));
-            }
-        }
+        self.peer_addr()?;
+        self.recv_from(buf).await.map(|(n, _)| n)
     }
 
     pub async fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        let (data, from) = self.next_datagram().await?;
-        let n = Self::copy_out(buf, &data);
-        *self.peeked.lock().expect("peek lock") = Some((data, from));
-        Ok((n, from))
+        let mut inbox = self.inbox.lock().await;
+        self.fill_peeked(&mut inbox).await?;
+        let (data, from) = inbox.peeked.as_ref().expect("filled peek slot");
+        Ok((Self::copy_out(buf, data), *from))
     }
 
-    /// Waits until a datagram is queued. What `try_recv_from` then returns.
     pub async fn readable(&self) -> io::Result<()> {
-        if self.peeked.lock().expect("peek lock").is_some() {
-            return Ok(());
-        }
-        let d = self.next_datagram().await?;
-        *self.peeked.lock().expect("peek lock") = Some(d);
-        Ok(())
+        let mut inbox = self.inbox.lock().await;
+        self.fill_peeked(&mut inbox).await
     }
 
     pub async fn writable(&self) -> io::Result<()> {
@@ -713,16 +729,29 @@ impl UdpSocket {
     }
 
     pub fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        match self.peeked.lock().expect("peek lock").take() {
-            Some((data, from)) => Ok((Self::copy_out(buf, &data), from)),
-            None => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "no datagram queued",
-            )),
+        let mut inbox = self.inbox.try_lock().map_err(|_| {
+            io::Error::new(io::ErrorKind::WouldBlock, "another receiver is waiting")
+        })?;
+        loop {
+            let packet = match inbox.peeked.take() {
+                Some(packet) => packet,
+                None => inbox.rx.try_recv().map_err(|error| match error {
+                    mpsc::error::TryRecvError::Empty => {
+                        io::Error::new(io::ErrorKind::WouldBlock, "no datagram queued")
+                    }
+                    mpsc::error::TryRecvError::Disconnected => {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "socket was unregistered")
+                    }
+                })?,
+            };
+            if self.accepts(packet.1) {
+                return Ok((Self::copy_out(buf, &packet.0), packet.1));
+            }
         }
     }
 
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.peer_addr()?;
         self.try_recv_from(buf).map(|(n, _)| n)
     }
 

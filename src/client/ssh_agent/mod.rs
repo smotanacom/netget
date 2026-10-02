@@ -9,13 +9,15 @@ pub use actions::SshAgentClientProtocol;
 
 use anyhow::{Context, Result};
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::StreamExt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{error, info, trace};
+use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
+use tracing::{error, info};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::ssh_agent::actions::{
@@ -27,6 +29,112 @@ use crate::llm::ClientLlmResult;
 use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
+
+/// Bound server-controlled SSH agent frame lengths before allocating their bodies.
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Decode complete SSH agent packets, stripping their four-byte big-endian length.
+/// Keeping framing in the reader preserves partial packets across command-channel
+/// select arms and separates multiple responses received in one socket read.
+pub fn response_reader<R: AsyncRead + Unpin>(reader: R) -> AgentResponseReader<R> {
+    response_reader_with_timeout(reader, crate::client::response_reader::RESPONSE_DEADLINE)
+}
+
+pub fn response_reader_with_timeout<R: AsyncRead + Unpin>(
+    reader: R,
+    timeout: std::time::Duration,
+) -> AgentResponseReader<R> {
+    AgentResponseReader {
+        timeout,
+        inner: FramedRead::new(
+            ProgressReader {
+                inner: reader,
+                received: false,
+            },
+            LengthDelimitedCodec::builder()
+                .max_frame_length(MAX_RESPONSE_BYTES)
+                .new_codec(),
+        ),
+        deadline: None,
+        ended: false,
+    }
+}
+
+struct ProgressReader<R> {
+    inner: R,
+    received: bool,
+}
+impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let result = std::pin::Pin::new(&mut this.inner).poll_read(cx, buf);
+        this.received |= buf.filled().len() > before;
+        result
+    }
+}
+
+/// Keeps an absolute partial-frame deadline across cancellation of `next()`.
+pub struct AgentResponseReader<R> {
+    timeout: std::time::Duration,
+    inner: FramedRead<ProgressReader<R>, LengthDelimitedCodec>,
+    deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    ended: bool,
+}
+impl<R: AsyncRead + Unpin> futures::Stream for AgentResponseReader<R> {
+    type Item = std::io::Result<BytesMut>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::future::Future;
+        let this = self.get_mut();
+        if this.ended {
+            return std::task::Poll::Ready(None);
+        }
+        // Enforce the original deadline even when the final bytes became ready
+        // while a caller had cancelled (and was not polling) `next()`.
+        if this
+            .deadline
+            .as_mut()
+            .is_some_and(|timer| timer.as_mut().poll(cx).is_ready())
+        {
+            this.ended = true;
+            return std::task::Poll::Ready(Some(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "SSH agent partial frame deadline exceeded",
+            ))));
+        }
+        let had_buffer = !this.inner.read_buffer().is_empty();
+        match std::pin::Pin::new(&mut this.inner).poll_next(cx) {
+            std::task::Poll::Ready(value) => {
+                this.deadline = None;
+                this.inner.get_mut().received = false;
+                return std::task::Poll::Ready(value);
+            }
+            std::task::Poll::Pending => {}
+        }
+        if (had_buffer || this.inner.get_ref().received) && this.deadline.is_none() {
+            this.deadline = Some(Box::pin(tokio::time::sleep(this.timeout)));
+        }
+        if this
+            .deadline
+            .as_mut()
+            .is_some_and(|timer| timer.as_mut().poll(cx).is_ready())
+        {
+            this.ended = true;
+            return std::task::Poll::Ready(Some(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "SSH agent partial frame deadline exceeded",
+            ))));
+        }
+        std::task::Poll::Pending
+    }
+}
 
 /// SSH Agent message types
 const SSH_AGENTC_REQUEST_IDENTITIES: u8 = 11;
@@ -47,19 +155,31 @@ const DEFAULT_AGENT_SOCKET: &str = "./netget-ssh-agent.sock";
 const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
 const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionState {
-    Idle,
-    Processing,
-    Accumulating,
+/// Memory is shared with the connected/response event flow, never held across a model call.
+struct ClientData {
+    memory: String,
 }
 
-/// Per-client data for LLM handling
-struct ClientData {
-    state: ConnectionState,
-    queued_data: Vec<u8>,
-    memory: String,
+/// A framed writer that permanently loses its transport after an incomplete write.
+/// Taking the transport out before awaiting also covers caller cancellation: its
+/// drop closes the owned Unix write half, and subsequent commands cannot append
+/// a new frame into an unfinished one.
+pub struct AgentWriter<W> {
+    transport: Option<W>,
+}
+impl<W: tokio::io::AsyncWrite + Unpin> AgentWriter<W> {
+    pub fn new(transport: W) -> Self {
+        Self {
+            transport: Some(transport),
+        }
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        if let Some(mut transport) = self.transport.take() {
+            transport.shutdown().await?;
+        }
+        Ok(())
+    }
 }
 
 /// SSH Agent client that connects to an SSH agent
@@ -117,91 +237,13 @@ impl SshAgentClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
         // Split stream
-        let (mut read_half, write_half) = tokio::io::split(stream);
-        let write_half_arc = Arc::new(Mutex::new(write_half));
+        let (read_half, write_half) = stream.into_split();
+        let write_half_arc = Arc::new(Mutex::new(AgentWriter::new(write_half)));
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
-            state: ConnectionState::Idle,
-            queued_data: Vec::new(),
             memory: String::new(),
         }));
-
-        // Call LLM with connected event
-        let protocol = Arc::new(SshAgentClientProtocol::new());
-        if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-            let event = Event::new(
-                &SSH_AGENT_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({
-                    "socket_path": socket_path.to_string_lossy(),
-                }),
-            );
-
-            match call_llm_for_client(
-                &llm_client,
-                &app_state,
-                client_id.to_string(),
-                &instruction,
-                &client_data.lock().await.memory,
-                Some(&event),
-                protocol.as_ref(),
-                &status_tx,
-            )
-            .await
-            {
-                Ok(ClientLlmResult {
-                    actions,
-                    memory_updates,
-                }) => {
-                    // Update memory
-                    if let Some(mem) = memory_updates {
-                        client_data.lock().await.memory = mem;
-                    }
-
-                    // Execute initial actions
-                    for action in actions {
-                        use crate::llm::actions::client_trait::Client;
-                        match protocol.as_ref().execute_action(action) {
-                            Ok(ClientActionResult::Custom { name, data }) => {
-                                if let Err(e) = Self::handle_custom_action(
-                                    &name,
-                                    data,
-                                    client_id,
-                                    &write_half_arc,
-                                    &app_state,
-                                    &status_tx,
-                                )
-                                .await
-                                {
-                                    error!("Failed to execute custom action: {}", e);
-                                }
-                            }
-                            Ok(ClientActionResult::Disconnect) => {
-                                info!("SSH Agent client {} disconnecting", client_id);
-                                app_state
-                                    .update_client_status(client_id, ClientStatus::Disconnected)
-                                    .await;
-                                return Ok("127.0.0.1:0".parse().unwrap());
-                            }
-                            Ok(ClientActionResult::WaitForMore) => {}
-                            Ok(ClientActionResult::NoAction) => {}
-                            Ok(ClientActionResult::SendData(_)) => {
-                                error!("SendData not expected in SSH Agent client (protocol should use Custom actions)");
-                            }
-                            Ok(ClientActionResult::Multiple(_)) => {
-                                error!("Multiple not expected in SSH Agent client (protocol should use individual actions)");
-                            }
-                            Err(e) => {
-                                error!("Action execution error: {}", e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("LLM error on SSH Agent client connect: {}", e);
-                }
-            }
-        }
 
         // Spawn read loop
         // Registered with AppState so stop_client can abort this task —
@@ -212,209 +254,86 @@ impl SshAgentClient {
         let mut command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
 
-        let task_handle = tokio::spawn(async move {
-            let mut buffer = vec![0u8; 8192];
-
-            loop {
-                let read_result = tokio::select! {
-                    read = read_half.read(&mut buffer) => read,
-                    Some(cmd) = command_rx.recv() => {
-                        let disconnect = crate::client::command_support::handle_stream_client_command(
-                            &crate::client::ssh_agent::actions::SshAgentClientProtocol,
-                            &write_half_arc,
-                            cmd,
-                            client_id,
-                            &app_state,
-                            &status_tx,
-                        )
+        let command_writer = write_half_arc.clone();
+        let command_state = app_state.clone();
+        let command_status = status_tx.clone();
+        let command_task = tokio::spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                if Self::handle_injected_command(
+                    &command_writer,
+                    command,
+                    client_id,
+                    &command_state,
+                    &command_status,
+                )
+                .await
+                {
+                    command_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
                         .await;
-                        if disconnect {
-                            app_state
-                                .update_client_status(client_id, ClientStatus::Disconnected)
-                                .await;
-                            let _ = status_tx.send(format!(
-                                "[CLIENT] SSH Agent client {} disconnected (injected action)",
-                                client_id
-                            ));
-                            let _ = status_tx.send("__UPDATE_UI__".to_string());
-                            break;
-                        }
-                        continue;
-                    }
-                };
-                match read_result {
-                    Ok(0) => {
-                        info!("SSH Agent client {} disconnected", client_id);
-                        app_state
-                            .update_client_status(client_id, ClientStatus::Disconnected)
-                            .await;
-                        let _ = status_tx.send(format!(
-                            "[CLIENT] SSH Agent client {} disconnected",
-                            client_id
-                        ));
-                        let _ = status_tx.send("__UPDATE_UI__".to_string());
-                        break;
-                    }
-                    Ok(n) => {
-                        let data = buffer[..n].to_vec();
-                        trace!("SSH Agent client {} received {} bytes", client_id, n);
-
-                        // Handle data with LLM
-                        let mut client_data_lock = client_data.lock().await;
-
-                        match client_data_lock.state {
-                            ConnectionState::Idle => {
-                                // Process immediately
-                                client_data_lock.state = ConnectionState::Processing;
-                                let current_memory = client_data_lock.memory.clone();
-                                drop(client_data_lock);
-
-                                // Parse response and call LLM
-                                if let Some(instruction) =
-                                    app_state.get_instruction_for_client(client_id).await
-                                {
-                                    match Self::parse_response(&data) {
-                                        Ok(event_data) => {
-                                            let event = Event::new(
-                                                &SSH_AGENT_CLIENT_RESPONSE_RECEIVED_EVENT,
-                                                event_data,
-                                            );
-
-                                            match call_llm_for_client(
-                                                &llm_client,
-                                                &app_state,
-                                                client_id.to_string(),
-                                                &instruction,
-                                                &current_memory,
-                                                Some(&event),
-                                                protocol.as_ref(),
-                                                &status_tx,
-                                            )
-                                            .await
-                                            {
-                                                Ok(ClientLlmResult {
-                                                    actions,
-                                                    memory_updates,
-                                                }) => {
-                                                    // Update memory
-                                                    if let Some(mem) = memory_updates {
-                                                        client_data.lock().await.memory = mem;
-                                                    }
-
-                                                    // Execute actions
-                                                    for action in actions {
-                                                        use crate::llm::actions::client_trait::Client;
-                                                        match protocol
-                                                            .as_ref()
-                                                            .execute_action(action)
-                                                        {
-                                                            Ok(ClientActionResult::Custom {
-                                                                name,
-                                                                data,
-                                                            }) => {
-                                                                if let Err(e) =
-                                                                    Self::handle_custom_action(
-                                                                        &name,
-                                                                        data,
-                                                                        client_id,
-                                                                        &write_half_arc,
-                                                                        &app_state,
-                                                                        &status_tx,
-                                                                    )
-                                                                    .await
-                                                                {
-                                                                    error!("Failed to execute custom action: {}", e);
-                                                                }
-                                                            }
-                                                            Ok(ClientActionResult::Disconnect) => {
-                                                                info!("SSH Agent client {} disconnecting", client_id);
-                                                                app_state
-                                                                    .update_client_status(
-                                                                        client_id,
-                                                                        ClientStatus::Disconnected,
-                                                                    )
-                                                                    .await;
-                                                                // This early return leaves the
-                                                                // read loop, so the after-loop
-                                                                // cleanup below never runs on this
-                                                                // path — drop the command handle
-                                                                // here too, or a dashboard [ send ]
-                                                                // keeps being offered on a dead
-                                                                // client (idempotent with the
-                                                                // after-loop removal).
-                                                                app_state
-                                                                    .remove_client_handle(client_id)
-                                                                    .await;
-                                                                return;
-                                                            }
-                                                            Ok(ClientActionResult::WaitForMore) => {
-                                                            }
-                                                            Ok(ClientActionResult::NoAction) => {}
-                                                            Ok(ClientActionResult::SendData(_)) => {
-                                                                error!("SendData not expected in SSH Agent client (protocol should use Custom actions)");
-                                                            }
-                                                            Ok(ClientActionResult::Multiple(_)) => {
-                                                                error!("Multiple not expected in SSH Agent client (protocol should use individual actions)");
-                                                            }
-                                                            Err(e) => {
-                                                                error!(
-                                                                    "Action execution error: {}",
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!(
-                                                        "LLM error for SSH Agent client {}: {}",
-                                                        client_id, e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("Failed to parse SSH Agent response: {}", e);
-                                        }
-                                    }
-                                }
-
-                                // Check for queued data
-                                let mut client_data_lock = client_data.lock().await;
-                                if client_data_lock.state == ConnectionState::Accumulating {
-                                    let _queued = std::mem::take(&mut client_data_lock.queued_data);
-                                    client_data_lock.state = ConnectionState::Idle;
-                                    drop(client_data_lock);
-                                    // Process queued data (recursive)
-                                    // For simplicity, we'll just discard queued data for now
-                                } else {
-                                    client_data_lock.state = ConnectionState::Idle;
-                                }
-                            }
-                            ConnectionState::Processing => {
-                                // Queue data
-                                client_data_lock.queued_data.extend_from_slice(&data);
-                                client_data_lock.state = ConnectionState::Accumulating;
-                            }
-                            ConnectionState::Accumulating => {
-                                // Continue queuing
-                                client_data_lock.queued_data.extend_from_slice(&data);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("SSH Agent client {} read error: {}", client_id, e);
-                        app_state
-                            .update_client_status(client_id, ClientStatus::Error(e.to_string()))
-                            .await;
+                    command_state.remove_client_handle(client_id).await;
+                    break;
+                }
+            }
+        });
+        app_state
+            .register_client_task(client_id, command_task)
+            .await;
+        let task_handle = tokio::spawn(async move {
+            let protocol = Arc::new(SshAgentClientProtocol::new());
+            let connected = Event::new(
+                &SSH_AGENT_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({"socket_path": socket_path.to_string_lossy()}),
+            );
+            let result: Result<()> = async {
+                if Self::process_event(
+                    &connected,
+                    client_id,
+                    &llm_client,
+                    &app_state,
+                    &status_tx,
+                    &protocol,
+                    &write_half_arc,
+                    &client_data,
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+                let mut reader = response_reader(read_half);
+                // Frame processing is serial. FramedRead and socket backpressure retain
+                // complete/partial frames while an event handler runs; no queue is discarded.
+                while let Some(frame) = reader.next().await {
+                    let data = Self::parse_response(&frame?)?;
+                    let event = Event::new(&SSH_AGENT_CLIENT_RESPONSE_RECEIVED_EVENT, data);
+                    if Self::process_event(
+                        &event,
+                        client_id,
+                        &llm_client,
+                        &app_state,
+                        &status_tx,
+                        &protocol,
+                        &write_half_arc,
+                        &client_data,
+                    )
+                    .await?
+                    {
                         break;
                     }
                 }
+                Ok(())
             }
-
-            // The loop owns the only receiver; dropping the registered handle
-            // makes later send_to_client calls fail fast instead of timing out.
+            .await;
+            let status = match result {
+                Ok(()) => ClientStatus::Disconnected,
+                Err(error) => {
+                    error!("SSH agent client {} failed: {}", client_id, error);
+                    ClientStatus::Error(error.to_string())
+                }
+            };
+            app_state.update_client_status(client_id, status).await;
             app_state.remove_client_handle(client_id).await;
+            let _ = status_tx.send("__UPDATE_UI__".into());
         });
         task_registrar
             .register_client_task(client_id, task_handle)
@@ -424,8 +343,58 @@ impl SshAgentClient {
         Ok("127.0.0.1:0".parse().unwrap())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn process_event(
+        event: &Event,
+        client_id: ClientId,
+        llm: &OllamaClient,
+        state: &Arc<AppState>,
+        status: &mpsc::UnboundedSender<String>,
+        protocol: &Arc<SshAgentClientProtocol>,
+        writer: &Arc<Mutex<AgentWriter<tokio::net::unix::OwnedWriteHalf>>>,
+        memory: &Arc<Mutex<ClientData>>,
+    ) -> Result<bool> {
+        use crate::llm::actions::client_trait::Client;
+        let Some(instruction) = state.get_instruction_for_client(client_id).await else {
+            return Ok(false);
+        };
+        let current_memory = memory.lock().await.memory.clone();
+        let ClientLlmResult {
+            actions,
+            memory_updates,
+        } = call_llm_for_client(
+            llm,
+            state,
+            client_id.to_string(),
+            &instruction,
+            &current_memory,
+            Some(event),
+            protocol.as_ref(),
+            status,
+        )
+        .await?;
+        if let Some(value) = memory_updates {
+            memory.lock().await.memory = value;
+        }
+        for action in actions {
+            match protocol.execute_action(action)? {
+                ClientActionResult::Custom { name, data } => {
+                    Self::handle_custom_action(&name, data, client_id, writer, state, status)
+                        .await?
+                }
+                ClientActionResult::Disconnect => {
+                    writer.lock().await.shutdown().await?;
+                    return Ok(true);
+                }
+                ClientActionResult::NoAction | ClientActionResult::WaitForMore => {}
+                _ => anyhow::bail!("unsupported SSH agent action result"),
+            }
+        }
+        Ok(false)
+    }
+
     /// Parse SSH Agent response message
-    fn parse_response(data: &[u8]) -> Result<serde_json::Value> {
+    pub fn parse_response(data: &[u8]) -> Result<serde_json::Value> {
         if data.is_empty() {
             anyhow::bail!("Empty response");
         }
@@ -482,101 +451,172 @@ impl SshAgentClient {
         }
     }
 
-    /// Handle custom action by name
-    async fn handle_custom_action(
-        action_name: &str,
-        data: serde_json::Value,
-        client_id: ClientId,
-        write_half: &Arc<Mutex<tokio::io::WriteHalf<UnixStream>>>,
-        _app_state: &Arc<AppState>,
-        _status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
+    /// Encode every action through one implementation shared by injected and model actions.
+    pub fn encode_custom_action(action_name: &str, data: &serde_json::Value) -> Result<Bytes> {
+        let mut message = BytesMut::new();
         match action_name {
-            "request_identities" => {
-                let mut message = BytesMut::new();
-                message.put_u8(SSH_AGENTC_REQUEST_IDENTITIES);
-                Self::send_message(message.freeze(), write_half).await?;
-                trace!("SSH Agent client {} sent REQUEST_IDENTITIES", client_id);
-            }
+            "request_identities" => message.put_u8(SSH_AGENTC_REQUEST_IDENTITIES),
+            "remove_all_identities" => message.put_u8(SSH_AGENTC_REMOVE_ALL_IDENTITIES),
             "sign_request" => {
-                let public_key_blob_hex = data["public_key_blob_hex"]
-                    .as_str()
-                    .context("Missing public_key_blob_hex")?;
-                let data_hex = data["data_hex"].as_str().context("Missing data_hex")?;
-                let flags = data["flags"].as_u64().unwrap_or(0) as u32;
-
-                let public_key_blob = hex::decode(public_key_blob_hex)?;
-                let data_to_sign = hex::decode(data_hex)?;
-
-                let mut message = BytesMut::new();
+                let key = hex::decode(
+                    data["public_key_blob_hex"]
+                        .as_str()
+                        .context("Missing public_key_blob_hex")?,
+                )?;
+                let payload = hex::decode(data["data_hex"].as_str().context("Missing data_hex")?)?;
+                let flags = match data.get("flags") {
+                    None => 0,
+                    Some(value) => u32::try_from(
+                        value
+                            .as_u64()
+                            .context("flags must be an unsigned integer")?,
+                    )
+                    .context("flags exceed u32")?,
+                };
                 message.put_u8(SSH_AGENTC_SIGN_REQUEST);
-                Self::write_string(&mut message, &public_key_blob);
-                Self::write_string(&mut message, &data_to_sign);
+                Self::write_string(&mut message, &key)?;
+                Self::write_string(&mut message, &payload)?;
                 message.put_u32(flags);
-
-                Self::send_message(message.freeze(), write_half).await?;
-                trace!("SSH Agent client {} sent SIGN_REQUEST", client_id);
             }
             "add_identity" => {
                 let key_type = data["key_type"].as_str().context("Missing key_type")?;
-                let public_key_blob_hex = data["public_key_blob_hex"]
-                    .as_str()
-                    .context("Missing public_key_blob_hex")?;
-                let private_key_blob_hex = data["private_key_blob_hex"]
-                    .as_str()
-                    .context("Missing private_key_blob_hex")?;
-                let comment = data["comment"].as_str().unwrap_or("");
-
-                let public_key_blob = hex::decode(public_key_blob_hex)?;
-                let private_key_blob = hex::decode(private_key_blob_hex)?;
-
-                let mut message = BytesMut::new();
+                let key = hex::decode(
+                    data["public_key_blob_hex"]
+                        .as_str()
+                        .context("Missing public_key_blob_hex")?,
+                )?;
+                let private = hex::decode(
+                    data["private_key_blob_hex"]
+                        .as_str()
+                        .context("Missing private_key_blob_hex")?,
+                )?;
                 message.put_u8(SSH_AGENTC_ADD_IDENTITY);
-                Self::write_string(&mut message, key_type.as_bytes());
-                Self::write_string(&mut message, &public_key_blob);
-                Self::write_string(&mut message, &private_key_blob);
-                Self::write_string(&mut message, comment.as_bytes());
-
-                Self::send_message(message.freeze(), write_half).await?;
-                trace!("SSH Agent client {} sent ADD_IDENTITY", client_id);
+                Self::write_string(&mut message, key_type.as_bytes())?;
+                Self::write_string(&mut message, &key)?;
+                Self::write_string(&mut message, &private)?;
+                Self::write_string(
+                    &mut message,
+                    data["comment"].as_str().unwrap_or("").as_bytes(),
+                )?;
             }
             "remove_identity" => {
-                let public_key_blob_hex = data["public_key_blob_hex"]
-                    .as_str()
-                    .context("Missing public_key_blob_hex")?;
-                let public_key_blob = hex::decode(public_key_blob_hex)?;
-
-                let mut message = BytesMut::new();
+                let key = hex::decode(
+                    data["public_key_blob_hex"]
+                        .as_str()
+                        .context("Missing public_key_blob_hex")?,
+                )?;
                 message.put_u8(SSH_AGENTC_REMOVE_IDENTITY);
-                Self::write_string(&mut message, &public_key_blob);
-
-                Self::send_message(message.freeze(), write_half).await?;
-                trace!("SSH Agent client {} sent REMOVE_IDENTITY", client_id);
+                Self::write_string(&mut message, &key)?;
             }
-            "remove_all_identities" => {
-                let mut message = BytesMut::new();
-                message.put_u8(SSH_AGENTC_REMOVE_ALL_IDENTITIES);
-                Self::send_message(message.freeze(), write_half).await?;
-                trace!("SSH Agent client {} sent REMOVE_ALL_IDENTITIES", client_id);
-            }
-            _ => {
-                anyhow::bail!("Unknown custom action: {}", action_name);
-            }
+            _ => anyhow::bail!("Unknown custom action: {action_name}"),
         }
+        if message.len() > MAX_RESPONSE_BYTES {
+            anyhow::bail!("SSH agent request exceeds byte cap");
+        }
+        Ok(message.freeze())
+    }
+
+    async fn handle_custom_action(
+        name: &str,
+        data: serde_json::Value,
+        _client_id: ClientId,
+        writer: &Arc<Mutex<AgentWriter<tokio::net::unix::OwnedWriteHalf>>>,
+        _state: &Arc<AppState>,
+        _status: &mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
+        Self::send_message(Self::encode_custom_action(name, &data)?, writer).await?;
         Ok(())
     }
 
-    /// Send message with SSH wire format (length prefix + data)
-    async fn send_message(
-        data: Bytes,
-        write_half: &Arc<Mutex<tokio::io::WriteHalf<UnixStream>>>,
-    ) -> Result<()> {
-        let mut message = BytesMut::new();
-        message.put_u32(data.len() as u32);
-        message.put_slice(&data);
+    /// Execute an injected action on the actual agent socket and report its wire outcome.
+    pub async fn handle_injected_command<W: tokio::io::AsyncWrite + Unpin>(
+        writer: &Arc<Mutex<AgentWriter<W>>>,
+        command: crate::state::client_handles::ClientCommand,
+        client_id: ClientId,
+        state: &Arc<AppState>,
+        status: &mpsc::UnboundedSender<String>,
+    ) -> bool {
+        use crate::llm::actions::client_trait::Client;
+        use crate::state::client_handles::ClientSendOutcome;
+        let action = command.action.clone();
+        let outcome: Result<ClientSendOutcome> = async {
+            match SshAgentClientProtocol.execute_action(action.clone())? {
+                ClientActionResult::Custom { name, data } => {
+                    let bytes_sent =
+                        Self::send_message(Self::encode_custom_action(&name, &data)?, writer)
+                            .await?;
+                    Ok(ClientSendOutcome::Sent { bytes_sent })
+                }
+                ClientActionResult::Disconnect => {
+                    writer.lock().await.shutdown().await?;
+                    Ok(ClientSendOutcome::Disconnected)
+                }
+                ClientActionResult::NoAction | ClientActionResult::WaitForMore => {
+                    Ok(ClientSendOutcome::Executed {
+                        detail: "no agent packet requested".into(),
+                    })
+                }
+                _ => anyhow::bail!("unsupported SSH agent action result"),
+            }
+        }
+        .await;
+        let disconnected = matches!(&outcome, Ok(ClientSendOutcome::Disconnected));
+        let detail = match &outcome {
+            Ok(value) => serde_json::to_value(value).unwrap_or_default(),
+            Err(error) => serde_json::json!({"error": error.to_string()}),
+        };
+        state
+            .record_access_log(
+                crate::state::AccessLogOwner::Client(client_id.as_u32()),
+                "ssh-agent",
+                None,
+                "injected_action",
+                action,
+                vec![detail],
+            )
+            .await;
+        crate::client::command_support::reply(command, outcome);
+        let _ = status.send("__UPDATE_UI__".into());
+        disconnected
+    }
 
-        write_half.lock().await.write_all(&message).await?;
-        Ok(())
+    async fn send_message<W: tokio::io::AsyncWrite + Unpin>(
+        data: Bytes,
+        writer: &Arc<Mutex<AgentWriter<W>>>,
+    ) -> Result<usize> {
+        Self::send_message_with_timeout(
+            data,
+            writer,
+            crate::client::response_reader::RESPONSE_DEADLINE,
+        )
+        .await
+    }
+
+    /// Bound the complete queued write, including waiting for the writer lock.
+    pub async fn send_message_with_timeout<W: tokio::io::AsyncWrite + Unpin>(
+        data: Bytes,
+        writer: &Arc<Mutex<AgentWriter<W>>>,
+        timeout: std::time::Duration,
+    ) -> Result<usize> {
+        if data.len() > MAX_RESPONSE_BYTES {
+            anyhow::bail!("SSH agent request exceeds byte cap");
+        }
+        let length = u32::try_from(data.len()).context("SSH agent packet length exceeds u32")?;
+        let mut packet = BytesMut::with_capacity(data.len() + 4);
+        packet.put_u32(length);
+        packet.extend_from_slice(&data);
+        tokio::time::timeout(timeout, async {
+            let mut writer = writer.lock().await;
+            let mut transport = writer
+                .transport
+                .take()
+                .context("SSH agent writer is unusable after an interrupted write or disconnect")?;
+            transport.write_all(&packet).await?;
+            writer.transport = Some(transport);
+            Ok::<_, anyhow::Error>(packet.len())
+        })
+        .await
+        .context("SSH agent write deadline exceeded")?
     }
 
     /// Read SSH wire format string (uint32 length + bytes)
@@ -606,8 +646,16 @@ impl SshAgentClient {
     }
 
     /// Write SSH wire format string (uint32 length + bytes)
-    fn write_string(buffer: &mut BytesMut, data: &[u8]) {
-        buffer.put_u32(data.len() as u32);
+    fn write_string(buffer: &mut BytesMut, data: &[u8]) -> Result<()> {
+        if data.len()
+            > MAX_RESPONSE_BYTES
+                .saturating_sub(buffer.len())
+                .saturating_sub(4)
+        {
+            anyhow::bail!("SSH agent request exceeds byte cap");
+        }
+        buffer.put_u32(u32::try_from(data.len()).context("SSH string length exceeds u32")?);
         buffer.put_slice(data);
+        Ok(())
     }
 }

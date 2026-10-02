@@ -14,6 +14,7 @@ mod non_interactive;
 pub mod server_startup;
 #[cfg(not(target_arch = "wasm32"))]
 mod setup;
+mod startup_guard;
 mod tasks;
 #[cfg(not(target_arch = "wasm32"))]
 mod terminal_cleanup;
@@ -22,7 +23,7 @@ pub mod theme;
 // Re-exported so MCP mode (`src/mcp_stdio`) can drive the scheduled-task ticker on the
 // same code path the TUI and non-interactive runner use, without exposing the whole
 // private `tasks` module.
-pub(crate) use tasks::execute_due_tasks_public;
+pub use tasks::{execute_due_tasks_owned_public, execute_due_tasks_public};
 
 use anyhow::Result;
 pub use args::Args;

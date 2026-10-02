@@ -1,9 +1,13 @@
 //! Syntax highlighting for script code in logs
 
+use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+
+static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+static THEMES: OnceLock<ThemeSet> = OnceLock::new();
 
 /// Highlight script code for terminal output
 ///
@@ -11,8 +15,8 @@ use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 /// Falls back to plain text if highlighting fails.
 pub fn highlight_code(code: &str, language: &str) -> String {
     // Load syntax definitions and theme
-    let ps = SyntaxSet::load_defaults_newlines();
-    let ts = ThemeSet::load_defaults();
+    let ps = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let ts = THEMES.get_or_init(ThemeSet::load_defaults);
 
     // Use a dark theme suitable for terminals
     let theme = &ts.themes["base16-ocean.dark"];
@@ -27,7 +31,7 @@ pub fn highlight_code(code: &str, language: &str) -> String {
     let mut highlighted = String::new();
 
     for line in LinesWithEndings::from(code) {
-        if let Ok(ranges) = h.highlight_line(line, &ps) {
+        if let Ok(ranges) = h.highlight_line(line, ps) {
             let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
             highlighted.push_str(&escaped);
         } else {

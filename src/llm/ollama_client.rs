@@ -1532,12 +1532,12 @@ impl OllamaClient {
     }
 
     /// Fail fast if the backend is known to be down.
-    fn breaker_guard(&self) -> Result<()> {
+    fn breaker_guard(&self) -> Result<Option<crate::llm::circuit_breaker::BreakerPermit<'_>>> {
         if !self.breaker_applies() {
-            return Ok(());
+            return Ok(None);
         }
         match self.breaker.acquire() {
-            Ok(()) => Ok(()),
+            Ok(permit) => Ok(Some(permit)),
             Err(open) => {
                 debug!("Short-circuiting LLM request: {}", open);
                 self.log().warn(self.breaker.status().summary());
@@ -1547,16 +1547,20 @@ impl OllamaClient {
     }
 
     /// Feed a request outcome back into the breaker and pass the result through unchanged.
-    fn record_backend_outcome<T>(&self, result: Result<T>) -> Result<T> {
-        if !self.breaker_applies() {
+    fn record_backend_outcome<T>(
+        &self,
+        permit: Option<crate::llm::circuit_breaker::BreakerPermit<'_>>,
+        result: Result<T>,
+    ) -> Result<T> {
+        let Some(permit) = permit else {
             return result;
-        }
+        };
 
         match &result {
-            Ok(_) => self.breaker.record_success(),
+            Ok(_) => permit.record_success(),
             Err(e) if is_transport_failure(e) => {
                 let summary = format!("{:#}", e);
-                if self.breaker.record_failure(&summary) {
+                if permit.record_failure(&summary) {
                     self.log().error(self.breaker.status().summary());
                 } else {
                     warn!(
@@ -1568,7 +1572,7 @@ impl OllamaClient {
                 }
             }
             // The backend answered, it just answered with an error. Transport is fine.
-            Err(_) => self.breaker.record_success(),
+            Err(_) => permit.record_success(),
         }
 
         result
@@ -1614,11 +1618,11 @@ impl OllamaClient {
     ) -> Result<GenerateResponse> {
         // Fail immediately if the backend is already known to be down, rather than paying
         // another full request timeout to rediscover it. See `crate::llm::circuit_breaker`.
-        self.breaker_guard()?;
+        let permit = self.breaker_guard()?;
         let result = self
             .generate_with_format_inner(model, prompt, format, offered)
             .await;
-        self.record_backend_outcome(result)
+        self.record_backend_outcome(permit, result)
     }
 
     async fn generate_with_format_inner(
@@ -1688,7 +1692,9 @@ impl OllamaClient {
 
                 let status = http_response.status();
                 if !status.is_success() {
-                    let body = http_response.text().await.unwrap_or_default();
+                    let body =
+                        crate::client::http_fetch::read_response_text(http_response, 1024 * 1024)
+                            .await?;
                     let msg = serde_json::from_str::<serde_json::Value>(&body)
                         .ok()
                         .and_then(|v| {
@@ -1761,7 +1767,8 @@ impl OllamaClient {
                 if !status.is_success() {
                     // Error responses are a single JSON object, not an SSE stream.
                     let response_body: serde_json::Value =
-                        http_response.json().await.unwrap_or_default();
+                        crate::client::http_fetch::read_response_json(http_response, 1024 * 1024)
+                            .await?;
                     let error_msg = response_body
                         .pointer("/error/message")
                         .and_then(|m| m.as_str())
@@ -1918,9 +1925,9 @@ impl OllamaClient {
     /// * `Ok(ChatResponse)` - Response with optional content and tool calls
     pub(crate) async fn chat_with_tools(&self, request: &ChatRequest) -> Result<ChatResponse> {
         // See `generate_with_format`: fail fast while the backend is known to be down.
-        self.breaker_guard()?;
+        let permit = self.breaker_guard()?;
         let result = self.chat_with_tools_inner(request).await;
-        self.record_backend_outcome(result)
+        self.record_backend_outcome(permit, result)
     }
 
     async fn chat_with_tools_inner(&self, request: &ChatRequest) -> Result<ChatResponse> {
@@ -2156,7 +2163,8 @@ impl OllamaClient {
 
         let status = http_response.status();
         if !status.is_success() {
-            let body = http_response.text().await.unwrap_or_default();
+            let body =
+                crate::client::http_fetch::read_response_text(http_response, 1024 * 1024).await?;
             let error_msg = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| {
@@ -2274,7 +2282,8 @@ impl OllamaClient {
         let status = http_response.status();
         if !status.is_success() {
             // Error responses are a single JSON object, not an SSE stream.
-            let response_body: serde_json::Value = http_response.json().await.unwrap_or_default();
+            let response_body: serde_json::Value =
+                crate::client::http_fetch::read_response_json(http_response, 1024 * 1024).await?;
             let error_msg = response_body
                 .pointer("/error/message")
                 .and_then(|m| m.as_str())
@@ -2495,10 +2504,10 @@ impl OllamaClient {
                     anyhow::bail!("OpenAI API returned error status: {}", response.status());
                 }
 
-                let body: serde_json::Value = response
-                    .json()
-                    .await
-                    .context("Failed to parse model list response")?;
+                let body: serde_json::Value =
+                    crate::client::http_fetch::read_response_json(response, 8 * 1024 * 1024)
+                        .await
+                        .context("Failed to parse model list response")?;
 
                 let models = body["data"]
                     .as_array()

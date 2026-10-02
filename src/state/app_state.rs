@@ -381,6 +381,10 @@ struct AppStateInner {
     instance_id: String,
     /// Scheduled tasks registry
     tasks: HashMap<TaskId, ScheduledTask>,
+    /// In-flight scheduled executions, cancelled with their task or scope.
+    scheduled_executions: HashMap<TaskId, tokio::task::JoinHandle<()>>,
+    /// Workers cancelled when one peer closes, even while an injected write blocks.
+    peer_tasks: HashMap<(ServerId, u32), Vec<tokio::task::JoinHandle<()>>>,
     /// Next task ID to assign
     next_task_id: u64,
     /// Conversation state for User Input Agent
@@ -422,8 +426,7 @@ struct AppStateInner {
     ///
     /// A `Vec` per client, not a single slot: several protocols spawn more than one
     /// task per connection (DNS spawns the hickory transport driver *and* the LLM
-    /// conversation task), and keeping only the last one — as
-    /// `register_server_task` does for servers — would silently leak the rest.
+    /// conversation task); retaining only the last one would leak the rest.
     ///
     /// Lives here rather than on `ClientInstance` because the handles are only ever
     /// touched through `register_client_task` / `remove_client`, and `ClientInstance`
@@ -467,6 +470,28 @@ struct AppStateInner {
 }
 
 impl AppStateInner {
+    fn remove_scheduled_task(&mut self, id: TaskId) -> Option<ScheduledTask> {
+        if let Some(handle) = self.scheduled_executions.remove(&id) {
+            handle.abort();
+        }
+        let task = self.tasks.remove(&id)?;
+        if self.task_names.get(&task.name) == Some(&id) {
+            self.task_names.remove(&task.name);
+        }
+        Some(task)
+    }
+
+    fn remove_peer(&mut self, server_id: ServerId, connection_id: u32) {
+        self.peer_handles.remove(&(server_id, connection_id));
+        for handle in self
+            .peer_tasks
+            .remove(&(server_id, connection_id))
+            .unwrap_or_default()
+        {
+            handle.abort();
+        }
+    }
+
     /// Tear down everything a server owns, other than its own map entry.
     ///
     /// Called from every path that drops a server — [`AppState::remove_server`] and
@@ -483,9 +508,16 @@ impl AppStateInner {
         }
         // A live-instance handle must never outlive the server it points at.
         self.server_handles.remove(&server_id);
-        // Dropping a peer handle closes its channel, which ends the per-peer
-        // command task.
         self.peer_handles.retain(|(sid, _), _| *sid != server_id);
+        self.peer_tasks.retain(|(sid, _), handles| {
+            if *sid != server_id {
+                return true;
+            }
+            for handle in handles {
+                handle.abort();
+            }
+            false
+        });
         self.drop_tasks_for_server(server_id);
 
         // Tear down any pipe touching this server (as source or sink), mirroring
@@ -519,9 +551,7 @@ impl AppStateInner {
             .collect();
 
         for id in task_ids_to_remove {
-            if let Some(task) = self.tasks.remove(&id) {
-                self.task_names.remove(&task.name);
-            }
+            self.remove_scheduled_task(id);
         }
     }
 }
@@ -597,6 +627,8 @@ impl AppState {
                 ollama_url,
                 instance_id,
                 tasks: HashMap::new(),
+                scheduled_executions: HashMap::new(),
+                peer_tasks: HashMap::new(),
                 next_task_id: 1,
                 user_conversation_state: None,
                 task_names: HashMap::new(),
@@ -1035,8 +1067,30 @@ impl AppState {
         self.inner
             .write()
             .await
-            .peer_handles
-            .remove(&(server_id, connection_id));
+            .remove_peer(server_id, connection_id);
+    }
+
+    /// Track a peer worker under its connection. A close racing registration
+    /// aborts it immediately; registration never revives a removed handle.
+    pub async fn register_peer_task(
+        &self,
+        server_id: ServerId,
+        connection_id: u32,
+        handle: tokio::task::JoinHandle<()>,
+    ) {
+        let mut inner = self.inner.write().await;
+        if !inner.servers.contains_key(&server_id)
+            || !inner.peer_handles.contains_key(&(server_id, connection_id))
+        {
+            handle.abort();
+            return;
+        }
+        let tasks = inner
+            .peer_tasks
+            .entry((server_id, connection_id))
+            .or_default();
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(handle);
     }
 
     /// Execute one action inside a server connection's own task and wait for
@@ -1465,7 +1519,13 @@ impl AppState {
     pub async fn mark_server_protocols_documented(&self, protocols: &[String]) {
         let mut inner = self.inner.write().await;
         for protocol in protocols {
-            inner.documented_server_protocols.insert(protocol.clone());
+            if crate::llm::conversation_state::ConversationState::valid_documented_protocol(
+                protocol,
+            ) && inner.documented_server_protocols.len()
+                < crate::llm::conversation_state::ConversationState::MAX_DOCUMENTED_PROTOCOLS
+            {
+                inner.documented_server_protocols.insert(protocol.clone());
+            }
         }
     }
 
@@ -1473,7 +1533,13 @@ impl AppState {
     pub async fn mark_client_protocols_documented(&self, protocols: &[String]) {
         let mut inner = self.inner.write().await;
         for protocol in protocols {
-            inner.documented_client_protocols.insert(protocol.clone());
+            if crate::llm::conversation_state::ConversationState::valid_documented_protocol(
+                protocol,
+            ) && inner.documented_client_protocols.len()
+                < crate::llm::conversation_state::ConversationState::MAX_DOCUMENTED_PROTOCOLS
+            {
+                inner.documented_client_protocols.insert(protocol.clone());
+            }
         }
     }
 
@@ -1769,6 +1835,9 @@ impl AppState {
             }
         }
 
+        self.remove_peer_handle(server_id, connection_id.as_u32())
+            .await;
+
         // Clean up any tasks associated with this connection
         self.cleanup_connection_tasks(server_id, connection_id)
             .await;
@@ -1783,6 +1852,9 @@ impl AppState {
         if let Some(server) = self.inner.write().await.servers.get_mut(&server_id) {
             server.remove_connection(connection_id);
         }
+
+        self.remove_peer_handle(server_id, connection_id.as_u32())
+            .await;
 
         // Clean up any tasks associated with this connection (safety measure)
         // Tasks should already be cleaned up when connection was closed,
@@ -2235,6 +2307,18 @@ impl AppState {
                 handle.abort();
             }
 
+            let task_ids: Vec<_> = inner
+                .tasks
+                .iter()
+                .filter_map(|(task_id, task)| {
+                    matches!(task.scope, crate::state::task::TaskScope::Client(cid) if cid == id)
+                        .then_some(*task_id)
+                })
+                .collect();
+            for task_id in task_ids {
+                inner.remove_scheduled_task(task_id);
+            }
+
             // Set mode to Idle if no more clients and no servers
             if inner.clients.is_empty() && inner.servers.is_empty() {
                 inner.mode = Mode::Idle;
@@ -2253,7 +2337,7 @@ impl AppState {
     ///
     /// Client `connect()` implementations call this with the `JoinHandle` of every
     /// task they spawn — read loop, transport driver, in-flight request — right
-    /// after spawning it. As with `register_server_task`, handles ACCUMULATE: a
+    /// after spawning it. Like `register_server_task`, handles accumulate: a
     /// client that spawns three tasks gets all three aborted, none silently dropped.
     ///
     /// If the client is already gone (raced with `stop_client`), the task is aborted
@@ -2699,10 +2783,13 @@ impl AppState {
     // ===== Task Management Methods =====
 
     /// Add a new scheduled task
-    pub async fn add_task(&self, task: ScheduledTask) -> TaskId {
+    pub async fn add_task(&self, mut task: ScheduledTask) -> TaskId {
         let mut inner = self.inner.write().await;
         let id = TaskId::new(inner.next_task_id);
         inner.next_task_id += 1;
+        // Constructors accept a placeholder ID. Every later status update and
+        // completion uses the ID on the stored task, so it must match the map key.
+        task.id = id;
 
         inner.task_names.insert(task.name.clone(), id);
         inner.tasks.insert(id, task);
@@ -2729,17 +2816,70 @@ impl AppState {
     /// Remove a task
     pub async fn remove_task(&self, id: TaskId) -> Option<ScheduledTask> {
         let mut inner = self.inner.write().await;
-        if let Some(task) = inner.tasks.remove(&id) {
-            inner.task_names.remove(&task.name);
-            Some(task)
-        } else {
-            None
+        inner.remove_scheduled_task(id)
+    }
+
+    /// Start a claimed task while holding its ownership lock. Removal cannot
+    /// race between spawn and registration; a previously removed claim is skipped.
+    pub async fn spawn_scheduled_task<F>(&self, id: TaskId, future: F) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut inner = self.inner.write().await;
+        if !inner
+            .tasks
+            .get(&id)
+            .is_some_and(|task| task.status == crate::state::task::TaskStatus::Executing)
+        {
+            return false;
         }
+        if inner
+            .scheduled_executions
+            .get(&id)
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return false;
+        }
+        inner.scheduled_executions.insert(id, tokio::spawn(future));
+        true
     }
 
     /// Get all tasks
     pub async fn get_all_tasks(&self) -> Vec<ScheduledTask> {
         self.inner.read().await.tasks.values().cloned().collect()
+    }
+
+    /// Atomically claim scheduled tasks whose deadline has arrived.
+    ///
+    /// A separate snapshot and status update lets concurrent timer ticks both
+    /// execute the same task. Mark each task while holding the selection lock.
+    pub async fn claim_due_tasks(&self) -> Vec<ScheduledTask> {
+        use crate::state::task::TaskStatus;
+        let mut inner = self.inner.write().await;
+        let now = crate::utils::clock::Instant::now();
+        let active: std::collections::HashSet<_> = inner
+            .scheduled_executions
+            .iter()
+            .filter_map(|(id, handle)| (!handle.is_finished()).then_some(*id))
+            .collect();
+        inner
+            .scheduled_executions
+            .retain(|_, handle| !handle.is_finished());
+        inner
+            .tasks
+            .values_mut()
+            .filter_map(|task| {
+                if task.status == TaskStatus::Scheduled
+                    && task.next_execution <= now
+                    && !active.contains(&task.id)
+                {
+                    task.status = TaskStatus::Executing;
+                    Some(task.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Get tasks for a specific server
@@ -2807,7 +2947,7 @@ impl AppState {
                 task.failure_count = 0;
                 task.last_error = None;
             } else {
-                task.failure_count += 1;
+                task.failure_count = task.failure_count.saturating_add(1);
                 task.last_error = result.error.clone();
             }
 
@@ -2817,7 +2957,7 @@ impl AppState {
                 ..
             } = task.task_type
             {
-                *executions_count += 1;
+                *executions_count = executions_count.saturating_add(1);
             }
         }
     }
@@ -2861,9 +3001,7 @@ impl AppState {
 
         // Remove tasks and their name mappings
         for id in task_ids_to_remove {
-            if let Some(task) = inner.tasks.remove(&id) {
-                inner.task_names.remove(&task.name);
-            }
+            inner.remove_scheduled_task(id);
         }
     }
 
@@ -2883,9 +3021,7 @@ impl AppState {
 
         // Remove tasks and their name mappings
         for id in task_ids_to_remove {
-            if let Some(task) = inner.tasks.remove(&id) {
-                inner.task_names.remove(&task.name);
-            }
+            inner.remove_scheduled_task(id);
         }
     }
 
@@ -2996,12 +3132,12 @@ impl AppState {
                     // Only sync if AppState has more protocols than ConversationState
                     for protocol in &inner.documented_server_protocols {
                         if !state.documented_server_protocols.contains(protocol) {
-                            state.documented_server_protocols.insert(protocol.clone());
+                            state.mark_server_protocols_documented(std::slice::from_ref(protocol));
                         }
                     }
                     for protocol in &inner.documented_client_protocols {
                         if !state.documented_client_protocols.contains(protocol) {
-                            state.documented_client_protocols.insert(protocol.clone());
+                            state.mark_client_protocols_documented(std::slice::from_ref(protocol));
                         }
                     }
                 }

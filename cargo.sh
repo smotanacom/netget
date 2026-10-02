@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cargo wrapper script with optional isolation support
+# Cargo wrapper with shared-target caching and session-owned process supervision
 # Usage: ./cargo.sh <cargo-args>
 # Example: ./cargo.sh build --release --all-features
 #
@@ -49,7 +49,7 @@ if [[ "$CARGO_USE_ISOLATION" == true ]] && [[ "$CARGO_CLEANUP_OLD" == true ]] &&
         if ! ps -p "$PID" > /dev/null 2>&1; then
             echo "Cleaning up old session: $dir (PID $PID no longer active)" >&2
             rm -rf "$dir"
-            ((CLEANED++))
+            CLEANED=$((CLEANED + 1))
         fi
     done
 
@@ -118,9 +118,12 @@ mkdir -p "${PROJECT_ROOT}/tmp"
 # Clean up log files older than 1 day
 find "${PROJECT_ROOT}/tmp" -name "netget-*.log" -type f -mtime +1 -delete 2>/dev/null || true
 
-# Determine log file name based on command and PPID
+# Each invocation gets a separate log, even for simultaneous builds in one session.
 COMMAND="${CARGO_ARGS[0]:-unknown}"
-LOG_FILE="${PROJECT_ROOT}/tmp/netget-${COMMAND}-${PPID}.log"
+COMMAND="${COMMAND//[^[:alnum:]_-]/_}"
+SESSION_PID="${CARGO_SESSION_PID:-$PPID}"
+export CARGO_SESSION_PID="$SESSION_PID"
+LOG_FILE="${PROJECT_ROOT}/tmp/netget-${COMMAND}-${SESSION_PID}-$$.log"
 
 # Echo the target directory info for visibility
 echo "=== Cargo $BUILD_MODE Build ===" >&2
@@ -133,7 +136,8 @@ echo "============================" >&2
 set -o pipefail
 
 # Run cargo and tee output to log file (captures both stdout and stderr)
-cargo "${CARGO_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
+python3 "${PROJECT_ROOT}/scripts/cargo_session.py" run \
+    --root "$PROJECT_ROOT" --session-pid "$SESSION_PID" -- cargo "${CARGO_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
 CARGO_EXIT=$?
 
 # Run cargo-sweep in background to keep target/ under 15GB (non-blocking)

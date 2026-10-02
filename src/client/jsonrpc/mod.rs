@@ -655,7 +655,7 @@ impl JsonRpcClient {
         let response = http_request.json(&request).send().await?;
 
         let status_code = response.status().as_u16();
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text = response.text().await?;
 
         info!(
             "JSON-RPC client {} received response: {}",
@@ -864,7 +864,7 @@ impl JsonRpcClient {
         let response = http_request.json(&batch).send().await?;
 
         let status_code = response.status().as_u16();
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text = response.text().await?;
 
         info!(
             "JSON-RPC client {} received batch response: {}",

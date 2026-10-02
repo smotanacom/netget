@@ -142,6 +142,9 @@ impl PtyServer {
             }
             (master, slave)
         };
+        // Own both descriptors before any fallible setup. In particular, refusing an
+        // existing regular file at link_path must not leak the already-open master.
+        let master_file = unsafe { File::from_raw_fd(master_raw) };
         // Own the slave fd so it is closed on drop; holding it open keeps the master from
         // returning EIO when a terminal client detaches.
         let slave_fd = unsafe { OwnedFd::from_raw_fd(slave_raw) };
@@ -159,7 +162,6 @@ impl PtyServer {
 
         // Master fd: make nonblocking and hand to a std File / AsyncFd.
         set_nonblocking(master_raw)?;
-        let master_file = unsafe { File::from_raw_fd(master_raw) };
         let async_master = AsyncFd::new(master_file)
             .context("Failed to register PTY master with the async runtime")?;
 

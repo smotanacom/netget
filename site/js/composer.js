@@ -79,7 +79,7 @@ export function newEntry(action, source) {
         const crlf = kind === 'text' && typeof v === 'string' && v.includes('\r\n');
         return { name: param.name, kind, raw, crlf, required: !!param.required };
     });
-    const extras = {};
+    const extras = Object.create(null);
     for (const [k, v] of Object.entries(values)) {
         if (k !== 'type' && !declared.has(k)) extras[k] = v;
     }
@@ -91,7 +91,8 @@ export function newEntry(action, source) {
  * where each error is `{field, message}`.
  */
 export function buildAction(entry) {
-    const value = { type: entry.name };
+    const value = Object.create(null);
+    value.type = entry.name;
     const errors = [];
     for (const f of entry.fields) {
         switch (f.kind) {
@@ -106,6 +107,7 @@ export function buildAction(entry) {
             if (s === '') { if (f.required) errors.push({ field: f.name, message: 'required' }); break; }
             const n = Number(s);
             if (!Number.isFinite(n)) errors.push({ field: f.name, message: 'not a number' });
+            else if (Number.isInteger(n) && !Number.isSafeInteger(n)) errors.push({ field: f.name, message: 'integer is too large to represent exactly; use Raw JSON' });
             else value[f.name] = n;
             break;
         }
@@ -164,15 +166,31 @@ export function entriesFromEnvelope(actions, parsed) {
     const known = new Set(Object.keys(parsed));
     known.delete('actions'); known.delete('tools');
     if (known.size) return null;
-    if (!Array.isArray(parsed.actions || []) || !Array.isArray(parsed.tools || [])) return null;
+    if (Object.hasOwn(parsed, 'actions') && !Array.isArray(parsed.actions)) return null;
+    if (Object.hasOwn(parsed, 'tools') && !Array.isArray(parsed.tools)) return null;
     const items = [...(parsed.tools || []), ...(parsed.actions || [])];
     const entries = [];
     for (const item of items) {
         const action = item && actions.find((a) => a.name === item.type);
         if (!action) return null;
-        entries.push(newEntry(action, item));
+        const entry = newEntry(action, item);
+        const built = buildAction(entry);
+        if (!built.ok || !sameJson(built.value, item)) return null;
+        entries.push(entry);
     }
+    // A tool put under actions (or vice versa) cannot survive the form's categorization.
+    const rebuilt = buildEnvelope(actions, entries).envelope;
+    if (!sameJson(rebuilt.actions, parsed.actions || []) || !sameJson(rebuilt.tools || [], parsed.tools || [])) return null;
     return entries;
+}
+
+function sameJson(left, right) {
+    if (left === right) return true;
+    if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+    if (Array.isArray(left) !== Array.isArray(right)) return false;
+    const keys = Object.keys(left);
+    return keys.length === Object.keys(right).length
+        && keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -201,7 +219,7 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
     const id = 'cmp' + (++uid);
     const state = {
         entries: actions.length ? [newEntry(actions[defaultActionIndex(actions)])] : [],
-        tab: actions.length ? 'form' : 'raw',
+        tab: actions.length ? null : 'raw',
         raw: '',
     };
 
@@ -270,14 +288,21 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
 
     function showTab(tab) {
         errorEl.textContent = '';
+        if (tab === state.tab) return;
         if (tab === 'raw') {
             const text = currentEnvelopeText();
             if (text !== null) rawInput.value = text;
             else if (!rawInput.value) rawInput.value = '{"actions": []}';
             validateRaw();
         } else {
-            const entries = validateRaw();
-            if (entries) state.entries = entries;
+            if (state.tab === 'raw') {
+                const entries = validateRaw();
+                if (!entries) {
+                    errorEl.textContent = 'This answer cannot be represented by the form. Keep editing it in Raw JSON.';
+                    return;
+                }
+                state.entries = entries;
+            }
             renderForm();
         }
         state.tab = tab;

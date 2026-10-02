@@ -144,7 +144,7 @@ pub async fn start_client_by_id(
         // Get the parameter schema from the protocol
         let schema = protocol.get_startup_parameters();
         // Create validated StartupParams
-        match crate::protocol::StartupParams::new(params_json, schema) {
+        match crate::protocol::StartupParams::new_validated(params_json, schema) {
             Ok(p) => Some(p),
             Err(e) => {
                 let msg = format!("Invalid startup_params for {}: {}", protocol_name, e);
@@ -223,6 +223,10 @@ pub async fn start_client_from_action(
     status_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<ClientId> {
     use crate::state::client::ClientStatus;
+    let prepared_tasks = crate::state::task::prepare_tasks(
+        scheduled_tasks.as_deref(),
+        crate::state::task::TaskScope::Global,
+    )?;
 
     // Get protocol from registry. Registry keys are the protocols' own casing
     // ("TCP", "Redis", …), so resolve the caller's spelling to the canonical name
@@ -275,12 +279,18 @@ pub async fn start_client_from_action(
         Some(params_json) => {
             let schema = protocol_impl.get_startup_parameters();
             Some(
-                crate::protocol::StartupParams::new(params_json, schema).map_err(|e| {
-                    anyhow::anyhow!("Invalid startup_params for {}: {}", protocol, e)
-                })?,
+                crate::protocol::StartupParams::new_validated(params_json, schema).map_err(
+                    |e| anyhow::anyhow!("Invalid startup_params for {}: {}", protocol, e),
+                )?,
             )
         }
-        None => None,
+        None => {
+            crate::protocol::StartupParams::new_validated(
+                serde_json::json!({}),
+                protocol_impl.get_startup_parameters(),
+            )?;
+            None
+        }
     };
 
     // === Parse event handlers BEFORE registering the client ===
@@ -320,6 +330,7 @@ pub async fn start_client_from_action(
     };
 
     let client_id = state.add_client(client).await;
+    let mut startup_guard = super::startup_guard::StartupGuard::client(state, client_id);
 
     // Set initial memory if provided
     if let Some(mem) = initial_memory {
@@ -330,49 +341,10 @@ pub async fn start_client_from_action(
             .await;
     }
 
-    // Create scheduled tasks if provided
-    if let Some(tasks) = scheduled_tasks {
-        for task_def in tasks {
-            use crate::state::task::{ScheduledTask, TaskId, TaskScope, TaskStatus, TaskType};
-            use crate::utils::clock::Instant;
-            use std::time::Duration;
-
-            // Determine task type
-            let task_type = if task_def.recurring {
-                TaskType::Recurring {
-                    interval_secs: task_def.interval_secs.unwrap_or(60),
-                    max_executions: task_def.max_executions,
-                    executions_count: 0,
-                }
-            } else {
-                TaskType::OneShot {
-                    delay_secs: task_def.delay_secs.unwrap_or(0),
-                }
-            };
-
-            // Calculate next execution time
-            let delay = if task_def.recurring {
-                Duration::from_secs(0) // Start immediately for recurring
-            } else {
-                Duration::from_secs(task_def.delay_secs.unwrap_or(0))
-            };
-
-            let task = ScheduledTask {
-                id: TaskId::new(rand::random()),
-                name: task_def.task_id,
-                scope: TaskScope::Client(client_id),
-                task_type,
-                instruction: task_def.instruction,
-                context: task_def.context,
-                status: TaskStatus::Scheduled,
-                created_at: Instant::now(),
-                next_execution: Instant::now() + delay,
-                last_error: None,
-                failure_count: 0,
-            };
-
-            state.add_task(task).await;
-        }
+    // Definitions were prepared before the owner was registered.
+    for mut task in prepared_tasks {
+        task.scope = crate::state::task::TaskScope::Client(client_id);
+        state.add_task(task).await;
     }
 
     // `startup_params_obj` was built and validated above, before `add_client`.
@@ -414,12 +386,15 @@ pub async fn start_client_from_action(
             state
                 .update_client_status(client_id, ClientStatus::Connected)
                 .await;
+            startup_guard.disarm();
             Ok(client_id)
         }
         Err(e) => {
             state
                 .update_client_status(client_id, ClientStatus::Error(e.to_string()))
                 .await;
+            state.remove_client(client_id).await;
+            startup_guard.disarm();
             Err(e)
         }
     }

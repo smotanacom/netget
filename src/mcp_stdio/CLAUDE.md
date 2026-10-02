@@ -246,17 +246,20 @@ test instead of shipping. It needs to see behind the tools — a tool result is 
 i.e. the live state the tools mutate).
 
 **Scheduled tasks now fire in MCP mode.** A dedicated ticker (`spawn_task_ticker`, started from
-`create_shared_state` alongside the reaper) drives `execute_due_tasks_public` on a **1s** cadence
+`create_shared_state` alongside the reaper) drives `execute_due_tasks_owned_public` on a **1s** cadence
 (`TASK_TICK_INTERVAL_SECS`, matching the TUI event loop and the non-interactive runner, with
 `MissedTickBehavior::Skip` so a slow batch cannot stampede catch-up ticks). So `start_server`'s
 `scheduled_tasks` array and the `schedule_task` action now actually execute over both the STDIO and
 HTTP transports (which share the one `SharedState`). Scoping is not re-implemented in the ticker:
-`execute_due_tasks_public` reads the live task set from `AppState` each tick, so Global / Server /
+`execute_due_tasks_owned_public` reads the live task set from `AppState` each tick, so Global / Server /
 Connection scoping — and the removal of server-/connection-scoped tasks by `remove_server` on
 `stop_server`/`stop_all` — are honoured exactly as in the TUI; only Global tasks persist a server
-stop. (Historical note: this was a known gap — tasks used to sit at `Scheduled` forever because no
-loop ticked `execute_due_tasks` — and an in-code comment in `spawn_state_reaper` still says
-scheduled tasks are "TUI-only here". That comment is stale; `spawn_task_ticker` is the authority.)
+stop. The shared service owns the reaper, ticker and status-drain handles; dropping
+its final STDIO/HTTP service owner stops them. Holding an AppState clone alone does
+not keep the MCP timers running. A per-service cancellation token also cancels
+already-launched MCP scheduled executions and marks their retained task definitions
+Failed. Executions launched by another AppState owner are unaffected. The ticker
+finishes any current claim/spawn batch before stopping, avoiding stranded claims.
 
 `register_server_task()` stores a `Vec` of handles per server, like the client side:
 a protocol with two long-lived loops (a UDP listener plus a TUN reader) gets both
@@ -364,6 +367,12 @@ Two notification paths (the agent picks either):
   named pipe (created if absent) on each enqueue, so an idle agent can block-read it
   (`read id < pipe`) instead of polling. Best-effort — if no reader is attached the
   non-blocking write is dropped; the long-poll tool is the source of truth.
+  Existing paths must be actual FIFOs, not regular files, directories or symlinks.
+  Every notification also opens without following symlinks and checks the opened
+  descriptor is still a FIFO, so replacing the path after startup cannot overwrite
+  a regular file. The configured path and its parent directories remain trusted
+  local configuration: these checks do not authenticate another FIFO's owner or
+  protect traversal through attacker-controlled ancestor directories.
 
 Note: the answer must use an action offered for that event. Using an action the
 event does not expose (e.g. `close_connection` on `tcp_data_received`) triggers
@@ -411,3 +420,11 @@ cargo build --features mcp-http,tcp,http,dns           # HTTP
 # HTTP transport:
 netget --mcp-http 8080          # serves MCP at http://127.0.0.1:8080/mcp
 ```
+
+## Control validation boundary
+
+MCP control rejects action names outside the offered vocabulary. Protocol action
+executors own parameter semantics and types; `check_action_types` is deliberately
+not a universal JSON-Schema validator. Script handlers are trusted local code,
+with the resource/cleanup rules described in `src/scripting/CLAUDE.md`; remote
+untrusted script execution is outside this control interface's trust model.

@@ -7,7 +7,7 @@ directory operations (list, create, delete), and authentication.
 
 ## Library Choice
 
-**Primary Library:** `pavao` v0.1.0 (libsmbclient wrapper)
+**Primary Library:** `pavao` v0.2.13 (libsmbclient wrapper)
 
 **Rationale:**
 
@@ -387,3 +387,18 @@ Outcomes:
 **SMB never reports `Sent`.** libsmbclient owns the transport and may sign or encrypt it, so
 NetGet never sees a wire byte count. A write reports the payload bytes it really put into the
 file, inside `Executed`.
+
+## Native ownership and bounded operations (October 2026 follow-up)
+
+Initialization, all share operations, and context destruction run on blocking workers. The
+async lock is acquired before spawning work; file handles are created and dropped entirely
+inside the worker. Buffered file reads/writes are limited to 8 MiB; over-limit reads return an
+error, never partial success. Native operation timeout is 30 seconds. Failed operations emit
+their error event and return Err to injected callers rather than reporting Executed success.
+
+The cached pavao 0.2.13 implementation has one process-global SMBCTX, and every SmbClient drop
+frees it. NetGet therefore allows one active native SMB session per process and explicitly
+refuses a second owner until cleanup finishes. This prevents one session invalidating another.
+The installed native library is available to compile and run the pure bounded-reader regression;
+a live authenticated share is still required to validate server-side behavior and cancellation of
+an in-progress native operation cannot forcibly interrupt the C library.

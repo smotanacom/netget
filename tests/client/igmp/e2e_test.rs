@@ -16,12 +16,11 @@ mod igmp_client_tests {
     async fn test_igmp_client_join_and_receive() -> E2EResult<()> {
         // Start IGMP client and instruct it to join a multicast group
         let multicast_group = "239.255.1.1";
-        // Allocated, not hardcoded. A fixed port in a suite that runs in parallel is
-        // shared with whatever else happens to be bound to it -- and a multicast socket
-        // sets SO_REUSEPORT, so a second listener does not fail to bind, it silently
-        // competes for the datagrams. The client here bound :15000 and its receive loop
-        // logged that it was listening, and the packet still went somewhere else.
-        let multicast_port = get_available_port().await?;
+        // Learn the UDP port from the connected event, while the client keeps
+        // the actual socket bound; a released TCP reservation cannot protect it.
+        let bound_port = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0));
+        let event_port = bound_port.clone();
+        let multicast_port = 0;
 
         let client_config = NetGetConfig::new(format!(
             "Start IGMP client on port {}. Join multicast group {} and log all received data.",
@@ -48,13 +47,18 @@ mod igmp_client_tests {
                 .and()
                 // Mock 2: Client connected (igmp_connected event)
                 .on_event("igmp_connected")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "join_multicast_group",
-                        "multicast_addr": "239.255.1.1",
-                        "interface_addr": "0.0.0.0"
-                    }
-                ]))
+                .respond_with_actions_from_event(move |event| {
+                    let address: std::net::SocketAddr =
+                        event["local_addr"].as_str().unwrap().parse().unwrap();
+                    event_port.store(address.port(), std::sync::atomic::Ordering::SeqCst);
+                    serde_json::json!([
+                        {
+                            "type": "join_multicast_group",
+                            "multicast_addr": "239.255.1.1",
+                            "interface_addr": "0.0.0.0"
+                        }
+                    ])
+                })
                 .expect_calls(1)
                 .and()
                 // Mock 3: Data received (igmp_data_received event)
@@ -81,6 +85,13 @@ mod igmp_client_tests {
         );
 
         println!("✅ IGMP client initialized");
+
+        client.wait_for_any(&["Joined multicast group"], 30).await;
+        let multicast_port = bound_port.load(std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(
+            multicast_port, 0,
+            "connected event must report the bound UDP port"
+        );
 
         // Send a multicast packet to the group
         let sender = UdpSocket::bind("0.0.0.0:0").await?;

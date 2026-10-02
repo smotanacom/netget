@@ -57,9 +57,9 @@ like `printer2.local.` would silently be answered by the `printer.local.` rule.
 | 3 | UDP `broken.local.` A | **nothing** — the model asked for RCODE REFUSED and it was suppressed (`decision=model_reject_suppressed_udp`) |
 | 4 | TCP `broken.local.` A | RCODE 5, ID + question echoed, no answers |
 
-The port comes from `helpers::get_available_port()` rather than `port: 0`, because step 4
-connects to the TCP listener the server binds on the *same* port; a port that was just proven
-bindable for TCP makes that collision-free in practice.
+The server requests `port: 0` and reports the bound UDP port through `server.port`.
+Its TCP listener binds that same port. The test retains the running server while querying
+both transports; it does not release a preliminary reservation before startup.
 
 ### The transaction ID is echoed dynamically
 

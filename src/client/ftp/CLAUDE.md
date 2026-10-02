@@ -123,3 +123,19 @@ Test with FTP servers:
 - Local netget FTP server
 - vsftpd or proftpd
 - Public anonymous FTP servers
+
+## Bounded response reading (October 2026 review)
+
+Response lines now use `client::response_reader::read_response_line`, sharing the
+existing bounded line decoder. The 64 KiB cap includes the line terminator; a partial
+line at EOF is an error. Oversized or incomplete replies are not forwarded as successful
+responses.
+Pure decoder tests are in `tests/client_review_regression_test.rs::text_responses`.
+
+## Response completion deadlines (October 2026 follow-up)
+
+Shared text readers allow an idle established connection to wait for its first response byte,
+then enforce a 30-second absolute line-completion deadline. Dot-terminated bodies have a
+30-second whole-response deadline in addition to their byte cap. NNTP greetings are bounded
+from the first wait; HTTP CONNECT has a single deadline spanning status and headers. A framing
+timeout is terminal because resuming an interrupted parse would misalign the stream.

@@ -736,7 +736,7 @@ impl WebdavClient {
                 }
 
                 // Get body
-                let body_text = response.text().await.unwrap_or_default();
+                let body_text = response.text().await?;
 
                 info!(
                     "WebDAV client {} received response: {} ({})",

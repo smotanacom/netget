@@ -118,7 +118,8 @@ async fn a_closed_kafka_connection_reaps_its_connection_scoped_tasks() {
         None,
         "Report the state of this connection.".to_string(),
         None,
-    );
+    )
+    .unwrap();
     state.add_task(task).await;
 
     // Control: the task really is registered against this connection while it is live. Without

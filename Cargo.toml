@@ -333,7 +333,7 @@ etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
 tor = ["dep:tor-netdoc", "dep:tor-cert", "dep:tor-cell", "dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:ed25519-dalek", "dep:x25519-dalek", "dep:sha2", "dep:aes", "dep:ctr", "dep:hmac", "dep:hkdf", "dep:arti-client", "dep:tor-rtcompat", "dep:tor-dirmgr", "dep:tor-netdir"]  # Tor directory mirror and OR protocol relay (Guard/Middle/Exit) with cell handling + client with directory queries
-vnc = []  # VNC server and client with custom RFB protocol implementation
+vnc = ["dep:des"]  # VNC server and client with custom RFB protocol implementation
 reverse-shell = []  # Reverse-shell listener EMULATION (red-team/CTF); model role-plays the shell, nothing is executed
 rdp = []  # RDP server: TPKT/X.224 connection-negotiation slice of [MS-RDPBCGR] (hand-rolled, no crate)
 openapi = ["http", "dep:openapi-rs", "dep:matchit"]  # OpenAPI 3.1 server with runtime request validation and route matching
@@ -779,6 +779,7 @@ futures = "0.3"
 textwrap = "0.16"
 
 # HTTP client for Ollama
+des = { version = "0.8", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "http2"] }
 
 # Ollama Rust client
@@ -1147,7 +1148,7 @@ llama-cpp-2 = { version = "0.1", optional = true }  # Rust bindings to llama.cpp
 hf-hub = { version = "0.3", optional = true, features = ["tokio"] }  # Hugging Face Hub API for model downloading
 
 # SQLite database support (in-memory or file-based)
-rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
+rusqlite = { version = "0.37", optional = true, features = ["bundled", "limits", "hooks"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
 tun = { version = "0.8.14", optional = true }
 sha1 = { version = "0.10", optional = true }
 
@@ -1171,7 +1172,7 @@ tui-textarea = "0.7"
 termbg = "0.5"  # Terminal background detection for adaptive theming
 ollama-rs = { version = "0.3.3", features = ["stream"] }
 socket2 = "0.5"  # Socket options (SO_REUSEADDR)
-fs2 = "0.4"  # File locking for cross-process synchronization (nothing in src/ uses it today)
+fs2 = "0.4"  # Cross-process lock for non-destructive legacy settings migration
 syntect = "5.3"
 
 # ---------------------------------------------------------------------------------------------
@@ -1201,6 +1202,9 @@ bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
 # same reason as bluer above: the `can` feature compiles everywhere, and the protocol returns a
 # clear Err naming the platform rather than being hidden, on every other OS.
 socketcan = { version = "3.5", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # For async tests

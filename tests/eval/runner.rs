@@ -28,7 +28,6 @@
 #![allow(dead_code)]
 
 use super::case::{EvalCase, Independence, ProbeKind};
-use super::classify::{classify, Diagnosis};
 use super::probe;
 use crate::helpers::common::E2EResult;
 use crate::helpers::llm_live::{live_model, LiveRequestTest};
@@ -416,15 +415,6 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
 
     // Read the log *after* the probe, so it contains this exchange.
     let log = server.instance.get_output().await;
-    // Only the lines that prove netget *ran* something. Handing `check` the
-    // whole log let an `executed_action` expectation match netget's own dump of
-    // a **rejected** reply, which is how syslog scored a false 3/3.
-    let executed_text = log
-        .iter()
-        .filter(|l| l.contains("Executing action"))
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
     let _ = server.finish().await;
 
     let outcome = match outcome {
@@ -448,43 +438,26 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
     };
 
     let combined = outcome.combined();
-    match case.expect.check(&combined, &executed_text) {
-        Ok(()) => RunRecord {
-            run,
-            verdict: "pass",
-            failure_mode: None,
-            detail: None,
-            model_output: super::classify::model_output(&log),
-            recovered_actions: Vec::new(),
-            executed_actions: executed_actions(&log),
-            client_command: outcome.command.clone(),
-            client_output: clip(&combined),
-            client_exit: outcome.exit_code,
-            client_timed_out: outcome.timed_out,
-            elapsed_secs: started.elapsed().as_secs_f64(),
-        },
-        Err(why) => {
-            let Diagnosis {
-                mode,
-                detail,
-                evidence,
-                recovered_actions,
-            } = classify(case.protocol, case.instruction, &log, &outcome, &why);
-            RunRecord {
-                run,
-                verdict: "fail",
-                failure_mode: Some(mode.to_string()),
-                detail: Some(detail),
-                model_output: evidence,
-                recovered_actions,
-                executed_actions: executed_actions(&log),
-                client_command: outcome.command.clone(),
-                client_output: clip(&combined),
-                client_exit: outcome.exit_code,
-                client_timed_out: outcome.timed_out,
-                elapsed_secs: started.elapsed().as_secs_f64(),
-            }
-        }
+    let score = super::scoring::score_probe(
+        &case.expect,
+        case.protocol,
+        case.instruction,
+        &log,
+        &outcome,
+    );
+    RunRecord {
+        run,
+        verdict: score.verdict,
+        failure_mode: score.failure_mode,
+        detail: score.detail,
+        model_output: score.model_output,
+        recovered_actions: score.recovered_actions,
+        executed_actions: executed_actions(&log),
+        client_command: outcome.command.clone(),
+        client_output: clip(&combined),
+        client_exit: outcome.exit_code,
+        client_timed_out: outcome.timed_out,
+        elapsed_secs: started.elapsed().as_secs_f64(),
     }
 }
 

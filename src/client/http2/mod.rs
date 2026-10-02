@@ -606,7 +606,7 @@ impl Http2Client {
                 }
 
                 // Get body
-                let body_text = response.text().await.unwrap_or_default();
+                let body_text = response.text().await?;
 
                 info!(
                     "HTTP/2 client {} received response: {} ({}) version: {:?}",

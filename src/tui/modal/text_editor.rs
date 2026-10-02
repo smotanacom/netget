@@ -49,7 +49,7 @@ impl TextEditorModel {
         let lines: Vec<String> = if initial.is_empty() {
             vec![String::new()]
         } else {
-            initial.lines().map(|l| l.to_string()).collect()
+            initial.split('\n').map(|l| l.to_string()).collect()
         };
         Self {
             label: label.to_string(),

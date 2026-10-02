@@ -24,6 +24,7 @@
 
 import { mountComposer, offeredActions, entriesFromEnvelope, buildReply } from './composer.js';
 import { splitThinking } from './thinking.js';
+import { TelnetDecoder } from './telnet.js';
 
 const PKG = '../demo/pkg/netget_web.js';
 const WEBLLM_URL = 'https://esm.run/@mlc-ai/web-llm@0.2.85';
@@ -113,7 +114,6 @@ const LM_OPTIONS = {
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 
 const app = {
     netget: null,
@@ -1169,38 +1169,6 @@ async function answerWithWebLlm(req, engine, model, onText) {
 // The Telnet client: NetGet.connect() on the virtual network, line mode with local echo.
 // ---------------------------------------------------------------------------------------
 
-const IAC = 255, DONT = 254, DO = 253, WONT = 252, WILL = 251, SB = 250, SE = 240;
-
-// Refuse every option, as a plain line-mode client does (echo included: this client always
-// echoes locally), and strip the commands from the byte stream.
-function telnetFilter(bytes) {
-    const out = [];
-    const replies = [];
-    let i = 0;
-    while (i < bytes.length) {
-        const b = bytes[i];
-        if (b !== IAC) { out.push(b); i += 1; continue; }
-        const cmd = bytes[i + 1];
-        if (cmd === undefined) break;
-        if (cmd === IAC) { out.push(IAC); i += 2; continue; }
-        if (cmd === SB) {
-            let j = i + 2;
-            while (j < bytes.length && !(bytes[j] === IAC && bytes[j + 1] === SE)) j += 1;
-            i = j + 2;
-            continue;
-        }
-        if (cmd === DO || cmd === DONT || cmd === WILL || cmd === WONT) {
-            const opt = bytes[i + 2];
-            if (cmd === WILL) replies.push(IAC, DONT, opt);
-            else if (cmd === DO) replies.push(IAC, WONT, opt);
-            i += 3;
-            continue;
-        }
-        i += 2;
-    }
-    return { data: new Uint8Array(out), replies: new Uint8Array(replies) };
-}
-
 function setTelnetState(text, up) {
     const el = $('#telnet-state');
     el.textContent = text;
@@ -1244,11 +1212,14 @@ function telnetConnect() {
     if (t.conn !== null) { app.netget.close(t.conn); t.conn = null; }
     t.line = '';
     t.term.write('Trying 127.0.0.1...\r\n');
+    const decoder = new TelnetDecoder();
     const id = app.netget.connect(TELNET_PORT, (bytes) => {
-        const { data, replies } = telnetFilter(bytes);
+        const { text, replies } = decoder.push(bytes);
         if (replies.length && t.conn === id) app.netget.send(id, replies);
-        if (data.length) t.term.write(dec.decode(data).replace(/(?<!\r)\n/g, '\r\n'));
+        if (text) t.term.write(text);
     }, (reason) => {
+        const remaining = decoder.finish();
+        if (remaining) t.term.write(remaining);
         // Start on a fresh line, as telnet(1) does, without leaving an empty one.
         const nl = t.term.buffer?.active?.cursorX ? '\r\n' : '';
         t.term.write(nl + (reason

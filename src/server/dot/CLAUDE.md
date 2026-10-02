@@ -16,7 +16,8 @@ action set, action execution, response construction - is the DNS protocol's,
 reached through delegation (see below). So DoT is as mature as DNS on the wire
 format, plus a TLS layer that is exercised by `tests/server/dot/e2e_test.rs`
 against a real rustls client. Not covered: CA-signed or custom certificates,
-mutual TLS, connection limits, EDNS0.
+mutual TLS and EDNS0. Connection bounds and partial-frame timeout cleanup are covered
+separately by `tests/server/dot/connection_bounds_test.rs`.
 
 ## Library Choices
 
@@ -238,7 +239,8 @@ All limitations from standard DNS protocol apply:
 ### 4. No Connection Pooling
 
 - Each connection handled independently
-- No connection limits or rate limiting
+- Connections are capped at 256; rate limiting is not implemented. After a length
+  prefix arrives, its DNS body must finish within 10 seconds (`MESSAGE_READ_TIMEOUT`).
 - Memory usage grows with concurrent connections
 
 Bounded in three places, though, all added September 2026:
@@ -399,4 +401,3 @@ exactly the class of defect an in-house codec cannot see.
 **Unproven:** certificate validation of any kind — the certificate is self-signed and plain
 `+tls` does not authenticate it (that needs `+tls-ca`, `+tls-hostname` or `+tls-pin`) — client
 auth, and record types beyond A.
-

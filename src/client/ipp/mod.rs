@@ -687,15 +687,14 @@ impl IppClient {
                     .get("document_format")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let document_data = data
-                    .get("document_data")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u8))
-                            .collect::<Vec<u8>>()
-                    })
-                    .unwrap_or_default();
+                let document_data = match data.get("document_data") {
+                    None => Vec::new(),
+                    Some(value) => crate::client::wire_values::bytes(
+                        value
+                            .as_array()
+                            .context("document_data must be a byte array")?,
+                    )?,
+                };
 
                 match dispatch {
                     Dispatch::Spawn => {
