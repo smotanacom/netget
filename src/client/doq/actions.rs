@@ -7,12 +7,43 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::server::doq::wire::*;
 use crate::state::AppState;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::sync::LazyLock;
+
+// Reuse the DNS action vocabulary, with descriptions and logs for the DoQ transport.
+fn doq_actions(mut actions: Vec<ActionDefinition>) -> Vec<ActionDefinition> {
+    for action in &mut actions {
+        match action.name.as_str() {
+            "send_dns_query" => {
+                if let Some(parameter) = action
+                    .parameters
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "query_type")
+                {
+                    parameter.description = "DNS record type to query, such as A, AAAA, MX or TXT. AXFR and IXFR are not supported.".into();
+                }
+                action.log_template = Some(
+                    LogTemplate::new()
+                        .with_info("-> DoQ {domain} {query_type}")
+                        .with_debug("DoQ send_dns_query: {domain} {query_type} recursion_desired={recursion_desired}"),
+                );
+            }
+            "disconnect" => {
+                action.log_template = Some(LogTemplate::new().with_info("-> DoQ disconnect"));
+            }
+            "wait_for_more" => {
+                action.log_template = Some(LogTemplate::new().with_info("DoQ wait for more data"));
+            }
+            _ => {}
+        }
+    }
+    actions
+}
 
 pub static DOQ_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -21,7 +52,7 @@ pub static DOQ_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({"type":"send_dns_query","domain":"example.com","query_type":"A"}),
     )
     .with_parameters(DNS_CLIENT_CONNECTED_EVENT.parameters.clone())
-    .with_actions(DnsClientProtocol::new().get_sync_actions())
+    .with_actions(DoqClientProtocol::new().get_sync_actions())
 });
 pub static DOQ_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -30,7 +61,7 @@ pub static DOQ_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({"type":"wait_for_more"}),
     )
     .with_parameters(DNS_CLIENT_RESPONSE_RECEIVED_EVENT.parameters.clone())
-    .with_actions(DnsClientProtocol::new().get_sync_actions())
+    .with_actions(DoqClientProtocol::new().get_sync_actions())
 });
 pub static DOQ_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -42,7 +73,7 @@ pub static DOQ_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "domain".into(),
             type_hint: "string".into(),
-            description: "Queried name".into(),
+            description: "The DNS name that could not be queried, such as example.com.".into(),
             required: true,
         },
         Parameter {
@@ -58,7 +89,7 @@ pub static DOQ_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             required: true,
         },
     ])
-    .with_actions(DnsClientProtocol::new().get_sync_actions())
+    .with_actions(DoqClientProtocol::new().get_sync_actions())
 });
 
 #[derive(Default)]
@@ -88,10 +119,10 @@ impl Protocol for DoqClientProtocol {
         "Connect to dns.example:853 over DoQ and query the AAAA records for example.com"
     }
     fn get_async_actions(&self, state: &AppState) -> Vec<ActionDefinition> {
-        DnsClientProtocol::new().get_async_actions(state)
+        doq_actions(DnsClientProtocol::new().get_async_actions(state))
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        DnsClientProtocol::new().get_sync_actions()
+        doq_actions(DnsClientProtocol::new().get_sync_actions())
     }
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
