@@ -355,6 +355,9 @@ impl ClientRegistry {
             crate::client::websocket::WebSocketClientProtocol::new(),
         ));
 
+        #[cfg(feature = "beanstalkd")]
+        self.register(Arc::new(crate::client::beanstalkd::BeanstalkdClientProtocol::new()));
+
         #[cfg(feature = "nut")]
         self.register(Arc::new(crate::client::nut::actions::NutClientProtocol::new()));
 
@@ -734,6 +737,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BitTorrent Tracker", "torrent-tracker"),
     ("TURN", "turn"),
     ("UDP", "udp"),
+    ("Beanstalkd", "beanstalkd"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),
