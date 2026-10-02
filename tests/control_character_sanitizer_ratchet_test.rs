@@ -72,6 +72,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          itself refuses, so the model gets an error rather than a silently different ref",
     ),
     (
+        "src/server/graphite/codec.rs",
+        1,
+        "validator: Metric::validate rejects whitespace and control characters in a Carbon \
+         path; rewriting it would collect a different metric from the one the sender named",
+    ),
+    (
         "src/server/kafka/mod.rs",
         1,
         "encoding predicate: decides whether record bytes are shown to the model as utf8 or as \
