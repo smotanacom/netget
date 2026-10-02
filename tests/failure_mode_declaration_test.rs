@@ -72,6 +72,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "cdp",
     "datalink",
     "dhcp",
+    // Carbon plaintext accepts a metric stream; its grammar has no application reply.
+    "graphite",
     "hsrp",
     "icmp",
     "igmp",
@@ -87,6 +89,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "rip",
     "rtp",
     "ssdp",
+    // StatsD and DogStatsD are one-way UDP; neither defines an acknowledgment or error reply.
+    "statsd",
     "stp",
     "syslog",
     "tuntap",
