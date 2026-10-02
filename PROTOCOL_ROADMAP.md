@@ -873,18 +873,18 @@ Priority is an engineering judgment: **A** strongest general fit, **B** useful f
 
 ## Disk and collaboration policy
 
-Initial free space was approximately 71 GiB. The active main checkout is heavily modified by other work. This programme uses small isolated source worktrees under `/private/tmp/netget-protocol-expansion-20261001/` and one shared target directory. All programme builds run through `python3 /private/tmp/netget-protocol-expansion-20261001/run_cargo.py ...`, which serializes them, disables debug symbols/incremental compilation and limits build jobs. New builds require 30 GiB free; the guard stops only its owned build if space drops below 25 GiB.
+Initial free space was approximately 71 GiB. The active main checkout is heavily modified by other work. After temporary-directory cleanup, source worktrees were restored from their retained Git branches under `/Users/matus/dev/netget/.protocol-expansion-20261001/`; build artifacts share `/private/tmp/netget-protocol-target-20261002`. All programme builds now run through `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py ...`, which serializes them, disables debug symbols/incremental compilation and limits build jobs. New builds require 30 GiB free; the guard stops only its owned build if space drops below 25 GiB.
 
-Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or running processes. Reclaim only verified programme-owned build artifacts between builds. The coordinator checks disk before each batch and after builds. Agents commit within their assigned branches; the coordinator merges, validates combinations and publishes logical changes. No duplicate per-agent target directories or full-feature build storms.
+Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or running processes. Reclaim only verified programme-owned build artifacts between builds. The coordinator checks disk before each batch and after builds. Agents commit within their assigned branches; the coordinator merges validated batches into local `master` and pushes to `origin/master`, as explicitly authorized on 2 October 2026. GitHub PRs are not part of this workflow. No duplicate per-agent target directories or full-feature build storms.
 
 ## Active assignments and progress
 
-- Completed: **6 / 72**. Checkboxes below are authoritative and are updated only from evidence.
+- Completed: **8 / 72**. Checkboxes below are authoritative and are updated only from evidence.
 - Integration branch: `protocol-expansion-20261001`.
-- Agent `nut`: NUT, Beanstalkd and DICT merged and validated. Gemini is committed (`d9b6f492`) with 32 protocol tests passed on its worker branch; integration pending. Now implementing NSQ, then Gearman.
-- Agent `doq`: DoQ complete. Raw QUIC (`5a872651`, merge `08584d20`) passes 14 protocol tests; direct NetGet pairing and encoded-input allocation review follow-up pending. HTTP/3 implementation in progress, followed by SFTP and OTLP.
+- Agent `nut`: NUT, Beanstalkd, DICT and Gemini merged and validated. Gemini (`d9b6f492`, merge `e3a682bb`) passed all 32 protocol tests in the combined integration build. Now implementing NSQ, then Gearman.
+- Agent `doq`: DoQ and raw QUIC complete. Raw QUIC (`5a872651`, follow-up `7afc32e0`, merge `b7a2e7c6`) passed all 16 protocol tests, including direct NetGet pairing and encoded-input allocation limits. HTTP/3 implementation in progress, followed by SFTP and OTLP.
 - Agent `statsd`: StatsD and Graphite complete. Shared task-registration cancellation fix (`7916e859`) integrated and validated. GELF and Fluent Forward in progress, then InfluxDB and Loki.
-- Combined second-batch validation: 157 protocol tests and 71 shared checks passed. Six checklist entries complete; raw QUIC remains unchecked until its review follow-up passes. Three workers maximum; builds serialized.
+- Combined second-batch validation: 157 protocol tests and 71 shared checks passed. Gemini/raw QUIC follow-ups passed 48 protocol and 71 shared checks. Eight checklist entries complete. Three workers maximum; builds serialized.
 
 ## New protocol checklist
 
@@ -1267,11 +1267,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
-- [ ] **54. Raw QUIC client**.
+- [x] **54. Raw QUIC client**.
   - Scope: Stream-oriented counterpart to existing raw QUIC server; explicit ALPN and stream lifecycle.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 6 client and 10 server tests passed with aioquic 1.3.0 in both independent roles and direct NetGet binary pairing. Code `5a872651`, allocation/pairing follow-up `7afc32e0`, final merge `b7a2e7c6`. Raw ALPN is now `netget-quic`; `h3` is reserved for HTTP/3. Verified TLS/custom trust, 1 MiB decoded/4 MiB encoded bounds, owned concurrent streams, cancellation and socket release. Experimental; no 0-RTT/datagrams/unidirectional application streams.
 
 - [ ] **55. SFTP client**.
   - Scope: Extend SSH with file/directory operations matching existing server SFTP, plus real external-server evidence.
@@ -1340,11 +1341,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
-- [ ] **66. Gemini client**.
+- [x] **66. Gemini client**.
   - Scope: TLS requests, certificate policy, status/meta/body handling and bounds.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 8 client and 24 existing server tests passed together with Agate 3.3.24, ignition-gemini 1.0.0 on supported Python 3.12, and the existing tshark TLS oracle. Code `d9b6f492`, merge `e3a682bb`; fixes server file-backed certificate provider startup. Experimental text/UTF-8 client with verified TLS/custom trust, structured gemtext, explicit input/redirects and bounded cancellation. No hidden TOFU, automatic cross-endpoint redirects, binary bodies or client certificate authentication.
 
 - [x] **67. DICT client**.
   - Scope: Dictionary discovery, matching/definition operations, multiline replies and errors.
@@ -1382,15 +1384,19 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Integrated validation evidence
 
+- Recovery on 2 October: temporary sources, logs and artifacts had been removed; committed implementations were restored from Git. Historical test counts below were recorded before cleanup. Original temporary log paths are no longer available. Uncommitted HTTP/3, GELF and NSQ work is being reconstructed; those items remain unchecked. Free space at recovery: approximately 148 GiB.
+
+- **Batch 3 — 54 raw QUIC completion, 66 Gemini client:** all 48 protocol tests (16 QUIC, 32 Gemini) and 71 shared checks passed at merge `b7a2e7c6` with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic,gemini`. Same test command shape and shared targets as Batch 2; logs in `/private/tmp/netget-protocol-expansion-20261001/validation-third/`. No failed or ignored cases. Raw QUIC review is closed; the independent peers and direct NetGet pairing agree. CI's `stream-pairs` job now includes Gemini/Agate/ignition and tshark.
+
 - **Batch 2 — 24 Graphite, 63 Beanstalkd client, 67 DICT client; raw QUIC review in progress:** all 157 protocol tests passed with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic` together at merge `08584d20`. This includes the first three protocols after the shared task-registration fix and 14 raw QUIC tests; its direct NetGet pairing review remains open. No failed or ignored tests in the final protocol runs.
 - Batch 2 commands use the Batch 1 protocol command with that expanded feature set and each of `graphite`, `beanstalkd`, `dict`, `quic`, `nut`, `statsd`, `doq`. All 71 shared checks passed, adding `task_registration_cancellation_test`, `server_task_registry_test` and `client_stop_releases_socket_test` to Batch 1's targets. An obsolete QUIC server-only pairing assertion was updated to require the implemented client, then the shared checks passed.
 - Lifecycle fix `7916e859`: a started child is owned before the registration future is first polled, and cancelled if registration is dropped. Both regression tests failed before the fix; successful registration/owner removal also remain covered.
-- Batch 2 logs: `/private/tmp/netget-protocol-expansion-20261001/validation-second/`. CI's separate `stream-pairs` job installs Graphite, queue, dictionary and aioquic peers; remote execution still awaits publication approval.
+- Batch 2 logs: `/private/tmp/netget-protocol-expansion-20261001/validation-second/`. CI's separate `stream-pairs` job installs Graphite, queue, dictionary and aioquic peers; remote execution has not yet run. Publication is authorized; the validated batch will be merged to master and pushed.
 
 - **Batch 1 — 01 DoQ, 06 NUT, 23 StatsD/DogStatsD:** all 53 protocol tests and 62 shared checks passed with `tcp,nut,doq,statsd` enabled together at merge `07339b83`; no ignored tests in this combined run. All three remain Experimental, with their selected scope and missing maturity evidence documented in their source/test `CLAUDE.md` files.
 - Protocol command, once for each `PROTOCOL` in `nut`, `statsd`, `doq`: `cargo test --locked --offline --no-default-features --features tcp,nut,doq,statsd --test server --test client -- PROTOCOL:: --test-threads=4`. The programme runs Cargo through its serialized guard and provides the documented local peer paths.
 - Shared checks: `event_action_declarations_test`, `advertised_actions_test`, `well_known_port_declaration_test`, `startup_param_defaults_test`, `startup_param_drift_test`, `protocol_startup_examples_test`, `dual_protocol_test`, `dashboard_wireshark_test`, `client_event_wiring_test`, `event_emit_sites_test` with the same feature set.
-- Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the remote workflow has not run because publication approval is pending. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
+- Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the remote workflow has not yet run. Publication to master is explicitly authorized. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
 
 ## Implementation and independent peer plan
 

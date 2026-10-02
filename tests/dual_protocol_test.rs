@@ -57,6 +57,7 @@ fn golden_duals_map() {
         "Graphite",
         "Beanstalkd",
         "DICT",
+        "Gemini",
         "QUIC",
     ] {
         assert!(

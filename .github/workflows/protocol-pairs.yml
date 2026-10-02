@@ -78,11 +78,11 @@ jobs:
             --test event_emit_sites_test
 
   stream-pairs:
-    name: Graphite, Beanstalkd, DICT and raw QUIC with independent peers
+    name: Graphite, queue, DICT, Gemini and raw QUIC with independent peers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      PAIR_FEATURES: tcp,graphite,beanstalkd,dict,quic
+      PAIR_FEATURES: tcp,graphite,beanstalkd,dict,gemini,quic
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -96,23 +96,25 @@ jobs:
       - name: Install independent queue and dictionary daemons
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler beanstalkd dictd dictfmt dict
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler beanstalkd dictd dictfmt dict tshark
 
       - name: Prepare pinned independent Python peers
         run: |
           python3 tests/server/graphite/install_peers.py "$RUNNER_TEMP/stream-peers"
-          python3 -m pip install --no-cache-dir --target "$RUNNER_TEMP/stream-peers/queue-python" greenstalk==2.1.1
+          python3 -m pip install --no-cache-dir --target "$RUNNER_TEMP/stream-peers/queue-python" greenstalk==2.1.1 ignition-gemini==1.0.0
+          sh scripts/test-peers/fetch-agate.sh "$RUNNER_TEMP/stream-peers/agate"
           python3 -m venv "$RUNNER_TEMP/stream-peers/aioquic"
           "$RUNNER_TEMP/stream-peers/aioquic/bin/pip" install --no-cache-dir --only-binary=:all: aioquic==1.3.0
           {
             printf 'PYTHONPATH=%s/stream-peers/graphite-python:%s/stream-peers/graphite-python/opt/graphite/lib:%s/stream-peers/queue-python\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP"
             printf 'NETGET_GRAPHITE_PYTHON=python3\n'
+            printf 'NETGET_TEST_AGATE=%s/stream-peers/agate/agate-3.3.24\n' "$RUNNER_TEMP"
             printf 'NETGET_AIOQUIC_PYTHON=%s/stream-peers/aioquic/bin/python\n' "$RUNNER_TEMP"
           } >> "$GITHUB_ENV"
 
       - name: Server and client suites including independent interoperability
         run: |
-          for protocol in graphite beanstalkd dict quic; do
+          for protocol in graphite beanstalkd dict gemini quic; do
             cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
               --test server --test client -- "$protocol::" --test-threads=4
           done
