@@ -230,3 +230,7 @@ pub mod quic;
 
 #[cfg(feature = "gelf")]
 pub mod gelf;
+
+#[cfg(feature = "nsq")]
+pub mod nsq;
+
