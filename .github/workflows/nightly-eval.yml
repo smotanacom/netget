@@ -88,11 +88,16 @@ jobs:
           # unconditionally and on macOS that serialises through mDNSResponder.
           OLLAMA_BASE_URL: http://127.0.0.1:11434
           CARGO_TARGET_DIR: /tmp/netget-eval-target
+          EVAL_RUNS: ${{ github.event.inputs.runs || '5' }}
+          EVAL_MODEL: ${{ github.event.inputs.model || 'llama3.1:8b' }}
+          EVAL_PROTOCOLS: ${{ github.event.inputs.protocols }}
         run: |
+          # Treat dispatch inputs as data, never as generated shell source.
+          read -r -a protocols <<< "${EVAL_PROTOCOLS//$'\n'/ }"
           ./run-eval.sh \
-            --runs "${{ github.event.inputs.runs || '5' }}" \
-            --model "${{ github.event.inputs.model || 'llama3.1:8b' }}" \
-            ${{ github.event.inputs.protocols }}
+            --runs "$EVAL_RUNS" \
+            --model "$EVAL_MODEL" \
+            "${protocols[@]}"
 
       - name: Summary
         if: always()

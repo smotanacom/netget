@@ -1,0 +1,38 @@
+   Compiling hyper v1.7.0 (/Users/matus/dev/netget/.audit-integration-20261002/vendor/hyper)
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+   Compiling hyper-util v0.1.17
+   Compiling hyper-tls v0.6.0
+   Compiling hyper-rustls v0.27.7
+   Compiling axum v0.7.9
+   Compiling reqwest v0.12.24
+   Compiling http-mitm-proxy v0.16.0
+   Compiling axum-server v0.6.0
+   Compiling ollama-rs v0.3.3
+    Finished `test` profile [unoptimized] target(s) in 45.57s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/task_registration_cancellation_test.rs (/Users/matus/dev/netget/target/debug/deps/task_registration_cancellation_test-8950821c378483d3)
+
+running 6 tests
+test dropping_unpolled_server_registration_aborts_started_child ... ok
+test dropping_unpolled_client_registration_aborts_started_child ... ok
+test successful_client_registration_retains_child_until_owner_removal ... ok
+test successful_peer_registration_retains_child_until_connection_removal ... ok
+test successful_server_registration_retains_child_until_owner_removal ... ok
+test dropping_unpolled_peer_registration_aborts_started_child ... FAILED
+
+failures:
+
+---- dropping_unpolled_peer_registration_aborts_started_child stdout ----
+
+thread 'dropping_unpolled_peer_registration_aborts_started_child' (554609) panicked at tests/task_registration_cancellation_test.rs:120:5:
+dropping unpolled peer registration detached its child
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    dropping_unpolled_peer_registration_aborts_started_child
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+
+error: test failed, to rerun pass `--test task_registration_cancellation_test`

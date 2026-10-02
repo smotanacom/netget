@@ -1,0 +1,25 @@
+ WARN netget::ui::app: Could not determine home directory for history file
+
+ok: dashboard painted, tcp, udp, http, openapi, jsonrpc, rss and http2 servers started, virtual connections round-tripped through the model bridge
+    thinking: a reply's reasoning reached the dashboard; thinking.js split <think> streams and left other models' text whole
+    composer: 11 actions offered, default send_tcp_data, example bytes "220 Welcome\r\n" reached the peer
+    http client: [ + http client ] connected client #7 to :8080; client #9 read 200 "hello from the http server" and, via [ send ], 404 (22 byte body); https refused
+    http (node client): GET / 200 (37B), POST /echo 201 "SHOUT THIS"
+    openapi (node client): GET /todos 200 [{"id":1,"title":"Buy milk","path":"/todos"}]
+    jsonrpc (node client): add(2,3) -> {"jsonrpc":"2.0","result":5,"id":7}; nope -> error -32601
+    rss (node client): GET /news.xml 200 (329B of RSS)
+    http2 (node client): GET /greet?who=smoke 200 "h2 says hi to /greet?who=smoke"
+    jsonrpc client: [ + client ] #23, [ send ] add(2,3) -> jsonrpc_request 'add' sent; HTTP 200 (JSON-RPC response received); parked result 5
+    elasticsearch client: [ + client ] #27, [ send ] search -> search completed: HTTP 200; parked hit "Dune"
+    openapi client: ClientForm #29: model ran listTodos -> 200 [{"id":1,"title":"Buy milk","path":"/todos"}]; [ send ] -> operation listTodos -> get /todos -> 200 (45 byte body)
+    bitcoin client: ClientForm #32 -> http :8080: [ send ] bitcoin_rpc 'getblockchaininfo' -> HTTP 200 (result); blocks 101; Basic auth arrived
+    npm client: [ + client ] #35 -> http://127.0.0.1:8086, [ send ] get_package_info -> get_package_info smoke-pkg@latest -> version 1.3.0, 1 published version(s); parked npm_package_info_received
+    pypi client: [ + client ] #38 -> http://127.0.0.1:8087, [ send ] get_package_info -> get_package_info smoke-pkg -> version 2.0.0; parked pypi_package_info_received
+    maven client: [ + client ] #41 -> http://127.0.0.1:8088, [ send ] download_pom -> download_pom net.netget:smoke:1.0.0 -> HTTP 200 (198 bytes); parked maven_pom_received
+    torrent-tracker client: [ + client ] #45, [ send ] announce -> tracker_announce completed; parked interval 900, peers Some(Bytes([127, 0, 0, 1, 26, 225, 10, 0, 0, 2, 200, 213]))
+    http2 client: [ + client ] #47, [ send ] GET -> http2_request GET /from-netget?via=h2c -> 200 (34 byte body); parked HTTP/2.0 200 "h2 says hi to /from-netget?via=h2c"
+    ollama client: [ + client ] #50, [ send ] generate -> send_generate_request completed (model=smoke-model, 28 chars of generated text); parked "Smoke City, said smoke-model"
+    oauth2 client: ClientForm #54: model asked for client_credentials -> token, expires_in 1234; [ send ] -> oauth2_exchange_client_credentials: completed, an access token is stored; https token URL refused
+    openidconnect client: ClientForm #58: discovered http://127.0.0.1:8091 (discovery, jwks, discovery, jwks, token), token expires_in 4321
+    Date headers checked: 6 | latest: Fri, 02 Oct 2026 02:34:59 GMT
+    requests: 43 | tcp received: "HELLO NETGET\n" | udp received: [["cba",5555]] | closed: eof

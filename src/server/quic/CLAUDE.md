@@ -42,3 +42,10 @@ The server retains its existing Beta rating. Existing Quinn tests cover text and
 binary echo, custom responses, concurrent streams and backend failure. An
 additional independent aioquic 1.3.0 client checks certificate authentication,
 binary payloads and concurrent streams. See `tests/server/quic/CLAUDE.md`.
+
+## Shared certificate validation
+
+QUIC uses `extract_required_tls_config_from_params`, the mandatory-TLS form of
+the shared certificate extractor. SAN arrays must contain strings; malformed
+entries fail with their index before binding. Certificate lifetime and
+certificate/key pairing use the same checks as the other TLS protocols.

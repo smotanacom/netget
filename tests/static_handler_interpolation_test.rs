@@ -557,3 +557,77 @@ async fn executor_fails_loudly_on_a_typod_field() {
         "must list the real field: {chain}"
     );
 }
+
+#[test]
+fn expansion_has_a_shared_budget_across_repeated_references_and_actions() {
+    let event = json!({"body": "x".repeat(1024 * 1024)});
+    let action = json!({"type":"send_data", "value":"{{event.body}}"});
+    let error = interpolate_actions(&vec![action; 10], Some(&event)).unwrap_err();
+    assert!(error.to_string().contains("budget"));
+    let embedded = json!(format!("prefix{}", "{{event.body}}".repeat(10)));
+    assert!(interpolate_value(&embedded, Some(&event)).is_err());
+}
+
+#[test]
+fn interpolation_rejects_deep_programmatic_json_without_recursive_inspection() {
+    let mut value = json!("{{event}}");
+    for _ in 0..500 {
+        value = Value::Array(vec![value]);
+    }
+    assert!(validate_event_references(&value).is_err());
+    assert!(interpolate_value(&value, Some(&json!(1))).is_err());
+    netget::utils::json_budget::drop_iteratively(value);
+}
+
+#[test]
+fn interpolation_refuses_colliding_resolved_keys() {
+    assert!(interpolate_value(
+        &json!({"{{event.a}}": 1, "{{event.b}}": 2}),
+        Some(&json!({"a":"same","b":"same"}))
+    )
+    .is_err());
+}
+
+#[test]
+fn script_entry_detection_ignores_language_comments_and_strings() {
+    for (language, code) in [
+        ("javascript", "// function handle() {}\nconsole.log('[]')"),
+        (
+            "javascript",
+            "const message = `function handle() {}`; console.log('[]')",
+        ),
+        (
+            "javascript",
+            "const pattern = /function handle()/; console.log('[]')",
+        ),
+        ("javascript", "const handle = (input); console.log('[]')"),
+        (
+            "python",
+            "text = '''def handle(event): pass'''\nprint('[]')",
+        ),
+        ("perl", "# sub handle { }\nprint '[]';"),
+        ("perl", "my $text = q{sub handle { }}; print '[]';"),
+    ] {
+        let handler: EventHandlerType =
+            serde_json::from_value(json!({"type":"script", "language":language, "code":code}))
+                .unwrap();
+        assert!(
+            handler.validate().is_ok(),
+            "must ignore literal/comment for {language}: {code}"
+        );
+    }
+    for (language, code) in [
+        ("python", "def\t handle \n (event): pass"),
+        ("javascript", "async function\nhandle (event) {}"),
+        ("javascript", "const handle = async (event) => [];"),
+        ("perl", "sub\nhandle { return []; }"),
+    ] {
+        let handler: EventHandlerType =
+            serde_json::from_value(json!({"type":"script", "language":language, "code":code}))
+                .unwrap();
+        assert!(
+            handler.validate().is_err(),
+            "must detect resident declaration for {language}: {code}"
+        );
+    }
+}

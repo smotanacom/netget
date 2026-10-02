@@ -53,6 +53,7 @@ use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -68,6 +69,11 @@ pub const MAX_INFLIGHT_DELIVERIES: usize = 128;
 /// Cap on a single rendered payload. A pipe is for log lines and small records,
 /// not bulk transfer.
 pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// Limit the intermediate template representation as well as the decoded payload.
+/// This allows separated hex while preventing repeated substitutions from allocating
+/// arbitrarily large strings before the payload limit can run.
+pub const MAX_RENDERED_BYTES: usize = 1024 * 1024;
 
 const DELIVERY_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DELIVERY_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -130,49 +136,49 @@ pub fn would_create_cycle(existing: &[PipeSpec], from: u32, to: u32) -> bool {
 /// Render a `{field}` / `{dotted.path}` template against structured event data.
 /// A missing field renders empty (and is not an error — the payload is still
 /// well-formed). Literal braces are not supported in this first slice.
-fn render_template(tmpl: &str, data: &Value) -> String {
-    let mut out = String::new();
-    let mut chars = tmpl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            let mut key = String::new();
-            let mut closed = false;
-            for nc in chars.by_ref() {
-                if nc == '}' {
-                    closed = true;
-                    break;
-                }
-                key.push(nc);
-            }
-            if closed {
-                out.push_str(&lookup(data, key.trim()));
-            } else {
-                // Unterminated `{` — emit verbatim so nothing is silently eaten.
-                out.push('{');
-                out.push_str(&key);
-            }
-        } else {
-            out.push(c);
+struct RenderBuffer(Vec<u8>);
+
+impl Write for RenderBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_RENDERED_BYTES.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other(format!(
+                "pipe rendered mapping exceeds the {MAX_RENDERED_BYTES}-byte cap"
+            )));
         }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
     }
-    out
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
-/// Resolve a dotted path into `data`, stringifying the leaf. Strings are used
-/// unquoted; other JSON values fall back to their compact JSON form.
-fn lookup(data: &Value, path: &str) -> String {
-    let mut cur = data;
-    for seg in path.split('.') {
-        match cur.get(seg) {
-            Some(v) => cur = v,
-            None => return String::new(),
+fn render_template(mut tmpl: &str, data: &Value) -> Result<String> {
+    let mut out = RenderBuffer(Vec::new());
+    while let Some(open) = tmpl.find('{') {
+        out.write_all(tmpl[..open].as_bytes())?;
+        let rest = &tmpl[open + 1..];
+        let Some(close) = rest.find('}') else {
+            // Preserve an unterminated placeholder verbatim.
+            out.write_all(tmpl[open..].as_bytes())?;
+            return Ok(String::from_utf8(out.0)?);
+        };
+        let mut value = Some(data);
+        for segment in rest[..close].trim().split('.') {
+            value = value.and_then(|v| v.get(segment));
         }
+        match value {
+            Some(Value::String(value)) => out.write_all(value.as_bytes())?,
+            None | Some(Value::Null) => {}
+            // Serialize directly into the bounded buffer; to_string() would allocate
+            // an entire arbitrarily large object before applying the limit.
+            Some(value) => serde_json::to_writer(&mut out, value)?,
+        }
+        tmpl = &rest[close + 1..];
     }
-    match cur {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
+    out.write_all(tmpl.as_bytes())?;
+    Ok(String::from_utf8(out.0)?)
 }
 
 /// Decode a rendered `data` string into wire bytes per `encoding`.
@@ -214,11 +220,12 @@ pub fn render_payload(spec: &PipeSpec, event_data: &Value) -> Result<Vec<u8>> {
             spec.id
         )
     })?;
-    let data = render_template(data_tmpl, event_data);
+    let data = render_template(data_tmpl, event_data)?;
     let encoding = spec
         .map
         .get("encoding")
         .map(|t| render_template(t, event_data))
+        .transpose()?
         .unwrap_or_else(|| "utf8".to_string());
     let bytes = decode_payload(&data, &encoding)?;
     if bytes.len() > MAX_PAYLOAD_BYTES {
@@ -272,10 +279,9 @@ pub async fn dispatch_pipes(state: &AppState, from: ServerId, event: &Event) {
     if specs.is_empty() {
         return;
     }
-    let event_data = event.data.clone();
 
     for spec in specs {
-        let payload = match render_payload(&spec, &event_data) {
+        let payload = match render_payload(&spec, &event.data) {
             Ok(p) => p,
             Err(e) => {
                 warn!("pipe #{}: mapping failed, dropping: {}", spec.id, e);
@@ -362,20 +368,27 @@ pub async fn execute_pipe_action(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow!("create_pipe requires an 'as' action"))?
                 .to_string();
-            let from = action
-                .get("from")
-                .and_then(json_as_u32)
-                .map(ServerId::new)
-                .or(default_from)
-                .ok_or_else(|| {
-                    anyhow!("create_pipe has no 'from' and no server context to default to")
-                })?;
+            let from =
+                match action.get("from") {
+                    Some(value) => ServerId::new(json_as_u32(value).ok_or_else(|| {
+                        anyhow!("create_pipe requires a numeric 'from' server id")
+                    })?),
+                    None => default_from.ok_or_else(|| {
+                        anyhow!("create_pipe has no 'from' and no server context to default to")
+                    })?,
+                };
             let map: BTreeMap<String, String> = match action.get("map") {
                 Some(Value::Object(obj)) => obj
                     .iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect(),
-                _ => BTreeMap::new(),
+                    .map(|(k, v)| {
+                        v.as_str()
+                            .map(|s| (k.clone(), s.to_string()))
+                            .ok_or_else(|| {
+                                anyhow!("create_pipe map field {k:?} must be a string template")
+                            })
+                    })
+                    .collect::<Result<_>>()?,
+                _ => bail!("create_pipe requires a 'map' object of string templates"),
             };
             let id = state
                 .add_pipe(from, on, ServerId::new(to), as_action, map)

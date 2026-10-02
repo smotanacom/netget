@@ -98,8 +98,9 @@ fn load_actions_file(path: &str) -> Result<Vec<serde_json::Value>> {
         }
     };
 
-    let content = std::fs::read_to_string(&resolved)
-        .with_context(|| format!("Failed to read --load file: {}", resolved.display()))?;
+    let content =
+        crate::utils::file_io::read_text(&resolved, crate::utils::save_load::MAX_SESSION_BYTES)
+            .with_context(|| format!("Failed to read --load file: {}", resolved.display()))?;
 
     let parsed: serde_json::Value = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse JSON from {}", resolved.display()))?;

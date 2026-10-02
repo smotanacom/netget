@@ -42,11 +42,15 @@ Send Initial Event (connected) → LLM → Execute Actions → Send Requests
 Reader Task ──→ Parse Response ──→ Call LLM ──→ Execute Actions → Send More Requests
 ```
 
-### State Machine
+### Event and command ordering
 
-Same as server: Idle → Processing → Accumulating
-
-Prevents concurrent LLM calls while processing responses.
+The framed reader processes one event at a time, retaining pending data through
+socket backpressure. A separate registered command task remains available during
+manual event handling. Both paths serialize complete frames through `AgentWriter`.
+The 30-second send deadline includes waiting for that writer lock. A write that
+starts but fails, times out, or is cancelled closes its owned Unix write half and
+permanently disables further sends; a new frame cannot be appended to a partial
+frame. Timing out before acquiring the lock leaves the untouched writer usable.
 
 ### Supported Operations
 
@@ -164,7 +168,7 @@ The LLM can use memory to:
 1. **Platform**: Unix/Linux/macOS only (Unix domain sockets)
 2. **Socket Path**: Requires a valid socket path. Defaults to `./netget-ssh-agent.sock`, NetGet's own agent server, and deliberately never falls back to `$SSH_AUTH_SOCK` — see "Never the live agent by default" below.
 3. **Response Parsing**: Basic parsing, may not handle all edge cases
-4. **Queued Data**: Simplified queuing (discards queued responses)
+4. **Response backpressure**: complete frames are processed serially; socket/framing buffers retain later replies
 5. **Windows**: Not supported (would need named pipe implementation)
 6. **Extensions**: OpenSSH-specific extensions not implemented
 
@@ -234,3 +238,24 @@ Pointing this client at a real agent is still supported and is a legitimate thin
 just has to be asked for by path, either as `remote_addr` or as the `socket_path` startup
 parameter — which is now read (it was declared and ignored, so a caller who put the path in the
 parameter they were told to use connected somewhere else entirely).
+
+## Response framing (October 2026 review)
+
+`response_reader` uses Tokio's `LengthDelimitedCodec` to strip the four-byte big-endian
+length prefix and emit one complete response at a time. It preserves partial packets
+across command-channel select arms, separates coalesced packets and refuses frames
+over 1 MiB before allocating their bodies. The previous reader treated arbitrary
+socket chunks as decoded messages, leaving the length prefix in front of the type.
+`tests/client_review_regression_test.rs::ssh_agent` covers coalesced messages, a partial
+header whose read is cancelled, oversized lengths and premature EOF, without sockets
+or any model calls.
+
+## Injected actions and partial-frame deadlines (October 2026 follow-up)
+
+Injected actions now execute the same packet encoder as event-generated actions and report
+actual framed byte counts. The command worker is registered before processing the connected
+event and remains available during manual/event waits. The receive loop no longer has dead
+queue branches that discarded replies. Packet framing retains an absolute 30-second deadline
+across cancelled `next()` calls, including a complete length header with no body yet. Signing
+flags and string/packet lengths use checked conversions and a 1 MiB packet cap. Tests use
+in-memory streams and fabricated bytes; they never connect to the operator's agent.

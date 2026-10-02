@@ -156,7 +156,9 @@ pub async fn call_llm_for_client(
         match state.try_consume_client_llm_call(cid).await {
             Ok(used) => {
                 let limit = state.get_client_llm_call_limit().await;
-                if limit > 0 && used * 100 >= limit * WARN_AT_PERCENT {
+                if limit > 0
+                    && u64::from(used) * 100 >= u64::from(limit) * u64::from(WARN_AT_PERCENT)
+                {
                     warn!(
                         "Client {} has used {}/{} of its LLM call budget",
                         cid, used, limit

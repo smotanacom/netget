@@ -258,6 +258,39 @@ fn run_for_exits_zero_when_the_duration_elapses() {
     );
 }
 
+#[test]
+fn restored_global_task_keeps_cli_alive_and_reaches_the_task_ticker() {
+    let mut netget = Netget::spawn(
+        "global-task-only",
+        serde_json::json!([{
+            "type": "restore_session",
+            "session": {
+                "version": 2,
+                "resources": [],
+                "global_tasks": [{
+                    "task_id": "restored-global-fixture",
+                    "recurring": false,
+                    "delay_secs": 1,
+                    "instruction": "model availability failure is expected in this fixture"
+                }]
+            }
+        }]),
+        &["--run-for", "3"],
+    );
+    netget.wait_line("Configuration loaded successfully", Duration::from_secs(20));
+    netget.assert_alive_for(
+        Duration::from_millis(200),
+        "a future global task keeps the run alive",
+    );
+    // The fixture endpoint is 127.0.0.1:1. Observing dispatch proves the ticker
+    // runs; model availability can fail without contacting an actual model.
+    netget.wait_line(
+        "[TASK] Executing task 'restored-global-fixture'",
+        Duration::from_secs(10),
+    );
+    assert!(netget.wait_exit(Duration::from_secs(10)).success());
+}
+
 /// Two servers, `--exit-after-events 2`: both are reported and served, the first exchange does
 /// not end the run, the second (on the other server) does.
 #[test]

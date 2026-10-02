@@ -168,8 +168,8 @@ impl NetGetConfig {
             return Ok(Self::default());
         }
 
-        let contents =
-            std::fs::read_to_string(&config_path).context("Failed to read config file")?;
+        let contents = crate::utils::file_io::read_text(&config_path, 1024 * 1024)
+            .context("Failed to read config file")?;
 
         let config: NetGetConfig =
             toml::from_str(&contents).context("Failed to parse config file")?;
@@ -180,16 +180,11 @@ impl NetGetConfig {
 
     /// Save configuration to ~/.netget/config.toml
     pub fn save(&self) -> Result<()> {
-        let config_path = Self::config_file_path()?;
-
-        // Ensure parent directory exists
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).context("Failed to create config directory")?;
-        }
-
+        let home = dirs::home_dir().context("Cannot find home directory")?;
+        let config_path =
+            crate::utils::file_io::ensure_config_directory(&home)?.join("config.toml");
         let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
-
-        std::fs::write(&config_path, contents).context("Failed to write config file")?;
+        crate::utils::file_io::write_atomic(&config_path, contents.as_bytes())?;
 
         debug!("Saved config to: {}", config_path.display());
         Ok(())

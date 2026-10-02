@@ -1,0 +1,8 @@
+{
+  "command": [
+    "./.github/scripts/check-module-reachability.sh"
+  ],
+  "exit_code": 0,
+  "seconds": 118.3,
+  "log": "/Users/matus/dev/netget/tmp/audit-2026-10-02/module-reachability.log"
+}

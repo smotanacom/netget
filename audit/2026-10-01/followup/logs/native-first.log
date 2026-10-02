@@ -1,0 +1,71 @@
+   Compiling rusqlite v0.37.0
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+   Compiling des v0.8.1
+warning: unused `Result` that must be used
+   --> src/state/sqlite.rs:304:9
+    |
+304 | /         conn.set_limit(
+305 | |             rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+306 | |             MAX_QUERY_VALUE_BYTES,
+307 | |         );
+    | |_________^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+304 |         let _ = conn.set_limit(
+    |         +++++++
+
+warning: unused `Result` that must be used
+   --> src/state/sqlite.rs:308:9
+    |
+308 | /         conn.set_limit(
+309 | |             rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH,
+310 | |             MAX_QUERY_SQL_BYTES,
+311 | |         );
+    | |_________^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+308 |         let _ = conn.set_limit(
+    |         +++++++
+
+warning: `netget` (lib) generated 2 warnings
+error[E0432]: unresolved import `common::get_available_port`
+  --> tests/helpers/mod.rs:30:5
+   |
+30 |     get_available_port, retry, retry_with_backoff, wait_for_server_listening, with_aws_sdk_timeout,
+   |     ^^^^^^^^^^^^^^^^^^ no `get_available_port` in `helpers::common`
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:461:9
+    |
+461 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:553:9
+    |
+553 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `expected_value`
+   --> tests/helpers/ollama_test_builder.rs:884:36
+    |
+884 |         Expectation::StaticHandler(expected_value) => {
+    |                                    ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_expected_value`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `netget` (test "scheduled_task_claim_test") generated 3 warnings
+error: could not compile `netget` (test "scheduled_task_claim_test") due to 1 previous error; 3 warnings emitted
+warning: build failed, waiting for other jobs to finish...

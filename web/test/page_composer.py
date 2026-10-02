@@ -84,8 +84,9 @@ the real `xterm.js`, `xterm.css` and `addon-fit.js` (5.5.0 / 0.10.0 from jsDeliv
 what the screenshots want. SCREENSHOT_DIR=/some/dir saves the demo at each size (and lets the
 page's web fonts load).
 
-Not run in CI: it needs Playwright for Python and a Chromium, neither of which the wasm-web
-job installs. web/test/smoke.mjs is the CI check of the bundle, without a DOM.
+The wasm-web CI job runs this with NETGET_CPU_ONLY=1: GPU features and real model APIs are
+disabled, external requests remain fixture-only, and the real Prompt API probe is skipped.
+web/test/smoke.mjs also checks the bundle without a DOM.
 """
 
 import functools
@@ -105,6 +106,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SITE = os.environ.get("SITE_DIR") or os.path.join(ROOT, "site")
 XTERM_DIR = os.environ.get("XTERM_DIR")
 SCREENSHOT_DIR = os.environ.get("SCREENSHOT_DIR")
+CPU_ONLY = os.environ.get("NETGET_CPU_ONLY") == "1"
 
 SIZES = [(1280, 800), (1440, 900), (1920, 1080), (390, 844)]
 
@@ -378,12 +380,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def launch(p):
     """Playwright's own Chromium if installed, else a system Chrome or Chromium."""
+    options = {"args": ["--disable-gpu", "--disable-gpu-compositing", "--disable-software-rasterizer", "--disable-features=WebGPU,WebGPUService,OptimizationGuideOnDeviceModel"]} if CPU_ONLY else {}
     try:
-        return p.chromium.launch()
+        return p.chromium.launch(**options)
     except Exception as first:
         for channel in ("chrome", "chromium"):
             try:
-                return p.chromium.launch(channel=channel)
+                return p.chromium.launch(channel=channel, **options)
             except Exception:
                 pass
         for path in (
@@ -391,7 +394,7 @@ def launch(p):
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ):
             if os.path.exists(path):
-                return p.chromium.launch(executable_path=path)
+                return p.chromium.launch(executable_path=path, **options)
         raise first
 
 
@@ -400,7 +403,11 @@ def open_page(browser, origin, size=(1280, 800), init_script=None):
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     # The page never scrolls on its own; start where a visitor does and stay there.
-    if init_script:
+    if CPU_ONLY:
+        # One ordered initializer prevents the real GPU/Prompt APIs from being
+        # touched; individual scenarios may replace these with plain JS fakes.
+        page.add_init_script(NO_GPU + "delete self.LanguageModel;" + (init_script or ""))
+    elif init_script:
         page.add_init_script(init_script)
 
     def route(r):
@@ -419,7 +426,7 @@ def open_page(browser, origin, size=(1280, 800), init_script=None):
         if url.startswith("https://esm.run/@mlc-ai/web-llm"):
             return r.fulfill(status=200, content_type="text/javascript", body=FAKE_WEBLLM,
                              headers={"Access-Control-Allow-Origin": "*"})
-        if SCREENSHOT_DIR and ("fonts.googleapis.com" in url or "fonts.gstatic.com" in url):
+        if not CPU_ONLY and SCREENSHOT_DIR and ("fonts.googleapis.com" in url or "fonts.gstatic.com" in url):
             return r.continue_()
         if url.endswith(".css"):
             return r.fulfill(status=200, content_type="text/css", body="")
@@ -1281,7 +1288,7 @@ def main():
         run_you_are_selected(browser, origin)
         run_adventure_state(browser, origin)
         mobile_font = run_mobile(browser, origin)
-        real = run_real_prompt_api(browser, origin)
+        real = "not probed (CPU-only mode)" if CPU_ONLY else run_real_prompt_api(browser, origin)
         browser.close()
 
     server.shutdown()

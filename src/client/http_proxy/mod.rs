@@ -6,7 +6,7 @@ pub use actions::HttpProxyClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace};
@@ -312,7 +312,7 @@ impl HttpProxyClient {
             // The loop body is an inner block so its `return`s all land on the handle removal
             // below: once the socket is dead the dashboard must stop offering [ send ].
             async move {
-            let mut reader = BufReader::new(read_half);
+            let mut reader = BufReader::new(crate::client::response_reader::FrameReader::new(read_half));
 
             // First, check if we need to read CONNECT response
             if let Some(target) = app_state_clone
@@ -325,9 +325,10 @@ impl HttpProxyClient {
                 .await
                 .flatten()
             {
+                reader.get_mut().start_frame(crate::client::response_reader::RESPONSE_DEADLINE);
                 // Read CONNECT response
                 let mut status_line = String::new();
-                match reader.read_line(&mut status_line).await {
+                match crate::client::response_reader::read_response_line(&mut reader, &mut status_line).await {
                     Ok(0) => {
                         error!(
                             "HTTP proxy client {} disconnected during CONNECT",
@@ -356,12 +357,22 @@ impl HttpProxyClient {
                             0
                         };
 
-                        // Read headers until empty line
+                        // Bound the aggregate head too: many short headers are otherwise
+                        // just as unbounded as one line with no terminator.
+                        let mut header_bytes = status_line.len();
                         loop {
                             let mut header_line = String::new();
-                            match reader.read_line(&mut header_line).await {
-                                Ok(0) => break,
+                            match crate::client::response_reader::read_response_line(&mut reader, &mut header_line).await {
+                                Ok(0) => {
+                                    app_state_clone.update_client_status(client_id, ClientStatus::Error("Proxy closed before CONNECT headers completed".to_string())).await;
+                                    return;
+                                },
                                 Ok(_) => {
+                                    header_bytes += header_line.len();
+                                    if header_bytes > crate::client::response_reader::MAX_RESPONSE_LINE_BYTES {
+                                        app_state_clone.update_client_status(client_id, ClientStatus::Error("Proxy CONNECT response headers exceed the byte cap".to_string())).await;
+                                        return;
+                                    }
                                     if header_line.trim().is_empty() {
                                         break;
                                     }
@@ -371,7 +382,8 @@ impl HttpProxyClient {
                                         "HTTP proxy client {} error reading headers: {}",
                                         client_id, e
                                     );
-                                    break;
+                                    app_state_clone.update_client_status(client_id, ClientStatus::Error(e.to_string())).await;
+                                    return;
                                 }
                             }
                         }
@@ -502,6 +514,7 @@ impl HttpProxyClient {
             // Now read data through the tunnel
             let mut buffer = vec![0u8; 8192];
 
+            reader.get_mut().end_frame();
             'tunnel: loop {
                 match reader.read(&mut buffer).await {
                     Ok(0) => {

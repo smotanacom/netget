@@ -33,8 +33,9 @@ only the first exchange of a keep-alive HTTPS connection is inspected.
 
 Bounds that do exist: the request head is capped at 64 KiB with a 30s deadline
 (408 on expiry), an upstream response is buffered to at most 8 MiB, and CONNECT
-tunnels run through `copy_bidirectional` so a half-close propagates. The number of
-concurrent connections is unbounded.
+tunnels run through `copy_bidirectional` so a half-close propagates. Concurrent
+connections are capped at 256 by the shared admission limiter; generated host
+certificate pairs are capped at 1,024 entries.
 
 ## Security: the MITM CA (read this first)
 
@@ -270,8 +271,9 @@ tunnels feed through `update_connection_stats`.
 5. Process through LLM filtering pipeline
 6. Mark connection closed after completion
 
-**Concurrent Connections**: Each connection handled in separate tokio task. No connection limit enforced by default (
-production deployments should add rate limiting).
+**Concurrent Connections**: Each connection has a separate task and holds a shared
+connection-limiter permit for its lifetime. `DEFAULT_MAX_CONNECTIONS` caps live sessions
+at 256; excess peers receive the bounded busy response. This does not impose a request-rate limit.
 
 ## Certificate Management
 
@@ -335,6 +337,9 @@ let cert = params.self_signed(&key_pair)?;
 
 ### Certificate Cache Design
 
+- **Capacity**: at most 1,024 retained certificate/key pairs. A new hostname at capacity
+  evicts the oldest generated pair under the insertion lock. Existing TLS sessions own
+  their copies; eviction only causes a future lookup to generate a new pair.
 - **Thread-safe**: `Arc<RwLock<HashMap<String, CachedCert>>>`
 - **TTL**: 24 hours, hardcoded. `cert_ttl_secs` is a private field set in
   `CertificateCache::new`; there is no setter and no startup parameter for it.

@@ -30,10 +30,63 @@ use tokio::sync::Mutex;
 
 /// The live libsmbclient handle, shared by the LLM task and the command loop.
 ///
-/// `pavao`'s calls are synchronous, so the guard is taken and released around each
-/// one and is never held across an `.await` — in particular never across an LLM
-/// round-trip, which a `*` manual routing rule can park for minutes.
-type SharedSmb = Arc<Mutex<PavaoSmbClient>>;
+/// Every native call runs on a blocking worker; its file handles are created and
+/// dropped on that worker. The async mutex serializes operations before spawning
+/// work, and no native handle or guard survives into a model event dispatch.
+type SharedSmb = Arc<Mutex<NativeSmb>>;
+// pavao 0.2 owns one process-global native context; dropping any SmbClient frees it.
+// Refuse a second live owner rather than letting it invalidate the first session.
+static NATIVE_SESSION: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+struct NativeSmb {
+    client: Option<PavaoSmbClient>,
+    lease: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+impl Drop for NativeSmb {
+    fn drop(&mut self) {
+        let client = self.client.take();
+        let lease = self.lease.take();
+        let cleanup = move || {
+            drop(client);
+            drop(lease);
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn_blocking(cleanup);
+        } else {
+            std::thread::spawn(cleanup);
+        }
+    }
+}
+
+/// Buffered file contents forwarded into model events are capped independently of SMB packets.
+pub const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Read at most one byte beyond the cap, refusing partial data instead of claiming success.
+pub fn read_file_bounded(reader: impl IoRead) -> std::io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    reader
+        .take(MAX_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut data)?;
+    if data.len() > MAX_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "SMB file exceeds buffered byte cap",
+        ));
+    }
+    Ok(data)
+}
+
+async fn blocking_smb<T: Send + 'static>(
+    client: &SharedSmb,
+    operation: impl FnOnce(&PavaoSmbClient) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let client = client.clone().lock_owned().await;
+    tokio::task::spawn_blocking(move || {
+        operation(client.client.as_ref().context("SMB client is closed")?)
+    })
+    .await
+    .context("SMB worker panicked")?
+}
 
 /// What applying one action against the SMB share actually did.
 ///
@@ -98,10 +151,24 @@ impl SmbClient {
             creds = creds.workgroup(&w);
         }
 
+        // Acquire ownership before native initialization: pavao's context is global.
+        let lease = NATIVE_SESSION
+            .clone()
+            .try_acquire_owned()
+            .context("the pavao SMB backend supports one active native session per process")?;
         // Create SMB client
         let smb_client: SharedSmb = Arc::new(Mutex::new(
-            PavaoSmbClient::new(creds, SmbOptions::default())
-                .context("Failed to create SMB client")?,
+            tokio::task::spawn_blocking(move || {
+                let client = PavaoSmbClient::new(creds, SmbOptions::default())
+                    .context("Failed to create SMB client")?;
+                client.set_timeout(std::time::Duration::from_secs(30))?;
+                Ok::<_, anyhow::Error>(NativeSmb {
+                    client: Some(client),
+                    lease: Some(lease),
+                })
+            })
+            .await
+            .context("SMB initialization worker panicked")??,
         ));
 
         // For SMB, we use a dummy local address since it's a library-based client
@@ -350,6 +417,7 @@ impl SmbClient {
     ) -> Result<SmbApplied> {
         // Assigned exactly once on every path that does not return early.
         let detail: String;
+        let mut failure = None;
         match action_result {
             crate::llm::actions::client_trait::ClientActionResult::Custom { name, data } => {
                 match name.as_str() {
@@ -363,7 +431,10 @@ impl SmbClient {
 
                         // List directory using pavao. The guard is scoped to the
                         // synchronous call only — never held across the LLM await below.
-                        let list_result = { smb_client.lock().await.list_dir(path) };
+                        let owned_path = path.to_string();
+                        let list_result =
+                            blocking_smb(smb_client, move |smb| Ok(smb.list_dir(&owned_path)?))
+                                .await;
                         match list_result {
                             Ok(entries) => {
                                 let entry_list: Vec<serde_json::Value> = entries
@@ -417,6 +488,7 @@ impl SmbClient {
                             Err(e) => {
                                 error!("SMB client {} list_dir error: {}", client_id, e);
                                 detail = format!("list_directory {path:?} failed: {e}");
+                                failure = Some(e.to_string());
                                 let error_event = Event::new(
                                     &SMB_CLIENT_ERROR_EVENT,
                                     serde_json::json!({
@@ -448,15 +520,13 @@ impl SmbClient {
 
                         // Open file for reading and immediately read contents
                         // We need to close the file before any await (SmbFile contains raw pointer, not Send)
-                        let read_result = {
-                            let smb = smb_client.lock().await;
-                            smb.open_with(path, SmbOpenOptions::default().read(true))
-                                .and_then(|mut file| {
-                                    let mut content_bytes = Vec::new();
-                                    file.read_to_end(&mut content_bytes)?;
-                                    Ok(content_bytes)
-                                })
-                        };
+                        let owned_path = path.to_string();
+                        let read_result = blocking_smb(smb_client, move |smb| {
+                            let file =
+                                smb.open_with(&owned_path, SmbOpenOptions::default().read(true))?;
+                            Ok(read_file_bounded(file)?)
+                        })
+                        .await;
 
                         match read_result {
                             Ok(content_bytes) => {
@@ -495,6 +565,7 @@ impl SmbClient {
                             Err(e) => {
                                 error!("SMB client {} read_file error: {}", client_id, e);
                                 detail = format!("read_file {path:?} failed: {e}");
+                                failure = Some(e.to_string());
                                 let error_event = Event::new(
                                     &SMB_CLIENT_ERROR_EVENT,
                                     serde_json::json!({
@@ -545,24 +616,22 @@ impl SmbClient {
                             }
                             None => content.as_bytes().to_vec(),
                         };
-                        let content_bytes = content_bytes.as_slice();
-
-                        // Open file for writing and immediately write contents
-                        // We need to close the file before any await (SmbFile contains raw pointer, not Send)
-                        let write_result = {
-                            let smb = smb_client.lock().await;
-                            smb.open_with(
-                                path,
+                        if content_bytes.len() > MAX_FILE_BYTES {
+                            anyhow::bail!("SMB write exceeds buffered byte cap");
+                        }
+                        let owned_path = path.to_string();
+                        let write_result = blocking_smb(smb_client, move |smb| {
+                            let mut file = smb.open_with(
+                                &owned_path,
                                 SmbOpenOptions::default()
                                     .write(true)
                                     .create(true)
                                     .truncate(true),
-                            )
-                            .and_then(|mut file| {
-                                file.write_all(content_bytes)?;
-                                Ok(content_bytes.len())
-                            })
-                        };
+                            )?;
+                            file.write_all(&content_bytes)?;
+                            Ok(content_bytes.len())
+                        })
+                        .await;
 
                         match write_result {
                             Ok(bytes_written) => {
@@ -590,6 +659,7 @@ impl SmbClient {
                             Err(e) => {
                                 error!("SMB client {} write_file error: {}", client_id, e);
                                 detail = format!("write_file {path:?} failed: {e}");
+                                failure = Some(e.to_string());
                                 let error_event = Event::new(
                                     &SMB_CLIENT_ERROR_EVENT,
                                     serde_json::json!({
@@ -619,12 +689,11 @@ impl SmbClient {
 
                         debug!("SMB client {} creating directory: {}", client_id, path);
 
-                        let mkdir_result = {
-                            smb_client
-                                .lock()
-                                .await
-                                .mkdir(path, pavao::SmbMode::from(0o755))
-                        };
+                        let owned_path = path.to_string();
+                        let mkdir_result = blocking_smb(smb_client, move |smb| {
+                            Ok(smb.mkdir(&owned_path, pavao::SmbMode::from(0o755))?)
+                        })
+                        .await;
                         match mkdir_result {
                             Ok(()) => {
                                 info!("SMB client {} created directory {}", client_id, path);
@@ -637,6 +706,7 @@ impl SmbClient {
                             Err(e) => {
                                 error!("SMB client {} mkdir error: {}", client_id, e);
                                 detail = format!("create_directory {path:?} failed: {e}");
+                                failure = Some(e.to_string());
                                 let error_event = Event::new(
                                     &SMB_CLIENT_ERROR_EVENT,
                                     serde_json::json!({
@@ -666,7 +736,9 @@ impl SmbClient {
 
                         debug!("SMB client {} deleting file: {}", client_id, path);
 
-                        let unlink_result = { smb_client.lock().await.unlink(path) };
+                        let owned_path = path.to_string();
+                        let unlink_result =
+                            blocking_smb(smb_client, move |smb| Ok(smb.unlink(&owned_path)?)).await;
                         match unlink_result {
                             Ok(()) => {
                                 info!("SMB client {} deleted file {}", client_id, path);
@@ -679,6 +751,7 @@ impl SmbClient {
                             Err(e) => {
                                 error!("SMB client {} unlink error: {}", client_id, e);
                                 detail = format!("delete_file {path:?} failed: {e}");
+                                failure = Some(e.to_string());
                                 let error_event = Event::new(
                                     &SMB_CLIENT_ERROR_EVENT,
                                     serde_json::json!({
@@ -708,7 +781,9 @@ impl SmbClient {
 
                         debug!("SMB client {} deleting directory: {}", client_id, path);
 
-                        let rmdir_result = { smb_client.lock().await.rmdir(path) };
+                        let owned_path = path.to_string();
+                        let rmdir_result =
+                            blocking_smb(smb_client, move |smb| Ok(smb.rmdir(&owned_path)?)).await;
                         match rmdir_result {
                             Ok(()) => {
                                 info!("SMB client {} deleted directory {}", client_id, path);
@@ -721,6 +796,7 @@ impl SmbClient {
                             Err(e) => {
                                 error!("SMB client {} rmdir error: {}", client_id, e);
                                 detail = format!("delete_directory {path:?} failed: {e}");
+                                failure = Some(e.to_string());
                                 let error_event = Event::new(
                                     &SMB_CLIENT_ERROR_EVENT,
                                     serde_json::json!({
@@ -771,6 +847,9 @@ impl SmbClient {
             }
         }
 
+        if let Some(error) = failure {
+            anyhow::bail!("SMB operation failed: {error}");
+        }
         Ok(SmbApplied::Executed(detail))
     }
 

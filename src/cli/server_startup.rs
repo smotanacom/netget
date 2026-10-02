@@ -218,7 +218,7 @@ pub async fn start_server_by_id(
         // Get the parameter schema from the protocol
         let schema = protocol.get_startup_parameters();
         // Create validated StartupParams
-        match crate::protocol::StartupParams::new(params_json, schema) {
+        match crate::protocol::StartupParams::new_validated(params_json, schema) {
             Ok(p) => Some(p),
             Err(e) => {
                 let msg = format!("Invalid startup_params for {}: {}", protocol_name, e);
@@ -352,6 +352,10 @@ pub async fn start_server_from_action(
     status_tx: mpsc::UnboundedSender<String>,
 ) -> Result<ServerId> {
     use crate::state::server::ServerStatus;
+    let prepared_tasks = crate::state::task::prepare_tasks(
+        scheduled_tasks.as_deref(),
+        crate::state::task::TaskScope::Global,
+    )?;
 
     // Resolve the protocol from the registry. `resolve()` is case-insensitive and
     // distinguishes "compiled out of this build" from "no such protocol", with a
@@ -457,13 +461,24 @@ pub async fn start_server_from_action(
     let startup_params_obj = match startup_params.clone() {
         Some(params_json) => {
             let schema = protocol_impl.get_startup_parameters();
+            crate::cli::management::validate_server_startup_params(
+                &params_json,
+                &schema,
+                protocol,
+            )?;
             Some(
-                crate::protocol::StartupParams::new(params_json, schema).map_err(|e| {
-                    anyhow::anyhow!("Invalid startup_params for {}: {}", protocol, e)
-                })?,
+                crate::protocol::StartupParams::new_validated(params_json, schema).map_err(
+                    |e| anyhow::anyhow!("Invalid startup_params for {}: {}", protocol, e),
+                )?,
             )
         }
-        None => None,
+        None => {
+            crate::protocol::StartupParams::new_validated(
+                serde_json::json!({}),
+                protocol_impl.get_startup_parameters(),
+            )?;
+            None
+        }
     };
 
     // === DUAL PATH LOGIC: Migrated vs Unmigrated Protocols ===
@@ -592,6 +607,11 @@ pub async fn start_server_from_action(
         return Err(anyhow::anyhow!(msg));
     }
 
+    let parsed_handlers = event_handlers
+        .map(crate::events::handler::EventHandler::parse_event_handlers)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("Invalid event handler configuration: {}", error))?;
+
     // Create server instance
     // NOTE: For unmigrated protocols, port is always Some(_)
     // For migrated protocols, port may be None (interface-based protocols like ICMP)
@@ -620,106 +640,57 @@ pub async fn start_server_from_action(
     };
 
     let server_id = state.add_server(server).await;
+    let mut startup_guard = super::startup_guard::StartupGuard::server(state, server_id);
 
     // Set initial memory if provided
     if let Some(mem) = initial_memory {
         state.set_memory(server_id, mem).await;
     }
 
-    // Configure event handlers if provided
-    if let Some(handlers) = event_handlers {
-        // Use proper validation that checks LLM handler instruction field
-        match crate::events::handler::EventHandler::parse_event_handlers(handlers) {
-            Ok(config) => {
-                state
-                    .with_server_mut(server_id, |s| {
-                        s.event_handler_config = Some(config);
-                    })
-                    .await;
-                let _ = status_tx.send("[INFO] Event handler configuration applied".to_string());
-            }
-            Err(e) => {
-                // Return error instead of just warning - invalid config should fail
-                return Err(anyhow::anyhow!(
-                    "Invalid event handler configuration: {}",
-                    e
-                ));
-            }
-        }
+    if let Some(config) = parsed_handlers {
+        state
+            .with_server_mut(server_id, |server| {
+                server.event_handler_config = Some(config)
+            })
+            .await;
+        let _ = status_tx.send("[INFO] Event handler configuration applied".to_string());
     }
 
-    // Create scheduled tasks if provided
-    if let Some(tasks) = scheduled_tasks {
-        for task_def in tasks {
-            use crate::state::task::{ScheduledTask, TaskId, TaskScope, TaskStatus, TaskType};
-            use crate::utils::clock::Instant;
-            use std::time::Duration;
-
-            // Determine task type
-            let task_type = if task_def.recurring {
-                TaskType::Recurring {
-                    interval_secs: task_def.interval_secs.unwrap_or(60),
-                    max_executions: task_def.max_executions,
-                    executions_count: 0,
-                }
-            } else {
-                TaskType::OneShot {
-                    delay_secs: task_def.delay_secs.unwrap_or(0),
-                }
+    // Definitions were prepared before the owner was registered.
+    for (task_def, mut task) in scheduled_tasks
+        .unwrap_or_default()
+        .into_iter()
+        .zip(prepared_tasks)
+    {
+        task.scope = crate::state::task::TaskScope::Server(server_id);
+        let task_name = task.name.clone();
+        let task_id_num = state.add_task(task).await;
+        // Report it exactly as the standalone `schedule_task` action does
+        // (src/events/handler.rs). Creating a task through `open_server`'s
+        // `scheduled_tasks` array used to be completely silent - nothing in
+        // the TUI, nothing over MCP - so the two paths disagreed about
+        // whether task creation is an observable event. It is.
+        if task_def.recurring {
+            let interval = task_def.interval_secs.unwrap_or(60);
+            let max_info = match task_def.max_executions {
+                Some(max) => format!(" (max {} executions)", max),
+                None => String::new(),
             };
-
-            // Calculate next execution time
-            let delay = if task_def.recurring {
-                Duration::from_secs(0) // Start immediately for recurring
-            } else {
-                Duration::from_secs(task_def.delay_secs.unwrap_or(0))
-            };
-
-            let task_name = task_def.task_id.clone();
-
-            let task = ScheduledTask {
-                id: TaskId::new(rand::random()),
-                name: task_def.task_id,
-                scope: TaskScope::Server(server_id),
-                task_type,
-                instruction: task_def.instruction,
-                context: task_def.context,
-                status: TaskStatus::Scheduled,
-                created_at: Instant::now(),
-                next_execution: Instant::now() + delay,
-                last_error: None,
-                failure_count: 0,
-            };
-
-            let task_id_num = state.add_task(task).await;
-
-            // Report it exactly as the standalone `schedule_task` action does
-            // (src/events/handler.rs). Creating a task through `open_server`'s
-            // `scheduled_tasks` array used to be completely silent - nothing in
-            // the TUI, nothing over MCP - so the two paths disagreed about
-            // whether task creation is an observable event. It is.
-            if task_def.recurring {
-                let interval = task_def.interval_secs.unwrap_or(60);
-                let max_info = match task_def.max_executions {
-                    Some(max) => format!(" (max {} executions)", max),
-                    None => String::new(),
-                };
-                let msg = format!(
-                    "[TASK] Scheduled recurring task '{}' (ID: {}) to execute every {}s{}",
-                    task_name, task_id_num, interval, max_info
-                );
-                tracing::info!("{}", msg);
-                let _ = status_tx.send(msg);
-            } else {
-                let msg = format!(
-                    "[TASK] Scheduled one-shot task '{}' (ID: {}) to execute in {}s",
-                    task_name,
-                    task_id_num,
-                    task_def.delay_secs.unwrap_or(0)
-                );
-                tracing::info!("{}", msg);
-                let _ = status_tx.send(msg);
-            }
+            let msg = format!(
+                "[TASK] Scheduled recurring task '{}' (ID: {}) to execute every {}s{}",
+                task_name, task_id_num, interval, max_info
+            );
+            tracing::info!("{}", msg);
+            let _ = status_tx.send(msg);
+        } else {
+            let msg = format!(
+                "[TASK] Scheduled one-shot task '{}' (ID: {}) to execute in {}s",
+                task_name,
+                task_id_num,
+                task_def.delay_secs.unwrap_or(0)
+            );
+            tracing::info!("{}", msg);
+            let _ = status_tx.send(msg);
         }
     }
 
@@ -803,6 +774,7 @@ pub async fn start_server_from_action(
                 let _ = status_tx.send(update_msg);
             }
 
+            startup_guard.disarm();
             Ok(server_id)
         }
         Err(e) => {
@@ -817,6 +789,7 @@ pub async fn start_server_from_action(
                 .update_server_status(server_id, ServerStatus::Error(e.to_string()))
                 .await;
             state.remove_server(server_id).await;
+            startup_guard.disarm();
             let _ = status_tx.send(format!(
                 "[ERROR] Server #{} ({}) failed to start: {}",
                 server_id.as_u32(),

@@ -183,8 +183,8 @@ a `select!` arm. `send_pop3_command` yields `ClientActionResult::Custom`, which 
 
 1. **No APOP**: Challenge-response authentication not supported
 2. **No TLS of any kind**: neither implicit POP3S nor STARTTLS/STLS
-3. **Basic multiline detection**: Simple dot-termination parsing
-4. **No pipelining**: Commands sent one at a time
+3. **Command-aware multiline replies**: RETR/TOP/CAPA and argumentless LIST/UIDL use dot termination
+4. **Ordered command expectations**: pipelined commands have FIFO reply framing expectations
 5. **No SASL**: Extended authentication not supported
 
 ## Example Prompts
@@ -210,7 +210,6 @@ See `tests/client/pop3/CLAUDE.md` for:
 
 1. **APOP support**: MD5 challenge-response authentication
 2. **TLS**: implicit POP3S and/or STLS upgrade — neither exists today
-3. **Better multiline parsing**: Handle edge cases
 4. **Certificate validation control**: Option to accept self-signed certs
 5. **Connection pooling**: Reuse connections for multiple sessions
 6. **Asynchronous DELE**: Queue deletions and apply on QUIT
@@ -222,3 +221,27 @@ See `tests/client/pop3/CLAUDE.md` for:
 - RFC 1939 - Post Office Protocol - Version 3
 - RFC 2449 - POP3 Extension Mechanism
 - RFC 2595 - Using TLS with IMAP, POP3 and ACAP
+
+## Bounded response reading (October 2026 review)
+
+Response lines now use `client::response_reader::read_response_line`, sharing the
+existing bounded line decoder. The 64 KiB cap includes the line terminator; a partial
+line at EOF is an error. Oversized or incomplete replies are not forwarded as successful
+responses.
+Dot-terminated responses additionally have an 8 MiB aggregate cap, require an exact
+`.` terminator and undo dot stuffing. A peer closing before that terminator is a
+framing failure, avoiding POP3's former EOF loop and NNTP's partial-success result.
+Read-loop exits now always clear the command handle and update client status. The
+reply framing follows a FIFO of command expectations, recorded under the same mutex as writes.
+A negative status consumes its expectation without trying to read a multiline body.
+Pure decoder tests are in `tests/client_review_regression_test.rs::text_responses`.
+
+## Atomic command framing (October 2026 follow-up)
+
+`CommandWriter` is shared by both injected and event-generated commands. USER/PASS replies
+stay single-line regardless of status wording; LIST/UIDL with a message argument stay single-line,
+while their argumentless variants, RETR, TOP and CAPA consume exact dot-terminated bodies.
+CR/LF injection is rejected. A cancelled/failed write poisons the writer so future commands
+cannot reuse ambiguous framing. Outstanding expectations are capped at 1024. Whole writes,
+greetings and multiline bodies have 30-second deadlines; an idle established session may wait
+for the first byte, after which each partial response line has a 30-second completion deadline.

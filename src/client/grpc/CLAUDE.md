@@ -117,7 +117,23 @@ wrong, and both failed silently:
   name became variant `0`, and invalid base64 became empty bytes. Every one of those is now an
   error naming the field, and integers are range-checked with `try_from`.
 
-A field name the message does not declare is logged at WARN rather than dropped in silence.
+A field name the message does not declare is rejected. Non-object messages, multiple
+members of one `oneof`, map keys that normalize to the same protobuf key, float overflow or
+underflow to zero,
+and non-finite protobuf values also return errors; conversion never substitutes an empty
+message, zero, or null for those invalid inputs.
+
+Both peers share `src/server/grpc/value_codec.rs`. It enforces depth 32 (root depth zero,
+one step per field/map value/list element), 100,000 logical nodes, and an 8 MiB retained-content
+budget. Accounting includes 64 bytes per node, 32 bytes per key plus its text, and string or
+base64 content. These are conversion bounds rather than serialized wire-size limits. The
+same budget crosses message/list/map recursion and siblings, and it is checked before
+cloning strings, allocating decoded bytes, or emitting base64. Inputs constructed directly
+in memory receive the same bounds as parsed inputs.
+
+`tests/grpc_value_bounds_test.rs` uses in-memory descriptors and values to exercise both public
+peer conversion paths, exact depth/node/byte boundaries, aggregate content, invalid values,
+and nested protobuf round trips. It does not invoke protoc, model inference, or a network peer.
 
 ### Connection Management
 

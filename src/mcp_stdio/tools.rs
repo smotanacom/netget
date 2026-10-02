@@ -104,6 +104,20 @@ pub(crate) struct SharedState {
     /// requests to and the MCP tools answer from.
     agent_queue: Option<Arc<LlmRequestQueue>>,
     _status_tx: mpsc::UnboundedSender<String>,
+    background_tasks: Vec<tokio::task::JoinHandle<()>>,
+    task_owner: tokio_util::sync::CancellationToken,
+    // On drop the token requests a graceful finish of the current claim/spawn
+    // batch. Aborting that batch could leave claimed tasks without an executor.
+    _task_ticker: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SharedState {
+    fn drop(&mut self) {
+        self.task_owner.cancel();
+        for task in &self.background_tasks {
+            task.abort();
+        }
+    }
 }
 
 /// NetGet MCP STDIO service - exposes NetGet capabilities as MCP tools
@@ -469,8 +483,15 @@ const INJECT_TIMEOUT_MAX_SECS: u32 = 120;
 #[cfg(unix)]
 fn ensure_fifo(path: &std::path::Path) -> anyhow::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    if path.exists() {
-        return Ok(());
+    use std::os::unix::fs::FileTypeExt;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_fifo() => return Ok(()),
+        Ok(_) => anyhow::bail!(
+            "--llm-agent-pipe path {} must be a FIFO, not a regular file, directory, or symlink",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| anyhow::anyhow!("invalid FIFO path: {}", path.display()))?;
@@ -511,16 +532,14 @@ const CONNECTIONLESS_CLEANUP_TIMEOUT_SECS: u64 = 10;
 /// `feedback_instructions`, which makes `provide_feedback` an advertised tool, so
 /// without this an MCP caller could switch the loop on and have every entry
 /// accumulate unread — the TUI and non-interactive modes drive the drain from their
-/// task timer, and MCP has no task timer. (Scheduled tasks are still TUI-only here;
-/// that is a separate gap.)
+/// task timer. Scheduled tasks are driven separately by `spawn_task_ticker`.
 ///
-/// The handle is deliberately dropped: the reaper lives as long as the process, and
-/// there is nothing to stop it for.
+/// SharedState owns this handle and aborts it when the final service goes away.
 fn spawn_state_reaper(
     app_state: AppState,
     llm_client: crate::llm::OllamaClient,
     status_tx: mpsc::UnboundedSender<String>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker =
             tokio::time::interval(std::time::Duration::from_secs(REAPER_INTERVAL_SECS));
@@ -538,7 +557,7 @@ fn spawn_state_reaper(
                 .await;
             app_state.cleanup_old_conversations().await;
         }
-    });
+    })
 }
 
 /// How often the MCP-mode scheduled-task ticker fires. Matches the 1s cadence the
@@ -562,14 +581,13 @@ const TASK_TICK_INTERVAL_SECS: u64 = 1;
 /// server's tasks are gone from state before the next tick, so they cannot fire; only
 /// Global tasks (which the TUI also keeps) persist.
 ///
-/// The handle is deliberately dropped, matching the reaper: the ticker lives for the
-/// life of the process and is torn down when the process exits (STDIO: stdin EOF;
-/// HTTP: server shutdown).
+/// SharedState owns this handle, so dropping the final service stops ticking.
 fn spawn_task_ticker(
     app_state: AppState,
     llm_client: crate::llm::OllamaClient,
     status_tx: mpsc::UnboundedSender<String>,
-) {
+    owner: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker =
             tokio::time::interval(std::time::Duration::from_secs(TASK_TICK_INTERVAL_SECS));
@@ -577,10 +595,20 @@ fn spawn_task_ticker(
         // burst of catch-up ticks, exactly as the TUI's task timer skips them.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            ticker.tick().await;
-            crate::cli::execute_due_tasks_public(&app_state, &llm_client, &status_tx).await;
+            tokio::select! {
+                biased;
+                _ = owner.cancelled() => break,
+                _ = ticker.tick() => {}
+            }
+            crate::cli::execute_due_tasks_owned_public(
+                &app_state,
+                &llm_client,
+                &status_tx,
+                owner.clone(),
+            )
+            .await;
         }
-    });
+    })
 }
 
 /// The port a server is actually listening on.
@@ -743,25 +771,33 @@ impl NetGetMcpService {
         // ticked by the TUI event loop, so an LLM-initiated `close_server` (which
         // marks the server Stopped rather than removing it) left the entry — and its
         // scheduled tasks — in AppState for the life of the process.
-        spawn_state_reaper(app_state.clone(), llm_client.clone(), status_tx.clone());
+        let reaper = spawn_state_reaper(app_state.clone(), llm_client.clone(), status_tx.clone());
 
         // Fire scheduled tasks. Without this, `start_server`'s `scheduled_tasks` and
         // the `schedule_task` action create tasks that never execute in MCP mode —
         // only the TUI and non-interactive runners ticked `execute_due_tasks`.
-        spawn_task_ticker(app_state.clone(), llm_client.clone(), status_tx.clone());
+        let task_owner = tokio_util::sync::CancellationToken::new();
+        let ticker = spawn_task_ticker(
+            app_state.clone(),
+            llm_client.clone(),
+            status_tx.clone(),
+            task_owner.clone(),
+        );
 
+        // The receiver belongs to the same service lifetime as its producers.
+        let status_drain = tokio::spawn(async move {
+            while let Some(msg) = status_rx.recv().await {
+                eprintln!("[NETGET] {}", msg);
+            }
+        });
         let state = Arc::new(SharedState {
             app_state,
             llm_client,
             agent_queue,
             _status_tx: status_tx,
-        });
-
-        // Drain status messages to stderr in background
-        tokio::spawn(async move {
-            while let Some(msg) = status_rx.recv().await {
-                eprintln!("[NETGET] {}", msg);
-            }
+            background_tasks: vec![reaper, status_drain],
+            task_owner,
+            _task_ticker: ticker,
         });
 
         Ok(state)

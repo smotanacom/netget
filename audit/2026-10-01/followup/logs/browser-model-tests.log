@@ -1,0 +1,14 @@
+✔ numeric fields reject integers that JavaScript silently rounds (1.470833ms)
+✔ raw-to-form conversion refuses values it would change (0.389333ms)
+✔ literal __proto__ JSON fields remain ordinary data through the form (0.424709ms)
+✔ negotiation, UTF-8 and CRLF survive every possible TCP split (1.852334ms)
+✔ one-byte chunks and empty chunks preserve parser state (0.168833ms)
+✔ incomplete negotiations never reply with an invented option (0.066792ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 245.953959

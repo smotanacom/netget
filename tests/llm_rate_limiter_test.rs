@@ -17,6 +17,64 @@ use netget::llm::{
 };
 use std::time::Duration;
 
+#[tokio::test]
+async fn queued_requests_recheck_the_budget_after_the_preceding_call_finishes() {
+    let limiter = RateLimiter::new(RateLimiterConfig {
+        token_limit: Some(10),
+        ..Default::default()
+    });
+    let first = limiter
+        .acquire_permit(RequestSource::Network)
+        .await
+        .unwrap();
+    let waiting_limiter = limiter.clone();
+    let waiter = tokio::spawn(async move {
+        waiting_limiter
+            .acquire_permit(RequestSource::Network)
+            .await
+            .map(|_| ())
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while limiter.get_stats().await.currently_queued == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    first.record_usage(10, 0).await;
+    drop(first);
+    let error = tokio::time::timeout(Duration::from_secs(2), waiter)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect_err("the previous call exhausted the budget");
+    assert!(matches!(
+        error.downcast_ref::<RateLimitError>(),
+        Some(RateLimitError::TokenLimit { .. })
+    ));
+    assert_eq!(limiter.get_stats().await.currently_queued, 0);
+    assert_eq!(limiter.get_stats().await.requests_discarded, 1);
+}
+
+#[tokio::test]
+async fn extreme_backend_usage_and_window_values_do_not_overflow_or_reopen_budget() {
+    let limiter = RateLimiter::new(RateLimiterConfig {
+        token_limit: Some(u64::MAX),
+        token_window_secs: u64::MAX,
+        ..Default::default()
+    });
+    limiter.record_token_usage(u64::MAX, u64::MAX).await;
+    limiter.record_token_usage(1, 1).await;
+    let stats = limiter.get_stats().await;
+    assert_eq!(stats.current_window_tokens, u64::MAX);
+    assert_eq!(stats.total_input_tokens, u64::MAX);
+    assert_eq!(stats.total_output_tokens, u64::MAX);
+    assert!(limiter
+        .acquire_permit(RequestSource::Network)
+        .await
+        .is_err());
+}
+
 /// The default is what ships; assert it explicitly so a change to it is a
 /// deliberate edit to this test rather than a silent behaviour change.
 #[tokio::test]
