@@ -1,0 +1,137 @@
+[
+  {
+    "path": ".github/workflows/ci.yml",
+    "bytes": 86177,
+    "sha256": "0f0310ffa453db2f239f37f54b5bffaecbab413661a1af5ff9f200b3338bc3de"
+  },
+  {
+    "path": "Cargo.toml",
+    "bytes": 55677,
+    "sha256": "3179858ec131b413fee7a1053668122b53ec5a1f994dab95f58b963fa4a72ae8"
+  },
+  {
+    "path": "build.rs",
+    "bytes": 810,
+    "sha256": "1af642a03ffa1034c7a0c48c4de83bd38cdb59b07bf9158b47d8d813007f2e58"
+  },
+  {
+    "path": "src/client/grpc/CLAUDE.md",
+    "bytes": 17343,
+    "sha256": "809e27497e0f28f92a4fae16d6404328b87eafd79ad2aa27253db318b05f14ca"
+  },
+  {
+    "path": "src/client/grpc/mod.rs",
+    "bytes": 39991,
+    "sha256": "6633de529b7d90f1ddfc24a20915e6165f7c2455d863f622cdfc5fbbaf994896"
+  },
+  {
+    "path": "src/server/grpc/CLAUDE.md",
+    "bytes": 17684,
+    "sha256": "f677cfa17eec57ec8b3b1cd9f9690e2d1867baf31691702c4539462a6236e8fa"
+  },
+  {
+    "path": "src/server/grpc/mod.rs",
+    "bytes": 53133,
+    "sha256": "70963f567a7fe459a2fd5b90ceba08c561d67b79b970b6c86eb072ee982d4878"
+  },
+  {
+    "path": "src/server/grpc/value_codec.rs",
+    "bytes": 14271,
+    "sha256": "4a138266caace7c6050d0f35b23c4fba888d63830a8228b77c08d31c319c639b"
+  },
+  {
+    "path": "src/server/ipp/CLAUDE.md",
+    "bytes": 20111,
+    "sha256": "350173f45540aa6eaac2fec082cf1b0934ee79108b769e04b3e320cae033f5c4"
+  },
+  {
+    "path": "src/server/ipp/actions.rs",
+    "bytes": 41282,
+    "sha256": "789dafba4be7da1550b999d1eaa8639896dbd323df022f6929df585f88fea125"
+  },
+  {
+    "path": "src/server/torrent_dht/CLAUDE.md",
+    "bytes": 14357,
+    "sha256": "ae6365129a060f325735661563d0f765bce4b60982257150ad35402950d58f00"
+  },
+  {
+    "path": "src/server/torrent_dht/mod.rs",
+    "bytes": 26730,
+    "sha256": "ca1413ed80ab318063cc436fb59b094a24cba9f3bb33f0077442bd3aecac4ae2"
+  },
+  {
+    "path": "src/server/usb/fido2/CLAUDE.md",
+    "bytes": 19218,
+    "sha256": "5d51837d2ef449e883986030b29a1ee886edba85adbed8157f82f0cabc67ea39"
+  },
+  {
+    "path": "src/server/usb/fido2/mod.rs",
+    "bytes": 48046,
+    "sha256": "06ec8bb5f66381569739b52926ce7f78eadb39834ef6ab30380dade06cbed76f"
+  },
+  {
+    "path": "src/state/app_state.rs",
+    "bytes": 130679,
+    "sha256": "1d7552505e1b21222554a8e052d1e7b867432abf23c717d6ee37637e8ae9be99"
+  },
+  {
+    "path": "tests/audit_server_decoder_bounds_test.rs",
+    "bytes": 15322,
+    "sha256": "bcfd3cd81c7a5a823891d0ffecc483d9813203f025d9001739c6c6f81531320d"
+  },
+  {
+    "path": "tests/e2e/netget_wrapper.rs",
+    "bytes": 13443,
+    "sha256": "09d9339f35638459be0899f177b6e4bcd5b775f4de6c2108946b5c60c05ad6c2"
+  },
+  {
+    "path": "tests/grpc_value_bounds_test.rs",
+    "bytes": 10818,
+    "sha256": "6b71a7c1ff21cc3fd55a243abe5d2f1bad8821d95541ec428bec6624455a95fc"
+  },
+  {
+    "path": "tests/helpers/wrapper_lifecycle.rs",
+    "bytes": 5503,
+    "sha256": "3eb69bf46ffd1baee40e90e55cf6254a34b0a4a26db3d0bac1a3cd8cda394556"
+  },
+  {
+    "path": "tests/process_group_windows_test.rs",
+    "bytes": 5677,
+    "sha256": "f756fb4e111960d9e960e30fd810d4e23f5d7b99320c37189713e67e0d11d70f"
+  },
+  {
+    "path": "tests/recursive_decoder_depth_test.rs",
+    "bytes": 36678,
+    "sha256": "22fee92d1a8bd4bae162ae5e57324b177cfaf49c8958f257941e09776817578c"
+  },
+  {
+    "path": "tests/spawned_netget_is_tied_test.rs",
+    "bytes": 5781,
+    "sha256": "c56441a3f7ddb5faafa67ee0f37c005c7cf6e5fd894f0e0b8ce0d3c070808977"
+  },
+  {
+    "path": "tests/task_registration_cancellation_test.rs",
+    "bytes": 5260,
+    "sha256": "380eae861e94075d11468dbbedf3ec1794c819bc73896c431258e897e0a830a0"
+  },
+  {
+    "path": "tests/terminal_snapshot.rs",
+    "bytes": 230,
+    "sha256": "b67b4a31c622a18aff492a8dd34ca397fdd73e2e2292d9ef05e82c0199f84235"
+  },
+  {
+    "path": "tests/terminal_snapshot/child_lifecycle.rs",
+    "bytes": 3729,
+    "sha256": "bc2507f01e52cea9a2ba8381bfc219238eae2a3891f4e88c5b86da54dce60300"
+  },
+  {
+    "path": "tests/terminal_snapshot/mod.rs",
+    "bytes": 37700,
+    "sha256": "972326e5b6e9b4ab60cf59d3c9192490c416417e61ee06f3efc892120b57fe65"
+  },
+  {
+    "path": "tests/wrapper_lifecycle_test.rs",
+    "bytes": 2359,
+    "sha256": "a54576167766861b79cb44f7463e07c97ec8d1d9995168990b8c69a774d976a4"
+  }
+]

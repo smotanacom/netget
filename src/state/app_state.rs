@@ -1072,25 +1072,29 @@ impl AppState {
 
     /// Track a peer worker under its connection. A close racing registration
     /// aborts it immediately; registration never revives a removed handle.
-    pub async fn register_peer_task(
+    pub fn register_peer_task(
         &self,
         server_id: ServerId,
         connection_id: u32,
         handle: tokio::task::JoinHandle<()>,
-    ) {
-        let mut inner = self.inner.write().await;
-        if !inner.servers.contains_key(&server_id)
-            || !inner.peer_handles.contains_key(&(server_id, connection_id))
-        {
-            handle.abort();
-            return;
+    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+        // Construct ownership before polling: dropping an unpolled registration
+        // must abort the already-running worker, just like client/server tasks.
+        let pending = PendingTaskRegistration(Some(handle));
+        async move {
+            let mut inner = self.inner.write().await;
+            if !inner.servers.contains_key(&server_id)
+                || !inner.peer_handles.contains_key(&(server_id, connection_id))
+            {
+                return;
+            }
+            let tasks = inner
+                .peer_tasks
+                .entry((server_id, connection_id))
+                .or_default();
+            tasks.retain(|task| !task.is_finished());
+            tasks.push(pending.into_handle());
         }
-        let tasks = inner
-            .peer_tasks
-            .entry((server_id, connection_id))
-            .or_default();
-        tasks.retain(|task| !task.is_finished());
-        tasks.push(handle);
     }
 
     /// Execute one action inside a server connection's own task and wait for

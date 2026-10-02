@@ -1,8 +1,8 @@
 //! Terminal snapshot tests for sticky footer rendering
 //!
-//! Note: Temporarily disabled due to pty-process API changes
+//! Enabled with the Unix-only terminal-snapshot feature.
 
-#![cfg(feature = "terminal-snapshot")]
+#![cfg(all(unix, feature = "terminal-snapshot"))]
 
 #[path = "terminal_snapshot/mod.rs"]
 mod terminal_snapshot;

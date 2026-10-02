@@ -1206,6 +1206,11 @@ socketcan = { version = "3.5", optional = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# These fixture dependencies expose Unix-only process/terminal APIs.
+pty-process = "0.5"
+nix = { version = "0.29", features = ["signal", "process", "term", "ioctl"] }
+
 [dev-dependencies]
 # For async tests
 tokio-test = "0.4"
@@ -1214,13 +1219,10 @@ ctor = "0.2"
 # For creating temporary mock config files
 tempfile = "3.13"
 
-# Terminal snapshot testing
-pty-process = "0.5"
+# Terminal snapshot parsing
 vt100 = "0.15"
 
 # E2E test dependencies (only used when protocol features are enabled via test files' cfg gates)
-# For process management in e2e tests (Unix signals) and PTY window size
-nix = { version = "0.29", features = ["signal", "process", "term", "ioctl"] }
 # Axum for creating test HTTP servers in proxy e2e tests
 axum = "0.7"
 # Axum server with TLS support for HTTPS test servers

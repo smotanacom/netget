@@ -26,6 +26,9 @@ const KRPC_GENERIC_ERROR: i64 = 201;
 /// querying node distinguishes "come back later" from a permanent fault on this node.
 const KRPC_SERVER_ERROR: i64 = 202;
 
+/// Bound converted values independently of the wire decoder's preflight.
+pub const MAX_DHT_VALUE_DEPTH: usize = crate::utils::bencode::MAX_BENCODE_DEPTH;
+
 /// BitTorrent DHT server
 pub struct TorrentDhtServer;
 
@@ -465,7 +468,7 @@ impl TorrentDhtServer {
                             ("id" | "target" | "info_hash", Value::Bytes(bytes)) => {
                                 serde_json::json!(hex::encode(bytes))
                             }
-                            _ => Self::bencode_to_json(v),
+                            _ => Self::bencode_to_json(v)?,
                         };
                         params.insert(key, value);
                     }
@@ -480,10 +483,23 @@ impl TorrentDhtServer {
         }
     }
 
-    fn bencode_to_json(value: &serde_bencode::value::Value) -> serde_json::Value {
+    /// Convert a bencode value without relying on where it was decoded or constructed.
+    /// Lists and dictionaries each count as one level; scalars consume no depth.
+    pub fn bencode_to_json(value: &serde_bencode::value::Value) -> Result<serde_json::Value> {
+        Self::bencode_to_json_bounded(value, 0)
+    }
+
+    fn bencode_to_json_bounded(
+        value: &serde_bencode::value::Value,
+        depth: usize,
+    ) -> Result<serde_json::Value> {
         use serde_bencode::value::Value;
 
-        match value {
+        if matches!(value, Value::List(_) | Value::Dict(_)) && depth >= MAX_DHT_VALUE_DEPTH {
+            anyhow::bail!("DHT value nesting exceeds the {MAX_DHT_VALUE_DEPTH} level limit");
+        }
+
+        Ok(match value {
             Value::Int(i) => serde_json::json!(i),
             Value::Bytes(bytes) => {
                 // Try to decode as UTF-8 string, otherwise hex encode
@@ -500,17 +516,20 @@ impl TorrentDhtServer {
                 }
             }
             Value::List(list) => {
-                let json_list: Vec<_> = list.iter().map(|v| Self::bencode_to_json(v)).collect();
-                serde_json::json!(json_list)
+                let json_list = list
+                    .iter()
+                    .map(|v| Self::bencode_to_json_bounded(v, depth + 1))
+                    .collect::<Result<Vec<_>>>()?;
+                serde_json::Value::Array(json_list)
             }
             Value::Dict(dict) => {
                 let mut json_obj = serde_json::Map::new();
                 for (k, v) in dict {
                     let key = String::from_utf8_lossy(k).to_string();
-                    json_obj.insert(key, Self::bencode_to_json(v));
+                    json_obj.insert(key, Self::bencode_to_json_bounded(v, depth + 1)?);
                 }
                 serde_json::Value::Object(json_obj)
             }
-        }
+        })
     }
 }

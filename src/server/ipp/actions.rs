@@ -592,46 +592,19 @@ fn job_state_enum(value: &str) -> Option<i32> {
 /// lie, not to enforce the spec's per-syntax limits.
 const MAX_IPP_FIELD_BYTES: usize = u16::MAX as usize;
 
+/// Maximum array/object nesting in a model-supplied attribute value.
+///
+/// The attribute map itself is not counted. Bound the tree before JSON fallback encoding,
+/// including values constructed directly in memory without serde_json's parser limits.
+pub const MAX_IPP_ATTRIBUTE_DEPTH: usize = 32;
+
 /// Refuse model-supplied attribute values the encoder cannot represent.
 ///
 /// Run **before** `build_ipp_response`, which is the only point at which the original value is
 /// still visible: `as i32` on `4294967296` is `0`, and after the cast there is nothing left to
 /// check. Refusing beats clamping - `i32::MAX` is not what the model asked for either, and the
 /// message is what the repair loop reads.
-fn validate_attributes(attributes: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
-    fn check(name: &str, value: &serde_json::Value) -> Result<()> {
-        match value {
-            serde_json::Value::Number(n) => {
-                let raw = n.as_i64().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "attribute '{name}' must be a whole number; IPP's integer syntax has \
-                         no fractional form"
-                    )
-                })?;
-                i32::try_from(raw).map_err(|_| {
-                    anyhow::anyhow!(
-                        "attribute '{name}' is {raw}, outside IPP's 32-bit signed integer \
-                         range (-2147483648 to 2147483647)"
-                    )
-                })?;
-            }
-            serde_json::Value::String(text) if text.len() > MAX_IPP_FIELD_BYTES => {
-                anyhow::bail!(
-                    "attribute '{name}' is {} bytes; IPP's value-length field is two bytes, so \
-                     {MAX_IPP_FIELD_BYTES} is the most that can be encoded",
-                    text.len()
-                );
-            }
-            serde_json::Value::Array(values) => {
-                for v in values {
-                    check(name, v)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
+pub fn validate_attributes(attributes: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
     for (name, value) in attributes {
         if name.len() > MAX_IPP_FIELD_BYTES {
             anyhow::bail!(
@@ -639,9 +612,96 @@ fn validate_attributes(attributes: &serde_json::Map<String, serde_json::Value>) 
                 name.len()
             );
         }
-        check(name, value)?;
+
+        // Arrays are IPP sets; objects and nested containers are sent as JSON text. Walk
+        // both iteratively before any serialization, but preserve the integer checks on
+        // arrays without imposing IPP integer syntax on numbers inside JSON objects.
+        let mut pending = vec![(value, 0usize, true)];
+        while let Some((value, depth, check_scalar)) = pending.pop() {
+            if value.is_array() || value.is_object() {
+                if depth >= MAX_IPP_ATTRIBUTE_DEPTH {
+                    anyhow::bail!(
+                        "attribute '{name}' nesting exceeds the {MAX_IPP_ATTRIBUTE_DEPTH} level limit"
+                    );
+                }
+                match value {
+                    serde_json::Value::Array(values) => {
+                        pending.extend(values.iter().map(|value| (value, depth + 1, check_scalar)))
+                    }
+                    serde_json::Value::Object(values) => {
+                        pending.extend(values.values().map(|value| (value, depth + 1, false)))
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if !check_scalar {
+                continue;
+            }
+            match value {
+                serde_json::Value::Number(n) => {
+                    let raw = n.as_i64().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "attribute '{name}' must be a whole number; IPP's integer syntax has \
+                         no fractional form"
+                        )
+                    })?;
+                    i32::try_from(raw).map_err(|_| {
+                        anyhow::anyhow!(
+                            "attribute '{name}' is {raw}, outside IPP's 32-bit signed integer \
+                         range (-2147483648 to 2147483647)"
+                        )
+                    })?;
+                }
+                serde_json::Value::String(text) if text.len() > MAX_IPP_FIELD_BYTES => {
+                    anyhow::bail!(
+                    "attribute '{name}' is {} bytes; IPP's value-length field is two bytes, so \
+                     {MAX_IPP_FIELD_BYTES} is the most that can be encoded",
+                    text.len()
+                );
+                }
+                _ => {}
+            }
+        }
+
+        // Match push_attributes: only the outer array is a set. Each nested array/object
+        // becomes one JSON-text field, whose escaped byte length must fit in full.
+        match value {
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    validate_json_field(name, value)?;
+                }
+            }
+            value => validate_json_field(name, value)?,
+        }
     }
     Ok(())
+}
+
+/// Count the actual serialized bytes without allocating an oversized temporary string.
+fn validate_json_field(name: &str, value: &serde_json::Value) -> Result<()> {
+    if !value.is_object() && !value.is_array() {
+        return Ok(());
+    }
+    struct LengthWriter(usize);
+    impl std::io::Write for LengthWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_IPP_FIELD_BYTES - self.0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "JSON text exceeds IPP's two-byte value-length field",
+                ));
+            }
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(LengthWriter(0), value)
+        .with_context(|| format!("attribute '{name}' cannot be encoded in full"))
 }
 
 /// Append a length-prefixed byte string using IPP's two-byte big-endian length.

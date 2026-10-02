@@ -43,8 +43,8 @@
 //!
 //! `PROTOCOL_QUALITY.md` records that the crude version — "does the function's own name appear
 //! in its body" — reports **973 functions**, and `CLAUDE.md` is explicit about what a noisy
-//! build-failing check does: people edit the baseline instead of the code. Getting from 973 to
-//! 26 took four discriminators, and each one was added because of a specific family of false
+//! build-failing check does: people add exceptions instead of fixing the code. Reducing that
+//! noise took four discriminators, each added because of a specific family of false
 //! positives:
 //!
 //! * **A call, not a mention.** `self.adapter_name` is not recursion into `adapter_name`. Every
@@ -61,70 +61,19 @@
 //!   LLM-follow-up chains that are bounded by construction.
 //! * **Parameters, not return types.** See rule 2 above.
 //!
-//! What survives is 26 functions, of which 11 are correctly recognised as already bounded —
-//! `amqp` (5), `vnc` (2), `xmlrpc` server (2) and client (2). That the known-good bounds are
-//! *seen* is what makes the ratchet meaningful: remove
-//! `MAX_FIELD_TABLE_DEPTH` and AMQP moves from the exempt set into the failure.
+//! Known bounded identities in AMQP, VNC, XML-RPC, DHT and the shared gRPC value codec must
+//! remain visible. Total function counts are not a useful invariant: iterative rewrites and
+//! shared codecs legitimately remove recursion and duplicates. Fixtures also remove bounds
+//! and reintroduce call cycles to prove the detector still finds the historical defects.
 //!
-//! **The baseline may only shrink**, and the fix is always the same three lines: take a `depth`
-//! parameter, refuse past a constant, pass `depth + 1`.
+//! **There are no unbounded exceptions.** Bound recursive calls explicitly, walk iteratively,
+//! or remove the call cycle. A dependency's incidental parse limit is not the local bound.
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features tcp --test recursive_decoder_depth_test
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
-/// `area:protocol:file:function` for every recursive decoder with no depth bound in scope.
-///
-/// No line numbers: these are stable identities and other agents edit these files constantly.
-///
-/// **`grpc` (8 entries, four in each of the server and the client).** `proto_value_to_json`
-/// walks a `prost_reflect::Value` the peer sent; `json_to_proto_value` / `json_to_field_value`
-/// / `json_to_dynamic_message` walk JSON the model sent. Both are bounded *incidentally* —
-/// prost's decoder caps recursion at 100 and `serde_json` caps `from_str` at 128 — so neither
-/// is exploitable today. They are listed because an incidental bound owned by a dependency is
-/// exactly what `CLAUDE.md` says not to rely on: a prost major version or a switch to a
-/// streaming JSON reader removes it silently. Fix: a `depth` parameter, bound at 32, which is
-/// far above any real protobuf schema.
-///
-/// Their cycle partner `dynamic_message_to_json` is deliberately *not* here: it takes
-/// `&DynamicMessage`, which is not a decoder-shaped parameter, so the rule sees the cycle at
-/// the other node only. One node per cycle is enough to fail the build, and widening the shape
-/// vocabulary to catch the second was what pulled in the `ActionResult` walkers.
-///
-/// **`ipp:actions.rs:check`** recursively validates the model's attribute object. Bounded by
-/// serde_json's 128 today; same argument as grpc.
-///
-/// **`torrent_dht:mod.rs:bencode_to_json`** is bounded in practice and the interesting case:
-/// `handle_datagram` runs `crate::utils::bencode::check_bencode_structure` (iterative,
-/// `MAX_BENCODE_DEPTH = 32`) before anything is decoded, so the tree this walks can never be
-/// deeper than 32. The constant lives in `src/utils/`, not in the protocol directory, so the
-/// scan cannot see it. Fix: name the bound at the walker too, or re-export it.
-///
-/// **`usb/fido2:mod.rs:run_command` and `:park`** are genuinely mutually recursive over a
-/// `&[u8]` CTAPHID payload, and terminate for a semantic reason rather than a counted one:
-/// `park` re-enters `run_command` only with `UserPresence::Denied`, and that arm cannot park
-/// again. That is a two-level bound held by an enum variant, which is real but invisible —
-/// a future arm that parks under a different presence value reopens it. Fix: a depth parameter,
-/// or an explicit `debug_assert` naming the invariant.
-///
-/// Scripting's former three entries were removed after adding an explicit JSON
-/// tree budget and iterative preflight. They no longer rely only on serde's parse limit.
-const UNBOUNDED_RECURSIVE_DECODER_BASELINE: &[&str] = &[
-    "client:grpc:mod.rs:json_to_dynamic_message",
-    "client:grpc:mod.rs:json_to_field_value",
-    "client:grpc:mod.rs:json_to_proto_value",
-    "client:grpc:mod.rs:proto_value_to_json",
-    "server:grpc:mod.rs:json_to_dynamic_message",
-    "server:grpc:mod.rs:json_to_field_value",
-    "server:grpc:mod.rs:json_to_proto_value",
-    "server:grpc:mod.rs:proto_value_to_json",
-    "server:ipp:actions.rs:check",
-    "server:torrent_dht:mod.rs:bencode_to_json",
-    "server:usb/fido2:mod.rs:park",
-    "server:usb/fido2:mod.rs:run_command",
-];
 
 /// Parameter-type shapes that mean "this function consumes something a peer or the model sent,
 /// and its structure decides how deep the recursion goes".
@@ -851,29 +800,17 @@ fn survey() -> (BTreeSet<String>, BTreeSet<String>) {
 #[test]
 fn no_recursive_decoder_is_unbounded() {
     let (_, unbounded) = survey();
-    let found: BTreeSet<&str> = unbounded.iter().map(String::as_str).collect();
-    let baseline: BTreeSet<&str> = UNBOUNDED_RECURSIVE_DECODER_BASELINE
-        .iter()
-        .copied()
-        .collect();
-
-    let new: Vec<_> = found.difference(&baseline).copied().collect();
     assert!(
-        new.is_empty(),
+        unbounded.is_empty(),
         "these recurse over something a peer or the model sent, with no depth counter and no \
-         MAX_*_DEPTH in their protocol directory: {new:?}\n\
+         MAX_*_DEPTH in their protocol directory: {unbounded:?}\n\
          A Rust stack overflow is a SIGSEGV against the guard page, not a panic: `catch_unwind` \
          cannot see it, `tokio::spawn` cannot contain it, and the whole NetGet process dies — \
          taking every other server in it. AMQP's field tables cost the peer five bytes a level; \
          bencode costs one. Take a `depth: usize`, refuse past a constant (32 is far above any \
-         real message), and pass `depth + 1`. Verify the bound the way AMQP's was: remove it \
-         and watch the test binary abort with `stack overflow`."
-    );
-
-    let fixed: Vec<_> = baseline.difference(&found).copied().collect();
-    assert!(
-        fixed.is_empty(),
-        "these are bounded now, or moved — update UNBOUNDED_RECURSIVE_DECODER_BASELINE: {fixed:?}"
+         real message), and pass `depth + 1`; an iterative rewrite or removal of the call \
+         cycle also works. Verify both accepted boundary values and explicit refusal beyond \
+         the bound. Do not add an exception."
     );
 }
 
@@ -893,6 +830,8 @@ fn the_scan_sees_the_decoders_that_are_already_bounded() {
         "server:xmlrpc:actions.rs:xmlrpc_value_to_json",
         "client:xmlrpc:mod.rs:xmlrpc_value_to_json_at",
         "server:vnc:actions.rs:parse_display_command",
+        "server:torrent_dht:mod.rs:bencode_to_json_bounded",
+        "server:grpc:value_codec.rs:value_to_json",
     ] {
         assert!(
             bounded.iter().any(|b| b.as_str() == expected),
@@ -901,13 +840,20 @@ fn the_scan_sees_the_decoders_that_are_already_bounded() {
         );
     }
 
-    assert!(
-        all.len() >= 20,
-        "only {} recursive decoders found in the whole tree; there were 26 when this was \
-         written, so a number this low means the call-cycle detection broke rather than that \
-         the code got better",
-        all.len()
-    );
+    // IPP's validator is now iterative; FIDO2's unavailable-approval path calls a leaf
+    // denial helper. These identities must not silently become call cycles again.
+    for removed_cycle in [
+        "server:ipp:actions.rs:check",
+        "server:ipp:actions.rs:validate_attributes",
+        "server:usb/fido2:mod.rs:run_command",
+        "server:usb/fido2:mod.rs:park",
+        "server:usb/fido2:mod.rs:deny_presence_command",
+    ] {
+        assert!(
+            !all.contains(removed_cycle),
+            "{removed_cycle} must stay acyclic; restoring recursion needs an explicit review"
+        );
+    }
 }
 
 /// What the rule does on inputs whose right answer is known.
@@ -931,8 +877,8 @@ fn the_rule_flags_the_historical_defects_and_not_their_fixes() {
     // 2. The fix: a depth parameter.
     assert_eq!(
         scan_one(
-            "fn bencode_to_json(value: &serde_bencode::value::Value, depth: usize) -> Value {\n\
-             if depth > 32 { return Value::Null; }\n\
+            "fn bencode_to_json(value: &serde_bencode::value::Value, depth: usize) -> Result<Value> {\n\
+             if depth > 32 { return Err(TooDeep); }\n\
              bencode_to_json(value, depth + 1)\n}"
         ),
         vec![("bencode_to_json".to_string(), true)],
@@ -1011,5 +957,42 @@ fn the_rule_flags_the_historical_defects_and_not_their_fixes() {
         scan_one("fn fib(n: u64) -> u64 { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }")
             .is_empty(),
         "the parameter list is the anchor; arithmetic recursion is not a decoder"
+    );
+
+    // 10. FIDO2's previous cycle was bounded only by an enum variant. The scanner must
+    // still see both ends if somebody restores the dispatch/parking call cycle.
+    let fido_cycle = "impl HidHandler {\n\
+        fn run_command(&mut self, data: &[u8]) -> Vec<u8> { self.park(data) }\n\
+        fn park(&mut self, data: &[u8]) -> Vec<u8> { self.run_command(data) }\n\
+        fn deny_presence_command(&mut self, data: &[u8]) -> Vec<u8> { data.to_vec() }\n\
+    }";
+    assert_eq!(
+        scan_one(fido_cycle),
+        vec![("park".into(), false), ("run_command".into(), false)],
+        "both dispatch and parking consume wire bytes and belong to the unbounded cycle"
+    );
+    let fido_acyclic = fido_cycle.replace(
+        "fn park(&mut self, data: &[u8]) -> Vec<u8> { self.run_command(data) }",
+        "fn park(&mut self, data: &[u8]) -> Vec<u8> { self.deny_presence_command(data) }",
+    );
+    assert!(
+        scan_one(&fido_acyclic).is_empty(),
+        "a direct leaf denial removes the cycle without needing a recursion allowance"
+    );
+
+    // 11. Iterative value validation is an actual fix, not a reason to force a minimum
+    // count of recursive functions in the repository.
+    assert!(
+        scan_one(
+            "fn check(value: &serde_json::Value) -> Result<()> {\n\
+             let mut pending = vec![value];\n\
+             while let Some(value) = pending.pop() {\n\
+                 if let Value::Array(values) = value { pending.extend(values); }\n\
+             }\n\
+             Ok(())\n\
+             }"
+        )
+        .is_empty(),
+        "the IPP iterative walk consumes model data without creating a call cycle"
     );
 }

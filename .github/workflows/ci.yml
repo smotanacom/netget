@@ -1341,6 +1341,8 @@ jobs:
     env:
       NETGET_USE_OLLAMA: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      AUDIT_CPU_FEATURES: tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite,quic,grpc,ipp,torrent-dht,usb-fido2,terminal-snapshot
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -1355,7 +1357,7 @@ jobs:
       - name: Run native regressions without real models
         run: |
           cargo test --locked --no-default-features \
-            --features tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite,quic \
+            --features "$AUDIT_CPU_FEATURES" \
             --no-fail-fast \
             --test core_followup_test --test eval_probe_followup_test --test eval_probe_classification_test \
             --test llm_circuit_breaker_test --test llm_rate_limiter_test \
@@ -1367,7 +1369,15 @@ jobs:
             --test static_handler_interpolation_test --test mcp_stop_cleanup_test --test mcp_startup_config_test \
             --test client_followup_test --test client_review_regression_test \
             --test dashboard_frame_test --test display_rendering_test \
-            --test test_infrastructure_review_test -- --test-threads=32
+            --test test_infrastructure_review_test \
+            --test grpc_value_bounds_test --test audit_server_decoder_bounds_test \
+            --test wrapper_lifecycle_test --test task_registration_cancellation_test \
+            --test recursive_decoder_depth_test --test spawned_netget_is_tied_test \
+            -- --test-threads=32
+      - name: Focused PTY lifecycle regressions with inert fixtures
+        run: |
+          cargo test --locked --no-default-features --features "$AUDIT_CPU_FEATURES" \
+            --test terminal_snapshot child_lifecycle -- --test-threads=32
       - name: Browser parsing and package launcher fixtures
         run: node --test web/test/composer_model_test.mjs web/test/telnet_test.mjs tests/npm_launcher_test.cjs tests/npm_download_test.cjs
 
@@ -1468,11 +1478,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # These targets use local fixtures only. The Windows ProcessGroup path is
-      # compiled with the library; Unix descendant/signal tests are not run here.
+      # These targets use local fixtures only. Native Job Object tests exercise
+      # descendant termination on normal drop and abrupt owner termination.
       - name: Native Windows configuration and concurrency regressions
         run: >-
           cargo test --locked --no-default-features --features tcp,http
           --test core_followup_test --test llm_rate_limiter_test --test llm_config_test
+          --test process_group_windows_test
       - name: Native Windows package launcher and archive fixtures
         run: node --test tests/npm_launcher_test.cjs tests/npm_download_test.cjs

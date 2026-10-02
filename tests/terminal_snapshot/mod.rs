@@ -83,9 +83,36 @@ const SNAPSHOT_DIR: &str = "tests/terminal_snapshot/snapshots";
 /// OS-level death tie (`tests/helpers/child_guard.rs`).
 struct NetGetChild(Option<Child>, Option<child_guard::DeathTie>);
 
+impl NetGetChild {
+    fn new(child: Child) -> std::io::Result<Self> {
+        Self::with_armer(child, child_guard::arm_death_tie)
+    }
+
+    fn with_armer(
+        child: Child,
+        arm: impl FnOnce(u32) -> Option<child_guard::DeathTie>,
+    ) -> std::io::Result<Self> {
+        let mut guard = Self(Some(child), None);
+        guard.1 = arm(guard.0.as_ref().unwrap().id());
+        if guard.1.is_none() {
+            // The owned guard kills and reaps before returning this failure.
+            return Err(std::io::Error::other(
+                "failed to arm PTY parent-death cleanup",
+            ));
+        }
+        Ok(guard)
+    }
+}
+
 impl Drop for NetGetChild {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                if let Some(mut tie) = self.1.take() {
+                    tie.disarm();
+                }
+                return;
+            }
             // Kill the whole process group, then reap without blocking forever.
             //
             // `kill()` + `wait()` hung here, and only on the *success* path: a test whose
@@ -112,11 +139,12 @@ impl Drop for NetGetChild {
                     }
                     Ok(None) => {
                         eprintln!("warning: netget pid {pid} did not exit within 1s of SIGKILL");
-                        break;
+                        // Leave the OS tie armed when death was not confirmed.
+                        return;
                     }
                     Err(e) => {
                         eprintln!("warning: could not reap netget pid {pid}: {e}");
-                        break;
+                        return;
                     }
                 }
             }
@@ -198,10 +226,13 @@ fn spawn_netget_with_args(args: &[&str]) -> (pty_process::blocking::Pty, NetGetC
     }
     let child = cmd.spawn(pts).expect("Failed to spawn netget in PTY");
 
-    let tie = child_guard::arm_death_tie(child.id());
+    let child = NetGetChild::new(child).expect("Failed to protect PTY child lifetime");
 
-    (pty, NetGetChild(Some(child), tie))
+    (pty, child)
 }
+
+#[cfg(test)]
+mod child_lifecycle;
 
 /// Replace anything in a captured screen that differs between machines.
 ///

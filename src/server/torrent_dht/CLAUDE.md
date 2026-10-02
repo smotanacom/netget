@@ -33,7 +33,7 @@ pub struct TorrentDhtServer;
 impl TorrentDhtServer {
     pub async fn spawn_with_llm_actions(...) -> Result<SocketAddr>
     fn parse_krpc_message(data: &[u8]) -> Result<(String, serde_json::Value)>
-    fn bencode_to_json(value: &serde_bencode::value::Value) -> serde_json::Value
+    pub fn bencode_to_json(value: &serde_bencode::value::Value) -> Result<serde_json::Value>
 }
 ```
 
@@ -183,12 +183,19 @@ compact.extend_from_slice(&port.to_be_bytes());         // 2 bytes
 
 ### Bencode ↔ JSON Conversion
 
-**bencode_to_json()**: Recursively converts bencode to JSON
+**bencode_to_json()**: Fallibly converts bencode to JSON with its own
+`MAX_DHT_VALUE_DEPTH` limit (32 list/dictionary levels). The wire parser still performs its
+iterative bencode preflight before deserialization; the conversion bound also protects values
+constructed directly in memory. An excess-depth error propagates to the KRPC parser, without
+truncating a tree or inventing a null value.
 
 - `Value::Int` → `json!(i)`
 - `Value::Bytes` → UTF-8 string if printable, else hex string
 - `Value::List` → JSON array
 - `Value::Dict` → JSON object
+
+`tests/audit_server_decoder_bounds_test.rs` exercises normal conversions, the exact maximum,
+the next level, and 20,000-level in-memory trees without network or model calls.
 
 **Example**:
 
