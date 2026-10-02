@@ -178,9 +178,9 @@ const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is re
     loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
     at all, so there would be nothing to see there anyway. Same trap as isis.";
 
-const QUIC_ALPN_NOTE: &str = "NetGet's QUIC server negotiates ALPN `h3` while sending raw stream \
-    bytes rather than RFC 9114 frames, so Wireshark hands the payload to its HTTP/3 sub-dissector \
-    and reports malformed frames. That is expected - read the QUIC stream payload directly.";
+const QUIC_ALPN_NOTE: &str = "NetGet's raw QUIC protocol negotiates ALPN `netget-quic`. \
+    Its bidirectional streams contain application bytes delimited by FIN. HTTP/3 uses \
+    the separate `http3` protocol and ALPN `h3`.";
 
 const USB_NOTE: &str = "USB is not network traffic. Wireshark can capture it from usbmon on \
                         Linux (tshark -D lists usbmonN) or the XHC20 device on macOS after \

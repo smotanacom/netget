@@ -76,3 +76,60 @@ jobs:
             --test dashboard_wireshark_test \
             --test client_event_wiring_test \
             --test event_emit_sites_test
+
+  stream-pairs:
+    name: Graphite, Beanstalkd, DICT and raw QUIC with independent peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,graphite,beanstalkd,dict,quic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+
+      - name: Install independent queue and dictionary daemons
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler beanstalkd dictd dictfmt dict
+
+      - name: Prepare pinned independent Python peers
+        run: |
+          python3 tests/server/graphite/install_peers.py "$RUNNER_TEMP/stream-peers"
+          python3 -m pip install --no-cache-dir --target "$RUNNER_TEMP/stream-peers/queue-python" greenstalk==2.1.1
+          python3 -m venv "$RUNNER_TEMP/stream-peers/aioquic"
+          "$RUNNER_TEMP/stream-peers/aioquic/bin/pip" install --no-cache-dir --only-binary=:all: aioquic==1.3.0
+          {
+            printf 'PYTHONPATH=%s/stream-peers/graphite-python:%s/stream-peers/graphite-python/opt/graphite/lib:%s/stream-peers/queue-python\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP"
+            printf 'NETGET_GRAPHITE_PYTHON=python3\n'
+            printf 'NETGET_AIOQUIC_PYTHON=%s/stream-peers/aioquic/bin/python\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Server and client suites including independent interoperability
+        run: |
+          for protocol in graphite beanstalkd dict quic; do
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test server --test client -- "$protocol::" --test-threads=4
+          done
+
+      - name: Shared metadata and task ownership
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test well_known_port_declaration_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test

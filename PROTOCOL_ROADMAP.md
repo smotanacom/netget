@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **3 / 72**. Checkboxes below are authoritative and are updated only from evidence.
+- Completed: **6 / 72**. Checkboxes below are authoritative and are updated only from evidence.
 - Integration branch: `protocol-expansion-20261001`.
-- Agent `nut`: item 06 merged (`444dc681`, merge `b08302d9`); 18 protocol and 30 shared checks passed. Now implementing items 63/67/66 (Beanstalkd/DICT/Gemini clients).
-- Agent `doq`: item 01 merged (`e900e753`, merge `07339b83`); 17 protocol tests passed. Now implementing items 54/53 (raw QUIC client and HTTP/3 server/client fixes).
-- Agent `statsd`: item 23 merged (`643eef1f`, merge `79b98590`); 18 protocol tests passed. Now implementing items 24/26/25 (Graphite/GELF/Fluent Forward).
-- First three pairs passed combined integration validation. Other items remain queued. Three workers maximum; builds serialized.
+- Agent `nut`: NUT, Beanstalkd and DICT merged and validated. Gemini is committed (`d9b6f492`) with 32 protocol tests passed on its worker branch; integration pending. Now implementing NSQ, then Gearman.
+- Agent `doq`: DoQ complete. Raw QUIC (`5a872651`, merge `08584d20`) passes 14 protocol tests; direct NetGet pairing and encoded-input allocation review follow-up pending. HTTP/3 implementation in progress, followed by SFTP and OTLP.
+- Agent `statsd`: StatsD and Graphite complete. Shared task-registration cancellation fix (`7916e859`) integrated and validated. GELF and Fluent Forward in progress, then InfluxDB and Loki.
+- Combined second-batch validation: 157 protocol tests and 71 shared checks passed. Six checklist entries complete; raw QUIC remains unchecked until its review follow-up passes. Three workers maximum; builds serialized.
 
 ## New protocol checklist
 
@@ -1055,12 +1055,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: 13 server and 5 client tests passed with Python `statsd==4.0.1` / `datadog==0.52.0` and Node `statsd@0.9.0`. Code `643eef1f`, integration merge `79b98590`; shared metadata and combined integration checks passed (see batch evidence below). No external DogStatsD Agent receiver, fuzz or packet-capture coverage is claimed.
 
-- [ ] **24. Graphite Carbon plaintext** — B/S; proposed feature `graphite`. [Specification/reference](https://graphite.readthedocs.io/en/stable/feeding-carbon.html).
+- [x] **24. Graphite Carbon plaintext** — B/S; proposed feature `graphite`. [Specification/reference](https://graphite.readthedocs.io/en/stable/feeding-carbon.html).
   - Scope: Timestamped metric collection/emission with bounded lines and numeric validation.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 13 server and 5 client tests passed with Graphyte 1.7.1 and official Carbon 1.1.10/Twisted 25.5.0 (Python 3.11), including the NetGet pair. Code `56ec664b`, merge `ea66427a`. Experimental; TCP plaintext with bounded batches, no Pickle, UDP, TLS or storage/query service.
 
 - [ ] **25. Fluent Forward** — B/M; proposed feature `fluent_forward`. [Specification/reference](https://docs.fluentd.org/input/forward).
   - Scope: MessagePack event/batch modes, acknowledgments, bounded compression and explicit secure-transport scope.
@@ -1320,11 +1321,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
-- [ ] **63. Beanstalkd client**.
+- [x] **63. Beanstalkd client**.
   - Scope: Put/reserve/release/bury/delete jobs and command/reply framing.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 9 client and 30 existing server tests passed with beanstalkd 1.13 and greenstalk 2.1.1, including the NetGet pair. Code `5730ffeb`, scalar-only YAML hardening `222b0d74`, merges `492fc905`/`8ff3cda6`. Text jobs up to 65,535 bytes; bounded replies and responsive cancellation. Nested/recursive/expanding YAML rejected before traversal.
 
 - [ ] **64. NSQ client**.
   - Scope: Publish/subscribe, negotiated readiness, acknowledgments, requeue and heartbeat.
@@ -1344,11 +1346,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
-- [ ] **67. DICT client**.
+- [x] **67. DICT client**.
   - Scope: Dictionary discovery, matching/definition operations, multiline replies and errors.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 8 client and 25 existing server tests passed with independent dictd, dictfmt and dict 1.13.3, including the NetGet pair. Code `434fc816`, merge `9146ee6d`. Experimental client; discovery/definitions/matches, bounded multiline decoding and cancellation. No AUTH, SASL, MIME negotiation or pipelining in the new client.
 
 ## Separated extension checklist
 
@@ -1378,6 +1381,11 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent validation, feature build, documentation and integrated commit recorded.
 
 ## Integrated validation evidence
+
+- **Batch 2 — 24 Graphite, 63 Beanstalkd client, 67 DICT client; raw QUIC review in progress:** all 157 protocol tests passed with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic` together at merge `08584d20`. This includes the first three protocols after the shared task-registration fix and 14 raw QUIC tests; its direct NetGet pairing review remains open. No failed or ignored tests in the final protocol runs.
+- Batch 2 commands use the Batch 1 protocol command with that expanded feature set and each of `graphite`, `beanstalkd`, `dict`, `quic`, `nut`, `statsd`, `doq`. All 71 shared checks passed, adding `task_registration_cancellation_test`, `server_task_registry_test` and `client_stop_releases_socket_test` to Batch 1's targets. An obsolete QUIC server-only pairing assertion was updated to require the implemented client, then the shared checks passed.
+- Lifecycle fix `7916e859`: a started child is owned before the registration future is first polled, and cancelled if registration is dropped. Both regression tests failed before the fix; successful registration/owner removal also remain covered.
+- Batch 2 logs: `/private/tmp/netget-protocol-expansion-20261001/validation-second/`. CI's separate `stream-pairs` job installs Graphite, queue, dictionary and aioquic peers; remote execution still awaits publication approval.
 
 - **Batch 1 — 01 DoQ, 06 NUT, 23 StatsD/DogStatsD:** all 53 protocol tests and 62 shared checks passed with `tcp,nut,doq,statsd` enabled together at merge `07339b83`; no ignored tests in this combined run. All three remain Experimental, with their selected scope and missing maturity evidence documented in their source/test `CLAUDE.md` files.
 - Protocol command, once for each `PROTOCOL` in `nut`, `statsd`, `doq`: `cargo test --locked --offline --no-default-features --features tcp,nut,doq,statsd --test server --test client -- PROTOCOL:: --test-threads=4`. The programme runs Cargo through its serialized guard and provides the documented local peer paths.

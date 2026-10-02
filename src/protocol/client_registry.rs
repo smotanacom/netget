@@ -132,7 +132,9 @@ impl ClientRegistry {
         // The `http3` feature no longer builds a server - NetGet's QUIC server
         // lives behind `quic` and cannot be spoken to by this client.
         #[cfg(feature = "quic")]
-        self.register(Arc::new(crate::client::quic::actions::QuicClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::quic::actions::QuicClientProtocol::new(),
+        ));
 
         #[cfg(feature = "http3")]
         self.register(Arc::new(crate::client::http3::Http3ClientProtocol::new()));
@@ -377,7 +379,9 @@ impl ClientRegistry {
         self.register(Arc::new(crate::client::dict::DictClientProtocol::new()));
 
         #[cfg(feature = "beanstalkd")]
-        self.register(Arc::new(crate::client::beanstalkd::BeanstalkdClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
+        ));
 
         #[cfg(feature = "nut")]
         self.register(Arc::new(
@@ -766,7 +770,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("TURN", "turn"),
     ("UDP", "udp"),
     ("DICT", "dict"),
-            ("Beanstalkd", "beanstalkd"),
+    ("Beanstalkd", "beanstalkd"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),

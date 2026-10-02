@@ -51,6 +51,13 @@ fn golden_duals_map() {
         "DHCP",
         "BOOTP",
         "STUN",
+        "DoQ",
+        "NUT",
+        "StatsD",
+        "Graphite",
+        "Beanstalkd",
+        "DICT",
+        "QUIC",
     ] {
         assert!(
             client_protocol_for_server(server).is_some(),
@@ -116,7 +123,6 @@ fn server_only_protocols_have_no_dual() {
         "RDP",
         "TFTP",
         "SVN",
-        "QUIC",
         "Mercurial",
         "Reverse Shell",
         "OpenVPN",
