@@ -96,6 +96,9 @@ impl ServerRegistry {
         #[cfg(feature = "dns")]
         self.register(Arc::new(crate::server::DnsProtocol::new()));
 
+        #[cfg(feature = "doq")]
+        self.register(Arc::new(crate::server::doq::actions::DoqProtocol::new()));
+
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::server::DotProtocol::new()));
 
@@ -1193,6 +1196,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("DC", "dc"),
     ("DNS", "dns"),
     ("DoT", "dot"),
+    ("DoQ", "doq"),
     ("DoH", "doh"),
     ("DHCP", "dhcp"),
     ("BOOTP", "bootp"),

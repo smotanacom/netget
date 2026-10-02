@@ -45,6 +45,7 @@ portable-base = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -190,6 +191,7 @@ eapol = ["pnet", "dep:pcap", "dep:md-5"]  # EAPOL / 802.1X authenticator - libpc
 wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
 dc = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # DC (Direct Connect) - supports TLS (DCCS)
 dns = ["hickory-server", "hickory-proto", "dep:hickory-client"]
+doq = ["dns", "dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # RFC 9250 DNS over QUIC server and client
 dot = ["dns", "hickory-server/dns-over-rustls", "hickory-proto/dns-over-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # DNS-over-TLS server
 doh = ["dns", "hickory-server/dns-over-https-rustls", "hickory-proto/dns-over-https-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:h2"]  # DNS-over-HTTPS server
 dhcp = ["dhcproto"]
@@ -450,6 +452,7 @@ dist-windows = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -578,6 +581,7 @@ all-protocols = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",

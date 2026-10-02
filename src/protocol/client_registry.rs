@@ -86,6 +86,9 @@ impl ClientRegistry {
         #[cfg(feature = "doh")]
         self.register(Arc::new(crate::client::doh::DohClientProtocol::new()));
 
+        #[cfg(feature = "doq")]
+        self.register(Arc::new(crate::client::doq::actions::DoqClientProtocol::new()));
+
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::client::dot::DotClientProtocol::new()));
 
@@ -688,6 +691,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("DNS", "dns"),
     ("DNS-over-HTTPS", "doh"),
     ("DoT", "dot"),
+    ("DoQ", "doq"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
