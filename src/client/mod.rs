@@ -630,3 +630,6 @@ pub mod doq;
 pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
+
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
