@@ -228,7 +228,7 @@ jobs:
 
       - name: cargo test (source-reading ratchets)
         run: |
-          cargo test --locked --no-default-features --features tcp \
+          cargo test --locked --no-default-features --features tcp --no-fail-fast \
             --test affirmative_default_drift_test \
             --test client_event_wiring_test \
             --test decision_tag_ratchet_test \
