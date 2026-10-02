@@ -19,7 +19,8 @@ The wire encoder uses UTF-8 byte counts. Jobs are text only (non-UTF8 incoming j
 explicitly), at most 65535 bytes. Response headers require CRLF and are capped at 224
 bytes; counted payloads are capped at 1 MiB before allocation. YAML data is parsed as
 flat scalar mappings or tube-name lists, with a 512-entry bound and independently parsed
-scalar values; aliases cannot refer across records. Duplicate keys and nested values fail.
+scalar values through a scalar-only serde Visitor: collections are rejected before their
+children are visited. Aliases cannot refer across records. Duplicate keys fail.
 
 At most one transaction is in flight because the protocol has no request IDs. A tracked
 I/O task owns the split socket. A separately tracked handler task allows injected actions

@@ -230,6 +230,51 @@ pub async fn response<R: AsyncBufRead + Unpin>(reader: &mut R, request: &Request
     .context("Beanstalkd response deadline exceeded")?
 }
 
+/// Deserialize scalar values without ever visiting a sequence/map's children.
+/// Deserializing into Value first would allocate nested graphs before rejecting them.
+struct Scalar(Value);
+impl<'de> serde::Deserialize<'de> for Scalar {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct ScalarVisitor;
+        impl<'de> serde::de::Visitor<'de> for ScalarVisitor {
+            type Value = Scalar;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a flat YAML scalar")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<Scalar, E> {
+                Ok(Scalar(json!(v)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Scalar, E> {
+                Ok(Scalar(json!(v)))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Scalar, E> {
+                Ok(Scalar(json!(v)))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> std::result::Result<Scalar, E> {
+                serde_json::Number::from_f64(v)
+                    .map(|n| Scalar(Value::Number(n)))
+                    .ok_or_else(|| E::custom("Nonfinite YAML number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<Scalar, E> {
+                Ok(Scalar(json!(v)))
+            }
+            fn visit_string<E: serde::de::Error>(
+                self,
+                v: String,
+            ) -> std::result::Result<Scalar, E> {
+                Ok(Scalar(Value::String(v)))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Scalar, E> {
+                Ok(Scalar(Value::Null))
+            }
+            // The default visit_seq, visit_map and visit_enum reject immediately.
+        }
+        deserializer.deserialize_any(ScalarVisitor)
+    }
+}
+
 /// Beanstalkd's YAML payload is a flat list or scalar mapping. Parse each scalar
 /// independently so aliases/anchors cannot expand across records.
 pub fn parse_yaml(text: &str, list: bool) -> Result<Value> {
@@ -245,7 +290,7 @@ pub fn parse_yaml(text: &str, list: bool) -> Result<Value> {
         let mut out = Vec::new();
         for row in rows {
             let text = row.strip_prefix("- ").context("Expected flat tube list")?;
-            let value: Value = serde_yaml::from_str(text)?;
+            let Scalar(value) = serde_yaml::from_str(text)?;
             let name = value.as_str().context("Tube name must be text")?;
             ensure!(wire::valid_tube_name(name), "Invalid tube name in list");
             out.push(value);
@@ -264,11 +309,7 @@ pub fn parse_yaml(text: &str, list: bool) -> Result<Value> {
                         .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
                 "Invalid stats key"
             );
-            let value: Value = serde_yaml::from_str(text)?;
-            ensure!(
-                !value.is_array() && !value.is_object(),
-                "Nested stats are unsupported"
-            );
+            let Scalar(value) = serde_yaml::from_str(text)?;
             ensure!(
                 out.insert(key.into(), value).is_none(),
                 "Duplicate stats key"
