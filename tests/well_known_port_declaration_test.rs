@@ -136,6 +136,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     // the OCI distribution registry 5000), the protocol declares it instead of being here.
     ("git", "Git smart HTTP rides on HTTP; git:// (9418) is a different protocol this server does not speak"),
     ("grpc", "gRPC rides on HTTP/2 and has no registered port of its own"),
+    ("grpc_web", "binary gRPC-Web rides on the configured HTTP origin and has no registered port of its own"),
     ("hls", "HLS is playlists and segments served over plain HTTP; no port of its own"),
     ("jsonrpc", "JSON-RPC over HTTP has no registered port; each service picks its own"),
     ("maven", "a Maven repository is a layout over plain HTTP; no port of its own"),
