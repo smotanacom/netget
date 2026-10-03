@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
         feature = "kubernetes",
         feature = "kubernetes-server",
         feature = "openvpn",
+        feature = "otlp",
         feature = "pop3",
         feature = "proxy",
         feature = "quic",
