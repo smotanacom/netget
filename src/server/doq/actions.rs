@@ -146,7 +146,7 @@ impl Protocol for DoqProtocol {
             .max_inbound_bytes(super::wire::MAX_FRAME_BYTES)
             .implementation("quinn 0.11, rustls 0.23 and existing hickory-proto 0.24 DNS codec")
             .llm_control("Typed A/AAAA/MX/TXT/CNAME/NXDOMAIN responses per QUIC query stream")
-            .e2e_testing("Loopback framing, bounds, certificate validation, command/event and cleanup tests; independent-peer evidence recorded in tests/server/doq/CLAUDE.md")
+            .e2e_testing("Loopback framing, bounds, certificate validation, command/event and cleanup tests; independent-peer evidence recorded in tests/server/doq/AGENTS.md")
             .notes("Single-question QUERY only; no AXFR/IXFR, DNSSEC signing, recursive resolver, 0-RTT, automatic padding or server-initiated messages. PEM certificate/key supported; generated localhost certificate otherwise.")
             .build()
     }

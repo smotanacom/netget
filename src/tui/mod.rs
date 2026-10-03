@@ -3,7 +3,7 @@
 //! Management on the left: every server and client as a card with its
 //! buttons and sections, always visible. On the right, one stream of what is
 //! happening and of the conversation, with the input box at the bottom. See
-//! `src/tui/CLAUDE.md` for the design.
+//! `src/tui/AGENTS.md` for the design.
 //!
 
 pub mod actions;

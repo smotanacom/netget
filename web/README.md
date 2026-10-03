@@ -33,7 +33,7 @@ cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' C
 node web/test/smoke.mjs                     # headless end-to-end check of the bundle
 python3 web/test/page_composer.py           # the real page in headless Chromium (Playwright; not in CI)
 cd site && python3 -m http.server 8000      # then open http://localhost:8000/
-./site/deploy.sh                            # publish: S3 + CloudFront, see site/CLAUDE.md
+./site/deploy.sh                            # publish: S3 + CloudFront, see site/AGENTS.md
 ```
 
 `web/build.sh --dev` skips optimisation (seconds instead of a minute, ~5x the size).
