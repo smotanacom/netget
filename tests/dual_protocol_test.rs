@@ -59,6 +59,7 @@ fn golden_duals_map() {
         "GELF",
         "FluentForward",
         "NSQ",
+        "Gearman",
         "Beanstalkd",
         "DICT",
         "Gemini",
