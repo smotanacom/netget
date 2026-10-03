@@ -367,3 +367,6 @@ pub mod gelf;
 pub mod fluent_forward;
 #[cfg(feature = "http3")]
 pub mod http3;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;

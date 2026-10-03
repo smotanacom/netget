@@ -213,6 +213,11 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "influxdb")]
+        self.register(Arc::new(
+            crate::server::influxdb::actions::InfluxDbProtocol::new(),
+        ));
+
         #[cfg(feature = "fluent-forward")]
         self.register(Arc::new(
             crate::server::fluent_forward::actions::FluentForwardProtocol::new(),
@@ -1260,6 +1265,8 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("InfluxDB", "influxdb"),
+    ("InfluxDB2", "influxdb"),
     ("GELF", "gelf"),
     ("Graylog", "gelf"),
     ("Graphite", "graphite"),

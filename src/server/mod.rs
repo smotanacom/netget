@@ -1239,3 +1239,6 @@ pub mod http3;
 pub use http3::actions::Http3Protocol;
 #[cfg(feature = "fluent-forward")]
 pub mod fluent_forward;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;

@@ -81,7 +81,7 @@ env:
   # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
-    vrrp hsrp wol dc dot doq doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman nsq nut statsd graphite gelf fluent-forward ssdp llmnr
+    vrrp hsrp wol dc dot doq doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman nsq nut statsd graphite gelf fluent-forward influxdb ssdp llmnr
     netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
     mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
     smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch

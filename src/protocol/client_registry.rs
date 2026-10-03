@@ -310,6 +310,11 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "influxdb")]
+        self.register(Arc::new(
+            crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
+        ));
+
         #[cfg(feature = "fluent-forward")]
         self.register(Arc::new(
             crate::client::fluent_forward::actions::FluentForwardClientProtocol::new(),
@@ -392,6 +397,16 @@ impl ClientRegistry {
         #[cfg(feature = "beanstalkd")]
         self.register(Arc::new(
             crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "prometheus")]
+        self.register(Arc::new(
+            crate::client::prometheus::PrometheusClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gearman")]
+        self.register(Arc::new(
+            crate::client::gearman::GearmanClientProtocol::new(),
         ));
 
         #[cfg(feature = "nsq")]
@@ -772,6 +787,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("InfluxDB", "influxdb"),
+    ("InfluxDB2", "influxdb"),
     ("GELF", "gelf"),
     ("Graylog", "gelf"),
     ("Graphite", "graphite"),
@@ -789,6 +806,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Gemini", "gemini"),
     ("DICT", "dict"),
     ("Beanstalkd", "beanstalkd"),
+    ("Gearman", "gearman"),
+    ("Prometheus", "prometheus"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

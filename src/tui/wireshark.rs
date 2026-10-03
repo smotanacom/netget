@@ -278,7 +278,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" | "influxdb" => tcp("http"),
         // OTLP/HTTP (TCP 4318) is HTTP to Wireshark: `tshark -G protocols` has no otlp dissector.
         // Its `protobuf` dissector reads an application/x-protobuf body only once the
         // OpenTelemetry .proto files are on its protobuf search path, so HTTP is what a capture

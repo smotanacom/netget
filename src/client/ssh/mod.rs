@@ -1,667 +1,698 @@
-//! SSH client implementation
+//! SSH commands and bounded SFTP v3 operations on one authenticated owned session.
 pub mod actions;
-
-pub use actions::SshClientProtocol;
-
-use anyhow::{Context, Result};
-use russh::client::{self, Handle};
-use russh::*;
-use russh_keys::*;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, trace, warn};
-
-use crate::client::llm_budget::call_llm_for_client;
-use crate::client::ssh::actions::{SSH_CLIENT_CONNECTED_EVENT, SSH_CLIENT_OUTPUT_RECEIVED_EVENT};
+pub mod sftp;
+use crate::client::{command_support, llm_budget::call_llm_for_client};
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
-use crate::llm::ollama_client::OllamaClient;
-use crate::llm::ClientLlmResult;
-use crate::protocol::Event;
-use crate::state::app_state::AppState;
-use crate::state::{ClientId, ClientStatus};
+use crate::logging::emit::Log;
+use crate::protocol::{ConnectContext, Event};
+use crate::state::{
+    client_handles::{ClientCommand, ClientSendOutcome},
+    AccessLogOwner, ClientStatus,
+};
+pub use actions::SshClientProtocol;
+use actions::{
+    SSH_CLIENT_CONNECTED_EVENT, SSH_CLIENT_OUTPUT_RECEIVED_EVENT, SSH_OPERATION_FAILED_EVENT,
+    SSH_SFTP_RESULT_EVENT,
+};
+use anyhow::{bail, ensure, Context, Result};
+use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
+use russh::{
+    client::{self, Handle},
+    ChannelMsg, Disconnect,
+};
+use russh_keys::key;
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    net::{Shutdown, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
-/// Per-client data for LLM handling
-struct ClientData {
-    memory: String,
-}
-
-/// What applying one action to the live SSH session actually did.
-///
-/// SSH never yields [`crate::state::client_handles::ClientSendOutcome::Sent`]:
-/// russh owns the encrypted transport, so NetGet never sees a byte count on the
-/// wire. A command that really ran reports `Executed` with its exit status and
-/// the size of the output it produced — which is the honest thing this client
-/// can say.
-pub enum SshApplied {
-    /// The action ran; the string describes what it did.
-    Executed(String),
-    /// The session was disconnected.
-    Disconnected,
-}
-
-/// How the client authenticates, decided from the startup parameters before connecting.
-enum SshCredential {
-    Password(String),
-    PublicKey(Arc<key::KeyPair>),
-}
-
-/// How many action -> command -> output -> action turns one client will take.
-///
-/// Every command's output goes back to the model, whose answer may be another command, so the
-/// chain is self-referential and needs a bound rather than silence. Four matches the database
-/// and directory clients; the output at the bound is shown to the model and its answer is
-/// dropped with a warning.
-const MAX_FOLLOWUP_DEPTH: usize = 4;
-
-/// SSH client handler
-struct ClientHandler;
-
-#[async_trait::async_trait]
-impl client::Handler for ClientHandler {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        // Accept all server keys (for testing)
-        // In production, this should verify against known_hosts
-        Ok(true)
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+pub const MAX_OPERATIONS: usize = 16;
+pub const MAX_COMMAND_OUTPUT: usize = 1024 * 1024;
+pub const MAX_CHANNEL_BYTES: usize = 3 * 1024 * 1024;
+pub const MAX_CHANNEL_MESSAGES: usize = 4096;
+const MAX_FOLLOWUP_DEPTH: u8 = 4;
+const CONNECT_DEPTH: u8 = u8::MAX;
+type HandlerFuture = BoxFuture<'static, (u8, Result<Vec<Value>>)>;
+type OperationFuture = BoxFuture<'static, (u8, Event)>;
+struct SocketGuard(Arc<std::net::TcpStream>);
+impl Drop for SocketGuard {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(Shutdown::Both);
     }
 }
-
-/// SSH client that connects to a remote SSH server
+struct ClientHandler {
+    expected: Option<String>,
+    channels: HashMap<russh::ChannelId, (usize, usize)>,
+}
+impl ClientHandler {
+    fn receive(&mut self, channel: russh::ChannelId, bytes: usize) -> Result<()> {
+        let (received, messages) = self
+            .channels
+            .get_mut(&channel)
+            .context("SSH data for an unowned channel")?;
+        ensure!(
+            bytes <= MAX_CHANNEL_BYTES.saturating_sub(*received),
+            "SSH channel byte budget exceeded"
+        );
+        ensure!(
+            *messages < MAX_CHANNEL_MESSAGES,
+            "SSH channel message budget exceeded"
+        );
+        *received += bytes;
+        *messages += 1;
+        Ok(())
+    }
+}
+#[async_trait::async_trait]
+impl client::Handler for ClientHandler {
+    type Error = anyhow::Error;
+    async fn check_server_key(&mut self, key: &key::PublicKey) -> Result<bool, Self::Error> {
+        // Preserve legacy command-only connections; SFTP refuses an unpinned session.
+        Ok(self
+            .expected
+            .as_ref()
+            .is_none_or(|pin| key.fingerprint() == *pin))
+    }
+    async fn channel_open_confirmation(
+        &mut self,
+        channel: russh::ChannelId,
+        _: u32,
+        _: u32,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        ensure!(
+            self.channels.len() < MAX_OPERATIONS,
+            "SSH channel count exceeds 16"
+        );
+        ensure!(
+            self.channels.insert(channel, (0, 0)).is_none(),
+            "Duplicate SSH channel"
+        );
+        Ok(())
+    }
+    async fn channel_close(
+        &mut self,
+        channel: russh::ChannelId,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.channels.remove(&channel);
+        Ok(())
+    }
+    async fn data(
+        &mut self,
+        channel: russh::ChannelId,
+        data: &[u8],
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, data.len())
+    }
+    async fn extended_data(
+        &mut self,
+        channel: russh::ChannelId,
+        _: u32,
+        data: &[u8],
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, data.len())
+    }
+    async fn window_adjusted(
+        &mut self,
+        channel: russh::ChannelId,
+        _: u32,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, 0)
+    }
+    async fn channel_success(
+        &mut self,
+        channel: russh::ChannelId,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, 0)
+    }
+    async fn channel_failure(
+        &mut self,
+        channel: russh::ChannelId,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, 0)
+    }
+    async fn channel_eof(
+        &mut self,
+        channel: russh::ChannelId,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, 0)
+    }
+    async fn exit_status(
+        &mut self,
+        channel: russh::ChannelId,
+        _: u32,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, 0)
+    }
+    async fn exit_signal(
+        &mut self,
+        channel: russh::ChannelId,
+        _: russh::Sig,
+        _: bool,
+        message: &str,
+        language: &str,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, message.len() + language.len())
+    }
+    async fn xon_xoff(
+        &mut self,
+        channel: russh::ChannelId,
+        _: bool,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        self.receive(channel, 0)
+    }
+    async fn server_channel_open_session(
+        &mut self,
+        _: russh::ChannelId,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        bail!("Unsolicited SSH session channel")
+    }
+    async fn server_channel_open_direct_tcpip(
+        &mut self,
+        _: russh::ChannelId,
+        _: &str,
+        _: u32,
+        _: &str,
+        _: u32,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        bail!("Unsolicited SSH TCP channel")
+    }
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        _: russh::ChannelId,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        bail!("Unsolicited SSH agent channel")
+    }
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: &str,
+        _: u32,
+        _: &str,
+        _: u32,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        bail!("Unsolicited SSH forwarded channel")
+    }
+    async fn server_channel_open_x11(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: &str,
+        _: u32,
+        _: &mut client::Session,
+    ) -> Result<()> {
+        bail!("Unsolicited SSH X11 channel")
+    }
+}
+fn parameter(
+    p: &crate::protocol::StartupParams,
+    name: &str,
+    default: u64,
+    max: u64,
+) -> Result<u64> {
+    let n = p.get_optional_u64(name)?.unwrap_or(default);
+    ensure!(n > 0 && n <= max, "{name} must be 1..{max}");
+    Ok(n)
+}
 pub struct SshClient;
-
 impl SshClient {
-    /// Connect to an SSH server with integrated LLM actions
+    /// Compatibility entry point for callers using the prior command-only API.
     pub async fn connect_with_llm_actions(
         remote_addr: String,
-        llm_client: OllamaClient,
-        app_state: Arc<AppState>,
-        status_tx: mpsc::UnboundedSender<String>,
-        client_id: ClientId,
+        llm_client: crate::llm::OllamaClient,
+        app_state: Arc<crate::state::AppState>,
+        status_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        client_id: crate::state::ClientId,
         startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
-        // Parse startup parameters
-        let params =
-            startup_params.context("Missing required startup parameters for SSH client")?;
-
-        let username = params.get_string("username")?;
-        let password = params.get_optional_string("password")?;
-        let private_key_path = params.get_optional_string("private_key_path")?;
-        let private_key_passphrase = params.get_optional_string("private_key_passphrase")?;
-        // A key path with no explicit method means public-key auth: naming a key and then
-        // being asked for a password would be the surprising reading.
-        let auth_method = params
-            .get_optional_string("auth_method")?
-            .unwrap_or_else(|| {
-                if private_key_path.is_some() {
-                    "publickey".to_string()
-                } else {
-                    "password".to_string()
-                }
-            });
-
-        // Decide the credential before touching the network, so a missing password or an
-        // unreadable key is reported as that rather than as a failed handshake.
-        let credential = match auth_method.as_str() {
-            "password" => SshCredential::Password(
-                password
+        Self::connect(ConnectContext {
+            remote_addr,
+            llm_client,
+            state: app_state,
+            status_tx,
+            client_id,
+            startup_params,
+        })
+        .await
+    }
+    pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
+        let p = ctx
+            .startup_params
+            .as_ref()
+            .context("Missing required startup parameters for SSH client")?;
+        let username = p.get_string("username")?;
+        let pin = p
+            .get_optional_string("host_key_sha256")?
+            .map(|pin| -> Result<String> {
+                use base64::Engine;
+                let hash = pin
+                    .strip_prefix("SHA256:")
+                    .context("host_key_sha256 must start with SHA256:")?;
+                ensure!(
+                    base64::engine::general_purpose::STANDARD_NO_PAD
+                        .decode(hash)?
+                        .len()
+                        == 32,
+                    "host_key_sha256 must contain a SHA256 fingerprint"
+                );
+                Ok(hash.to_owned())
+            })
+            .transpose()?;
+        let pinned = pin.is_some();
+        let handshake = Duration::from_secs(parameter(
+            p,
+            "handshake_timeout_secs",
+            HANDSHAKE_TIMEOUT.as_secs(),
+            60,
+        )?);
+        let deadline = Duration::from_secs(parameter(
+            p,
+            "operation_timeout_secs",
+            OPERATION_TIMEOUT.as_secs(),
+            300,
+        )?);
+        let idle = Duration::from_secs(parameter(
+            p,
+            "idle_timeout_secs",
+            IDLE_TIMEOUT.as_secs(),
+            3600,
+        )?);
+        let key_path = p.get_optional_string("private_key_path")?;
+        let method = p.get_optional_string("auth_method")?.unwrap_or_else(|| {
+            if key_path.is_some() {
+                "publickey"
+            } else {
+                "password"
+            }
+            .into()
+        });
+        enum Credential {
+            Password(String),
+            Key(Arc<key::KeyPair>),
+        }
+        let credential = match method.as_str() {
+            "password" => Credential::Password(
+                p.get_optional_string("password")?
                     .context("auth_method 'password' needs the 'password' startup parameter")?,
             ),
             "publickey" => {
-                let path = private_key_path.context(
+                let path = key_path.context(
                     "auth_method 'publickey' needs the 'private_key_path' startup parameter",
                 )?;
-                // The key is the operator's file, read once here; its contents never reach
-                // the model, an event or the log.
-                let key = russh_keys::load_secret_key(&path, private_key_passphrase.as_deref())
-                    .with_context(|| format!("Failed to load SSH private key from {path}"))?;
-                SshCredential::PublicKey(Arc::new(key))
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unknown SSH auth_method '{other}': expected 'password' or 'publickey'"
+                let passphrase = p.get_optional_string("private_key_passphrase")?;
+                Credential::Key(Arc::new(
+                    russh_keys::load_secret_key(&path, passphrase.as_deref())
+                        .with_context(|| format!("Failed to load SSH private key from {path}"))?,
                 ))
             }
+            _ => bail!("Unknown SSH auth_method '{method}': expected 'password' or 'publickey'"),
         };
-
-        info!(
-            "SSH client {} connecting to {} as user '{}'",
-            client_id, remote_addr, username
-        );
-        let _ = status_tx.send(format!(
-            "[CLIENT] SSH connecting to {} as {}",
-            remote_addr, username
-        ));
-
-        // Parse address
-        let addr = match remote_addr.parse::<SocketAddr>() {
-            Ok(addr) => addr,
-            Err(_) => {
-                // Try to resolve hostname
-                let parts: Vec<&str> = remote_addr.split(':').collect();
-                if parts.len() != 2 {
-                    return Err(anyhow::anyhow!("Invalid address format: {}", remote_addr));
-                }
-                let host = parts[0];
-                let port: u16 = parts[1].parse().context("Invalid port number")?;
-
-                let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
-                    .await
-                    .context(format!("Failed to resolve hostname: {}", host))?
-                    .collect();
-
-                addrs
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("No addresses found for {}", host))?
-            }
-        };
-
-        // Create SSH config
-        let config = client::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(300)),
-            ..<_>::default()
-        };
-
-        // Connect to SSH server
-        let mut session = client::connect(Arc::new(config), addr, ClientHandler)
-            .await
-            .context("Failed to connect to SSH server")?;
-
-        // Authenticate
-        let auth_result = match credential {
-            SshCredential::Password(password) => session
-                .authenticate_password(username.clone(), password)
-                .await
-                .context("SSH authentication failed")?,
-            SshCredential::PublicKey(key) => session
-                .authenticate_publickey(username.clone(), key)
-                .await
-                .context("SSH authentication failed")?,
-        };
-
-        if !auth_result {
-            return Err(anyhow::anyhow!(
-                "SSH authentication failed: the server refused the {} credential for '{}'",
-                auth_method,
-                username
-            ));
-        }
-
-        info!("SSH client {} authenticated successfully", client_id);
-        let _ = status_tx.send(format!("[CLIENT] SSH client {} authenticated", client_id));
-
-        // Update client status
-        app_state
-            .update_client_status(client_id, ClientStatus::Connected)
+        let (session, socket, local, peer) = tokio::time::timeout(handshake, async {
+            let stream = tokio::net::TcpStream::connect(&ctx.remote_addr).await.context("Failed to connect to SSH server")?;
+            let local = stream.local_addr()?;
+            let peer = stream.peer_addr()?;
+            let std = stream.into_std()?;
+            let socket = SocketGuard(Arc::new(std.try_clone()?));
+            let stream = tokio::net::TcpStream::from_std(std)?;
+            let config = client::Config { inactivity_timeout: Some(idle), window_size: 256*1024, maximum_packet_size: 32768, ..Default::default() };
+            let mut session = client::connect_stream(Arc::new(config), stream, ClientHandler { expected: pin, channels: HashMap::new() }).await.context("Failed to connect to SSH server")?;
+            let authenticated = match credential {
+                Credential::Password(password) => session.authenticate_password(username.clone(),password).await,
+                Credential::Key(key) => session.authenticate_publickey(username.clone(),key).await,
+            }.context("SSH authentication failed")?;
+            ensure!(authenticated, "SSH authentication failed: the server refused the {method} credential for '{username}'");
+            Ok::<_,anyhow::Error>((session,socket,local,peer))
+        }).await.context("SSH handshake deadline exceeded")??;
+        let now = crate::utils::clock::Instant::now();
+        ctx.state
+            .with_client_mut(ctx.client_id, |client| {
+                client.connection = Some(crate::state::ClientConnectionState {
+                    id: ctx.client_id,
+                    remote_addr: ctx.remote_addr.clone(),
+                    connected_addr: Some(peer),
+                    local_addr: Some(local),
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    packets_sent: 0,
+                    packets_received: 0,
+                    last_activity: now,
+                    status: ClientStatus::Connected,
+                    status_changed_at: now,
+                    protocol_info: crate::state::server::ProtocolConnectionInfo::new(
+                        json!({"host_key_verified":pinned}),
+                    ),
+                });
+            })
             .await;
-        let _ = status_tx.send("__UPDATE_UI__".to_string());
-
-        // Get local address (use the connected socket address)
-        let local_addr = addr; // russh doesn't expose local addr easily, using remote for now
-
-        // Trigger connected event to LLM
-        let protocol = Arc::new(SshClientProtocol::new());
-        let connected_event = Event::new(
+        ctx.state
+            .update_client_status(ctx.client_id, ClientStatus::Connected)
+            .await;
+        let commands = command_support::register_command_channel(&ctx.state, ctx.client_id).await;
+        let state = ctx.state.clone();
+        let id = ctx.client_id;
+        let event = Event::new(
             &SSH_CLIENT_CONNECTED_EVENT,
-            serde_json::json!({
-                "remote_addr": remote_addr,
-                "username": username,
-            }),
+            json!({"remote_addr":ctx.remote_addr,"username":username,"host_key_verified":pinned}),
         );
-
-        // Initialize client data
-        let client_data = Arc::new(Mutex::new(ClientData {
-            memory: String::new(),
-        }));
-
-        // Clone for the spawned task
-        let session_arc = Arc::new(Mutex::new(session));
-
-        // Command channel for injected actions (the dashboard's [ send ]).
-        // Registered BEFORE the connected-event LLM call below: a dashboard-created
-        // client defaults to a `*` -> manual rule, so that call can park for minutes
-        // waiting for a human, and the operator must be able to reach the session
-        // while it waits.
-        let command_rx =
-            crate::client::command_support::register_command_channel(&app_state, client_id).await;
-        let cmd_task = tokio::spawn({
-            let session_arc = session_arc.clone();
-            let protocol = protocol.clone();
-            let llm_client = llm_client.clone();
-            let app_state = app_state.clone();
-            let status_tx = status_tx.clone();
-            let client_data = client_data.clone();
-            async move {
-                Self::command_loop(
-                    command_rx,
-                    session_arc,
-                    protocol,
-                    client_id,
-                    llm_client,
-                    app_state,
-                    status_tx,
-                    client_data,
-                )
-                .await;
-            }
-        });
-        app_state.register_client_task(client_id, cmd_task).await;
-
-        let client_data_clone = client_data.clone();
-        let protocol_clone = protocol.clone();
-        let llm_client_clone = llm_client.clone();
-        let app_state_clone = app_state.clone();
-        let status_tx_clone = status_tx.clone();
-
-        // Call LLM with connected event
-        let task_registrar = app_state.clone();
-        let handle = tokio::spawn(async move {
-            if let Some(instruction) = app_state_clone.get_instruction_for_client(client_id).await {
-                // Copy the memory out before the call: the command loop shares this
-                // mutex, and a guard held across an LLM round-trip (which a `*` manual
-                // rule can park for minutes) would stall every injected command.
-                let memory = client_data_clone.lock().await.memory.clone();
-
-                // Call LLM with connected event
-                match call_llm_for_client(
-                    &llm_client_clone,
-                    &app_state_clone,
-                    client_id.to_string(),
-                    &instruction,
-                    &memory,
-                    Some(&connected_event),
-                    protocol_clone.as_ref(),
-                    &status_tx_clone,
-                )
-                .await
-                {
-                    Ok(ClientLlmResult {
-                        actions,
-                        memory_updates,
-                    }) => {
-                        // Update memory
-                        if let Some(mem) = memory_updates {
-                            client_data_clone.lock().await.memory = mem;
-                        }
-
-                        // Execute initial actions
-                        for action in actions {
-                            if let Err(e) = Self::execute_ssh_action(
-                                &session_arc,
-                                &protocol_clone,
-                                action,
-                                client_id,
-                                &llm_client_clone,
-                                &app_state_clone,
-                                &status_tx_clone,
-                                &client_data_clone,
-                                0,
-                            )
-                            .await
-                            {
-                                error!("Error executing SSH action: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("LLM error for SSH client {}: {}", client_id, e);
-                    }
-                }
-            }
-        });
-        task_registrar.register_client_task(client_id, handle).await;
-
-        Ok(local_addr)
+        state
+            .spawn_client_task(
+                id,
+                Self::run(ctx, session, socket, commands, event, deadline, pinned),
+            )
+            .await;
+        Ok(local)
     }
-
-    /// Drain injected commands until the channel closes (the client was removed,
-    /// which drops the handle) or an injected `disconnect` ends the session.
-    ///
-    /// The generic `command_support::handle_stream_client_command` cannot serve this
-    /// client: it owns no socket to write to, and `execute_command` yields a
-    /// `ClientActionResult::Custom` that only russh can carry out. So the action goes
-    /// through [`Self::apply_ssh_result`] — the exact function the LLM path uses,
-    /// including the `ssh_output_received` follow-up event — and the outcome is
-    /// recorded and replied the way the generic arm does it.
-    #[allow(clippy::too_many_arguments)]
-    async fn command_loop(
-        mut command_rx: tokio::sync::mpsc::Receiver<crate::state::client_handles::ClientCommand>,
-        session_arc: Arc<Mutex<Handle<ClientHandler>>>,
-        protocol: Arc<SshClientProtocol>,
-        client_id: ClientId,
-        llm_client: OllamaClient,
-        app_state: Arc<AppState>,
-        status_tx: mpsc::UnboundedSender<String>,
-        client_data: Arc<Mutex<ClientData>>,
+    async fn run(
+        ctx: ConnectContext,
+        session: Handle<ClientHandler>,
+        socket: SocketGuard,
+        mut commands: tokio::sync::mpsc::Receiver<ClientCommand>,
+        event: Event,
+        deadline: Duration,
+        pinned: bool,
     ) {
-        use crate::llm::actions::protocol_trait::Protocol;
-        use crate::state::client_handles::ClientSendOutcome;
-        use crate::state::AccessLogOwner;
-
-        while let Some(command) = command_rx.recv().await {
-            let action = command.action.clone();
-
-            // `execute_action` is the only step that can fail before the session is
-            // touched, so its error is a rejection (unknown verb / bad params) rather
-            // than a transport failure.
-            let outcome = match protocol.as_ref().execute_action(action.clone()) {
-                Err(e) => Ok(ClientSendOutcome::Rejected {
-                    error: e.to_string(),
-                }),
-                Ok(result) => Self::apply_ssh_result(
-                    result,
-                    &session_arc,
-                    &protocol,
-                    client_id,
-                    &llm_client,
-                    &app_state,
-                    &status_tx,
-                    &client_data,
-                    0,
-                )
-                .await
-                .map(|applied| match applied {
-                    SshApplied::Executed(detail) => ClientSendOutcome::Executed { detail },
-                    SshApplied::Disconnected => ClientSendOutcome::Disconnected,
-                }),
-            };
-
-            let outcome_json = match &outcome {
-                Ok(outcome) => serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
-                Err(e) => serde_json::json!({"error": e.to_string()}),
-            };
-            app_state
-                .record_access_log(
-                    AccessLogOwner::Client(client_id.as_u32()),
-                    protocol.protocol_name(),
-                    None,
-                    "injected_action",
-                    action,
-                    vec![outcome_json],
-                )
-                .await;
-
-            let disconnect = matches!(outcome, Ok(ClientSendOutcome::Disconnected));
-            if let Err(e) = &outcome {
-                error!("SSH client {} injected action failed: {}", client_id, e);
-                let _ = status_tx.send(format!(
-                    "[WARN] Client {} injected action failed: {}",
-                    client_id, e
-                ));
-            }
-            let _ = status_tx.send("__UPDATE_UI__".to_string());
-            crate::client::command_support::reply(command, outcome);
-
-            if disconnect {
-                break;
-            }
-        }
-
-        // Every exit path lands here: drop the command handle so the dashboard stops
-        // offering [ send ] on a dead session and a late send fails fast.
-        app_state.remove_client_handle(client_id).await;
-        let _ = status_tx.send("__UPDATE_UI__".to_string());
-    }
-
-    /// Execute an SSH action (helper function). `depth` counts the follow-up turns so far.
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_ssh_action(
-        session_arc: &Arc<Mutex<Handle<ClientHandler>>>,
-        protocol: &Arc<SshClientProtocol>,
-        action: serde_json::Value,
-        client_id: ClientId,
-        llm_client: &OllamaClient,
-        app_state: &Arc<AppState>,
-        status_tx: &mpsc::UnboundedSender<String>,
-        client_data: &Arc<Mutex<ClientData>>,
-        depth: usize,
-    ) -> Result<SshApplied> {
-        let result = protocol.as_ref().execute_action(action)?;
-        Self::apply_ssh_result(
-            result,
-            session_arc,
-            protocol,
-            client_id,
-            llm_client,
-            app_state,
-            status_tx,
-            client_data,
-            depth,
-        )
-        .await
-    }
-
-    /// Carry one already-decoded action out against the live session. Shared by the
-    /// connected-event path, the `ssh_output_received` follow-up path and injected
-    /// commands, so the channel/exec machinery exists exactly once.
-    #[allow(clippy::too_many_arguments)]
-    async fn apply_ssh_result(
-        action_result: ClientActionResult,
-        session_arc: &Arc<Mutex<Handle<ClientHandler>>>,
-        protocol: &Arc<SshClientProtocol>,
-        client_id: ClientId,
-        llm_client: &OllamaClient,
-        app_state: &Arc<AppState>,
-        status_tx: &mpsc::UnboundedSender<String>,
-        client_data: &Arc<Mutex<ClientData>>,
-        depth: usize,
-    ) -> Result<SshApplied> {
-        match action_result {
-            ClientActionResult::Custom { name, data } if name == "execute_command" => {
-                let command = data
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .context("Missing command in action data")?;
-
-                info!("SSH client {} executing command: {}", client_id, command);
-                let _ = status_tx.send(format!("[CLIENT] SSH executing: {}", command));
-
-                // Open channel and execute command. The session guard is released as
-                // soon as the channel exists: `Channel` is owned, not borrowed from the
-                // handle, and holding the guard across the exec + the follow-up LLM call
-                // would (a) deadlock the recursive follow-up below, which locks the same
-                // mutex, and (b) block every injected command for the whole round-trip.
-                let mut channel = {
-                    let session = session_arc.lock().await;
-                    session
-                        .channel_open_session()
-                        .await
-                        .context("Failed to open SSH channel")?
-                };
-
-                channel
-                    .exec(true, command)
-                    .await
-                    .context("Failed to execute command")?;
-
-                // Read output until the channel is done. EOF only says the server will send no
-                // more *data*: OpenSSH sends `exit-status` after its EOF and then closes the
-                // channel, so stopping at EOF loses the exit status of every command. Stop at
-                // CLOSE, at the end of the channel, or at EOF once the status is already in
-                // hand (a server may send it first).
-                let mut output = Vec::new();
-                let mut stderr = Vec::new();
-                let mut exit_code: Option<u32> = None;
-                let mut eof = false;
-
-                loop {
-                    match channel.wait().await {
-                        Some(ChannelMsg::Data { ref data }) => {
-                            output.extend_from_slice(data);
-                            trace!(
-                                "SSH client {} received {} bytes of output",
-                                client_id,
-                                data.len()
-                            );
-                        }
-                        // Extended data type 1 is SSH_EXTENDED_DATA_STDERR (RFC 4254 §5.2).
-                        Some(ChannelMsg::ExtendedData { ref data, ext: 1 }) => {
-                            stderr.extend_from_slice(data);
-                        }
-                        Some(ChannelMsg::ExitStatus { exit_status }) => {
-                            exit_code = Some(exit_status);
-                            debug!("SSH command exit status: {}", exit_status);
-                            if eof {
-                                break;
-                            }
-                        }
-                        Some(ChannelMsg::Eof) => {
-                            debug!("SSH channel EOF");
-                            eof = true;
-                            if exit_code.is_some() {
-                                break;
-                            }
-                        }
-                        Some(ChannelMsg::Close) | None => break,
-                        Some(_) => {}
-                    }
+        let session = Arc::new(session);
+        let mut operations: FuturesUnordered<OperationFuture> = FuturesUnordered::new();
+        let mut handlers: FuturesUnordered<HandlerFuture> = FuturesUnordered::new();
+        handlers.push(handle_event(ctx.clone(), event, CONNECT_DEPTH));
+        let mut check_closed = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                command = commands.recv() => {
+                    let Some(command) = command else { break; };
+                    if enqueue(&ctx,&session,socket.0.clone(),deadline,pinned,&mut operations,handlers.len(),command.action.clone(),Some(command),0).await { break; }
                 }
-
-                let output_str = String::from_utf8_lossy(&output).to_string();
-                let stderr_str = String::from_utf8_lossy(&stderr).to_string();
-                trace!("SSH command output: {}", output_str);
-
-                let applied = SshApplied::Executed(format!(
-                    "execute_command {:?}: exit_code={}, {} bytes of output, {} of stderr",
-                    command,
-                    exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    output.len(),
-                    stderr.len()
-                ));
-
-                // Call LLM with output
-                if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-                    let mut event_data = serde_json::json!({
-                        "command": command,
-                        "output": output_str,
-                    });
-
-                    if !stderr_str.is_empty() {
-                        event_data["stderr"] = serde_json::json!(stderr_str);
-                    }
-                    if let Some(code) = exit_code {
-                        event_data["exit_code"] = serde_json::json!(code);
-                    }
-
-                    let output_event = Event::new(&SSH_CLIENT_OUTPUT_RECEIVED_EVENT, event_data);
-
-                    // Copy the memory out before the call: the command loop shares this
-                    // mutex, and a guard held across an LLM round-trip would stall it.
-                    let memory = client_data.lock().await.memory.clone();
-
-                    match call_llm_for_client(
-                        llm_client,
-                        app_state,
-                        client_id.to_string(),
-                        &instruction,
-                        &memory,
-                        Some(&output_event),
-                        protocol.as_ref(),
-                        status_tx,
-                    )
-                    .await
-                    {
-                        Ok(ClientLlmResult {
-                            actions,
-                            memory_updates,
-                        }) => {
-                            // Update memory
-                            if let Some(mem) = memory_updates {
-                                client_data.lock().await.memory = mem;
-                            }
-
-                            if !actions.is_empty() && depth >= MAX_FOLLOWUP_DEPTH {
-                                warn!(
-                                    "SSH client {} reached the follow-up depth bound ({}); \
-                                     dropping {} action(s) rather than looping",
-                                    client_id,
-                                    MAX_FOLLOWUP_DEPTH,
-                                    actions.len()
-                                );
-                                return Ok(applied);
-                            }
-
-                            // Execute follow-up actions
-                            for next_action in actions {
-                                // Recursive call for follow-up commands (boxed to avoid infinite size)
-                                let session_clone = session_arc.clone();
-                                let protocol_clone = protocol.clone();
-                                let llm_clone = llm_client.clone();
-                                let app_clone = app_state.clone();
-                                let status_clone = status_tx.clone();
-                                let data_clone = client_data.clone();
-
-                                if let Err(e) = Box::pin(Self::execute_ssh_action(
-                                    &session_clone,
-                                    &protocol_clone,
-                                    next_action,
-                                    client_id,
-                                    &llm_clone,
-                                    &app_clone,
-                                    &status_clone,
-                                    &data_clone,
-                                    depth + 1,
-                                ))
-                                .await
-                                {
-                                    error!("Error executing follow-up SSH action: {}", e);
+                Some((depth,event)) = operations.next(), if !operations.is_empty() => { handlers.push(handle_event(ctx.clone(),event,depth)); }
+                Some((depth,result)) = handlers.next(), if !handlers.is_empty() => {
+                    match result {
+                        Ok(actions) if actions.len() <= MAX_OPERATIONS => {
+                            let mut disconnect = false;
+                            for action in actions {
+                                if depth != CONNECT_DEPTH && depth >= MAX_FOLLOWUP_DEPTH && action["type"] != "disconnect" {
+                                    Log::new(Some(&ctx.status_tx)).warn("SSH follow-up depth bound reached");
+                                    continue;
                                 }
+                                let next_depth = if depth == CONNECT_DEPTH {0} else {depth+1};
+                                if enqueue(&ctx,&session,socket.0.clone(),deadline,pinned,&mut operations,handlers.len(),action,None,next_depth).await { disconnect = true; break; }
                             }
+                            if disconnect { break; }
                         }
-                        Err(e) => {
-                            error!("LLM error for SSH client {}: {}", client_id, e);
-                        }
+                        Ok(_) => Log::new(Some(&ctx.status_tx)).warn("SSH handler returned too many actions"),
+                        Err(e) => Log::new(Some(&ctx.status_tx)).warn(format!("SSH event handler failed: {e}")),
                     }
                 }
-
-                Ok(applied)
-            }
-            ClientActionResult::Custom { name, .. } => {
-                warn!(
-                    "SSH client {} has no handler for custom result '{}'",
-                    client_id, name
-                );
-                Ok(SshApplied::Executed(format!(
-                    "custom result '{name}' has no SSH handler"
-                )))
-            }
-            ClientActionResult::Disconnect => {
-                info!("SSH client {} disconnecting", client_id);
-                let _ = status_tx.send(format!("[CLIENT] SSH client {} disconnecting", client_id));
-                app_state
-                    .update_client_status(client_id, ClientStatus::Disconnected)
-                    .await;
-                // Drop the command handle here rather than only in the command loop:
-                // the LLM can disconnect too, and a handle left behind would offer
-                // [ send ] into a closed session.
-                app_state.remove_client_handle(client_id).await;
-                let _ = status_tx.send("__UPDATE_UI__".to_string());
-
-                // Close session
-                let session = session_arc.lock().await;
-                session
-                    .disconnect(Disconnect::ByApplication, "", "en")
-                    .await?;
-
-                Ok(SshApplied::Disconnected)
-            }
-            ClientActionResult::WaitForMore => {
-                // No-op for SSH (commands are discrete)
-                Ok(SshApplied::Executed("wait_for_more".to_string()))
-            }
-            other => {
-                warn!("Unexpected action result for SSH client");
-                Ok(SshApplied::Executed(format!(
-                    "unhandled action result {other:?}"
-                )))
+                _ = check_closed.tick() => { if session.is_closed() { break; } }
             }
         }
+        drop(operations);
+        drop(handlers);
+        if let Ok(mut session) = Arc::try_unwrap(session) {
+            let _ = session
+                .disconnect(Disconnect::ByApplication, "", "en")
+                .await;
+            // Let the transport flush the disconnect, then the socket guard forces
+            // closure even if the library's internally spawned driver is stalled.
+            let _ = tokio::time::timeout(Duration::from_secs(1), &mut session).await;
+        }
+        drop(socket);
+        ctx.state.remove_client_handle(ctx.client_id).await;
+        ctx.state
+            .with_client_mut(ctx.client_id, |c| {
+                if let Some(connection) = &mut c.connection {
+                    connection.status = ClientStatus::Disconnected;
+                    connection.status_changed_at = crate::utils::clock::Instant::now();
+                }
+            })
+            .await;
+        ctx.state
+            .update_client_status(ctx.client_id, ClientStatus::Disconnected)
+            .await;
+        let _ = ctx.status_tx.send("__UPDATE_UI__".into());
     }
+}
+fn handle_event(ctx: ConnectContext, event: Event, depth: u8) -> HandlerFuture {
+    async move {
+        let result = async {
+            let instruction = ctx
+                .state
+                .get_instruction_for_client(ctx.client_id)
+                .await
+                .unwrap_or_default();
+            let memory = ctx
+                .state
+                .get_memory_for_client(ctx.client_id)
+                .await
+                .unwrap_or_default();
+            let result = call_llm_for_client(
+                &ctx.llm_client,
+                &ctx.state,
+                ctx.client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                &SshClientProtocol,
+                &ctx.status_tx,
+            )
+            .await?;
+            if let Some(memory) = result.memory_updates {
+                ctx.state.set_memory_for_client(ctx.client_id, memory).await;
+            }
+            Ok(result.actions)
+        }
+        .await;
+        (depth, result)
+    }
+    .boxed()
+}
+#[allow(clippy::too_many_arguments)]
+async fn enqueue(
+    ctx: &ConnectContext,
+    session: &Arc<Handle<ClientHandler>>,
+    socket: Arc<std::net::TcpStream>,
+    deadline: Duration,
+    pinned: bool,
+    operations: &mut FuturesUnordered<OperationFuture>,
+    handlers: usize,
+    action: Value,
+    command: Option<ClientCommand>,
+    depth: u8,
+) -> bool {
+    let outcome = match SshClientProtocol.execute_action(action.clone()) {
+        Err(e) => Ok(ClientSendOutcome::Rejected {
+            error: e.to_string(),
+        }),
+        Ok(ClientActionResult::Disconnect) => Ok(ClientSendOutcome::Disconnected),
+        Ok(ClientActionResult::WaitForMore | ClientActionResult::NoAction) => {
+            Ok(ClientSendOutcome::Executed {
+                detail: "wait_for_more".into(),
+            })
+        }
+        Ok(ClientActionResult::Custom { name, .. })
+            if name == "execute_command" || name == "sftp_operation" =>
+        {
+            if name == "sftp_operation" && !pinned {
+                Ok(ClientSendOutcome::Rejected {
+                    error: "SFTP requires host_key_sha256 at startup".into(),
+                })
+            } else if operations.len() + handlers >= MAX_OPERATIONS {
+                Err(anyhow::anyhow!(
+                    "SSH client busy: 16 operations or handlers"
+                ))
+            } else {
+                operations.push(operation_future(
+                    ctx.clone(),
+                    session.clone(),
+                    socket,
+                    deadline,
+                    action,
+                    command,
+                    depth,
+                ));
+                return false;
+            }
+        }
+        Ok(_) => Ok(ClientSendOutcome::Rejected {
+            error: "Unsupported SSH action".into(),
+        }),
+    };
+    let disconnect = matches!(outcome, Ok(ClientSendOutcome::Disconnected));
+    record_action(ctx, &action, &outcome).await;
+    if let Some(command) = command {
+        command_support::reply(command, outcome);
+    }
+    disconnect
+}
+async fn record_action(ctx: &ConnectContext, action: &Value, outcome: &Result<ClientSendOutcome>) {
+    let result = match outcome {
+        Ok(v) => serde_json::to_value(v).unwrap_or(Value::Null),
+        Err(e) => json!({"error":e.to_string()}),
+    };
+    ctx.state
+        .record_access_log(
+            AccessLogOwner::Client(ctx.client_id.as_u32()),
+            "SSH",
+            None,
+            "injected_action",
+            action.clone(),
+            vec![result],
+        )
+        .await;
+}
+fn operation_future(
+    ctx: ConnectContext,
+    session: Arc<Handle<ClientHandler>>,
+    socket: Arc<std::net::TcpStream>,
+    deadline: Duration,
+    action: Value,
+    command: Option<ClientCommand>,
+    depth: u8,
+) -> OperationFuture {
+    async move {
+        let (outcome,event) = match execute(&session,&socket,&action,deadline).await {
+            Ok((detail,event)) => (Ok(ClientSendOutcome::Executed {detail}),event),
+            Err(error) => {
+                Log::new(Some(&ctx.status_tx)).warn(format!("SSH operation failed: {error:#}"));
+                let event = Event::new(&SSH_OPERATION_FAILED_EVENT,json!({"action_type":action["type"],"path":action["path"],"command":action["command"],"error":format!("{error:#}")}));
+                (Err(error),event)
+            }
+        };
+        ctx.state
+            .with_client_mut(ctx.client_id, |client| {
+                if let Some(connection) = &mut client.connection {
+                    connection.last_activity = crate::utils::clock::Instant::now();
+                }
+            })
+            .await;
+        record_action(&ctx,&action,&outcome).await;
+        if let Some(command) = command { command_support::reply(command,outcome); }
+        (depth,event)
+    }.boxed()
+}
+async fn execute(
+    session: &Handle<ClientHandler>,
+    socket: &std::net::TcpStream,
+    action: &Value,
+    deadline: Duration,
+) -> Result<(String, Event)> {
+    let end = tokio::time::Instant::now() + deadline;
+    let mut channel = tokio::time::timeout_at(end, session.channel_open_session())
+        .await
+        .context("SSH channel-open deadline exceeded")??;
+    let result = tokio::time::timeout_at(end, async {
+        if action["type"] == "execute_command" {
+            let command = action["command"].as_str().context("Missing command")?;
+            channel.exec(true, command).await?;
+            let mut output = Vec::new();
+            let mut stderr = Vec::new();
+            let mut exit_code = None;
+            let mut eof = false;
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => {
+                        ensure!(
+                            data.len()
+                                <= MAX_COMMAND_OUTPUT.saturating_sub(output.len() + stderr.len()),
+                            "SSH command output exceeds 1 MiB"
+                        );
+                        output.extend_from_slice(&data);
+                    }
+                    Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
+                        ensure!(
+                            data.len()
+                                <= MAX_COMMAND_OUTPUT.saturating_sub(output.len() + stderr.len()),
+                            "SSH command output exceeds 1 MiB"
+                        );
+                        stderr.extend_from_slice(&data);
+                    }
+                    Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        exit_code = Some(exit_status);
+                        if eof {
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::Eof) => {
+                        eof = true;
+                        if exit_code.is_some() {
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::Close) => break,
+                    None => {
+                        ensure!(!session.is_closed(), "SSH connection closed during command");
+                        break;
+                    }
+                    Some(ChannelMsg::Failure) => bail!("SSH server refused command"),
+                    _ => {}
+                }
+            }
+            let detail = format!(
+                "execute_command {command:?}: exit_code={}, {} bytes of output, {} of stderr",
+                exit_code
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                output.len(),
+                stderr.len()
+            );
+            let mut data = json!({"command":command,"output":String::from_utf8_lossy(&output)});
+            if !stderr.is_empty() {
+                data["stderr"] = json!(String::from_utf8_lossy(&stderr));
+            }
+            if let Some(code) = exit_code {
+                data["exit_code"] = json!(code);
+            }
+            Ok((detail, Event::new(&SSH_CLIENT_OUTPUT_RECEIVED_EVENT, data)))
+        } else {
+            channel.request_subsystem(true, "sftp").await?;
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Success) => break,
+                    Some(ChannelMsg::WindowAdjusted { .. }) => {}
+                    _ => bail!("SSH server refused SFTP subsystem"),
+                }
+            }
+            let writer = channel.make_writer();
+            let reader = channel.make_reader();
+            let result = sftp::exchange(tokio::io::join(reader, writer), action).await?;
+            let detail = format!(
+                "{} {} completed",
+                action["type"].as_str().unwrap_or("sftp"),
+                action["path"].as_str().unwrap_or("")
+            );
+            Ok((detail, Event::new(&SSH_SFTP_RESULT_EVENT, result)))
+        }
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!(error).context("SSH operation deadline exceeded"))
+    .and_then(|result| result);
+    // Closing a timed-out or malformed channel does not end unrelated operations.
+    // A blocked transport cannot retain an orphan channel past client removal.
+    if tokio::time::timeout(Duration::from_millis(250), async {
+        channel.eof().await?;
+        channel.close().await
+    })
+    .await
+    .is_err()
+    {
+        let _ = socket.shutdown(Shutdown::Both);
+    }
+    result
 }
