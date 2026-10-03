@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::app_state::AppState;
 use anyhow::{bail, Result};
@@ -33,7 +34,7 @@ fn request() -> ActionDefinition {
         p("message_id","string","16 hexadecimal characters from nsq_message",false),
         p("count","integer","RDY simultaneous in-flight limit 0..2500, default 1; 0 pauses deliveries",false),
         p("delay_ms","integer","DPUB/REQ delay 0..3600000 ms, default 0",false),
-    ],example:json!({"type":"nsq_request","operation":"publish","topic":"greetings","body":"hello"}),log_template:None}
+    ],example:json!({"type":"nsq_request","operation":"publish","topic":"greetings","body":"hello"}),log_template: Some(LogTemplate::new().with_info("-> NSQ {operation}"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -41,7 +42,7 @@ fn disconnect() -> ActionDefinition {
         description: "Immediately close NSQ, including a stalled exchange".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("-> NSQ disconnect")),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
@@ -57,7 +58,12 @@ pub static CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "nsq_connected",
         "IDENTIFY completed; features negotiated. Publish or subscribe then set ready.",
         vec![
-            p("remote_addr", "string", "Server address", true),
+            p(
+                "remote_addr",
+                "string",
+                "Remote IP and TCP port of the NSQ broker",
+                true,
+            ),
             p("features", "object", "Validated negotiation response", true),
         ],
     )
@@ -68,7 +74,12 @@ pub static RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "A complete command response. Commands FIN/REQ/TOUCH/RDY/NOP have no success response.",
         vec![
             p("request", "object", "Typed originating request", true),
-            p("command", "string", "Wire command", true),
+            p(
+                "command",
+                "string",
+                "NSQ wire command that produced this response",
+                true,
+            ),
             p("status", "string", "OK or CLOSE_WAIT", true),
         ],
     )
@@ -77,7 +88,7 @@ pub static MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     event("nsq_message","A delivered message; finish, requeue or touch using message_id. No automatic acknowledgement.",vec![p("topic","string","Subscribed topic",true),p("channel","string","Subscribed channel",true),p("message_id","string","16-character message ID",true),p("timestamp_ns","integer","Unix nanoseconds",true),p("attempts","integer","Delivery attempts",true),p("body","string","UTF-8 text (null when not UTF-8)",false),p("body_bytes","integer","Exact byte length",true),p("body_utf8","boolean","Whether body decoded as UTF-8",true)])
 });
 pub static ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    event("nsq_error","A protocol refusal. Fatal errors end the connection; FIN/REQ/TOUCH failures are recoverable.",vec![p("code","string","NSQ error code",true),p("description","string","Peer refusal",true),p("fatal","boolean","Whether connection is closing",true),p("request","object","Pending response-producing request, if any; asynchronous errors may be uncorrelated",false)])
+    event("nsq_error","A protocol refusal. Fatal errors end the connection; FIN/REQ/TOUCH failures are recoverable.",vec![p("code","string","NSQ protocol error code from the broker",true),p("description","string","Broker explanation of the refused command",true),p("fatal","boolean","Whether connection is closing",true),p("request","object","Pending response-producing request, if any; asynchronous errors may be uncorrelated",false)])
 });
 impl Protocol for NsqClientProtocol {
     fn protocol_name(&self) -> &'static str {
