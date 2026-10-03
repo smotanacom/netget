@@ -1,7 +1,7 @@
 # M3UA Test Strategy
 
 Three files, three different kinds of evidence. Read
-[`src/server/m3ua/CLAUDE.md`](../../../src/server/m3ua/CLAUDE.md) first — in particular the
+[`src/server/m3ua/AGENTS.md`](../../../src/server/m3ua/AGENTS.md) first — in particular the
 transport section, which is what limits what any of this can prove.
 
 | File | What it is evidence of | LLM calls |
@@ -19,14 +19,14 @@ which no real ASP does.
 
 That is not a gap to be closed by writing more tests here. It is closed on Linux, against
 `osmo-stp` / `libosmo-sigtran`. Until then the protocol stays `Experimental`, and any claim
-otherwise should be treated as the `wireguard` bug the root `CLAUDE.md` records: a maturity
+otherwise should be treated as the `wireguard` bug the root `AGENTS.md` records: a maturity
 rating resting on a test that never exercised the thing it claimed.
 
 ## `codec_test.rs` — why literal octets, not round-trips
 
 Every expected vector is **written out by hand from RFC 4666**, field by field, with the decode
 in the comment. Round-tripping NetGet's encoder through NetGet's decoder would pass just as
-happily if both were wrong in the same way — the root `CLAUDE.md` names that as circular
+happily if both were wrong in the same way — the root `AGENTS.md` names that as circular
 evidence, and for M3UA it is not hypothetical.
 
 The rule at stake is RFC 4666 section 3.2: **the Parameter Length excludes the padding that

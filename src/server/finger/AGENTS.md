@@ -179,7 +179,7 @@ carries options, of which none is a port.
 
 So driving the real client needs a run privileged enough to bind port 79. The
 e2e suite does not do that, and deliberately does **not** contain an `#[ignore]`d
-root test instead: the root `CLAUDE.md` records two protocols stuck at
+root test instead: the root `AGENTS.md` records two protocols stuck at
 Experimental for exactly that, because an ignored test proves nothing and a
 skip-when-missing gate is a silent pass. `Experimental` is the honest rating for
 "compiles, is tested at the byte level, and no real client has ever spoken to

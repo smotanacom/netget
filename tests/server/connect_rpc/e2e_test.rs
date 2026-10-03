@@ -403,21 +403,47 @@ async fn response_backpressure_deadline_cancels_http1_owner() {
     let state = peer::state().await;
     let (id,port)=peer::server(&state,vec![json!({"event_pattern":"grpc_stream_opened","handler":{"type":"static","actions":[
         {"type":"grpc_stream_send","message":{"name":"x".repeat(4*1024*1024-5)}},{"type":"grpc_stream_finish"}]}})],json!({"rpc_timeout_secs":1})).await.unwrap();
-    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+    // An unread response only exercises backpressure when the peer's receive
+    // window cannot absorb it. OS autotuning can otherwise buffer this entire
+    // successful response and leave a legitimately idle keep-alive connection.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut socket = socket
+        .connect(std::net::SocketAddr::from(([127, 0, 0, 1], port)))
         .await
         .unwrap();
     socket.write_all(b"POST /streams.Session/Echo HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/proto\r\nConnect-Protocol-Version: 1\r\nContent-Length: 0\r\n\r\n").await.unwrap();
-    let mut initial = [0u8; 256];
-    tokio::time::timeout(Duration::from_secs(2), socket.read(&mut initial))
-        .await
-        .unwrap()
-        .unwrap();
+    let mut initial = Vec::new();
+    // Read only the bounded header/message prefix, then leave the multi-megabyte
+    // payload unread. A small failure response would not exercise backpressure.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut buffer = [0u8; 256];
+        loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(count > 0, "large successful response prefix required");
+            initial.extend_from_slice(&buffer[..count]);
+            assert!(initial.len() <= 1024, "bounded response prefix");
+            if initial.windows(5).any(|v| v == &[10, 251, 255, 255, 1]) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        initial.starts_with(b"HTTP/1.1 200"),
+        "backpressure requires a successful large response: {}",
+        String::from_utf8_lossy(&initial)
+    );
     tokio::time::sleep(Duration::from_secs(2)).await;
     let mut output = Vec::new();
     assert!(
         tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut output))
             .await
-            .is_ok()
+            .is_ok(),
+        "response did not close after its deadline; initial={}, remaining_bytes={}",
+        String::from_utf8_lossy(&initial),
+        output.len()
     );
     assert!(state.list_intercepts().await.is_empty());
     state.remove_server(id).await.unwrap();

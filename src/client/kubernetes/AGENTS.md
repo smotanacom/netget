@@ -313,7 +313,7 @@ status_tx.send("[CLIENT] Kubernetes operation successful");                     
 
 ## Testing Strategy
 
-See `tests/client/kubernetes/CLAUDE.md`.
+See `tests/client/kubernetes/AGENTS.md`.
 
 **There is no test against a real cluster, and nothing here should imply there is.**
 `tests/client/kubernetes/e2e_test.rs` previously held three `#[ignore]`d tests gated on
@@ -405,7 +405,7 @@ provider itself — `let _ = rustls::crypto::ring::default_provider().install_de
 same one-liner `dot`, `tls`, `dc` and `http3` carry, with `Err` (a provider is already set)
 being exactly the wanted outcome.
 
-The moral is the one the root `CLAUDE.md` draws about "current gaps" lists: a known-defect note
+The moral is the one the root `AGENTS.md` draws about "current gaps" lists: a known-defect note
 that rots towards *understating* the code tells the next person to build around an absence that
 is not there.
 

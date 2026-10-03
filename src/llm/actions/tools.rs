@@ -1695,18 +1695,19 @@ pub fn get_all_tool_actions(
     actions
 }
 
-/// Get tool actions suitable for network event handlers
+/// Tools for scheduled tasks scoped to an already-running server or client.
 ///
-/// Network events should not have access to server/client documentation tools
-/// since those are only relevant for opening new servers/clients (user input context).
-/// Network events are for handling requests on already-running servers.
+/// The legacy name is retained for callers. Immediate network-event responses
+/// exclude these tools through `PromptBuilder::advertised_network_event_actions`;
+/// scheduled tasks may still read files, query SQLite, or gather other information.
+/// Documentation tools for opening new instances belong to operator conversations.
 pub fn get_network_event_tool_actions(
     web_search_mode: crate::state::app_state::WebSearchMode,
 ) -> Vec<ActionDefinition> {
     use crate::state::app_state::WebSearchMode;
 
     let mut actions = vec![
-        generate_random_action(), // Put first - LLMs need this for mock data
+        generate_random_action(),
         read_file_action(),
         list_tasks_action(),
     ];

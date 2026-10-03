@@ -74,7 +74,7 @@ take it.
 
 `TestBroker` is hand-written in this file from the protocol description; the fourth test's peer
 is NetGet's own NATS server. On their own these would be the circular-evidence class the root
-`CLAUDE.md` names for `webrtc_signaling` and `websocket` — they show the two halves agree with
+`AGENTS.md` names for `webrtc_signaling` and `websocket` — they show the two halves agree with
 each other, not that either matches the spec — and `TestBroker` is additionally the same class
 as `dhcp`'s in-test RFC 2131 decoder: an independent *reading*, not an independent
 *implementation*.

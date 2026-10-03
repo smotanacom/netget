@@ -4,7 +4,7 @@ use crate::{
         protocol_trait::Protocol,
         ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
     },
-    protocol::{ConnectContext, EventType},
+    protocol::{ConnectContext, EventType, LogTemplate},
     state::AppState,
 };
 use anyhow::{ensure, Result};
@@ -28,7 +28,12 @@ pub static CONNECTED: LazyLock<EventType> = LazyLock::new(|| {
         "connect_rpc_connected",
         "Binary ConnectRPC HTTP/1.1 connection ready",
         vec![
-            field("remote_addr", "string", "Connected peer", true),
+            field(
+                "remote_addr",
+                "string",
+                "Connected HTTP/1.1 peer address as host:port",
+                true,
+            ),
             field("services", "array", "Internal schema's service names", true),
             field(
                 "tls_verified",
@@ -132,7 +137,13 @@ impl Protocol for ConnectRpcClientProtocol {
                 description: description.into(),
                 parameters,
                 example,
-                log_template: None,
+                log_template: Some(LogTemplate::new().with_info(match name {
+                    "connect_rpc_call" => "ConnectRPC call {call_id} queued",
+                    "connect_rpc_cancel" => "ConnectRPC call {call_id} cancellation requested",
+                    "disconnect" => "ConnectRPC client disconnect requested",
+                    "wait_for_more" => "ConnectRPC client waiting for another event",
+                    _ => "ConnectRPC client action executed",
+                })),
             }
         };
         vec![
@@ -147,7 +158,12 @@ impl Protocol for ConnectRpcClientProtocol {
                         true,
                     ),
                     field("service", "string", "Fully qualified service name", true),
-                    field("method", "string", "Method name", true),
+                    field(
+                        "method",
+                        "string",
+                        "Method name declared by the selected protobuf service",
+                        true,
+                    ),
                     field(
                         "request",
                         "object",

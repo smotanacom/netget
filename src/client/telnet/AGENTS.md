@@ -82,7 +82,7 @@ genuinely be re-entered. Copying its shape here bought nothing and described a
 concurrency this client does not have. The struct now holds the model's memory and
 nothing else.
 
-(The root `CLAUDE.md` records the same shape one level up: `state/machine.rs` defines
+(The root `AGENTS.md` records the same shape one level up: `state/machine.rs` defines
 a generic `StateMachine<S>` that nothing uses, and every protocol hand-rolls a copy.)
 
 **Backpressure still works**, because it is TCP's: while an LLM call is in flight this
@@ -245,7 +245,7 @@ fast. E2E: `tests/client_handle_test.rs`.
 
 ## Testing Strategy
 
-See `tests/client/telnet/CLAUDE.md` for E2E testing approach.
+See `tests/client/telnet/AGENTS.md` for E2E testing approach.
 
 ## References
 

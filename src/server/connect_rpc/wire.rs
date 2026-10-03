@@ -443,7 +443,27 @@ impl RpcMetadata {
 }
 pub fn metadata_action() -> crate::llm::actions::ActionDefinition {
     use crate::llm::actions::{ActionDefinition, Parameter};
-    ActionDefinition {name:"connect_rpc_metadata".into(),description:"Replace bounded ASCII response metadata; headers before first message, trailers before finish".into(),parameters:vec![Parameter{name:"phase".into(),type_hint:"string".into(),description:"headers or trailers".into(),required:true},Parameter{name:"metadata".into(),type_hint:"object".into(),description:"At most 16 lowercase ASCII keys/string values, 8 KiB; no reserved or binary names".into(),required:true}],example:json!({"type":"connect_rpc_metadata","phase":"trailers","metadata":{"x-note":"done"}}),log_template:None}
+    use crate::protocol::LogTemplate;
+    ActionDefinition {
+        name: "connect_rpc_metadata".into(),
+        description: "Replace bounded ASCII response metadata; headers before first message, trailers before finish".into(),
+        parameters: vec![
+            Parameter {
+                name: "phase".into(),
+                type_hint: "string".into(),
+                description: "Set headers before the first response message, or trailers before finishing the RPC".into(),
+                required: true,
+            },
+            Parameter {
+                name: "metadata".into(),
+                type_hint: "object".into(),
+                description: "At most 16 lowercase ASCII keys/string values, 8 KiB; no reserved or binary names".into(),
+                required: true,
+            },
+        ],
+        example: json!({"type":"connect_rpc_metadata","phase":"trailers","metadata":{"x-note":"done"}}),
+        log_template: Some(LogTemplate::new().with_info("ConnectRPC response metadata replaced")),
+    }
 }
 pub fn validate_metadata_action(action: &Value) -> anyhow::Result<()> {
     anyhow::ensure!(

@@ -81,5 +81,5 @@ https://prometheus.io/docs/instrumenting/exposition_formats/,
 https://prometheus.io/docs/instrumenting/content_negotiation/,
 https://github.com/prometheus/OpenMetrics/blob/v1.0.0/specification/OpenMetrics.md.
 Independent exporter evidence and exact environment are in
-`tests/client/prometheus/CLAUDE.md`. Maturity remains Experimental: no new pcap or
+`tests/client/prometheus/AGENTS.md`. Maturity remains Experimental: no new pcap or
 fuzz evidence is claimed.

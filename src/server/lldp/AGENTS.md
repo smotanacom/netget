@@ -9,7 +9,7 @@ operator reads. There is no request, no response and no acknowledgement.
 libpcap capture and injection and never opens a `SOCK_RAW`. On Linux both come from
 `CAP_NET_RAW`, but on macOS a user in the ChmodBPF group has capture and not raw sockets, so
 declaring `RawSockets` would refuse a host that can in fact run it. That is the
-"don't claim more than you need" rule the root `CLAUDE.md` records for `ospf`, which declared
+"don't claim more than you need" rule the root `AGENTS.md` records for `ospf`, which declared
 `Root` when it wanted `CAP_NET_RAW`. `arp`, `datalink` and `isis` — the other pcap-based L2
 protocols — all declare `PacketCapture` too.
 **Connectionless**: declared, so the 10-second idle sweep reaps the per-neighbour entries.
@@ -39,7 +39,7 @@ unreadable to a model and would leave nothing for it to decide.
 The raw transport needs `CAP_NET_RAW` / `/dev/bpf*`, which nothing in this repository has, so
 the transport can never be executed here. The frame format can be, and is — against literal
 specification bytes in `tests/server/lldp/codec_test.rs`. This is the `bluetooth_ble_beacon`
-precedent the root `CLAUDE.md` describes: *"payload construction is pure and exhaustively
+precedent the root `AGENTS.md` describes: *"payload construction is pure and exhaustively
 unit-tested against literal spec bytes; its BlueZ transport has never been compiled or run"*.
 `metadata().notes` says which half is which, which is what `Experimental` is for.
 
@@ -149,7 +149,7 @@ Two defaults worth knowing, both chosen because the alternative would misreprese
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-LLDP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and it is one of
+LLDP is in the **deliberately-silent** class the root `AGENTS.md` catalogues, and it is one of
 the clearer cases. Every frame the protocol defines is a *positive assertion* that a device with
 a given identity exists on this link, and a neighbour writes it straight into its topology table
 and shows it to an operator. There is no error frame, no NAK and no refusal message.
@@ -194,7 +194,7 @@ there is nothing honest to claim.
 - **Not proven**: the raw-Ethernet transport. No frame this code produced has reached a real
   LLDP neighbour. No third-party LLDP peer is runnable in the environment that tests it.
 
-The bar for Beta, per the root `CLAUDE.md`, is *a real independent peer completing a real
+The bar for Beta, per the root `AGENTS.md`, is *a real independent peer completing a real
 exchange*. Here is the experiment that would do it, and it needs no hardware — **this machine
 has the `feth` driver** (`sysctl net.link.fake.txstart` is `1`):
 
@@ -217,7 +217,7 @@ fields exactly as the model wrote them, and `lldpd`'s own advertisements arrive 
 
 **This has not been run.** It needs root, which no agent here has. Do not claim it, and do not
 promote on the codec tests alone — that is the mistake `wireguard` made, and the correction is
-recorded in the root `CLAUDE.md`.
+recorded in the root `AGENTS.md`.
 
 ### `lldpcli` is installed, and it is NOT a way to do this
 
@@ -237,7 +237,7 @@ point it at a NetGet server.
 The real peer is still `lldpd` itself, on the other end of a `feth` pair, exactly as the recipe
 above describes — and that still needs root and still needs NetGet's never-executed pcap
 transport. A test requiring root could only be `#[ignore]`d or skip-gated, and the root
-`CLAUDE.md` disqualifies both as evidence. **So no LLDP test was written in that pass, on
+`AGENTS.md` disqualifies both as evidence. **So no LLDP test was written in that pass, on
 purpose**: contriving one against `lldpcli` would have produced something that looks like
 third-party evidence and is not.
 

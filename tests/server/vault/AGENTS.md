@@ -11,7 +11,9 @@ The child runs with a **cleared environment** (`vault()` in `real_client_test.rs
 temp `HOME` so no `~/.vault-token` or token helper is read, `VAULT_ADDR` at NetGet and the test's
 own `VAULT_TOKEN`. No real Vault is involved.
 
-`require_tool("vault")` **hard-fails** when the CLI is absent.
+`require_tool("vault")` searches `PATH` first, including the workflow's pinned
+owned peer directory, then the shared Homebrew/Linux installation fallbacks.
+It **hard-fails** when the CLI is absent.
 
 ## Files
 

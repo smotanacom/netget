@@ -338,7 +338,7 @@ database and advertising state — that is a CoreBluetooth reality, not a NetGet
 When the LLM answers a `bluetooth_read_request` without a `respond_to_read` action, the read falls
 back to the characteristic's last stored value. That fallback used to acquire the lock with
 `futures::executor::block_on(server_data.lock())` inside a synchronous `unwrap_or_else` closure —
-a blocking call on a tokio worker thread, the exact antipattern the root `CLAUDE.md` documents
+a blocking call on a tokio worker thread, the exact antipattern the root `AGENTS.md` documents
 (its panic is swallowed by the `tokio::spawn` running the event loop, so the server looks healthy
 while the read dies). The event loop is already async at that point, so the lock is now simply
 `.await`ed. (IMPROVEMENTS item 3.)
@@ -444,7 +444,7 @@ Full specifications: https://www.bluetooth.com/specifications/assigned-numbers/
 - Verified working on macOS 26 / Apple Silicon: adapter powers on, services register, advertising
   starts, and all three `tests/server/bluetooth_ble` e2e tests pass. See `docs/archive/MACOS_SUPPORT.md` at the
   repo root for the commands and evidence.
-- The `libdbus` dependency in the root `CLAUDE.md` table is Linux-only — macOS links
+- The `libdbus` dependency in the root `AGENTS.md` table is Linux-only — macOS links
   `CoreBluetooth.framework` and needs no installed package.
 - A cached `initial_value` is only legal on a read-only characteristic; see the caveat above.
 - Production apps require .app bundle with Info.plist
@@ -499,7 +499,7 @@ this is an upstream limit, not a version lag.
 `bluetooth_ble_beacon` no longer builds on this stack for that reason. It talks to BlueZ
 directly through `bluer` (Linux only), which is where `ManufacturerData` and `ServiceData` live,
 and refuses to start elsewhere. It is not a profile wrapper any more and shares no code with
-this module — see `src/server/bluetooth_ble_beacon/CLAUDE.md`. If this base ever gains an
+this module — see `src/server/bluetooth_ble_beacon/AGENTS.md`. If this base ever gains an
 advertising-payload API, that is a chance to re-unify them, not a reason to assume they are
 still related.
 

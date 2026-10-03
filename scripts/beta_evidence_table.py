@@ -185,9 +185,14 @@ SELF_SERVED_MARKERS = (
 
 
 def declared_states(side: str) -> dict[str, str]:
-    """Every protocol's own DevelopmentState on this side, keyed by its source directory."""
+    """Each protocol's own state, declared through a metadata builder or struct field.
+
+    OSPF's client constructs ProtocolMetadataV2 directly; scanning only .state(...)
+    silently omitted it from the inventory.
+    """
     pattern = re.compile(
-        r"\.state\(\s*(?:crate::protocol::metadata::)?DevelopmentState::([A-Za-z]+)"
+        r"(?:\.state\(\s*|\bstate\s*:\s*)"
+        r"(?:crate::protocol::metadata::)?DevelopmentState::([A-Za-z]+)"
     )
     out: dict[str, str] = {}
     base = ROOT / "src" / side

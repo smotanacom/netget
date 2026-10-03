@@ -113,7 +113,7 @@ downstream reads it and every endpoint here is a GET.
 **Maturity stays `Experimental`, deliberately.** The tests drive `reqwest`, a generic HTTP
 client: it proves the server answers HTTP and that the bodies are the JSON arrays Spark's API
 documents, not that a real Spark client or History Server UI accepts them. That is the
-generic-HTTP-client exclusion the root `CLAUDE.md` lists, and it is the whole distance between
+generic-HTTP-client exclusion the root `AGENTS.md` lists, and it is the whole distance between
 this rating and Beta.
 
 **Request-only.** `metadata()` declares `.request_only(…)`: "The Spark REST API is HTTP
@@ -148,7 +148,7 @@ owns every read once `serve_connection` starts and keeps polling the connection 
 LLM round-trip. It watches `ConnectionActivity` instead, which reports a connection with work in
 flight as not idle at all — so the model round-trip, and a `manual` rule parking an event for a
 human (`src/state/intercepts.rs`, 300s by default), sit outside every deadline by construction.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse: TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse: TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **One residual, stated rather than hidden.** The first-byte bound is discharged the moment any

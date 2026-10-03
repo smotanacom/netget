@@ -175,7 +175,7 @@ endpoints are hit repeatedly. Current tests focus on functionality breadth, not 
 
 ### 8-10. Failure semantics (`failure_semantics_test.rs`)
 
-`CLAUDE.md` names HTTP as the reference other protocols copy for answering a peer on LLM
+`AGENTS.md` names HTTP as the reference other protocols copy for answering a peer on LLM
 failure, and nothing tested it until these. All three point the server at a mock that
 answers the startup instruction and nothing else, so every `http_request` event is a
 backend failure.

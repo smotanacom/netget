@@ -322,7 +322,7 @@ Handled with `context()` to provide useful error messages.
 
 ## Testing Strategy
 
-See `tests/client/npm/CLAUDE.md` for E2E testing approach.
+See `tests/client/npm/AGENTS.md` for E2E testing approach.
 
 ## Example Prompts
 
@@ -426,9 +426,9 @@ timeout protects the caller either way.
 
 **A scheme-less address is no longer discarded, and a missing one no longer reaches the vendor.** `remote_addr` without `http://`/`https://` used to be thrown away and silently replaced with the public registry, so an operator who typed `127.0.0.1:8080` had their requests sent there with no warning — and this protocol's own startup example (`"remote_addr": "registry.npmjs.org"`) took exactly that branch. A host now gets the `https://` it was missing.
 
-An *empty* address used to fall back to the public registry with an INFO line, which is the class the root `CLAUDE.md` calls "a client that loses its target must fail, never fall back to the real service". It is milder than the DynamoDB case — nothing here is signed with anybody's credentials — and it is the same shape: an address that merely failed to arrive is indistinguishable, further down, from one the caller deliberately omitted. `resolve_registry_url` returns `Result` and refuses, naming a localhost example, exactly as `openai::api_base_for` does. The protocol's own name as an address (`"npm"`) refuses too: it reaches the resolver when a caller fills `remote_addr` with the thing it is starting rather than the thing it is talking to, and it used to become the public registry as well. `tests/client/npm/registry_target_test.rs` pins both refusals **and** that an explicitly named public registry is still honoured — a guard that refused everything would satisfy the first assertion alone.
+An *empty* address used to fall back to the public registry with an INFO line, which is the class the root `AGENTS.md` calls "a client that loses its target must fail, never fall back to the real service". It is milder than the DynamoDB case — nothing here is signed with anybody's credentials — and it is the same shape: an address that merely failed to arrive is indistinguishable, further down, from one the caller deliberately omitted. `resolve_registry_url` returns `Result` and refuses, naming a localhost example, exactly as `openai::api_base_for` does. The protocol's own name as an address (`"npm"`) refuses too: it reaches the resolver when a caller fills `remote_addr` with the thing it is starting rather than the thing it is talking to, and it used to become the public registry as well. `tests/client/npm/registry_target_test.rs` pins both refusals **and** that an explicitly named public registry is still honoured — a guard that refused everything would satisfy the first assertion alone.
 
-**One `reqwest::Client`, built once, off the runtime.** Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately. Building a client is blocking — rustls setup plus the platform root store, which on macOS reads the keychain through Security.framework — so this was the systemic defect `CLAUDE.md` records as having stalled a whole client runtime, paid per request.
+**One `reqwest::Client`, built once, off the runtime.** Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately. Building a client is blocking — rustls setup plus the platform root store, which on macOS reads the keychain through Security.framework — so this was the systemic defect `AGENTS.md` records as having stalled a whole client runtime, paid per request.
 
 ## Browser build
 
@@ -439,3 +439,5 @@ so what reaches the wire is unchanged; on wasm32 it is the shared hyper HTTP/1.1
 transport reads a response whole before `chunk()` yields it, so the streaming checks below the
 round trip see one chunk. A scheme-less registry address gets `https://` natively and `http://` in the browser, whose registries are servers on the page's virtual network; an explicit `https://` registry — the public one included — is refused there with the reason. `web/test/smoke.mjs` proves it in the bundle: `[ + npm client ]` on NetGet's `npm` server connects (`http://127.0.0.1:<port>`), `[ send ]` of `get_package_info` reaches the server's model and comes back `Executed` with the version it answered, and the packument it wrote is in the `npm_package_info_received` event parked on the client; `https://registry.npmjs.org` is refused with the reason.
 
+
+The dashboard pairs NetGet servers with explicit `http://127.0.0.1:<bound-port>` URLs on both native and browser builds. Native pairing exchanges are covered in `tests/dashboard_create_flow_test.rs`.

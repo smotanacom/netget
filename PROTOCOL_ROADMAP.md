@@ -156,7 +156,7 @@ the well-known port does.
 | NATS | `nats` | Joins a real NATS fabric; LLM reacts to live messages and publishes | **`nats-server` v2.14.6 routes and `async-nats` requests — independent implementations on *both* sides** | `landed` (`a982ccc1`) — **Beta** |
 | Ident | `ident` | Queries a remote identd — what an IRC server does. Makes the existing `irc` server able to do genuine ident lookups | **None, structurally**: RFC 1413 has no configurable port, so nothing can be aimed at an ephemeral one | `landed` (`bec74f5d`) — Experimental |
 | LLMNR | `llmnr` | Resolves a name via LLMNR multicast; collects a whole window and raises `llmnr_conflicting_responses` when responders disagree | Real Windows / systemd-resolved hosts. **`llmnr-poison` considered and declined — see below** | `landed` (`f415efb4`) — Experimental |
-| STOMP | `stomp` | Same shape as NATS, against ActiveMQ/RabbitMQ | Needs a real broker. **The two assertions that would catch a buggy client past a lenient one are written down** in `src/client/stomp/CLAUDE.md` | `landed` (`702eb22f`) — Experimental |
+| STOMP | `stomp` | Same shape as NATS, against ActiveMQ/RabbitMQ | Needs a real broker. **The two assertions that would catch a buggy client past a lenient one are written down** in `src/client/stomp/AGENTS.md` | `landed` (`702eb22f`) — Experimental |
 | Gopher | `gopher` | Browses gopherspace; LLM navigates menus | **`geomyidae`/`gophernicus`/`pygopherd` all bind an ordinary port and run fine on loopback** — the external-endpoint ban was never the blocker; none is installed, and a hard-fail (not skip) test would earn Beta | `landed` (`be405db9`) — Experimental |
 | Finger | `finger` | Queries a remote finger daemon; **does not parse the response** (RFC 1288 specifies no format) — raw text to the model, with any scraped field marked `GUESS ONLY` | No packaged daemon anywhere (no Homebrew formula for `bsd-finger`/`fingerd`/`netkit`), but a daemon *can* bind a high port, so Beta is achievable in principle | `landed` (`e3f58a57`) — Experimental |
 
@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **27 / 72**; **45 remain**. Completed scopes comprise ten new families, thirteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 42 new families, Bolt/OCI clients and GraphQL subscriptions.
+- Completed: **30 / 72**; **42 remain**. Completed scopes comprise twelve new families, fourteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 40 new families, the OCI client and GraphQL subscriptions.
 - Integration branch: `protocol-expansion-20261001`. All completed scopes pass coordinator gates. Signed implementations and reviewed corrections merge into local master and push directly to origin/master; no GitHub PRs. The content-preserving `AGENTS.md` migration remains integrated.
-- Agent `queue_continue`: Nostr60 passes final validation; Bolt61 implementation now includes the identified malformed PULL/DISCARD parser and outbound depth/pre-clone fixes. OCI and assigned service APIs follow.
-- Agent `http3_continue`: gRPC-Web69 passes final validation, including through-EOF admission; Connect RPC13 is active, followed by assigned RPC and streaming families.
-- Agent `metrics_continue`: remote write70 and native NetFlow v971 pass final validation; TACACS+07 is active with calibrated independent legacy AAA peers. Assigned industrial and framed-service families follow.
-- Three workers maximum, one guarded build at a time. Last published batch `013835ee` passed **16 of 17 protocol-pair jobs**; Vault CLI discovery caused the sole failure and is corrected by `cb48aec5` with four root regression checks passing. Its general run passed **11 of 13 job instances**; TLS provider declaration (`7d0d067e`, two checks pass) and gRPC helper/module reachability (`cb48aec5`, audit passes) are corrected. Full remote CI is not claimed green. The new workflow requires **21 protocol-pair jobs**, including all four batch9 scopes.
+- Agent `queue_continue`: Bolt61 passes final integration; OCI62 has 27 client and 21 server checks on the refreshed base, with final signed source/integration gates pending. NETCONF peer calibration and the remaining assigned service APIs follow.
+- Agent `http3_continue`: Connect RPC13 passes final integration; gNMI04 Capabilities/Get/Set/subscriptions are active, followed by assigned RPC and streaming families.
+- Agent `metrics_continue`: TACACS+07 and shared startup/privacy corrections pass final integration; Diameter08 has calibrated independent Python/Go peers and active native implementation, followed by assigned industrial and framed-service families.
+- Three workers maximum, one guarded build at a time. Remote master advanced to `88657066`; its **21 protocol-pair jobs** and **14 general job instances** pass ([pairs](https://github.com/smotanacom/netget/actions/runs/37105040499), [general](https://github.com/smotanacom/netget/actions/runs/37105040567)). Signed merge `ed66d10f` preserves that work. Batch 10 passed the refreshed coordinator gates; its workflow requires **24 mandatory protocol-pair jobs**, whose new remote executions await publication.
 
 ## New protocol checklist
 
@@ -934,12 +934,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: 13 server and 5 client tests passed with no skips. Official NUT 2.8.4 `upsc`/`upscmd` exercised discovery, variables and authenticated instant commands; the client read independent `upsd` + `dummy-ups`. Code `444dc681` and merge `b08302d9`; 30 shared checks also passed. Combined integration validation passed (see batch evidence below).
 
-- [ ] **07. TACACS+** — B/M; proposed feature `tacacs`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8907.html).
+- [x] **07. TACACS+** — B/M; proposed feature `tacacs`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8907.html).
   - Scope: Authentication, authorization, accounting and deterministic session/secret processing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: **17 server + 11 client checks** pass at 100 threads with unchanged nwaples/tacplus 0.0.3 and Python tacacs 2.6 SDKs, literal packet fixtures and the NetGet pair. Selected RFC8907 legacy TCP authentication (ASCII/PAP), authorization and accounting use bounded fresh sessions, secret processing and shared volatile recording before accounting SUCCESS. Printable ASCII identities, no durable AAA store, SINGLE_CONNECT and RFC9887 TLS profile excluded; Experimental. Source `a418922d`, runtime event placement `6b9ca9f5`, central registry/CI/capture `8c0e486a`; reproduction in corresponding server/client test `AGENTS.md` files.
 
 - [ ] **08. Diameter** — C/L; proposed feature `diameter`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6733.html).
   - Scope: Base peer lifecycle plus a documented useful AAA application; typed AVPs, requests/answers and errors.
@@ -976,12 +977,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **13. Connect RPC** — B/M-L; proposed feature `connect_rpc`. [Specification/reference](https://connectrpc.com/docs/protocol/).
+- [x] **13. Connect RPC** — B/M-L; proposed feature `connect_rpc`. [Specification/reference](https://connectrpc.com/docs/protocol/).
   - Scope: Protobuf-defined RPC with Connect framing, structured messages and errors; gRPC-Web tracked separately below.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: **13 server + nine client checks** pass at 100 threads against pinned independent Connect-ES 2.2.0 / protobuf-es 2.16.0 Node/Fetch transports and the NetGet pair. Native binary protobuf HTTP/1.1 unary and server streaming, Connect errors/EndStream, gzip, bounded metadata, real 30-second first-byte and 120-second empty/nonempty idle limits are verified. JSON-message/GET/client-bidi/reflection/TLS/browser/CORS/pcap/fuzz claims are excluded; Experimental. Sources `9b5b9488`, refreshed `9938b6e7`; central `42cae6ca`/`8c0e486a`, explicit backpressure fixture `00af53ab`; reproduction in corresponding server/client test documents.
 
 - [ ] **14. A2A** — B/M-L; proposed feature `a2a`. [Specification/reference](https://a2a-protocol.org/latest/specification/).
   - Scope: Pin released version/binding; agent discovery, messages, tasks, streaming/cancellation as advertised.
@@ -1335,11 +1337,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - Selected native scope: NIP-01 signed publishing, bounded REQ/CLOSE subscriptions and optional NIP-11 information. Rust validates event IDs and BIP340 signatures; handler results are typed. WS and verified native WSS are supported; unknown publish outcome stays unknown, subscriptions remain volatile, and AUTH/COUNT/browser execution/positive WSS interoperability are excluded from this evidence.
   - Evidence: coordinator **20 client + 33 preserved relay checks** pass at 100 test threads using independent nak 0.20.7 and rust-nostr SDK 0.45.1, the NetGet pair and real OpenSSL certificate rejection. Existing relay packet-capture checks also pass. Depth/node/retained-byte preflight precedes copying, queues/tasks are bounded, and stop cancels parked handlers. Source `dd9b01a2`; feature `nostr`; reproduction and exclusions in `tests/client/nostr/AGENTS.md`.
 
-- [ ] **61. Bolt client**.
+- [x] **61. Bolt client**.
   - Scope: Negotiated Neo4j-compatible sessions, queries/results/errors against existing server and independent server.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: **29 new client + 69 existing server checks** pass at 100 threads with official isolated Neo4j Community 5.26.31, Java21 and bundled cypher-shell 5.26.31 / Driver5.28.15. All eight CLI cases also pass with cypher-shell 2026.09.0 / Driver6.2.1. Selected direct Bolt5.x negotiation/authentication, parameterized RUN/PULL/DISCARD, explicit transactions, RESET, typed primitive/graph/temporal/spatial results, unknown-outcome errors, bounded tasks/queues and cancellation are implemented. Native client TLS verifies WebPKI/name; untrusted-certificate rejection is tested, with no positive trusted-local TLS claim. Routing pools, Bolt6/manifest negotiation, typed complex inputs, replay, local graph/query stores and pcap/fuzz/conformance are excluded; client remains Experimental. Server arity/outbound pre-clone bounds `4ec0de1e`, native CLI compatibility `995ff86f`, client `916f63f9`, refreshed `1f0e484b`, mandatory peer CI `bdec771e`; reproduction in `tests/client/bolt/AGENTS.md`.
 
 - [ ] **62. OCI Registry client**.
   - Scope: Manifest/blob operations, digest validation and authentication flows.
@@ -1466,6 +1469,15 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 - Final **all-target** clippy correctness/suspicious/unused-must-use gates and whole-package formatting pass with `tcp,prometheus-remote-write,vault,grpc,grpc-web,nostr,netflow-v9`; advisory warnings remain. Module reachability finds **2565 reachable source/test files, zero allowlisted**, all formatted. Both workflow files, **133 shell steps** and two native peer bootstrap ASTs parse. Required independent peer downloads are versioned, bounded and hash-verified; Linux executions await the next publication run. Capture carrier mappings and aliases are checked for HTTP/cflow; this mapping is not new protocol packet-capture maturity evidence.
 - Reproduce using the shared guard and this feature bundle with `--test server --test client -- <grpc_web|grpc|nostr|netflow_v9>:: --test-threads=100`, the three gRPC wire/value/tonic targets and the34 shared targets recorded in owned logs. Remote write24 was validated first with `tcp,prometheus-remote-write,vault,grpc`; unchanged source retains that evidence. Peer environments are recorded in each protocol test document. Logs: `.protocol-expansion-20261001/logs/batch9-*`, `item69-*` and `agent-*`; initial source failures and invalid post-EOS stress attempts remain recorded separately from successful runs. The corrected report index was rebuilt from retained logs after a follow-up script overwrote its index; underlying logs were retained.
 - Owned package-only maintenance under the shared lock reclaimed a Cargo-reported **2.0 GiB**, then **1.9 GiB** in separate measured cleanups. Download/dependency caches, peers, sources, logs, unrelated artifacts and processes were retained. Free space after final gates is approximately **40 GiB**. All builds retain the same30 GiB start floor and25 GiB stop reserve; observed unrelated volume changes are not attributed to cleanup.
+
+- **Batch 10 — 07 TACACS+, 13 Connect RPC and 61 Bolt client:** final root evidence totals **206 protocol/neighbor checks**: Connect22, gRPC-Web20, native gRPC38, TACACS28 and Bolt98, all at 100 test threads. A separate **26 framing/converter/tonic checks** pass. All final results have zero failed or ignored cases. Independent peer versions, selected scopes and separate signed source changes are recorded on each item; all three new scopes remain Experimental.
+- Final shared/privacy/startup controls additionally enable HTTP: **149 shared checks across35 active targets**, **148 privacy checks across20 active targets** and **45 startup/management checks across8 active targets** pass. These lists overlap; counts describe executions, not distinct tests. This activates the real HTTP-gated management/followup controls rather than counting cfg-disabled targets. Shared fixes `201c2a82`, `46d9dc11` and `495bb4e1` preflight constructed JSON before copies/drop and keep credential-bearing model/script diagnostics private while preserving typed values and the numeric retryable overload category.
+- Initial integration failures are retained: omitted TACACS canonical names, Connect's incorrect compiled-out feature slug, a backpressure test that did not explicitly constrain peer buffering, invisible TACACS runtime event selection and Bolt's CI filter-list shape. Corrections add the actual Cargo-feature contract, move the same reply mapping beside its runtime caller and require nonzero unignored peer test counts in the three new jobs. Both HTTP bindings verify a successful multi-megabyte wire prefix and a constrained peer receive window before leaving output unread; the one-second RPC and actual 30/120-second connection limits remain intact. Full Connect and Web suites, including all long timer cases, pass after correction.
+- Final all-target correctness/suspicious/unused-must-use clippy and whole-package formatting pass with `tcp,http,connect_rpc,grpc-web,tacacs,bolt`; advisory warnings remain. Module discovery finds **2603 reachable source/test files, zero allowlisted**, all formatted. Workflow validation parses24 mandatory jobs and91 shell run steps (192 total action/setup/run steps), plus the Neo4j bash/embedded-Python and TACACS installer syntax. New Linux peer jobs await publication; the earlier published21/21 and13/13 CI results apply to5192c107.
+- Reproduction: `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --locked --offline --no-default-features --features tcp,connect_rpc,grpc-web,tacacs,bolt --test server --test client --no-fail-fast -- PROTOCOL:: --test-threads=100`, once per `connect_rpc`, `grpc_web`, `grpc`, `tacacs`, `bolt`, with owned native peer environments from `validate_batch10.py` and each test document. Shared/privacy/startup/lint runs use the additional `http` feature. Exact commands, versions and final log selection are retained in `logs/batch10-final-verified-results.json`; initial and diagnostic logs remain separate. Free space after final gates is approximately35GiB, with the unchanged30/25GiB build guard and one compiled target. No unrelated artifacts or processes were removed.
+
+- **Batch 10 refresh against current master:** preserved published `88657066` in signed merge `ed66d10f`, including prompt/browser/final-action behavior, shared privacy fixtures and FTP/Bitcoin registry regressions. Complete independent role gates still pass **206 checks**, plus **26 framing/converter checks** and **19 bridge/prompt checks**. The newly required declaration audit exposed **147 repeated findings** in new action/event lists; signed correction `55f48f44` supplies explanatory Connect/TACACS/Bolt descriptions, canonical boolean hints and safe operation-specific logs. Its mandatory CI jobs now run the upstream declaration, startup-example and executable-example gates. The audit and baseline remain unchanged.
+- The complete corrected refresh passes **188 shared checks across38 targets**, **148 privacy checks across20 targets** and **45 startup/management checks across8 targets**, with zero failures. One existing shared-audit diagnostic is intentionally ignored because it measures stale baseline entries only with `all-protocols`; protocol, framing, privacy, startup and bridge/prompt tests have zero ignores. These overlapping lists count executions. All-target correctness/suspicious/unused-must-use clippy and whole-package formatting pass. Module discovery finds **2604 reachable files, zero allowlisted**, all formatted; the24 mandatory jobs,91 shell run steps and192 total steps parse. Exact final commands/logs are retained in `logs/batch10-master-refresh-final-verified-results.json`; initial audit failure evidence remains separate. The pre-Programme3 prefix retains upstream's one-line STOMP citation repair to `AGENTS.md`, rather than discarding it. Approximately33GiB remains free; the30/25GiB guard and owned shared target remain in force.
 
 ## Implementation and independent peer plan
 

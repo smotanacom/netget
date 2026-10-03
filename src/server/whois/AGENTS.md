@@ -163,7 +163,7 @@ every dialect treats as a remark and no client can mistake for a record:
 
 The two failure notices are **byte literals**, not a format string, so there is no
 placeholder anything derived from the error could reach. `crate::utils::WireFailure`
-classifies the error and is never rendered — see the root `CLAUDE.md` on the pass
+classifies the error and is never rendered — see the root `AGENTS.md` on the pass
 that put netget's own retry message on strangers' terminals. `decision=` tokens
 follow `src/server/radius/`: grep them to tell an outage from a model that chose
 to say nothing.

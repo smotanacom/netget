@@ -31,7 +31,7 @@ one action:
 {"type": "send_stp_bpdu", "root_priority": 0, "root_path_cost": 0}
 ```
 
-Point this at a lab segment. `tests/server/stp/CLAUDE.md` describes the isolated
+Point this at a lab segment. `tests/server/stp/AGENTS.md` describes the isolated
 `feth` pair to use.
 
 ## Why silence is the failure mode
@@ -40,7 +40,7 @@ Point this at a lab segment. `tests/server/stp/CLAUDE.md` describes the isolated
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-STP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and
+STP is in the **deliberately-silent** class the root `AGENTS.md` catalogues, and
 its case is among the strongest there.
 
 Every BPDU this server can emit is a *positive assertion about topology*. A
@@ -163,7 +163,7 @@ sends, and is one of the literals in the test.
 `ether dst 01:80:c2:00:00:00`. Receive on one handle, inject on a second from a
 dedicated thread. `spawn()` awaits a oneshot from the blocking task and returns
 `Err` unless the handle *and* its filter are genuinely open — the
-ARP/DataLink/ICMP/IS-IS fire-and-forget defect the root `CLAUDE.md` records is
+ARP/DataLink/ICMP/IS-IS fire-and-forget defect the root `AGENTS.md` records is
 designed out rather than left to be found later. Stopping is cooperative through
 `crate::utils::StopSignal`, because `JoinHandle::abort()` cannot interrupt a
 thread parked in `next_packet()`.
@@ -302,7 +302,7 @@ offset 35 is not parsed. No storage of any kind.
 * The codec, against literal specification bytes in **both** directions —
   configuration BPDU, RST BPDU and TCN, including the 1/256-second timer encoding
   at its exact offsets and the 4/12-bit priority packing. See
-  `tests/server/stp/CLAUDE.md` for the provenance of the literals and why they are
+  `tests/server/stp/AGENTS.md` for the provenance of the literals and why they are
   not circular evidence.
 * The whole decision path over the UDP transport, unprivileged: decode → event →
   handler/LLM dispatch → action → re-encode → transmit, with the response frame
@@ -323,7 +323,7 @@ offset 35 is not parsed. No storage of any kind.
 
 `Experimental` is therefore the honest rating and it is not close. Beta means
 "works against real clients", and nothing here has met a real client. Do not
-promote it on the codec tests alone — that is the mistake the root `CLAUDE.md`
+promote it on the codec tests alone — that is the mistake the root `AGENTS.md`
 records for `wireguard`, which held `Stable` on a test that mocked events the
 implementation did not have.
 

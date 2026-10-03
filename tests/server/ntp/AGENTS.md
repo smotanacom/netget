@@ -163,4 +163,4 @@ revisited in the same change. That is what happened: `build_kod_packet` was wire
 fail-open closed. `llm_failure_test.rs` asserts the same pair from the other direction
 (including the `INIT` kiss code), so neither the wire nor the token can move alone.
 
-See `src/server/ntp/CLAUDE.md`, "Failure behaviour".
+See `src/server/ntp/AGENTS.md`, "Failure behaviour".

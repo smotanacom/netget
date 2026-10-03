@@ -252,7 +252,7 @@ RUST_LOG=trace ./cargo-isolated.sh test --no-default-features --features nfs --t
 
 ## References
 
-- [NFS Client Implementation](../../../src/client/nfs/CLAUDE.md)
-- [NFS Server Implementation](../../../src/server/nfs/CLAUDE.md)
+- [NFS Client Implementation](../../../src/client/nfs/AGENTS.md)
+- [NFS Server Implementation](../../../src/server/nfs/AGENTS.md)
 - [Test Infrastructure](../../README.md)
 - [RFC 1813: NFSv3](https://tools.ietf.org/html/rfc1813)

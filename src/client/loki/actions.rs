@@ -4,6 +4,7 @@ use crate::llm::actions::{
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
 use crate::protocol::{
+    log_template::LogTemplate,
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
 };
@@ -23,7 +24,7 @@ impl LokiClientProtocol {
     }
 }
 pub fn write_action() -> ActionDefinition {
-    ActionDefinition{name:"push_loki_entries".into(),description:"Submit one validated typed Loki push, with explicit status/error/tenant/encoding completion and no automatic retries.204 means receiver acceptance.".into(),parameters:vec![parameter("batch","object","optional tenant_id,encoding json(default)/gzip_json/snappy_protobuf,streams[{labels:{name:value},entries:[{timestamp_ns:i64,line:string,structured_metadata:{name:value}(optional)}]}]",true)],example:json!({"type":"push_loki_entries","batch":{"tenant_id":"tenant-one","encoding":"snappy_protobuf","streams":[{"labels":{"app":"example"},"entries":[{"timestamp_ns":1700000000000000000i64,"line":"Hello 名","structured_metadata":{"trace_id":"123"}}]}]}}),log_template:None}
+    ActionDefinition{name:"push_loki_entries".into(),description:"Submit one validated typed Loki push, with explicit status/error/tenant/encoding completion and no automatic retries.204 means receiver acceptance.".into(),parameters:vec![parameter("batch","object","optional tenant_id,encoding json(default)/gzip_json/snappy_protobuf,streams[{labels:{name:value},entries:[{timestamp_ns:i64,line:string,structured_metadata:{name:value}(optional)}]}]",true)],example:json!({"type":"push_loki_entries","batch":{"tenant_id":"tenant-one","encoding":"snappy_protobuf","streams":[{"labels":{"app":"example"},"entries":[{"timestamp_ns":1700000000000000000i64,"line":"Hello 名","structured_metadata":{"trace_id":"123"}}]}]}}),log_template:Some(LogTemplate::new().with_info("Push Loki log entries"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -31,7 +32,7 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel logical session, parked handlers and pending HTTP exchange".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("Disconnect Loki client")),
     }
 }
 pub static LOKI_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -43,13 +44,13 @@ pub static LOKI_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_parameters(vec![parameter(
         "remote_addr",
         "string",
-        "HTTP origin",
+        "Cleartext HTTP origin of the Loki push receiver",
         true,
     )])
     .with_actions(vec![write_action(), disconnect()])
 });
 pub static LOKI_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("loki_push_response","Typed push outcome;204accepted,260blocked,other supported error statuses explicit. No retry/persistence/atomicity promise.",write_action().example).with_parameters(vec![parameter("tenant_id","string","Submitted tenant or fake",true),parameter("encoding","string","Submitted carrier",true),parameter("stream_count","number","Submitted streams",true),parameter("entry_count","number","Submitted entries",true),parameter("status","number","HTTP status",true),parameter("error","object|null","message for rejection, including260",true),parameter("retry_after_seconds","number|null","Numeric advice only",true)]).with_actions(vec![write_action(),disconnect()])
+    EventType::new("loki_push_response","Typed push outcome;204accepted,260blocked,other supported error statuses explicit. No retry/persistence/atomicity promise.",write_action().example).with_parameters(vec![parameter("tenant_id","string","Submitted tenant or fake",true),parameter("encoding","string","Carrier used for the submitted batch: json, gzip_json or snappy_protobuf",true),parameter("stream_count","number","Number of label streams in the submitted batch",true),parameter("entry_count","number","Number of log entries in the submitted batch",true),parameter("status","number","Receiver HTTP response status; 204 accepts the push, 260 blocks ingestion",true),parameter("error","object|null","message for rejection, including260",true),parameter("retry_after_seconds","number|null","Optional receiver retry delay in seconds; this client never retries automatically",true)]).with_actions(vec![write_action(),disconnect()])
 });
 impl Protocol for LokiClientProtocol {
     fn protocol_name(&self) -> &'static str {

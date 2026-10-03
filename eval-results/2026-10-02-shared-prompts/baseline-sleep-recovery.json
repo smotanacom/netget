@@ -1,0 +1,822 @@
+{
+  "schema": "netget.eval.v1",
+  "generated_at": "1790990974",
+  "model": "llama3.1:8b",
+  "runs_per_case": 5,
+  "seed": 42,
+  "temperature": null,
+  "determinism": "pass-rate over N independent runs with a pinned sampler seed; the seed makes an identical prompt answer identically, but each run's prompt carries its own ports and ids, so agreement is measured (totals.cases_*_agree) rather than assumed",
+  "totals": {
+    "cases_total": 6,
+    "cases_attempted": 6,
+    "cases_skipped": 0,
+    "runs_total": 30,
+    "runs_passed": 25,
+    "pass_rate": 0.8333333333333334,
+    "runs_recoverable": 0,
+    "pass_rate_with_lenient_parse": 0.8333333333333334,
+    "cases_with_repeats": 6,
+    "cases_verdicts_agree": 6,
+    "cases_actions_agree": 3
+  },
+  "protocols": [
+    {
+      "protocol": "gopher",
+      "client": "curl",
+      "independence": "protocol-client",
+      "instructions": 3,
+      "instructions_fully_passed": 2,
+      "runs": 15,
+      "runs_passed": 10,
+      "pass_rate": 0.6666666666666666,
+      "dominant_failures": [
+        "copied_example_content"
+      ],
+      "skipped_reason": null,
+      "runs_recoverable": 0
+    },
+    {
+      "protocol": "whois",
+      "client": "nc",
+      "independence": "generic-transport",
+      "instructions": 3,
+      "instructions_fully_passed": 3,
+      "runs": 15,
+      "runs_passed": 15,
+      "pass_rate": 1.0,
+      "dominant_failures": [],
+      "skipped_reason": null,
+      "runs_recoverable": 0
+    }
+  ],
+  "failure_modes": [
+    {
+      "mode": "copied_example_content",
+      "runs": 5,
+      "cases": [
+        "gopher/welcome-menu"
+      ],
+      "explanation": "The model reproduced text out of the action's own `example` and dropped what the operator asked for. Same defect as a `{{…}}` placeholder in an example, but invisible on the wire because the copied text looks plausible. An `example` is the strongest prompt a protocol has: whatever it contains is what a small model will send. Make the values obviously stand-ins, or generic enough that copying them is visibly wrong."
+    }
+  ],
+  "cases": [
+    {
+      "id": "whois/registrar-line",
+      "protocol": "whois",
+      "instruction": "Answer every query with a whois record whose registrar is NETGET-EVAL-REGISTRAR.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "contains [\"NETGET-EVAL-REGISTRAR\"]",
+      "note": "macOS whois segfaults with -p; driven with nc.",
+      "attempts": 5,
+      "passes": 5,
+      "pass_rate": 1.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": null,
+      "recoverable_runs": 0,
+      "verdicts_agree": true,
+      "actions_agree": false,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:21:27.202202Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:27.202398Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:27.202481Z DEBUG Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:27.202556Z DEBUG Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:27.202628Z DEBUG Executing action 4: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 4: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 54307",
+          "client_output": "Domain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 31.570227458
+        },
+        {
+          "run": 2,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:21:51.817245Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:51.817415Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:51.817502Z DEBUG Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:51.817583Z DEBUG Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:21:51.817666Z DEBUG Executing action 4: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 4: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 58747",
+          "client_output": "Domain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 24.67070975
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:22:06.030352Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:06.030518Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:06.030605Z DEBUG Executing action 2: Object {\"type\": String(\"close_connection\")}",
+            "2026-10-03T01:22:06.030658Z DEBUG Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 2: Object {\"type\": String(\"close_connection\")}",
+            "Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 59599",
+          "client_output": "Domain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 11.889900125
+        },
+        {
+          "run": 4,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:22:18.171487Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:18.171647Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:18.171734Z DEBUG Executing action 2: Object {\"type\": String(\"close_connection\")}",
+            "2026-10-03T01:22:18.171780Z DEBUG Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 2: Object {\"type\": String(\"close_connection\")}",
+            "Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 59682",
+          "client_output": "Domain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 12.142456917
+        },
+        {
+          "run": 5,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:22:49.614918Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:49.615134Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:49.615237Z DEBUG Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:49.615331Z DEBUG Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "2026-10-03T01:22:49.615424Z DEBUG Executing action 4: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}",
+            "Executing action 4: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrar\": String(\"NETGET-EVAL-REGISTRAR\")}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 59753",
+          "client_output": "Domain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\nDomain Name: netget.example\r\nRegistrar: NETGET-EVAL-REGISTRAR\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 33.969916
+        }
+      ]
+    },
+    {
+      "id": "whois/registrant-and-status",
+      "protocol": "whois",
+      "instruction": "For netget.example, report the registrant organisation as Example Holdings Ltd and the domain status as clientTransferProhibited.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "contains [\"Example Holdings\", \"clientTransferProhibited\"]",
+      "note": null,
+      "attempts": 5,
+      "passes": 5,
+      "pass_rate": 1.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": null,
+      "recoverable_runs": 0,
+      "verdicts_agree": true,
+      "actions_agree": false,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:23:07.363248Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 59943",
+          "client_output": "Domain Name: netget.example\r\nDomain Status: clientTransferProhibited\r\nRegistrant Organization: Example Holdings Ltd\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 17.688255875
+        },
+        {
+          "run": 2,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:23:15.545474Z DEBUG Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "2026-10-03T01:23:15.545573Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60017",
+          "client_output": "Domain Name: netget.example\r\nDomain Status: clientTransferProhibited\r\nRegistrant Organization: Example Holdings Ltd\r\n\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.71212275
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:23:21.341605Z DEBUG Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "2026-10-03T01:23:21.341719Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60306",
+          "client_output": "Domain Name: netget.example\r\nDomain Status: clientTransferProhibited\r\nRegistrant Organization: Example Holdings Ltd\r\n\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.798349667
+        },
+        {
+          "run": 4,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:23:27.076019Z DEBUG Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "2026-10-03T01:23:27.076123Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60337",
+          "client_output": "Domain Name: netget.example\r\nDomain Status: clientTransferProhibited\r\nRegistrant Organization: Example Holdings Ltd\r\n\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.734476875
+        },
+        {
+          "run": 5,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:23:32.753869Z DEBUG Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "2026-10-03T01:23:32.753979Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"close_connection\")}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"netget.example\"), \"registrant_organization\": String(\"Example Holdings Ltd\"), \"domain_status\": Array [String(\"clientTransferProhibited\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60361",
+          "client_output": "Domain Name: netget.example\r\nDomain Status: clientTransferProhibited\r\nRegistrant Organization: Example Holdings Ltd\r\n\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.677494333
+        }
+      ]
+    },
+    {
+      "id": "whois/no-match",
+      "protocol": "whois",
+      "instruction": "Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "matches /(?i)no match|not found|no entries|no data found/",
+      "note": null,
+      "attempts": 5,
+      "passes": 5,
+      "pass_rate": 1.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": null,
+      "recoverable_runs": 0,
+      "verdicts_agree": true,
+      "actions_agree": false,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:23:51.107232Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "2026-10-03T01:23:51.107399Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60391",
+          "client_output": "Domain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\nDomain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 20.706680625
+        },
+        {
+          "run": 2,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:24:06.075289Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "2026-10-03T01:24:06.075462Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60478",
+          "client_output": "Domain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\nDomain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 15.143671167
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:24:16.072859Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\")}",
+            "2026-10-03T01:24:16.073031Z DEBUG Executing action 1: Object {\"type\": String(\"send_error\"), \"message\": String(\"No match found for domain ending in .invalid\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\")}",
+            "Executing action 1: Object {\"type\": String(\"send_error\"), \"message\": String(\"No match found for domain ending in .invalid\")}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60536",
+          "client_output": "Domain Name: nothing.invalid\r\n\r\nError: No match found for domain ending in .invalid\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 9.774458583
+        },
+        {
+          "run": 4,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:24:28.927558Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "2026-10-03T01:24:28.927738Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60846",
+          "client_output": "Domain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\nDomain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 12.821646333
+        },
+        {
+          "run": 5,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:24:48.692517Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "2026-10-03T01:24:48.692703Z DEBUG Executing action 1: Object {\"type\": String(\"send_whois_response\"), \"response\": String(\"No match found for domain nothing.invalid\")}",
+            "2026-10-03T01:24:48.692783Z DEBUG Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "2026-10-03T01:24:48.692878Z DEBUG Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "Executing action 1: Object {\"type\": String(\"send_whois_response\"), \"response\": String(\"No match found for domain nothing.invalid\")}",
+            "Executing action 2: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}",
+            "Executing action 3: Object {\"type\": String(\"send_whois_record\"), \"domain\": String(\"nothing.invalid\"), \"domain_status\": Array [String(\"No match found\")]}"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60939",
+          "client_output": "Domain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\nNo match found for domain nothing.invalid\r\nDomain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\nDomain Name: nothing.invalid\r\nDomain Status: No match found\r\n\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 19.763273583
+        }
+      ]
+    },
+    {
+      "id": "gopher/welcome-menu",
+      "protocol": "gopher",
+      "instruction": "Serve a menu whose first item is labelled Welcome to NetGet.",
+      "client": "curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/",
+      "independence": "protocol-client",
+      "expectation": "contains [\"Welcome to NetGet\"]",
+      "note": null,
+      "attempts": 5,
+      "passes": 0,
+      "pass_rate": 0.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "copied_example_content",
+      "recoverable_runs": 0,
+      "verdicts_agree": true,
+      "actions_agree": true,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "copied_example_content",
+          "detail": "the model reproduced its own action's example (send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\") instead of what the instruction asked for",
+          "model_output": [
+            "2026-10-03T01:25:40.607151Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:25:40.607505Z DEBUG Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:25:40.607758Z DEBUG Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:25:40.608008Z DEBUG Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:25:40.608243Z DEBUG Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:61055/",
+          "client_output": "iWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 49.643811125
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "copied_example_content",
+          "detail": "the model reproduced its own action's example (send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\") instead of what the instruction asked for",
+          "model_output": [
+            "2026-10-03T01:26:25.746576Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:26:25.746876Z DEBUG Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:26:25.747086Z DEBUG Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:26:25.747287Z DEBUG Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:26:25.747482Z DEBUG Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:61399/",
+          "client_output": "iWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 45.1391505
+        },
+        {
+          "run": 3,
+          "verdict": "fail",
+          "failure_mode": "copied_example_content",
+          "detail": "the model reproduced its own action's example (send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\") instead of what the instruction asked for",
+          "model_output": [
+            "2026-10-03T01:27:03.538009Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:03.538308Z DEBUG Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:03.538516Z DEBUG Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:03.538713Z DEBUG Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:03.538910Z DEBUG Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:61644/",
+          "client_output": "iWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 37.792989708
+        },
+        {
+          "run": 4,
+          "verdict": "fail",
+          "failure_mode": "copied_example_content",
+          "detail": "the model reproduced its own action's example (send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\") instead of what the instruction asked for",
+          "model_output": [
+            "2026-10-03T01:27:43.232706Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:43.232967Z DEBUG Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:43.233140Z DEBUG Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:43.233301Z DEBUG Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:27:43.233465Z DEBUG Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:61914/",
+          "client_output": "iWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 39.6902945
+        },
+        {
+          "run": 5,
+          "verdict": "fail",
+          "failure_mode": "copied_example_content",
+          "detail": "the model reproduced its own action's example (send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\"; send_gopher_menu: \"Welcome to the gopher hole\"; send_gopher_menu: \"About this server\"; send_gopher_menu: \"/about.txt\"; send_gopher_menu: \"Search the archive\") instead of what the instruction asked for",
+          "model_output": [
+            "2026-10-03T01:28:25.830520Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:28:25.830767Z DEBUG Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:28:25.830940Z DEBUG Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:28:25.831109Z DEBUG Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "2026-10-03T01:28:25.831273Z DEBUG Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 1: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 2: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 3: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}",
+            "Executing action 4: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62216/",
+          "client_output": "iWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\niWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 42.598126542
+        }
+      ]
+    },
+    {
+      "id": "gopher/text-selector",
+      "protocol": "gopher",
+      "instruction": "When the selector /about is asked for, return the text NetGet eval gopher server.",
+      "client": "curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/0/about",
+      "independence": "protocol-client",
+      "expectation": "contains [\"NetGet eval gopher server\"]",
+      "note": null,
+      "attempts": 5,
+      "passes": 5,
+      "pass_rate": 1.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": null,
+      "recoverable_runs": 0,
+      "verdicts_agree": true,
+      "actions_agree": true,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:28:36.376378Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62355/0/about",
+          "client_output": "NetGet eval gopher server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 10.542183334
+        },
+        {
+          "run": 2,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:28:43.004041Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62403/0/about",
+          "client_output": "NetGet eval gopher server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 6.626823958
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:28:49.597460Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62445/0/about",
+          "client_output": "NetGet eval gopher server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 6.593918083
+        },
+        {
+          "run": 4,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:28:56.192243Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62468/0/about",
+          "client_output": "NetGet eval gopher server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 6.594313
+        },
+        {
+          "run": 5,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:29:02.772311Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62518/0/about",
+          "client_output": "NetGet eval gopher server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 6.580607291
+        }
+      ]
+    },
+    {
+      "id": "gopher/unknown-selector",
+      "protocol": "gopher",
+      "instruction": "Serve a menu at the root. For any other selector, say it was not found.",
+      "client": "curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/1/nowhere",
+      "independence": "protocol-client",
+      "expectation": "matches /(?i)not found|no such|does not exist|error/",
+      "note": null,
+      "attempts": 5,
+      "passes": 5,
+      "pass_rate": 1.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": null,
+      "recoverable_runs": 0,
+      "verdicts_agree": true,
+      "actions_agree": true,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:29:12.405992Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62551/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 9.631658125
+        },
+        {
+          "run": 2,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:29:18.309424Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62574/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.902948875
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:29:24.225586Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62604/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.917229584
+        },
+        {
+          "run": 4,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:29:28.279212Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62654/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 4.051611417
+        },
+        {
+          "run": 5,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-10-03T01:29:34.186419Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "executed_actions": [
+            "Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:62686/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.908028834
+        }
+      ]
+    }
+  ]
+}

@@ -54,7 +54,7 @@ host.
 That test does not exist, and it cannot be written to run unattended here. HID-over-GATT only
 becomes an input device after bonding, and `ble-peripheral-rust` 0.2 exposes no pairing or
 bonding control at all. Any adapter-claiming test would also have to be `#[ignore]`d so a
-100-thread run does not deadlock on the machine's single radio — and per the root `CLAUDE.md`,
+100-thread run does not deadlock on the machine's single radio — and per the root `AGENTS.md`,
 an `#[ignore]`d test is not evidence however good its reason.
 
 ## What this file used to say

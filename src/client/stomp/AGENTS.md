@@ -45,7 +45,7 @@ raised**:
 | socket closed | refused |
 
 This is exactly the strictness `async-stomp` applies to *our* server — its `Connector::connect()`
-refuses to hand back a transport otherwise. The server's own `CLAUDE.md` records that deleting
+refuses to hand back a transport otherwise. The server's own `AGENTS.md` records that deleting
 the `version` header from `CONNECTED` makes `async-stomp` fail while a hand-written test peer
 sailed past it. This client is on the strict side of that line, and
 `tests/client/stomp/e2e_test.rs` proves the check exists rather than assuming it.
@@ -182,7 +182,7 @@ Both omissions are deliberate and both are the *same* argument:
   boundaries: this loop parses whole frames and handles them one at a time in one task. Bytes
   arriving during a model call sit in the socket buffer — TCP's own backpressure. There is no
   window in which two model calls could overlap, so there is nothing to track.
-- **No `MAX_FOLLOWUP_DEPTH`.** The root `CLAUDE.md` requires a boxed, depth-capped recursive
+- **No `MAX_FOLLOWUP_DEPTH`.** The root `AGENTS.md` requires a boxed, depth-capped recursive
   call for clients whose action → event → action cycle is self-referential *in process*. This
   client's is not: every action puts a frame on the wire, and the answer arrives as another
   frame that the same read loop parses and reports. The chain continues by itself through the
@@ -226,7 +226,7 @@ That is a real exchange over a real socket between two processes, and it is wort
 catches genuine disagreements between the two halves. But it is *same-project* evidence. It
 shows that this repository agrees with itself, not that either half matches what a broker in
 the wild does — a shared misreading of the specification is invisible to it. The bar the root
-`CLAUDE.md` sets for Beta is "works against real clients", and by symmetry a client needs a real
+`AGENTS.md` sets for Beta is "works against real clients", and by symmetry a client needs a real
 *broker*.
 
 `async-stomp` cannot close the gap: it is a client, so it can only ever be our peer's opposite
@@ -279,7 +279,7 @@ None of it is hidden from the broker:
 
 ## Testing
 
-See `tests/client/stomp/CLAUDE.md`.
+See `tests/client/stomp/AGENTS.md`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features stomp \
@@ -289,4 +289,4 @@ See `tests/client/stomp/CLAUDE.md`.
 ## References
 
 - STOMP 1.2 specification: <https://stomp.github.io/stomp-specification-1.2.html>
-- `src/server/stomp/CLAUDE.md` — the other half, and the codec's own documentation
+- `src/server/stomp/AGENTS.md` — the other half, and the codec's own documentation

@@ -1,0 +1,2696 @@
+{
+  "imap_greetings": [
+    {
+      "case": "imap/list-folders",
+      "greeting_actions_per_run": {
+        "before": [
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "after": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "case": "imap/inbox-count",
+      "greeting_actions_per_run": {
+        "before": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "after": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "settings": {
+    "model": "llama3.1:8b",
+    "runs_per_case": 5,
+    "seed": 42,
+    "temperature": null
+  },
+  "before": {
+    "totals": {
+      "cases_total": 105,
+      "cases_attempted": 104,
+      "cases_skipped": 1,
+      "runs_total": 520,
+      "runs_passed": 455,
+      "pass_rate": 0.875,
+      "runs_recoverable": 0,
+      "pass_rate_with_lenient_parse": 0.875,
+      "cases_with_repeats": 104,
+      "cases_verdicts_agree": 87,
+      "cases_actions_agree": 47
+    },
+    "latency": {
+      "runs": 520,
+      "median_seconds": 12.4631264375,
+      "mean_seconds": 19.036386381976925,
+      "total_seconds": 9898.920918628002
+    }
+  },
+  "after": {
+    "totals": {
+      "cases_total": 105,
+      "cases_attempted": 104,
+      "cases_skipped": 1,
+      "runs_total": 520,
+      "runs_passed": 457,
+      "pass_rate": 0.8788461538461538,
+      "runs_recoverable": 0,
+      "pass_rate_with_lenient_parse": 0.8788461538461538,
+      "cases_with_repeats": 104,
+      "cases_verdicts_agree": 96,
+      "cases_actions_agree": 69
+    },
+    "latency": {
+      "runs": 520,
+      "median_seconds": 7.6535931875,
+      "mean_seconds": 9.732584900290385,
+      "total_seconds": 5060.944148151005
+    }
+  },
+  "gains": [
+    {
+      "case": "dict/unknown-word",
+      "before_passes": 0,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 24.082193917,
+        "mean_seconds": 23.076769200199998,
+        "total_seconds": 115.38384600100001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.420398208,
+        "mean_seconds": 7.7753956582,
+        "total_seconds": 38.87697829100001
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "gearman/unknown-function-fails",
+      "before_passes": 0,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.36252425,
+        "mean_seconds": 11.917328575199999,
+        "total_seconds": 59.586642876
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.202097083,
+        "mean_seconds": 6.664203841600001,
+        "total_seconds": 33.321019207999996
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "nsq/accept-publish",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 5.701886125,
+        "mean_seconds": 6.7420508748,
+        "total_seconds": 33.710254374
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.027867209,
+        "mean_seconds": 6.463327033400001,
+        "total_seconds": 32.316635167
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "ldap/two-people",
+      "before_passes": 0,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 20.044890833,
+        "mean_seconds": 20.5754109248,
+        "total_seconds": 102.87705462400001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.1051015,
+        "mean_seconds": 13.0952657668,
+        "total_seconds": 65.476328834
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "ipp/printer-stopped",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.227630208,
+        "mean_seconds": 11.9659382082,
+        "total_seconds": 59.829691041000004
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.998513875,
+        "mean_seconds": 6.9667583747999995,
+        "total_seconds": 34.833791874
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "telnet/answer-command",
+      "before_passes": 3,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 15.793798709,
+        "mean_seconds": 14.6708461086,
+        "total_seconds": 73.354230543
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.648013042,
+        "mean_seconds": 7.4728416752,
+        "total_seconds": 37.364208376
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "ftp/banner",
+      "before_passes": 3,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 16.194289417,
+        "mean_seconds": 16.9165941332,
+        "total_seconds": 84.58297066600001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 10.463012458,
+        "mean_seconds": 10.3824457998,
+        "total_seconds": 51.91222899899999
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "ftp/working-directory",
+      "before_passes": 0,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 242.917428334,
+        "mean_seconds": 242.9205104754,
+        "total_seconds": 1214.602552377
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 18.344000083,
+        "mean_seconds": 17.6878009916,
+        "total_seconds": 88.439004958
+      },
+      "before_failure": "no_wire_response",
+      "after_failure": null
+    },
+    {
+      "case": "smtp/refuse-other-domain",
+      "before_passes": 1,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 26.873444209,
+        "mean_seconds": 26.891397142,
+        "total_seconds": 134.45698571
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 11.49061375,
+        "mean_seconds": 11.951758208200001,
+        "total_seconds": 59.758791040999995
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "pop3/message-subject",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 27.551806125,
+        "mean_seconds": 26.471171825199995,
+        "total_seconds": 132.35585912599998
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.609287291,
+        "mean_seconds": 13.0605223832,
+        "total_seconds": 65.302611916
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "mqtt/retained-message",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.743556625,
+        "mean_seconds": 59.4650028918,
+        "total_seconds": 297.325014459
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.8645505,
+        "mean_seconds": 8.9067497,
+        "total_seconds": 44.5337485
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "mqtt/refuse-client-id",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.658369334,
+        "mean_seconds": 16.5246515002,
+        "total_seconds": 82.62325750100001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.362643167,
+        "mean_seconds": 4.977067,
+        "total_seconds": 24.885334999999998
+      },
+      "before_failure": "invented_action_name",
+      "after_failure": null
+    },
+    {
+      "case": "modbus/illegal-address",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.724049958,
+        "mean_seconds": 11.3192625584,
+        "total_seconds": 56.596312792
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.540913625,
+        "mean_seconds": 7.0031977502,
+        "total_seconds": 35.015988751
+      },
+      "before_failure": "model_answered_with_no_actions",
+      "after_failure": null
+    },
+    {
+      "case": "nostr/serve-notes",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 9.375404917000001,
+        "mean_seconds": 9.0577436166,
+        "total_seconds": 45.288718083000006
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.788524417,
+        "mean_seconds": 7.79548885,
+        "total_seconds": 38.977444250000005
+      },
+      "before_failure": "client_left_before_model_answered",
+      "after_failure": null
+    },
+    {
+      "case": "nostr/accept-film-note",
+      "before_passes": 2,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.143435833,
+        "mean_seconds": 10.541040200000001,
+        "total_seconds": 52.705201
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.4879055,
+        "mean_seconds": 7.1676754332,
+        "total_seconds": 35.838377166
+      },
+      "before_failure": "model_answered_with_no_actions",
+      "after_failure": null
+    }
+  ],
+  "regressions": [
+    {
+      "case": "http/json-status",
+      "before_passes": 5,
+      "after_passes": 2,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.348060083,
+        "mean_seconds": 10.7032927582,
+        "total_seconds": 53.516463791
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.998952125,
+        "mean_seconds": 8.8094341086,
+        "total_seconds": 44.04717054300001
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "gemini/not-found",
+      "before_passes": 5,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.37097275,
+        "mean_seconds": 13.1687773166,
+        "total_seconds": 65.843886583
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 11.542312375,
+        "mean_seconds": 12.0301818332,
+        "total_seconds": 60.150909166
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "ldap/single-person",
+      "before_passes": 2,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 17.797178334,
+        "mean_seconds": 17.8288689002,
+        "total_seconds": 89.144344501
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.906220583,
+        "mean_seconds": 6.3162387749999995,
+        "total_seconds": 31.581193874999997
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "prometheus/queue-depth-gauge",
+      "before_passes": 5,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.620067667,
+        "mean_seconds": 12.3699263,
+        "total_seconds": 61.8496315
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.474834583,
+        "mean_seconds": 6.977043499999999,
+        "total_seconds": 34.8852175
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "bolt/count",
+      "before_passes": 5,
+      "after_passes": 3,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 20.069434333,
+        "mean_seconds": 20.336863275000002,
+        "total_seconds": 101.68431637500001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.9024985,
+        "mean_seconds": 9.7547494,
+        "total_seconds": 48.773747
+      },
+      "before_failure": null,
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "bolt/syntax-error",
+      "before_passes": 3,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.5592665,
+        "mean_seconds": 12.1706046418,
+        "total_seconds": 60.853023209
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.904082291,
+        "mean_seconds": 6.2354166332,
+        "total_seconds": 31.177083166000003
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "pop3/message-count",
+      "before_passes": 5,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 30.339304375,
+        "mean_seconds": 31.488830633600003,
+        "total_seconds": 157.444153168
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 242.813768208,
+        "mean_seconds": 153.6766783832,
+        "total_seconds": 768.3833919159999
+      },
+      "before_failure": null,
+      "after_failure": "no_wire_response"
+    },
+    {
+      "case": "coap/text-resource",
+      "before_passes": 5,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 16.237194084,
+        "mean_seconds": 15.0596768918,
+        "total_seconds": 75.298384459
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.996833417,
+        "mean_seconds": 8.7019454916,
+        "total_seconds": 43.509727458
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "websocket/echo",
+      "before_passes": 4,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 52.185170041,
+        "mean_seconds": 51.2451536832,
+        "total_seconds": 256.225768416
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.679450416,
+        "mean_seconds": 14.229330874999999,
+        "total_seconds": 71.146654375
+      },
+      "before_failure": "invented_action_name",
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "nostr/refuse-adverts",
+      "before_passes": 1,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.999041083,
+        "mean_seconds": 10.7913043166,
+        "total_seconds": 53.956521583
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.120269334,
+        "mean_seconds": 6.2268888335999995,
+        "total_seconds": 31.134444167999998
+      },
+      "before_failure": "wrong_content",
+      "after_failure": "wrong_content"
+    }
+  ],
+  "cases": [
+    {
+      "case": "http/hello-page",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 19.810759667,
+        "mean_seconds": 18.3471407,
+        "total_seconds": 91.7357035
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.015084291,
+        "mean_seconds": 7.580883,
+        "total_seconds": 37.904415
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "http/admin-404",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.478806625,
+        "mean_seconds": 9.038669516599999,
+        "total_seconds": 45.193347583
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.212309834,
+        "mean_seconds": 8.114830100199999,
+        "total_seconds": 40.574150501
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "http/json-status",
+      "before_passes": 5,
+      "after_passes": 2,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.348060083,
+        "mean_seconds": 10.7032927582,
+        "total_seconds": 53.516463791
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.998952125,
+        "mean_seconds": 8.8094341086,
+        "total_seconds": 44.04717054300001
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "http/permanent-redirect",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.266986709,
+        "mean_seconds": 9.1163230418,
+        "total_seconds": 45.581615209
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.810007,
+        "mean_seconds": 8.4475678166,
+        "total_seconds": 42.237839083
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "dns/a-record",
+      "before_passes": 4,
+      "after_passes": 4,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 27.580847667,
+        "mean_seconds": 28.1075574668,
+        "total_seconds": 140.537787334
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.617769791,
+        "mean_seconds": 8.961546758,
+        "total_seconds": 44.80773379
+      },
+      "before_failure": "wrong_content",
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "dns/wildcard-a",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 15.914896959,
+        "mean_seconds": 23.546007767,
+        "total_seconds": 117.730038835
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.938836417,
+        "mean_seconds": 10.6898751166,
+        "total_seconds": 53.44937558299999
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "dns/txt-record",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.448942209,
+        "mean_seconds": 12.835465708600001,
+        "total_seconds": 64.177328543
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.23479675,
+        "mean_seconds": 8.427326016799999,
+        "total_seconds": 42.136630084
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "dns/nxdomain",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.116014166,
+        "mean_seconds": 10.688772783400001,
+        "total_seconds": 53.443863917
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.080250875,
+        "mean_seconds": 8.1418919084,
+        "total_seconds": 40.709459542
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "whois/registrar-line",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 24.67070975,
+        "mean_seconds": 22.848642050000002,
+        "total_seconds": 114.24321025
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.109187875,
+        "mean_seconds": 9.2326014082,
+        "total_seconds": 46.163007041
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "whois/registrant-and-status",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 5.734476875,
+        "mean_seconds": 8.1221399,
+        "total_seconds": 40.610699499999996
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.01335575,
+        "mean_seconds": 7.4765472832,
+        "total_seconds": 37.382736416
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "whois/no-match",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 15.143671167,
+        "mean_seconds": 15.6419460582,
+        "total_seconds": 78.209730291
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.5730362079999995,
+        "mean_seconds": 8.1077168832,
+        "total_seconds": 40.538584416
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "gopher/welcome-menu",
+      "before_passes": 0,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 42.598126542,
+        "mean_seconds": 42.972874475000005,
+        "total_seconds": 214.86437237500002
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.790462542,
+        "mean_seconds": 9.364156358399999,
+        "total_seconds": 46.820781792
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "gopher/text-selector",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.594313,
+        "mean_seconds": 7.3875691332,
+        "total_seconds": 36.937845666
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.686759458,
+        "mean_seconds": 5.4488086498,
+        "total_seconds": 27.244043249
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "gopher/unknown-selector",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 5.908028834,
+        "mean_seconds": 6.282295367,
+        "total_seconds": 31.411476835
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.093004916,
+        "mean_seconds": 6.829454191400001,
+        "total_seconds": 34.147270957
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "dict/define-invented-word",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.682521584,
+        "mean_seconds": 7.392001625000001,
+        "total_seconds": 36.960008124999995
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.226007666,
+        "mean_seconds": 6.2974642332,
+        "total_seconds": 31.487321165999997
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "dict/list-databases",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.229924291,
+        "mean_seconds": 7.3844541996,
+        "total_seconds": 36.922270998
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.785398792,
+        "mean_seconds": 6.2523642668,
+        "total_seconds": 31.261821334
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "dict/unknown-word",
+      "before_passes": 0,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 24.082193917,
+        "mean_seconds": 23.076769200199998,
+        "total_seconds": 115.38384600100001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.420398208,
+        "mean_seconds": 7.7753956582,
+        "total_seconds": 38.87697829100001
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "gemini/home-page",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.824787582999999,
+        "mean_seconds": 15.001519591599997,
+        "total_seconds": 75.007597958
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.165325417,
+        "mean_seconds": 8.4076219584,
+        "total_seconds": 42.038109792
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "gemini/ask-for-input",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.017078208,
+        "mean_seconds": 11.2238479916,
+        "total_seconds": 56.119239958
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.865712875,
+        "mean_seconds": 8.608700275,
+        "total_seconds": 43.043501375000005
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "gemini/not-found",
+      "before_passes": 5,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.37097275,
+        "mean_seconds": 13.1687773166,
+        "total_seconds": 65.843886583
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 11.542312375,
+        "mean_seconds": 12.0301818332,
+        "total_seconds": 60.150909166
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "beanstalkd/accept-a-job",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 4.434759458,
+        "mean_seconds": 6.4937056496,
+        "total_seconds": 32.468528248
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.771093625,
+        "mean_seconds": 7.0234491168,
+        "total_seconds": 35.117245584
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "beanstalkd/hand-out-a-job",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.947473125,
+        "mean_seconds": 10.157482783399999,
+        "total_seconds": 50.787413916999995
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.377950083,
+        "mean_seconds": 5.5241732,
+        "total_seconds": 27.620866
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "beanstalkd/queue-statistics",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 14.770227833,
+        "mean_seconds": 15.6684003668,
+        "total_seconds": 78.342001834
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.568048375,
+        "mean_seconds": 7.0522362082,
+        "total_seconds": 35.261181041
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "zabbix/accept-known-host",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.358876708,
+        "mean_seconds": 7.6263027498,
+        "total_seconds": 38.131513749
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 4.69944425,
+        "mean_seconds": 4.4302422334,
+        "total_seconds": 22.151211167
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "zabbix/reject-unknown-host",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.323894917,
+        "mean_seconds": 14.363705666599998,
+        "total_seconds": 71.818528333
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.842533042,
+        "mean_seconds": 6.0098792666000005,
+        "total_seconds": 30.049396332999997
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "gearman/reverse-text",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.879538375,
+        "mean_seconds": 9.2252645168,
+        "total_seconds": 46.126322584
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.561943875,
+        "mean_seconds": 6.05583405,
+        "total_seconds": 30.27917025
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "gearman/unknown-function-fails",
+      "before_passes": 0,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.36252425,
+        "mean_seconds": 11.917328575199999,
+        "total_seconds": 59.586642876
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.202097083,
+        "mean_seconds": 6.664203841600001,
+        "total_seconds": 33.321019207999996
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "nsq/deliver-waiting-messages",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.529443375,
+        "mean_seconds": 11.6454257,
+        "total_seconds": 58.22712849999999
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.586859125,
+        "mean_seconds": 10.3198840416,
+        "total_seconds": 51.599420208000005
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "nsq/accept-publish",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 5.701886125,
+        "mean_seconds": 6.7420508748,
+        "total_seconds": 33.710254374
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.027867209,
+        "mean_seconds": 6.463327033400001,
+        "total_seconds": 32.316635167
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "nsq/refuse-closed-topic",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.031651583,
+        "mean_seconds": 8.1569430416,
+        "total_seconds": 40.784715208
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.624690917,
+        "mean_seconds": 6.0889868666,
+        "total_seconds": 30.444934332999996
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "otlp/accept-known-service",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.982791292,
+        "mean_seconds": 9.070811375,
+        "total_seconds": 45.354056875000005
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.090854083,
+        "mean_seconds": 6.5143740584,
+        "total_seconds": 32.571870292
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "otlp/refuse-unknown-service",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 19.925059125,
+        "mean_seconds": 20.947834841400002,
+        "total_seconds": 104.739174207
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.114277583,
+        "mean_seconds": 7.224681674999999,
+        "total_seconds": 36.123408375
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "otlp/refuse-debug-spans",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.036443125,
+        "mean_seconds": 8.0446824084,
+        "total_seconds": 40.223412042
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.405930541,
+        "mean_seconds": 6.550545999799999,
+        "total_seconds": 32.752729999
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "finger/user-record",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.714717208,
+        "mean_seconds": 9.563011808199999,
+        "total_seconds": 47.815059041
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.63867525,
+        "mean_seconds": 7.765427275,
+        "total_seconds": 38.827136374999995
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "finger/unknown-user",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.018133542,
+        "mean_seconds": 6.7516454168,
+        "total_seconds": 33.758227084
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.9470934589999995,
+        "mean_seconds": 6.4844216166,
+        "total_seconds": 32.422108083
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "finger/user-list",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.780310334,
+        "mean_seconds": 9.1808934666,
+        "total_seconds": 45.904467333
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.407093291,
+        "mean_seconds": 6.5532157332,
+        "total_seconds": 32.766078666
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "redis/get-string",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.45013125,
+        "mean_seconds": 8.9040629832,
+        "total_seconds": 44.520314916
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 3.488242042,
+        "mean_seconds": 4.2624264166,
+        "total_seconds": 21.312132082999998
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "redis/ping",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.229441875,
+        "mean_seconds": 7.4469039746,
+        "total_seconds": 37.234519872999996
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 4.691091709,
+        "mean_seconds": 4.7629164752,
+        "total_seconds": 23.814582376
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "redis/key-list",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 5.7845478329999995,
+        "mean_seconds": 6.7822157916,
+        "total_seconds": 33.911078958000004
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 4.648367542,
+        "mean_seconds": 4.0772029415999995,
+        "total_seconds": 20.386014707999998
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "redis/counter",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 5.958564208,
+        "mean_seconds": 6.498958249999999,
+        "total_seconds": 32.49479125
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.971967084,
+        "mean_seconds": 7.689439633399999,
+        "total_seconds": 38.447198166999996
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "postgresql/select-literal",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.909240042,
+        "mean_seconds": 9.3586925836,
+        "total_seconds": 46.793462917999996
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.710645958,
+        "mean_seconds": 7.688550316600001,
+        "total_seconds": 38.442751583
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "postgresql/current-user",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.472563708,
+        "mean_seconds": 7.6747400664,
+        "total_seconds": 38.373700332
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.984860792,
+        "mean_seconds": 7.123221742,
+        "total_seconds": 35.61610871
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "postgresql/users-table",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.977297,
+        "mean_seconds": 14.058486733,
+        "total_seconds": 70.292433665
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.494640167,
+        "mean_seconds": 7.3096991254,
+        "total_seconds": 36.548495627
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "mysql/select-literal",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 16.930440958,
+        "mean_seconds": 17.1285667416,
+        "total_seconds": 85.64283370800001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 10.390881916,
+        "mean_seconds": 11.029357316799999,
+        "total_seconds": 55.146786584
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "mysql/server-version",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 16.141491958,
+        "mean_seconds": 18.466262583400002,
+        "total_seconds": 92.33131291699999
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.091924167,
+        "mean_seconds": 13.379666650199999,
+        "total_seconds": 66.898333251
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "mysql/users-table",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 15.268193375,
+        "mean_seconds": 16.1742778834,
+        "total_seconds": 80.87138941699999
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.377581375,
+        "mean_seconds": 9.0731331502,
+        "total_seconds": 45.365665751
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "ldap/single-person",
+      "before_passes": 2,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 17.797178334,
+        "mean_seconds": 17.8288689002,
+        "total_seconds": 89.144344501
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.906220583,
+        "mean_seconds": 6.3162387749999995,
+        "total_seconds": 31.581193874999997
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "ldap/two-people",
+      "before_passes": 0,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 20.044890833,
+        "mean_seconds": 20.5754109248,
+        "total_seconds": 102.87705462400001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.1051015,
+        "mean_seconds": 13.0952657668,
+        "total_seconds": 65.476328834
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "ldap/empty-result",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 64.069766042,
+        "mean_seconds": 60.5080452836,
+        "total_seconds": 302.540226418
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 10.133214625,
+        "mean_seconds": 10.563755658400002,
+        "total_seconds": 52.818778292
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "ipp/printer-name",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.878816333,
+        "mean_seconds": 15.8886152498,
+        "total_seconds": 79.443076249
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.176481208,
+        "mean_seconds": 6.3162010166,
+        "total_seconds": 31.581005083
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "ipp/printer-stopped",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.227630208,
+        "mean_seconds": 11.9659382082,
+        "total_seconds": 59.829691041000004
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.998513875,
+        "mean_seconds": 6.9667583747999995,
+        "total_seconds": 34.833791874
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "syslog/store-message",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.81944,
+        "mean_seconds": 12.3076979916,
+        "total_seconds": 61.538489958
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.176651459,
+        "mean_seconds": 6.6906355416,
+        "total_seconds": 33.453177708000005
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "syslog/drop-healthchecks",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.14190675,
+        "mean_seconds": 9.5666667916,
+        "total_seconds": 47.833333958000004
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.587983958,
+        "mean_seconds": 6.6814494998,
+        "total_seconds": 33.407247499
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "ntp/current-time",
+      "before_passes": 0,
+      "after_passes": 0,
+      "runs": 0,
+      "before_latency": {
+        "runs": 0,
+        "median_seconds": null,
+        "mean_seconds": null,
+        "total_seconds": 0
+      },
+      "after_latency": {
+        "runs": 0,
+        "median_seconds": null,
+        "mean_seconds": null,
+        "total_seconds": 0
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "telnet/banner",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.552184708,
+        "mean_seconds": 9.2753186416,
+        "total_seconds": 46.376593207999996
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.229818208,
+        "mean_seconds": 8.519634200199999,
+        "total_seconds": 42.598171001
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "telnet/login-prompt",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.305524375,
+        "mean_seconds": 8.1850969082,
+        "total_seconds": 40.925484541
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.856267666,
+        "mean_seconds": 7.931818783200001,
+        "total_seconds": 39.659093915999996
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "telnet/answer-command",
+      "before_passes": 3,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 15.793798709,
+        "mean_seconds": 14.6708461086,
+        "total_seconds": 73.354230543
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.648013042,
+        "mean_seconds": 7.4728416752,
+        "total_seconds": 37.364208376
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "tcp/fixed-reply",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 9.652158125,
+        "mean_seconds": 10.3300576166,
+        "total_seconds": 51.65028808299999
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.198621291,
+        "mean_seconds": 8.0783674416,
+        "total_seconds": 40.391837208
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "tcp/echo",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.147654833,
+        "mean_seconds": 10.3181408582,
+        "total_seconds": 51.590704291
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.20484475,
+        "mean_seconds": 7.8162923166,
+        "total_seconds": 39.081461583
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "tcp/uppercase",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.889714792,
+        "mean_seconds": 10.1677019836,
+        "total_seconds": 50.838509918
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.578456291,
+        "mean_seconds": 7.732516391600001,
+        "total_seconds": 38.662581958000004
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "ftp/banner",
+      "before_passes": 3,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 16.194289417,
+        "mean_seconds": 16.9165941332,
+        "total_seconds": 84.58297066600001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 10.463012458,
+        "mean_seconds": 10.3824457998,
+        "total_seconds": 51.91222899899999
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "ftp/anonymous-login",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 43.153004541,
+        "mean_seconds": 43.80063061680001,
+        "total_seconds": 219.00315308400002
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 11.6346965,
+        "mean_seconds": 12.089994558399999,
+        "total_seconds": 60.449972792
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "ftp/working-directory",
+      "before_passes": 0,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 242.917428334,
+        "mean_seconds": 242.9205104754,
+        "total_seconds": 1214.602552377
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 18.344000083,
+        "mean_seconds": 17.6878009916,
+        "total_seconds": 88.439004958
+      },
+      "before_failure": "no_wire_response",
+      "after_failure": null
+    },
+    {
+      "case": "udp/fixed-reply",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.630196458,
+        "mean_seconds": 11.9148724668,
+        "total_seconds": 59.574362334
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.709628417,
+        "mean_seconds": 8.093734016800001,
+        "total_seconds": 40.468670084
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "udp/echo",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.148789625,
+        "mean_seconds": 10.7213088582,
+        "total_seconds": 53.606544291
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.5885315,
+        "mean_seconds": 8.2229172416,
+        "total_seconds": 41.114586208
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "prometheus/queue-depth-gauge",
+      "before_passes": 5,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.620067667,
+        "mean_seconds": 12.3699263,
+        "total_seconds": 61.8496315
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.474834583,
+        "mean_seconds": 6.977043499999999,
+        "total_seconds": 34.8852175
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "prometheus/requests-by-status",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 17.74618175,
+        "mean_seconds": 19.5449354832,
+        "total_seconds": 97.724677416
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.329449958,
+        "mean_seconds": 7.675906916600001,
+        "total_seconds": 38.379534583
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "prometheus/latency-histogram",
+      "before_passes": 0,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 69.678907542,
+        "mean_seconds": 64.2190991584,
+        "total_seconds": 321.095495792
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.782447125000001,
+        "mean_seconds": 10.3390751834,
+        "total_seconds": 51.69537591700001
+      },
+      "before_failure": "executor_rejected_action",
+      "after_failure": "executor_rejected_action"
+    },
+    {
+      "case": "docker/ps-running-container",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.447279833,
+        "mean_seconds": 13.699173616600001,
+        "total_seconds": 68.495868083
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.595265875,
+        "mean_seconds": 8.0192885,
+        "total_seconds": 40.0964425
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "docker/ps-all-includes-stopped",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.581124583,
+        "mean_seconds": 12.415169324999999,
+        "total_seconds": 62.075846625
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.474294208,
+        "mean_seconds": 9.884728641399999,
+        "total_seconds": 49.423643207
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "docker/inspect-missing",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.270670416,
+        "mean_seconds": 12.938753024799999,
+        "total_seconds": 64.69376512400001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 10.583865167,
+        "mean_seconds": 11.0901093664,
+        "total_seconds": 55.45054683200001
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "vault/read-a-field",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.443369333,
+        "mean_seconds": 9.5015863416,
+        "total_seconds": 47.507931708
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.415555791,
+        "mean_seconds": 5.8860620830000006,
+        "total_seconds": 29.430310415
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "vault/list-keys",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.8957296249999995,
+        "mean_seconds": 7.7899470833999995,
+        "total_seconds": 38.949735417
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 4.643855208,
+        "mean_seconds": 5.0181951334,
+        "total_seconds": 25.090975666999995
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "vault/missing-secret",
+      "before_passes": 0,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.247618458,
+        "mean_seconds": 8.3917159418,
+        "total_seconds": 41.958579709000006
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.098384375,
+        "mean_seconds": 5.4980257834,
+        "total_seconds": 27.490128917
+      },
+      "before_failure": "wrong_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "bolt/people-by-name",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 14.063190792,
+        "mean_seconds": 15.870596583200001,
+        "total_seconds": 79.352982916
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.987197542,
+        "mean_seconds": 9.651670258600001,
+        "total_seconds": 48.258351293
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "bolt/count",
+      "before_passes": 5,
+      "after_passes": 3,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 20.069434333,
+        "mean_seconds": 20.336863275000002,
+        "total_seconds": 101.68431637500001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.9024985,
+        "mean_seconds": 9.7547494,
+        "total_seconds": 48.773747
+      },
+      "before_failure": null,
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "bolt/syntax-error",
+      "before_passes": 3,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.5592665,
+        "mean_seconds": 12.1706046418,
+        "total_seconds": 60.853023209
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.904082291,
+        "mean_seconds": 6.2354166332,
+        "total_seconds": 31.177083166000003
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": "copied_example_content"
+    },
+    {
+      "case": "smtp/named-banner",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.178636,
+        "mean_seconds": 7.8202595582,
+        "total_seconds": 39.101297791
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.373851792,
+        "mean_seconds": 6.8862684668,
+        "total_seconds": 34.431342334
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "smtp/accept-local-domain",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 23.675833417,
+        "mean_seconds": 24.211161141599998,
+        "total_seconds": 121.05580570799998
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 11.894446917,
+        "mean_seconds": 11.887887675,
+        "total_seconds": 59.439438374999995
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "smtp/refuse-other-domain",
+      "before_passes": 1,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 26.873444209,
+        "mean_seconds": 26.891397142,
+        "total_seconds": 134.45698571
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 11.49061375,
+        "mean_seconds": 11.951758208200001,
+        "total_seconds": 59.758791040999995
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "pop3/message-count",
+      "before_passes": 5,
+      "after_passes": 1,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 30.339304375,
+        "mean_seconds": 31.488830633600003,
+        "total_seconds": 157.444153168
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 242.813768208,
+        "mean_seconds": 153.6766783832,
+        "total_seconds": 768.3833919159999
+      },
+      "before_failure": null,
+      "after_failure": "no_wire_response"
+    },
+    {
+      "case": "pop3/message-subject",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 27.551806125,
+        "mean_seconds": 26.471171825199995,
+        "total_seconds": 132.35585912599998
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.609287291,
+        "mean_seconds": 13.0605223832,
+        "total_seconds": 65.302611916
+      },
+      "before_failure": "copied_example_content",
+      "after_failure": null
+    },
+    {
+      "case": "imap/list-folders",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 45.940930125,
+        "mean_seconds": 48.1539900168,
+        "total_seconds": 240.76995008400002
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 20.656305875,
+        "mean_seconds": 20.9496504248,
+        "total_seconds": 104.74825212399999
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "imap/inbox-count",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 30.812452584,
+        "mean_seconds": 33.6664204752,
+        "total_seconds": 168.33210237600002
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 16.410261459,
+        "mean_seconds": 16.5462844832,
+        "total_seconds": 82.73142241600002
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "nntp/group-article-count",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 35.939680833,
+        "mean_seconds": 34.6865805582,
+        "total_seconds": 173.432902791
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 12.61488525,
+        "mean_seconds": 11.1193404168,
+        "total_seconds": 55.596702084
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "nntp/list-groups",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.867542542,
+        "mean_seconds": 14.6107125586,
+        "total_seconds": 73.053562793
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 10.943362209,
+        "mean_seconds": 11.4324574834,
+        "total_seconds": 57.162287417
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "nntp/unknown-group",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 14.732978792,
+        "mean_seconds": 16.2740898002,
+        "total_seconds": 81.370449001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.687803208,
+        "mean_seconds": 10.517172608,
+        "total_seconds": 52.58586304
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "memcached/get-value",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.389055042,
+        "mean_seconds": 14.6364724166,
+        "total_seconds": 73.182362083
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.339881083,
+        "mean_seconds": 5.773179408,
+        "total_seconds": 28.86589704
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "memcached/missing-key",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 10.488895292,
+        "mean_seconds": 11.230495325000001,
+        "total_seconds": 56.152476625
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.189075916,
+        "mean_seconds": 5.259223083,
+        "total_seconds": 26.296115415000003
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "memcached/stats-version",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 6.760082833,
+        "mean_seconds": 14.605177649999998,
+        "total_seconds": 73.02588825
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.68572775,
+        "mean_seconds": 5.5391217998,
+        "total_seconds": 27.695608999
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "mqtt/retained-message",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 13.743556625,
+        "mean_seconds": 59.4650028918,
+        "total_seconds": 297.325014459
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.8645505,
+        "mean_seconds": 8.9067497,
+        "total_seconds": 44.5337485
+      },
+      "before_failure": "wrong_content",
+      "after_failure": null
+    },
+    {
+      "case": "mqtt/refuse-client-id",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.658369334,
+        "mean_seconds": 16.5246515002,
+        "total_seconds": 82.62325750100001
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.362643167,
+        "mean_seconds": 4.977067,
+        "total_seconds": 24.885334999999998
+      },
+      "before_failure": "invented_action_name",
+      "after_failure": null
+    },
+    {
+      "case": "coap/text-resource",
+      "before_passes": 5,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 16.237194084,
+        "mean_seconds": 15.0596768918,
+        "total_seconds": 75.298384459
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.996833417,
+        "mean_seconds": 8.7019454916,
+        "total_seconds": 43.509727458
+      },
+      "before_failure": null,
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "coap/not-found",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.39687325,
+        "mean_seconds": 9.194414267,
+        "total_seconds": 45.972071335
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.565485084,
+        "mean_seconds": 8.0362063,
+        "total_seconds": 40.181031499999996
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "modbus/holding-registers",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 7.10763975,
+        "mean_seconds": 7.889833733400001,
+        "total_seconds": 39.449168667
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.860718458,
+        "mean_seconds": 7.3998657664,
+        "total_seconds": 36.999328832
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "modbus/illegal-address",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 8.724049958,
+        "mean_seconds": 11.3192625584,
+        "total_seconds": 56.596312792
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.540913625,
+        "mean_seconds": 7.0031977502,
+        "total_seconds": 35.015988751
+      },
+      "before_failure": "model_answered_with_no_actions",
+      "after_failure": null
+    },
+    {
+      "case": "snmp/sysdescr",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 20.556508958,
+        "mean_seconds": 27.1749713834,
+        "total_seconds": 135.874856917
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 9.023871416,
+        "mean_seconds": 9.8329373582,
+        "total_seconds": 49.164686791
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "snmp/sysdescr-and-sysname",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 34.405404875,
+        "mean_seconds": 74.527139475,
+        "total_seconds": 372.63569737500006
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 8.455127333,
+        "mean_seconds": 9.0441013998,
+        "total_seconds": 45.220506999
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "sip/available",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 12.910331,
+        "mean_seconds": 13.2910342248,
+        "total_seconds": 66.455171124
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.294853792,
+        "mean_seconds": 6.3399381084,
+        "total_seconds": 31.699690542
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "sip/busy",
+      "before_passes": 5,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 15.182201083,
+        "mean_seconds": 16.1903595414,
+        "total_seconds": 80.951797707
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 5.925832292,
+        "mean_seconds": 5.937260775,
+        "total_seconds": 29.686303875
+      },
+      "before_failure": null,
+      "after_failure": null
+    },
+    {
+      "case": "websocket/echo",
+      "before_passes": 4,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 52.185170041,
+        "mean_seconds": 51.2451536832,
+        "total_seconds": 256.225768416
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 13.679450416,
+        "mean_seconds": 14.229330874999999,
+        "total_seconds": 71.146654375
+      },
+      "before_failure": "invented_action_name",
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "websocket/greeting",
+      "before_passes": 4,
+      "after_passes": 4,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 14.141229417,
+        "mean_seconds": 14.7204200668,
+        "total_seconds": 73.602100334
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 12.150719541,
+        "mean_seconds": 11.176827908,
+        "total_seconds": 55.88413954000001
+      },
+      "before_failure": "wrong_content",
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "nostr/serve-notes",
+      "before_passes": 4,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 9.375404917000001,
+        "mean_seconds": 9.0577436166,
+        "total_seconds": 45.288718083000006
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.788524417,
+        "mean_seconds": 7.79548885,
+        "total_seconds": 38.977444250000005
+      },
+      "before_failure": "client_left_before_model_answered",
+      "after_failure": null
+    },
+    {
+      "case": "nostr/refuse-adverts",
+      "before_passes": 1,
+      "after_passes": 0,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.999041083,
+        "mean_seconds": 10.7913043166,
+        "total_seconds": 53.956521583
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 6.120269334,
+        "mean_seconds": 6.2268888335999995,
+        "total_seconds": 31.134444167999998
+      },
+      "before_failure": "wrong_content",
+      "after_failure": "wrong_content"
+    },
+    {
+      "case": "nostr/accept-film-note",
+      "before_passes": 2,
+      "after_passes": 5,
+      "runs": 5,
+      "before_latency": {
+        "runs": 5,
+        "median_seconds": 11.143435833,
+        "mean_seconds": 10.541040200000001,
+        "total_seconds": 52.705201
+      },
+      "after_latency": {
+        "runs": 5,
+        "median_seconds": 7.4879055,
+        "mean_seconds": 7.1676754332,
+        "total_seconds": 35.838377166
+      },
+      "before_failure": "model_answered_with_no_actions",
+      "after_failure": null
+    }
+  ]
+}

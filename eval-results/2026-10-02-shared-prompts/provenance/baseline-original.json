@@ -1,0 +1,52 @@
+{
+  "phase": "before",
+  "source": "d34d91c09ee1731ec13eb3977c17344aeda95497",
+  "source_directory": "/Users/matus/dev/netget/.netget-handoff/evals/before-source",
+  "command": [
+    "./run-eval.sh",
+    "--model",
+    "llama3.1:8b",
+    "--runs",
+    "5",
+    "--seed",
+    "42",
+    "--out",
+    "/Users/matus/dev/netget/.netget-handoff/evals/before"
+  ],
+  "started_at": "2026-10-02T14:08:04.011504+00:00",
+  "model": {
+    "name": "llama3.1:8b",
+    "model": "llama3.1:8b",
+    "modified_at": "2026-06-25T22:35:16.282595214-04:00",
+    "size": 4920753328,
+    "digest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+    "details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "llama",
+      "families": [
+        "llama"
+      ],
+      "parameter_size": "8.0B",
+      "quantization_level": "Q4_K_M",
+      "context_length": 131072,
+      "embedding_length": 4096
+    },
+    "capabilities": [
+      "completion",
+      "tools"
+    ]
+  },
+  "python": "Python 3.10.21",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew)",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05) (Homebrew)",
+  "build_environment": {
+    "CARGO_TARGET_DIR": "/Users/matus/dev/netget/.netget-handoff/evals/before-target",
+    "CARGO_BUILD_JOBS": "3",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434"
+  },
+  "build_only": false
+}

@@ -217,7 +217,7 @@ Add a new temporary key
 
 ## Testing
 
-See `tests/client/ssh_agent/CLAUDE.md` for testing strategy.
+See `tests/client/ssh_agent/AGENTS.md` for testing strategy.
 
 ## References
 

@@ -492,3 +492,5 @@ This client is in the browser build (`crates/netget-web`). The `openidconnect` c
 in the browser at connect with the reason (`http_fetch::check_url`): the transport has no TLS.
 `web/test/smoke.mjs` proves it in the bundle: the client is started through `ClientForm` with `client_id` (`[ + OpenIDConnect client ]` cannot know it), discovers NetGet's `openid` provider (discovery document and key set, both written by the server's model, the issuer `http://127.0.0.1:<port>`), and the model's client-credentials exchange comes back with the expiry the provider chose.
 
+
+Dashboard pairing uses an absolute `http://127.0.0.1:<bound-port>` provider URL and asks for the client ID and any optional secret. Its default routing acknowledges `oidc_discovered` with no actions so connection setup can finish before a manual send. Later token and userinfo events still wait for the operator.

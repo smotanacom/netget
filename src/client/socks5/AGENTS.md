@@ -324,7 +324,7 @@ LLM:
 
 ## Testing Strategy
 
-See `tests/client/socks5/CLAUDE.md` for E2E testing details.
+See `tests/client/socks5/AGENTS.md` for E2E testing details.
 
 **Test Server Options:**
 

@@ -43,11 +43,22 @@ Each was removed, its tests watched failing, then restored (recorded in the feat
 ./cargo-isolated.sh test --no-default-features --features bolt --test server -- bolt:: --test-threads=100
 ```
 
-`real_client_test.rs` needs `cypher-shell` on `PATH` (or in `/opt/homebrew/bin`,
+`real_client_test.rs` needs `cypher-shell` on `PATH` (searched first, then `/opt/homebrew/bin`,
 `/usr/local/bin`, `/usr/bin`) and a Java 21 runtime: `brew install cypher-shell` on macOS; on
 Ubuntu the release zip from `https://dist.neo4j.org/cypher-shell/cypher-shell-2026.09.0.zip`, which
 is what CI's `registry-audit` installs (see `.github/workflows/ci.yml`). Each run starts a JVM
 (~1–2 s), so the file dominates the suite's wall time.
+
+The full 69-test server suite also passes with the official Community5.26.31
+distribution's bundled cypher-shell5.26.31 (JavaDriver5.28.15) and OpenJDK21.0.12.1.
+All eight independent CLI cases pass with both that bundle and installed
+cypher-shell2026.09.0 (JavaDriver6.2.1). Native `--log` in an owned temporary HOME
+supplies the independently raised exception classes for both CLI versions;
+credentials use explicit environment variables, not CLI arguments, and diagnostic
+output removes the fixed fixture password. The write-statistics assertion accepts
+the exact native wording of these two versions for the same three update counts.
+For the programme's pinned pair job, use `scripts/test-peers/install-neo4j.sh`
+and put that distribution's bin directory first on PATH; no extra CLI download.
 
 No pcap oracle: Wireshark 4.6.8 has no Bolt dissector. The fuzz target is
 `fuzz/fuzz_targets/packstream_message.rs`.

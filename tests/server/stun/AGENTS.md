@@ -333,6 +333,6 @@ through the server's own builder — **and** that the log carries
 Both halves are needed because those two paths put *byte-identical* datagrams on the wire: one
 is a server nobody asked to consult a model, the other is a server whose backend went down.
 The token deliberately is not `fail_closed_*`, since the peer did get an affirmative answer.
-See the failure-behaviour table in `src/server/stun/CLAUDE.md`.
+See the failure-behaviour table in `src/server/stun/AGENTS.md`.
 
 LLM call budget: 1 (startup); the per-request call is *made to fail on purpose*.

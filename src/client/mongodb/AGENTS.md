@@ -350,7 +350,7 @@ Find the top 5 spenders.
 
 ## Testing Approach
 
-See `tests/client/mongodb/CLAUDE.md` for E2E testing strategy.
+See `tests/client/mongodb/AGENTS.md` for E2E testing strategy.
 
 ## Future Enhancements
 

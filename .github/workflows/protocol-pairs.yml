@@ -76,6 +76,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -142,6 +145,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -201,6 +207,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -251,6 +260,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -305,6 +317,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -364,6 +379,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -393,7 +411,10 @@ jobs:
       - name: Install bounded source-peer build prerequisites
         run: |
           sudo apt-get update
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler build-essential curl ca-certificates pkg-config libtool gperf libevent-dev libboost-program-options-dev uuid-dev tshark
+          tshark --version | head -1
 
       - name: Prepare pinned official Gearman daemon and tools
         run: |
@@ -418,6 +439,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -475,6 +499,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -540,6 +567,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -599,6 +629,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -652,6 +685,9 @@ jobs:
       - name: Shared Docker registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -712,6 +748,9 @@ jobs:
       - name: Shared Loki registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -779,6 +818,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test vendored_tonic_patch_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -838,6 +880,9 @@ jobs:
       - name: Shared IPFIX registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -900,6 +945,9 @@ jobs:
       - name: Shared gRPC schema, ownership and framing checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -961,6 +1009,9 @@ jobs:
       - name: Shared sFlow registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -1019,6 +1070,9 @@ jobs:
       - name: Shared Vault registration, credential diagnostics and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -1078,6 +1132,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1139,6 +1196,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1201,6 +1261,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1257,6 +1320,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1272,3 +1338,219 @@ jobs:
             --test rustls_provider_gate_test \
             --test failure_mode_declaration_test \
             --test decision_tag_ratchet_test
+
+  connect-rpc-pairs:
+    name: Binary ConnectRPC and gRPC-Web with independent Connect-ES peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,connect_rpc,grpc-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install protobuf fixture compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Prepare pinned Connect-ES and protobuf-es peer packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/connect-peer"
+          cp tests/helpers/grpcweb-package.json "$RUNNER_TEMP/connect-peer/package.json"
+          cp tests/helpers/grpcweb-package-lock.json "$RUNNER_TEMP/connect-peer/package-lock.json"
+          npm ci --prefix "$RUNNER_TEMP/connect-peer" --ignore-scripts --no-audit --no-fund
+          {
+            printf 'NETGET_CONNECT_RPC_NODE_DIR=%s/connect-peer\n' "$RUNNER_TEMP"
+            printf 'NETGET_GRPCWEB_NODE_DIR=%s/connect-peer\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+      - name: Both protocol roles with mandatory independent peers and actual connection timers
+        run: |
+          set -euo pipefail
+          for filter in connect_rpc:: client/connect_rpc:: grpc_web:: client/grpc_web::; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            pair_log="$RUNNER_TEMP/${GITHUB_JOB}-${target}-${filter//:/_}.log"
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4 2>&1 | tee "$pair_log"
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$pair_log"
+          done
+      - name: Connect framing, Web framing and shared typed protobuf bounds
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test connect_rpc_wire_test \
+            --test grpc_web_wire_test \
+            --test grpc_value_bounds_test \
+            --test vendored_tonic_patch_test
+      - name: Shared registration, public catalogue and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test \
+            --test rustls_provider_gate_test \
+            --test site_protocol_list_test
+
+  tacacs-pairs:
+    name: Legacy TACACS+ roles with pinned independent Go and Python SDKs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,tacacs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install protobuf fixture compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Prepare hash-verified independent peers in owned paths
+        run: |
+          python3 tests/server/tacacs/install_peers.py "$RUNNER_TEMP/tacacs-peers"
+          {
+            printf 'NETGET_TACACS_PEER=%s/tacacs-peers/nwaples-tacplus-peer\n' "$RUNNER_TEMP"
+            printf 'NETGET_TACACS_PYTHON=python3\n'
+            printf 'PYTHONPATH=%s/tacacs-peers/python\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+      - name: Both protocol roles, literals, credential handling, bounds and cancellation
+        run: |
+          set -euo pipefail
+          for filter in tacacs:: client/tacacs::; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            pair_log="$RUNNER_TEMP/${GITHUB_JOB}-${target}-${filter//:/_}.log"
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4 2>&1 | tee "$pair_log"
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$pair_log"
+          done
+      - name: Shared registration, privacy, public catalogue and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test \
+            --test client_credential_logging_test \
+            --test secret_redaction_test \
+            --test failure_mode_declaration_test \
+            --test decision_tag_ratchet_test \
+            --test site_protocol_list_test
+
+  bolt-pairs:
+    name: Bolt roles with official Neo4j Community and native cypher-shell
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,bolt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install protobuf fixture compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler openssl
+      - name: Prepare hash-verified official Neo4j distribution in owned paths
+        run: |
+          bash scripts/test-peers/install-neo4j.sh "$RUNNER_TEMP/bolt-peer"
+          {
+            printf 'NETGET_NEO4J_HOME=%s/bolt-peer/neo4j-community-5.26.31\n' "$RUNNER_TEMP"
+            printf 'NETGET_BOLT_JAVA_HOME=%s\n' "$JAVA_HOME"
+          } >> "$GITHUB_ENV"
+          printf '%s/bolt-peer/neo4j-community-5.26.31/bin\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Both protocol roles with native independent peers and actual bounds
+        run: |
+          set -euo pipefail
+          for filter in \
+            bolt:: \
+            client/bolt::; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            pair_log="$RUNNER_TEMP/${GITHUB_JOB}-${target}-${filter//:/_}.log"
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4 2>&1 | tee "$pair_log"
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$pair_log"
+          done
+      - name: Shared registration, privacy, startup input and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test startup_params_result_test \
+            --test startup_constructed_input_test \
+            --test management_test \
+            --test management_form_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test \
+            --test rustls_provider_gate_test \
+            --test client_credential_logging_test \
+            --test client_llm_budget_test \
+            --test secret_redaction_test \
+            --test wire_failure_test \
+            --test site_protocol_list_test

@@ -92,7 +92,7 @@ encoding and the executor agree.
 
 **One event, and it really fires.** A legacy beacon advertisement is one-way, so nothing ever
 arrives and there is nothing else to report. Declaring `beacon_stopped` or `beacon_updated`
-would produce the failure documented in the root `CLAUDE.md`: an event that is advertised to the
+would produce the failure documented in the root `AGENTS.md`: an event that is advertised to the
 model, that an `event_handlers` pattern can be keyed on, and that can never fire.
 
 ## How an action reaches the radio
@@ -118,7 +118,7 @@ nothing is registered with `register_server_task()` — there is no task to canc
 If the model (or a script/static handler) answers `beacon_started` with no `start_*` action,
 **nothing is broadcast** and a WARN says so on both the log and the status stream. Inventing a
 default UUID would put an unattributable beacon on the air that nobody asked for, which is the
-fail-open pattern the root `CLAUDE.md` warns about.
+fail-open pattern the root `AGENTS.md` warns about.
 
 ## The 31-octet budget
 
@@ -151,7 +151,7 @@ Both are declared in `get_startup_parameters()` and both are read. Anything else
 ## Privilege
 
 `privilege_requirement` is `None`. BLE advertising needs adapter access, not a port, raw sockets
-or root, and `PrivilegeRequirement` has no variant for device access (root `CLAUDE.md`,
+or root, and `PrivilegeRequirement` has no variant for device access (root `AGENTS.md`,
 IMPROVEMENTS item 60). Claiming `Root` would refuse to start for users who can in fact use the
 adapter. In practice a Linux user needs D-Bus permission to talk to `org.bluez` — usually
 membership of a `bluetooth` group, or a polkit rule.

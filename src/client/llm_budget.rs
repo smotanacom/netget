@@ -72,15 +72,61 @@ pub async fn call_llm_for_client(
     protocol: &dyn Client,
     status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<ClientLlmResult> {
+    if let Some(event) = event {
+        anyhow::ensure!(
+            crate::utils::json_budget::within_budget(
+                &event.data,
+                crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+                crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+                crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+            ),
+            "event exceeds the shared JSON budget"
+        );
+    }
+    let offered_actions =
+        crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event);
+    let private_payloads = crate::utils::redact::actions_have_credentials(&offered_actions)
+        || event.is_some_and(|event| crate::utils::redact::contains_credentials(&event.data));
+    let run = call_llm_for_client_inner(
+        llm_client,
+        state,
+        client_id,
+        instruction,
+        memory,
+        event,
+        protocol,
+        status_tx,
+        offered_actions,
+        private_payloads,
+    );
+    if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(crate::utils::redact::hide_error_details)
+    } else {
+        run.await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_llm_for_client_inner(
+    llm_client: &OllamaClient,
+    state: &AppState,
+    client_id: String,
+    instruction: &str,
+    memory: &str,
+    event: Option<&Event>,
+    protocol: &dyn Client,
+    status_tx: &mpsc::UnboundedSender<String>,
+    offered_actions: Vec<crate::llm::actions::ActionDefinition>,
+    private_payloads: bool,
+) -> Result<ClientLlmResult> {
     use crate::llm::action_helper::split_client_common_actions;
     use crate::llm::event_handler_executor::{
         try_execute_client_event_handler_with_privacy, ClientEventHandlerResult,
         HANDLER_INSTRUCTION_HEADER,
     };
-
-    let offered_actions =
-        crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event);
-    let private_payloads = crate::utils::redact::actions_have_credentials(&offered_actions);
 
     // Deterministic script/static routing, before any budget or model involvement.
     let mut handler_instruction: Option<String> = None;
@@ -96,7 +142,7 @@ pub async fn call_llm_for_client(
         .await
         .map_err(|e| {
             if private_payloads {
-                anyhow::anyhow!("credential-bearing event handler failed; details hidden")
+                crate::utils::redact::hide_error_details(e)
             } else {
                 e
             }

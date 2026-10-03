@@ -165,7 +165,7 @@ Kafka broker over a real socket, both mutation-checked.
 
 - [Apache Kafka Protocol Guide](https://kafka.apache.org/protocol)
 - [`kafka-protocol` crate](https://docs.rs/kafka-protocol/) — `Cargo.toml` pins 0.14
-- Broker half: `src/server/kafka/CLAUDE.md`
+- Broker half: `src/server/kafka/AGENTS.md`
 
 ### Dashboard injection (`[ send ]`)
 

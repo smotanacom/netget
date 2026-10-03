@@ -262,7 +262,7 @@ pub enum FailureMode {
     DeliberatelySilent,
 }
 
-/// The transport a protocol's [`ProtocolMetadataV2::well_known_port`] is registered for.
+/// The IP port transport a protocol uses, including protocols with no well-known port.
 ///
 /// Not the same thing as [`ProtocolMetadataV2::connectionless`]: that says whether the runtime
 /// may reap idle peers, and TFTP is UDP yet must not be reaped. This says which socket type to
@@ -384,8 +384,9 @@ pub struct ProtocolMetadataV2 {
     /// included — is never replaced.
     pub well_known_port: Option<u16>,
 
-    /// The transport [`Self::well_known_port`] is registered for. Meaningless when that is
-    /// `None`; the builder's default is TCP.
+    /// The transport used by this protocol's port-based listener. Also applies when
+    /// [`Self::well_known_port`] is `None`, such as raw UDP on an operator-chosen port.
+    /// The builder's default is TCP; socketless protocols do not use this field.
     pub well_known_transport: PortTransport,
 
     /// Why this server can only ever *answer* a peer, when that is a property of the protocol
@@ -553,6 +554,13 @@ impl ProtocolMetadataV2Builder {
     pub const fn well_known_sctp_port(mut self, port: u16) -> Self {
         self.well_known_port = Some(port);
         self.well_known_transport = PortTransport::Sctp;
+        self
+    }
+
+    /// Declare a port transport without assigning a well-known port. Raw UDP has
+    /// no registered port of its own, but its listener still occupies UDP's namespace.
+    pub const fn port_transport(mut self, transport: PortTransport) -> Self {
+        self.well_known_transport = transport;
         self
     }
 

@@ -1,0 +1,101 @@
+{
+  "checked_at": "2026-10-02T17:14:03.874034+00:00",
+  "records": [
+    {
+      "label": "baseline",
+      "request": "01-imap-imap_connection.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 16045,
+      "advertises_generate_random": true,
+      "has_tools_section": true
+    },
+    {
+      "label": "baseline",
+      "request": "02-imap-imap_auth.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 14837,
+      "advertises_generate_random": true,
+      "has_tools_section": true
+    },
+    {
+      "label": "baseline",
+      "request": "03-imap-imap_command.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 16274,
+      "advertises_generate_random": true,
+      "has_tools_section": true
+    },
+    {
+      "label": "baseline",
+      "request": "04-http-http_request.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 17420,
+      "advertises_generate_random": true,
+      "has_tools_section": true
+    },
+    {
+      "label": "baseline",
+      "request": "05-telnet-telnet_connection_opened.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 15101,
+      "advertises_generate_random": true,
+      "has_tools_section": true
+    },
+    {
+      "label": "baseline",
+      "request": "06-telnet-telnet_message_received.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 15628,
+      "advertises_generate_random": true,
+      "has_tools_section": true
+    },
+    {
+      "label": "patched",
+      "request": "01-imap-imap_connection.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 9416,
+      "advertises_generate_random": false,
+      "has_tools_section": false
+    },
+    {
+      "label": "patched",
+      "request": "02-imap-imap_auth.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 8208,
+      "advertises_generate_random": false,
+      "has_tools_section": false
+    },
+    {
+      "label": "patched",
+      "request": "03-imap-imap_command.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 9645,
+      "advertises_generate_random": false,
+      "has_tools_section": false
+    },
+    {
+      "label": "patched",
+      "request": "04-http-http_request.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 10791,
+      "advertises_generate_random": false,
+      "has_tools_section": false
+    },
+    {
+      "label": "patched",
+      "request": "05-telnet-telnet_connection_opened.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 8472,
+      "advertises_generate_random": false,
+      "has_tools_section": false
+    },
+    {
+      "label": "patched",
+      "request": "06-telnet-telnet_message_received.request.json",
+      "repeat_bytes_equal": true,
+      "prompt_chars": 8999,
+      "advertises_generate_random": false,
+      "has_tools_section": false
+    }
+  ]
+}

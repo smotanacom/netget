@@ -15,7 +15,7 @@ with a different `protocol_number`.
 
 **There is no per-protocol branching here, and there must never be.**
 
-No `match protocol_number { 47 => parse_gre(), 50 => parse_esp(), … }`. The root `CLAUDE.md`'s
+No `match protocol_number { 47 => parse_gre(), 50 => parse_esp(), … }`. The root `AGENTS.md`'s
 decentralization rule exists precisely to stop that: the moment this file knows about GRE
 specifically it has become the wrong thing, the next change adds ESP, then L2TP, and it is the
 centralized per-protocol logic the architecture forbids. **A protocol that deserves real parsing
@@ -69,7 +69,7 @@ kernel's own stack for the same packets while being unable to complete a session
 
 Everything goes through `?`. `StartupParams` accessors are never `unwrap()`ed: these values come
 from the model or an MCP client, and a panic here would kill the per-request task before it could
-reply (root `CLAUDE.md`, startup parameters).
+reply (root `AGENTS.md`, startup parameters).
 
 ## The event
 
@@ -124,7 +124,7 @@ what makes it different from answering nothing at all.
 
 ### The payload is genuinely opaque, and that is the one legitimate encoded field
 
-The root `CLAUDE.md` forbids raw bytes and base64 in action parameters because models cannot
+The root `AGENTS.md` forbids raw bytes and base64 in action parameters because models cannot
 produce or parse them reliably, and structured fields are almost always available instead. Here
 they are not: netget does not implement the protocol above IP, by construction. So the payload is
 bytes, and the rule that applies is the **other** one:
@@ -183,7 +183,7 @@ deliberately did not answer.
 
 `spawn()` creates both raw sockets **before** any task is spawned, so a privilege failure
 propagates out of `Server::spawn`, `server_startup` records `ServerStatus::Error`, and an MCP
-caller sees the reason. This is the ARP/DataLink/ICMP defect the root `CLAUDE.md` records — a
+caller sees the reason. This is the ARP/DataLink/ICMP defect the root `AGENTS.md` records — a
 server sitting in `Running` having captured nothing is worse than one that refuses to start — and
 it is avoided by construction here rather than patched in.
 
@@ -206,7 +206,7 @@ sent the datagram; `destination` is logged but cannot be honoured, and `ttl` is 
 
 ## Maturity: `Experimental`, precisely
 
-**Proven** (see `tests/server/rawip/CLAUDE.md`):
+**Proven** (see `tests/server/rawip/AGENTS.md`):
 
 * the IPv4 and IPv6 header decoders, against literal RFC 791 / RFC 8200 bytes — with options,
   without options, fragmented, and cut short;
@@ -234,7 +234,7 @@ sent the datagram; `destination` is logged but cannot be honoured, and `ttl` is 
 
 **Path to Beta**: run it under `sudo` against a real independent peer — GRE (47) from a Linux
 `ip tunnel` endpoint is the obvious case — and assert both directions. Nothing less counts; the
-root `CLAUDE.md` records three protocols that held a higher rating on evidence that was never a
+root `AGENTS.md` records three protocols that held a higher rating on evidence that was never a
 real client.
 
 ## Things that are deliberately absent

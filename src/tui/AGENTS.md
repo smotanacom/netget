@@ -88,6 +88,13 @@ The dashboard is built around driving instances yourself. Three mechanisms carry
   (`cards::NO_PEER_HANDLE_REASON`). `tests/request_only_declaration_test.rs` keeps the
   declaration off any protocol that registers a handle.
 
+`[ + client ]` inherits the OpenAPI server's inline spec, uses local OAuth2 endpoints, and
+sets explicit HTTP URLs for local npm/PyPI/Maven and OIDC servers. Unknown client IDs and
+optional secrets stay editable in the normal focused form. The browser page API opens that
+same form when it needs input. OpenAPI forms require an inline spec or (clients only) a
+spec file; either one satisfies the requirement. OIDC's initial discovery, like other
+client connect events, is acknowledged with no actions so Apply can finish before a send.
+
 Instances created here default to `*` → manual (see `modal/form.rs`), so the first thing you
 see after starting a server and poking it with `curl` is `⚠ … waiting for YOUR answer`, in
 the list badge, the inspector overview, the feed, and the status bar.

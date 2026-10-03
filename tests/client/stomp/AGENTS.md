@@ -63,7 +63,7 @@ It is a *client*. It is the Beta evidence for `src/server/stomp/`, where it is t
 number; it cannot be the opposite number of another client. There is no STOMP broker crate in
 this tree and none on macOS or in Homebrew.
 
-`src/client/stomp/CLAUDE.md` sets out, step by step, the ActiveMQ / RabbitMQ test that would
+`src/client/stomp/AGENTS.md` sets out, step by step, the ActiveMQ / RabbitMQ test that would
 promote this client to Beta — including the two assertions that a lenient broker would let a
 buggy client pass without: that the delivery was *acknowledged* rather than redelivered (which
 is what catches an `ACK` quoting `message_id` instead of the `ack` header), and that the session

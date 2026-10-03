@@ -62,7 +62,7 @@ must survive any edit:
 - **Not `#[ignore]`d.** Every test runs in an ordinary `cargo test`.
 - **It fails when `git` is absent.** `run_git_command` spawns the binary and returns
   `Err` if the spawn fails; every caller propagates with `?`. There is no
-  `SKIP: git is not installed` branch. Root `CLAUDE.md` records four protocols
+  `SKIP: git is not installed` branch. Root `AGENTS.md` records four protocols
   (`kubernetes`, `oci_registry`, `maven`, `websocket`) held back from Beta precisely
   because their real-client tests return `Ok(())` when the binary is missing, which
   is a silent pass. Do not add such a branch here.
@@ -93,7 +93,7 @@ keeping the mock surface small and each rule individually asserted, not latency.
 ## Scripting
 
 `test_git_with_scripting()` configures the server's `open_server` action with an
-`event_handlers` entry of `type: "script"` (Python), per `src/scripting/CLAUDE.md`. Once
+`event_handlers` entry of `type: "script"` (Python), per `src/scripting/AGENTS.md`. Once
 that handler is registered, **`git_info_refs` and `git_upload_pack` never reach the mock
 LLM at all** — `src/llm/action_helper.rs::call_llm_with_actions` tries the configured
 event handler first and only falls back to the LLM if none matches or the interpreter is
@@ -139,7 +139,7 @@ invokes and (unlike `git2-rs`) needs no extra crate wiring to add here.
 
 Real `git clone` of a repository with a top-level file, a nested path (`src/main.rs`),
 and an executable file (`bin/run.sh`, `executable: true`) — the three properties
-`src/server/git/CLAUDE.md` calls out as verified against the real `git` binary. Asserts,
+`src/server/git/AGENTS.md` calls out as verified against the real `git` binary. Asserts,
 in order: the clone command itself succeeds (no "acceptable failure" branch — a failure
 here means clone doesn't work, full stop); `git fsck --full` passes; `git log -1
 --format=%s` and `git branch --show-current` match what the mock specified; `git show
@@ -188,7 +188,7 @@ Before this rewrite, the suite mocked two actions — `git_advertise_refs` and
 entirely, replacing them with `git_repository`/`git_error`. `git_send_pack` had asked the
 model for a base64-encoded pack (`pack_data`), which is both unimplementable by an LLM
 (a valid pack needs zlib streams and a SHA-1 trailer) and forbidden by the root
-`CLAUDE.md`'s "no bytes in action parameters" rule; `git_advertise_refs` had the model
+`AGENTS.md`'s "no bytes in action parameters" rule; `git_advertise_refs` had the model
 invent SHAs with no relationship to `git_send_pack`'s (nonexistent) pack contents. A real
 `git clone` against that design could never have succeeded — the old
 `test_git_clone_with_system_git` in fact accepted clone failure as "acceptable for MVP"
@@ -210,5 +210,5 @@ again.
 - [Git Smart HTTP Protocol](https://git-scm.com/docs/http-protocol)
 - [Git Pack Protocol](https://git-scm.com/docs/pack-protocol)
 - [Pkt-Line Format](https://git-scm.com/docs/protocol-common#_pkt_line_format)
-- `src/server/git/CLAUDE.md` — implementation, what's verified against the real `git`
+- `src/server/git/AGENTS.md` — implementation, what's verified against the real `git`
   binary, and what's deliberately not implemented (push, tags, deltas, shallow clones).
