@@ -6,7 +6,7 @@ and what each Cypher query returns. NetGet stores no graph, owns the whole proto
 machine, and writes every byte.
 
 **State**: Beta (see Maturity). **Privilege**: `None` — the well-known port is 7687.
-**Stack**: `ETH>IP>TCP>BOLT`. **Feature**: `bolt` (no dependencies).
+**Stack**: `ETH>IP>TCP>BOLT`. **Feature**: `bolt` (the server codec needs no additional dependencies).
 
 ## Library choice
 
@@ -211,6 +211,22 @@ For a **query**, the connection enters FAILED and recovers on RESET — Bolt's o
 every driver takes. For a **login**, the connection closes: a login nobody could decide is
 refused, never admitted (a backend outage must not open the database). No error text reaches
 the client; the messages are constants.
+
+## Request and answer schema guards
+
+Known requests require their native exact field count. HELLO/LOGON/BEGIN/RUN maps
+cannot be omitted or replaced with null. PULL/DISCARD require an explicit integer
+`n` (positive or -1); an optional `qid` is an integer at least -1. A malformed count
+never means drain-all. ROUTE requires string bookmarks and Bolt5 metadata; TELEMETRY
+requires an API integer0..3.
+
+Owned answer actions receive iterative JSON preflight before copying/conversion:
+container depth36 (the JSON action/records/row wrappers are included),65,536nodes,
+8MiB retained content. Over-budget owned values are disposed iteratively. Converted
+cells are checked at their actual wire position inside RECORD/row envelopes, so
+PackStream container depth32 is accepted and33 is refused before any RECORD.
+`schema_guard_test.rs` exercises each boundary, constructed10,000-depth owned input,
+malformed wire PULL and recoverable overdepth answers.
 
 ## Bounds
 

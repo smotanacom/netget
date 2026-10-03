@@ -699,3 +699,6 @@ pub mod netflow_v9;
 
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+
+#[cfg(feature = "bolt")]
+pub mod bolt;
