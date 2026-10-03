@@ -5,6 +5,9 @@ gzip JSON (same MIME with `Content-Encoding: gzip`), or raw Snappy block compres
 push protobuf (`application/x-protobuf`, absent or explicit `snappy` HTTP encoding; identity is also tolerated). Both type and encoding
 headers must be unique; content type is required. No query parameters, alternate endpoints,
 OTLP, framed Snappy, HTTP/2, TLS or storage/query/retention/order engine.
+Media type and content-coding tokens ignore ASCII case. JSON permits one optional
+`charset=utf-8`, with case-insensitive name/value, quoted or unquoted UTF-8 and HTTP whitespace.
+Other nonempty parameters, duplicate charsets and unsupported/malformed charsets return415.
 
 Events expose `tenant_id`, `tenant_provided`, carrier, typed streams `{labels,entries}` and
 entries `{timestamp_ns,line,structured_metadata}`, plus source/authentication facts. JSON
@@ -19,7 +22,8 @@ One valid `X-Scope-OrgID` identifies a tenant: <=150 ASCII bytes, alphanumerics 
 excluding `.` and `..`; multi-tenant `|` and colon are rejected. Absent header is `fake` unless
 `require_tenant=true`, which returns401. Identity does not grant a tenant ACL or create a
 private tenant store. Optional `auth_token` checks exactly one `Authorization: Bearer ...`
-with a constant-work compare; no configured token means anonymous. This is a proxy-style
+with a case-insensitive scheme and constant-work, case-sensitive token compare; one or more
+spaces separate scheme/token. No configured token means anonymous. This is a proxy-style
 check; Loki itself separates authorization from this API. Tokens never reach events/logs.
 
 Unmatched pushes collect through the common access log without a model call. A configured
@@ -44,6 +48,8 @@ Primary wire references: [Loki API](https://grafana.com/docs/loki/latest/referen
 [pinned schema](https://github.com/grafana/loki/blob/v3.7.8/pkg/push/push.proto),
 [tenant rules](https://grafana.com/docs/loki/latest/operations/multi-tenancy/),
 [Snappy block format](https://github.com/google/snappy/blob/main/format_description.txt).
+[HTTP token semantics](https://www.rfc-editor.org/rfc/rfc9110.html#name-media-type)
+define media/auth/content-coding case handling.
 Implementation is native and uses only existing flate2; no Loki/Alloy/Snappy runtime code is
 vendored or linked. Independent peer commands/licensing are in tests/server/loki/AGENTS.md.
 Experimental: no fuzz/pcap evidence and no general Loki service compatibility claim.

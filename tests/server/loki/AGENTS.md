@@ -57,3 +57,7 @@ with all pinned peers above. A subsequent focused capacity regression passed: th
 503 refusal is parsed by the native client as a typed error with Retry-After5 while256 peers
 hold slots, and releasing a malformed peer admits a valid request. Standalone feature
 check --tests, correctness/suspicious clippy and final whole-package fmt check pass.
+A focused HTTP compatibility regression additionally passes for case-insensitive Bearer,
+media/content-coding tokens and optional quoted/unquoted UTF-8 JSON charsets across all
+carriers; duplicate/malformed/unsupported parameters and differently cased secrets fail
+without dispatch or credential disclosure.

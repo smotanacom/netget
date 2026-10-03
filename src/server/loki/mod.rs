@@ -153,7 +153,8 @@ fn authorized(headers: &hyper::HeaderMap, expected: Option<&str>) -> bool {
     let Some((scheme, token)) = values[0].to_str().ok().and_then(|v| v.split_once(' ')) else {
         return false;
     };
-    if scheme != "Bearer" || codec::validate_token(token).is_err() {
+    let token = token.trim_start_matches(' ');
+    if !scheme.eq_ignore_ascii_case("Bearer") || codec::validate_token(token).is_err() {
         return false;
     }
     let mut difference = expected.len() ^ token.len();
@@ -164,6 +165,49 @@ fn authorized(headers: &hyper::HeaderMap, expected: Option<&str>) -> bool {
         );
     }
     difference == 0
+}
+// RFC9110: media types, parameter names, auth schemes and content codings
+// are case-insensitive tokens. JSON accepts an optional UTF-8 charset.
+fn request_encoding(content_type: &str, content_encoding: &str) -> Option<codec::Encoding> {
+    let mut parts = content_type.split(';');
+    let media = parts.next()?.trim();
+    let json = media.eq_ignore_ascii_case("application/json");
+    if !json && !media.eq_ignore_ascii_case("application/x-protobuf") {
+        return None;
+    }
+    let mut charset_seen = false;
+    for parameter in parts {
+        let parameter = parameter.trim();
+        if parameter.is_empty() {
+            continue;
+        }
+        let (name, value) = parameter.split_once('=')?;
+        if !json || charset_seen || !name.trim().eq_ignore_ascii_case("charset") {
+            return None;
+        }
+        let value = value.trim();
+        let value = if value.starts_with('"') {
+            value.strip_prefix('"')?.strip_suffix('"')?
+        } else {
+            value
+        };
+        if !value.eq_ignore_ascii_case("utf-8") {
+            return None;
+        }
+        charset_seen = true;
+    }
+    let coding = content_encoding.trim();
+    if json && coding.eq_ignore_ascii_case("identity") {
+        Some(codec::Encoding::Json)
+    } else if json && coding.eq_ignore_ascii_case("gzip") {
+        Some(codec::Encoding::GzipJson)
+    } else if !json
+        && (coding.eq_ignore_ascii_case("identity") || coding.eq_ignore_ascii_case("snappy"))
+    {
+        Some(codec::Encoding::SnappyProtobuf)
+    } else {
+        None
+    }
 }
 async fn handle_request(
     request: Request<Incoming>,
@@ -265,11 +309,9 @@ async fn handle_request(
         Ok(None) => "identity",
         Err(_) => return error(415, "Invalid content encoding"),
     };
-    let encoding = match (content_type, content_encoding) {
-        ("application/json", "identity") => codec::Encoding::Json,
-        ("application/json", "gzip") => codec::Encoding::GzipJson,
-        ("application/x-protobuf", "identity" | "snappy") => codec::Encoding::SnappyProtobuf,
-        _ => return error(415, "Expected JSON, gzip JSON or Snappy protobuf"),
+    let encoding = match request_encoding(content_type, content_encoding) {
+        Some(encoding) => encoding,
+        None => return error(415, "Expected JSON, gzip JSON or Snappy protobuf"),
     };
     let streams = match codec::decode_batch(&bytes, encoding) {
         Ok(v) => v,
