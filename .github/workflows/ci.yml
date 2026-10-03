@@ -88,7 +88,7 @@ env:
     couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
     jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin nostr mcp
     zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
-    kubernetes-server prometheus otlp docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
+    kubernetes-server prometheus prometheus-remote-write otlp docker vault bolt git mercurial kafka http3 torrent-tracker torrent-dht
     torrent-peer mcp-http
 
 jobs:

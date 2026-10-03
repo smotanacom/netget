@@ -61,6 +61,7 @@ fn golden_duals_map() {
         "NSQ",
         "Gearman",
         "Prometheus",
+        "PrometheusRemoteWrite",
         "InfluxDB",
         "Docker",
         "Loki",

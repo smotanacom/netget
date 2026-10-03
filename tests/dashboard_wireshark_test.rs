@@ -413,3 +413,18 @@ fn flow_export_collectors_select_their_udp_dissectors() {
         );
     }
 }
+
+#[test]
+fn remote_write_names_select_the_http_carrier() {
+    for name in [
+        "PrometheusRemoteWrite",
+        "prometheus-remote-write",
+        "remote-write",
+        "prometheus-write",
+    ] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", 9090), Platform::Linux);
+        assert_eq!(plan.capture_filter, "tcp port 9090");
+        assert_eq!(plan.display_filter, "tcp.port == 9090 && http");
+        assert_eq!(plan.decode_as, Some("tcp.port==9090,http".into()));
+    }
+}

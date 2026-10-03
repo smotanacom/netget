@@ -41,7 +41,7 @@ explicit generic facilities for application data.
 Bounds:256KiB wire and decoded body;128series,2048total samples,32labels per series;
 128byte names,2048byte values,32768protobuf fields;1024byte token/path;
 256connections through the shared limiter,64headers/32KiB aggregate headers;
-30s header/body deadlines and10s decision-write deadline. All tasks are registered
+30s header/body deadlines and10s response-write deadline after the handler completes. All tasks are registered
 with AppState; removal cancels parked handlers and sockets. HTTP/1.1 uses a fresh
 connection for each request and closes it after the response. Terminal decisions
 are logged; HTTP errors reveal no backend details.

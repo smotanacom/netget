@@ -281,7 +281,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "vault" | "influxdb" | "loki" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "prometheus_remote_write" | "prometheusremotewrite"
+        | "remote_write" | "prometheus_write" | "vault" | "influxdb" | "loki" => tcp("http"),
         "docker" => with_note(
             tcp("http"),
             "This captures Docker HTTP TCP connections. A native Unix socket has no IP packets to capture.",
