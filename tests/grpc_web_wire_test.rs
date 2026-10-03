@@ -24,6 +24,37 @@ fn initial_http_header_count_and_aggregate_exact_plus_one() {
     );
     assert!(!netget::server::grpc_web::wire::bounded_headers(&headers));
 }
+
+#[tokio::test]
+async fn admission_survives_last_status_frame_until_eof_and_releases_on_drop() {
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let mut headers = http::HeaderMap::new();
+    headers.insert("grpc-status", http::HeaderValue::from_static("7"));
+    let status = StreamBody::new(futures::stream::iter([Ok::<_, tonic::Status>(Frame::<
+        Bytes,
+    >::trailers(
+        headers
+    ))]))
+    .boxed_unsync();
+    let mut held = wire::hold_body(status, permits.clone().try_acquire_owned().unwrap());
+    assert_eq!(permits.available_permits(), 0);
+    assert!(held.frame().await.unwrap().unwrap().is_trailers());
+    assert!(!hyper::body::Body::is_end_stream(&held));
+    assert_eq!(
+        permits.available_permits(),
+        0,
+        "the last-frame hint must not release admission"
+    );
+    assert!(held.frame().await.is_none());
+    assert_eq!(permits.available_permits(), 1);
+    let held = wire::hold_body(
+        body(vec![vec![0; 5]]),
+        permits.clone().try_acquire_owned().unwrap(),
+    );
+    assert_eq!(permits.available_permits(), 0);
+    drop(held);
+    assert_eq!(permits.available_permits(), 1);
+}
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;

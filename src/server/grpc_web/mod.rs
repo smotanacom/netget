@@ -20,6 +20,7 @@ use hyper::{
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tonic::{body::BoxBody, Status};
 use tower::{Layer, Service};
+pub const DEFAULT_RPC_TIMEOUT_SECS: u64 = 300;
 pub const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 pub const MAX_CONNECTIONS: usize = 256;
@@ -213,20 +214,29 @@ async fn request(
                 let bytes = match input {
                     Ok(Ok(body)) => body.to_bytes(),
                     Ok(Err(_)) => {
-                        return Ok(closing_status(Status::resource_exhausted(
-                            "request exceeds framed bound+1 or is malformed",
-                        )))
+                        return Ok(admission.guard(
+                            closing_status(Status::resource_exhausted(
+                                "request exceeds framed bound+1 or is malformed",
+                            )),
+                            busy,
+                        ))
                     }
                     Err(_) => {
-                        return Ok(closing_status(Status::deadline_exceeded(
-                            "RPC request deadline exceeded",
-                        )))
+                        return Ok(admission.guard(
+                            closing_status(Status::deadline_exceeded(
+                                "RPC request deadline exceeded",
+                            )),
+                            busy,
+                        ))
                     }
                 };
                 if bytes.len() > wire::MAX_MESSAGE_BYTES + 5 {
-                    return Ok(status_in_body(
-                        Status::resource_exhausted("request exceeds 4 MiB framed message")
-                            .into_http(),
+                    return Ok(admission.guard(
+                        status_in_body(
+                            Status::resource_exhausted("request exceeds 4 MiB framed message")
+                                .into_http(),
+                        ),
+                        busy,
                     ));
                 }
                 let request = Request::from_parts(
@@ -235,10 +245,10 @@ async fn request(
                         .map_err(|never| match never {})
                         .boxed_unsync(),
                 );
-                Ok(status_in_body(
-                    core.request(request, connection, busy, registry, admission)
-                        .await,
-                ))
+                let response = core
+                    .request(request, connection, registry, &admission)
+                    .await;
+                Ok(admission.guard(status_in_body(response), busy))
             }
         },
     ));
@@ -263,7 +273,7 @@ impl GrpcWebServer {
             .map(|p| p.get_optional_u64("rpc_timeout_secs"))
             .transpose()?
             .flatten()
-            .unwrap_or(300);
+            .unwrap_or(DEFAULT_RPC_TIMEOUT_SECS);
         ensure!(
             (1..=3600).contains(&timeout),
             "rpc_timeout_secs must be 1..3600"

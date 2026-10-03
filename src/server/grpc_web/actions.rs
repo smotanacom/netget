@@ -58,7 +58,7 @@ impl Protocol for GrpcWebProtocol {
         parameters.extend([
             ParameterDefinition { name:"rpc_timeout_secs".into(), type_hint:"integer".into(), required:false,
                 description:"Whole RPC deadline 1..3600 seconds, shortened by grpc-timeout; includes response backpressure".into(),
-                example:json!(300), default:Some(json!(300)) },
+                example:json!(300), default:Some(json!(super::DEFAULT_RPC_TIMEOUT_SECS)) },
             ParameterDefinition { name:"allow_origin".into(), type_hint:"string".into(), required:false,
                 description:"One exact HTTP(S) browser origin, without trailing slash; omitted rejects all Origin headers. No credentials or wildcard".into(),
                 example:json!("https://app.example"), default:None },
