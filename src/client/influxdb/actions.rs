@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -23,7 +24,7 @@ impl InfluxDbClientProtocol {
     }
 }
 pub fn write_action() -> ActionDefinition {
-    ActionDefinition {name:"write_influx_points".into(),description:"Submit one typed InfluxDB v2 batch. Completion reports HTTP status; 204 is handler acceptance, not durable storage. No automatic retries.".into(),parameters:vec![parameter("batch","object","org,bucket,precision ns/us/ms/s(default ns),points(1..256) with measurement,tags,fields typed {type:float/integer/unsigned/boolean/string,value},optional timestamp;gzip(default false)",true)],example:json!({"type":"write_influx_points","batch":{"org":"example","bucket":"metrics","points":[{"measurement":"cpu","tags":{"host":"localhost"},"fields":{"load":{"type":"float","value":0.42}},"timestamp":1700000000000000000i64}]}}),log_template:Some("Submit typed InfluxDB write batch".into())}
+    ActionDefinition {name:"write_influx_points".into(),description:"Submit one typed InfluxDB v2 batch. Completion reports HTTP status; 204 is handler acceptance, not durable storage. No automatic retries.".into(),parameters:vec![parameter("batch","object","org,bucket,precision ns/us/ms/s(default ns),points(1..256) with measurement,tags,fields typed {type:float/integer/unsigned/boolean/string,value},optional timestamp;gzip(default false)",true)],example:json!({"type":"write_influx_points","batch":{"org":"example","bucket":"metrics","points":[{"measurement":"cpu","tags":{"host":"localhost"},"fields":{"load":{"type":"float","value":0.42}},"timestamp":1700000000000000000i64}]}}),log_template: Some(LogTemplate::new().with_info("Submit typed InfluxDB write batch"))}
 }
 fn disconnect_action() -> ActionDefinition {
     ActionDefinition {
@@ -32,7 +33,9 @@ fn disconnect_action() -> ActionDefinition {
             .into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: Some("Cancel InfluxDB write session and active exchange".into()),
+        log_template: Some(
+            LogTemplate::new().with_info("Cancel InfluxDB write session and active exchange"),
+        ),
     }
 }
 pub static INFLUX_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {

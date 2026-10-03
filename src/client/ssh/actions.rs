@@ -4,6 +4,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::AppState;
 use anyhow::{ensure, Context, Result};
@@ -29,7 +30,7 @@ fn action(
         description: description.into(),
         parameters,
         example,
-        log_template: Some(log_template.into()),
+        log_template: Some(LogTemplate::new().with_info(log_template)),
     }
 }
 fn event(id: &str, description: &str, fields: Vec<Parameter>) -> EventType {

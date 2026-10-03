@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -36,13 +37,13 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
     }
 }
 fn accept_action() -> ActionDefinition {
-    ActionDefinition { name:"accept_influx_points".into(),description:"Accept every validated point. Returns 204 when all lines are valid, or a 400 partial-write response for syntax errors. Acceptance is observation/handling, not persistent storage.".into(),parameters:vec![],example:json!({"type":"accept_influx_points"}),log_template:Some("Accept validated InfluxDB write points".into()) }
+    ActionDefinition { name:"accept_influx_points".into(),description:"Accept every validated point. Returns 204 when all lines are valid, or a 400 partial-write response for syntax errors. Acceptance is observation/handling, not persistent storage.".into(),parameters:vec![],example:json!({"type":"accept_influx_points"}),log_template: Some(LogTemplate::new().with_info("Accept validated InfluxDB write points")) }
 }
 fn reject_action() -> ActionDefinition {
-    ActionDefinition { name:"reject_influx_points".into(),description:"Reject all points with an InfluxDB JSON error; no automatic retry or private schema storage.".into(),parameters:vec![parameter("status","number","400,401,403,404,413,422,429,500 or 503",true),parameter("message","string","Error explanation, <=1024 bytes, no controls",true),parameter("retry_after_seconds","number","Optional retry advice 1..3600, only 429/503",false)],example:json!({"type":"reject_influx_points","status":422,"message":"Field type conflict"}),log_template:Some("Reject InfluxDB write with HTTP {status}: {message}".into()) }
+    ActionDefinition { name:"reject_influx_points".into(),description:"Reject all points with an InfluxDB JSON error; no automatic retry or private schema storage.".into(),parameters:vec![parameter("status","number","400,401,403,404,413,422,429,500 or 503",true),parameter("message","string","Error explanation, <=1024 bytes, no controls",true),parameter("retry_after_seconds","number","Optional retry advice 1..3600, only 429/503",false)],example:json!({"type":"reject_influx_points","status":422,"message":"Field type conflict"}),log_template: Some(LogTemplate::new().with_info("Reject InfluxDB write with HTTP {status}: {message}")) }
 }
 fn partial_action() -> ActionDefinition {
-    ActionDefinition { name:"accept_influx_subset".into(),description:"Accept the specified valid source line numbers, rejecting every other line with an explicit 400 partial-write JSON error. Cannot accept a syntax-invalid line.".into(),parameters:vec![parameter("accepted_lines","array","Unique valid source line numbers, <=256",true),parameter("message","string","Partial-write explanation, <=1024 bytes, no controls",true)],example:json!({"type":"accept_influx_subset","accepted_lines":[1],"message":"Second point rejected"}),log_template:Some("Accept InfluxDB write subset: source lines {accepted_lines}".into()) }
+    ActionDefinition { name:"accept_influx_subset".into(),description:"Accept the specified valid source line numbers, rejecting every other line with an explicit 400 partial-write JSON error. Cannot accept a syntax-invalid line.".into(),parameters:vec![parameter("accepted_lines","array","Unique valid source line numbers, <=256",true),parameter("message","string","Partial-write explanation, <=1024 bytes, no controls",true)],example:json!({"type":"accept_influx_subset","accepted_lines":[1],"message":"Second point rejected"}),log_template: Some(LogTemplate::new().with_info("Accept InfluxDB write subset: source lines {accepted_lines}")) }
 }
 pub static INFLUX_WRITE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("influx_write","A v2 write with org, bucket, precision, typed valid points/source line numbers/timestamp_ns, syntax errors and authentication facts. Tokens and raw line protocol never appear in event data.",accept_action().example).with_parameters(vec![parameter("org","string","Organization name/ID",true),parameter("bucket","string","Target bucket name or ID for the submitted points",true),parameter("precision","string","Timestamp precision: ns, us, ms or s",true),parameter("points","array","Valid typed points and source line numbers",true),parameter("errors","array","Syntax error line numbers and explanations",true),parameter("authenticated","boolean","Configured token check succeeded (or authentication not configured)",true),parameter("auth_required","boolean","A token is configured",true),parameter("source_addr","string","TCP socket address of the HTTP write sender",true)]).with_actions(vec![accept_action(),reject_action(),partial_action()])

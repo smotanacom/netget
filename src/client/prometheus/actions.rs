@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::AppState;
 use anyhow::{bail, Result};
@@ -27,7 +28,7 @@ fn scrape() -> ActionDefinition {
     ActionDefinition{name:"scrape_metrics".into(),description:"GET metrics from this exporter's origin, negotiate text 0.0.4 or OpenMetrics 1.0.0 and parse families/samples. No raw body or PromQL service.".into(),parameters:vec![
         p("path","string","Optional origin path/query; defaults to startup metrics_path",false),
         p("format","string","auto (prefer OpenMetrics with text fallback), text, or openmetrics; default auto",false),
-    ],example:json!({"type":"scrape_metrics","format":"auto"}),log_template:Some("Scrape Prometheus exporter metrics".into())}
+    ],example:json!({"type":"scrape_metrics","format":"auto"}),log_template: Some(LogTemplate::new().with_info("Scrape Prometheus exporter metrics"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -35,7 +36,9 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel the scrape and close this logical client".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: Some("Cancel Prometheus scrape and close exporter client".into()),
+        log_template: Some(
+            LogTemplate::new().with_info("Cancel Prometheus scrape and close exporter client"),
+        ),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
