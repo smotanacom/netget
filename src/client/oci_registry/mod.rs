@@ -467,13 +467,12 @@ async fn session(
             let pending = tokio::time::timeout(timeout, perform(client, prepared, &mut state));
             tokio::pin!(pending);
             let result = loop {
-                ensure!(
-                    tokio::time::Instant::now() < deadline,
-                    "OCI whole request deadline"
-                );
+                if tokio::time::Instant::now() >= deadline {
+                    break Err(anyhow::anyhow!("OCI whole request deadline"));
+                }
                 tokio::select! {biased;
                     c=external.recv()=>{let Some(mut c)=c else{return Ok(())};let value=std::mem::take(&mut c.action);let disconnect=matches!(api::action(&value),Ok(api::Action::Disconnect));crate::utils::json_budget::drop_iteratively(value);if disconnect{command_support::reply(c,Ok(ClientSendOutcome::Disconnected));return Ok(());}command_support::reply(c,Ok(ClientSendOutcome::Rejected{error:"OCI request pending; wait for native result".into()}));},
-                    r=&mut pending=>break r,
+                    r=&mut pending=>break r.map_err(anyhow::Error::from),
                 }
             };
             result

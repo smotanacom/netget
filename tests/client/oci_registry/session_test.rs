@@ -3,7 +3,7 @@ use netget::state::client_handles::ClientSendOutcome;
 use serde_json::json;
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -465,4 +465,98 @@ async fn native_chunked_blob_bound_is_exact_and_redirects_or_encoding_are_refuse
         state.remove_client(id).await;
         peer.stop().await;
     }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn continuously_queued_overlaps_do_not_close_session_on_whole_deadline() {
+    let peer = Peer::start("hang").await;
+    let state = state();
+    let id = client(
+        &state,
+        peer.origin.clone(),
+        json!({"request_timeout_secs":1}),
+        vec![static_handler("*", json!([]))],
+    )
+    .await;
+    event(&state, id, "oci_connected", 0).await;
+    let before = latest(&state, id).await;
+    let injected = state.clone();
+    let pending = tokio::spawn(async move {
+        injected
+            .send_to_client(
+                id,
+                json!({"type":"oci_request","operation":"tags","repository":"library/demo"}),
+                Duration::from_secs(3),
+            )
+            .await
+    });
+    peer.observed(2).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let overlaps = Arc::new(AtomicUsize::new(0));
+    let mut workers = JoinSet::new();
+    for _ in 0..32 {
+        let (state, stop, overlaps) = (state.clone(), stop.clone(), overlaps.clone());
+        workers.spawn(async move {
+            while !stop.load(Ordering::SeqCst) {
+                // If dequeued after completion this is rejected as an invalid
+                // action without issuing another request or filling event queues.
+                match state
+                    .send_to_client(
+                        id,
+                        json!({"type":"oci_request","operation":"unsupported"}),
+                        Duration::from_secs(2),
+                    )
+                    .await
+                {
+                    Ok(ClientSendOutcome::Rejected { error }) if error.contains("pending") => {
+                        overlaps.fetch_add(1, Ordering::SeqCst);
+                    }
+                    _ => break,
+                }
+            }
+        });
+    }
+    let outcome = tokio::time::timeout(Duration::from_secs(4), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    stop.store(true, Ordering::SeqCst);
+    while let Some(worker) = workers.join_next().await {
+        worker.unwrap();
+    }
+    assert!(
+        outcome.is_err(),
+        "deadline must not acknowledge a hanging native request"
+    );
+    assert!(
+        overlaps.load(Ordering::SeqCst) >= 32,
+        "actual repeated overlap refusals are required"
+    );
+    event(&state, id, "oci_request_error", before).await;
+    peer.closed().await;
+    assert!(
+        state.has_client_handle(id).await,
+        "a request deadline must retain the session handle"
+    );
+    assert!(!state
+        .list_access_logs_for(
+            Some(netget::state::AccessLogOwner::Client(id.as_u32())),
+            None
+        )
+        .await
+        .iter()
+        .any(|e| e.id > before && e.event_type == "oci_result"));
+    *peer.mode.lock().unwrap() = "normal";
+    let before = latest(&state, id).await;
+    send(
+        &state,
+        id,
+        json!({"type":"oci_request","operation":"tags","repository":"library/demo"}),
+    )
+    .await;
+    assert_eq!(
+        event(&state, id, "oci_result", before).await.1["data"]["tags"],
+        json!(["latest"])
+    );
+    state.remove_client(id).await;
+    peer.stop().await;
 }

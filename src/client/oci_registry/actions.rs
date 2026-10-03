@@ -31,12 +31,27 @@ fn a(
     parameters: Vec<Parameter>,
     example: Value,
 ) -> ActionDefinition {
+    let intent = match name {
+        "oci_request" => "request one read-only registry response; await validation",
+        "oci_authenticate" => {
+            "request a token for the last challenge; await token-service response"
+        }
+        "oci_set_token" => {
+            "set a transient token for later requests; authorization remains unverified"
+        }
+        "oci_clear_token" => "stop sending Authorization; server revocation remains unverified",
+        "disconnect" => "cancel the pending request and stop owned client tasks",
+        _ => unreachable!("only declared OCI actions receive a log template"),
+    };
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(
+            crate::protocol::log_template::LogTemplate::new()
+                .with_debug(format!("OCI {name}: {intent}")),
+        ),
     }
 }
 pub fn actions() -> Vec<ActionDefinition> {
@@ -60,7 +75,7 @@ pub static RESULT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     event("oci_result","Complete validated native read response. GET manifest/blob digest_verified means exact raw response bytes were hashed; HEAD never proves content integrity.",vec![p("operation","string","Selected operation",true),p("status","integer","Native HTTP status",true),p("repository","string|null","Requested repository",true),p("reference","string|null","Requested tag/digest",true),p("data","object","Typed list/continuation, validated manifest or blob metadata/text; binary/large text content omitted",true)],json!({"type":"disconnect"}))
 });
 pub static CHALLENGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    event("oci_auth_challenge","Native401 with selected Bearer realm/service/pull scopes. Credentials/tokens excluded. Exchange requires trusted token origin; pull not replayed.",vec![p("operation","string","Challenged operation",true),p("status","integer","401",true),p("errors","array|null","Native OCI errors if supplied",true),p("challenge","object","Parsed Bearer realm/service/scopes",true)],json!({"type":"oci_authenticate"}))
+    event("oci_auth_challenge","Native401 with selected Bearer realm/service/pull scopes. Credentials/tokens excluded. Exchange requires trusted token origin; pull not replayed.",vec![p("operation","string","Challenged operation",true),p("status","integer","Native unauthorized HTTP401 response status",true),p("errors","array|null","Native OCI errors if supplied",true),p("challenge","object","Parsed Bearer realm/service/scopes",true)],json!({"type":"oci_authenticate"}))
 });
 pub static AUTH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     event("oci_authentication","Local token set/clear or native token-service issuance. Never claims backend authorization without a registry response.",vec![p("operation","string","set_token, clear_token or authenticate",true),p("data","object","On exchange: token_received, registry_authorization_verified=false, native optional expiry/issue time and effective transient lifetime",false),p("token_present","boolean","On local token operations only",false),p("authentication_verified","boolean","False for local token operations",false)],json!({"type":"oci_request","operation":"tags","repository":"library/demo"}))
