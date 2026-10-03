@@ -42,3 +42,6 @@ pub use server::{start_netget_server, wait_for_server_startup};
 
 #[cfg(any(feature = "quic", feature = "http3"))]
 pub mod quic_peer;
+
+#[cfg(feature = "grpc-web")]
+pub mod grpcweb_peer;

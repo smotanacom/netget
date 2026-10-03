@@ -100,6 +100,8 @@ pub mod git;
 pub mod gopher;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "gtp")]
 pub mod gtp;
 #[cfg(feature = "hls")]

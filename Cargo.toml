@@ -139,6 +139,7 @@ portable-base = [
     "nostr",
     "mcp",
     "grpc",
+    "grpc-web",
     "xmlrpc",
     "tor",
     "vnc",
@@ -339,6 +340,7 @@ bitcoin = ["dep:bitcoin"]  # Bitcoin P2P protocol server (LLM-controlled, not a 
 nostr = ["dep:tokio-tungstenite", "dep:secp256k1", "dep:sha2"]  # Nostr relay (NIP-01 over WebSocket, NIP-11) - secp256k1 is the 0.29 bitcoin already links
 mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 over HTTP/SSE)
 grpc = ["dep:tonic", "tonic/tls-webpki-roots", "dep:h2", "dep:rustls", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # Dynamic unary/streaming gRPC and bounded reflection
+grpc-web = ["grpc", "dep:tonic-web", "dep:flate2"] # Binary HTTP/1.1 unary and server-streaming binding
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
@@ -558,6 +560,7 @@ dist-windows = [
     "nostr",
     "mcp",
     "grpc",
+    "grpc-web",
     "xmlrpc",
     "vnc",
     "reverse-shell",
@@ -719,6 +722,7 @@ all-protocols = [
     "nostr",
     "mcp",
     "grpc",
+    "grpc-web",
     "xmlrpc",
     "tor",
     "vnc",
@@ -1001,6 +1005,7 @@ tonic = { version = "0.12", optional = true, features = ["gzip"] }
 prost = { version = "0.13", optional = true }
 prost-reflect = { version = "0.14", optional = true }
 prost-types = { version = "0.13", optional = true }
+tonic-web = { version = "=0.12.3", optional = true }
 tonic-reflection = { version = "0.12", optional = true }
 tower = { version = "0.5", optional = true }
 tempfile = { version = "3.13", optional = true }

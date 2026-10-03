@@ -926,6 +926,8 @@ pub use mcp::McpServer;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcProtocol;
 #[cfg(feature = "grpc")]
