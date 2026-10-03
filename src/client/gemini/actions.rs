@@ -29,20 +29,21 @@ fn action(
     description: &str,
     parameters: Vec<Parameter>,
     example: Value,
+    log_template: &str,
 ) -> ActionDefinition {
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(log_template.into()),
     }
 }
 fn request_action() -> ActionDefinition {
     action("gemini_request", "Fetch a Gemini URL on this client's endpoint; redirects and input prompts are returned for an explicit next action", vec![
         parameter("url","string","Absolute gemini:// URL, maximum1024 bytes; host/port must match the configured endpoint",true),
         parameter("input","string","Optional response to an input prompt; UTF-8 percent-encoded as the URL query",false),
-    ],json!({"type":"gemini_request","url":"gemini://localhost:1965/"}))
+    ],json!({"type":"gemini_request","url":"gemini://localhost:1965/"}), "Request Gemini capsule response")
 }
 fn disconnect_action() -> ActionDefinition {
     action(
@@ -50,6 +51,7 @@ fn disconnect_action() -> ActionDefinition {
         "Close the Gemini connection",
         vec![],
         json!({"type":"disconnect"}),
+        "Disconnect Gemini capsule",
     )
 }
 fn actions() -> Vec<ActionDefinition> {

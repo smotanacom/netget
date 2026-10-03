@@ -24,7 +24,11 @@ pub static QUIC_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "Authenticated raw QUIC connection established",
         json!({"type":"send_quic_data","data":"hello"}),
     )
-    .with_parameters(vec![field("remote_addr", "string", "Peer address")])
+    .with_parameters(vec![field(
+        "remote_addr",
+        "string",
+        "Authenticated QUIC peer's socket address",
+    )])
     .with_actions(QuicClientProtocol.get_sync_actions())
 });
 pub static QUIC_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -95,7 +99,7 @@ impl Protocol for QuicClientProtocol {
             description: "Close the QUIC connection and cancel all streams".into(),
             parameters: vec![],
             example: json!({"type":"disconnect"}),
-            log_template: None,
+            log_template: Some("Disconnect raw QUIC peer and cancel all active streams".into()),
         });
         a
     }
