@@ -406,7 +406,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install bounded source-peer build prerequisites
         run: |
@@ -436,6 +436,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -467,7 +470,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install required SSH client and server peers
         run: |
@@ -493,6 +496,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -522,7 +528,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install build prerequisites
         run: |
@@ -558,6 +564,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -585,7 +594,7 @@ jobs:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install required build and TLS-test prerequisites
         run: |
@@ -617,6 +626,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
