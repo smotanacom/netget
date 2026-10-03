@@ -442,7 +442,7 @@ Limited by LLM processing:
 
 ## Testing Notes
 
-See `tests/server/icmp/CLAUDE.md` for test strategy and E2E test details.
+See `tests/server/icmp/AGENTS.md` for test strategy and E2E test details.
 
 ## Future Enhancements
 

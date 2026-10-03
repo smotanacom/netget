@@ -48,7 +48,7 @@ file is added, which is the argument for a per-test table rather than a number: 
 rather than reading it. `dig_test`'s event count is a floor (`expect_at_least`) because its
 default-flags query is allowed to fall back from EDNS and re-ask.
 
-The ~10-call guidance in the root `CLAUDE.md` is about keeping a suite cheap against a *real*
+The ~10-call guidance in the root `AGENTS.md` is about keeping a suite cheap against a *real*
 model; every call here is answered by the in-process mock, so what the table is really for is
 noticing a rule that fires more often than it should.
 

@@ -13,7 +13,7 @@ harness cannot start this server at all. The suite is split the way
 |---|---|---|
 | `codec_test.rs` | yes | The frame format against literal IEEE 802.1X / RFC 3748 bytes, and MD5 against RFC 1321's own suite |
 | `e2e_test.rs` | yes | The whole event → handler/LLM → action → frame path, over the UDP test transport, in-process |
-| — | — | **Nothing here proves anything about pcap, and no third-party supplicant has ever spoken to this server.** See `src/server/eapol/CLAUDE.md`. |
+| — | — | **Nothing here proves anything about pcap, and no third-party supplicant has ever spoken to this server.** See `src/server/eapol/AGENTS.md`. |
 
 **44 tests**: 33 codec, 11 end to end. About 14s at `--test-threads=100`, almost all of which
 is the two tests that talk to a mock model.
@@ -42,7 +42,7 @@ Every expected byte string is written out literally with a field-by-field deriva
 comment above it, and **both directions are asserted against that literal**: `decode(LITERAL)`
 must yield the fields, `encode(fields)` must yield the literal. Neither is allowed to define
 the other. Round-tripping an encoder through its own decoder proves only that one function
-inverts the other — the circularity the root `CLAUDE.md` names, and the reason `rss` sat at
+inverts the other — the circularity the root `AGENTS.md` names, and the reason `rss` sat at
 Experimental for months.
 
 Coverage worth keeping if these are ever rewritten:
@@ -144,7 +144,7 @@ test has been observed.
 ## What still has no coverage
 
 - No frame this code produced has reached a real supplicant. `wpa_supplicant` over a `feth`
-  pair is the experiment that would change that; `src/server/eapol/CLAUDE.md` records the exact
+  pair is the experiment that would change that; `src/server/eapol/AGENTS.md` records the exact
   commands, and **it has not been run** — it needs root.
 - `pcap::Capture::open`, the `ether proto 0x888e` filter compile, `sendpacket` and the capture
   loop have never executed. Their error paths are reached only through the "no such

@@ -221,7 +221,7 @@ Connect to LDAP at localhost:389, bind as admin and change mail for cn=alice,dc=
 
 ## Testing
 
-See `tests/client/ldap/CLAUDE.md`. The evidence is `tests/client/ldap/real_server_test.rs`,
+See `tests/client/ldap/AGENTS.md`. The evidence is `tests/client/ldap/real_server_test.rs`,
 against OpenLDAP's `slapd`.
 
 ## References
@@ -266,8 +266,8 @@ way to get a response carrying the request's real messageID — a static handler
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/ldap/real_server_test.rs` (see `tests/client/ldap/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/ldap/real_server_test.rs` (see `tests/client/ldap/AGENTS.md`):
 
 1. **Real third-party server** — OpenLDAP's `slapd` (C), configured per test with an `mdb`
    database, seeded with `ldapadd` and read back with `ldapsearch`. NetGet's side is the `ldap3`

@@ -117,4 +117,4 @@ fast. E2E: `tests/client_handle_test.rs`.
 
 ## Testing Strategy
 
-See `tests/client/tcp/CLAUDE.md` for E2E testing approach.
+See `tests/client/tcp/AGENTS.md` for E2E testing approach.

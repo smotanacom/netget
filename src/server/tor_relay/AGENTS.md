@@ -364,7 +364,7 @@ admission — it completes the handshake and hands the peer a circuit to build o
 `call_llm` returns `Err`, the relay sends **DESTROY / reason 2 INTERNAL** instead of CREATED2,
 drops the half-built circuit state, and logs `decision=fail_closed_llm_error`. Sending CREATED2
 there would turn a backend outage into "every circuit accepted", the OAuth2 shape in the root
-`CLAUDE.md`. A model that answers with an action producing no output (`detect_relay_cell`,
+`AGENTS.md`. A model that answers with an action producing no output (`detect_relay_cell`,
 `tor_relay_log`) has admitted the circuit, and that is logged `decision=model_answer`.
 
 **Decision tags.** Every LLM outcome on both events is logged with a `decision=` token:
@@ -542,7 +542,7 @@ from inside `connect()` if pointed here — `PROTOCOL_QUALITY.md`'s three-state 
 **The deadline covers the read and nothing else.** The deadline is armed immediately before the `select!` and covers only the wait, not the loop body — `handle_cell` awaits the model above it and may park a cell for a human, and none of that time is counted. **Not covered:** the outbound exit-stream forwarder (`spawn_stream_forwarder`) reads from a target this relay dialled out to, not from an inbound peer, so it is outside this bound. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

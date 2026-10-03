@@ -113,7 +113,7 @@ anywhere in the usage tables — so the five controls are ordinary Keyboard/Keyp
 It returns `Option`, and that is the point rather than a convenience: **a zeroed HID report is
 not "nothing"** — it asserts that every key has been released, which is an unasked-for
 statement on the wire. An unrecognised control name therefore yields `None` and the caller
-decides. This is the same reasoning that puts the BLE profiles on `CLAUDE.md`'s
+decides. This is the same reasoning that puts the BLE profiles on `AGENTS.md`'s
 deliberately-silent list: a fabricated HID report claims a keypress happened, so on an LLM
 failure the correct behaviour is to emit nothing and put the distinction in the log. The base
 stack owns every wire write and does that tagging; this profile adds no path that can
@@ -133,7 +133,7 @@ each characteristic, `start_advertising` for the advertised service list, and
 
 This section used to say the exact opposite: that the shorthand is rejected, that `add_service`
 fails with "Invalid service UUID", that no expansion helper exists anywhere in the tree, and
-that `src/server/bluetooth_ble/CLAUDE.md` was wrong to claim `"180D"` is "expanded to" the full
+that `src/server/bluetooth_ble/AGENTS.md` was wrong to claim `"180D"` is "expanded to" the full
 form. Every part of that was false and the base's own documentation was right. Read
 `parse_ble_uuid` before repeating any of it.
 
@@ -263,4 +263,4 @@ capability is missing, so they build a second copy around an absence that is not
 Raising the rating above `Experimental` needs a real adapter, an independent central and a host
 that accepts the peripheral as an input device — and HID-over-GATT needs bonding, which
 `ble-peripheral-rust` 0.2 exposes no control over, so it is blocked on the dependency and not
-only on hardware. See `tests/server/bluetooth_ble_presenter/CLAUDE.md`.
+only on hardware. See `tests/server/bluetooth_ble_presenter/AGENTS.md`.

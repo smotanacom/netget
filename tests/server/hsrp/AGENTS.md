@@ -13,7 +13,7 @@ Two files, six tests. Run:
 | `e2e_test.rs` | 3 | Event → LLM → action → packet, over a real UDP socket. Port 1985 is unprivileged, so the transport genuinely executes rather than being mocked away. |
 
 All six pass. Both are declared in `tests/server/hsrp/mod.rs`, which is declared in
-`tests/server/mod.rs` — check with the `comm` one-liner in the root `CLAUDE.md` if you add a
+`tests/server/mod.rs` — check with the `comm` one-liner in the root `AGENTS.md` if you add a
 file here.
 
 ## `codec_test.rs` — the authentication field
@@ -40,7 +40,7 @@ The rest of the file below concerns `e2e_test.rs`.
 `PrivilegeRequirement::None`. Nothing here is stubbed: the tests bind a real UDP socket, send
 real datagrams into the running server, and assert on the real bytes that come back. Its
 neighbours in the roadmap's routing/L2 tier (`arp`, `isis`, `ospf`, and the `wireguard` case
-the root `CLAUDE.md` records at length) cannot say that — they need root or raw sockets, so
+the root `AGENTS.md` records at length) cannot say that — they need root or raw sockets, so
 their suites prove the wiring and stop at the socket.
 
 That is the whole of HSRP's advantage, and it is worth being precise about what it buys. It
@@ -55,7 +55,7 @@ There is no HSRP crate on crates.io in any role, and no runnable HSRP speaker on
 only genuine HSRP peer is a Cisco device.
 
 So the packets below are **hand-written from RFC 2281 and Cisco's HSRPv2 documentation**. The
-root `CLAUDE.md` is explicit that this is an independent *reading* of the spec and not an
+root `AGENTS.md` is explicit that this is an independent *reading* of the spec and not an
 independent implementation — the same standing as `dhcp`'s in-test RFC 2131 decoder and
 `usb/serial`'s USB/IP client. It is the strongest evidence available here, and it is not Beta
 evidence. **Do not promote HSRP on the strength of this file.**
@@ -67,7 +67,7 @@ against the raw datagram. Nothing is decoded with `codec.rs` first.
 
 That is the entire point. Round-tripping a packet through the server's own encoder and decoder
 proves only that the codec agrees with itself — the circular-evidence failure the root
-`CLAUDE.md` names for `webrtc_signaling`/`websocket`. Since the peer here is already only a
+`AGENTS.md` names for `webrtc_signaling`/`websocket`. Since the peer here is already only a
 reading of the spec, letting the *assertions* be circular too would leave nothing at all. If a
 field moves, changes width, or changes byte order, these literals fail.
 
@@ -144,7 +144,7 @@ and the inversion is the point. HSRP has **no negative message of any kind** —
 no NAK — so the only thing that could be sent is an advertisement, and every advertisement is a
 positive claim about who owns the segment's gateway address. A fabricated Hello during an
 outage can win an election NetGet cannot serve, and every host on the link then sends its
-off-subnet traffic into a black hole. See `src/server/hsrp/CLAUDE.md`.
+off-subnet traffic into a black hole. See `src/server/hsrp/AGENTS.md`.
 
 ## Asserting an absence without asserting a race
 
@@ -163,7 +163,7 @@ By the time `expect_silence` runs the server has finished deciding, so its 1.5s 
 This also pins the *reason*, which is the part that would otherwise rot. `model_silent` and
 `fail_closed_llm_error` are byte-identical on the wire — both are zero bytes — so the log token
 is the only thing distinguishing a deliberate refusal to join the election from a total backend
-outage. Conflating them is the OAuth2 defect the root `CLAUDE.md` records, and here it would be
+outage. Conflating them is the OAuth2 defect the root `AGENTS.md` records, and here it would be
 especially invisible: **a silent HSRP speaker is entirely normal**, so an outage would look like
 correct behaviour indefinitely.
 
@@ -194,4 +194,4 @@ Eight, under the ~10 guideline. All three finish with `wait_for_mocks(30)` and t
 * **Resign as an outbound action.** `send_hsrp_resign` is covered only by
   `executable_examples_test` at the executor level, which is weaker than a wire assertion.
 * **A real election.** Priorities, preemption and role changes across datagrams do not exist
-  here — by design; see `src/server/hsrp/CLAUDE.md`.
+  here — by design; see `src/server/hsrp/AGENTS.md`.

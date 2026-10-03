@@ -351,7 +351,7 @@ deadline and the answer are live at the same moment. `read_bounded` therefore co
 per-message handler and the connect-event task each hold a `BusyGuard` for the whole of
 their work, so an LLM round-trip, and a `manual` rule parking an event for a human
 (`src/state/intercepts.rs`, 300s by default), can never be timed out from under themselves. That
-is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted live
+is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted live
 transfers because "idle" was measured wrongly.
 
 `tests/server/tcp/connection_bounds_test.rs` drives all three from the wire: a silent peer is

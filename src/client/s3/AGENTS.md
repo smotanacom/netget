@@ -215,7 +215,7 @@ Same as async actions, allowing the LLM to chain operations:
 5. **LLM decides next action** (or waits for user input) — but only once. Follow-ups from
    `s3_response_received` are dispatched through `run_operation_once`, which raises no event,
    so the chain is exactly one step deep. That is the "non-notifying path" the root
-   `CLAUDE.md` names, chosen here to keep the async type non-recursive for `tokio::spawn`'s
+   `AGENTS.md` names, chosen here to keep the async type non-recursive for `tokio::spawn`'s
    `Send` bound; the prescribed fix is a boxed call with a depth bound, not silence.
 
 ## Limitations
@@ -291,7 +291,7 @@ LLM sees the error and can decide to retry, create bucket, or report to user.
 
 ## Testing Strategy
 
-See `tests/client/s3/CLAUDE.md` for E2E testing approach.
+See `tests/client/s3/AGENTS.md` for E2E testing approach.
 
 **Recommended test setup:**
 
@@ -350,7 +350,7 @@ Connect to S3, list all objects in bucket "temp-bucket", delete all objects, the
 - `src/client/s3/actions.rs` - Action definitions and trait implementation
 - `src/client/s3/mod.rs` - Core S3 client logic (this file's implementation)
 - `tests/client/s3/e2e_test.rs` - E2E tests with MinIO/LocalStack
-- `tests/client/s3/CLAUDE.md` - Test strategy and budget
+- `tests/client/s3/AGENTS.md` - Test strategy and budget
 
 ## Command channel (dashboard `[ send ]`)
 

@@ -23,7 +23,7 @@ zero calls reach a mock *by design* — its backend is a closed port.
 ## Why the literals, and why they are not circular
 
 Encoding with our encoder and decoding with our decoder proves only that the two
-agree with each other. The root `CLAUDE.md` names that as circular evidence, and
+agree with each other. The root `AGENTS.md` names that as circular evidence, and
 it is exactly the mistake that held `rss` at Experimental while its test
 round-tripped one crate through itself.
 
@@ -138,7 +138,7 @@ the model, `ensure_model_selected` falls back to probing a real Ollama on
 `localhost:11434` and the test starts depending on the developer's machine.
 
 `wait_for_expectations(30)` then `verify_calls()` on every test that uses a mock,
-per the root `CLAUDE.md`: waiting on the expectations waits on the exchange, and
+per the root `AGENTS.md`: waiting on the expectations waits on the exchange, and
 `verify_calls` is the thing that actually asserts.
 
 ## The UDP transport in tests
@@ -160,7 +160,7 @@ protocol makes possible, and the reply frame is decoded and asserted field by
 field: root priority really is 0, the port role really is designated, the source
 MAC comes from `bridge_mac`, and every field the action *omitted* (bridge
 priority, port id, all three timers) came from the startup parameters rather than
-from a constant. That last group is the `ospf` defect the root `CLAUDE.md`
+from a constant. That last group is the `ospf` defect the root `AGENTS.md`
 records — four of its six parameters were advertised and reached the wire from
 nowhere.
 
@@ -178,7 +178,7 @@ backend is `http://127.0.0.1:1`, a closed port.
 
 A bare "no frame arrived" would prove nothing: it is equally consistent with a
 server that never received the frame, which is the shape of assertion the root
-`CLAUDE.md` warns about under the empty-static-handler investigation. So this
+`AGENTS.md` warns about under the empty-static-handler investigation. So this
 asserts a **pair**: the `decision=fail_closed_` status line proves the frame was
 decoded, the event raised and the model asked; the absent frame proves the failure
 produced no output. `a_bpdu_produces_the_bpdu_the_model_decided_on` is the
@@ -226,7 +226,7 @@ libpcap's behaviour rather than netget's.
   it against another implementation's *reading* of the spec.
 
 That is why the protocol is `Experimental`, and the codec tests are not grounds to
-promote it. See `src/server/stp/CLAUDE.md` for the `feth`-pair recipe that would
+promote it. See `src/server/stp/AGENTS.md` for the `feth`-pair recipe that would
 give a real Ethernet segment on this machine — **nobody has run it.**
 
 ## Adding a test here

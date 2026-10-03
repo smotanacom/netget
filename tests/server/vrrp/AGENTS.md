@@ -24,7 +24,7 @@ Two files with different jobs, and the split is the whole strategy:
 ## Why the literals, and why they are not circular
 
 Encoding with our encoder and decoding with our decoder proves only that the two agree with
-each other. The root `CLAUDE.md` names that as circular evidence, and it is exactly the mistake
+each other. The root `AGENTS.md` names that as circular evidence, and it is exactly the mistake
 that held `rss` at Experimental while its test round-tripped one crate through itself.
 
 There is no third-party VRRP or CARP codec in this tree and no peer that can be run here — the
@@ -167,7 +167,7 @@ falls back to probing a real Ollama on `localhost:11434` and the test starts dep
 developer's machine.
 
 `wait_for_expectations(30)` then `verify_calls()` on every test that uses a mock, per the root
-`CLAUDE.md`: waiting on the expectations waits on the exchange, and `verify_calls` is the thing
+`AGENTS.md`: waiting on the expectations waits on the exchange, and `verify_calls` is the thing
 that actually asserts.
 
 ## The UDP transport in tests
@@ -195,7 +195,7 @@ makes possible, and its action names **only** the priority. The reply is decoded
 field by field: priority really is 200, and the version, VRID, interval and virtual addresses
 all came from the startup parameters rather than from a constant *or* from the inbound packet
 (which was v2, interval 1 s, one address — all different). That last group is the `ospf` defect
-the root `CLAUDE.md` records: four of its six parameters were advertised to the model and
+the root `AGENTS.md` records: four of its six parameters were advertised to the model and
 reached the wire from nowhere. The reply's checksum is then validated under the v3
 pseudo-header.
 
@@ -212,7 +212,7 @@ every other silence, so the tag is the only place the difference survives.
 `http://127.0.0.1:1`, a closed port.
 
 A bare "no packet arrived" would prove nothing: it is equally consistent with a server that
-never received the advertisement, which is the shape of assertion the root `CLAUDE.md` warns
+never received the advertisement, which is the shape of assertion the root `AGENTS.md` warns
 about under the empty-static-handler investigation. So this asserts a **pair**: the
 `decision=fail_closed_` status line proves the packet was decoded, the event raised and the
 model asked; the absent packet proves the failure produced no output.
@@ -284,7 +284,7 @@ themselves (`no_registered_protocol_emits_an_event_without_actions`,
   specification, and nothing has accepted it.
 
 That is why the protocol is `Experimental`, and the codec tests are not grounds to promote it.
-See `src/server/vrrp/CLAUDE.md` for the `feth`-pair recipe that would give a real Ethernet
+See `src/server/vrrp/AGENTS.md` for the `feth`-pair recipe that would give a real Ethernet
 segment on this machine, with `keepalived` as the peer — **nobody has run it.**
 
 ## Adding a test here

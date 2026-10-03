@@ -27,7 +27,7 @@ Requests are built and responses parsed in the test file from RFC 8656 / RFC 848
 message types written as the literal constants from RFC 8656 section 17. `webrtc-turn`'s
 client would be the more independent choice, but its `RelayConn`'s `send_to`/`recv_from`
 come only from `impl util::Conn`, and `webrtc-util` is not a dependency of this crate —
-see the library-choice section of `src/server/turn/CLAUDE.md`.
+see the library-choice section of `src/server/turn/AGENTS.md`.
 
 One consequence: a symmetric bug in this file's encoder and NetGet's would hide itself.
 Two things guard against that:

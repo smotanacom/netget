@@ -16,9 +16,9 @@ external binary. Runs in well under a second.
 The server on the other end is **NetGet's own Gopher server**. Every wire
 assertion here is therefore *same-project evidence*: it shows the two halves of
 this repo agree with each other, not that either agrees with RFC 1436. The root
-`CLAUDE.md` names that class ("circular: the peer is the same crate the server
+`AGENTS.md` names that class ("circular: the peer is the same crate the server
 frames with") and it is the reason the client is rated `Experimental`. See
-`src/client/gopher/CLAUDE.md` for what would earn `Beta` — a third-party daemon
+`src/client/gopher/AGENTS.md` for what would earn `Beta` — a third-party daemon
 on loopback, hard-failing when absent, never a `SKIP:`.
 
 It is still worth doing, because everything on **this client's own side of the

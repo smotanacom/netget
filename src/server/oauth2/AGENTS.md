@@ -121,7 +121,7 @@ operator the backend was saturated rather than dead.
 
 ### The historical fail-open is gone — verified, not assumed
 
-The root `CLAUDE.md` names this protocol as *the* worked example of a fail-open: no action
+The root `AGENTS.md` names this protocol as *the* worked example of a fail-open: no action
 meant a hardcoded `AUTH_CODE_123`, a hardcoded `ACCESS_TOKEN_123`, and introspection answering
 `{"active": true}` for every bearer token. **That is history.** Re-read against the current
 `mod.rs` (September 2026): every one of the four endpoints refuses when the model produces
@@ -231,7 +231,7 @@ Deterministic equivalent — no LLM call per request:
 ## Tests
 
 `tests/server/oauth2/` exists and is declared in `tests/server/mod.rs`. See
-`tests/server/oauth2/CLAUDE.md`.
+`tests/server/oauth2/AGENTS.md`.
 
 ## References
 
@@ -264,7 +264,7 @@ watchdog over `ConnectionActivity` instead, which reports a connection with work
 idle at all. The model round-trip, and an event a `manual` rule parked for a human
 (`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
 construction: an answer that takes minutes can never close the connection it is an answer for.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless

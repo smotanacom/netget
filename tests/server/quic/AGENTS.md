@@ -8,7 +8,7 @@ These peers now negotiate `netget-quic`; `h3` is reserved for HTTP/3.
 `independent_peer_test.rs`: an independent aioquic 1.3.0 client authenticates the
 certificate/hostname, opens concurrent streams, exchanges binary and text bytes,
 and verifies endpoint cleanup. It requires the pinned external Python dependency.
-See `tests/client/quic/CLAUDE.md` for its small isolated setup and combined command.
+See `tests/client/quic/AGENTS.md` for its small isolated setup and combined command.
 No real model or public network is used by the tests. Server maturity remains
 Beta based on the existing evidence; the new client remains Experimental.
 

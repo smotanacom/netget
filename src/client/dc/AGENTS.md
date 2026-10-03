@@ -480,7 +480,7 @@ Examples:
 
 ## Testing Strategy
 
-See `tests/client/dc/CLAUDE.md` for comprehensive testing documentation.
+See `tests/client/dc/AGENTS.md` for comprehensive testing documentation.
 
 **Test Approach**:
 - Use local DC server from `src/server/dc/` as test target
@@ -493,5 +493,5 @@ See `tests/client/dc/CLAUDE.md` for comprehensive testing documentation.
 - [NMDC Protocol Specification](https://nmdc.sourceforge.io/NMDC.html)
 - [ADC Protocol](https://adc.sourceforge.io/ADC.html)
 - [DC++ Official Site](https://dcplusplus.sourceforge.io/)
-- Server implementation: `src/server/dc/CLAUDE.md`
+- Server implementation: `src/server/dc/AGENTS.md`
 - Existing client patterns: `src/client/tcp/`, `src/client/redis/`

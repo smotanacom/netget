@@ -45,7 +45,7 @@ and a bare `127.0.0.1:11434` failed every request with "relative URL without a b
 
 That matters more here than it looks. This client is the one that speaks to whatever NetGet
 itself uses as a model backend, so "lost the target and fell back to a default" is not a
-cosmetic bug — it is the DynamoDB defect in `CLAUDE.md`, aimed at the operator's own Ollama.
+cosmetic bug — it is the DynamoDB defect in `AGENTS.md`, aimed at the operator's own Ollama.
 `tests/client/ollama/endpoint_targeting_test.rs` pins it against a stub on an ephemeral
 loopback port that no default could name.
 
@@ -265,7 +265,7 @@ open_client ollama http://localhost:11434 "Ask llama2 about Rust" default_model=
 
 ## Testing Strategy
 
-See `tests/client/ollama/CLAUDE.md` for E2E testing approach.
+See `tests/client/ollama/AGENTS.md` for E2E testing approach.
 
 Key test scenarios:
 

@@ -35,7 +35,7 @@ They passed throughout the entire period in which:
 
 The file header even carried a stale BLOCKED banner claiming the feature did not compile.
 
-The lesson is the one the root `CLAUDE.md` keeps repeating: a suite that never opens a socket
+The lesson is the one the root `AGENTS.md` keeps repeating: a suite that never opens a socket
 constrains nothing about the protocol. The unit tests worth keeping are still at the bottom of
 `e2e_test.rs` — PIN retry accounting, resident-key bookkeeping, CTAPHID fragmentation at its
 exact limits — because those are awkward to reach over the wire. They were just never the thing
@@ -93,7 +93,7 @@ It runs with `approval_timeout_secs: 3` so the silence case does not spend the 3
 ## Synchronisation
 
 Both network tests wait for `"USB FIDO2 LLM call completed (attach)"` before asserting: the attach event follows the peer's `OP_REQ_IMPORT`, not the TCP accept — a bare
-connect costs no model call at all (see `src/server/usb/CLAUDE.md` and
+connect costs no model call at all (see `src/server/usb/AGENTS.md` and
 `tests/server/usb_keyboard/attach_on_import_test.rs`), so the log line is the only
 signal that the import has been answered. The
 log line puts the event kind *before* the connection id precisely so a test can wait on one

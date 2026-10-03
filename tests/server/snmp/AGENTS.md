@@ -31,7 +31,7 @@ queries with proper OID values and data types. Tests both basic system OIDs and 
 ### `ber_depth_test.rs`
 
 Four unit tests over `SnmpServer::parse_snmp_message`, no server and no mock model. They cover the
-input screen described in `src/server/snmp/CLAUDE.md` §7: a 30000-level indefinite-length nesting
+input screen described in `src/server/snmp/AGENTS.md` §7: a 30000-level indefinite-length nesting
 (which aborted the whole test binary with `stack overflow` before the screen existed), the
 definite-length route to the same recursion, a length reaching past the end of the datagram, and a
 real net-snmp `GetRequest` that must still parse.

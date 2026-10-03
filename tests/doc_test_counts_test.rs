@@ -125,7 +125,7 @@ fn tests_in_dir(dir: &Path) -> usize {
     paths.iter().map(|p| tests_in_file(p)).sum()
 }
 
-/// Every `CLAUDE.md` under `tests/`.
+/// Every `AGENTS.md` and legacy `CLAUDE.md` under `tests/`.
 fn test_docs(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -135,7 +135,10 @@ fn test_docs(root: &Path) -> Vec<PathBuf> {
             let p = entry.path();
             if p.is_dir() {
                 walk(&p, out);
-            } else if p.file_name().is_some_and(|n| n == "CLAUDE.md") {
+            } else if p
+                .file_name()
+                .is_some_and(|n| n == "AGENTS.md" || n == "CLAUDE.md")
+            {
                 out.push(p);
             }
         }

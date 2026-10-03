@@ -199,7 +199,7 @@ a `select!` arm. `send_pop3_command` yields `ClientActionResult::Custom`, which 
 
 ## Testing Strategy
 
-See `tests/client/pop3/CLAUDE.md` for:
+See `tests/client/pop3/AGENTS.md` for:
 
 - E2E test approach
 - Local POP3 server setup (NetGet POP3 server, Dovecot, or similar)

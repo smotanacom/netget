@@ -72,7 +72,7 @@ has its own test.
 Both are emitted. Note that, on the client path, what the model is actually offered comes from
 `get_async_actions()` — `call_llm_for_client` never reads `get_sync_actions()` or the event's
 own action list. RSS is unaffected because `fetch_rss_feed` and `disconnect` are in both, but
-see `src/client/tftp/CLAUDE.md` for the case where that difference bit.
+see `src/client/tftp/AGENTS.md` for the case where that difference bit.
 
 ## Connection model
 

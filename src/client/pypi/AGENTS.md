@@ -231,7 +231,7 @@ Connect to PyPI and list all available files for numpy
 
 ## Testing Strategy
 
-See `tests/client/pypi/CLAUDE.md` for detailed E2E testing approach.
+See `tests/client/pypi/AGENTS.md` for detailed E2E testing approach.
 
 ### Test Priorities
 
@@ -298,10 +298,10 @@ timeout protects the caller either way.
 - The connected event carries `index_url`. It declares that parameter as **required** and this file documented it, but the event was raised with `{}` — so a `pypi_connected` handler could not tell which index it was talking to.
 - `index_url` is declared in `get_connect`/`get_startup_parameters()` **and read**: `connect()` prefers it over `ctx.remote_addr`. It was read by nothing until now, so the advertised knob did nothing when turned.
 - A `remote_addr` with no scheme is no longer discarded and replaced with the public index. It gets the `https://` it was missing. Before, an operator who typed `127.0.0.1:8080` had their requests sent to the public index with no warning.
-- An **empty** address no longer falls back either. It used to return `https://pypi.org` with an INFO line, which is the class the root `CLAUDE.md` calls "a client that loses its target must fail, never fall back to the real service" — milder than the DynamoDB case, since nothing here is signed with anybody's credentials, and the same shape. `resolve_index_url` returns `Result` and refuses, naming a localhost example, exactly as `openai::api_base_for` does. The protocol's own name as an address (`"pypi"`) refuses too. `tests/client/pypi/index_target_test.rs` pins both refusals **and** that an explicitly named `pypi.org` is still honoured — a guard that refused everything would satisfy the first assertion alone.
+- An **empty** address no longer falls back either. It used to return `https://pypi.org` with an INFO line, which is the class the root `AGENTS.md` calls "a client that loses its target must fail, never fall back to the real service" — milder than the DynamoDB case, since nothing here is signed with anybody's credentials, and the same shape. `resolve_index_url` returns `Result` and refuses, naming a localhost example, exactly as `openai::api_base_for` does. The protocol's own name as an address (`"pypi"`) refuses too. `tests/client/pypi/index_target_test.rs` pins both refusals **and** that an explicitly named `pypi.org` is still honoured — a guard that refused everything would satisfy the first assertion alone.
 - `search_packages` builds its `search_url` from the configured index. It hardcoded `https://pypi.org/search/?q=...`, so a client pointed at a private index was handed the public one as somewhere to go.
 - `download_package` **streams and counts**; it does not buffer. It used to hold an entire distribution in memory and use it for nothing but `.len()`, at a size chosen by whatever the client was pointed at. It is capped at `MAX_DOWNLOAD_BYTES` (256 MiB). Nothing is written to disk — NetGet implements no storage, so a download here is a fetch-and-report.
-- One `reqwest::Client`, built once on `spawn_blocking`. Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately — the blocking rustls + platform-root-store cost that `CLAUDE.md` records as having stalled a whole client runtime, paid per request.
+- One `reqwest::Client`, built once on `spawn_blocking`. Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately — the blocking rustls + platform-root-store cost that `AGENTS.md` records as having stalled a whole client runtime, paid per request.
 - `get_event_types()` returns clones of the `LazyLock` statics the client actually raises. It used to hand-build a parallel set with no parameters and `{"type": "placeholder"}` examples, which steered the model to `show_message` — an action `execute_action` rejects.
 
 ## Browser build

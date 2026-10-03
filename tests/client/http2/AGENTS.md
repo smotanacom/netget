@@ -148,7 +148,7 @@ transparently.
 
 ## References
 
-- Parent implementation: `src/client/http2/CLAUDE.md`
+- Parent implementation: `src/client/http2/AGENTS.md`
 - Test helpers: `tests/helpers/client.rs`, `tests/helpers/common.rs`
 - HTTP/2 spec: RFC 7540
 

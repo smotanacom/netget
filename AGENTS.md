@@ -5,7 +5,7 @@ protocols as servers and ~90 as clients. NetGet owns the network stack; the LLM 
 what to say on the wire, either by reasoning per-request or via deterministic handlers.
 
 Three ways to run it: interactive TUI (default), headless (`--mcp` / `--mcp-http`, see
-`src/mcp_stdio/CLAUDE.md`), and non-interactive one-shot (`src/cli/non_interactive.rs`).
+`src/mcp_stdio/AGENTS.md`), and non-interactive one-shot (`src/cli/non_interactive.rs`).
 
 A non-interactive run (a prompt, `--load`, `--server`, `--client`) serves **every** server it
 started until all have stopped or Ctrl+C, keeps a clients-only run alive while any client is
@@ -17,7 +17,7 @@ instance whoever answered it. `tests/non_interactive_run_limits_test.rs` drives 
 **The interactive TUI is the full-screen ratatui dashboard (`src/tui/`)**, the only
 interactive UI — the rolling-terminal TUI that used to sit behind `--legacy-tui` was removed
 in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.rs`.
-`src/tui/CLAUDE.md` is the design document; the short version:
+`src/tui/AGENTS.md` is the design document; the short version:
 
 - **Left column is every instance, always visible.** A scrollable canvas of **cards**: each
   server and client with its summary line (status glyph, id, protocol, address, live peers,
@@ -155,7 +155,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
      forever against the class it exists for.
   4. **Every declared bound has a test**: max message size, idle timeout, connection cap,
      recursion depth. A bound nobody tested is a comment.
-  5. **Its two `CLAUDE.md` files were verified against source in the current pass**, not
+  5. **Its two `AGENTS.md` files were verified against source in the current pass**, not
      inherited. `ssh`'s said "there is no E2E test" while eleven existed.
   6. **No `#[ignore]` and no skip-when-missing gate in its suite.**
 
@@ -165,7 +165,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   plus libmodbus's `mbpoll`) and `dns` (ISC `dig` plus Knot `kdig`). Each names two independent
   clients in its own `e2e_testing`, each has a `tests/server/<p>/` file using `pcap_oracle`, each
   has a fuzz target with a corpus, and no suite has an `#[ignore]` or a skip gate. What was left
-  for them was condition 4 (a test per declared bound) and condition 5 (both `CLAUDE.md` files
+  for them was condition 4 (a test per declared bound) and condition 5 (both `AGENTS.md` files
   re-verified against source). **All three went the rest of the way and are Stable** — `coap`
   and `dns` on 16 September, `modbus` on 26 September 2026. `smb` followed on 30 September
   2026 from Beta, with conditions 1, 3 and 4 made true in the pass rather than found true.
@@ -399,7 +399,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   blocking, and running it on the Tokio runtime the in-process mock also needs deadlocks
   the two — fixed long before by moving every libssh2 call onto `spawn_blocking`. The
   comment outlived the fix and was quoted verbatim in `metadata()` and in
-  `src/server/ssh/CLAUDE.md` as the reason for the rating. `ssh` is Beta.
+  `src/server/ssh/AGENTS.md` as the reason for the rating. `ssh` is Beta.
 
   **Check what a test drives, not what the server links.** The demotion read `russh` in
   `src/` and never looked for `ssh2::Session` in `tests/`. That is a two-minute grep, and
@@ -1085,7 +1085,7 @@ failure surfaces two steps later on a different expectation.
 
 UDP-style protocols (DNS, STUN, NTP, DHCP, BOOTP, TFTP…) **must** use
 `.respond_with_actions_from_event()` to echo the client's random transaction/query ID back.
-Static mocks with hardcoded IDs cause client timeouts. See `tests/server/dns/CLAUDE.md`.
+Static mocks with hardcoded IDs cause client timeouts. See `tests/server/dns/AGENTS.md`.
 
 ```rust
 .on_event("dns_query")
@@ -1488,7 +1488,7 @@ so a deploy is live within seconds. `css/`, `js/` and `demo/` go up under a cont
 `v/<hash>/` prefix (immutable) and `index.html` (`no-cache`) is rewritten to point there, so a
 browser never pairs one deploy's JavaScript with another's `.wasm` — which fixed-URL week-long
 caching did, breaking the demo with `wasm.<export> is not a function`. `DRY_RUN=1` changes
-nothing; `STAGE_DIR=<dir>` keeps the staged copy to test. Details in `site/CLAUDE.md`.
+nothing; `STAGE_DIR=<dir>` keeps the staged copy to test. Details in `site/AGENTS.md`.
 
 Two things about it are load-bearing:
 
@@ -1509,7 +1509,7 @@ Two things about it are load-bearing:
   **Why nobody noticed: the site root is a 404.** Only the individual pages resolve, so from the
   front door it looks dead. There is no workflow file to remove — `build_type: legacy` means
   GitHub's own builder, driven by a repository setting.
-- **`deploy.sh` excludes itself and every `*.md`.** `site/CLAUDE.md` names the bucket,
+- **`deploy.sh` excludes itself and every `*.md`.** `site/AGENTS.md` names the bucket,
   distribution and OAC IDs; the first run of the script published it before the exclusion
   existed. `--delete` skips excluded paths too, so removing such a file from the bucket is a
   manual `aws s3 rm`.
@@ -1518,7 +1518,7 @@ Hosting is S3 + CloudFront (private bucket, OAC, ACM cert, DNS at Porkbun) — t
 the maintainer's other static sites. It replaced GitHub Pages for the landing page — the
 stated reason was that Pages "cannot serve a private repository", which does not hold today
 since the repository is public, so treat that as history rather than as a constraint. Pages
-itself was never turned off; see the `docs/` note above. `site/CLAUDE.md` has the resource IDs,
+itself was never turned off; see the `docs/` note above. `site/AGENTS.md` has the resource IDs,
 the DNS records and how to change them.
 
 ## Browser build (wasm32) — the landing-page demo
@@ -1607,7 +1607,7 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
 ## MCP surface
 
 `--mcp` (stdio) and `--mcp-http PORT` expose tools sharing the TUI's code paths. See
-`src/mcp_stdio/CLAUDE.md`.
+`src/mcp_stdio/AGENTS.md`.
 
 **Five of the six gaps this section used to list have been fixed, and it kept claiming them.**
 Re-verified September 2026 against `src/mcp_stdio/`:
@@ -1625,7 +1625,7 @@ Re-verified September 2026 against `src/mcp_stdio/`:
 `fail_intercept`. Each validates the action `type` against the target's own set before handing
 it to a running loop; `server_status` lists connection ids and which accept `send_to_peer`.
 There is no `dismiss_intercept` tool on purpose: dismissing *is* failing closed. Details in
-`src/mcp_stdio/CLAUDE.md` ("Driving by hand").
+`src/mcp_stdio/AGENTS.md` ("Driving by hand").
 
 **Two remain:**
 
@@ -2026,7 +2026,7 @@ Read before assuming a subsystem is sound:
   `<value><array><data>` level buys a `SIGSEGV` against the guard page — not a panic, so
   `spawn_blocking` cannot contain it and the whole process dies.
 
-  `src/client/xmlrpc/CLAUDE.md` recorded this as unfixable because "`Request::call` with a
+  `src/client/xmlrpc/AGENTS.md` recorded this as unfixable because "`Request::call` with a
   custom `Transport` takes a `reqwest` 0.11 `RequestBuilder`". **That is a provided impl of the
   trait, not its signature.** `xmlrpc::Transport` is public with an associated `Stream: Read`
   and anything may implement it. Reading a provided impl as the interface is the mistake worth
@@ -2272,7 +2272,7 @@ Read before assuming a subsystem is sound:
   rather than quietly closed.
 - `AppState` is one global `RwLock` over everything — a throughput ceiling, not a deadlock.
 - **The root markdown clutter is gone** — the ~50 one-off session/status reports this entry used
-  to warn about were deleted. Ten files remain and all are durable: `README.md`, `CLAUDE.md`,
+  to warn about were deleted. Ten files remain and all are durable: `README.md`, `AGENTS.md`,
   `ARCHITECTURE.md`, `METADATA_EXAMPLES.md`, `CLIENT_PROTOCOL_FEASIBILITY.md`,
   `LICENSE_ANALYSIS.md`, `SYSTEM_DEPENDENCIES_macOS.md`, `TERMUX_INSTALL.md`,
   `PROTOCOL_MIGRATION_GUIDE.md`, `IMPROVEMENTS.md`, `PROTOCOL_ROADMAP.md` (Programmes 1 and 2,

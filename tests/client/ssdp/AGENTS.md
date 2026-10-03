@@ -9,7 +9,7 @@ Run:
 ```
 
 **11 tests, all passing, ~7.6s wall.** No `#[ignore]`, no skip-when-missing gate: nothing here
-prints `SKIP: … not installed` and returns `Ok(())`, which the root `CLAUDE.md` catalogues as a
+prints `SKIP: … not installed` and returns `Ok(())`, which the root `AGENTS.md` catalogues as a
 silent pass on a runner without the binary.
 
 ## LLM call budget: 17 across the suite, 4–6 per end-to-end test
@@ -79,8 +79,8 @@ have their own mock Ollama and both are verified.
 
 **This is same-project evidence and the test's own doc comment says so.** The peer shares this
 client's HTTPU codec and was written in the same pass; it shows the two halves agree and cannot
-catch a mistake both make. It is the circular-evidence class the root `CLAUDE.md` names, and
-it is why the client is `Experimental`. See `src/client/ssdp/CLAUDE.md` for what would earn
+catch a mistake both make. It is the circular-evidence class the root `AGENTS.md` names, and
+it is why the client is `Experimental`. See `src/client/ssdp/AGENTS.md` for what would earn
 Beta.
 
 It is still worth having: it is the only test where the thing answering is a real server
@@ -107,7 +107,7 @@ ephemeral port. UDA 1.1 §1.3.2 permits a unicast M-SEARCH, so these are real se
 testing-only shortcut — and `send_msearch`'s `target` parameter exists for exactly this.
 
 `join_multicast: false` also keeps the suite off every interface but loopback, which the root
-`CLAUDE.md`'s localhost-only rule requires. **Do not "fix" a multicast join that is not
+`AGENTS.md`'s localhost-only rule requires. **Do not "fix" a multicast join that is not
 broken.**
 
 ## Timing

@@ -45,7 +45,7 @@ Two things make it worth its cost:
 
 1. **The mock ACKs dynamically.** `respond_with_actions_from_event` reads `block_number` off
    the event. A static `{"block_number": 1}` would stall the transfer at block 1 and the test
-   would then be "fixed" by weakening its assertions — the failure mode the root `CLAUDE.md`
+   would then be "fixed" by weakening its assertions — the failure mode the root `AGENTS.md`
    warns about for UDP protocols.
 2. **The server answers from a fresh TID.** RFC 1350 §4 requires the server's first reply to
    come from a newly allocated port, and subsequent client packets to go *there*, not to port

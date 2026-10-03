@@ -7,13 +7,13 @@ whatever card is in the field, and reads and writes NFC Forum Type 4 NDEF messag
 decides what to send and what to make of the answer.
 
 The NFC **server** is a different thing entirely and shares no code: it *is* a virtual tag, on
-a TCP socket, needing no hardware. See `src/server/nfc/CLAUDE.md`. This file compiles under the
+a TCP socket, needing no hardware. See `src/server/nfc/AGENTS.md`. This file compiles under the
 **`nfc-client`** feature, not `nfc` — several `cargo check --features nfc` runs have reported
 success without compiling a line of it.
 
 `DevelopmentState` is `Experimental`. It was `Incomplete` until September 2026, which means
 `is_available_to_llm()` returned false and **the model could not see this client at all** —
-a leftover from when the NDEF verbs did nothing, and a contradiction of the root `CLAUDE.md`'s
+a leftover from when the NDEF verbs did nothing, and a contradiction of the root `AGENTS.md`'s
 claim that no `Incomplete` protocol remained. Hiding a protocol is not how an unfinished one is
 reported: the `bluetooth_ble_beacon` precedent is to expose it and say plainly what is untested.
 
@@ -94,7 +94,7 @@ decoded and length-checked first, over 255 data bytes is refused with a pointer 
 
 ## NDEF (`ndef.rs`)
 
-`write_ndef` advertises typed records because the root `CLAUDE.md` forbids handing a model raw
+`write_ndef` advertises typed records because the root `AGENTS.md` forbids handing a model raw
 bytes. Something has to turn those into wire bytes, and until September 2026 nothing did:
 `execute_action` produced `{"records": [...]}` while `mod.rs` looked for `message_hex` or
 `message`, which nothing declared and nothing produced. **Every `write_ndef` returned "needs
@@ -107,7 +107,7 @@ empty and unknown TNFs, and reports anything else with its raw bytes.
 
 **Nested messages are deliberately not supported, in either direction.** NDEF nests — a Smart
 Poster's payload is itself an NDEF message — and that is the stack-overflow class the root
-`CLAUDE.md` describes: a recursive decoder without a counter dies on a `SIGSEGV` against the
+`AGENTS.md` describes: a recursive decoder without a counter dies on a `SIGSEGV` against the
 guard page, which is not a panic, so `catch_unwind` and `spawn_blocking` cannot contain it and
 the whole NetGet process goes down. The bytes come off a tag anyone can hand us. So the decoder
 walks the top level in a loop and returns a nested payload as hex; there is no depth counter

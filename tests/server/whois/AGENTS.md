@@ -32,7 +32,7 @@ Two facts about `whois(1)` to know before touching these tests:
 
 - macOS's `whois` **segfaults** when `-h` is given an **IP literal** (`-h 127.0.0.1`) — it does
   so against a plain `nc` listener too, so it is a client bug. `-h localhost` works, and still
-  resolves to loopback only. An earlier note in `src/server/whois/CLAUDE.md` read this as "the
+  resolves to loopback only. An earlier note in `src/server/whois/AGENTS.md` read this as "the
   real client is unusable"; it is not.
 - It reads until EOF. RFC 3912 has the server close as soon as its output is finished, but this
   server keeps the connection open, so **the handler must answer with `close_connection`** or

@@ -423,7 +423,7 @@ machine that was never implemented.
 
 ## Testing
 
-See `tests/server/torrent_peer/CLAUDE.md` for comprehensive testing documentation.
+See `tests/server/torrent_peer/AGENTS.md` for comprehensive testing documentation.
 
 ## Piece Transfer Example
 
@@ -478,7 +478,7 @@ copied.
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/server/torrent_peer/connection_bounds_test.rs` drives both from the wire: a peer that
