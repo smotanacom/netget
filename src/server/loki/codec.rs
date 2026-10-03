@@ -8,6 +8,7 @@ use std::{
     io::{Read, Write},
 };
 pub const DEFAULT_LLM_FALLBACK: bool = false;
+pub const DEFAULT_REQUIRE_TENANT: bool = false;
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
 pub const MAX_STREAMS: usize = 64;
 pub const MAX_ENTRIES: usize = 1024;

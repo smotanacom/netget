@@ -81,6 +81,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "hsrp",
     "icmp",
     "igmp",
+    // RFC 7011 UDP collection has no acknowledgement or negative response.
+    "ipfix",
     "ipsec",
     "isis",
     "lldp",

@@ -90,8 +90,11 @@ access log is checked for the path.
 
 `src/client/http_fetch/transport.rs` (re-exported as `client::http::transport`) is what the
 client uses in the browser build; it compiles
-natively so it can be tested without one. Every server answers through a `*` static handler,
-so there are no LLM calls. NetGet's HTTP server gives a 200 (body, `status_text`, two headers,
+natively so it can be tested without one. NetGet servers answer through a `*` static handler,
+so there are no LLM calls. The oversized native response uses a test-owned TCP peer with
+bounded request headers, 64 KiB writes, a 40-second deadline and a cancelling `JoinSet`:
+its 8 MiB-plus-one body must not be embedded in the shared 8 MiB static-action budget.
+NetGet's HTTP server gives a 200 (body, `status_text`, two headers,
 and a POST) and a 404 read as a status; NetGet's **TCP** server writes hand-made HTTP bytes,
 because NetGet's HTTP server never chunks: a chunked body reassembled, the same body refused
 at a 10-byte bound and accepted at exactly 19, and a server that never answers giving up at the
@@ -112,4 +115,3 @@ request line), `header`, `json` (`Content-Type: application/json`) and `form`
 byte through `bytes()` and through `chunk()`; the transport's `with_max_body` refuses 65 bytes
 against 64 and accepts exactly 64; `https://` on the transport is refused with
 `HTTPS_UNSUPPORTED`. Zero LLM calls. Making `with_max_body` a no-op turns the bound test red.
-

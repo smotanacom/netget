@@ -121,6 +121,7 @@ struct ScopeKey {
     connection_id: Option<String>,
     language: ScriptLanguage,
     code_hash: u64,
+    private_payloads: bool,
 }
 
 impl ScopeKey {
@@ -150,6 +151,7 @@ impl ScopeKey {
             connection_id,
             language,
             code_hash: hasher.finish(),
+            private_payloads: false,
         }
     }
 
@@ -198,7 +200,12 @@ impl ResidentScript {
     /// Spawn the interpreter with the wrapped resident harness. Synchronous
     /// (`.spawn()` does not await), so it is safe to call while holding the
     /// registry lock.
-    fn spawn(language: ScriptLanguage, code: &str, describe: String) -> Result<Arc<Self>> {
+    fn spawn(
+        language: ScriptLanguage,
+        code: &str,
+        describe: String,
+        private_payloads: bool,
+    ) -> Result<Arc<Self>> {
         let (command, args, wrapped): (&str, Vec<&str>, String) = match language {
             ScriptLanguage::Python => ("python3", vec!["-u", "-c"], python_harness(code)),
             ScriptLanguage::JavaScript => ("node", vec!["-e"], javascript_harness(code)),
@@ -253,11 +260,12 @@ impl ResidentScript {
                 }
                 let keep = n.min(MAX_STDERR_BYTES.saturating_sub(logged));
                 if keep > 0 {
-                    warn!(
-                        "resident script {}: {}",
-                        describe_for_log,
+                    let shown = if private_payloads {
+                        std::borrow::Cow::Borrowed(crate::utils::redact::REDACTED)
+                    } else {
                         String::from_utf8_lossy(&chunk[..keep])
-                    );
+                    };
+                    warn!("resident script {}: {}", describe_for_log, shown);
                     logged += keep;
                     if logged == MAX_STDERR_BYTES {
                         warn!("resident script {}: stderr log cap reached; draining further diagnostics without logging", describe_for_log);
@@ -423,12 +431,39 @@ impl ResidentScriptManager {
         .await
     }
 
+    /// Credential-bearing callers hide raw diagnostics and keep a separate process
+    /// from an ordinary invocation of the same code and scope.
+    pub(crate) async fn dispatch_private(
+        config: &ScriptConfig,
+        input: &ScriptInput,
+        scope: ResidentScope,
+    ) -> Result<ScriptResponse> {
+        Self::dispatch_with_timeout_and_privacy(
+            config,
+            input,
+            scope,
+            super::executor::DEFAULT_SCRIPT_TIMEOUT,
+            true,
+        )
+        .await
+    }
+
     /// [`dispatch`](Self::dispatch) with an explicit per-event timeout.
     pub async fn dispatch_with_timeout(
         config: &ScriptConfig,
         input: &ScriptInput,
         scope: ResidentScope,
         timeout: Duration,
+    ) -> Result<ScriptResponse> {
+        Self::dispatch_with_timeout_and_privacy(config, input, scope, timeout, false).await
+    }
+
+    async fn dispatch_with_timeout_and_privacy(
+        config: &ScriptConfig,
+        input: &ScriptInput,
+        scope: ResidentScope,
+        timeout: Duration,
+        private_payloads: bool,
     ) -> Result<ScriptResponse> {
         if !resident_language_supported(config.language) {
             anyhow::bail!(
@@ -448,7 +483,8 @@ impl ResidentScriptManager {
             .await
             .context("resident: timed out loading script code")?
             .context("resident: failed to load script code")?;
-        let key = ScopeKey::new(scope, input, config.language, &code);
+        let mut key = ScopeKey::new(scope, input, config.language, &code);
+        key.private_payloads = private_payloads;
 
         // Acquire (or spawn) the resident process. The registry lock is held only
         // for this block — spawning does not await — and dropped before the
@@ -470,7 +506,12 @@ impl ResidentScriptManager {
                     entry.script.clone()
                 }
                 None => {
-                    let script = ResidentScript::spawn(config.language, &code, key.describe())?;
+                    let script = ResidentScript::spawn(
+                        config.language,
+                        &code,
+                        key.describe(),
+                        private_payloads,
+                    )?;
                     registry.insert(
                         key.clone(),
                         ResidentEntry {

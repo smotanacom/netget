@@ -143,6 +143,7 @@ impl Protocol for DoqProtocol {
         };
         ProtocolMetadataV2::builder().state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(853)).well_known_udp_port(853)
+            .max_inbound_bytes(MAX_FRAME_BYTES)
             .implementation("quinn 0.11, rustls 0.23 and existing hickory-proto 0.24 DNS codec")
             .llm_control("Typed A/AAAA/MX/TXT/CNAME/NXDOMAIN responses per QUIC query stream")
             .e2e_testing("Loopback framing, bounds, certificate validation, command/event and cleanup tests; independent-peer evidence recorded in tests/server/doq/CLAUDE.md")

@@ -315,6 +315,10 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "ipfix")]
+        self.register(Arc::new(
+            crate::client::ipfix::actions::IpfixClientProtocol::new(),
+        ));
         #[cfg(feature = "loki")]
         self.register(Arc::new(
             crate::client::loki::actions::LokiClientProtocol::new(),
@@ -780,6 +784,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("nfc", "nfc-client"),
     ("NTP", "ntp"),
     ("OpenAI", "openai"),
+    ("OTLP", "otlp"),
     ("PostgreSQL", "postgresql"),
     ("PyPI", "pypi"),
     ("MSSQL", "mssql"),
@@ -798,6 +803,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("IPFIX", "ipfix"),
+    ("IPFIX-UDP", "ipfix"),
     ("Loki", "loki"),
     ("LokiPush", "loki"),
     ("InfluxDB", "influxdb"),

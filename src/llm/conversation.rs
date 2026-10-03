@@ -166,6 +166,9 @@ pub struct ConversationHandler {
     /// client with every request so a bridge host can show them as structured data.
     offered_actions: Vec<ActionDefinition>,
 
+    /// Conversation-local policy retained once credential parameters are offered.
+    private_payloads: bool,
+
     /// Cap on `messages.len()` — see [`DEFAULT_MAX_HISTORY_MESSAGES`]
     max_history_messages: usize,
 
@@ -220,6 +223,7 @@ impl ConversationHandler {
             tool_schemas: Vec::new(),
             use_native_tools: false,
             offered_actions: Vec::new(),
+            private_payloads: false,
             max_history_messages: DEFAULT_MAX_HISTORY_MESSAGES,
             max_history_chars: DEFAULT_MAX_HISTORY_CHARS,
             trim_generation: 0,
@@ -241,7 +245,15 @@ impl ConversationHandler {
     /// narrates it to the TUI. Wire facts (sizes, tokens) belong to the transport
     /// (`OllamaClient`) and stay file-only. Full payloads are TRACE/file-only.
     fn log(&self) -> Log<'_> {
-        Log::new(self.status_tx.as_ref())
+        Log::new(self.status_tx.as_ref()).with_payloads(!self.private_payloads)
+    }
+
+    fn display_payload(&self, text: &str) -> String {
+        if self.private_payloads {
+            crate::utils::redact::REDACTED.into()
+        } else {
+            text.into()
+        }
     }
 
     /// Total characters of everything but the system message.
@@ -696,6 +708,8 @@ impl ConversationHandler {
             available_actions.iter().map(|a| a.name.clone()).collect();
         let mut valid_action_names_list: Vec<String> =
             available_actions.iter().map(|a| a.name.clone()).collect();
+        // History can retain a credential after the currently offered actions are narrowed.
+        self.private_payloads |= crate::utils::redact::actions_have_credentials(&available_actions);
         self.offered_actions = available_actions.clone();
 
         for iteration in 1..=self.max_tool_iterations {
@@ -720,7 +734,7 @@ impl ConversationHandler {
                 crate::llm::reference_parser::extract_references(&cleaned_response)
                     .context("Failed to extract XML references from response")?;
 
-            if !references.is_empty() {
+            if !references.is_empty() && !self.private_payloads {
                 debug!(
                     "Extracted {} XML references from LLM response",
                     references.len()
@@ -791,18 +805,23 @@ impl ConversationHandler {
 
             if !unknown_actions.is_empty() {
                 unknown_action_retries += 1;
+                let shown_unknown_actions = if self.private_payloads {
+                    vec![crate::utils::redact::REDACTED.to_string(); unknown_actions.len()]
+                } else {
+                    unknown_actions.clone()
+                };
 
                 // Log warning with the actual response
                 warn!(
                     "LLM returned unknown action(s): {:?}. Response was: {}",
-                    unknown_actions,
-                    crate::utils::truncate_for_log(&cleaned_response, 500)
+                    shown_unknown_actions,
+                    self.display_payload(&crate::utils::truncate_for_log(&cleaned_response, 500))
                 );
 
                 if let Some(ref tx) = self.status_tx {
                     let _ = tx.send(format!(
                         "[WARN] LLM returned unknown action(s): {:?}",
-                        unknown_actions
+                        shown_unknown_actions
                     ));
                 }
 
@@ -810,7 +829,7 @@ impl ConversationHandler {
                     // All retries exhausted - log error
                     error!(
                         "LLM failed to use valid actions after {} retries. Unknown actions: {:?}",
-                        unknown_action_retries, unknown_actions
+                        unknown_action_retries, shown_unknown_actions
                     );
                     if let Some(ref tx) = self.status_tx {
                         let _ = tx.send(format!(
@@ -822,7 +841,7 @@ impl ConversationHandler {
                     anyhow::bail!(
                         "LLM returned unknown action(s) after {} retries: {:?}",
                         unknown_action_retries,
-                        unknown_actions
+                        shown_unknown_actions
                     );
                 }
 
@@ -843,7 +862,10 @@ impl ConversationHandler {
                         "[TRACE] → Sending correction to LLM for unknown action...".to_string(),
                     );
                     // Show the correction message being sent (indented and dimmed)
-                    for line in crate::llm::format_indented_dimmed_lines(&correction, 8) {
+                    for line in crate::llm::format_indented_dimmed_lines(
+                        &self.display_payload(&correction),
+                        8,
+                    ) {
                         let _ = tx.send(format!("[TRACE] {}", line));
                     }
                 }
@@ -902,7 +924,12 @@ impl ConversationHandler {
                     match crate::llm::actions::common::CommonAction::from_json(&action) {
                         Ok(_) => valid_regular.push(action),
                         Err(e) => {
-                            malformed_actions.push((action, e.to_string()));
+                            let error = if self.private_payloads {
+                                "invalid credential-bearing action".into()
+                            } else {
+                                e.to_string()
+                            };
+                            malformed_actions.push((action, error));
                         }
                     }
                 } else {
@@ -924,8 +951,10 @@ impl ConversationHandler {
                             .and_then(|t| t.as_str())
                             .unwrap_or("unknown"),
                         error,
-                        serde_json::to_string(action_json)
-                            .unwrap_or_else(|_| action_json.to_string())
+                        self.display_payload(
+                            &serde_json::to_string(action_json)
+                                .unwrap_or_else(|_| action_json.to_string())
+                        )
                     );
                 }
 
@@ -942,8 +971,10 @@ impl ConversationHandler {
                         // Show the actual JSON that was returned
                         let _ = tx.send(format!(
                             "[ERROR]   JSON: {}",
-                            serde_json::to_string(action_json)
-                                .unwrap_or_else(|_| action_json.to_string())
+                            self.display_payload(
+                                &serde_json::to_string(action_json)
+                                    .unwrap_or_else(|_| action_json.to_string())
+                            )
                         ));
                     }
                 }
@@ -1045,11 +1076,13 @@ impl ConversationHandler {
                 // prefix; `tests/llm_log_prefix_guard_test.rs` fails the build on any
                 // new one of those in src/llm/. (That guard counts substrings without
                 // parsing, so even naming the pattern in a comment trips it.)
-                Log::new(self.status_tx.as_ref()).warn(format!(
-                    "LLM action(s) {:?} reference a tool result that has not been produced \
+                Log::new(self.status_tx.as_ref())
+                    .with_payloads(!self.private_payloads)
+                    .warn(format!(
+                        "LLM action(s) {:?} reference a tool result that has not been produced \
                      yet; holding them back until the tool(s) have run",
-                    names
-                ));
+                        names
+                    ));
 
                 if tools.is_empty() {
                     // No tool call to wait for: the placeholder can never be filled in,
@@ -1134,11 +1167,14 @@ impl ConversationHandler {
             for tool_json in tools {
                 match ToolAction::from_json(&tool_json) {
                     Ok(tool_action) => {
-                        info!("→ Executing tool: {}", tool_action.describe());
+                        info!(
+                            "→ Executing tool: {}",
+                            self.display_payload(&tool_action.describe())
+                        );
                         if let Some(ref tx) = self.status_tx {
                             let _ = tx.send(format!(
                                 "[INFO] → Executing tool: {}",
-                                tool_action.describe()
+                                self.display_payload(&tool_action.describe())
                             ));
                         }
 
@@ -1163,7 +1199,10 @@ impl ConversationHandler {
                                 #[cfg(feature = "sqlite")]
                                 ToolAction::ListDatabases => "list_databases",
                             };
-                            state.add_tool_call(tool_name.to_string(), tool_action.describe());
+                            state.add_tool_call(
+                                tool_name.to_string(),
+                                self.display_payload(&tool_action.describe()),
+                            );
                         }
 
                         // Check if this is a doc reading tool
@@ -1176,13 +1215,24 @@ impl ConversationHandler {
                         let is_read_docs =
                             matches!(tool_action, ToolAction::ReadDocumentation { .. });
 
-                        let result =
-                            execute_tool(&tool_action, approval_tx.as_ref(), web_search_mode, None)
-                                .await;
-                        info!("  Result: {}", result.summary());
+                        let execution =
+                            execute_tool(&tool_action, approval_tx.as_ref(), web_search_mode, None);
+                        let result = if self.private_payloads {
+                            use tracing::instrument::WithSubscriber;
+                            execution
+                                .with_subscriber(tracing::subscriber::NoSubscriber::default())
+                                .await
+                        } else {
+                            execution.await
+                        };
+                        info!("  Result: {}", self.display_payload(&result.summary()));
                         if let Some(ref tx) = self.status_tx {
                             let status = if result.success { "✓" } else { "✗" };
-                            let _ = tx.send(format!("[INFO]   {} {}", status, result.summary()));
+                            let _ = tx.send(format!(
+                                "[INFO]   {} {}",
+                                status,
+                                self.display_payload(&result.summary())
+                            ));
                         }
 
                         // Mark protocol docs as read if the tool succeeded
@@ -1326,14 +1376,20 @@ impl ConversationHandler {
                         tool_results.push(result);
                     }
                     Err(e) => {
-                        error!("Failed to parse tool action: {}", e);
+                        let error = if self.private_payloads {
+                            "invalid credential-bearing tool action".to_string()
+                        } else {
+                            e.to_string()
+                        };
+                        error!("Failed to parse tool action: {}", error);
                         if let Some(ref tx) = self.status_tx {
-                            let _ = tx.send(format!("[ERROR] Failed to parse tool action: {}", e));
+                            let _ =
+                                tx.send(format!("[ERROR] Failed to parse tool action: {}", error));
                         }
                         tool_results.push(ToolResult::error(
                             "unknown",
                             "parse_error",
-                            format!("Failed to parse tool action: {}", e),
+                            format!("Failed to parse tool action: {}", error),
                         ));
                     }
                 }
@@ -1482,6 +1538,7 @@ impl ConversationHandler {
                 }
             };
 
+            let details = self.display_payload(&details);
             let log_msg = if details.is_empty() {
                 format!("[INFO]   → {}", action_type)
             } else {
@@ -1590,7 +1647,7 @@ impl ConversationHandler {
 
                 let chat_response = self
                     .client
-                    .chat_with_tools(&chat_request)
+                    .chat_with_tools(&chat_request, self.private_payloads)
                     .await
                     .context("Chat API call failed")?;
 
@@ -1646,7 +1703,13 @@ impl ConversationHandler {
                 // as some models (e.g., gpt-oss) don't support Ollama's JSON format mode
                 let generate_response = self
                     .client
-                    .generate_offering(&self.model, &full_prompt, None, &self.offered_actions)
+                    .generate_offering(
+                        &self.model,
+                        &full_prompt,
+                        None,
+                        &self.offered_actions,
+                        self.private_payloads,
+                    )
                     .await
                     .context("Generate API call failed")?;
 
@@ -1747,6 +1810,11 @@ impl ConversationHandler {
                     return Ok((response_text.clone(), normalized_response));
                 }
                 Err(e) => {
+                    let e = if self.private_payloads {
+                        anyhow::anyhow!("invalid credential-bearing model response")
+                    } else {
+                        e
+                    };
                     if attempt <= self.max_retries {
                         // We have retries left, send corrective feedback
                         warn!("✗ Parse error on attempt {}: {}", attempt, e);
@@ -1755,7 +1823,10 @@ impl ConversationHandler {
                             if response_text.is_empty() {
                                 "(empty response)".to_string()
                             } else {
-                                crate::utils::truncate_for_log(&response_text, 500)
+                                self.display_payload(&crate::utils::truncate_for_log(
+                                    &response_text,
+                                    500,
+                                ))
                             }
                         );
 
@@ -1763,7 +1834,10 @@ impl ConversationHandler {
                             let error_preview = if normalized_response.is_empty() {
                                 "(empty)".to_string()
                             } else {
-                                crate::utils::truncate_for_log(&normalized_response, 100)
+                                self.display_payload(&crate::utils::truncate_for_log(
+                                    &normalized_response,
+                                    100,
+                                ))
                             };
                             let _ = tx.send(format!(
                                 "[WARN] ✗ Invalid format (attempt {}): {}. Response: {}",
@@ -1800,7 +1874,10 @@ impl ConversationHandler {
                         if let Some(ref tx) = self.status_tx {
                             let _ = tx.send("[INFO] → Sending correction to LLM...".to_string());
                             // Show the correction message being sent (indented and dimmed)
-                            for line in crate::llm::format_indented_dimmed_lines(&correction, 8) {
+                            for line in crate::llm::format_indented_dimmed_lines(
+                                &self.display_payload(&correction),
+                                8,
+                            ) {
                                 let _ = tx.send(format!("[INFO] {}", line));
                             }
                         }
