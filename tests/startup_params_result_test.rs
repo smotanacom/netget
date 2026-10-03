@@ -204,3 +204,136 @@ fn accessing_a_key_the_protocol_never_declared_is_an_error() {
     assert!(msg.contains("never_declared"), "{msg}");
     assert!(msg.contains("banner"), "{msg}");
 }
+
+fn deeply_constructed_params() -> serde_json::Value {
+    let mut value = serde_json::Value::Null;
+    for _ in 0..10_000 {
+        value = serde_json::Value::Array(vec![value]);
+    }
+    let mut params = serde_json::Map::new();
+    params.insert("hosts".into(), value);
+    serde_json::Value::Object(params)
+}
+
+#[test]
+fn constructed_startup_json_is_refused_before_copy_format_or_recursive_drop() {
+    for validate_types in [false, true] {
+        let params = deeply_constructed_params();
+        let result = if validate_types {
+            StartupParams::new_validated(params, schema())
+        } else {
+            StartupParams::new(params, schema())
+        };
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("budget"), "{error}");
+    }
+    for params in [
+        json!({"banner": "x".repeat(8 * 1024 * 1024)}),
+        json!({"hosts": vec![serde_json::Value::Null; 65_536]}),
+    ] {
+        assert!(StartupParams::new(params, schema())
+            .unwrap_err()
+            .to_string()
+            .contains("budget"));
+    }
+    let mut owned = Some(deeply_constructed_params());
+    assert!(StartupParams::preflight_owned(&mut owned).is_err());
+    assert!(
+        owned.is_none(),
+        "rejected owned input must be consumed safely"
+    );
+    let value = json!({"banner": "ordinary", "hosts": [1, 2]});
+    StartupParams::preflight(&value).unwrap();
+    let params = StartupParams::new_validated(value, schema()).unwrap();
+    assert_eq!(params.get_string("banner").unwrap(), "ordinary");
+}
+
+#[test]
+fn startup_errors_redact_sensitive_values_and_keep_actionable_types_and_keys() {
+    const MARKER: &str = "STARTUP_SECRET_MARKER_3ef1";
+    let definitions = vec![
+        param("banner", "string"),
+        param("password", "string"),
+        param("headers", "object"),
+    ];
+    let params = StartupParams::new(
+        json!({"password": MARKER, "headers": {"authorization": MARKER, "ordinary": "visible"}}),
+        definitions.clone(),
+    )
+    .unwrap();
+    for rendered in [
+        params.get_string("banner").unwrap_err().to_string(),
+        params.get_bool("banner").unwrap_err().to_string(),
+        params.get_i64("banner").unwrap_err().to_string(),
+        params.get_u64("banner").unwrap_err().to_string(),
+        params.get_object("banner").unwrap_err().to_string(),
+        params.get_array("banner").unwrap_err().to_string(),
+        params
+            .get_optional_string("headers")
+            .unwrap_err()
+            .to_string(),
+        format!("{params:?}"),
+    ] {
+        assert!(!rendered.contains(MARKER), "{rendered}");
+        assert!(
+            rendered.contains("visible"),
+            "ordinary diagnostics retained: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
+    assert_eq!(params.get_string("password").unwrap(), MARKER);
+    assert_eq!(
+        params.get_object("headers").unwrap()["authorization"],
+        MARKER
+    );
+    let raw = json!({"password": {"nested": MARKER}});
+    let error = StartupParams::new_validated(raw.clone(), definitions.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("password") && error.contains("expected string"),
+        "{error}"
+    );
+    assert!(!error.contains(MARKER), "{error}");
+    let params = StartupParams::new(raw, definitions).unwrap();
+    for error in [
+        params
+            .get_optional_string("password")
+            .unwrap_err()
+            .to_string(),
+        params
+            .get_optional_bool("password")
+            .unwrap_err()
+            .to_string(),
+        params.get_optional_i64("password").unwrap_err().to_string(),
+        params.get_optional_u64("password").unwrap_err().to_string(),
+        params.get_optional_u32("password").unwrap_err().to_string(),
+        params
+            .get_optional_array("password")
+            .unwrap_err()
+            .to_string(),
+    ] {
+        assert!(!error.contains(MARKER), "{error}");
+        assert!(error.contains("password") && error.contains("<redacted>"));
+    }
+    let params = StartupParams::new(
+        json!({"password": MARKER}),
+        vec![param("password", "string")],
+    )
+    .unwrap();
+    assert!(!params
+        .get_optional_object("password")
+        .unwrap_err()
+        .to_string()
+        .contains(MARKER));
+    let error = StartupParams::new_validated(
+        json!({"value": "ordinary-wrong-type"}),
+        vec![param("value", "boolean")],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("expected boolean") && error.contains("ordinary-wrong-type"),
+        "{error}"
+    );
+}

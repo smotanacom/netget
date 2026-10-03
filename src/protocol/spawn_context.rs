@@ -81,7 +81,7 @@ pub type StartupParamResult<T> = std::result::Result<T, StartupParamError>;
 /// Every accessor returns a [`StartupParamResult`]: the JSON originates from the
 /// LLM (`open_server`) or an MCP client (`start_server`), so malformed values
 /// must surface as errors to the caller instead of aborting the task.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StartupParams {
     /// The actual JSON parameter values provided by the LLM
     params: serde_json::Value,
@@ -89,7 +89,55 @@ pub struct StartupParams {
     allowed_params: HashSet<String>,
 }
 
+/// Maximum retained startup JSON content, including keys and node overhead.
+pub const MAX_STARTUP_PARAM_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum nodes in a constructed startup parameter object.
+pub const MAX_STARTUP_PARAM_NODES: usize = 65_536;
+/// Maximum nesting depth in a constructed startup parameter object.
+pub const MAX_STARTUP_PARAM_DEPTH: usize = 64;
+
+impl fmt::Debug for StartupParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StartupParams")
+            .field(
+                "params",
+                &crate::utils::redact::redact_sensitive(&self.params),
+            )
+            .field("allowed_params", &self.allowed_params)
+            .finish()
+    }
+}
+
 impl StartupParams {
+    /// Check borrowed JSON before cloning or formatting untrusted startup data.
+    pub fn preflight(params: &serde_json::Value) -> StartupParamResult<()> {
+        if crate::utils::json_budget::within_budget(
+            params,
+            MAX_STARTUP_PARAM_BYTES,
+            MAX_STARTUP_PARAM_NODES,
+            MAX_STARTUP_PARAM_DEPTH,
+        ) {
+            Ok(())
+        } else {
+            Err(StartupParamError::Invalid {
+                key: "startup_params".into(),
+                detail: "startup_params exceeds the JSON size, node or depth budget".into(),
+            })
+        }
+    }
+
+    /// Refuse an excessive owned value without recursively dropping its children.
+    /// Call this before an earlier error path can dispose of a constructed value.
+    pub fn preflight_owned(params: &mut Option<serde_json::Value>) -> StartupParamResult<()> {
+        if let Some(value) = params.as_ref() {
+            if let Err(error) = Self::preflight(value) {
+                crate::utils::json_budget::drop_iteratively(params.take().expect("present above"));
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Create new StartupParams with validation
     ///
     /// # Arguments
@@ -104,6 +152,10 @@ impl StartupParams {
         params: serde_json::Value,
         schema: Vec<ParameterDefinition>,
     ) -> StartupParamResult<Self> {
+        if let Err(error) = Self::preflight(&params) {
+            crate::utils::json_budget::drop_iteratively(params);
+            return Err(error);
+        }
         let allowed_params: HashSet<String> = schema.iter().map(|p| p.name.clone()).collect();
 
         let obj = params
@@ -155,7 +207,11 @@ impl StartupParams {
             {
                 return Err(result.invalid(
                     &parameter.name,
-                    format!("expected {}, got {}", parameter.type_hint, value),
+                    format!(
+                        "expected {}, got {}",
+                        parameter.type_hint,
+                        diagnostic_value(&parameter.name, value)
+                    ),
                 ));
             }
         }
@@ -181,7 +237,8 @@ impl StartupParams {
                 key,
                 format!(
                     "Required string parameter '{}' is missing or not a string. Params: {}",
-                    key, self.params
+                    key,
+                    crate::utils::redact::redact_sensitive(&self.params)
                 ),
             )),
         }
@@ -202,7 +259,8 @@ impl StartupParams {
                     key,
                     format!(
                         "Optional string parameter '{}' exists but is not a string. Value: {}",
-                        key, v
+                        key,
+                        diagnostic_value(key, v)
                     ),
                 )),
             },
@@ -223,7 +281,8 @@ impl StartupParams {
                 key,
                 format!(
                     "Required boolean parameter '{}' is missing or not a boolean. Params: {}",
-                    key, self.params
+                    key,
+                    crate::utils::redact::redact_sensitive(&self.params)
                 ),
             )),
         }
@@ -244,7 +303,8 @@ impl StartupParams {
                     key,
                     format!(
                         "Optional boolean parameter '{}' exists but is not a boolean. Value: {}",
-                        key, v
+                        key,
+                        diagnostic_value(key, v)
                     ),
                 )),
             },
@@ -265,7 +325,8 @@ impl StartupParams {
                 key,
                 format!(
                     "Required integer parameter '{}' is missing or not an integer. Params: {}",
-                    key, self.params
+                    key,
+                    crate::utils::redact::redact_sensitive(&self.params)
                 ),
             )),
         }
@@ -286,7 +347,8 @@ impl StartupParams {
                     key,
                     format!(
                         "Optional integer parameter '{}' exists but is not an integer. Value: {}",
-                        key, v
+                        key,
+                        diagnostic_value(key, v)
                     ),
                 )),
             },
@@ -307,7 +369,7 @@ impl StartupParams {
                 key,
                 format!(
                     "Required unsigned integer parameter '{}' is missing or not an unsigned integer. Params: {}",
-                    key, self.params
+                    key, crate::utils::redact::redact_sensitive(&self.params)
                 ),
             )),
         }
@@ -328,7 +390,7 @@ impl StartupParams {
                     key,
                     format!(
                         "Optional unsigned integer parameter '{}' exists but is not an unsigned integer. Value: {}",
-                        key, v
+                        key, diagnostic_value(key, v)
                     ),
                 )),
             },
@@ -352,7 +414,7 @@ impl StartupParams {
                             key,
                             format!(
                                 "Optional u32 parameter '{}' exists but is not an unsigned integer. Value: {}",
-                                key, v
+                                key, diagnostic_value(key, v)
                             ),
                         ))
                     }
@@ -364,7 +426,7 @@ impl StartupParams {
                             "Optional u32 parameter '{}' exceeds u32::MAX ({}). Value: {}",
                             key,
                             u32::MAX,
-                            val
+                            diagnostic_value(key, v)
                         ),
                     ));
                 }
@@ -390,7 +452,8 @@ impl StartupParams {
                 key,
                 format!(
                     "Required object parameter '{}' is missing or not an object. Params: {}",
-                    key, self.params
+                    key,
+                    crate::utils::redact::redact_sensitive(&self.params)
                 ),
             )),
         }
@@ -414,7 +477,8 @@ impl StartupParams {
                     key,
                     format!(
                         "Optional object parameter '{}' exists but is not an object. Value: {}",
-                        key, v
+                        key,
+                        diagnostic_value(key, v)
                     ),
                 )),
             },
@@ -435,7 +499,8 @@ impl StartupParams {
                 key,
                 format!(
                     "Required array parameter '{}' is missing or not an array. Params: {}",
-                    key, self.params
+                    key,
+                    crate::utils::redact::redact_sensitive(&self.params)
                 ),
             )),
         }
@@ -459,7 +524,8 @@ impl StartupParams {
                     key,
                     format!(
                         "Optional array parameter '{}' exists but is not an array. Value: {}",
-                        key, v
+                        key,
+                        diagnostic_value(key, v)
                     ),
                 )),
             },
@@ -487,6 +553,14 @@ impl StartupParams {
             });
         }
         Ok(())
+    }
+}
+
+fn diagnostic_value(key: &str, value: &serde_json::Value) -> serde_json::Value {
+    if crate::utils::redact::is_sensitive_key(key) && !value.is_null() {
+        serde_json::Value::String(crate::utils::redact::REDACTED.into())
+    } else {
+        crate::utils::redact::redact_sensitive(value)
     }
 }
 
