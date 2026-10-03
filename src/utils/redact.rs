@@ -30,7 +30,18 @@ pub const REDACTED: &str = "<redacted>";
 /// Whether a key names a credential.
 pub fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+    key == "token"
+        || key.ends_with("_token")
+        || SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+}
+
+/// Whether this request offers an action that can carry credentials. Such model
+/// replies can be malformed or plain text, so hiding whole payloads is safer
+/// than trying to recover credential fields from an unparseable response.
+pub fn actions_have_credentials(actions: &[crate::llm::actions::ActionDefinition]) -> bool {
+    actions
+        .iter()
+        .any(|action| action.parameters.iter().any(|p| is_sensitive_key(&p.name)))
 }
 
 /// Deepest nesting walked. `serde_json` refuses to parse past 128 levels, so a parsed value

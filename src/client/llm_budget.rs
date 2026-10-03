@@ -74,21 +74,33 @@ pub async fn call_llm_for_client(
 ) -> Result<ClientLlmResult> {
     use crate::llm::action_helper::split_client_common_actions;
     use crate::llm::event_handler_executor::{
-        try_execute_client_event_handler, ClientEventHandlerResult, HANDLER_INSTRUCTION_HEADER,
+        try_execute_client_event_handler_with_privacy, ClientEventHandlerResult,
+        HANDLER_INSTRUCTION_HEADER,
     };
+
+    let private_payloads = crate::utils::redact::actions_have_credentials(
+        &crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event),
+    );
 
     // Deterministic script/static routing, before any budget or model involvement.
     let mut handler_instruction: Option<String> = None;
     if let (Some(cid), Some(ev)) = (ClientId::from_string(&client_id), event) {
-        match try_execute_client_event_handler(
+        match try_execute_client_event_handler_with_privacy(
             state,
             cid,
             ev.id(),
             &ev.event_type.description,
             Some(ev.data.clone()),
+            private_payloads,
         )
         .await
-        {
+        .map_err(|e| {
+            if private_payloads {
+                anyhow::anyhow!("credential-bearing event handler failed; details hidden")
+            } else {
+                e
+            }
+        }) {
             Ok(ClientEventHandlerResult::Handled { actions }) => {
                 // Common actions (provide_feedback) are executed centrally,
                 // mirroring the LLM path below; the protocol actions go back
@@ -114,7 +126,10 @@ pub async fn call_llm_for_client(
                         None,
                         ev.id(),
                         ev.data.clone(),
-                        protocol_actions.clone(),
+                        protocol_actions
+                            .iter()
+                            .map(crate::utils::redact::redact_sensitive)
+                            .collect(),
                     )
                     .await;
                 let _ = status_tx.send("__UPDATE_UI__".to_string());
@@ -199,7 +214,11 @@ pub async fn call_llm_for_client(
                 None,
                 ev.id(),
                 ev.data.clone(),
-                result.actions.clone(),
+                result
+                    .actions
+                    .iter()
+                    .map(crate::utils::redact::redact_sensitive)
+                    .collect(),
             )
             .await;
     }

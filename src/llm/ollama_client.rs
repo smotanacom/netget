@@ -1281,7 +1281,10 @@ impl OllamaClient {
     /// `[REASONING]` lines on the status channel, plus the file-only summary and payload.
     /// The host has already shown it live on its own side; here it arrives whole, with the
     /// answer, because the bridge carries one reply per request.
-    fn forward_host_reasoning(&self, reasoning: Option<&str>) {
+    fn forward_host_reasoning(&self, reasoning: Option<&str>, private_payloads: bool) {
+        if private_payloads {
+            return;
+        }
         let Some(reasoning) = reasoning.filter(|r| !r.trim().is_empty()) else {
             return;
         };
@@ -1309,9 +1312,14 @@ impl OllamaClient {
         &self,
         mut http_response: reqwest::Response,
         kind: OllamaResponseKind,
+        private_payloads: bool,
     ) -> Result<StreamAccumulation> {
         let mut acc = StreamAccumulation::default();
-        let mut fwd = ReasoningForwarder::new(self.status_tx.as_ref());
+        let mut fwd = ReasoningForwarder::new(if private_payloads {
+            None
+        } else {
+            self.status_tx.as_ref()
+        });
         let mut buf: Vec<u8> = Vec::new();
 
         // Bound the whole body read by the same wall-clock budget as the request, so
@@ -1355,7 +1363,7 @@ impl OllamaClient {
         // never streamed to the TUI here — the TUI already received the live
         // [REASONING] lines. This is a new output, not a duplicate of the response log.
         if !acc.thinking.is_empty() {
-            let log = self.log();
+            let log = self.log().with_payloads(!private_payloads);
             log.debug(format!(
                 "LLM reasoning: {} chars streamed",
                 acc.thinking.len()
@@ -1378,9 +1386,14 @@ impl OllamaClient {
     async fn read_openai_stream(
         &self,
         mut http_response: reqwest::Response,
+        private_payloads: bool,
     ) -> Result<OpenAiStreamAcc> {
         let mut acc = OpenAiStreamAcc::default();
-        let mut fwd = ReasoningForwarder::new(self.status_tx.as_ref());
+        let mut fwd = ReasoningForwarder::new(if private_payloads {
+            None
+        } else {
+            self.status_tx.as_ref()
+        });
         let mut buf: Vec<u8> = Vec::new();
         let mut raw = String::new();
         let mut saw_sse = false;
@@ -1546,16 +1559,32 @@ impl OllamaClient {
         }
     }
 
-    /// Feed a request outcome back into the breaker and pass the result through unchanged.
-    fn record_backend_outcome<T>(&self, result: Result<T>) -> Result<T> {
+    /// Feed the original outcome into the breaker, then hide private error diagnostics.
+    fn record_backend_outcome<T>(&self, result: Result<T>, private_payloads: bool) -> Result<T> {
+        let hide_error = |e: anyhow::Error| {
+            if !private_payloads {
+                e
+            } else if is_transport_failure(&e) {
+                anyhow::anyhow!(
+                    "LLM connection failure for credential-bearing request; details hidden"
+                )
+            } else {
+                anyhow::anyhow!("LLM backend rejected credential-bearing request; details hidden")
+            }
+        };
         if !self.breaker_applies() {
-            return result;
+            return result.map_err(hide_error);
         }
 
         match &result {
             Ok(_) => self.breaker.record_success(),
             Err(e) if is_transport_failure(e) => {
-                let summary = format!("{:#}", e);
+                let summary = if private_payloads {
+                    "LLM connection failure for credential-bearing request; details hidden"
+                        .to_string()
+                } else {
+                    format!("{e:#}")
+                };
                 if self.breaker.record_failure(&summary) {
                     self.log().error(self.breaker.status().summary());
                 } else {
@@ -1571,7 +1600,7 @@ impl OllamaClient {
             Err(_) => self.breaker.record_success(),
         }
 
-        result
+        result.map_err(hide_error)
     }
 
     /// Generate a completion from the model with optional JSON schema
@@ -1598,27 +1627,32 @@ impl OllamaClient {
         prompt: &str,
         format: Option<serde_json::Value>,
     ) -> Result<GenerateResponse> {
-        self.generate_offering(model, prompt, format, &[]).await
+        self.generate_offering(model, prompt, format, &[], false)
+            .await
     }
 
     /// [`Self::generate_with_format`] for a prompt that offers actions. `offered` is the
     /// list the prompt describes; only the bridge backend passes it on (a person answering
     /// by hand gets a form built from it), and the HTTP backends send exactly what
-    /// `generate_with_format` sends.
+    /// `generate_with_format` sends. `private_payloads` also covers credentials
+    /// retained in earlier conversation turns when the offered list is narrowed.
     pub(crate) async fn generate_offering(
         &self,
         model: &str,
         prompt: &str,
         format: Option<serde_json::Value>,
         offered: &[crate::llm::actions::ActionDefinition],
+        private_payloads: bool,
     ) -> Result<GenerateResponse> {
         // Fail immediately if the backend is already known to be down, rather than paying
         // another full request timeout to rediscover it. See `crate::llm::circuit_breaker`.
+        let private_payloads =
+            private_payloads || crate::utils::redact::actions_have_credentials(offered);
         self.breaker_guard()?;
         let result = self
-            .generate_with_format_inner(model, prompt, format, offered)
+            .generate_with_format_inner(model, prompt, format, offered, private_payloads)
             .await;
-        self.record_backend_outcome(result)
+        self.record_backend_outcome(result, private_payloads)
     }
 
     async fn generate_with_format_inner(
@@ -1627,10 +1661,11 @@ impl OllamaClient {
         prompt: &str,
         format: Option<serde_json::Value>,
         offered: &[crate::llm::actions::ActionDefinition],
+        private_payloads: bool,
     ) -> Result<GenerateResponse> {
         // Transport owns wire facts: DEBUG summary + TRACE payload, both file-only.
         // The conversation layer is the one that narrates the round-trip to the TUI.
-        let log = self.log();
+        let log = self.log().with_payloads(!private_payloads);
         log.debug(format!(
             "LLM request: model={}, prompt_len={} chars, format={}",
             model,
@@ -1706,7 +1741,11 @@ impl OllamaClient {
                 }
 
                 let acc = self
-                    .read_ollama_stream(http_response, OllamaResponseKind::Generate)
+                    .read_ollama_stream(
+                        http_response,
+                        OllamaResponseKind::Generate,
+                        private_payloads,
+                    )
                     .await?;
                 if let Some(err) = acc.error {
                     anyhow::bail!("✗  Ollama request failed: {}", err);
@@ -1785,7 +1824,9 @@ impl OllamaClient {
                     }
                 }
 
-                let acc = self.read_openai_stream(http_response).await?;
+                let acc = self
+                    .read_openai_stream(http_response, private_payloads)
+                    .await?;
                 if let Some(err) = &acc.error {
                     anyhow::bail!("✗  OpenAI API error: {}", err);
                 }
@@ -1803,7 +1844,7 @@ impl OllamaClient {
                     offered,
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
-                self.forward_host_reasoning(reply.reasoning.as_deref());
+                self.forward_host_reasoning(reply.reasoning.as_deref(), private_payloads);
                 let usage = TokenUsage {
                     prompt_tokens: reply.prompt_tokens,
                     completion_tokens: reply.completion_tokens,
@@ -1916,16 +1957,26 @@ impl OllamaClient {
     ///
     /// # Returns
     /// * `Ok(ChatResponse)` - Response with optional content and tool calls
-    pub(crate) async fn chat_with_tools(&self, request: &ChatRequest) -> Result<ChatResponse> {
+    pub(crate) async fn chat_with_tools(
+        &self,
+        request: &ChatRequest,
+        private_payloads: bool,
+    ) -> Result<ChatResponse> {
         // See `generate_with_format`: fail fast while the backend is known to be down.
+        let private_payloads = private_payloads
+            || crate::utils::redact::actions_have_credentials(&request.offered_actions);
         self.breaker_guard()?;
-        let result = self.chat_with_tools_inner(request).await;
-        self.record_backend_outcome(result)
+        let result = self.chat_with_tools_inner(request, private_payloads).await;
+        self.record_backend_outcome(result, private_payloads)
     }
 
-    async fn chat_with_tools_inner(&self, request: &ChatRequest) -> Result<ChatResponse> {
+    async fn chat_with_tools_inner(
+        &self,
+        request: &ChatRequest,
+        private_payloads: bool,
+    ) -> Result<ChatResponse> {
         // Transport wire facts: file-only through the facade defaults.
-        let log = self.log();
+        let log = self.log().with_payloads(!private_payloads);
         log.debug(format!(
             "Chat request: model={}, messages={}, tools={}",
             request.model,
@@ -1951,7 +2002,7 @@ impl OllamaClient {
         let chat_response = match &self.backend {
             #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::Ollama(ollama, http_client) => {
-                self.chat_with_tools_ollama(ollama, http_client, request)
+                self.chat_with_tools_ollama(ollama, http_client, request, private_payloads)
                     .await?
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1960,7 +2011,7 @@ impl OllamaClient {
                 base_url,
                 api_key,
             } => {
-                self.chat_with_tools_openai(client, base_url, api_key, request)
+                self.chat_with_tools_openai(client, base_url, api_key, request, private_payloads)
                     .await?
             }
             LlmBackend::Queue { queue, timeout } => {
@@ -1976,7 +2027,7 @@ impl OllamaClient {
                     &request.offered_actions,
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
-                self.forward_host_reasoning(reply.reasoning.as_deref());
+                self.forward_host_reasoning(reply.reasoning.as_deref(), private_payloads);
                 let tool_calls = reply
                     .tool_calls
                     .into_iter()
@@ -2098,6 +2149,7 @@ impl OllamaClient {
         ollama: &Ollama,
         http_client: &reqwest::Client,
         request: &ChatRequest,
+        private_payloads: bool,
     ) -> Result<ChatResponse> {
         // Build the request body manually since ollama-rs may not support tools natively
         let messages: Vec<serde_json::Value> = request
@@ -2169,7 +2221,7 @@ impl OllamaClient {
         }
 
         let acc = self
-            .read_ollama_stream(http_response, OllamaResponseKind::Chat)
+            .read_ollama_stream(http_response, OllamaResponseKind::Chat, private_payloads)
             .await?;
         if let Some(err) = acc.error {
             anyhow::bail!("Ollama chat API error: {}", err);
@@ -2221,6 +2273,7 @@ impl OllamaClient {
         base_url: &str,
         api_key: &str,
         request: &ChatRequest,
+        private_payloads: bool,
     ) -> Result<ChatResponse> {
         let messages: Vec<serde_json::Value> = request
             .messages
@@ -2282,7 +2335,9 @@ impl OllamaClient {
             anyhow::bail!("OpenAI chat API error ({}): {}", status, error_msg);
         }
 
-        let acc = self.read_openai_stream(http_response).await?;
+        let acc = self
+            .read_openai_stream(http_response, private_payloads)
+            .await?;
         if let Some(err) = &acc.error {
             anyhow::bail!("OpenAI chat API error: {}", err);
         }

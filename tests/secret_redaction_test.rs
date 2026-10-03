@@ -17,7 +17,9 @@ fn credential_named_keys_are_redacted_at_any_depth_and_nothing_else_is() {
         "secret": "testing123",
         "accounting_port": 1813,
         "nested": {"Bind_Password": "pw", "user": "alice", "list": [{"api_key": "k"}]},
-        "shared_secret": null
+        "shared_secret": null,
+        "token": "startup-token",
+        "auth": {"client_token": "returned-token", "token_type": "service", "token_policies": ["default"], "token_present": true}
     }));
     assert_eq!(shown["secret"], REDACTED);
     assert_eq!(shown["accounting_port"], 1813);
@@ -29,6 +31,11 @@ fn credential_named_keys_are_redacted_at_any_depth_and_nothing_else_is() {
         "an absent value is not invented"
     );
     assert!(!shown.to_string().contains("testing123"));
+    assert_eq!(shown["token"], REDACTED);
+    assert_eq!(shown["auth"]["client_token"], REDACTED);
+    assert_eq!(shown["auth"]["token_type"], "service");
+    assert_eq!(shown["auth"]["token_policies"], json!(["default"]));
+    assert_eq!(shown["auth"]["token_present"], true);
 }
 
 #[test]
