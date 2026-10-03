@@ -76,6 +76,7 @@ portable-base = [
     "influxdb",
     "loki",
     "ipfix",
+    "sflow",
     "ssh",
     "ssh-agent",
     "svn",
@@ -252,6 +253,7 @@ fluent-forward = ["dep:flate2"] # MessagePack Forward logs and ACKs
 influxdb = ["dep:flate2"] # Typed InfluxDB v2 HTTP write collector/emitter
 loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ipfix = [] # Native typed UDP IPFIX templates/options/records
+sflow = [] # Native typed sFlow v5 UDP samples/counters
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -501,6 +503,7 @@ dist-windows = [
     "influxdb",
     "loki",
     "ipfix",
+    "sflow",
     "ssh",
     "svn",
     "irc",
@@ -652,6 +655,7 @@ all-protocols = [
     "influxdb",
     "loki",
     "ipfix",
+    "sflow",
     "ssh",
     "ssh-agent",
     "svn",

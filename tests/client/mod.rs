@@ -249,7 +249,10 @@ pub mod influxdb;
 
 #[cfg(feature = "ipfix")]
 pub mod ipfix;
+
 #[cfg(feature = "loki")]
 pub mod loki;
 #[cfg(feature = "otlp")]
 pub mod otlp;
+#[cfg(feature = "sflow")]
+pub mod sflow;
