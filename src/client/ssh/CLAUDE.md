@@ -55,6 +55,11 @@ becomes `ssh_operation_failed` with action_type, path or command and a local err
 client dispatcher handles static/script/manual/model rules and AppState instruction/memory;
 memory updates are saved before follow-up actions run. Unknown or invalid actions are rejected.
 
+The three startup examples use the same trusted host-key pin and read-only directory listing:
+an LLM instruction, an executable Python event handler, and static rules. Each disconnects
+after a result or operation failure. Replace the example key path and independently trusted
+fingerprint before connecting.
+
 Command output preserves the prior lossy UTF-8 handling. EOF does not discard a later SSH
 exit-status; the loop waits for status plus EOF, channel CLOSE or the end of the channel.
 Injected operations report honest `Executed` details. They do not claim encrypted wire byte

@@ -242,8 +242,26 @@ impl Protocol for SshClientProtocol {
             .build()
     }
     fn get_startup_examples(&self) -> StartupExamples {
-        let value = json!({"type":"open_client","protocol":"ssh","remote_addr":"localhost:22","startup_params":{"username":"user","private_key_path":"/home/user/.ssh/id_ed25519","host_key_sha256":"SHA256:<trusted fingerprint>"},"event_handlers":[{"event_pattern":"ssh_connected","handler":{"type":"static","actions":[{"type":"sftp_list_directory","path":"/reports"}]}},{"event_pattern":"*","handler":{"type":"static","actions":[]}}]});
-        StartupExamples::new(value.clone(), value.clone(), value)
+        let base = || json!({"type":"open_client","protocol":"ssh","remote_addr":"localhost:22","startup_params":{"username":"user","private_key_path":"/home/user/.ssh/id_ed25519","host_key_sha256":"SHA256:<trusted fingerprint>"}});
+        let mut llm = base();
+        llm["instruction"] = json!("On ssh_connected, list /reports with sftp_list_directory. Inspect the resulting entries, then disconnect. Disconnect if the operation fails. Use only read-only SFTP actions.");
+        let mut script = base();
+        script["event_handlers"] = json!([{"event_pattern":"*","handler":{"type":"script","language":"python","code":r#"import json, sys
+event_type = json.load(sys.stdin)['event_type_id']
+actions = []
+if event_type == 'ssh_connected':
+    actions = [{'type': 'sftp_list_directory', 'path': '/reports'}]
+elif event_type in ('ssh_sftp_result', 'ssh_operation_failed'):
+    actions = [{'type': 'disconnect'}]
+print(json.dumps({'actions': actions}))"#}}]);
+        let mut static_handler = base();
+        static_handler["event_handlers"] = json!([
+            {"event_pattern":"ssh_connected","handler":{"type":"static","actions":[{"type":"sftp_list_directory","path":"/reports"}]}},
+            {"event_pattern":"ssh_sftp_result","handler":{"type":"static","actions":[{"type":"disconnect"}]}},
+            {"event_pattern":"ssh_operation_failed","handler":{"type":"static","actions":[{"type":"disconnect"}]}},
+            {"event_pattern":"*","handler":{"type":"static","actions":[]}}
+        ]);
+        StartupExamples::new(llm, script, static_handler)
     }
 }
 impl Client for SshClientProtocol {
