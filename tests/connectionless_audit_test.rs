@@ -71,6 +71,11 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // diagnostic sequence state expires independently on its owned 1-second timer.
     #[cfg(feature = "sflow")]
     "sFlow",
+    // NetFlow v9 owns the same temporary datagram row lifecycle: each common
+    // handler removes its row on completion. The idle sweep must leave a parked
+    // request visible; its template/session cache expires on a separate owned timer.
+    #[cfg(feature = "netflow-v9")]
+    "NetFlowV9",
 ];
 
 /// Registry names whose source directory does not follow any of the mechanical
@@ -83,6 +88,8 @@ fn dir_alias(protocol_name: &str) -> Option<&'static str> {
         "SamlIdp" => Some("saml_idp"),
         "SamlSp" => Some("saml_sp"),
         "FluentForward" => Some("fluent_forward"),
+        "NetFlowV9" => Some("netflow_v9"),
+        "PrometheusRemoteWrite" => Some("prometheus_remote_write"),
         _ => None,
     }
 }
