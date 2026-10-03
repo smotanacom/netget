@@ -209,9 +209,22 @@ async fn official_goflow2_227_service_decodes_native_templates_values_and_option
             vec![1],
         ],
     ];
-    for (seq, r) in [0, 3].into_iter().zip(messages.iter()) {
+    assert_eq!(messages.len(), 2, "exactly two domain-42 exports");
+    // GoFlow2 decodes packets on parallel workers; file order is not wire order.
+    for seq in [0, 3] {
+        let matching = messages
+            .iter()
+            .filter(|r| r["message"]["sequence-number"] == seq)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matching.len(),
+            1,
+            "one domain-42 export with sequence {seq}"
+        );
+        let r = matching[0];
         let m = &r["message"];
         assert_eq!(r["type"], "ipfix");
+        assert_eq!(m["observation-domain-id"], 42);
         assert_eq!(m["version"], 10);
         assert_eq!(m["export-time"], 1710000000);
         assert_eq!(m["sequence-number"], seq);
