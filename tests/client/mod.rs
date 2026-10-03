@@ -274,3 +274,6 @@ pub mod nostr;
 
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
+
+#[cfg(feature = "tacacs")]
+pub mod tacacs;

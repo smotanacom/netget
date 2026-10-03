@@ -77,6 +77,7 @@ portable-base = [
     "loki",
     "ipfix",
     "netflow-v9",
+    "tacacs",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -258,6 +259,7 @@ influxdb = ["dep:flate2"] # Typed InfluxDB v2 HTTP write collector/emitter
 loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ipfix = [] # Native typed UDP IPFIX templates/options/records
 netflow-v9 = [] # Native RFC3954 v9 UDP templates/options/records
+tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -512,6 +514,7 @@ dist-windows = [
     "loki",
     "ipfix",
     "netflow-v9",
+    "tacacs",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -668,6 +671,7 @@ all-protocols = [
     "loki",
     "ipfix",
     "netflow-v9",
+    "tacacs",
     "sflow",
     "prometheus-remote-write",
     "ssh",
