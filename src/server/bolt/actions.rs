@@ -165,7 +165,10 @@ impl Protocol for BoltProtocol {
                  routing table naming the address the client used), BEGIN/COMMIT/ROLLBACK, \
                  RESET, TELEMETRY, and three admin queries cypher-shell sends on connect - CALL \
                  db.ping(), CALL dbms.licenseAgreementDetails() and CALL dbms.components(). \
-                 PULL/DISCARD honour n and qid over the model's rows. Messages are capped at 1 \
+                 PULL/DISCARD require explicit integer n and typed qid over the model's rows; \
+                 known messages require exact arity. Owned model/injected actions are preflighted \
+                 before copies at JSON depth36/nodes65536/retained8MiB; emitted RECORDs include \
+                 their structure/list envelopes in the strict wire-depth32 check. Messages are capped at 1 \
                  MiB summed over chunks and PackStream nesting at 32; either refusal is a \
                  Neo.ClientError.Request.Invalid FAILURE and a close. Not implemented: TLS \
                  (bolt+s), the handshake manifest (Bolt 6), notifications, temporal and \
@@ -285,6 +288,12 @@ impl Server for BoltProtocol {
     }
 
     fn execute_action(&self, action: Value) -> Result<ActionResult> {
+        if !values::action_within_budget(&action) {
+            crate::utils::json_budget::drop_iteratively(action);
+            return Err(anyhow!(
+                "Bolt action exceeds the in-memory depth/node/retained-content budget"
+            ));
+        }
         let action_type = action
             .get("type")
             .and_then(|v| v.as_str())
