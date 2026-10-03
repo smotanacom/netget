@@ -890,7 +890,7 @@ pub fn host_of(url_or_host: &str) -> &str {
 /// `hyper-util`'s `GaiResolver` does not special-case one. That becomes a real
 /// `getaddrinfo()` call, which on macOS goes through libinfo to mDNSResponder: a single
 /// system-wide daemon, and a serialisation point under concurrency. It was measured blocking
-/// for **8.25 seconds** with ~100 processes asking at once (see `src/server/doh/CLAUDE.md`),
+/// for **8.25 seconds** with ~100 processes asking at once (see `src/server/doh/AGENTS.md`),
 /// which is long enough to expire a request timeout against a server that is up and idle.
 ///
 /// A hostname is left alone: resolving `localhost` or a real name is the resolver's job, and

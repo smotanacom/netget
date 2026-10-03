@@ -43,7 +43,7 @@ stop_server closes existing sockets and releases the listener. No shared I/O loc
 Maturity stays Experimental. Tests cover wire behavior, deterministic and mocked-model
 handlers, denial and acceptance, bounds and shutdown. Independent peers are official NUT
 2.8.4 upsc and upscmd, built from upstream source with SSL/hardware drivers disabled;
-the client is tested against upsd 2.8.4 plus dummy-ups 0.22. See tests/server/nut/CLAUDE.md.
+the client is tested against upsd 2.8.4 plus dummy-ups 0.22. See tests/server/nut/AGENTS.md.
 No packet-capture oracle or fuzz target was added, and untested commands are not implied
 by successful read/instant-command tests.
 

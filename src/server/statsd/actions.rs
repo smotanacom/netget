@@ -77,7 +77,7 @@ impl Protocol for StatsdProtocol {
             .max_inbound_bytes(MAX_DATAGRAM_BYTES)
             .implementation("Native bounded UTF-8 UDP codec, no additional dependencies")
             .llm_control("Explicit handlers process entire batches; llm_fallback=false collects unmatched batches without model calls")
-            .e2e_testing("Typed codec vectors and real UDP wire/lifecycle tests; see tests/server/statsd/CLAUDE.md for independent implementation evidence")
+            .e2e_testing("Typed codec vectors and real UDP wire/lifecycle tests; see tests/server/statsd/AGENTS.md for independent implementation evidence")
             .notes("8 KiB / 256 records per datagram. No aggregation, persistence, replies, origin metadata or packed values. DogStatsD is the default dialect.")
             .build()
     }

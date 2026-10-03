@@ -842,7 +842,7 @@ fn postgresql() -> Vec<EvalCase> {
 //     cannot be loaded: dlopen(…/mysql/9.3.0/lib/plugin/mysql_native_password.so)
 //
 // — recorded as `event_never_reached_model`, which is exactly right: the model
-// was never asked. `src/server/mysql/CLAUDE.md` already says to use an 8.0
+// was never asked. `src/server/mysql/AGENTS.md` already says to use an 8.0
 // client, so this is confirmation rather than news; what it *does* show is that
 // MySQL's Beta rating rests on `mysql_async`, which still supports the old
 // plugin and is therefore more permissive than the shipping client. That is the

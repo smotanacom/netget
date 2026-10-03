@@ -170,7 +170,7 @@ impl Protocol for DoqClientProtocol {
         ProtocolMetadataV2::builder().state(DevelopmentState::Experimental)
             .implementation("quinn/rustls with hickory-proto DNS messages; public roots plus optional PEM trust")
             .llm_control("Typed DNS queries, response/error events, bounded follow-up actions and disconnect")
-            .e2e_testing("Loopback TLS/framing, injected commands, event follow-ups, cancellation and shutdown; independent-server evidence recorded in tests/client/doq/CLAUDE.md")
+            .e2e_testing("Loopback TLS/framing, injected commands, event follow-ups, cancellation and shutdown; independent-server evidence recorded in tests/client/doq/AGENTS.md")
             .notes("Certificate and hostname validation always enabled. Single-question ordinary queries only; no AXFR/IXFR, automatic reconnect, 0-RTT or transport fallback. Maximum 32 active exchanges and four queries per automatic action chain.")
             .build()
     }
