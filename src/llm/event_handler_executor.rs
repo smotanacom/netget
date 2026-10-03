@@ -321,6 +321,49 @@ pub async fn try_execute_client_event_handler_with_privacy(
     event_data: Option<serde_json::Value>,
     private_payloads: bool,
 ) -> Result<ClientEventHandlerResult> {
+    if event_data.as_ref().is_some_and(|value| {
+        !crate::utils::json_budget::within_budget(
+            value,
+            crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+        )
+    }) {
+        if let Some(value) = event_data {
+            crate::utils::json_budget::drop_iteratively(value);
+        }
+        anyhow::bail!("event exceeds the shared JSON budget");
+    }
+    let private_payloads = private_payloads
+        || event_data
+            .as_ref()
+            .is_some_and(crate::utils::redact::contains_credentials);
+    let run = try_execute_client_event_handler_inner(
+        state,
+        client_id,
+        event_type_id,
+        event_description,
+        event_data,
+        private_payloads,
+    );
+    if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(crate::utils::redact::hide_error_details)
+    } else {
+        run.await
+    }
+}
+
+async fn try_execute_client_event_handler_inner(
+    state: &AppState,
+    client_id: crate::state::ClientId,
+    event_type_id: &str,
+    event_description: &str,
+    event_data: Option<serde_json::Value>,
+    private_payloads: bool,
+) -> Result<ClientEventHandlerResult> {
     let Some(config) = state.get_client_event_handler_config(client_id).await else {
         return Ok(ClientEventHandlerResult::FallbackToLlm { instruction: None });
     };

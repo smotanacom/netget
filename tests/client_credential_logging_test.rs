@@ -182,6 +182,8 @@ async fn mock(mode: &str, openai: bool) -> (u16, tokio::task::JoinHandle<()>) {
             ("ordinary_action", "value", PASSWORD)
         } else if credential {
             ("credential_login", "password", PASSWORD)
+        } else if request.to_string().contains(PASSWORD) {
+            ("ordinary_action", "value", PASSWORD)
         } else {
             ("ordinary_action", "value", ORDINARY)
         };
@@ -197,16 +199,16 @@ async fn mock(mode: &str, openai: bool) -> (u16, tokio::task::JoinHandle<()>) {
             return (
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(if openai {
-                    json!({"error":{"message":PASSWORD}})
+                    json!({"error":{"message":value}})
                 } else {
-                    json!({"error":PASSWORD})
+                    json!({"error":value})
                 }),
             )
                 .into_response();
         }
         let content = match mode.as_str() {
-            "malformed" => format!("{{\"actions\":[{{\"password\":\"{PASSWORD}\""),
-            "plain" => format!("unstructured secret {PASSWORD}"),
+            "malformed" => format!("{{\"actions\":[{{\"password\":\"{value}\""),
+            "plain" => format!("unstructured secret {value}"),
             "malformed_common" => {
                 json!({"actions":[{"type":"show_message","message":null,"password":PASSWORD}]})
                     .to_string()
@@ -930,4 +932,342 @@ async fn constructed_server_actions_and_handler_events_preflight_before_copy_or_
         1,
         8
     ));
+}
+
+fn client_input_event(private: bool, authorization: bool) -> Event {
+    static EVENT: std::sync::LazyLock<EventType> = std::sync::LazyLock::new(|| {
+        EventType::new("test_connected", "Typed client input", json!({}))
+    });
+    Event::new(
+        &EVENT,
+        if private {
+            if authorization {
+                json!({"metadata":{"authorization":PASSWORD}})
+            } else {
+                json!({"request":{"password":PASSWORD}})
+            }
+        } else {
+            json!({"request":{"value":ORDINARY}})
+        },
+    )
+}
+
+async fn client_with_input(
+    state: &AppState,
+    client: &OllamaClient,
+    id: ClientId,
+    input: &Event,
+    tx: &mpsc::UnboundedSender<String>,
+    direct: bool,
+) -> anyhow::Result<netget::llm::ClientLlmResult> {
+    let protocol = TestProtocol { credential: false };
+    if direct {
+        netget::llm::action_helper::call_llm_for_client(
+            client,
+            state,
+            id.to_string(),
+            "test",
+            "",
+            Some(input),
+            &protocol,
+            tx,
+        )
+        .await
+    } else {
+        call_llm_for_client(
+            client,
+            state,
+            id.to_string(),
+            "test",
+            "",
+            Some(input),
+            &protocol,
+            tx,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn nested_client_input_hides_model_reflections_on_routed_and_direct_entries() {
+    for openai in [false, true] {
+        for direct in [false, true] {
+            for authorization in [false, true] {
+                for mode in ["malformed", "plain", "error", "valid"] {
+                    let capture = Capture::default();
+                    let observed = capture.clone();
+                    async move {
+                        let (port, peer) = mock(mode,openai).await;
+                        let url = format!("http://127.0.0.1:{port}");
+                        let (tx,mut rx) = mpsc::unbounded_channel();
+                        let client = if openai {OllamaClient::new_openai(url.clone(),"fixture-api-key")}
+                            else {OllamaClient::new(&url)}.with_status_tx(tx.clone());
+                        let state = AppState::new_with_options(false,url);
+                        state.set_ollama_model(Some("test-model".into())).await;
+                        let id = instance(&state,None).await;
+                        let input = client_input_event(true,authorization);
+                        let result = client_with_input(&state,&client,id,&input,&tx,direct).await;
+                        if mode == "valid" {
+                            let actions = result.unwrap_or_else(|error| panic!("mode={mode} openai={openai} direct={direct} authorization={authorization}: {error}")).actions;
+                            assert_eq!(actions[0]["value"],PASSWORD,"original typed input must reach model and action");
+                            assert!(matches!(TestProtocol{credential:false}.execute_action(actions[0].clone()).unwrap(),ClientActionResult::SendData(bytes) if bytes == PASSWORD.as_bytes()));
+                            if !direct {
+                                let access = state.list_access_logs_for(Some(AccessLogOwner::Client(id.as_u32())),None).await;
+                                assert_eq!(access[0].request,input.data,"intentional typed handler input is retained");
+                                assert_eq!(access[0].response,vec![json!({"type":"ordinary_action"})]);
+                            }
+                        } else {
+                            let error = result.err().expect("invalid private response must fail");
+                            assert!(!format!("{error:#}").contains(PASSWORD));
+                        }
+                        assert_hidden(&observed.text(),&drain(&mut rx));
+                        let ordinary = client_input_event(false,authorization);
+                        let result = client_with_input(&state,&client,id,&ordinary,&tx,direct).await;
+                        if mode == "valid" {
+                            assert_eq!(result.unwrap().actions[0]["value"],ORDINARY);
+                            assert!(observed.text().contains(ORDINARY),"ordinary control retains payload diagnostics");
+                            if !direct {
+                                let access = state.list_access_logs_for(Some(AccessLogOwner::Client(id.as_u32())),None).await;
+                                assert_eq!(access[0].request,ordinary.data);
+                                assert_eq!(access[0].response[0]["value"],ORDINARY);
+                            }
+                        } else if mode == "error" {
+                            assert!(format!("{:#}",result.err().unwrap()).contains(ORDINARY),"ordinary backend error context retained");
+                        }
+                        peer.abort(); let _ = peer.await;
+                        state.remove_client(id).await;
+                    }.with_subscriber(subscriber(capture)).await;
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn nested_client_input_privacy_reaches_direct_static_and_script_handlers() {
+    let background = background_capture();
+    let capture = Capture::default();
+    let observed = capture.clone();
+    async move {
+        let state = AppState::new_with_options(false,"http://127.0.0.1:1".into());
+        for routed in [false,true] {
+            for resident in [false,true] {
+                for fail in [false,true] {
+                    let handler = if resident {
+                        let verdict = if fail {"raise Exception(value)"} else {"return {'actions':[{'type':'ordinary_action','value':value}]}"};
+                        EventHandlerType::script_resident("python",format!("import sys\ndef handle(event_type,event,message):\n value=event['request']['password']\n sys.stderr.write(value+'\\n')\n {verdict}"),None)
+                    } else {
+                        let verdict = if fail {"raise Exception(value)"} else {"print(json.dumps({'actions':[{'type':'ordinary_action','value':value}]}))"};
+                        EventHandlerType::script("python",format!("import json,sys\ne=json.load(sys.stdin)['event']\nvalue=e['request']['password']\nsys.stderr.write(value)\n{verdict}"))
+                    };
+                    let id = instance(&state,Some(handler)).await;
+                    let input = client_input_event(true,false);
+                    if routed {
+                        let (tx,mut rx) = mpsc::unbounded_channel();
+                        let result = client_with_input(&state,&OllamaClient::new("http://127.0.0.1:1"),id,&input,&tx,false).await;
+                        if fail { assert!(result.is_err()); }
+                        else { assert_eq!(result.unwrap().actions[0]["value"],PASSWORD); }
+                        assert_hidden(&observed.text(),&drain(&mut rx));
+                    } else {
+                        let result = netget::llm::event_handler_executor::try_execute_client_event_handler(&state,id,input.id(),&input.to_prompt_description(),Some(input.data.clone())).await.unwrap();
+                        match result {
+                            netget::llm::event_handler_executor::ClientEventHandlerResult::Handled {actions} if !fail => assert_eq!(actions[0]["value"],PASSWORD),
+                            netget::llm::event_handler_executor::ClientEventHandlerResult::FallbackToLlm {..} if fail => {},
+                            _ => panic!("unexpected script result routed={routed} resident={resident} fail={fail}"),
+                        }
+                    }
+                    assert!(!observed.text().contains(PASSWORD));
+                    assert!(!background.text().contains(PASSWORD));
+                    state.remove_client(id).await;
+                }
+            }
+        }
+        for direct in [false,true] {
+            let input = client_input_event(true,false);
+            let id = instance(&state,Some(EventHandlerType::static_response(vec![json!({"type":"ordinary_action","value":"{{event.request.password}}"})]))).await;
+            if direct {
+                let result = netget::llm::event_handler_executor::try_execute_client_event_handler(&state,id,input.id(),&input.to_prompt_description(),Some(input.data.clone())).await.unwrap();
+                match result {netget::llm::event_handler_executor::ClientEventHandlerResult::Handled{actions} => assert_eq!(actions[0]["value"],PASSWORD),_=>panic!("static handler must handle")}
+            } else {
+                let (tx,mut rx)=mpsc::unbounded_channel();
+                assert_eq!(client_with_input(&state,&OllamaClient::new("http://127.0.0.1:1"),id,&input,&tx,false).await.unwrap().actions[0]["value"],PASSWORD);
+                assert_hidden(&observed.text(),&drain(&mut rx));
+            }
+            state.remove_client(id).await;
+        }
+        let handler = EventHandlerType::script("python",format!("import json,sys\ne=json.load(sys.stdin)['event']\nsys.stderr.write(e['request']['value'])\nprint('{{\"actions\":[]}}')"));
+        let id = instance(&state,Some(handler)).await;
+        let input = client_input_event(false,false);
+        netget::llm::event_handler_executor::try_execute_client_event_handler(&state,id,input.id(),&input.to_prompt_description(),Some(input.data.clone())).await.unwrap();
+        assert!(observed.text().contains(ORDINARY),"ordinary script stderr remains visible");
+        state.remove_client(id).await;
+    }.with_subscriber(subscriber(capture)).await;
+}
+
+#[tokio::test]
+async fn constructed_client_events_preflight_before_routing_copy_or_recursive_drop() {
+    fn deep() -> Value {
+        let mut value = Value::Null;
+        for _ in 0..10_000 {
+            value = Value::Array(vec![value]);
+        }
+        value
+    }
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".into());
+    let id = instance(&state, None).await;
+    for external_private in [false, true] {
+        assert!(
+            netget::llm::event_handler_executor::try_execute_client_event_handler_with_privacy(
+                &state,
+                id,
+                "test",
+                "test",
+                Some(deep()),
+                external_private
+            )
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("budget")
+        );
+    }
+    assert!(
+        netget::llm::event_handler_executor::try_execute_client_event_handler(
+            &state,
+            id,
+            "test",
+            "test",
+            Some(deep())
+        )
+        .await
+        .is_err()
+    );
+    let mut input = client_input_event(false, false);
+    input.data = deep();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    for direct in [false, true] {
+        let error = client_with_input(
+            &state,
+            &OllamaClient::new("http://127.0.0.1:1"),
+            id,
+            &input,
+            &tx,
+            direct,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("budget"));
+    }
+    assert_eq!(
+        state.get_client_llm_calls(id).await,
+        0,
+        "invalid constructed input must not debit model budget"
+    );
+    netget::utils::json_budget::drop_iteratively(input.data);
+    state.remove_client(id).await;
+}
+
+#[tokio::test]
+async fn private_errors_preserve_numeric_overload_category_without_secret_context() {
+    use netget::llm::rate_limiter::RateLimitError;
+    use netget::utils::{redact::hide_error_details, wire_failure::WireFailure};
+    for category in [
+        RateLimitError::QueueFull { max_queued: 1 },
+        RateLimitError::QueueTimeout { waited_secs: 1 },
+        RateLimitError::TokenLimit {
+            limit: 10,
+            window_secs: 60,
+        },
+    ] {
+        let error = hide_error_details(anyhow::Error::new(category).context(PASSWORD));
+        assert_eq!(error.downcast_ref::<RateLimitError>(), Some(&category));
+        assert_eq!(WireFailure::classify(&error), WireFailure::Overloaded);
+        assert_eq!(error.chain().count(), 1, "untyped context must be removed");
+        assert!(!format!("{error:#}").contains(PASSWORD));
+    }
+    let error = hide_error_details(anyhow::anyhow!(PASSWORD).context("backend context"));
+    assert_eq!(WireFailure::classify(&error), WireFailure::Unavailable);
+    assert!(!format!("{error:#}").contains(PASSWORD));
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".into());
+    state.set_ollama_model(Some("test-model".into())).await;
+    state
+        .configure_rate_limiter(RateLimiterConfig {
+            max_concurrent: 1,
+            max_queued: 1,
+            queue_timeout_secs: 30,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let limiter = state.get_rate_limiter().await;
+    let held = limiter
+        .acquire_permit(RequestSource::Network)
+        .await
+        .unwrap();
+    let queued = {
+        let limiter = limiter.clone();
+        tokio::spawn(async move { limiter.acquire_permit(RequestSource::Network).await })
+    };
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if limiter.get_stats().await.currently_queued == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let server = server_instance(&state, None).await;
+    let input = server_event(true);
+    let error = netget::llm::action_helper::call_llm(
+        &OllamaClient::new("http://127.0.0.1:1"),
+        &state,
+        server,
+        None,
+        &input,
+        &TestProtocol { credential: false },
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(WireFailure::classify(&error), WireFailure::Overloaded);
+    assert_eq!(
+        error.downcast_ref::<RateLimitError>(),
+        Some(&RateLimitError::QueueFull { max_queued: 1 })
+    );
+    assert_eq!(error.chain().count(), 1);
+    assert!(!format!("{error:#}").contains(PASSWORD));
+    let client = instance(&state, None).await;
+    let input = client_input_event(true, false);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for direct in [false, true] {
+        let error = client_with_input(
+            &state,
+            &OllamaClient::new("http://127.0.0.1:1"),
+            client,
+            &input,
+            &tx,
+            direct,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(WireFailure::classify(&error), WireFailure::Overloaded);
+        assert_eq!(error.chain().count(), 1);
+        assert!(!format!("{error:#}").contains(PASSWORD));
+    }
+    assert!(!drain(&mut rx).contains(PASSWORD));
+    drop(held);
+    let permit = tokio::time::timeout(Duration::from_secs(3), queued)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    drop(permit);
+    assert_eq!(limiter.get_stats().await.currently_queued, 0);
+    state.remove_client(client).await;
+    state.remove_server(server).await;
 }
