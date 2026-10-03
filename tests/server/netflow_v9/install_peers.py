@@ -72,9 +72,12 @@ defines = ['FLOW_RB', 'EXPIRY_RB', 'ENABLE_LEGACY', 'HAVE_INTTYPES_H',
            'HAVE_INT8_T', 'HAVE_INT16_T', 'HAVE_INT32_T', 'HAVE_INT64_T',
            'HAVE_U_INT8_T', 'HAVE_U_INT16_T', 'HAVE_U_INT32_T', 'HAVE_U_INT64_T',
            'HAVE_STRSEP', 'HAVE_SETREUID', 'HAVE_SETREGID', 'HAVE_SYSCONF']
+# Match pinned upstream common.h: Linux BPF declarations need the BSD integer
+# typedefs from sys/types.h before their header, with _DEFAULT_SOURCE enabled.
+bpf_prerequisites = '#define _DEFAULT_SOURCE\n#include <sys/types.h>\n'
 for flag, code in [
-    ('HAVE_NET_BPF_H', '#include <net/bpf.h>'),
-    ('HAVE_PCAP_BPF_H', '#include <pcap-bpf.h>'),
+    ('HAVE_NET_BPF_H', bpf_prerequisites + '#include <net/bpf.h>'),
+    ('HAVE_PCAP_BPF_H', bpf_prerequisites + '#include <pcap-bpf.h>'),
     ('SOCK_HAS_LEN', '#include <sys/socket.h>\n_Static_assert(sizeof(((struct sockaddr*)0)->sa_len)>0,"sa_len");'),
     ('HAVE_STRUCT_IP6_EXT', '#include <netinet/ip6.h>\n_Static_assert(sizeof(struct ip6_ext)>0,"ip6_ext");'),
     ('HAVE_DAEMON', '#include <unistd.h>\nvoid *f=(void*)&daemon;'),
