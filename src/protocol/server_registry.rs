@@ -213,6 +213,11 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "diameter")]
+        self.register(Arc::new(
+            crate::server::diameter::actions::DiameterProtocol::new(),
+        ));
+
         #[cfg(feature = "tacacs")]
         self.register(Arc::new(
             crate::server::tacacs::actions::TacacsProtocol::new(),
@@ -1329,6 +1334,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("PostgreSQL", "postgresql"),
     ("Memcached", "memcached"),
     ("RADIUS", "radius"),
+    ("DIAMETER", "diameter"),
     ("Redis", "redis"),
     ("RSS", "rss"),
     ("Cassandra", "cassandra"),
