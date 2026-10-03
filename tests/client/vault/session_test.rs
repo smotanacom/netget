@@ -1,5 +1,5 @@
 use super::common::*;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 #[tokio::test]
 async fn startup_public_probe_is_not_authentication_and_health_codes_keep_their_meaning() {
@@ -317,6 +317,63 @@ async fn endpoint_and_startup_parameters_refuse_raw_paths_credentials_or_unsafe_
     ] {
         refused_start(&state, "127.0.0.1:1".into(), params).await;
     }
+}
+
+#[tokio::test]
+async fn deeply_constructed_injected_values_are_rejected_without_copying_or_wire_io() {
+    fn deep(disconnect: bool) -> Value {
+        let mut leaf = Value::String(TOKEN.into());
+        for _ in 0..10000 {
+            leaf = Value::Array(vec![leaf]);
+        }
+        let mut action = if disconnect {
+            json!({"type":"disconnect"})
+        } else {
+            json!({"type":"vault_request","operation":"write","path":"fixture/app","data":{}})
+        };
+        action["nested"] = leaf;
+        action
+    }
+    let peer = mock_peer("normal").await;
+    let state = state();
+    let id = client(
+        &state,
+        peer.address.clone(),
+        json!({"request_timeout_secs":1}),
+        vec![static_handler("*", json!([]))],
+    )
+    .await;
+    event(&state, id, "vault_connected", 0).await;
+    let before = peer.seen().len();
+    for disconnect in [false, true] {
+        rejected(&state, id, deep(disconnect), "depth/node/retained-content").await;
+    }
+    assert_eq!(peer.seen().len(), before);
+    peer.mode("stall_body");
+    let after = latest(&state, id).await;
+    send(&state, id, json!({"operation":"health"})).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while peer.seen().len() == before {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for disconnect in [false, true] {
+        rejected(&state, id, deep(disconnect), "depth/node/retained-content").await;
+    }
+    assert_eq!(peer.seen().len(), before + 1);
+    assert_eq!(
+        event(&state, id, "vault_request_error", after).await.1["category"],
+        "transport"
+    );
+    peer.mode("normal");
+    assert_eq!(
+        request(&state, id, json!({"operation":"health"})).await["status"],
+        200
+    );
+    state.remove_client(id).await;
+    peer.stop().await;
 }
 
 #[tokio::test]
