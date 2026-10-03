@@ -1,3 +1,4 @@
+use crate::helpers::grpc_peer as peer;
 use base64::Engine;
 use prost::Message;
 use prost_types::{
@@ -6,8 +7,6 @@ use prost_types::{
     MethodDescriptorProto, ServiceDescriptorProto,
 };
 use serde_json::json;
-#[path = "../../helpers/grpc_peer.rs"]
-mod peer;
 const LIMIT: usize = 4 * 1024 * 1024;
 fn set() -> FileDescriptorSet {
     FileDescriptorSet {
