@@ -133,6 +133,12 @@ fn repository_names_follow_the_spec_grammar() {
     assert!(is_valid_repository_name("library/alpine"));
     assert!(is_valid_repository_name("a/b/c"));
     assert!(is_valid_repository_name("my-repo.name_1"));
+    for name in ["a__b", "a---b", "a._b", "a..b", "a___b"] {
+        assert_eq!(
+            is_valid_repository_name(name),
+            matches!(name, "a__b" | "a---b")
+        );
+    }
 
     assert!(!is_valid_repository_name(""));
     assert!(!is_valid_repository_name("Library/Alpine")); // uppercase
