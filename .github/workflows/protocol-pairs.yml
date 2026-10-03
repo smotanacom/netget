@@ -30,7 +30,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install build prerequisites and QUIC-capable Knot tools
         run: |
@@ -99,7 +99,7 @@ jobs:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install independent queue and dictionary daemons
         run: |
@@ -172,7 +172,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned pygelf and official Graylog reader peers
         run: |
@@ -226,7 +226,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned official daemon and client peers
         run: |
@@ -277,7 +277,7 @@ jobs:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned independent QUIC and HTTP3 peer
         run: |
@@ -333,7 +333,7 @@ jobs:
           ruby-version: '4.0.6'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned independent Forward peers in temporary storage
         run: |
@@ -388,12 +388,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install bounded source-peer build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler build-essential curl ca-certificates pkg-config libtool gperf libevent-dev libboost-program-options-dev uuid-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler build-essential curl ca-certificates pkg-config libtool gperf libevent-dev libboost-program-options-dev uuid-dev tshark
 
       - name: Prepare pinned official Gearman daemon and tools
         run: |
@@ -449,7 +449,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install required SSH client and server peers
         run: |
@@ -504,7 +504,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install build prerequisites
         run: |
@@ -567,7 +567,7 @@ jobs:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install required build and TLS-test prerequisites
         run: |
