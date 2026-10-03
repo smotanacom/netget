@@ -224,3 +224,6 @@ pub mod influxdb;
 
 #[cfg(feature = "loki")]
 pub mod loki;
+
+#[cfg(feature = "ipfix")]
+pub mod ipfix;

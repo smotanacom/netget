@@ -207,6 +207,8 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "ipfix")]
+        self.register(Arc::new(crate::server::ipfix::actions::IpfixProtocol::new()));
         #[cfg(feature = "loki")]
         self.register(Arc::new(crate::server::loki::actions::LokiProtocol::new()));
         #[cfg(feature = "influxdb")]
@@ -1256,6 +1258,8 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("IPFIX", "ipfix"),
+    ("IPFIX-UDP", "ipfix"),
     ("Loki", "loki"),
     ("LokiPush", "loki"),
     ("InfluxDB", "influxdb"),
