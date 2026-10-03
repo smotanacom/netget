@@ -65,6 +65,7 @@ fn golden_duals_map() {
         "Docker",
         "Loki",
         "OTLP",
+        "IPFIX",
         "Beanstalkd",
         "DICT",
         "Gemini",
