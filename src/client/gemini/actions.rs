@@ -4,6 +4,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::app_state::AppState;
 use anyhow::{bail, Result};
@@ -36,7 +37,7 @@ fn action(
         description: description.into(),
         parameters,
         example,
-        log_template: Some(log_template.into()),
+        log_template: Some(LogTemplate::new().with_info(log_template)),
     }
 }
 fn request_action() -> ActionDefinition {
