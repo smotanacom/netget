@@ -13,7 +13,8 @@
 //!   deadline against a server that never answers.
 //! - `https://` refused with the reason.
 //! - The native reqwest path honours the same body bound, end to end through the client's own
-//!   command channel.
+//!   command channel, against an owned streaming TCP peer so the oversized body does not
+//!   pass through the shared static-action interpolation budget.
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features http,tcp --test client -- http::transport --test-threads=100
@@ -28,7 +29,9 @@ use netget::client::http::transport::{
 };
 use netget::state::app_state::AppState;
 use netget::state::{ClientId, ServerId};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 async fn new_state() -> AppState {
     let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
@@ -257,51 +260,44 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 /// body one byte over [`MAX_RESPONSE_BODY_BYTES`] fails the request instead of being buffered.
 #[tokio::test]
 async fn the_native_client_refuses_a_body_over_the_bound() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     let state = new_state().await;
     let size = MAX_RESPONSE_BODY_BYTES + 1;
-    // A static handler is itself bounded to 8 MiB. Generate the oversized peer's
-    // response on its socket so this exercises the client's independent body bound.
+    // A body larger than the transport bound also exceeds the shared static-action
+    // interpolation budget. Stream it from a test-owned peer instead of changing either
+    // runtime limit. Dropping the JoinSet cancels the peer if an assertion fails.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("bind oversized HTTP peer");
+        .expect("bind oversized-response peer");
     let huge = listener.local_addr().unwrap().port();
-    let huge_peer = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.expect("accept HTTP client");
-        let mut request = Vec::new();
-        let mut scratch = [0u8; 4096];
-        while !request.ends_with(b"\r\n\r\n") {
-            let read = socket.read(&mut scratch).await.expect("read request");
-            assert_ne!(read, 0, "client closed before sending its request");
-            request.extend_from_slice(&scratch[..read]);
-            assert!(request.len() <= 32 * 1024, "request header bound");
-        }
-        assert!(request.starts_with(b"GET / HTTP/1.1\r\n"));
-        socket
-            .write_all(
-                format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n")
-                    .as_bytes(),
-            )
-            .await
-            .expect("write response header");
-        let chunk = [b'a'; 64 * 1024];
-        let mut remaining = size;
-        while remaining > 0 {
-            let length = remaining.min(chunk.len());
-            if let Err(error) = socket.write_all(&chunk[..length]).await {
-                assert!(
-                    matches!(
-                        error.kind(),
-                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                    ),
-                    "unexpected response write error: {error}"
-                );
-                return;
+    let mut peers = JoinSet::new();
+    peers.spawn(async move {
+        tokio::time::timeout(Duration::from_secs(40), async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut request = Vec::new();
+            let mut read_buf = [0u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let read = socket.read(&mut read_buf).await?;
+                anyhow::ensure!(read > 0, "client closed before sending request headers");
+                anyhow::ensure!(request.len() + read <= 4096, "request headers too large");
+                request.extend_from_slice(&read_buf[..read]);
             }
-            remaining -= length;
-        }
-        let _ = socket.shutdown().await;
+            socket
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await?;
+            let chunk = [b'a'; 64 * 1024];
+            let mut remaining = size;
+            while remaining > 0 {
+                let count = remaining.min(chunk.len());
+                socket.write_all(&chunk[..count]).await?;
+                remaining -= count;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .expect("oversized-response peer deadline")
     });
     let small = raw_http_server(
         &state,
@@ -345,8 +341,10 @@ async fn the_native_client_refuses_a_body_over_the_bound() {
         .as_ref()
         .expect_err("a body over the bound fails the request");
     assert!(huge.to_string().contains("-byte limit"), "{huge:#}");
-    tokio::time::timeout(Duration::from_secs(30), huge_peer)
+    peers
+        .join_next()
         .await
-        .expect("oversized peer stops")
-        .expect("oversized peer completed");
+        .expect("owned response peer")
+        .expect("response peer did not panic")
+        .expect("response peer streamed the oversized body");
 }

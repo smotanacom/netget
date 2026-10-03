@@ -1,19 +1,21 @@
-//! OpenTelemetry OTLP/HTTP receiver — the model decides which exports are accepted.
+//! OpenTelemetry HTTP/gRPC receiver — the model decides which exports are accepted.
 //!
 //! OTLP exporters `POST` to `/v1/traces`, `/v1/metrics` or `/v1/logs` in protobuf or JSON,
 //! optionally gzip-compressed. NetGet reads the body (bounded before and after inflation),
 //! decodes it, and raises one `otlp_export` event carrying a summary — never the payload. The
 //! model answers with a verdict (`accept_otlp`, `accept_otlp_partially`, `reject_otlp`), and
 //! NetGet encodes the response in the request's own encoding (see [`codec`]).
+//! Generated unary gRPC Export services use the same semantic verdict path on HTTP/2.
 //!
 //! Everything that is not a well-formed export is answered by NetGet without asking the model:
 //! another path (404), method (405), content type or content encoding (415), a body past the
 //! cap (413), bad gzip or an undecodable payload (400).
 //!
-//! See `src/server/otlp/CLAUDE.md`.
+//! See `src/server/otlp/AGENTS.md`.
 
 pub mod actions;
 pub mod codec;
+mod grpc;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -23,10 +25,10 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Incoming};
 use hyper::header::{HeaderValue, ALLOW, CONTENT_ENCODING, CONTENT_TYPE, RETRY_AFTER};
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use hyper_util::server::conn::auto;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -91,6 +93,7 @@ impl OtlpServer {
         let protocol = Arc::new(actions::OtlpProtocol::new());
         let task_registrar = app_state.clone();
         let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        let exports = Arc::new(tokio::sync::Semaphore::new(grpc::MAX_EXPORTS));
         let accept_handle = tokio::spawn(async move {
             loop {
                 match crate::server::accept_bounded::accept_bounded(
@@ -140,6 +143,7 @@ impl OtlpServer {
                             protocol: protocol.clone(),
                             server_id,
                             connection_id,
+                            exports: exports.clone(),
                         };
                         let app_state_for_close = app_state.clone();
                         let status_for_close = status_tx.clone();
@@ -202,6 +206,7 @@ struct RequestContext {
     protocol: Arc<actions::OtlpProtocol>,
     server_id: ServerId,
     connection_id: ConnectionId,
+    exports: Arc<tokio::sync::Semaphore>,
 }
 
 async fn serve_connection<T>(io: TokioIo<T>, ctx: RequestContext)
@@ -211,16 +216,42 @@ where
     let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
     let activity_for_service = Arc::clone(&activity);
 
+    let children = grpc::OwnedExecutor::default();
+    let _children_guard = grpc::ConnectionTasks(children.clone());
     let service = service_fn(move |req: Request<Incoming>| {
         let ctx = ctx.clone();
         let activity = Arc::clone(&activity_for_service);
         async move {
             let _busy = activity.busy();
-            Ok::<_, Infallible>(handle_request(req, ctx).await)
+            let reply = if req
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| {
+                    v.split(';').next().is_some_and(|v| {
+                        v.trim().eq_ignore_ascii_case("application/grpc")
+                            || v.trim().eq_ignore_ascii_case("application/grpc+proto")
+                    })
+                }) {
+                grpc::dispatch(req, ctx).await
+            } else {
+                handle_request(req, ctx)
+                    .await
+                    .map(|body| body.map_err(|never| match never {}).boxed_unsync())
+            };
+            Ok::<_, Infallible>(reply)
         }
     });
 
-    let conn = http1::Builder::new().serve_connection(io, service);
+    let mut builder = auto::Builder::new(children.clone());
+    builder
+        .http2()
+        .max_concurrent_streams(16)
+        .initial_stream_window_size(65536)
+        .initial_connection_window_size(1048576)
+        .max_header_list_size(32768)
+        .max_frame_size(16384);
+    let conn = builder.serve_connection(io, service);
     tokio::pin!(conn);
     tokio::select! {
         result = &mut conn => {
@@ -410,7 +441,27 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
         }
     };
 
-    let mut data = summary.to_event(signal, encoding, compressed, body.len());
+    let body_bytes = body.len();
+    drop(body);
+    respond_to_export(
+        ctx, signal, encoding, compressed, body_bytes, summary, "http",
+    )
+    .await
+}
+
+async fn respond_to_export(
+    ctx: RequestContext,
+    signal: Signal,
+    encoding: Encoding,
+    compressed: bool,
+    body_bytes: usize,
+    summary: codec::Summary,
+    transport: &str,
+) -> Response<Full<Bytes>> {
+    let log = crate::logging::emit::Log::new(Some(&ctx.status_tx));
+    let path = format!("/v1/{}", signal.as_str());
+    let mut data = summary.to_event(signal, encoding, compressed, body_bytes);
+    data["transport"] = serde_json::json!(transport);
     data["answer_with"] = serde_json::json!(actions::answer_with(signal, summary.item_count));
     let event = Event::new(&actions::OTLP_EXPORT_EVENT, data);
     let who = summary.services.first().cloned().unwrap_or_default();

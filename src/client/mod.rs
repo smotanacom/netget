@@ -304,6 +304,12 @@ pub mod openidconnect;
 #[cfg(feature = "openidconnect")]
 pub use openidconnect::actions::OpenIdConnectClientProtocol;
 
+// otlp client
+#[cfg(feature = "otlp")]
+pub mod otlp;
+#[cfg(feature = "otlp")]
+pub use otlp::actions::OtlpClientProtocol;
+
 // ospf client
 #[cfg(feature = "ospf")]
 pub mod ospf;
@@ -658,8 +664,13 @@ pub mod nsq;
 #[cfg(feature = "gearman")]
 pub mod gearman;
 
+#[cfg(feature = "docker")]
+pub mod docker;
 #[cfg(feature = "prometheus")]
 pub mod prometheus;
 
 #[cfg(feature = "influxdb")]
 pub mod influxdb;
+
+#[cfg(feature = "loki")]
+pub mod loki;

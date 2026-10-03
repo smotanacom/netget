@@ -104,16 +104,13 @@ impl Protocol for OtlpProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            // Beta on evidence: tests/server/otlp/real_client_test.rs drives otel-cli and the
-            // Collector project's telemetrygen - two independent OTLP/HTTP exporters - and both
-            // hard-fail when absent. Not Stable: no fuzz target, no pcap oracle, and no
-            // third-party exporter sends the JSON encoding.
-            .state(DevelopmentState::Beta)
+            // HTTP has independent exporter evidence; the expanded gRPC scope stays Experimental.
+            .state(DevelopmentState::Experimental)
             .well_known_port(4318)
             // 4318 is unprivileged, and so is every port a test picks.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
-                "hyper HTTP/1.1 receiver for POST /v1/traces, /v1/metrics and /v1/logs, in \
+                "hyper HTTP/1.1 and HTTP/2 receiver with generated tonic unary gRPC Export services for traces, metrics and logs; POST /v1/traces, /v1/metrics and /v1/logs in \
                  application/x-protobuf (decoded with the OpenTelemetry project's own \
                  opentelemetry-proto types) or application/json (walked as JSON), with \
                  Content-Encoding gzip held to the same size cap after inflation. Every \
@@ -134,29 +131,34 @@ impl Protocol for OtlpProtocol {
                  telemetrygen (the OpenTelemetry Collector project's load generator) sending \
                  metrics and logs over OTLP/HTTP, asserting the metric and log counts and a \
                  rejection it reports. Both fail, never skip, when absent. \
+                 tests/server/otlp/grpc_test.rs drives those exporters over gRPC, including \
+                 a PERMISSION_DENIED refusal, and covers all three generated services, \
+                 exact size boundaries, RPC admission, deadlines and cancellation. \
+                 tests/client/otlp drives official core Collector 0.162.0 over both transports \
+                 with plain/gzip exports and verified custom-CA TLS, plus native pairing. \
                  tests/server/otlp/e2e_test.rs covers the mocked-model path over JSON and \
                  protobuf.",
             )
             .notes(
-                "Implements the OTLP/HTTP receiver side: the three signal paths, both \
+                "Implements OTLP/HTTP and OTLP/gRPC receiver sides: the three signal paths, both HTTP \
                  encodings, gzip, full and partial success, and google.rpc.Status failures \
                  with the specification's HTTP statuses (415 for another Content-Type or \
                  Content-Encoding, 404 for another path, 405 for another method). Not \
-                 implemented: OTLP/gRPC, TLS, profiles, and any storage or forwarding - \
+                 implemented: receiver TLS, profiles, and any storage or forwarding - \
                  NetGet keeps nothing it received. Bodies are capped at 4 MiB after \
                  inflation; a payload that does not decode is refused 400 by NetGet without \
                  asking the model. On backend failure the export is refused 503 with \
-                 Retry-After (overloaded) or 500, with a fixed message.",
+                 Retry-After (overloaded) or 500, with a fixed message. Expanded gRPC surface remains Experimental: 16 HTTP/2 streams per connection, 64 active RPCs before decoding, one bounded message per unary Export, 30-second whole-RPC deadline including body/model, and connection-owned stream tasks.",
             )
             .max_inbound_bytes(codec::MAX_BODY_BYTES)
             // LLM failure: 503 + Retry-After when the backend is saturated, 500 otherwise, each
             // with a fixed google.rpc.Status message. Never an invented 200.
             .answers_on_failure()
-            .request_only("OTLP/HTTP is request/response; a receiver cannot send an exporter anything unprompted")
+            .request_only("OTLP HTTP/gRPC exports are request/response; a receiver cannot send an exporter anything unprompted")
             .build()
     }
     fn description(&self) -> &'static str {
-        "OpenTelemetry OTLP/HTTP receiver - the model decides which exports are accepted"
+        "OpenTelemetry HTTP/gRPC receiver - the model decides which exports are accepted"
     }
     fn example_prompt(&self) -> &'static str {
         "OTLP receiver on port 4318 - accept traces from the checkout service and refuse \
@@ -346,8 +348,7 @@ fn reject_action() -> ActionDefinition {
             Parameter {
                 name: "retry_after_secs".to_string(),
                 type_hint: "number".to_string(),
-                description: "Seconds the client should wait before retrying (429 and 503 \
-                              only; sent as Retry-After)"
+                description: "Seconds before retrying: HTTP Retry-After on 429/502/503/504; gRPC RetryInfo. gRPC 429 needs this recovery hint to be retryable"
                     .to_string(),
                 required: false,
             },
@@ -384,7 +385,7 @@ pub fn answer_with(signal: codec::Signal, count: usize) -> String {
          this data: accept_otlp to take all {count} {items}; accept_otlp_partially with how \
          many of them your instructions say to drop and why; or reject_otlp with 403 for a \
          sender your instructions refuse, 400 for data they call invalid, or 429/503 to have \
-         the client retry later",
+         the client retry later. For grpc, use retry_after_secs with 429 to signal that exhaustion can recover",
         items = signal.items()
     )
 }
@@ -401,6 +402,7 @@ pub static OTLP_EXPORT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_parameters(vec![
         param("signal", "string", "traces, metrics or logs")
             .with_choices(["traces", "metrics", "logs"]),
+        param("transport", "string", "http or grpc").with_choices(["http", "grpc"]),
         param("encoding", "string", "How the client encoded the export")
             .with_choices(["protobuf", "json"]),
         param(

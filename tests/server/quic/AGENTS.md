@@ -17,11 +17,14 @@ client -- quic:: --test-threads=4` passed 10 server and 4 client tests, zero ign
 The server suite includes a 32-stream credit/cancellation/active-removal test and
 an explicit close_this_stream-on-open regression with client FIN withheld.
 
-One earlier four-worker run timed out in the existing mocked three-stream test
-at its unchanged five-second read deadline. It passed isolated, alongside all
-interfering mocked tests at four workers, and in the final complete four-worker
-run. The initial trace stopped after connection notification; its cause was not
-established, so these passes do not establish that the transient cannot recur.
+The existing mocked three-stream test originally used a five-second read deadline,
+shorter than the receiver's thirty-second whole exchange bound. That deadline failed
+again on Linux after the trace reached a stream-open notification; the reason for
+that particular scheduling delay is not established. The test now deliberately makes
+all three stream-open model replies take six seconds and gives the concurrent exchange
+group the receiver's bound plus five seconds of scheduling margin. All three notifications
+and data replies remain required. JoinSet owns the client tasks so any failed assertion
+or whole-group timeout cancels the remaining work. No runtime protocol timeout is widened.
 
 ## Certificate parameter regression
 

@@ -278,12 +278,19 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" | "influxdb" => tcp("http"),
-        // OTLP/HTTP (TCP 4318) is HTTP to Wireshark: `tshark -G protocols` has no otlp dissector.
-        // Its `protobuf` dissector reads an application/x-protobuf body only once the
-        // OpenTelemetry .proto files are on its protobuf search path, so HTTP is what a capture
-        // shows by default; the JSON encoding reads as text.
-        "otlp" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "vault" | "influxdb" | "loki" => tcp("http"),
+        "docker" => with_note(
+            tcp("http"),
+            "This captures Docker HTTP TCP connections. A native Unix socket has no IP packets to capture.",
+        ),
+        // The receiver admits both HTTP/1.1 and gRPC/HTTP2 on the same port. Do not
+        // force one dissector before the instance's selected transport is known.
+        "otlp" => Wire {
+            transport: Transport::Tcp,
+            decode_as: None,
+            display: Some("http || http2 || grpc"),
+            note: Some("Choose HTTP for OTLP/HTTP or HTTP/2 for OTLP/gRPC in Wireshark Decode As. TLS exports require TLS session keys."),
+        },
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
