@@ -1034,3 +1034,241 @@ jobs:
             --test peer_handle_coverage_ratchet_test \
             --test client_credential_logging_test \
             --test secret_redaction_test
+
+  remote-write-pairs:
+    name: Published remote write1.0 with official Prometheus sender and receiver
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,prometheus-remote-write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Prepare pinned official Prometheus and exporter peers
+        run: |
+          python3 tests/server/prometheus_remote_write/install_peers.py "$RUNNER_TEMP/remote-write-peers"
+          {
+            printf 'NETGET_PRW_PROMETHEUS=%s/remote-write-peers/prometheus-3.15.0\n' "$RUNNER_TEMP"
+            printf 'NETGET_PRW_PYTHON=python3\n'
+            printf 'PYTHONPATH=%s/remote-write-peers/python\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+      - name: Both roles, special floats, readback, retry, limits and cancellation
+        run: |
+          for filter in \
+            prometheus_remote_write:: client/prometheus_remote_write:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+      - name: Shared remote-write registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test
+
+  grpc-web-pairs:
+    name: Binary gRPC-Web with independent Connect-ES peers and bounded framing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,grpc-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install protobuf fixture compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Prepare pinned Connect-ES and protobuf-es peer packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/grpcweb-peer"
+          cp tests/helpers/grpcweb-package.json "$RUNNER_TEMP/grpcweb-peer/package.json"
+          cp tests/helpers/grpcweb-package-lock.json "$RUNNER_TEMP/grpcweb-peer/package-lock.json"
+          npm ci --prefix "$RUNNER_TEMP/grpcweb-peer" --ignore-scripts --no-audit --no-fund
+          printf 'NETGET_GRPCWEB_NODE_DIR=%s/grpcweb-peer\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Both protocol roles with mandatory independent peers
+        run: |
+          for filter in \
+            grpc_web:: client/grpc_web:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+      - name: Bounded Web frames and shared native tonic seam
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test grpc_web_wire_test \
+            --test grpc_value_bounds_test \
+            --test vendored_tonic_patch_test
+      - name: Shared registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test \
+            --test rustls_provider_gate_test
+
+  nostr-pairs:
+    name: Nostr publishing and subscriptions with independent nak and rust-nostr peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,nostr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install protobuf and independent TLS and packet fixture tools
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler openssl tshark
+      - name: Prepare pinned independent nak and rust-nostr peers
+        run: |
+          mkdir -p "$RUNNER_TEMP/nostr-peers/bin"
+          curl --fail --location --max-time 120 --max-filesize 67108864 \
+            --output "$RUNNER_TEMP/nostr-peers/bin/nak" \
+            https://github.com/fiatjaf/nak/releases/download/v0.20.7/nak-v0.20.7-linux-amd64
+          printf 'ba918fafd1b030bc50958a5b218c6386f4c3a57c1e469562d3947e858e0ba56e  %s/nostr-peers/bin/nak\n' "$RUNNER_TEMP" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/nostr-peers/bin/nak"
+          "$RUNNER_TEMP/nostr-peers/bin/nak" --version
+          python3 -m venv "$RUNNER_TEMP/nostr-peers/python"
+          "$RUNNER_TEMP/nostr-peers/python/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --only-binary=:all: --require-hashes -r tests/helpers/nostr-peer-linux-requirements.txt
+          printf '%s/nostr-peers/bin\n%s/nostr-peers/python/bin\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          printf 'NETGET_NOSTR_PYTHON=%s/nostr-peers/python/bin/python\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Both protocol roles with mandatory independent peers
+        run: |
+          for filter in \
+            nostr:: client/nostr:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+      - name: Shared registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test \
+            --test rustls_provider_gate_test
+
+  netflow-v9-pairs:
+    name: Native NetFlow v9 with unmodified softflowd and GoFlow2 peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,netflow-v9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+      - name: Install required native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler build-essential libpcap-dev
+      - name: Prepare pinned upstream legacy softflowd and GoFlow2 peers
+        run: |
+          python3 tests/server/netflow_v9/install_peers.py "$RUNNER_TEMP/netflow-v9-peers"
+          {
+            printf 'NETGET_NETFLOW_V9_EXPORTER=%s/netflow-v9-peers/softflowd-1.1.1-legacy\n' "$RUNNER_TEMP"
+            printf 'NETGET_NETFLOW_V9_COLLECTOR=%s/netflow-v9-peers/goflow2-v2.2.7\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+      - name: Both protocol roles with mandatory independent peers
+        run: |
+          for filter in \
+            netflow_v9:: client/netflow_v9:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+      - name: Shared registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test peer_handle_coverage_ratchet_test \
+            --test rustls_provider_gate_test \
+            --test failure_mode_declaration_test \
+            --test decision_tag_ratchet_test

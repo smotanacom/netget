@@ -926,6 +926,8 @@ pub use mcp::McpServer;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcProtocol;
 #[cfg(feature = "grpc")]
@@ -1251,3 +1253,9 @@ pub mod sflow;
 
 #[cfg(feature = "loki")]
 pub mod loki;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
