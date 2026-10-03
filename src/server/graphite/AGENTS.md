@@ -29,3 +29,5 @@ registered; server stop cancels parked handlers and closes established sockets.
 References: [Graphite feeding Carbon](https://graphite.readthedocs.io/en/stable/feeding-carbon.html),
 [official Carbon parser](https://github.com/graphite-project/carbon/blob/1.1.10/lib/carbon/protocols.py).
 Independent interoperability and bootstrap: `tests/server/graphite/CLAUDE.md`.
+
+Peer controls: Carbon plaintext collectors never send application replies or unsolicited peer messages. Pending requests remain answerable through the ordinary event handler; no uncorrelated wire reply is offered.

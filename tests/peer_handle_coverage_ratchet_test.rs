@@ -23,7 +23,8 @@
 //! a protocol **runs a TCP accept loop** when its `mod.rs` contains any of
 //! `TcpListener`, `accept_bounded::accept_bounded(` or `listener.accept().await` — and is not a
 //! Unix-domain listener wearing the third of those (see the false-positive note). Such a
-//! protocol must either call `peer_support::register_peer_channel` or appear in
+//! protocol must either call `peer_support::register_peer_channel`, declare an exchange-only
+//! `request_only` contract with no raw-output actions, or appear in
 //! [`NO_PEER_HANDLE_BASELINE`] with a reason.
 //!
 //! **The baseline may only shrink.** A protocol that gains a handle and stays listed fails the
@@ -133,6 +134,13 @@ impl Reason {
             Reason::Reviewed | Reason::Unreviewed => None,
         }
     }
+
+    fn holds_for(self, server: &ServerSource) -> bool {
+        match self {
+            Self::HyperOwnsSocket => server.hyper_owns_socket(),
+            _ => self.marker().is_none_or(|marker| server.has(marker)),
+        }
+    }
 }
 
 /// TCP accept-loop servers with no peer handle, and why.
@@ -185,7 +193,6 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("elasticsearch", Reason::HyperOwnsSocket),
     ("etcd", Reason::HyperOwnsSocket),
     ("git", Reason::HyperOwnsSocket),
-    ("grpc", Reason::HyperOwnsSocket),
     ("hls", Reason::Unreviewed),
     ("http", Reason::HyperOwnsSocket),
     ("ipp", Reason::HyperOwnsSocket),
@@ -291,6 +298,9 @@ fn server_mod_files() -> Vec<(String, PathBuf)> {
 struct ServerSource {
     name: String,
     body: String,
+    // Metadata and protocol actions usually live beside mod.rs, in actions.rs. Read the
+    // complete directory so declarations are not missed just because they moved files.
+    contract: String,
 }
 
 impl ServerSource {
@@ -330,7 +340,23 @@ impl ServerSource {
     }
 
     fn registers_peer_handle(&self) -> bool {
-        self.has("register_peer_channel")
+        self.contract.contains("register_peer_channel")
+    }
+
+    fn hyper_owns_socket(&self) -> bool {
+        self.has("hyper::server::conn")
+            || self.has("hyper_util::server::conn")
+            || (self.has("use hyper::{") && self.has("server::conn::"))
+    }
+
+    fn declares_exchange_only(&self) -> bool {
+        let declared = self.contract.contains(".request_only(")
+            || regex::Regex::new(r"request_only:\s*Some\(")
+                .unwrap()
+                .is_match(&self.contract);
+        // A raw-output action can be injected without an exchange identity, contradicting
+        // this exemption. The separate declaration test also rejects an existing handle.
+        declared && !self.contract.contains("ActionResult::Output")
     }
 }
 
@@ -340,9 +366,22 @@ fn load_servers() -> Vec<ServerSource> {
         .map(|(name, path)| {
             let raw = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let mut contract = String::new();
+            for file in std::fs::read_dir(path.parent().expect("protocol directory"))
+                .expect("read protocol directory")
+            {
+                let file = file.expect("protocol file").path();
+                if file.extension().is_some_and(|extension| extension == "rs") {
+                    contract.push_str(&strip_comments(
+                        &std::fs::read_to_string(&file).expect("read protocol source"),
+                    ));
+                    contract.push('\n');
+                }
+            }
             ServerSource {
                 name,
                 body: strip_comments(&raw),
+                contract,
             }
         })
         .collect()
@@ -367,7 +406,7 @@ fn every_tcp_accept_loop_server_has_a_peer_handle_or_a_reason() {
         if !server.runs_tcp_accept_loop() || server.registers_peer_handle() {
             continue;
         }
-        if !baselined.contains(server.name.as_str()) {
+        if !baselined.contains(server.name.as_str()) && !server.declares_exchange_only() {
             undeclared.push(server.name.clone());
         }
     }
@@ -450,9 +489,9 @@ fn every_declared_reason_is_still_true_of_the_source() {
         let Some(server) = servers.iter().find(|s| s.name == *name) else {
             continue; // reported by the shrink test
         };
-        if !server.has(marker) {
+        if !reason.holds_for(server) {
             wrong.push(format!(
-                "{name}: declared {reason:?}, but `{marker}` is gone"
+                "{name}: declared {reason:?}, but its framing source marker `{marker}` is gone"
             ));
         }
     }
@@ -490,4 +529,46 @@ fn peer_handle_coverage_does_not_regress() {
          handle, or the detection stopped seeing it.",
         tcp.len(),
     );
+}
+
+#[test]
+fn exchange_only_contract_requires_a_declaration_and_no_raw_output() {
+    let source = |contract: &str| ServerSource {
+        name: "fixture".into(),
+        body: "TcpListener::bind(addr);".into(),
+        contract: strip_comments(contract),
+    };
+    assert!(!source("// .request_only(\"comment\")").declares_exchange_only());
+    assert!(!source("ActionResult::Custom { name, data }").declares_exchange_only());
+    assert!(source(
+        "builder.request_only(\"correlated replies\"); ActionResult::Custom { name, data }"
+    )
+    .declares_exchange_only());
+    assert!(source("request_only: Some(\"no unsolicited messages\")").declares_exchange_only());
+    assert!(
+        !source("builder.request_only(\"incorrect\"); ActionResult::Output(bytes)")
+            .declares_exchange_only()
+    );
+}
+
+#[test]
+fn hyper_framing_reason_recognizes_both_library_import_forms() {
+    for body in [
+        "hyper::server::conn::http1::Builder::new()",
+        "use hyper::{server::conn::http1}; http1::Builder::new()",
+        "use hyper_util::server::conn::auto; auto::Builder::new()",
+    ] {
+        let source = ServerSource {
+            name: "fixture".into(),
+            body: strip_comments(body),
+            contract: String::new(),
+        };
+        assert!(Reason::HyperOwnsSocket.holds_for(&source), "{body}");
+    }
+    let source = ServerSource {
+        name: "fixture".into(),
+        body: strip_comments("// hyper_util::server::conn::auto"),
+        contract: String::new(),
+    };
+    assert!(!Reason::HyperOwnsSocket.holds_for(&source));
 }

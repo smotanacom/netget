@@ -76,6 +76,7 @@ portable-base = [
     "influxdb",
     "loki",
     "ipfix",
+    "sflow",
     "ssh",
     "ssh-agent",
     "svn",
@@ -252,6 +253,7 @@ fluent-forward = ["dep:flate2"] # MessagePack Forward logs and ACKs
 influxdb = ["dep:flate2"] # Typed InfluxDB v2 HTTP write collector/emitter
 loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ipfix = [] # Native typed UDP IPFIX templates/options/records
+sflow = [] # Native typed sFlow v5 UDP samples/counters
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -338,7 +340,7 @@ rip = []  # RIP (Routing Information Protocol) v2 - distance-vector routing
 bitcoin = ["dep:bitcoin"]  # Bitcoin P2P protocol server (LLM-controlled, not a real full node)
 nostr = ["dep:tokio-tungstenite", "dep:secp256k1", "dep:sha2"]  # Nostr relay (NIP-01 over WebSocket, NIP-11) - secp256k1 is the 0.29 bitcoin already links
 mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 over HTTP/SSE)
-grpc = ["dep:tonic", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # gRPC server with dynamic schema support
+grpc = ["dep:tonic", "tonic/tls-webpki-roots", "dep:h2", "dep:rustls", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # Dynamic unary/streaming gRPC and bounded reflection
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
@@ -501,6 +503,7 @@ dist-windows = [
     "influxdb",
     "loki",
     "ipfix",
+    "sflow",
     "ssh",
     "svn",
     "irc",
@@ -652,6 +655,7 @@ all-protocols = [
     "influxdb",
     "loki",
     "ipfix",
+    "sflow",
     "ssh",
     "ssh-agent",
     "svn",
