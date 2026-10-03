@@ -1,0 +1,428 @@
+[
+  {
+    "path": "test-examples.sh",
+    "command": [
+      "bash",
+      "-n",
+      "test-examples.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "cargo-isolated-kill.sh",
+    "command": [
+      "bash",
+      "-n",
+      "cargo-isolated-kill.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "run-eval.sh",
+    "command": [
+      "bash",
+      "-n",
+      "run-eval.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "lines-of-code.sh",
+    "command": [
+      "bash",
+      "-n",
+      "lines-of-code.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "npm/netget/bin/netget.js",
+    "command": [
+      "node",
+      "--check",
+      "npm/netget/bin/netget.js"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "test-e2e.sh",
+    "command": [
+      "bash",
+      "-n",
+      "test-e2e.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "am_i_claude_code_for_web.sh",
+    "command": [
+      "bash",
+      "-n",
+      "am_i_claude_code_for_web.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "cargo.sh",
+    "command": [
+      "bash",
+      "-n",
+      "cargo.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "fuzz/seed_corpus.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "test-unit.sh",
+    "command": [
+      "bash",
+      "-n",
+      "test-unit.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "build-termux.sh",
+    "command": [
+      "bash",
+      "-n",
+      "build-termux.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "test-models.sh",
+    "command": [
+      "bash",
+      "-n",
+      "test-models.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "web/build.sh",
+    "command": [
+      "bash",
+      "-n",
+      "web/build.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "cargo-isolated.sh",
+    "command": [
+      "bash",
+      "-n",
+      "cargo-isolated.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "web/test/page_composer.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "web/test/composer_model_test.mjs",
+    "command": [
+      "node",
+      "--check",
+      "web/test/composer_model_test.mjs"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "web/test/telnet_test.mjs",
+    "command": [
+      "node",
+      "--check",
+      "web/test/telnet_test.mjs"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "web/test/smoke.mjs",
+    "command": [
+      "node",
+      "--check",
+      "web/test/smoke.mjs"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "test-snapshot.sh",
+    "command": [
+      "bash",
+      "-n",
+      "test-snapshot.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "site/deploy.sh",
+    "command": [
+      "bash",
+      "-n",
+      "site/deploy.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "site/js/thinking.js",
+    "command": [
+      "node",
+      "--check",
+      "site/js/thinking.js"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "site/js/demo.js",
+    "command": [
+      "node",
+      "--check",
+      "site/js/demo.js"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "site/js/main.js",
+    "command": [
+      "node",
+      "--check",
+      "site/js/main.js"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "site/js/telnet.js",
+    "command": [
+      "node",
+      "--check",
+      "site/js/telnet.js"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "site/js/composer.js",
+    "command": [
+      "node",
+      "--check",
+      "site/js/composer.js"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": ".github/scripts/check-module-reachability.sh",
+    "command": [
+      "bash",
+      "-n",
+      ".github/scripts/check-module-reachability.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/npm/prepare-packages.mjs",
+    "command": [
+      "node",
+      "--check",
+      "scripts/npm/prepare-packages.mjs"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/beta_evidence_table.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/cargo_session.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/apply_test_timeouts.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/archive/apply_test_timeouts.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/fix_all_protocols.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/add_test_timeouts.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/add_mocks_helper.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/fix_all_e2e_references.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/archive/fix_all_e2e_references.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/fix_param_def.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/update_test_feature_gates.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/archive/update_test_feature_gates.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/fix_inline_action_defs.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/archive/fix_inline_action_defs.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/add_is_tool_field.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/archive/add_is_tool_field.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/migrate_event_types.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/archive/fix_event_params.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "tests/npm_launcher_test.cjs",
+    "command": [
+      "node",
+      "--check",
+      "tests/npm_launcher_test.cjs"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "tests/prompt/update_snapshots.sh",
+    "command": [
+      "bash",
+      "-n",
+      "tests/prompt/update_snapshots.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "tests/build_scripts_test.py",
+    "command": "python ast.parse",
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "tests/npm_download_test.cjs",
+    "command": [
+      "node",
+      "--check",
+      "tests/npm_download_test.cjs"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/sccache/cargo-sccache.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/sccache/cargo-sccache.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/sccache/setup-sccache-r2.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/sccache/setup-sccache-r2.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  },
+  {
+    "path": "scripts/sccache/setup-sccache-upstash.sh",
+    "command": [
+      "bash",
+      "-n",
+      "scripts/sccache/setup-sccache-upstash.sh"
+    ],
+    "exit_code": 0,
+    "detail": ""
+  }
+]

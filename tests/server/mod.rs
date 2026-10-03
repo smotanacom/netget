@@ -350,6 +350,10 @@ pub mod zookeeper;
 // Shared test helpers - re-export from top-level for backward compatibility
 pub use super::helpers;
 
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
 
@@ -361,6 +365,8 @@ pub mod gelf;
 
 #[cfg(feature = "fluent-forward")]
 pub mod fluent_forward;
+#[cfg(feature = "http3")]
+pub mod http3;
 
 #[cfg(feature = "influxdb")]
 pub mod influxdb;

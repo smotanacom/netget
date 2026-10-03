@@ -1,0 +1,49 @@
+PASS shell_syntax .github/scripts/check-module-reachability.sh (0.011s)
+PASS shell_syntax cargo-isolated-kill.sh (0.01s)
+PASS shell_syntax cargo-isolated.sh (0.013s)
+PASS shell_syntax cargo.sh (0.01s)
+PASS shell_syntax scripts/sccache/cargo-sccache.sh (0.014s)
+PASS shell_syntax scripts/sccache/setup-sccache-r2.sh (0.009s)
+PASS shell_syntax scripts/sccache/setup-sccache-upstash.sh (0.018s)
+PASS shell_syntax web/build.sh (0.024s)
+PASS python_ast scripts/cargo_session.py (0.002s)
+PASS python_ast tests/build_scripts_test.py (0.003s)
+PASS python_ast web/test/page_composer.py (0.01s)
+PASS node_syntax npm/netget/bin/netget.js (0.052s)
+PASS node_syntax site/js/composer.js (0.128s)
+PASS node_syntax site/js/demo.js (0.125s)
+PASS node_syntax site/js/telnet.js (0.097s)
+PASS node_syntax tests/npm_download_test.cjs (0.108s)
+PASS node_syntax tests/npm_launcher_test.cjs (0.072s)
+PASS node_syntax web/test/composer_model_test.mjs (0.069s)
+PASS node_syntax web/test/telnet_test.mjs (0.082s)
+PASS workflow_yaml .github/workflows/ci.yml (0.048s)
+PASS workflow_yaml .github/workflows/fuzz.yml (0.041s)
+PASS workflow_yaml .github/workflows/nightly-eval.yml (0.022s)
+PASS workflow_yaml .github/workflows/nightly-soak.yml (0.016s)
+PASS workflow_yaml .github/workflows/release.yml (0.01s)
+PASS diff_whitespace . (0.066s)
+FAIL module_reachability .github/scripts/check-module-reachability.sh (49.844s)
+ERROR: rustfmt --check failed on tracked file(s) (run 'cargo fmt', then rustfmt any file listed below by hand):
+
+{
+  "counts": {
+    "diff_whitespace": 1,
+    "module_reachability": 1,
+    "node_syntax": 8,
+    "python_ast": 3,
+    "shell_syntax": 8,
+    "workflow_yaml": 5
+  },
+  "total": 26,
+  "passed": 25,
+  "failed": 1
+}
+RERUN PASS shell_syntax .github/scripts/check-module-reachability.sh
+
+RERUN PASS diff_whitespace .
+
+RERUN PASS module_reachability .github/scripts/check-module-reachability.sh
+OK: 2283 files under src/ and tests/ are all reachable (0 allowlisted), and every working-tree .rs file is formatted.
+
+FINAL: 26 checks passed, 0 failed. Module graph: 2283 source/test Rust files, 0 allowlisted, 0 unreachable; all working-tree Rust formatted.

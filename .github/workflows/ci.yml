@@ -81,7 +81,7 @@ env:
   # The other 109. Checked by the same matrix, on the same events, to the same standard.
   SINGLE_FEATURE_REST: >-
     socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
-    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman nsq ssdp llmnr
+    vrrp hsrp wol dc dot doq doh dhcp bootp nfc nats stomp ident gopher finger dict gemini beanstalkd zabbix gearman nsq nut statsd graphite gelf fluent-forward influxdb loki ssdp llmnr
     netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
     mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
     smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch
@@ -230,6 +230,7 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features tcp \
             --test affirmative_default_drift_test \
+            --test audit_ci_coverage_test \
             --test client_event_wiring_test \
             --test decision_tag_ratchet_test \
             --test doc_paths_exist_test \
@@ -248,7 +249,11 @@ jobs:
             --test real_client_evidence_is_run_test \
             --test test_suite_hygiene_test \
             --test vendored_hyper_patch_test \
+            --test vendored_tonic_patch_test \
             -- --test-threads=50
+
+      - name: Build wrapper and credential configuration regressions
+        run: python3 tests/build_scripts_test.py -v
 
       # BLOCKING, and it belongs here rather than in `registry-audit`: the script reads
       # source only, so it needs no build, no features and no binaries — and
@@ -1316,6 +1321,67 @@ jobs:
       - name: smoke-test the bundle headlessly
         run: node web/test/smoke.mjs
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install CPU browser fixture runtime
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Exercise browser interactions without GPUs or real models
+        env:
+          NETGET_CPU_ONLY: '1'
+        run: python web/test/page_composer.py
+
+  resource-lifecycles:
+    name: CPU resource and lifecycle regressions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      NETGET_USE_OLLAMA: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+      AUDIT_CPU_FEATURES: tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite,quic,grpc,ipp,torrent-dht,usb-fido2,terminal-snapshot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: resource-lifecycles
+      - name: Install fixture runtimes and fonts
+        run: sudo apt-get update && sudo apt-get install -y python3 perl golang-go fonts-dejavu-core
+      - name: Run native regressions without real models
+        run: |
+          cargo test --locked --no-default-features \
+            --features "$AUDIT_CPU_FEATURES" \
+            --no-fail-fast \
+            --test core_followup_test --test eval_probe_followup_test --test eval_probe_classification_test \
+            --test llm_circuit_breaker_test --test llm_rate_limiter_test \
+            --test scheduled_task_lifecycle_test --test scheduled_task_claim_test \
+            --test sqlite_query_bounds_test --test sqlite_identifier_test \
+            --test easy_startup_test --test utils_save_load_test \
+            --test startup_cancellation_test --test non_interactive_run_limits_test \
+            --test scripting_resources_test --test scripting_resident_test \
+            --test static_handler_interpolation_test --test mcp_stop_cleanup_test --test mcp_startup_config_test \
+            --test client_followup_test --test client_review_regression_test \
+            --test dashboard_frame_test --test display_rendering_test \
+            --test test_infrastructure_review_test \
+            --test grpc_value_bounds_test --test vendored_tonic_patch_test --test audit_server_decoder_bounds_test \
+            --test wrapper_lifecycle_test --test task_registration_cancellation_test \
+            --test recursive_decoder_depth_test --test spawned_netget_is_tied_test \
+            -- --test-threads=32
+      - name: Focused PTY lifecycle regressions with inert fixtures
+        run: |
+          cargo test --locked --no-default-features --features "$AUDIT_CPU_FEATURES" \
+            --test terminal_snapshot child_lifecycle -- --test-threads=32
+      - name: Browser parsing and package launcher fixtures
+        run: node --test web/test/composer_model_test.mjs web/test/telnet_test.mjs tests/npm_launcher_test.cjs tests/npm_download_test.cjs
+
   orphaned-tests:
     name: Orphaned test check
     runs-on: ubuntu-22.04
@@ -1395,3 +1461,30 @@ jobs:
       # cfg-gated ones - are the only files it never sees.
       - name: Check every .rs file is reachable from a target root
         run: ./.github/scripts/check-module-reachability.sh
+
+  windows-resource-checks:
+    name: Windows CPU resource and configuration checks
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-resource-checks-tcp-http
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # These targets use local fixtures only. Native Job Object tests exercise
+      # descendant termination on normal drop and abrupt owner termination.
+      - name: Native Windows configuration and concurrency regressions
+        run: >-
+          cargo test --locked --no-default-features --features tcp,http
+          --test core_followup_test --test llm_rate_limiter_test --test llm_config_test
+          --test process_group_windows_test
+      - name: Native Windows package launcher and archive fixtures
+        run: node --test tests/npm_launcher_test.cjs tests/npm_download_test.cjs

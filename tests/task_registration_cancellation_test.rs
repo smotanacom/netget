@@ -107,3 +107,55 @@ async fn successful_client_registration_retains_child_until_owner_removal() {
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn dropping_unpolled_peer_registration_aborts_started_child() {
+    let state = AppState::new();
+    let (handle, dropped) = started_child().await;
+    let abort = handle.abort_handle();
+    let registration = state.register_peer_task(ServerId::new(123), 7, handle);
+    drop(registration);
+    let result = tokio::time::timeout(Duration::from_millis(500), dropped).await;
+    abort.abort();
+    assert!(
+        matches!(result, Ok(Ok(()))),
+        "dropping unpolled peer registration detached its child"
+    );
+}
+
+#[tokio::test]
+async fn successful_peer_registration_retains_child_until_connection_removal() {
+    let state = AppState::new();
+    let id = state
+        .add_server(ServerInstance::new(
+            ServerId::new(0),
+            0,
+            "test".into(),
+            String::new(),
+        ))
+        .await;
+    let (command_tx, _command_rx) = tokio::sync::mpsc::channel(1);
+    state
+        .register_peer_handle(
+            id,
+            7,
+            netget::state::client_handles::ClientHandle { command_tx },
+        )
+        .await;
+    let (handle, mut dropped) = started_child().await;
+    state.register_peer_task(id, 7, handle).await;
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        dropped.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    state.remove_peer_handle(id, 7).await;
+    tokio::time::timeout(Duration::from_secs(2), dropped)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        state.get_server(id).await.is_some(),
+        "closing one peer retains its server"
+    );
+}

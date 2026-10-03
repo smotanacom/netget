@@ -77,9 +77,8 @@ async fn expect_silence(socket: &UdpSocket, what: &str) -> E2EResult<()> {
 /// distinguishable by name so first-match-wins cannot misroute them.
 #[tokio::test]
 async fn test_llmnr_answers_only_for_names_it_owns() -> E2EResult<()> {
-    // A port taken from a real bind-and-drop rather than 0, because this test also connects
-    // to the TCP listener the server puts on the same port.
-    let port = helpers::get_available_port().await?;
+    // LLMNR binds TCP to the UDP listener's actual port, including port-0 startup.
+    let port = 0u16;
     let prompt = format!(
         "listen on port {port} via llmnr and answer for {OWNED_NAME} only, staying silent for \
          every other name"
@@ -139,10 +138,7 @@ async fn test_llmnr_answers_only_for_names_it_owns() -> E2EResult<()> {
         });
 
     let server = helpers::start_netget_server(server_config).await?;
-    assert_eq!(
-        server.port, port,
-        "the responder should have bound the port the test chose"
-    );
+    assert_ne!(server.port, 0, "the responder must report its bound port");
     let target = format!("127.0.0.1:{}", server.port);
 
     let socket = UdpSocket::bind("127.0.0.1:0").await?;

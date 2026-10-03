@@ -86,6 +86,11 @@ impl ClientRegistry {
         #[cfg(feature = "doh")]
         self.register(Arc::new(crate::client::doh::DohClientProtocol::new()));
 
+        #[cfg(feature = "doq")]
+        self.register(Arc::new(
+            crate::client::doq::actions::DoqClientProtocol::new(),
+        ));
+
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::client::dot::DotClientProtocol::new()));
 
@@ -123,9 +128,12 @@ impl ClientRegistry {
         #[cfg(feature = "http2")]
         self.register(Arc::new(crate::client::http2::Http2ClientProtocol::new()));
 
-        // Real RFC 9114 HTTP/3 (the `h3` crate), so it keeps the `http3` name.
-        // The `http3` feature no longer builds a server - NetGet's QUIC server
-        // lives behind `quic` and cannot be spoken to by this client.
+        // Raw QUIC and RFC 9114 HTTP/3 have distinct client/server registrations.
+        #[cfg(feature = "quic")]
+        self.register(Arc::new(
+            crate::client::quic::actions::QuicClientProtocol::new(),
+        ));
+
         #[cfg(feature = "http3")]
         self.register(Arc::new(crate::client::http3::Http3ClientProtocol::new()));
 
@@ -224,6 +232,11 @@ impl ClientRegistry {
 
         #[cfg(feature = "ospf")]
         self.register(Arc::new(crate::client::ospf::OspfClientProtocol::new()));
+
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(
+            crate::client::otlp::actions::OtlpClientProtocol::new(),
+        ));
 
         #[cfg(feature = "postgresql")]
         self.register(Arc::new(
@@ -386,6 +399,37 @@ impl ClientRegistry {
         #[cfg(feature = "websocket")]
         self.register(Arc::new(
             crate::client::websocket::WebSocketClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gemini")]
+        self.register(Arc::new(crate::client::gemini::GeminiClientProtocol::new()));
+
+        #[cfg(feature = "dict")]
+        self.register(Arc::new(crate::client::dict::DictClientProtocol::new()));
+
+        #[cfg(feature = "beanstalkd")]
+        self.register(Arc::new(
+            crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "prometheus")]
+        self.register(Arc::new(
+            crate::client::prometheus::PrometheusClientProtocol::new(),
+        ));
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::client::docker::DockerClientProtocol::new()));
+
+        #[cfg(feature = "gearman")]
+        self.register(Arc::new(
+            crate::client::gearman::GearmanClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "nsq")]
+        self.register(Arc::new(crate::client::nsq::NsqClientProtocol::new()));
+
+        #[cfg(feature = "nut")]
+        self.register(Arc::new(
+            crate::client::nut::actions::NutClientProtocol::new(),
         ));
 
         #[cfg(feature = "whois")]
@@ -721,12 +765,14 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("DNS", "dns"),
     ("DNS-over-HTTPS", "doh"),
     ("DoT", "dot"),
+    ("DoQ", "doq"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
+    ("QUIC", "quic"),
     ("igmp", "igmp"),
     ("IPP", "ipp"),
     ("IS-IS", "isis"),
@@ -738,6 +784,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("nfc", "nfc-client"),
     ("NTP", "ntp"),
     ("OpenAI", "openai"),
+    ("OTLP", "otlp"),
     ("PostgreSQL", "postgresql"),
     ("PyPI", "pypi"),
     ("MSSQL", "mssql"),
@@ -776,6 +823,14 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BitTorrent Tracker", "torrent-tracker"),
     ("TURN", "turn"),
     ("UDP", "udp"),
+    ("Gemini", "gemini"),
+    ("DICT", "dict"),
+    ("Beanstalkd", "beanstalkd"),
+    ("Gearman", "gearman"),
+    ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
+    ("NSQ", "nsq"),
+    ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),
     ("NetBIOS-NS", "netbios-ns"),

@@ -6,6 +6,20 @@ use crate::display::types::{Color, DisplayCommand};
 use image::{ImageBuffer, Rgb};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
+/// Maximum retained pixel surface (RGBA scratch plus RGB output).
+pub const MAX_CANVAS_PIXELS: u64 = 16 * 1024 * 1024;
+pub const MAX_CANVAS_COMMANDS: usize = 10_000;
+pub const MAX_CANVAS_TEXT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanvasError(pub &'static str);
+impl std::fmt::Display for CanvasError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for CanvasError {}
+
 /// Display canvas that accumulates drawing commands and renders to an image buffer
 pub struct DisplayCanvas {
     width: u32,
@@ -35,32 +49,111 @@ impl DisplayCanvas {
 
     /// Clear all drawing commands
     pub fn clear_commands(&mut self) {
-        self.commands.clear();
+        drop_commands(std::mem::take(&mut self.commands));
     }
 
-    /// Render all commands to an RGB image buffer
+    /// Compatibility entry point. An invalid/oversized canvas renders an empty
+    /// image; callers that need the reason should use `try_render`.
     pub fn render(&self) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-        // Create tiny-skia pixmap
-        let mut pixmap = Pixmap::new(self.width, self.height).expect("Failed to create pixmap");
+        self.try_render().unwrap_or_else(|_| ImageBuffer::new(0, 0))
+    }
 
-        // Execute all drawing commands
-        for cmd in &self.commands {
-            self.execute_command(&mut pixmap, cmd);
+    /// Bounded, fallible software rendering. Nested windows are visited without
+    /// recursion or cloning; one font/glyph cache serves the entire render.
+    pub fn try_render(&self) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, CanvasError> {
+        if u64::from(self.width) * u64::from(self.height) > MAX_CANVAS_PIXELS {
+            return Err(CanvasError("canvas exceeds the 16-megapixel limit"));
         }
-
-        // Convert pixmap to image buffer
+        if self.commands.len() > MAX_CANVAS_COMMANDS {
+            return Err(CanvasError("canvas command limit exceeded"));
+        }
+        let mut pending = self
+            .commands
+            .iter()
+            .rev()
+            .map(|command| (command, 0u32, 0u32))
+            .collect::<Vec<_>>();
+        if pending.len() > MAX_CANVAS_COMMANDS {
+            return Err(CanvasError("canvas command limit exceeded"));
+        }
+        let mut commands = Vec::new();
+        let mut text_bytes = 0usize;
+        while let Some((command, ox, oy)) = pending.pop() {
+            if matches!(command, DisplayCommand::DrawText { font_size, .. } | DisplayCommand::RenderAsciiArt { font_size, .. } if *font_size > super::text::MAX_FONT_SIZE)
+            {
+                return Err(CanvasError("canvas font size exceeds 512 pixels"));
+            }
+            let text = match command {
+                DisplayCommand::DrawText { text, .. }
+                | DisplayCommand::RenderAsciiArt { text, .. } => text.len(),
+                DisplayCommand::DrawButton { label, .. } => label.len(),
+                DisplayCommand::DrawTextBox {
+                    text, placeholder, ..
+                } => text
+                    .len()
+                    .saturating_add(placeholder.as_ref().map_or(0, String::len)),
+                DisplayCommand::DrawWindow {
+                    x,
+                    y,
+                    title,
+                    content,
+                    ..
+                } => {
+                    if content.len()
+                        > MAX_CANVAS_COMMANDS.saturating_sub(commands.len() + pending.len() + 1)
+                    {
+                        return Err(CanvasError("canvas command limit exceeded"));
+                    }
+                    pending.extend(content.iter().rev().map(|child| {
+                        (
+                            child,
+                            ox.saturating_add(*x),
+                            oy.saturating_add(*y).saturating_add(30),
+                        )
+                    }));
+                    title.len()
+                }
+                _ => 0,
+            };
+            text_bytes = text_bytes.saturating_add(text);
+            if text_bytes > MAX_CANVAS_TEXT_BYTES {
+                return Err(CanvasError("canvas text limit exceeded"));
+            }
+            commands.push((command, ox, oy));
+            if commands.len() > MAX_CANVAS_COMMANDS {
+                return Err(CanvasError("canvas command limit exceeded"));
+            }
+        }
+        if self.width == 0 || self.height == 0 {
+            return Ok(ImageBuffer::new(self.width, self.height));
+        }
+        let size = tiny_skia::IntSize::from_wh(self.width, self.height)
+            .ok_or(CanvasError("invalid canvas dimensions"))?;
+        let rgba_len = self.width as usize * self.height as usize * 4;
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(rgba_len)
+            .map_err(|_| CanvasError("canvas allocation failed"))?;
+        rgba.resize(rgba_len, 0);
+        let mut pixmap =
+            Pixmap::from_vec(rgba, size).ok_or(CanvasError("invalid pixel surface"))?;
+        let mut renderer = None;
+        for (command, ox, oy) in commands {
+            self.execute_command(&mut pixmap, command, ox, oy, &mut renderer);
+        }
         pixmap_to_image_buffer(&pixmap)
     }
 
-    /// Execute a single drawing command on the pixmap
-    fn execute_command(&self, pixmap: &mut Pixmap, cmd: &DisplayCommand) {
+    fn execute_command(
+        &self,
+        pixmap: &mut Pixmap,
+        cmd: &DisplayCommand,
+        ox: u32,
+        oy: u32,
+        renderer: &mut Option<TextRenderer>,
+    ) {
         match cmd {
-            DisplayCommand::SetBackground { color } => {
-                self.set_background(pixmap, *color);
-            }
-            DisplayCommand::Clear => {
-                pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
-            }
+            DisplayCommand::SetBackground { color } => self.set_background(pixmap, *color),
+            DisplayCommand::Clear => pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255)),
             DisplayCommand::DrawRectangle {
                 x,
                 y,
@@ -68,9 +161,15 @@ impl DisplayCanvas {
                 height,
                 color,
                 filled,
-            } => {
-                self.draw_rectangle(pixmap, *x, *y, *width, *height, *color, *filled);
-            }
+            } => self.draw_rectangle(
+                pixmap,
+                x.saturating_add(ox),
+                y.saturating_add(oy),
+                *width,
+                *height,
+                *color,
+                *filled,
+            ),
             DisplayCommand::DrawLine {
                 x1,
                 y1,
@@ -78,56 +177,87 @@ impl DisplayCanvas {
                 y2,
                 color,
                 width,
-            } => {
-                self.draw_line(pixmap, *x1, *y1, *x2, *y2, *color, *width);
-            }
+            } => self.draw_line(
+                pixmap,
+                x1.saturating_add(ox),
+                y1.saturating_add(oy),
+                x2.saturating_add(ox),
+                y2.saturating_add(oy),
+                *color,
+                *width,
+            ),
             DisplayCommand::DrawCircle {
                 x,
                 y,
                 radius,
                 color,
                 filled,
-            } => {
-                self.draw_circle(pixmap, *x, *y, *radius, *color, *filled);
-            }
+            } => self.draw_circle(
+                pixmap,
+                x.saturating_add(ox),
+                y.saturating_add(oy),
+                *radius,
+                *color,
+                *filled,
+            ),
             DisplayCommand::DrawText {
                 x,
                 y,
                 text,
                 font_size,
                 color,
-            } => {
-                let mut text_renderer = TextRenderer::new();
-                text_renderer.draw_text(pixmap, *x, *y, text, *font_size, *color);
-            }
+            } => renderer.get_or_insert_with(TextRenderer::new).draw_text(
+                pixmap,
+                x.saturating_add(ox),
+                y.saturating_add(oy),
+                text,
+                *font_size,
+                *color,
+            ),
             DisplayCommand::RenderAsciiArt {
                 text,
                 font_size,
                 fg_color,
                 bg_color,
-            } => {
-                let mut ascii_renderer = AsciiRenderer::new();
-                ascii_renderer.render(pixmap, text, *font_size, *fg_color, *bg_color);
-            }
+            } => AsciiRenderer::render_with(
+                renderer.get_or_insert_with(TextRenderer::new),
+                pixmap,
+                text,
+                *font_size,
+                *fg_color,
+                *bg_color,
+            ),
             DisplayCommand::DrawWindow {
                 x,
                 y,
                 width,
                 height,
                 title,
-                content,
-            } => {
-                self.draw_window(pixmap, *x, *y, *width, *height, title, content);
-            }
+                ..
+            } => self.draw_window(
+                pixmap,
+                renderer.get_or_insert_with(TextRenderer::new),
+                x.saturating_add(ox),
+                y.saturating_add(oy),
+                *width,
+                *height,
+                title,
+            ),
             DisplayCommand::DrawButton {
                 x,
                 y,
                 width,
                 height,
                 label,
-            } => {
-                self.draw_button(pixmap, *x, *y, *width, *height, label);
-            }
+            } => self.draw_button(
+                pixmap,
+                renderer.get_or_insert_with(TextRenderer::new),
+                x.saturating_add(ox),
+                y.saturating_add(oy),
+                *width,
+                *height,
+                label,
+            ),
             DisplayCommand::DrawTextBox {
                 x,
                 y,
@@ -135,9 +265,16 @@ impl DisplayCanvas {
                 height,
                 text,
                 placeholder,
-            } => {
-                self.draw_textbox(pixmap, *x, *y, *width, *height, text, placeholder);
-            }
+            } => self.draw_textbox(
+                pixmap,
+                renderer.get_or_insert_with(TextRenderer::new),
+                x.saturating_add(ox),
+                y.saturating_add(oy),
+                *width,
+                *height,
+                text,
+                placeholder,
+            ),
         }
     }
 
@@ -157,11 +294,16 @@ impl DisplayCanvas {
         color: Color,
         filled: bool,
     ) {
+        let Some(rect) =
+            tiny_skia::Rect::from_xywh(x as f32, y as f32, width as f32, height as f32)
+        else {
+            return;
+        };
         let mut path_builder = PathBuilder::new();
-        path_builder.push_rect(
-            tiny_skia::Rect::from_xywh(x as f32, y as f32, width as f32, height as f32).unwrap(),
-        );
-        let path = path_builder.finish().unwrap();
+        path_builder.push_rect(rect);
+        let Some(path) = path_builder.finish() else {
+            return;
+        };
 
         let mut paint = Paint::default();
         paint.set_color(color_to_tiny_skia(color));
@@ -198,7 +340,9 @@ impl DisplayCanvas {
         let mut path_builder = PathBuilder::new();
         path_builder.move_to(x1 as f32, y1 as f32);
         path_builder.line_to(x2 as f32, y2 as f32);
-        let path = path_builder.finish().unwrap();
+        let Some(path) = path_builder.finish() else {
+            return;
+        };
 
         let mut paint = Paint::default();
         paint.set_color(color_to_tiny_skia(color));
@@ -222,7 +366,9 @@ impl DisplayCanvas {
     ) {
         let mut path_builder = PathBuilder::new();
         path_builder.push_circle(x as f32, y as f32, radius as f32);
-        let path = path_builder.finish().unwrap();
+        let Some(path) = path_builder.finish() else {
+            return;
+        };
 
         let mut paint = Paint::default();
         paint.set_color(color_to_tiny_skia(color));
@@ -249,12 +395,12 @@ impl DisplayCanvas {
     fn draw_window(
         &self,
         pixmap: &mut Pixmap,
+        text_renderer: &mut TextRenderer,
         x: u32,
         y: u32,
         width: u32,
         height: u32,
         title: &str,
-        content: &[DisplayCommand],
     ) {
         // Draw window background
         self.draw_rectangle(pixmap, x, y, width, height, Color::LIGHT_GRAY, true);
@@ -266,21 +412,20 @@ impl DisplayCanvas {
         self.draw_rectangle(pixmap, x, y, width, 30, Color::BLUE, true);
 
         // Draw title text
-        let mut text_renderer = TextRenderer::new();
-        text_renderer.draw_text(pixmap, x + 10, y + 20, title, 14, Color::WHITE);
-
-        // Draw content (offset by title bar height)
-        let content_y = y + 30;
-        for cmd in content {
-            // Offset content commands relative to window position
-            let offset_cmd = offset_command(cmd, x, content_y);
-            self.execute_command(pixmap, &offset_cmd);
-        }
+        text_renderer.draw_text(
+            pixmap,
+            x.saturating_add(10),
+            y.saturating_add(20),
+            title,
+            14,
+            Color::WHITE,
+        );
     }
 
     fn draw_button(
         &self,
         pixmap: &mut Pixmap,
+        text_renderer: &mut TextRenderer,
         x: u32,
         y: u32,
         width: u32,
@@ -294,9 +439,11 @@ impl DisplayCanvas {
         self.draw_rectangle(pixmap, x, y, width, height, Color::BLACK, false);
 
         // Draw button label (centered)
-        let mut text_renderer = TextRenderer::new();
-        let label_x = x + (width / 2).saturating_sub((label.len() as u32 * 7) / 2);
-        let label_y = y + (height / 2) + 5;
+        let label_width = u32::try_from(label.chars().count())
+            .unwrap_or(u32::MAX)
+            .saturating_mul(7);
+        let label_x = x.saturating_add((width / 2).saturating_sub(label_width / 2));
+        let label_y = y.saturating_add(height / 2).saturating_add(5);
         text_renderer.draw_text(pixmap, label_x, label_y, label, 14, Color::BLACK);
     }
 
@@ -304,6 +451,7 @@ impl DisplayCanvas {
     fn draw_textbox(
         &self,
         pixmap: &mut Pixmap,
+        text_renderer: &mut TextRenderer,
         x: u32,
         y: u32,
         width: u32,
@@ -318,13 +466,26 @@ impl DisplayCanvas {
         self.draw_rectangle(pixmap, x, y, width, height, Color::GRAY, false);
 
         // Draw text or placeholder
-        let mut text_renderer = TextRenderer::new();
         if text.is_empty() {
             if let Some(ph) = placeholder {
-                text_renderer.draw_text(pixmap, x + 5, y + (height / 2) + 5, ph, 14, Color::GRAY);
+                text_renderer.draw_text(
+                    pixmap,
+                    x.saturating_add(5),
+                    y.saturating_add(height / 2).saturating_add(5),
+                    ph,
+                    14,
+                    Color::GRAY,
+                );
             }
         } else {
-            text_renderer.draw_text(pixmap, x + 5, y + (height / 2) + 5, text, 14, Color::BLACK);
+            text_renderer.draw_text(
+                pixmap,
+                x.saturating_add(5),
+                y.saturating_add(height / 2).saturating_add(5),
+                text,
+                14,
+                Color::BLACK,
+            );
         }
     }
 }
@@ -335,136 +496,28 @@ fn color_to_tiny_skia(color: Color) -> tiny_skia::Color {
 }
 
 /// Convert tiny-skia Pixmap to image::ImageBuffer
-fn pixmap_to_image_buffer(pixmap: &Pixmap) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    let width = pixmap.width();
-    let height = pixmap.height();
-    let mut img_buf = ImageBuffer::new(width, height);
-
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = pixmap.pixel(x, y).unwrap();
-            img_buf.put_pixel(x, y, Rgb([pixel.red(), pixel.green(), pixel.blue()]));
-        }
+fn pixmap_to_image_buffer(pixmap: &Pixmap) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, CanvasError> {
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(pixmap.width() as usize * pixmap.height() as usize * 3)
+        .map_err(|_| CanvasError("canvas RGB allocation failed"))?;
+    for pixel in pixmap.pixels() {
+        rgb.extend_from_slice(&[pixel.red(), pixel.green(), pixel.blue()]);
     }
-
-    img_buf
+    ImageBuffer::from_raw(pixmap.width(), pixmap.height(), rgb)
+        .ok_or(CanvasError("invalid RGB surface"))
 }
 
-/// Offset a display command by a given position (for window content)
-fn offset_command(cmd: &DisplayCommand, offset_x: u32, offset_y: u32) -> DisplayCommand {
-    match cmd {
-        DisplayCommand::DrawRectangle {
-            x,
-            y,
-            width,
-            height,
-            color,
-            filled,
-        } => DisplayCommand::DrawRectangle {
-            x: x + offset_x,
-            y: y + offset_y,
-            width: *width,
-            height: *height,
-            color: *color,
-            filled: *filled,
-        },
-        DisplayCommand::DrawText {
-            x,
-            y,
-            text,
-            font_size,
-            color,
-        } => DisplayCommand::DrawText {
-            x: x + offset_x,
-            y: y + offset_y,
-            text: text.clone(),
-            font_size: *font_size,
-            color: *color,
-        },
-        DisplayCommand::DrawLine {
-            x1,
-            y1,
-            x2,
-            y2,
-            color,
-            width,
-        } => DisplayCommand::DrawLine {
-            x1: x1 + offset_x,
-            y1: y1 + offset_y,
-            x2: x2 + offset_x,
-            y2: y2 + offset_y,
-            color: *color,
-            width: *width,
-        },
-        DisplayCommand::DrawCircle {
-            x,
-            y,
-            radius,
-            color,
-            filled,
-        } => DisplayCommand::DrawCircle {
-            x: x + offset_x,
-            y: y + offset_y,
-            radius: *radius,
-            color: *color,
-            filled: *filled,
-        },
-        DisplayCommand::DrawButton {
-            x,
-            y,
-            width,
-            height,
-            label,
-        } => DisplayCommand::DrawButton {
-            x: x + offset_x,
-            y: y + offset_y,
-            width: *width,
-            height: *height,
-            label: label.clone(),
-        },
-        DisplayCommand::DrawTextBox {
-            x,
-            y,
-            width,
-            height,
-            text,
-            placeholder,
-        } => DisplayCommand::DrawTextBox {
-            x: x + offset_x,
-            y: y + offset_y,
-            width: *width,
-            height: *height,
-            text: text.clone(),
-            placeholder: placeholder.clone(),
-        },
-        DisplayCommand::DrawWindow {
-            x,
-            y,
-            width,
-            height,
-            title,
-            content,
-        } => DisplayCommand::DrawWindow {
-            x: x + offset_x,
-            y: y + offset_y,
-            width: *width,
-            height: *height,
-            title: title.clone(),
-            content: content.clone(),
-        },
-        // Commands that don't need offsetting
-        DisplayCommand::SetBackground { color } => DisplayCommand::SetBackground { color: *color },
-        DisplayCommand::Clear => DisplayCommand::Clear,
-        DisplayCommand::RenderAsciiArt {
-            text,
-            font_size,
-            fg_color,
-            bg_color,
-        } => DisplayCommand::RenderAsciiArt {
-            text: text.clone(),
-            font_size: *font_size,
-            fg_color: *fg_color,
-            bg_color: *bg_color,
-        },
+/// Deep command trees are also destroyed iteratively, including rejected input.
+fn drop_commands(mut commands: Vec<DisplayCommand>) {
+    while let Some(mut command) = commands.pop() {
+        if let DisplayCommand::DrawWindow { content, .. } = &mut command {
+            commands.append(content);
+        }
+    }
+}
+
+impl Drop for DisplayCanvas {
+    fn drop(&mut self) {
+        drop_commands(std::mem::take(&mut self.commands));
     }
 }

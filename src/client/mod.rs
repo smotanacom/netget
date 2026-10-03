@@ -11,6 +11,8 @@ pub mod command_support;
 /// client over the virtual loopback in the browser build.
 pub mod http_fetch;
 pub mod llm_budget;
+pub mod response_reader;
+pub mod wire_values;
 
 // arp client
 #[cfg(feature = "arp")]
@@ -301,6 +303,12 @@ pub use openapi::actions::OpenApiClientProtocol;
 pub mod openidconnect;
 #[cfg(feature = "openidconnect")]
 pub use openidconnect::actions::OpenIdConnectClientProtocol;
+
+// otlp client
+#[cfg(feature = "otlp")]
+pub mod otlp;
+#[cfg(feature = "otlp")]
+pub use otlp::actions::OtlpClientProtocol;
 
 // ospf client
 #[cfg(feature = "ospf")]
@@ -624,17 +632,42 @@ pub mod xmpp;
 #[cfg(feature = "xmpp")]
 pub use xmpp::actions::XmppClientProtocol;
 
+#[cfg(feature = "doq")]
+pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
 #[cfg(feature = "statsd")]
 pub mod statsd;
 
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
+#[cfg(feature = "dict")]
+pub mod dict;
+
+#[cfg(feature = "beanstalkd")]
+pub mod beanstalkd;
 #[cfg(feature = "graphite")]
 pub mod graphite;
+
+#[cfg(feature = "quic")]
+pub mod quic;
 
 #[cfg(feature = "gelf")]
 pub mod gelf;
 
 #[cfg(feature = "fluent-forward")]
 pub mod fluent_forward;
+#[cfg(feature = "nsq")]
+pub mod nsq;
+
+#[cfg(feature = "gearman")]
+pub mod gearman;
+
+#[cfg(feature = "docker")]
+pub mod docker;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
 
 #[cfg(feature = "influxdb")]
 pub mod influxdb;

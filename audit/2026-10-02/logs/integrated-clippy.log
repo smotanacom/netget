@@ -1,0 +1,4121 @@
+    Checking webrtc-util v0.9.0
+    Checking hyper v1.7.0 (/Users/matus/dev/netget/.audit-integration-20261002/vendor/hyper)
+    Checking futures-executor v0.3.34
+    Checking tokio-stream v0.1.17
+    Checking futures v0.3.34
+    Checking num-bigint-dig v0.8.5
+    Checking hickory-proto v0.24.4
+    Checking tower v0.4.13
+    Checking hyper-util v0.1.17
+    Checking rtp v0.11.0
+    Checking stun v0.6.0
+    Checking rtcp v0.11.0
+    Checking mach2 v0.5.0
+    Checking smb-dtyp v0.10.3
+    Checking io-kit-sys v0.5.0
+    Checking hyper-tls v0.6.0
+    Checking hyper-rustls v0.27.7
+    Checking hyper-timeout v0.5.2
+    Checking reqwest v0.12.24
+    Checking axum v0.7.9
+    Checking webrtc-srtp v0.13.0
+    Checking rsa v0.9.8
+    Checking turn v0.8.0
+    Checking webrtc-mdns v0.7.0
+    Checking webrtc-sctp v0.10.0
+    Checking libusb1-sys v0.7.0
+    Checking ssh-key v0.6.7
+    Checking hickory-resolver v0.24.4
+    Checking webrtc-data v0.9.0
+    Checking rusb v0.9.4
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+    Checking sdp v0.6.2
+    Checking webrtc-dtls v0.10.0
+    Checking webrtc-ice v0.11.0
+    Checking interceptor v0.12.0
+    Checking tonic v0.12.3
+    Checking smb-fscc v0.10.3
+    Checking nusb v0.2.7
+    Checking webrtc-media v0.8.0
+    Checking tungstenite v0.21.0
+    Checking half v1.8.3
+    Checking webrtc v0.11.0
+    Checking tokio-tungstenite v0.21.0
+    Checking usbip v0.9.0
+    Checking rmcp v1.2.0
+    Checking serde_cbor v0.11.2
+    Checking ssh-agent-lib v0.5.1
+    Checking smb-msg v0.10.3
+    Checking http-mitm-proxy v0.16.0
+    Checking tonic-reflection v0.12.3
+    Checking hickory-server v0.24.4
+    Checking ipp v5.3.2
+    Checking hickory-client v0.24.4
+    Checking ollama-rs v0.3.3
+    Checking webrtc-util v0.8.1
+    Checking nkeys v0.4.5
+    Checking tokio-websockets v0.10.1
+    Checking nuid v0.5.0
+    Checking async-stomp v0.6.3
+    Checking async-nats v0.50.0
+    Checking axum-server v0.6.0
+    Checking webrtc-dtls v0.8.0
+    Checking tokio-test v0.4.4
+    Checking coap v0.27.0
+warning: the `Err`-variant returned from this function is very large
+  --> src/cli/client_startup.rs:65:6
+   |
+65 |   ) -> Result<(), ActionExecutionError> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: src/events/errors.rs:37:5
+   |
+37 | /     DocumentationRequired {
+38 | |         action_type: String, // "open_server" or "open_client"
+39 | |         protocol: String,
+40 | |         documentation: String,
+41 | |         original_action: serde_json::Value,
+42 | |     },
+   | |_____- the largest variant contains at least 144 bytes
+...
+45 | /     InvalidActionParameters {
+46 | |         action_type: String,
+47 | |         parameter_name: String,
+48 | |         error_message: String,
+49 | |         original_action: serde_json::Value,
+50 | |     },
+   | |_____- the variant `InvalidActionParameters` contains at least 144 bytes
+   |
+   = help: try reducing the size of `events::errors::ActionExecutionError`, for example by boxing large elements or replacing it with `Box<events::errors::ActionExecutionError>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+   = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+  --> src/cli/server_startup.rs:65:6
+   |
+65 |   ) -> Result<(), ActionExecutionError> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: src/events/errors.rs:37:5
+   |
+37 | /     DocumentationRequired {
+38 | |         action_type: String, // "open_server" or "open_client"
+39 | |         protocol: String,
+40 | |         documentation: String,
+41 | |         original_action: serde_json::Value,
+42 | |     },
+   | |_____- the largest variant contains at least 144 bytes
+...
+45 | /     InvalidActionParameters {
+46 | |         action_type: String,
+47 | |         parameter_name: String,
+48 | |         error_message: String,
+49 | |         original_action: serde_json::Value,
+50 | |     },
+   | |_____- the variant `InvalidActionParameters` contains at least 144 bytes
+   |
+   = help: try reducing the size of `events::errors::ActionExecutionError`, for example by boxing large elements or replacing it with `Box<events::errors::ActionExecutionError>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: you should consider adding a `Default` implementation for `DotClientProtocol`
+  --> src/client/dot/actions.rs:74:5
+   |
+74 | /     pub fn new() -> Self {
+75 | |         Self
+76 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+   = note: `#[warn(clippy::new_without_default)]` on by default
+help: try adding this
+   |
+73 + impl Default for DotClientProtocol {
+74 +     fn default() -> Self {
+75 +         Self::new()
+76 +     }
+77 + }
+   |
+
+warning: you should consider adding a `Default` implementation for `GrpcClientProtocol`
+   --> src/client/grpc/actions.rs:117:5
+    |
+117 | /     pub fn new() -> Self {
+118 | |         Self
+119 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+    |
+116 + impl Default for GrpcClientProtocol {
+117 +     fn default() -> Self {
+118 +         Self::new()
+119 +     }
+120 + }
+    |
+
+warning: this function has too many arguments (8/7)
+   --> src/client/grpc/mod.rs:341:1
+    |
+341 | / async fn execute_grpc_action(
+342 | |     client_id: ClientId,
+343 | |     action: serde_json::Value,
+344 | |     grpc_client_data: Arc<Mutex<GrpcClientData>>,
+...   |
+349 | |     dispatch: Dispatch,
+350 | | ) -> Result<Applied> {
+    | |____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: doc list item without indentation
+   --> src/client/http/mod.rs:316:9
+    |
+316 |     /// recorded and replied exactly the way the generic arm does it.
+    |         ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+    = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+    |
+316 |     ///   recorded and replied exactly the way the generic arm does it.
+    |         ++
+
+warning: you should consider adding a `Default` implementation for `IppClientProtocol`
+  --> src/client/ipp/actions.rs:64:5
+   |
+64 | /     pub fn new() -> Self {
+65 | |         Self
+66 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+63 + impl Default for IppClientProtocol {
+64 +     fn default() -> Self {
+65 +         Self::new()
+66 +     }
+67 + }
+   |
+
+warning: usage of `&String::new()` for a function expecting a `&str` argument
+   --> src/client/ipp/mod.rs:160:17
+    |
+160 |                 &String::new(),
+    |                 ^^^^^^^^^^^^^^ help: try: `""`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_owned_empty_strings
+    = note: `#[warn(clippy::unnecessary_owned_empty_strings)]` on by default
+
+warning: you seem to want to iterate on a map's values
+   --> src/client/ipp/mod.rs:265:42
+    |
+265 |                         for (_, attr) in printer_attrs.attributes() {
+    |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#for_kv_map
+    = note: `#[warn(clippy::for_kv_map)]` on by default
+help: use the corresponding method
+    |
+265 -                         for (_, attr) in printer_attrs.attributes() {
+265 +                         for attr in printer_attrs.attributes().values() {
+    |
+
+warning: you seem to want to iterate on a map's values
+   --> src/client/ipp/mod.rs:366:42
+    |
+366 |                         for (_, attr) in attrs.attributes() {
+    |                                          ^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#for_kv_map
+help: use the corresponding method
+    |
+366 -                         for (_, attr) in attrs.attributes() {
+366 +                         for attr in attrs.attributes().values() {
+    |
+
+warning: you seem to want to iterate on a map's values
+   --> src/client/ipp/mod.rs:447:42
+    |
+447 |                         for (_, attr) in job_attrs.attributes() {
+    |                                          ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#for_kv_map
+help: use the corresponding method
+    |
+447 -                         for (_, attr) in job_attrs.attributes() {
+447 +                         for attr in job_attrs.attributes().values() {
+    |
+
+warning: you should consider adding a `Default` implementation for `NntpClientProtocol`
+  --> src/client/nntp/actions.rs:75:5
+   |
+75 | /     pub fn new() -> Self {
+76 | |         Self
+77 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+74 + impl Default for NntpClientProtocol {
+75 +     fn default() -> Self {
+76 +         Self::new()
+77 +     }
+78 + }
+   |
+
+warning: you should consider adding a `Default` implementation for `RedisClientProtocol`
+  --> src/client/redis/actions.rs:74:5
+   |
+74 | /     pub fn new() -> Self {
+75 | |         Self
+76 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+73 + impl Default for RedisClientProtocol {
+74 +     fn default() -> Self {
+75 +         Self::new()
+76 +     }
+77 + }
+   |
+
+warning: you should consider adding a `Default` implementation for `SmbClientProtocol`
+   --> src/client/smb/actions.rs:137:5
+    |
+137 | /     pub fn new() -> Self {
+138 | |         Self
+139 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+    |
+136 + impl Default for SmbClientProtocol {
+137 +     fn default() -> Self {
+138 +         Self::new()
+139 +     }
+140 + }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/ftp/mod.rs:278:57
+    |
+278 | / ...                   if write_guard.write_all(&bytes).await.is_ok() {
+279 | | ...                       if write_guard.flush().await.is_ok() {
+280 | | ...                           let cmd = String::from_utf8_lossy(&bytes);
+281 | | ...                           trace!("FTP client {} sent: {}", client_id, cmd.trim());
+282 | | ...                       }
+283 | | ...                   }
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+278 ~                                                         if write_guard.write_all(&bytes).await.is_ok()
+279 ~                                                             && write_guard.flush().await.is_ok() {
+280 |                                                                 let cmd = String::from_utf8_lossy(&bytes);
+281 |                                                                 trace!("FTP client {} sent: {}", client_id, cmd.trim());
+282 ~                                                             }
+    |
+
+warning: this function has too many arguments (8/7)
+   --> src/client/pop3/mod.rs:289:5
+    |
+289 | /     async fn read_loop<R, W>(
+290 | |         mut reader: BufReader<R>,
+291 | |         write_half: Arc<tokio::sync::Mutex<CommandWriter<W>>>,
+292 | |         llm_client: OllamaClient,
+...   |
+300 | |         R: tokio::io::AsyncRead + Unpin,
+301 | |         W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    | |__________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (9/7)
+   --> src/client/pop3/mod.rs:433:5
+    |
+433 | /     async fn handle_llm_response<W>(
+434 | |         event: &Event,
+435 | |         llm_client: &OllamaClient,
+436 | |         app_state: &Arc<AppState>,
+...   |
+444 | |     where
+445 | |         W: tokio::io::AsyncWrite + Unpin,
+    | |_________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `SshAgentClientProtocol`
+  --> src/client/ssh_agent/actions.rs:58:5
+   |
+58 | /     pub fn new() -> Self {
+59 | |         Self
+60 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+57 + impl Default for SshAgentClientProtocol {
+58 +     fn default() -> Self {
+59 +         Self::new()
+60 +     }
+61 + }
+   |
+
+warning: this `if` statement can be collapsed
+   --> src/client/tcp/mod.rs:276:57
+    |
+276 | / ...                   if write_guard.write_all(&bytes).await.is_ok() {
+277 | | ...                       if write_guard.flush().await.is_ok() {
+278 | | ...                           trace!("TCP client {} sent {} bytes", client_id, bytes.len());
+279 | | ...                       }
+280 | | ...                   }
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+276 ~                                                         if write_guard.write_all(&bytes).await.is_ok()
+277 ~                                                             && write_guard.flush().await.is_ok() {
+278 |                                                                 trace!("TCP client {} sent {} bytes", client_id, bytes.len());
+279 ~                                                             }
+    |
+
+warning: you should consider adding a `Default` implementation for `TorrentDhtClientProtocol`
+  --> src/client/torrent_dht/actions.rs:68:5
+   |
+68 | /     pub fn new() -> Self {
+69 | |         Self
+70 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+67 + impl Default for TorrentDhtClientProtocol {
+68 +     fn default() -> Self {
+69 +         Self::new()
+70 +     }
+71 + }
+   |
+
+warning: you should consider adding a `Default` implementation for `TorrentPeerClientProtocol`
+  --> src/client/torrent_peer/actions.rs:82:5
+   |
+82 | /     pub fn new() -> Self {
+83 | |         Self
+84 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+81 + impl Default for TorrentPeerClientProtocol {
+82 +     fn default() -> Self {
+83 +         Self::new()
+84 +     }
+85 + }
+   |
+
+warning: this function has too many arguments (8/7)
+   --> src/client/udp/mod.rs:282:5
+    |
+282 | /     async fn process_datagram(
+283 | |         data: Vec<u8>,
+284 | |         source_addr: SocketAddr,
+285 | |         client_id: ClientId,
+...   |
+290 | |         client_data: &Arc<Mutex<ClientData>>,
+291 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `VncClientProtocol`
+   --> src/client/vnc/actions.rs:99:5
+    |
+ 99 | /     pub fn new() -> Self {
+100 | |         Self
+101 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+    |
+ 98 + impl Default for VncClientProtocol {
+ 99 +     fn default() -> Self {
+100 +         Self::new()
+101 +     }
+102 + }
+    |
+
+warning: using `chunks_exact_mut` with a constant chunk size
+   --> src/client/vnc/mod.rs:149:28
+    |
+149 |     for block in challenge.chunks_exact_mut(8) {
+    |                            ^^^^^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks_mut::<8>().0`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+    = note: `#[warn(clippy::chunks_exact_to_as_chunks)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> src/client/vnc/mod.rs:572:5
+    |
+572 | /     async fn handle_framebuffer_update<R, W>(
+573 | |         read_half: &mut R,
+574 | |         llm_client: &OllamaClient,
+575 | |         app_state: &Arc<AppState>,
+...   |
+583 | |         R: AsyncReadExt + Unpin,
+584 | |         W: AsyncWriteExt + Unpin,
+    | |_________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> src/client/vnc/mod.rs:697:5
+    |
+697 | /     async fn handle_server_cut_text<R, W>(
+698 | |         read_half: &mut R,
+699 | |         llm_client: &OllamaClient,
+700 | |         app_state: &Arc<AppState>,
+...   |
+708 | |         R: AsyncReadExt + Unpin,
+709 | |         W: AsyncWriteExt + Unpin,
+    | |_________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `WebRtcClientProtocol`
+  --> src/client/webrtc/actions.rs:94:5
+   |
+94 | /     pub fn new() -> Self {
+95 | |         Self
+96 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+93 + impl Default for WebRtcClientProtocol {
+94 +     fn default() -> Self {
+95 +         Self::new()
+96 +     }
+97 + }
+   |
+
+warning: this function has too many arguments (8/7)
+   --> src/display/canvas.rs:425:5
+    |
+425 | /     fn draw_button(
+426 | |         &self,
+427 | |         pixmap: &mut Pixmap,
+428 | |         text_renderer: &mut TextRenderer,
+...   |
+433 | |         label: &str,
+434 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: use of `unwrap_or_else` to construct default value
+   --> src/easy/http/actions.rs:109:18
+    |
+109 |                 .unwrap_or_else(Vec::new);
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `unwrap_or_default()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unwrap_or_default
+    = note: `#[warn(clippy::unwrap_or_default)]` on by default
+
+warning: stripping a prefix manually
+   --> src/easy/http/actions.rs:293:49
+    |
+293 |         Some(format!("<h1>{}</h1>", html_escape(&line[2..])))
+    |                                                 ^^^^^^^^^^
+    |
+note: the prefix was tested here
+   --> src/easy/http/actions.rs:292:5
+    |
+292 |     if line.starts_with("# ") {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+    = note: `#[warn(clippy::manual_strip)]` on by default
+help: try using the `strip_prefix` method
+    |
+292 ~     if let Some(<stripped>) = line.strip_prefix("# ") {
+293 ~         Some(format!("<h1>{}</h1>", html_escape(<stripped>)))
+    |
+
+warning: stripping a prefix manually
+   --> src/easy/http/actions.rs:295:49
+    |
+295 |         Some(format!("<h2>{}</h2>", html_escape(&line[3..])))
+    |                                                 ^^^^^^^^^^
+    |
+note: the prefix was tested here
+   --> src/easy/http/actions.rs:294:12
+    |
+294 |     } else if line.starts_with("## ") {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+help: try using the `strip_prefix` method
+    |
+294 ~     } else if let Some(<stripped>) = line.strip_prefix("## ") {
+295 ~         Some(format!("<h2>{}</h2>", html_escape(<stripped>)))
+    |
+
+warning: stripping a prefix manually
+   --> src/easy/http/actions.rs:297:49
+    |
+297 |         Some(format!("<h3>{}</h3>", html_escape(&line[4..])))
+    |                                                 ^^^^^^^^^^
+    |
+note: the prefix was tested here
+   --> src/easy/http/actions.rs:296:12
+    |
+296 |     } else if line.starts_with("### ") {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+help: try using the `strip_prefix` method
+    |
+296 ~     } else if let Some(<stripped>) = line.strip_prefix("### ") {
+297 ~         Some(format!("<h3>{}</h3>", html_escape(<stripped>)))
+    |
+
+warning: stripping a prefix manually
+   --> src/easy/http/actions.rs:299:49
+    |
+299 |         Some(format!("<h4>{}</h4>", html_escape(&line[5..])))
+    |                                                 ^^^^^^^^^^
+    |
+note: the prefix was tested here
+   --> src/easy/http/actions.rs:298:12
+    |
+298 |     } else if line.starts_with("#### ") {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+help: try using the `strip_prefix` method
+    |
+298 ~     } else if let Some(<stripped>) = line.strip_prefix("#### ") {
+299 ~         Some(format!("<h4>{}</h4>", html_escape(<stripped>)))
+    |
+
+warning: this function has too many arguments (13/7)
+  --> src/events/handler.rs:50:1
+   |
+50 | / fn log_open_server_summary(
+51 | |     status_tx: &mpsc::UnboundedSender<String>,
+52 | |     mac_address: &Option<String>,
+53 | |     interface: &Option<String>,
+...  |
+63 | |     feedback_instructions: &Option<String>,
+64 | | ) {
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (9/7)
+   --> src/events/handler.rs:195:1
+    |
+195 | / fn log_open_client_summary(
+196 | |     status_tx: &mpsc::UnboundedSender<String>,
+197 | |     protocol: &str,
+198 | |     remote_addr: &str,
+...   |
+204 | |     feedback_instructions: &Option<String>,
+205 | | ) {
+    | |_^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: the `Err`-variant returned from this function is very large
+   --> src/events/handler.rs:839:10
+    |
+839 |       ) -> Result<(), crate::events::ActionExecutionError> {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: src/events/errors.rs:37:5
+    |
+ 37 | /     DocumentationRequired {
+ 38 | |         action_type: String, // "open_server" or "open_client"
+ 39 | |         protocol: String,
+ 40 | |         documentation: String,
+ 41 | |         original_action: serde_json::Value,
+ 42 | |     },
+    | |_____- the largest variant contains at least 144 bytes
+...
+ 45 | /     InvalidActionParameters {
+ 46 | |         action_type: String,
+ 47 | |         parameter_name: String,
+ 48 | |         error_message: String,
+ 49 | |         original_action: serde_json::Value,
+ 50 | |     },
+    | |_____- the variant `InvalidActionParameters` contains at least 144 bytes
+    |
+    = help: try reducing the size of `events::errors::ActionExecutionError`, for example by boxing large elements or replacing it with `Box<events::errors::ActionExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+
+warning: called `unwrap` on `port` after checking its variant with `is_some`
+   --> src/events/handler.rs:990:39
+    |
+987 |                         if is_port_conflict && port.is_some() {
+    |                                                -------------- the check is happening here
+...
+990 |                                 port: port.unwrap(),
+    |                                       ^^^^^^^^^^^^^
+    |
+    = help: try using `match`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_unwrap
+    = note: `#[warn(clippy::unnecessary_unwrap)]` on by default
+
+warning: unnecessary use of `clone` to create a slice from a reference
+   --> src/events/handler.rs:881:63
+    |
+881 | ...                   .mark_server_protocols_documented(&[protocol.clone()])
+    |                                                         ^^^^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&protocol)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+    = note: `#[warn(clippy::cloned_ref_to_slice_refs)]` on by default
+
+warning: unnecessary use of `clone` to create a slice from a reference
+    --> src/events/handler.rs:1311:63
+     |
+1311 | ...                   .mark_client_protocols_documented(&[protocol.clone()])
+     |                                                         ^^^^^^^^^^^^^^^^^^^ help: try: `std::slice::from_ref(&protocol)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cloned_ref_to_slice_refs
+
+warning: unneeded late initialization
+   --> src/llm/action_helper.rs:88:5
+    |
+ 88 |     let handler_instruction: Option<String>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_late_init
+    = note: `#[warn(clippy::needless_late_init)]` on by default
+help: move the declaration `handler_instruction` here and remove the assignments from the `match` arms
+    |
+ 88 ~     
+ 89 ~     let handler_instruction: Option<String> = match crate::llm::event_handler_executor::try_execute_event_handler(
+ 90 |         state,
+...
+106 |             // instruction must be added to this event's prompt.
+107 ~             instruction
+108 |         }
+109 ~     };
+    |
+
+warning: unneeded late initialization
+   --> src/llm/action_helper.rs:491:5
+    |
+491 |     let handler_instruction: Option<String>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_late_init
+help: move the declaration `handler_instruction` here and remove the assignments from the `match` arms
+    |
+491 ~     
+492 ~     let handler_instruction: Option<String> = match crate::llm::event_handler_executor::try_execute_event_handler(
+493 |         state,
+...
+512 |             // instruction must be added to this event's prompt.
+513 ~             instruction
+514 |         }
+515 ~     };
+    |
+
+warning: explicit call to `.into_iter()` in function argument accepting `IntoIterator`
+   --> src/llm/actions/executor.rs:322:32
+    |
+322 |                         .chain(proto.get_async_actions(state).into_iter())
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: this parameter accepts any `IntoIterator`, so you don't need to call `.into_iter()`
+   --> /opt/homebrew/Cellar/rust/1.98.1/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:513:12
+    |
+513 |         U: [const] IntoIterator<Item = Self::Item>,
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+    = note: `#[warn(clippy::useless_conversion)]` on by default
+help: consider removing the `.into_iter()`
+    |
+322 -                         .chain(proto.get_async_actions(state).into_iter())
+322 +                         .chain(proto.get_async_actions(state))
+    |
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> src/llm/actions/summary.rs:40:58
+   |
+40 |             let preview = crate::utils::truncate_for_log(&message, 37);
+   |                                                          ^^^^^^^^ help: change this to: `message`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+   = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> src/llm/actions/summary.rs:50:64
+   |
+50 |             let instr_preview = crate::utils::truncate_for_log(&instruction, 27);
+   |                                                                ^^^^^^^^^^^^ help: change this to: `instruction`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> src/llm/actions/summary.rs:68:58
+   |
+68 |             let preview = crate::utils::truncate_for_log(&instruction, 27);
+   |                                                          ^^^^^^^^^^^^ help: change this to: `instruction`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> src/llm/actions/summary.rs:75:58
+   |
+75 |             let preview = crate::utils::truncate_for_log(&value, 27);
+   |                                                          ^^^^^^ help: change this to: `value`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> src/llm/actions/summary.rs:79:58
+   |
+79 |             let preview = crate::utils::truncate_for_log(&value, 27);
+   |                                                          ^^^^^^ help: change this to: `value`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+  --> src/llm/actions/summary.rs:86:58
+   |
+86 |             let preview = crate::utils::truncate_for_log(&content, 27);
+   |                                                          ^^^^^^^^ help: change this to: `content`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/llm/actions/summary.rs:116:64
+    |
+116 |             let instr_preview = crate::utils::truncate_for_log(&instruction, 27);
+    |                                                                ^^^^^^^^^^^^ help: change this to: `instruction`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/llm/actions/summary.rs:142:58
+    |
+142 |             let preview = crate::utils::truncate_for_log(&instruction, 27);
+    |                                                          ^^^^^^^^^^^^ help: change this to: `instruction`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/llm/actions/summary.rs:187:62
+    |
+187 |                 let preview = crate::utils::truncate_for_log(&data, 27);
+    |                                                              ^^^^^ help: change this to: `data`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: calling `push_str()` using a single-character string literal
+    --> src/llm/actions/tools.rs:2063:13
+     |
+2063 |             result.push_str("\n");
+     |             ^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `result.push('\n')`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+     = note: `#[warn(clippy::single_char_add_str)]` on by default
+
+warning: calling `push_str()` using a single-character string literal
+    --> src/llm/actions/tools.rs:2111:21
+     |
+2111 |                     result.push_str("\n");
+     |                     ^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `result.push('\n')`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+
+warning: calling `push_str()` using a single-character string literal
+    --> src/llm/actions/tools.rs:2228:13
+     |
+2228 |             result.push_str("\n");
+     |             ^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `result.push('\n')`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+
+warning: calling `push_str()` using a single-character string literal
+    --> src/llm/actions/tools.rs:2268:21
+     |
+2268 |                     result.push_str("\n");
+     |                     ^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `result.push('\n')`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+
+warning: calling `push_str()` using a single-character string literal
+    --> src/llm/actions/tools.rs:2442:17
+     |
+2442 |                 result.push_str("\n");
+     |                 ^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `result.push('\n')`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+
+warning: calling `push_str()` using a single-character string literal
+    --> src/llm/actions/tools.rs:2509:17
+     |
+2509 |                 result.push_str("\n");
+     |                 ^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `result.push('\n')`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+
+warning: unneeded `return` statement
+   --> src/llm/actions/mod.rs:793:29
+    |
+793 | ...                   return Ok(response);
+    |                       ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_return
+    = note: `#[warn(clippy::needless_return)]` on by default
+help: remove `return`
+    |
+793 -                             return Ok(response);
+793 +                             Ok(response)
+    |
+
+warning: unneeded `return` statement
+   --> src/llm/actions/mod.rs:826:21
+    |
+826 |                     return Ok(response);
+    |                     ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_return
+help: remove `return`
+    |
+826 -                     return Ok(response);
+826 +                     Ok(response)
+    |
+
+warning: unneeded `return` statement
+   --> src/llm/actions/mod.rs:843:21
+    |
+843 |                     return Ok(response);
+    |                     ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_return
+help: remove `return`
+    |
+843 -                     return Ok(response);
+843 +                     Ok(response)
+    |
+
+warning: unneeded `return` statement
+   --> src/llm/actions/mod.rs:858:21
+    |
+858 |                     return Ok(response);
+    |                     ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_return
+help: remove `return`
+    |
+858 -                     return Ok(response);
+858 +                     Ok(response)
+    |
+
+warning: unneeded `return` statement
+   --> src/llm/actions/mod.rs:863:21
+    |
+863 |                     return Ok(ActionResponse::empty());
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_return
+help: remove `return`
+    |
+863 -                     return Ok(ActionResponse::empty());
+863 +                     Ok(ActionResponse::empty())
+    |
+
+warning: redundant closure
+   --> src/llm/actions/mod.rs:896:28
+    |
+896 |                 .partition(|item| ToolAction::is_tool_action(item));
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the associated function itself: `ToolAction::is_tool_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+    = note: `#[warn(clippy::redundant_closure)]` on by default
+
+warning: redundant closure
+   --> src/llm/actions/mod.rs:908:28
+    |
+908 |                 .partition(|item| ToolAction::is_tool_action(item));
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the associated function itself: `ToolAction::is_tool_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: this `map_or` can be simplified
+   --> src/llm/agent_queue.rs:142:16
+    |
+142 |             if inner.entries.get(&id).map_or(false, |e| !e.request.claimed) {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_map_or
+    = note: `#[warn(clippy::unnecessary_map_or)]` on by default
+help: use `is_some_and` instead
+    |
+142 -             if inner.entries.get(&id).map_or(false, |e| !e.request.claimed) {
+142 +             if inner.entries.get(&id).is_some_and(|e| !e.request.claimed) {
+    |
+
+warning: doc list item without indentation
+  --> src/llm/conversation.rs:29:5
+   |
+29 | /// Whether any value in this action still points at a tool result rather than
+   |     ^
+   |
+   = help: if this is supposed to be its own paragraph, add a blank line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+help: indent this line
+   |
+29 | ///   Whether any value in this action still points at a tool result rather than
+   |     ++
+
+warning: doc list item without indentation
+  --> src/llm/conversation.rs:30:5
+   |
+30 | /// carrying one.
+   |     ^
+   |
+   = help: if this is supposed to be its own paragraph, add a blank line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+help: indent this line
+   |
+30 | ///   carrying one.
+   |     ++
+
+warning: redundant closure
+    --> src/llm/conversation.rs:1037:28
+     |
+1037 |                 .partition(|action| action_references_tool_result(action));
+     |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `action_references_tool_result`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: large size difference between variants
+   --> src/llm/feedback.rs:134:1
+    |
+134 | / enum Route {
+135 | |     /// Instruction updates: retargeted onto the instance the feedback came from
+136 | |     Instruction(String),
+137 | |     /// Needs `EventHandler` (spawns/stops servers and clients, changes the model)
+138 | |     Handler(crate::llm::CommonAction),
+    | |     --------------------------------- the largest variant contains at least 336 bytes
+139 | |     /// Executable by `llm::execute_actions` with the instance ids attached
+140 | |     Passthrough(serde_json::Value),
+    | |     ------------------------------ the second-largest variant contains at least 72 bytes
+141 | | }
+    | |_^ the entire enum is at least 336 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#large_enum_variant
+    = note: `#[warn(clippy::large_enum_variant)]` on by default
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+138 -     Handler(crate::llm::CommonAction),
+138 +     Handler(Box<crate::llm::CommonAction>),
+    |
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> src/llm/ollama_client.rs:529:29
+    |
+529 |         let prompt_tokens = response.prompt_eval_count.unwrap_or(0) as u64;
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `response.prompt_eval_count.unwrap_or(0)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_cast
+    = note: `#[warn(clippy::unnecessary_cast)]` on by default
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> src/llm/ollama_client.rs:530:33
+    |
+530 |         let completion_tokens = response.eval_count.unwrap_or(0) as u64;
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `response.eval_count.unwrap_or(0)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_cast
+
+warning: useless use of `format!`
+    --> src/llm/ollama_client.rs:1244:17
+     |
+1244 |                 format!("{}", ollama.uri())
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `ollama.uri().to_string()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+     = note: `#[warn(clippy::useless_format)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> src/llm/prompt.rs:749:5
+    |
+749 | /     pub async fn build_feedback_system_prompt(
+750 | |         state: &AppState,
+751 | |         server_id: Option<ServerId>,
+752 | |         _client_id: Option<crate::state::ClientId>,
+...   |
+757 | |         available_actions: Vec<ActionDefinition>,
+758 | |     ) -> String {
+    | |_______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: useless conversion to the same type: `anyhow::Error`
+   --> src/llm/rate_limiter.rs:535:52
+    |
+535 |                               acquire.await.map(Some).map_err(anyhow::Error::from)
+    |  ____________________________________________________-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+536 | |                         } else {
+    | |________________________- help: consider removing
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+
+warning: useless conversion to the same type: `anyhow::Error`
+   --> src/llm/rate_limiter.rs:543:63
+    |
+543 | ...                   Ok(result) => result.map(Some).map_err(anyhow::Error::from),
+    |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider removing
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+
+warning: consider using `sort_by_key`
+   --> src/llm/reference_parser.rs:149:5
+    |
+149 |     blocks_to_remove.sort_by(|a, b| b.0.cmp(&a.0));
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_sort_by
+    = note: `#[warn(clippy::unnecessary_sort_by)]` on by default
+help: try
+    |
+149 -     blocks_to_remove.sort_by(|a, b| b.0.cmp(&a.0));
+149 +     blocks_to_remove.sort_by_key(|a| std::cmp::Reverse(a.0));
+    |
+
+warning: this `impl` can be derived
+  --> src/llm/config.rs:47:1
+   |
+47 | / impl Default for OpenAIConfig {
+48 | |     fn default() -> Self {
+49 | |         Self {
+50 | |             base_url: None,
+...  |
+54 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#derivable_impls
+   = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute
+   |
+36 + #[derive(Default)]
+37 | pub struct OpenAIConfig {
+   |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/logging.rs:229:26
+    |
+229 |             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#io_other_error
+    = note: `#[warn(clippy::io_other_error)]` on by default
+help: use `std::io::Error::other`
+    |
+229 -             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+229 +             .map_err(|e| io::Error::other(e))?;
+    |
+
+warning: this function can be simplified using the `async fn` syntax
+   --> src/mcp_stdio/drain.rs:132:5
+    |
+132 |     fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleServer>>> + Send {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_async_fn
+    = note: `#[warn(clippy::manual_async_fn)]` on by default
+
+warning: this function can be simplified using the `async fn` syntax
+    --> src/mcp_stdio/tools.rs:2196:5
+     |
+2196 | /     fn initialize(
+2197 | |         &self,
+2198 | |         request: InitializeRequestParams,
+2199 | |         context: RequestContext<RoleServer>,
+2200 | |     ) -> impl std::future::Future<Output = Result<InitializeResult, McpError>> + Send + '_ {
+     | |__________________________________________________________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_async_fn
+
+warning: calling `as_bytes` after slicing a string
+   --> src/pipe/mod.rs:160:23
+    |
+160 |         out.write_all(tmpl[..open].as_bytes())?;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^ help: try: `&tmpl.as_bytes()[..open]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#sliced_string_as_bytes
+    = note: `#[warn(clippy::sliced_string_as_bytes)]` on by default
+
+warning: calling `as_bytes` after slicing a string
+   --> src/pipe/mod.rs:164:27
+    |
+164 |             out.write_all(tmpl[open..].as_bytes())?;
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^ help: try: `&tmpl.as_bytes()[open..]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#sliced_string_as_bytes
+
+warning: stripping a suffix manually
+   --> src/protocol/log_template.rs:231:21
+    |
+231 |         let field = &placeholder[..placeholder.len() - 4];
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: the suffix was tested here
+   --> src/protocol/log_template.rs:229:5
+    |
+229 |     if placeholder.ends_with("_len") {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_strip
+help: try using the `strip_suffix` method
+    |
+229 ~     if let Some(field) = placeholder.strip_suffix("_len") {
+230 |         // Length of field
+231 ~         let value = get_nested_value(data, field);
+    |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> src/server/http_common/handler.rs:317:23
+    |
+317 |     default_response: Option<(u16, Vec<(String, String)>, String)>,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+    = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> src/server/http_common/handler.rs:620:45
+    |
+620 |     pub fn default_response_parts(&self) -> Option<(u16, Vec<(String, String)>, String)> {
+    |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+warning: manual implementation of `.is_multiple_of()`
+   --> src/server/tcp/actions.rs:298:16
+    |
+298 |             if cleaned.len() % 2 != 0 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!cleaned.len().is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+    = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> src/server/tcp/mod.rs:146:5
+    |
+146 | /     pub async fn spawn_with_llm_actions(
+147 | |         listen_addr: SocketAddr,
+148 | |         llm_client: OllamaClient,
+149 | |         app_state: Arc<AppState>,
+...   |
+154 | |         idle_timeout_secs: Option<u64>,
+155 | |     ) -> Result<SocketAddr> {
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: redundant closure
+   --> src/server/http/mod.rs:128:43
+    |
+128 |         let tls_acceptor = tls_config.map(|config| tokio_rustls::TlsAcceptor::from(config));
+    |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the associated function itself: `tokio_rustls::TlsAcceptor::from`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: useless conversion to the same type: `anyhow::Error`
+   --> src/server/udp/actions.rs:208:74
+    |
+208 |                   .context("encoding is 'hex' but 'data' is not valid hex")
+    |  __________________________________________________________________________^
+209 | |                 .map_err(Into::into),
+    | |____________________________________^ help: consider removing
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+
+warning: you should consider adding a `Default` implementation for `DotProtocol`
+  --> src/server/dot/actions.rs:71:5
+   |
+71 | /     pub fn new() -> Self {
+72 | |         Self {
+73 | |             dns_protocol: DnsProtocol::new(),
+74 | |         }
+75 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+70 + impl Default for DotProtocol {
+71 +     fn default() -> Self {
+72 +         Self::new()
+73 +     }
+74 + }
+   |
+
+warning: useless use of `format!`
+   --> src/server/dot/mod.rs:448:57
+    |
+448 |                         Log::new(Some(&status_tx)).info(format!("{}", message));
+    |                                                         ^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `message.to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+
+warning: you should consider adding a `Default` implementation for `SshAgentProtocol`
+   --> src/server/ssh_agent/actions.rs:660:5
+    |
+660 | /     pub fn new() -> Self {
+661 | |         Self
+662 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+    |
+659 + impl Default for SshAgentProtocol {
+660 +     fn default() -> Self {
+661 +         Self::new()
+662 +     }
+663 + }
+    |
+
+warning: this function has too many arguments (8/7)
+   --> src/server/ssh_agent/mod.rs:500:5
+    |
+500 | /     async fn handle_data_with_actions(
+501 | |         connection_id: ConnectionId,
+502 | |         server_id: crate::state::ServerId,
+503 | |         data: Bytes,
+...   |
+508 | |         protocol: Arc<SshAgentProtocol>,
+509 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (9/7)
+   --> src/server/ssh_agent/mod.rs:561:5
+    |
+561 | /     async fn process_message_with_llm(
+562 | |         connection_id: ConnectionId,
+563 | |         server_id: crate::state::ServerId,
+564 | |         data: Vec<u8>,
+...   |
+570 | |         _current_memory: String,
+571 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/ftp/mod.rs:776:70
+    |
+776 |                 if let Some(hint) = actions::answer_with_for_command(&command) {
+    |                                                                      ^^^^^^^^ help: change this to: `command`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:660:19
+    |
+660 |     LazyLock::new(|| redis_simple_string_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `redis_simple_string_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:662:19
+    |
+662 |     LazyLock::new(|| redis_bulk_string_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `redis_bulk_string_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:663:75
+    |
+663 | pub static REDIS_ARRAY_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| redis_array_action());
+    |                                                                           ^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `redis_array_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:665:19
+    |
+665 |     LazyLock::new(|| redis_integer_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `redis_integer_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:666:75
+    |
+666 | pub static REDIS_ERROR_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| redis_error_action());
+    |                                                                           ^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `redis_error_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:667:74
+    |
+667 | pub static REDIS_NULL_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| redis_null_action());
+    |                                                                          ^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `redis_null_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/redis/actions.rs:669:19
+    |
+669 |     LazyLock::new(|| close_this_connection_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `close_this_connection_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: this function has too many arguments (8/7)
+   --> src/server/redis/mod.rs:124:5
+    |
+124 | /     pub async fn spawn_with_llm_actions(
+125 | |         listen_addr: SocketAddr,
+126 | |         llm_client: OllamaClient,
+127 | |         app_state: Arc<AppState>,
+...   |
+132 | |         idle_timeout_secs: Option<u64>,
+133 | |     ) -> Result<SocketAddr> {
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `ProxyProtocol`
+  --> src/server/proxy/actions.rs:52:5
+   |
+52 | /     pub fn new() -> Self {
+53 | |         Self
+54 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+51 + impl Default for ProxyProtocol {
+52 +     fn default() -> Self {
+53 +         Self::new()
+54 +     }
+55 + }
+   |
+
+warning: this `impl` can be derived
+  --> src/server/proxy/filter.rs:55:1
+   |
+55 | / impl Default for CertificateMode {
+56 | |     fn default() -> Self {
+57 | |         CertificateMode::Generate
+58 | |     }
+59 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute and mark the default variant
+   |
+38 + #[derive(Default)]
+39 | pub enum CertificateMode {
+40 |     /// Generate a self-signed CA certificate on-demand
+41 ~     #[default]
+42 ~     Generate,
+   |
+
+warning: this function has too many arguments (12/7)
+  --> src/server/proxy/tls_mitm.rs:40:1
+   |
+40 | / pub async fn perform_mitm(
+41 | |     mut client_stream: TcpStream,
+42 | |     dest_host: &str,
+43 | |     dest_port: u16,
+...  |
+52 | |     protocol: Arc<ProxyProtocol>,
+53 | | ) -> Result<()> {
+   | |_______________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: called `.as_ref().map(|v| v.as_slice())` on an `Option` value
+   --> src/server/proxy/tls_mitm.rs:505:30
+    |
+505 |           let final_response = response_modified
+    |  ______________________________^
+506 | |             .as_ref()
+507 | |             .map(|v| v.as_slice())
+    | |__________________________________^ help: consider using as_deref: `response_modified.as_deref()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#option_as_ref_deref
+    = note: `#[warn(clippy::option_as_ref_deref)]` on by default
+
+warning: this function has too many arguments (9/7)
+   --> src/server/proxy/tls_mitm.rs:643:1
+    |
+643 | / async fn consult_llm_for_response(
+644 | |     request_info: &FullRequestInfo,
+645 | |     status_code: u16,
+646 | |     response_headers: &HashMap<String, String>,
+...   |
+652 | |     status_tx: &mpsc::UnboundedSender<String>,
+653 | | ) -> Result<ResponseAction> {
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (10/7)
+   --> src/server/proxy/mod.rs:452:5
+    |
+452 | /     async fn handle_proxy_connection(
+453 | |         mut stream: tokio::net::TcpStream,
+454 | |         peer_addr: SocketAddr,
+455 | |         connection_id: ConnectionId,
+...   |
+462 | |         protocol: Arc<ProxyProtocol>,
+463 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (11/7)
+   --> src/server/proxy/mod.rs:582:5
+    |
+582 | /     async fn handle_https_connect(
+583 | |         mut client_stream: tokio::net::TcpStream,
+584 | |         uri: &str,
+585 | |         peer_addr: SocketAddr,
+...   |
+593 | |         protocol: Arc<ProxyProtocol>,
+594 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (12/7)
+   --> src/server/proxy/mod.rs:845:5
+    |
+845 | /     async fn handle_http_request(
+846 | |         mut client_stream: tokio::net::TcpStream,
+847 | |         request_data: &[u8],
+848 | |         method: &str,
+...   |
+857 | |         protocol: Arc<ProxyProtocol>,
+858 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> src/server/proxy/mod.rs:1074:5
+     |
+1074 | /     async fn forward_http_request(
+1075 | |         mut client_stream: tokio::net::TcpStream,
+1076 | |         request_data: &[u8],
+1077 | |         host: &str,
+...    |
+1082 | |         status_tx: mpsc::UnboundedSender<String>,
+1083 | |     ) -> Result<()> {
+     | |___________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: length comparison to zero
+    --> src/server/proxy/mod.rs:1216:12
+     |
+1216 |         if response_buffer.len() > 0 {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^ help: using `!is_empty` is clearer and more explicit: `!response_buffer.is_empty()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#len_zero
+     = note: `#[warn(clippy::len_zero)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+    --> src/server/proxy/mod.rs:1247:23
+     |
+1247 |         Log::new(Some(&status_tx)).debug("Consulting LLM about HTTP request...");
+     |                       ^^^^^^^^^^ help: change this to: `status_tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+    --> src/server/proxy/mod.rs:1286:23
+     |
+1286 |         Log::new(Some(&status_tx)).warn(format!(
+     |                       ^^^^^^^^^^ help: change this to: `status_tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+    --> src/server/proxy/mod.rs:1307:23
+     |
+1307 |         Log::new(Some(&status_tx)).debug("Consulting LLM about HTTPS connection...");
+     |                       ^^^^^^^^^^ help: change this to: `status_tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+    --> src/server/proxy/mod.rs:1343:23
+     |
+1343 |         Log::new(Some(&status_tx)).warn(format!(
+     |                       ^^^^^^^^^^ help: change this to: `status_tx`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: manual implementation of `.is_multiple_of()`
+   --> src/server/smb/actions.rs:450:16
+    |
+450 |             if cleaned.len() % 2 != 0 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!cleaned.len().is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: using `chunks_exact` with a constant chunk size
+   --> src/server/smb/wire.rs:847:14
+    |
+847 |         list.chunks_exact(2)
+    |              ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+
+warning: using `chunks_exact` with a constant chunk size
+    --> src/server/smb/wire.rs:1050:10
+     |
+1050 |         .chunks_exact(2)
+     |          ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+
+warning: useless use of `format!`
+    --> src/server/webrtc_signaling/mod.rs:1006:22
+     |
+1006 |             log.info(format!("{}", message));
+     |                      ^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `message.to_string()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+
+warning: you should consider adding a `Default` implementation for `Pop3Protocol`
+   --> src/server/pop3/actions.rs:148:5
+    |
+148 | /     pub fn new() -> Self {
+149 | |         Self
+150 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+    |
+147 + impl Default for Pop3Protocol {
+148 +     fn default() -> Self {
+149 +         Self::new()
+150 +     }
+151 + }
+    |
+
+warning: unnecessary closure used to substitute value for `Option::None`
+   --> src/server/pop3/actions.rs:253:20
+    |
+253 |           let size = action
+    |  ____________________^
+254 | |             .get("size")
+255 | |             .and_then(|v| v.as_u64())
+256 | |             .unwrap_or_else(|| body.len() as u64);
+    | |_________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_lazy_evaluations
+    = note: `#[warn(clippy::unnecessary_lazy_evaluations)]` on by default
+help: use `unwrap_or` instead
+    |
+256 -             .unwrap_or_else(|| body.len() as u64);
+256 +             .unwrap_or(body.len() as u64);
+    |
+
+warning: this function has too many arguments (8/7)
+   --> src/server/pop3/mod.rs:843:5
+    |
+843 | /     async fn process_command<W>(
+844 | |         event: &Event,
+845 | |         llm_client: &OllamaClient,
+846 | |         app_state: &Arc<AppState>,
+...   |
+853 | |     where
+854 | |         W: tokio::io::AsyncWrite + Unpin,
+    | |_________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `NntpProtocol`
+  --> src/server/nntp/actions.rs:25:5
+   |
+25 | /     pub fn new() -> Self {
+26 | |         Self {
+27 | |             connections: Arc::new(Mutex::new(HashMap::new())),
+28 | |         }
+29 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+24 + impl Default for NntpProtocol {
+25 +     fn default() -> Self {
+26 +         Self::new()
+27 +     }
+28 + }
+   |
+
+warning: you should consider adding a `Default` implementation for `GrpcProtocol`
+  --> src/server/grpc/actions.rs:19:5
+   |
+19 | /     pub fn new() -> Self {
+20 | |         Self
+21 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+18 + impl Default for GrpcProtocol {
+19 +     fn default() -> Self {
+20 +         Self::new()
+21 +     }
+22 + }
+   |
+
+warning: redundant closure
+   --> src/server/grpc/actions.rs:360:19
+    |
+360 |     LazyLock::new(|| grpc_unary_response_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `grpc_unary_response_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/grpc/actions.rs:361:74
+    |
+361 | pub static GRPC_ERROR_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| grpc_error_action());
+    |                                                                          ^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `grpc_error_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: using `chunks_exact` with a constant chunk size
+   --> src/server/vnc/actions.rs:223:49
+    |
+223 |                         for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+    |                                                 ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+
+warning: manual implementation of `.is_multiple_of()`
+   --> src/server/quic/actions.rs:314:16
+    |
+314 |             if cleaned.len() % 2 != 0 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!cleaned.len().is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: you should consider adding a `Default` implementation for `TorrentDhtProtocol`
+  --> src/server/torrent_dht/actions.rs:17:5
+   |
+17 | /     pub fn new() -> Self {
+18 | |         Self
+19 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+16 + impl Default for TorrentDhtProtocol {
+17 +     fn default() -> Self {
+18 +         Self::new()
+19 +     }
+20 + }
+   |
+
+warning: you should consider adding a `Default` implementation for `TorrentPeerProtocol`
+  --> src/server/torrent_peer/actions.rs:17:5
+   |
+17 | /     pub fn new() -> Self {
+18 | |         Self
+19 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+16 + impl Default for TorrentPeerProtocol {
+17 +     fn default() -> Self {
+18 +         Self::new()
+19 +     }
+20 + }
+   |
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/torrent_peer/mod.rs:545:41
+    |
+545 |                 let log = Log::new(Some(&status_tx));
+    |                                         ^^^^^^^^^^ help: change this to: `status_tx`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/torrent_peer/mod.rs:618:27
+    |
+618 |             Log::new(Some(&status_tx)).info(format!("{}", message));
+    |                           ^^^^^^^^^^ help: change this to: `status_tx`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: useless use of `format!`
+   --> src/server/torrent_peer/mod.rs:618:45
+    |
+618 |             Log::new(Some(&status_tx)).info(format!("{}", message));
+    |                                             ^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `message.to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/torrent_peer/mod.rs:621:23
+    |
+621 |         Log::new(Some(&status_tx)).debug(format!(
+    |                       ^^^^^^^^^^ help: change this to: `status_tx`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/torrent_peer/mod.rs:641:23
+    |
+641 |         Log::new(Some(&status_tx)).debug(format!(
+    |                       ^^^^^^^^^^ help: change this to: `status_tx`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/torrent_peer/mod.rs:669:31
+    |
+669 |                 Log::new(Some(&status_tx)).debug(format!(
+    |                               ^^^^^^^^^^ help: change this to: `status_tx`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> src/server/torrent_peer/mod.rs:677:31
+    |
+677 |                 Log::new(Some(&status_tx))
+    |                               ^^^^^^^^^^ help: change this to: `status_tx`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrow
+
+warning: you should consider adding a `Default` implementation for `TlsProtocol`
+  --> src/server/tls/actions.rs:18:5
+   |
+18 | /     pub fn new() -> Self {
+19 | |         Self {}
+20 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+17 + impl Default for TlsProtocol {
+18 +     fn default() -> Self {
+19 +         Self::new()
+20 +     }
+21 + }
+   |
+
+warning: manual implementation of `.is_multiple_of()`
+   --> src/server/tls/actions.rs:344:16
+    |
+344 |             if cleaned.len() % 2 != 0 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!cleaned.len().is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: redundant closure
+   --> src/server/tls/actions.rs:430:19
+    |
+430 |     LazyLock::new(|| send_tls_data_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `send_tls_data_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/tls/actions.rs:432:19
+    |
+432 |     LazyLock::new(|| wait_for_more_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `wait_for_more_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: redundant closure
+   --> src/server/tls/actions.rs:434:19
+    |
+434 |     LazyLock::new(|| close_this_connection_action());
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `close_this_connection_action`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#redundant_closure
+
+warning: this function has too many arguments (8/7)
+    --> src/server/tls/mod.rs:1007:5
+     |
+1007 | /     async fn handle_data_with_actions(
+1008 | |         connection_id: ConnectionId,
+1009 | |         server_id: crate::state::ServerId,
+1010 | |         data: Bytes,
+...    |
+1015 | |         protocol: Arc<TlsProtocol>,
+1016 | |     ) {
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+  --> src/server/usb/descriptors.rs:38:1
+   |
+38 | / pub fn build_device_descriptor(
+39 | |     vendor_id: u16,
+40 | |     product_id: u16,
+41 | |     device_class: u8,
+...  |
+46 | |     serial_str_index: u8,
+47 | | ) -> Vec<u8> {
+   | |____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `DatabaseManager`
+   --> src/state/sqlite.rs:499:5
+    |
+499 | /     pub fn new() -> Self {
+500 | |         Self {
+501 | |             connections: HashMap::new(),
+502 | |         }
+503 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+    |
+497 + impl Default for DatabaseManager {
+498 +     fn default() -> Self {
+499 +         Self::new()
+500 +     }
+501 + }
+    |
+
+warning: you should consider adding a `Default` implementation for `ChatState`
+  --> src/tui/chat.rs:58:5
+   |
+58 | /     pub fn new() -> Self {
+59 | |         Self {
+60 | |             entries: VecDeque::new(),
+61 | |             scroll: ScrollPos::Follow,
+...  |
+65 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+57 + impl Default for ChatState {
+58 +     fn default() -> Self {
+59 +         Self::new()
+60 +     }
+61 + }
+   |
+
+warning: consider using `sort_by_key`
+   --> src/tui/modal/protocol_picker.rs:102:5
+    |
+102 |     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_sort_by
+help: try
+    |
+102 -     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+102 +     entries.sort_by_key(|a| a.name.to_lowercase());
+    |
+
+warning: this `if` can be collapsed into the outer `match`
+   --> src/tui/modal_keys.rs:285:13
+    |
+285 | /             if form
+286 | |                 .selected_field()
+287 | |                 .is_some_and(|field| !field.multiline && field.target != FieldTarget::SendFirst)
+...   |
+293 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_match
+    = note: `#[warn(clippy::collapsible_match)]` on by default
+help: collapse nested if block
+    |
+282 ~         KeyCode::Backspace if form.focused_button.is_none()
+283 |             // Same for backspace: start editing and delete, rather than
+284 |             // silently doing nothing until Enter is pressed.
+285 ~             && form
+286 |                 .selected_field()
+287 |                 .is_some_and(|field| !field.multiline && field.target != FieldTarget::SendFirst)
+288 ~             => {
+289 |                 form.begin_edit();
+...
+292 |                 }
+293 ~             }
+    |
+
+warning: `netget` (lib) generated 150 warnings (run `cargo clippy --fix --lib -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 107 suggestions)
+warning: unused import: `netget::llm::actions::protocol_trait::Protocol`
+   --> tests/dashboard_create_flow_test.rs:415:9
+    |
+415 |     use netget::llm::actions::protocol_trait::Protocol;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "dashboard_create_flow_test") generated 1 warning
+warning: unused import: `netget::llm::actions::Server`
+  --> tests/examples/protocol_examples_test.rs:14:5
+   |
+14 | use netget::llm::actions::Server;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:461:9
+    |
+461 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:553:9
+    |
+553 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: `netget` (lib test) generated 150 warnings (150 duplicates)
+warning: unused imports: `start_netget_client` and `wait_for_client_startup`
+  --> tests/helpers/mod.rs:29:18
+   |
+29 | pub use client::{start_netget_client, wait_for_client_startup};
+   |                  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `retry_with_backoff`, `retry`, `wait_for_server_listening`, `with_aws_sdk_timeout`, `with_cassandra_timeout`, `with_client_timeout`, and `with_timeout`
+  --> tests/helpers/mod.rs:31:5
+   |
+31 |     retry, retry_with_backoff, wait_for_server_listening, with_aws_sdk_timeout,
+   |     ^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+32 |     with_cassandra_timeout, with_client_timeout, with_timeout, E2EResult,
+   |     ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `event_trigger::EventTrigger`
+  --> tests/helpers/mod.rs:34:9
+   |
+34 | pub use event_trigger::EventTrigger;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ProtocolExampleTest` and `TestReport`
+  --> tests/helpers/mod.rs:35:34
+   |
+35 | pub use example_test_framework::{ProtocolExampleTest, TestReport};
+   |                                  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `MockLlmConfig`, `MockResponse`, `MockRule`, `ResponseGenerator`, and `SerializedMockRule`
+  --> tests/helpers/mod.rs:37:5
+   |
+37 |     MockLlmConfig, MockResponse, MockRule, ResponseGenerator, SerializedMockRule,
+   |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LlmContext` and `MockMatcher`
+  --> tests/helpers/mod.rs:39:24
+   |
+39 | pub use mock_matcher::{LlmContext, MockMatcher};
+   |                        ^^^^^^^^^^  ^^^^^^^^^^^
+
+warning: unused import: `ollama_test_builder::OllamaTestBuilder`
+  --> tests/helpers/mod.rs:40:9
+   |
+40 | pub use ollama_test_builder::OllamaTestBuilder;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `wait_for_server_startup`
+  --> tests/helpers/mod.rs:41:39
+   |
+41 | pub use server::{start_netget_server, wait_for_server_startup};
+   |                                       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: useless conversion to the same type: `anyhow::Error`
+  --> examples/test_doc_gen.rs:51:32
+   |
+51 |                     return Err(e.into());
+   |                                ^^^^^^^^ help: consider removing `.into()`: `e`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+   = note: `#[warn(clippy::useless_conversion)]` on by default
+
+warning: useless conversion to the same type: `anyhow::Error`
+  --> examples/test_doc_gen.rs:56:24
+   |
+56 |             return Err(e.into());
+   |                        ^^^^^^^^ help: consider removing `.into()`: `e`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+
+warning: `netget` (example "test_doc_gen") generated 2 warnings (run `cargo clippy --fix --example "test_doc_gen" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 2 suggestions)
+warning: unused variable: `expected_value`
+   --> tests/helpers/ollama_test_builder.rs:884:36
+    |
+884 |         Expectation::StaticHandler(expected_value) => {
+    |                                    ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_expected_value`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `event_to_json` is never used
+  --> tests/helpers/ollama_test_builder.rs:14:4
+   |
+14 | fn event_to_json(event: &Event) -> Result<Value> {
+   |    ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `get_primary_action` is never used
+   --> tests/helpers/ollama_test_builder.rs:705:4
+    |
+705 | fn get_primary_action<'a>(actions: &'a [Value], expected_type: Option<&str>) -> Option<&'a Value> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: this function has too many arguments (11/7)
+  --> tests/helpers/client.rs:48:5
+   |
+48 | /     pub(crate) fn new(
+49 | |         child: ManagedChild,
+50 | |         id: String,
+51 | |         protocol: String,
+...  |
+59 | |         stderr_reader_handle: AbortOnDrop,
+60 | |     ) -> Self {
+   | |_____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+   = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: the borrowed expression implements the required traits
+   --> tests/helpers/event_trigger.rs:282:33
+    |
+282 |     let tx_id_hex = hex::encode(&transaction_id);
+    |                                 ^^^^^^^^^^^^^^^ help: change this to: `transaction_id`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+    = note: `#[warn(clippy::needless_borrows_for_generic_args)]` on by default
+
+warning: the borrowed expression implements the required traits
+   --> tests/helpers/example_test_framework.rs:237:40
+    |
+237 |             .on_instruction_containing(&format!("Start a {} server", self.protocol_name))
+    |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("Start a {} server", self.protocol_name)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> tests/helpers/llm_live_case.rs:43:16
+   |
+43 |     pub check: Box<dyn Fn(&Value) -> Result<(), String> + Send + Sync>,
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+   = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> tests/helpers/llm_live_case.rs:139:20
+    |
+139 |       action_checks: Vec<(
+    |  ____________________^
+140 | |         String,
+141 | |         Box<dyn Fn(&Value) -> Result<(), String> + Send + Sync>,
+142 | |     )>,
+    | |______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+warning: found call to `str::trim` before `str::split_whitespace`
+   --> tests/helpers/mock_ollama.rs:273:41
+    |
+273 |             let event_type = event_type.trim().split_whitespace().next().unwrap_or("");
+    |                                         ^^^^^^^ help: remove `trim()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#trim_split_whitespace
+    = note: `#[warn(clippy::trim_split_whitespace)]` on by default
+
+warning: this `map_or` can be simplified
+  --> tests/helpers/ollama_test_builder.rs:28:17
+   |
+28 | /                 act_map
+29 | |                     .get(key)
+30 | |                     .map_or(false, |act_val| json_contains_expected(exp_val, act_val))
+   | |______________________________________________________________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_map_or
+   = note: `#[warn(clippy::unnecessary_map_or)]` on by default
+help: use `is_some_and` instead
+   |
+30 -                     .map_or(false, |act_val| json_contains_expected(exp_val, act_val))
+30 +                     .is_some_and(|act_val| json_contains_expected(exp_val, act_val))
+   |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> tests/helpers/ollama_test_builder.rs:106:20
+    |
+106 |         validator: Arc<dyn Fn(&Value) -> Result<()> + Send + Sync>,
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+warning: you should consider adding a `Default` implementation for `OllamaTestBuilder`
+   --> tests/helpers/ollama_test_builder.rs:112:5
+    |
+112 | /     pub fn new() -> Self {
+113 | |         Self {
+114 | |             prompt_context: None,
+115 | |             expectations: Vec::new(),
+...   |
+118 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+    = note: `#[warn(clippy::new_without_default)]` on by default
+help: try adding this
+    |
+110 + impl Default for OllamaTestBuilder {
+111 +     fn default() -> Self {
+112 +         Self::new()
+113 +     }
+114 + }
+    |
+
+warning: calling `push_str()` using a single-character string literal
+   --> tests/helpers/ollama_test_builder.rs:153:21
+    |
+153 |                     existing.push_str("\n");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `existing.push('\n')`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+    = note: `#[warn(clippy::single_char_add_str)]` on by default
+
+warning: calling `push_str()` using a single-character string literal
+   --> tests/helpers/ollama_test_builder.rs:194:21
+    |
+194 |                     existing.push_str("\n");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `push` with a character literal: `existing.push('\n')`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_char_add_str
+
+warning: manual implementation of `Option::map`
+   --> tests/helpers/ollama_test_builder.rs:542:9
+    |
+542 | /         if let Some(actions) = action_response.get("actions").and_then(|a| a.as_array()) {
+543 | |             Some(actions.clone())
+544 | |         } else {
+545 | |             None
+546 | |         }
+    | |_________^ help: try: `action_response.get("actions").and_then(|a| a.as_array()).map(|actions| actions.clone())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_map
+    = note: `#[warn(clippy::manual_map)]` on by default
+
+warning: this function has too many arguments (9/7)
+  --> tests/helpers/server.rs:39:5
+   |
+39 | /     pub(crate) fn new(
+40 | |         child: ManagedChild,
+41 | |         port: u16,
+42 | |         stack: String,
+...  |
+48 | |         stderr_reader_handle: AbortOnDrop,
+49 | |     ) -> Self {
+   | |_____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#too_many_arguments
+
+warning: you should consider adding a `Default` implementation for `Certificate`
+  --> tests/helpers/quic_peer.rs:21:5
+   |
+21 | /     pub fn new() -> Self {
+22 | |         let _ = rustls::crypto::ring::default_provider().install_default();
+23 | |         let dir = tempfile::tempdir().unwrap();
+24 | |         let c = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+...  |
+27 | |         Self { dir }
+28 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+help: try adding this
+   |
+20 + impl Default for Certificate {
+21 +     fn default() -> Self {
+22 +         Self::new()
+23 +     }
+24 + }
+   |
+
+warning: the borrowed expression implements the required traits
+   --> tests/examples/protocol_examples_test.rs:304:48
+    |
+304 |                 mock.on_instruction_containing(&format!("Start a {} server", name))
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("Start a {} server", name)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: the borrowed expression implements the required traits
+   --> tests/examples/protocol_examples_test.rs:421:48
+    |
+421 |                 mock.on_instruction_containing(&format!("Start a {} server", name))
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("Start a {} server", name)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: consider using `sort_by_key`
+   --> tests/examples/example_runnability_test.rs:434:5
+    |
+434 |     protocols.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_sort_by
+    = note: `#[warn(clippy::unnecessary_sort_by)]` on by default
+help: try
+    |
+434 -     protocols.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+434 +     protocols.sort_by_key(|a| a.0.to_lowercase());
+    |
+
+warning: unnecessary use of `to_string`
+   --> tests/examples/coverage_test.rs:217:29
+    |
+217 |         if !tested.contains(&protocol.to_string()) {
+    |                             ^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `protocol`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_to_owned
+    = note: `#[warn(clippy::unnecessary_to_owned)]` on by default
+
+warning: `netget` (test "examples") generated 24 warnings (2 duplicates) (run `cargo clippy --fix --test "examples" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 13 suggestions)
+warning: multiple methods are never used
+   --> tests/helpers/client.rs:77:18
+    |
+ 45 | impl NetGetClient {
+    | ----------------- methods in this implementation
+...
+ 77 |     pub async fn stop(mut self) -> E2EResult<()> {
+    |                  ^^^^
+...
+125 |     pub fn is_running(&mut self) -> bool {
+    |            ^^^^^^^^^^
+...
+164 |     pub async fn count_in_output(&self, needle: &str) -> usize {
+    |                  ^^^^^^^^^^^^^^^
+...
+196 |     pub async fn verify_mocks(&self) -> E2EResult<()> {
+    |                  ^^^^^^^^^^^^
+...
+279 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+310 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+333 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `TriggerResult` is never used
+  --> tests/helpers/event_trigger.rs:15:10
+   |
+15 | pub type TriggerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+   |          ^^^^^^^^^^^^^
+
+warning: fields `body` and `headers` are never read
+  --> tests/helpers/event_trigger.rs:60:9
+   |
+54 |     HttpRequest {
+   |     ----------- fields in this variant
+...
+60 |         body: Option<Vec<u8>>,
+   |         ^^^^
+61 |         /// Optional headers
+62 |         headers: Vec<(String, String)>,
+   |         ^^^^^^^
+   |
+   = note: `EventTrigger` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: methods `is_available` and `execute` are never used
+   --> tests/helpers/event_trigger.rs:83:12
+    |
+ 81 | impl EventTrigger {
+    | ----------------- methods in this implementation
+ 82 |     /// Check if this trigger type is available in the current environment
+ 83 |     pub fn is_available(&self) -> bool {
+    |            ^^^^^^^^^^^^
+...
+123 |     pub fn execute(
+    |            ^^^^^^^
+
+warning: function `build_ntp_request` is never used
+   --> tests/helpers/event_trigger.rs:252:8
+    |
+252 | pub fn build_ntp_request() -> (Vec<u8>, u64) {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: struct `ProtocolExampleTest` is never constructed
+  --> tests/helpers/example_test_framework.rs:34:12
+   |
+34 | pub struct ProtocolExampleTest {
+   |            ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> tests/helpers/example_test_framework.rs:51:12
+    |
+ 49 | impl ProtocolExampleTest {
+    | ------------------------ associated items in this implementation
+ 50 |     /// Create a new test builder for a specific protocol
+ 51 |     pub fn new(protocol_name: &str) -> Self {
+    |            ^^^
+...
+ 66 |     pub fn with_response_examples(mut self) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 80 |     pub fn with_dynamic_udp_mocking(mut self, event_id: &str, correlation_field: &str) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 89 |     pub fn with_event_trigger(mut self, event_id: &str, trigger: EventTrigger) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+ 95 |     pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    |            ^^^^^^^^^^^^
+...
+101 |     pub fn with_log_level(mut self, level: &str) -> Self {
+    |            ^^^^^^^^^^^^^^
+...
+114 |     pub async fn run(self) -> E2EResult<TestReport> {
+    |                  ^^^
+...
+227 |     fn build_mock_config(
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: struct `TestReport` is never constructed
+   --> tests/helpers/example_test_framework.rs:297:12
+    |
+297 | pub struct TestReport {
+    |            ^^^^^^^^^^
+
+warning: methods `passed` and `summary` are never used
+   --> tests/helpers/example_test_framework.rs:310:12
+    |
+308 | impl TestReport {
+    | --------------- methods in this implementation
+309 |     /// Check if the test passed (no errors)
+310 |     pub fn passed(&self) -> bool {
+    |            ^^^^^^
+...
+315 |     pub fn summary(&self) -> String {
+    |            ^^^^^^^
+
+warning: function `run_protocol_example_tests` is never used
+   --> tests/helpers/example_test_framework.rs:330:14
+    |
+330 | pub async fn run_protocol_example_tests(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_protocols_with_examples` is never used
+   --> tests/helpers/example_test_framework.rs:378:8
+    |
+378 | pub fn get_protocols_with_examples() -> Vec<String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `HttpBounds` is never constructed
+   --> tests/helpers/http_bounds.rs:108:12
+    |
+108 | pub struct HttpBounds {
+    |            ^^^^^^^^^^
+
+warning: associated items `state`, `start`, `silent_peer_is_closed_at_the_first_byte_bound`, `an_answered_connection_outlives_the_first_byte_bound`, `the_connection_past_the_cap_is_refused_and_the_slot_comes_back`, and `exchange` are never used
+   --> tests/helpers/http_bounds.rs:124:14
+    |
+123 | impl HttpBounds {
+    | --------------- associated items in this implementation
+124 |     async fn state() -> AppState {
+    |              ^^^^^
+...
+136 |     async fn start(&self) -> (AppState, ServerId, u16) {
+    |              ^^^^^
+...
+163 |     pub async fn silent_peer_is_closed_at_the_first_byte_bound(&self) {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+211 |     pub async fn an_answered_connection_outlives_the_first_byte_bound(&self) {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+254 |     pub async fn the_connection_past_the_cap_is_refused_and_the_slot_comes_back(&self) {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+335 |     async fn exchange(&self, peer: &mut TcpStream) -> String {
+    |              ^^^^^^^^
+
+warning: constant `FIRST_BYTE_SECS` is never used
+   --> tests/helpers/http_bounds.rs:375:11
+    |
+375 | pub const FIRST_BYTE_SECS: u64 = 30;
+    |           ^^^^^^^^^^^^^^^
+
+warning: struct `HttpBoundsCase` is never constructed
+   --> tests/helpers/http_bounds.rs:378:12
+    |
+378 | pub struct HttpBoundsCase {
+    |            ^^^^^^^^^^^^^^
+
+warning: function `config` is never used
+   --> tests/helpers/http_bounds.rs:400:4
+    |
+400 | fn config(case: &HttpBoundsCase) -> NetGetConfig {
+    |    ^^^^^^
+
+warning: function `closed_by_peer` is never used
+   --> tests/helpers/http_bounds.rs:431:10
+    |
+431 | async fn closed_by_peer(stream: &mut TcpStream, secs: u64) -> bool {
+    |          ^^^^^^^^^^^^^^
+
+warning: function `wait_for_close` is never used
+   --> tests/helpers/http_bounds.rs:445:10
+    |
+445 | async fn wait_for_close(stream: &mut TcpStream, secs: u64) -> Option<Duration> {
+    |          ^^^^^^^^^^^^^^
+
+warning: function `assert_connection_cap` is never used
+   --> tests/helpers/http_bounds.rs:460:14
+    |
+460 | pub async fn assert_connection_cap(case: &HttpBoundsCase) -> E2EResult<()> {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `assert_read_deadlines` is never used
+   --> tests/helpers/http_bounds.rs:552:14
+    |
+552 | pub async fn assert_read_deadlines(case: &HttpBoundsCase) -> E2EResult<()> {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `assert_all_bounds` is never used
+   --> tests/helpers/http_bounds.rs:658:14
+    |
+658 | pub async fn assert_all_bounds(case: &HttpBoundsCase) -> E2EResult<()> {
+    |              ^^^^^^^^^^^^^^^^^
+
+warning: struct `ParamCheck` is never constructed
+  --> tests/helpers/llm_live_case.rs:40:12
+   |
+40 | pub struct ParamCheck {
+   |            ^^^^^^^^^^
+
+warning: associated functions `contains`, `equals`, `non_empty`, and `custom` are never used
+   --> tests/helpers/llm_live_case.rs:49:12
+    |
+ 46 | impl ParamCheck {
+    | --------------- associated functions in this implementation
+...
+ 49 |     pub fn contains(name: &'static str, needle: &'static str) -> Self {
+    |            ^^^^^^^^
+...
+ 69 |     pub fn equals(name: &'static str, expected: Value) -> Self {
+    |            ^^^^^^
+...
+ 90 |     pub fn non_empty(name: &'static str) -> Self {
+    |            ^^^^^^^^^
+...
+112 |     pub fn custom(
+    |            ^^^^^^
+
+warning: struct `EventCase` is never constructed
+   --> tests/helpers/llm_live_case.rs:126:12
+    |
+126 | pub struct EventCase {
+    |            ^^^^^^^^^
+
+warning: associated items `new`, `expect_action`, `or_action`, `check`, `check_action`, and `run` are never used
+   --> tests/helpers/llm_live_case.rs:150:12
+    |
+145 | impl EventCase {
+    | -------------- associated items in this implementation
+...
+150 |     pub fn new(
+    |            ^^^
+...
+169 |     pub fn expect_action(mut self, action: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+176 |     pub fn or_action(mut self, action: impl Into<String>) -> Self {
+    |            ^^^^^^^^^
+...
+182 |     pub fn check(mut self, check: ParamCheck) -> Self {
+    |            ^^^^^
+...
+189 |     pub fn check_action(
+    |            ^^^^^^^^^^^^
+...
+200 |     pub async fn run(self) -> E2EResult<()> {
+    |                  ^^^
+
+warning: methods `on_event`, `on_instruction_containing`, `on_instruction_regex`, `on_prompt_containing`, and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:24:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+24 |     pub fn on_event(self, event_type: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^
+...
+37 |     pub fn on_instruction_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+63 |     pub fn on_prompt_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: multiple methods are never used
+   --> tests/helpers/mock_builder.rs:140:12
+    |
+126 | impl MockRuleBuilder {
+    | -------------------- methods in this implementation
+...
+140 |     pub fn and_instruction_containing(mut self, substring: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+155 |     pub fn and_prompt_containing(mut self, substring: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+170 |     pub fn and_event_data_contains(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+192 |     pub fn and_iteration(mut self, iteration: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+205 |     pub fn and_message_role(mut self, role: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+261 |     pub fn respond_with_actions_from_event<F>(self, generator: F) -> MockResponseBuilder
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+288 |     pub fn respond_with_raw(self, raw: impl Into<String>) -> MockResponseBuilder {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: methods `after_delay`, `expect_calls`, and `expect_at_most` are never used
+   --> tests/helpers/mock_builder.rs:324:12
+    |
+308 | impl MockResponseBuilder {
+    | ------------------------ methods in this implementation
+...
+324 |     pub fn after_delay(mut self, delay: std::time::Duration) -> Self {
+    |            ^^^^^^^^^^^
+...
+330 |     pub fn expect_calls(mut self, count: usize) -> Self {
+    |            ^^^^^^^^^^^^
+...
+342 |     pub fn expect_at_most(mut self, count: usize) -> Self {
+    |            ^^^^^^^^^^^^^^
+
+warning: associated items `from_serialized` and `find_match` are never used
+   --> tests/helpers/mock_config.rs:75:12
+    |
+ 59 | impl MockLlmConfig {
+    | ------------------ associated items in this implementation
+...
+ 75 |     pub fn from_serialized(serialized: Vec<SerializedMockRule>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+125 |     pub async fn find_match(&self, context: &LlmContext) -> Option<(usize, MockResponse)> {
+    |                  ^^^^^^^^^^
+
+warning: associated function `from_serialized` is never used
+   --> tests/helpers/mock_config.rs:273:12
+    |
+204 | impl MockRule {
+    | ------------- associated function in this implementation
+...
+273 |     pub fn from_serialized(s: SerializedMockRule) -> Self {
+    |            ^^^^^^^^^^^^^^^
+
+warning: variant `DynamicActions` is never constructed
+   --> tests/helpers/mock_config.rs:521:5
+    |
+512 | pub enum MockResponse {
+    |          ------------ variant in this enum
+...
+521 |     DynamicActions { generator: ResponseGenerator },
+    |     ^^^^^^^^^^^^^^
+
+warning: methods `with_event_type`, `with_instruction`, `with_event_data`, `with_iteration`, and `with_message_role` are never used
+   --> tests/helpers/mock_matcher.rs:103:12
+    |
+ 82 | impl LlmContext {
+    | --------------- methods in this implementation
+...
+103 |     pub fn with_event_type(mut self, event_type: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+109 |     pub fn with_instruction(mut self, instruction: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+115 |     pub fn with_event_data(mut self, data: serde_json::Value) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+121 |     pub fn with_iteration(mut self, iteration: usize) -> Self {
+    |            ^^^^^^^^^^^^^^
+...
+127 |     pub fn with_message_role(mut self, role: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `EventTypeMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:143:12
+    |
+143 | pub struct EventTypeMatcher {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:148:12
+    |
+147 | impl EventTypeMatcher {
+    | --------------------- associated function in this implementation
+148 |     pub fn new(event_type: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `InstructionContainsMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:182:12
+    |
+182 | pub struct InstructionContainsMatcher {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:187:12
+    |
+186 | impl InstructionContainsMatcher {
+    | ------------------------------- associated function in this implementation
+187 |     pub fn new(substring: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `InstructionRegexMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:205:12
+    |
+205 | pub struct InstructionRegexMatcher {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:211:12
+    |
+210 | impl InstructionRegexMatcher {
+    | ---------------------------- associated function in this implementation
+211 |     pub fn new(pattern: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `PromptContainsMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:229:12
+    |
+229 | pub struct PromptContainsMatcher {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:234:12
+    |
+233 | impl PromptContainsMatcher {
+    | -------------------------- associated function in this implementation
+234 |     pub fn new(substring: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `EventDataMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:252:12
+    |
+252 | pub struct EventDataMatcher {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:258:12
+    |
+257 | impl EventDataMatcher {
+    | --------------------- associated function in this implementation
+258 |     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `IterationMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:294:12
+    |
+294 | pub struct IterationMatcher {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:299:12
+    |
+298 | impl IterationMatcher {
+    | --------------------- associated function in this implementation
+299 |     pub fn new(iteration: usize) -> Self {
+    |            ^^^
+
+warning: struct `MessageRoleMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:315:12
+    |
+315 | pub struct MessageRoleMatcher {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:320:12
+    |
+319 | impl MessageRoleMatcher {
+    | ----------------------- associated function in this implementation
+320 |     pub fn new(role: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: struct `CustomMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:336:12
+    |
+336 | pub struct CustomMatcher<F>
+    |            ^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> tests/helpers/mock_matcher.rs:347:12
+    |
+343 | / impl<F> CustomMatcher<F>
+344 | | where
+345 | |     F: Fn(&LlmContext) -> bool + Send + Sync,
+    | |_____________________________________________- associated function in this implementation
+346 |   {
+347 |       pub fn new(matcher_fn: F) -> Self {
+    |              ^^^
+
+warning: struct `CombinedMatcher` is never constructed
+   --> tests/helpers/mock_matcher.rs:379:12
+    |
+379 | pub struct CombinedMatcher {
+    |            ^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `add` are never used
+   --> tests/helpers/mock_matcher.rs:384:12
+    |
+383 | impl CombinedMatcher {
+    | -------------------- associated items in this implementation
+384 |     pub fn new(matchers: Vec<Box<dyn MockMatcher>>) -> Self {
+    |            ^^^
+...
+388 |     pub fn add(&mut self, matcher: Box<dyn MockMatcher>) {
+    |            ^^^
+
+warning: field `tags_hits` is never read
+  --> tests/helpers/mock_ollama.rs:36:5
+   |
+30 | pub struct MockOllamaServer {
+   |            ---------------- field in this struct
+...
+36 |     tags_hits: Arc<AtomicUsize>,
+   |     ^^^^^^^^^
+
+warning: method `tags_request_count` is never used
+   --> tests/helpers/mock_ollama.rs:406:12
+    |
+331 | impl MockOllamaServer {
+    | --------------------- method in this implementation
+...
+406 |     pub fn tags_request_count(&self) -> usize {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: method `with_mock` is never used
+   --> tests/helpers/netget.rs:326:12
+    |
+203 | impl NetGetConfig {
+    | ----------------- method in this implementation
+...
+326 |     pub fn with_mock<F>(mut self, builder_fn: F) -> Self
+    |            ^^^^^^^^^
+
+warning: function `event_to_json` is never used
+  --> tests/helpers/ollama_test_builder.rs:14:4
+   |
+14 | fn event_to_json(event: &Event) -> Result<Value> {
+   |    ^^^^^^^^^^^^^
+
+warning: function `json_contains_expected` is never used
+  --> tests/helpers/ollama_test_builder.rs:23:4
+   |
+23 | fn json_contains_expected(expected: &Value, actual: &Value) -> bool {
+   |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `OllamaTestBuilder` is never constructed
+  --> tests/helpers/ollama_test_builder.rs:47:12
+   |
+47 | pub struct OllamaTestBuilder {
+   |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `PromptContext` is never used
+  --> tests/helpers/ollama_test_builder.rs:54:10
+   |
+54 | pub enum PromptContext {
+   |          ^^^^^^^^^^^^^
+
+warning: enum `Expectation` is never used
+  --> tests/helpers/ollama_test_builder.rs:72:10
+   |
+72 | pub enum Expectation {
+   |          ^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> tests/helpers/ollama_test_builder.rs:112:12
+    |
+110 | impl OllamaTestBuilder {
+    | ---------------------- associated items in this implementation
+111 |     /// Create a new test builder
+112 |     pub fn new() -> Self {
+    |            ^^^
+...
+121 |     pub fn with_user_input(mut self, user_message: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+134 |     pub fn with_server_documentation(mut self, protocol: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+175 |     pub fn with_client_documentation(mut self, protocol: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+213 |     pub fn with_network_request(
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+228 |     pub fn with_model(mut self, model: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^
+...
+234 |     pub fn expect_action_type(mut self, action_type: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+241 |     pub fn expect_field_exact(mut self, field: impl Into<String>, value: Value) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+250 |     pub fn expect_field_contains(
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+263 |     pub fn expect_field_matches(
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+276 |     pub fn expect_protocol(mut self, protocol: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+283 |     pub fn expect_static_handler(mut self, value: Value) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+289 |     pub fn expect_script_handler(mut self) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+295 |     pub fn expect_script_with_language(mut self, language: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+307 |     pub fn expect_script_execution(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+320 |     pub fn expect_custom<F>(mut self, name: impl Into<String>, validator: F) -> Self
+    |            ^^^^^^^^^^^^^
+...
+332 |     pub async fn run(self) -> Result<TestResult> {
+    |                  ^^^
+
+warning: struct `TestResult` is never constructed
+   --> tests/helpers/ollama_test_builder.rs:496:12
+    |
+496 | pub struct TestResult {
+    |            ^^^^^^^^^^
+
+warning: methods `is_success` and `assert_success` are never used
+   --> tests/helpers/ollama_test_builder.rs:507:12
+    |
+505 | impl TestResult {
+    | --------------- methods in this implementation
+506 |     /// Check if all expectations passed
+507 |     pub fn is_success(&self) -> bool {
+    |            ^^^^^^^^^^
+...
+512 |     pub fn assert_success(&self) -> Result<()> {
+    |            ^^^^^^^^^^^^^^
+
+warning: function `parse_actions_from_response` is never used
+   --> tests/helpers/ollama_test_builder.rs:532:8
+    |
+532 | pub fn parse_actions_from_response(response: &str) -> Result<Vec<Value>> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `values_are_equivalent` is never used
+   --> tests/helpers/ollama_test_builder.rs:646:4
+    |
+646 | fn values_are_equivalent(expected: &Value, actual: &Value) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_json_from_markdown` is never used
+   --> tests/helpers/ollama_test_builder.rs:675:4
+    |
+675 | fn extract_json_from_markdown(text: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `find_action_by_type` is never used
+   --> tests/helpers/ollama_test_builder.rs:698:4
+    |
+698 | fn find_action_by_type<'a>(actions: &'a [Value], expected_type: &str) -> Option<&'a Value> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_expectation` is never used
+   --> tests/helpers/ollama_test_builder.rs:716:10
+    |
+716 | async fn validate_expectation(expectation: &Expectation, actions: &[Value]) -> Result<()> {
+    |          ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `expectation_description` is never used
+    --> tests/helpers/ollama_test_builder.rs:1187:4
+     |
+1187 | fn expectation_description(expectation: &Expectation) -> String {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `port`, `stdout_reader_handle`, and `stderr_reader_handle` are never read
+  --> tests/helpers/server.rs:16:9
+   |
+11 | pub struct NetGetServer {
+   |            ------------ fields in this struct
+...
+16 |     pub port: u16,
+   |         ^^^^
+...
+33 |     stdout_reader_handle: AbortOnDrop,
+   |     ^^^^^^^^^^^^^^^^^^^^
+34 |     stderr_reader_handle: AbortOnDrop,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `stop`, `verify_mocks`, `wait_for_pattern`, `wait_for_regex`, and `wait_for_patterns` are never used
+   --> tests/helpers/server.rs:39:19
+    |
+ 37 | impl NetGetServer {
+    | ----------------- associated items in this implementation
+ 38 |     /// Create a new NetGetServer instance
+ 39 |     pub(crate) fn new(
+    |                   ^^^
+...
+ 64 |     pub async fn stop(mut self) -> E2EResult<()> {
+    |                  ^^^^
+...
+324 |     pub async fn verify_mocks(&self) -> E2EResult<()> {
+    |                  ^^^^^^^^^^^^
+...
+415 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+446 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+469 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: function `start_netget_server` is never used
+   --> tests/helpers/server.rs:502:14
+    |
+502 | pub async fn start_netget_server(config: ServerConfig) -> E2EResult<NetGetServer> {
+    |              ^^^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "max_inbound_bytes_bound_plus_one_test") generated 94 warnings (16 duplicates) (run `cargo clippy --fix --test "max_inbound_bytes_bound_plus_one_test" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 8 suggestions)
+warning: manual implementation of `.is_multiple_of()`
+  --> tests/llm_live/ble_profiles.rs:50:30
+   |
+50 |     if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+   |                              ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!cleaned.len().is_multiple_of(2)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+   = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+  --> tests/llm_live/bluetooth_ble.rs:38:30
+   |
+38 |     if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+   |                              ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!cleaned.len().is_multiple_of(2)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: `netget` (test "llm_live") generated 21 warnings (17 duplicates) (run `cargo clippy --fix --test "llm_live" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 4 suggestions)
+warning: `netget` (test "scheduled_task_claim_test") generated 15 warnings (15 duplicates)
+warning: methods `on_instruction_regex`, `on_prompt_containing`, and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:50:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+63 |     pub fn on_prompt_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: manual implementation of `.is_multiple_of()`
+   --> tests/example_hex_drift_test.rs:261:16
+    |
+261 |             && lit.len() % 2 == 0
+    |                ^^^^^^^^^^^^^^^^^^ help: replace with: `lit.len().is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+    = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: `netget` (test "broken_stdout_pipe_test") generated 90 warnings (89 duplicates)
+warning: `netget` (test "example_hex_drift_test") generated 1 warning (run `cargo clippy --fix --test "example_hex_drift_test" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 1 suggestion)
+warning: unnecessary `>= y + 1` or `x - 1 >=`
+   --> tests/recursive_decoder_depth_test.rs:242:17
+    |
+242 |               || (b[..i]
+    |  _________________^
+243 | |                 .iter()
+244 | |                 .rev()
+245 | |                 .take_while(|c| **c == ' ' || **c == '\t')
+246 | |                 .count()
+247 | |                 + 1
+248 | |                 <= i
+    | |____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#int_plus_one
+    = note: `#[warn(clippy::int_plus_one)]` on by default
+help: change it to
+    |
+242 ~             || (b[..i]
+243 +                 .iter()
+244 +                 .rev()
+245 +                 .take_while(|c| **c == ' ' || **c == '\t')
+246 +                 .count() < i
+    |
+
+warning: `netget` (test "recursive_decoder_depth_test") generated 1 warning (run `cargo clippy --fix --test "recursive_decoder_depth_test" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 1 suggestion)
+warning: unused imports: `AsyncReadExt` and `AsyncWriteExt`
+  --> tests/mock_server_test.rs:14:21
+   |
+14 |     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+   |                     ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `start_netget_client` and `wait_for_client_startup`
+  --> tests/helpers/mod.rs:29:18
+   |
+29 | pub use client::{start_netget_client, wait_for_client_startup};
+   |                  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "eval") generated 19 warnings (19 duplicates)
+warning: methods `on_event`, `on_instruction_regex`, `on_prompt_containing`, and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:24:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+24 |     pub fn on_event(self, event_type: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+63 |     pub fn on_prompt_containing(self, substring: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: methods `and_prompt_containing`, `and_event_data_contains`, `and_iteration`, `and_message_role`, `respond_with_actions_from_event`, and `respond_with_raw` are never used
+   --> tests/helpers/mock_builder.rs:155:12
+    |
+126 | impl MockRuleBuilder {
+    | -------------------- methods in this implementation
+...
+155 |     pub fn and_prompt_containing(mut self, substring: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+170 |     pub fn and_event_data_contains(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+192 |     pub fn and_iteration(mut self, iteration: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+205 |     pub fn and_message_role(mut self, role: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+261 |     pub fn respond_with_actions_from_event<F>(self, generator: F) -> MockResponseBuilder
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+288 |     pub fn respond_with_raw(self, raw: impl Into<String>) -> MockResponseBuilder {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: methods `after_delay` and `expect_at_most` are never used
+   --> tests/helpers/mock_builder.rs:324:12
+    |
+308 | impl MockResponseBuilder {
+    | ------------------------ methods in this implementation
+...
+324 |     pub fn after_delay(mut self, delay: std::time::Duration) -> Self {
+    |            ^^^^^^^^^^^
+...
+342 |     pub fn expect_at_most(mut self, count: usize) -> Self {
+    |            ^^^^^^^^^^^^^^
+
+warning: `netget` (test "mock_server_test") generated 90 warnings (85 duplicates) (run `cargo clippy --fix --test "mock_server_test" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 2 suggestions)
+warning: `netget` (test "minimal_mock_test") generated 89 warnings (89 duplicates)
+warning: unused import: `std::time::Duration`
+  --> tests/server/dot/e2e_test.rs:15:5
+   |
+15 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `tokio::time::sleep`
+  --> tests/server/grpc/e2e_test.rs:10:5
+   |
+10 | use tokio::time::sleep;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::io::Write`
+  --> tests/server/grpc/e2e_test.rs:46:9
+   |
+46 |     use std::io::Write;
+   |         ^^^^^^^^^^^^^^
+
+warning: methods `on_instruction_regex` and `on_custom` are never used
+  --> tests/helpers/mock_builder.rs:50:12
+   |
+17 | impl MockLlmBuilder {
+   | ------------------- methods in this implementation
+...
+50 |     pub fn on_instruction_regex(self, regex: impl Into<String>) -> MockRuleBuilder {
+   |            ^^^^^^^^^^^^^^^^^^^^
+...
+84 |     pub fn on_custom<F>(self, matcher: F) -> MockRuleBuilder
+   |            ^^^^^^^^^
+
+warning: methods `wait_for_pattern`, `wait_for_regex`, and `wait_for_patterns` are never used
+   --> tests/helpers/server.rs:415:18
+    |
+ 37 | impl NetGetServer {
+    | ----------------- methods in this implementation
+...
+415 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+446 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+469 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "event_handler_llm_instruction_test") generated 85 warnings (83 duplicates)
+warning: unused import: `netget::llm::actions::protocol_trait::Protocol`
+  --> tests/connectionless_audit_test.rs:32:5
+   |
+32 | use netget::llm::actions::protocol_trait::Protocol;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: doc list item without indentation
+  --> tests/connectionless_audit_test.rs:84:5
+   |
+84 | /// Anything after a `/` in the name is dropped first (IPSec/IKEv2 → ipsec).
+   |     ^
+   |
+   = help: if this is supposed to be its own paragraph, add a blank line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+   = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+   |
+84 | ///    Anything after a `/` in the name is dropped first (IPSec/IKEv2 → ipsec).
+   |     +++
+
+warning: `netget` (test "connectionless_audit_test") generated 2 warnings
+warning: unnecessary `if let` since only the `Ok` variant of the iterator element is used
+  --> tests/logging_integration_test.rs:49:9
+   |
+49 | /         for entry in entries {
+50 | |             if let Ok(entry) = entry {
+51 | |                 let file_name = entry.file_name();
+52 | |                 let file_name_str = file_name.to_string_lossy();
+...  |
+58 | |         }
+   | |_________^
+   |
+help: try `.flatten()` and remove the `if let` statement in the for loop
+  --> tests/logging_integration_test.rs:50:13
+   |
+50 | /             if let Ok(entry) = entry {
+51 | |                 let file_name = entry.file_name();
+52 | |                 let file_name_str = file_name.to_string_lossy();
+53 | |                 if file_name_str.starts_with("netget_test_") && file_name_str.ends_with(".log") {
+...  |
+57 | |             }
+   | |_____________^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_flatten
+   = note: `#[warn(clippy::manual_flatten)]` on by default
+help: try
+   |
+49 ~         for entry in entries.flatten() {
+50 +             let file_name = entry.file_name();
+51 +             let file_name_str = file_name.to_string_lossy();
+52 +             if file_name_str.starts_with("netget_test_") && file_name_str.ends_with(".log") {
+53 +                 found_log_file = Some(entry.path());
+54 +                 break;
+55 +             }
+56 +         }
+   |
+
+warning: `netget` (test "logging_integration_test") generated 94 warnings (93 duplicates) (run `cargo clippy --fix --test "logging_integration_test" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 1 suggestion)
+warning: use of deprecated field `netget::protocol::SpawnContext::listen_addr`: Use host/port fields instead
+  --> tests/server/quic/certificate_validation_test.rs:19:17
+   |
+19 |                 listen_addr: "127.0.0.1:0".parse().unwrap(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: `netget` (test "empty_static_handler_test") generated 94 warnings (94 duplicates)
+error: file is loaded as a module multiple times: `tests/helpers/child_guard.rs`
+  |
+  = help: replace all but one `mod` item with `use` items
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#duplicate_mod
+  = note: `-D clippy::duplicate-mod` implied by `-D clippy::suspicious`
+  = help: to override `-D clippy::suspicious` add `#[allow(clippy::duplicate_mod)]`
+
+warning: field `protocol` is never read
+  --> tests/e2e/netget_wrapper.rs:23:9
+   |
+21 | pub struct ServerInfo {
+   |            ---------- field in this struct
+22 |     pub id: u32,
+23 |     pub protocol: String,
+   |         ^^^^^^^^
+   |
+   = note: `ServerInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `send_user_input`, `create_server`, `clear_output`, `get_server_port`, and `execute_command` are never used
+   --> tests/e2e/netget_wrapper.rs:43:12
+    |
+ 41 | impl NetGetWrapper {
+    | ------------------ associated items in this implementation
+ 42 |     /// Create a new NetGet wrapper
+ 43 |     pub fn new() -> Self {
+    |            ^^^
+...
+134 |     pub async fn send_user_input(&mut self, input: &str) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+158 |     pub async fn create_server(&mut self, prompt: &str) -> Result<ServerInfo> {
+    |                  ^^^^^^^^^^^^^
+...
+212 |     pub async fn clear_output(&self) {
+    |                  ^^^^^^^^^^^^
+...
+296 |     pub async fn get_server_port(&self, server_id: u32) -> Option<u16> {
+    |                  ^^^^^^^^^^^^^^^
+...
+305 |     pub async fn execute_command(&mut self, command: &str, wait_time: Duration) -> Result<String> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: compiling a regex in a loop
+   --> tests/e2e/netget_wrapper.rs:179:22
+    |
+179 |             let re = Regex::new(r"Server #(\d+):\s*(\w+).*port\s+(\d+)")?;
+    |                      ^^^^^^^^^^
+    |
+help: move the regex construction outside this loop
+   --> tests/e2e/netget_wrapper.rs:172:9
+    |
+172 |         while start_time.elapsed() < timeout {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#regex_creation_in_loops
+    = note: `#[warn(clippy::regex_creation_in_loops)]` on by default
+
+warning: compiling a regex in a loop
+   --> tests/e2e/netget_wrapper.rs:190:23
+    |
+190 |             let re2 = Regex::new(r"Started\s+(\w+)\s+on\s+.*:(\d+)")?;
+    |                       ^^^^^^^^^^
+    |
+help: move the regex construction outside this loop
+   --> tests/e2e/netget_wrapper.rs:172:9
+    |
+172 |         while start_time.elapsed() < timeout {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#regex_creation_in_loops
+
+warning: `netget` (test "wrapper_lifecycle_test") generated 4 warnings
+error: could not compile `netget` (test "wrapper_lifecycle_test") due to 1 previous error; 4 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: variable does not need to be mutable
+   --> tests/server/grpc/e2e_test.rs:148:9
+    |
+148 |     let mut server = helpers::start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/grpc/e2e_test.rs:313:9
+    |
+313 |     let mut server = helpers::start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/grpc/e2e_test.rs:617:9
+    |
+617 |     let mut server = helpers::start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `available_actions`
+   --> tests/ollama_model_test.rs:525:9
+    |
+525 |     let available_actions = vec![
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_available_actions`
+
+warning: unused variable: `available_actions`
+   --> tests/ollama_model_test.rs:596:9
+    |
+596 |     let available_actions = vec![
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_available_actions`
+
+warning: unused variable: `available_actions`
+   --> tests/ollama_model_test.rs:655:9
+    |
+655 |     let available_actions = vec![
+    |         ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_available_actions`
+
+warning: unused variable: `action`
+   --> tests/ollama_model_test.rs:778:45
+    |
+778 |         .expect_custom("multiple servers", |action| {
+    |                                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_action`
+
+warning: static `INIT` is never used
+  --> tests/ollama_model_test.rs:96:8
+   |
+96 | static INIT: Once = Once::new();
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `init_tracing` is never used
+  --> tests/ollama_model_test.rs:98:4
+   |
+98 | fn init_tracing() {
+   |    ^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> tests/helpers/client.rs:77:18
+    |
+ 45 | impl NetGetClient {
+    | ----------------- methods in this implementation
+...
+ 77 |     pub async fn stop(mut self) -> E2EResult<()> {
+    |                  ^^^^
+...
+125 |     pub fn is_running(&mut self) -> bool {
+    |            ^^^^^^^^^^
+...
+164 |     pub async fn count_in_output(&self, needle: &str) -> usize {
+    |                  ^^^^^^^^^^^^^^^
+...
+196 |     pub async fn verify_mocks(&self) -> E2EResult<()> {
+    |                  ^^^^^^^^^^^^
+...
+279 |     pub async fn wait_for_pattern(&self, pattern: &str, timeout: Duration) -> E2EResult<String> {
+    |                  ^^^^^^^^^^^^^^^^
+...
+310 |     pub async fn wait_for_regex(
+    |                  ^^^^^^^^^^^^^^
+...
+333 |     pub async fn wait_for_patterns(
+    |                  ^^^^^^^^^^^^^^^^^
+
+warning: variant `ScriptWithLanguage` is never constructed
+  --> tests/helpers/ollama_test_builder.rs:95:5
+   |
+72 | pub enum Expectation {
+   |          ----------- variant in this enum
+...
+95 |     ScriptWithLanguage(String),
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: methods `with_model` and `expect_script_with_language` are never used
+   --> tests/helpers/ollama_test_builder.rs:228:12
+    |
+110 | impl OllamaTestBuilder {
+    | ---------------------- methods in this implementation
+...
+228 |     pub fn with_model(mut self, model: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^
+...
+295 |     pub fn expect_script_with_language(mut self, language: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `model`, `prompt`, `response`, and `passed` are never read
+   --> tests/helpers/ollama_test_builder.rs:497:9
+    |
+496 | pub struct TestResult {
+    |            ---------- fields in this struct
+497 |     pub model: String,
+    |         ^^^^^
+498 |     pub prompt: String,
+    |         ^^^^^^
+499 |     pub response: String,
+    |         ^^^^^^^^
+500 |     pub actions: Vec<Value>,
+501 |     pub passed: Vec<String>,
+    |         ^^^^^^
+
+warning: variable does not need to be mutable
+   --> tests/server/ipp/test.rs:285:9
+    |
+285 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ipp/test.rs:428:9
+    |
+428 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ipp/test.rs:536:9
+    |
+536 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: manual `!RangeInclusive::contains` implementation
+   --> tests/ollama_model_test.rs:702:16
+    |
+702 |             if port < 1024 || port > 65535 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `!(1024..=65535).contains(&port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_range_contains
+    = note: `#[warn(clippy::manual_range_contains)]` on by default
+
+warning: useless use of `vec!`
+   --> tests/ollama_model_test.rs:525:29
+    |
+525 |       let available_actions = vec![
+    |  _____________________________^
+526 | |         json!({
+527 | |             "type": "send_http_response",
+528 | |             "description": "Send HTTP response",
+...   |
+538 | |         }),
+539 | |     ];
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_vec
+    = note: `#[warn(clippy::useless_vec)]` on by default
+help: you can use an array directly
+    |
+525 ~     let available_actions = [json!({
+526 +             "type": "send_http_response",
+527 +             "description": "Send HTTP response",
+528 +             "parameters": {
+529 +                 "status": "HTTP status code",
+530 +                 "headers": "Response headers (optional)",
+531 +                 "body": "Response body (optional)"
+532 +             }
+533 +         }),
+534 +         json!({
+535 +             "type": "wait_for_more",
+536 +             "description": "Wait for more data"
+537 ~         })];
+    |
+
+warning: useless use of `vec!`
+   --> tests/ollama_model_test.rs:596:29
+    |
+596 |       let available_actions = vec![
+    |  _____________________________^
+597 | |         json!({
+598 | |             "type": "send_dns_a_response",
+599 | |             "description": "Send DNS A record response",
+...   |
+612 | |         }),
+613 | |     ];
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_vec
+help: you can use an array directly
+    |
+596 ~     let available_actions = [json!({
+597 +             "type": "send_dns_a_response",
+598 +             "description": "Send DNS A record response",
+599 +             "parameters": {
+600 +                 "query_id": "Query ID from the request",
+601 +                 "domain": "Domain name",
+602 +                 "ip": "IP address to return"
+603 +             }
+604 +         }),
+605 +         json!({
+606 +             "type": "send_dns_nxdomain",
+607 +             "description": "Send DNS NXDOMAIN (not found) response",
+608 +             "parameters": {
+609 +                 "query_id": "Query ID from the request"
+610 +             }
+611 ~         })];
+    |
+
+warning: useless use of `vec!`
+   --> tests/ollama_model_test.rs:655:29
+    |
+655 |       let available_actions = vec![
+    |  _____________________________^
+656 | |         json!({
+657 | |             "type": "send_tcp_data",
+658 | |             "description": "Send TCP data",
+...   |
+666 | |         }),
+667 | |     ];
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_vec
+help: you can use an array directly
+    |
+655 ~     let available_actions = [json!({
+656 +             "type": "send_tcp_data",
+657 +             "description": "Send TCP data",
+658 +             "parameters": {
+659 +                 "data": "Data to send over TCP connection (text string or hex-encoded for binary data)"
+660 +             }
+661 +         }),
+662 +         json!({
+663 +             "type": "disconnect",
+664 +             "description": "Disconnect the connection"
+665 ~         })];
+    |
+
+warning: `netget` (test "ollama_model_test") generated 94 warnings (80 duplicates) (run `cargo clippy --fix --test "ollama_model_test" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 8 suggestions)
+warning: variable does not need to be mutable
+   --> tests/server/nntp/e2e_test.rs:115:9
+    |
+115 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/nntp/e2e_test.rs:302:9
+    |
+302 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/pop3/test.rs:51:9
+   |
+51 |     let mut server = helpers::start_netget_server(config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:158:9
+    |
+158 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:287:9
+    |
+287 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:399:9
+    |
+399 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:211:13
+    |
+211 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:273:13
+    |
+273 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:340:13
+    |
+340 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:401:13
+    |
+401 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:463:13
+    |
+463 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:527:13
+    |
+527 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:574:13
+    |
+574 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:205:9
+    |
+205 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:295:9
+    |
+295 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:384:9
+    |
+384 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:490:9
+    |
+490 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:601:9
+    |
+601 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: `netget` (test "mcp_scheduled_task_timer_test") generated 15 warnings (15 duplicates)
+warning: variable does not need to be mutable
+  --> tests/server/torrent_dht/e2e_test.rs:97:9
+   |
+97 |     let mut server = start_netget_server(server_config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/torrent_peer/e2e_test.rs:67:9
+   |
+67 |     let mut server = start_netget_server(server_config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/torrent_peer/e2e_test.rs:244:9
+    |
+244 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/webrtc_signaling/e2e_test.rs:90:13
+   |
+90 |         let mut server = start_netget_server(signaling_server(1)).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:109:13
+    |
+109 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:152:13
+    |
+152 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:195:13
+    |
+195 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:101:13
+    |
+101 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:153:13
+    |
+153 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:202:13
+    |
+202 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unnecessary closure used to substitute value for `Option::None`
+   --> tests/server/grpc/e2e_test.rs:173:24
+    |
+173 |       let user_id_desc = descriptor_pool
+    |  ________________________^
+174 | |         .get_message_by_name("test.UserId")
+175 | |         .ok_or_else(|| "UserId message not found")?;
+    | |__________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_lazy_evaluations
+    = note: `#[warn(clippy::unnecessary_lazy_evaluations)]` on by default
+help: use `ok_or` instead
+    |
+175 -         .ok_or_else(|| "UserId message not found")?;
+175 +         .ok_or("UserId message not found")?;
+    |
+
+warning: unnecessary closure used to substitute value for `Option::None`
+   --> tests/server/grpc/e2e_test.rs:178:20
+    |
+178 |       let id_field = user_id_desc
+    |  ____________________^
+179 | |         .get_field_by_name("id")
+180 | |         .ok_or_else(|| "id field not found")?;
+    | |____________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_lazy_evaluations
+help: use `ok_or` instead
+    |
+180 -         .ok_or_else(|| "id field not found")?;
+180 +         .ok_or("id field not found")?;
+    |
+
+warning: unnecessary closure used to substitute value for `Option::None`
+   --> tests/server/grpc/e2e_test.rs:491:24
+    |
+491 |       let user_id_desc = descriptor_pool
+    |  ________________________^
+492 | |         .get_message_by_name("test.UserId")
+493 | |         .ok_or_else(|| "UserId message not found")?;
+    | |__________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_lazy_evaluations
+help: use `ok_or` instead
+    |
+493 -         .ok_or_else(|| "UserId message not found")?;
+493 +         .ok_or("UserId message not found")?;
+    |
+
+warning: unnecessary closure used to substitute value for `Option::None`
+   --> tests/server/grpc/e2e_test.rs:496:20
+    |
+496 |       let id_field = user_id_desc
+    |  ____________________^
+497 | |         .get_field_by_name("id")
+498 | |         .ok_or_else(|| "id field not found")?;
+    | |____________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_lazy_evaluations
+help: use `ok_or` instead
+    |
+498 -         .ok_or_else(|| "id field not found")?;
+498 +         .ok_or("id field not found")?;
+    |
+
+warning: the borrowed expression implements the required traits
+   --> tests/server/http/test.rs:214:14
+    |
+214 |         .get(&format!("http://127.0.0.1:{}/home", server.port))
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("http://127.0.0.1:{}/home", server.port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: the borrowed expression implements the required traits
+   --> tests/server/http/test.rs:224:14
+    |
+224 |         .get(&format!("http://127.0.0.1:{}/about", server.port))
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("http://127.0.0.1:{}/about", server.port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: the borrowed expression implements the required traits
+   --> tests/server/http/test.rs:234:14
+    |
+234 |         .get(&format!("http://127.0.0.1:{}/unknown", server.port))
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("http://127.0.0.1:{}/unknown", server.port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: the borrowed expression implements the required traits
+   --> tests/server/http/test.rs:506:14
+    |
+506 |         .get(&format!("http://127.0.0.1:{}/forbidden", server.port))
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("http://127.0.0.1:{}/forbidden", server.port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: the borrowed expression implements the required traits
+   --> tests/server/http/test.rs:516:14
+    |
+516 |         .get(&format!("http://127.0.0.1:{}/error", server.port))
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("http://127.0.0.1:{}/error", server.port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: the borrowed expression implements the required traits
+   --> tests/server/http/test.rs:526:14
+    |
+526 |         .get(&format!("http://127.0.0.1:{}/redirect", server.port))
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `format!("http://127.0.0.1:{}/redirect", server.port)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#needless_borrows_for_generic_args
+
+warning: useless use of `format!`
+   --> tests/server/ipp/test.rs:277:54
+    |
+277 | ...                   "printer-uri-supported": format!("ipp://localhost:{{AVAILABLE_PORT}}/printers/netget")
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `"ipp://localhost:{AVAILABLE_PORT}/printers/netget".to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+    = note: `#[warn(clippy::useless_format)]` on by default
+
+warning: useless use of `format!`
+  --> tests/server/nntp/e2e_test.rs:42:18
+   |
+42 |       let prompt = format!(
+   |  __________________^
+43 | |         "listen on port {{AVAILABLE_PORT}} via nntp\n\
+44 | |          Send greeting: \"200 NetGet NNTP Test Server Ready\"\n\
+45 | |          Support 3 newsgroups:\n\
+...  |
+57 | |          When client sends QUIT, send \"205 Goodbye\" and close connection"
+58 | |     );
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+help: consider using `.to_string()`
+   |
+42 ~     let prompt = "listen on port {AVAILABLE_PORT} via nntp\n\
+43 +          Send greeting: \"200 NetGet NNTP Test Server Ready\"\n\
+44 +          Support 3 newsgroups:\n\
+45 +          - comp.lang.rust (50 articles, numbers 1-50)\n\
+46 +          - comp.lang.python (100 articles, numbers 1-100)\n\
+47 +          - misc.test (10 articles, numbers 1-10)\n\
+48 +          When client sends LIST, show all 3 newsgroups in format: name high low status\n\
+49 +          When client sends GROUP comp.lang.rust, respond: 211 50 1 50 comp.lang.rust\n\
+50 +          When client sends GROUP comp.lang.python, respond: 211 100 1 100 comp.lang.python\n\
+51 +          When client sends GROUP misc.test, respond: 211 10 1 10 misc.test\n\
+52 +          When client sends ARTICLE 1 (in any group), send a test article:\n\
+53 +          - Code: 220\n\
+54 +          - Headers: Subject: Test Article 1, From: test@example.com, Date: Mon, 1 Jan 2024 00:00:00 +0000\n\
+55 +          - Body: This is test article number 1.\n\
+56 ~          When client sends QUIT, send \"205 Goodbye\" and close connection".to_string();
+   |
+
+warning: useless use of `format!`
+   --> tests/server/nntp/e2e_test.rs:239:18
+    |
+239 |       let prompt = format!(
+    |  __________________^
+240 | |         "listen on port {{AVAILABLE_PORT}} via nntp\n\
+241 | |          Send greeting: \"200 NetGet NNTP Ready\"\n\
+242 | |          Support newsgroup: comp.test\n\
+...   |
+250 | |          When client sends QUIT, send \"205 Goodbye\" and close"
+251 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_format
+help: consider using `.to_string()`
+    |
+239 ~     let prompt = "listen on port {AVAILABLE_PORT} via nntp\n\
+240 +          Send greeting: \"200 NetGet NNTP Ready\"\n\
+241 +          Support newsgroup: comp.test\n\
+242 +          When client sends LIST, show: comp.test 5 1 y\n\
+243 +          When client sends GROUP comp.test, respond: 211 5 1 5 comp.test\n\
+244 +          When client sends XOVER 1-5, send overview for 5 articles:\n\
+245 +          - Use send_nntp_overview action\n\
+246 +          - Articles 1-5 with subjects \"Article 1\" through \"Article 5\"\n\
+247 +          - From: test@example.com for all\n\
+248 +          - Include message_id, bytes, lines\n\
+249 ~          When client sends QUIT, send \"205 Goodbye\" and close".to_string();
+    |
+
+warning: length comparison to one
+   --> tests/server/nntp/e2e_test.rs:338:9
+    |
+338 |         overview_lines.len() >= 1,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^ help: using `!is_empty` is clearer and more explicit: `!overview_lines.is_empty()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#len_zero
+    = note: `#[warn(clippy::len_zero)]` on by default
+
+warning: unnecessary use of `to_vec`
+   --> tests/server/quic/e2e_test.rs:533:29
+    |
+533 |         std::str::from_utf8(&BINARY.to_vec()).is_err(),
+    |                             ^^^^^^^^^^^^^^^^ help: use: `BINARY`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_to_owned
+    = note: `#[warn(clippy::unnecessary_to_owned)]` on by default
+
+warning: unnecessary use of `to_vec`
+   --> tests/server/smb/e2e_test.rs:896:29
+    |
+896 |         std::str::from_utf8(&BINARY.to_vec()).is_err(),
+    |                             ^^^^^^^^^^^^^^^^ help: use: `BINARY`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_to_owned
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> tests/server/smb/header_layout_test.rs:88:16
+   |
+88 |     let cases: Vec<(u16, u32, Box<dyn Fn(&ResponseHeader) -> Vec<u8>>)> = vec![
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+
+warning: can be more succinctly written as a byte str
+   --> tests/server/smb/bounds_test.rs:935:34
+    |
+935 |         names.extend_from_slice(&[b'C', b'A'].repeat(16));
+    |                                  ^^^^^^^^^^^^ help: try: `b"CA"`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#byte_char_slices
+    = note: `#[warn(clippy::byte_char_slices)]` on by default
+
+warning: called `.err().expect()` on a `Result` value
+  --> tests/server/tls/certificate_validation_test.rs:18:10
+   |
+18 |           .err()
+   |  __________^
+19 | |         .expect("invalid SAN accepted");
+   | |_______________^ help: try: `expect_err`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#err_expect
+   = note: `#[warn(clippy::err_expect)]` on by default
+
+warning: this `repeat().take()` can be written more concisely
+   --> tests/server/torrent_dht/bencode_depth_guard_test.rs:113:21
+    |
+113 |     at_limit.extend(std::iter::repeat(b'e').take(MAX_BENCODE_DEPTH));
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(b'e', MAX_BENCODE_DEPTH)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_repeat_n
+    = note: `#[warn(clippy::manual_repeat_n)]` on by default
+
+warning: this `repeat().take()` can be written more concisely
+   --> tests/server/torrent_dht/bencode_depth_guard_test.rs:118:17
+    |
+118 |     over.extend(std::iter::repeat(b'e').take(MAX_BENCODE_DEPTH + 1));
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(b'e', MAX_BENCODE_DEPTH + 1)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_repeat_n
+
+warning: accessing first element with `msg.get(0)`
+   --> tests/server/torrent_peer/e2e_test.rs:296:17
+    |
+296 |                 msg.get(0).unwrap_or(&255)
+    |                 ^^^^^^^^^^ help: try: `msg.first()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#get_first
+    = note: `#[warn(clippy::get_first)]` on by default
+
+warning: `netget` (test "server") generated 79 warnings (19 duplicates) (run `cargo clippy --fix --test "server" -p netget -- -D clippy::correctness -D clippy::suspicious` to apply 58 suggestions)

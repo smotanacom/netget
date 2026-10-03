@@ -1,4 +1,4 @@
-use super::codec::{DEFAULT_LLM_FALLBACK, MAX_BODY_BYTES};
+use super::codec::{DEFAULT_LLM_FALLBACK, DEFAULT_REQUIRE_TENANT, MAX_BODY_BYTES};
 use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
@@ -82,7 +82,7 @@ impl Protocol for LokiProtocol {
 .notes("Experimental POST /loki/api/v1/push only: JSON, gzip JSON, Snappy protobuf; optional single tenant header (fake if absent), require_tenant flag, optional proxy-style Bearer check (not Loki-built-in authentication).256KiB wire/decoded body;64streams/1024entries;16KiB UTF-8 lines;32labels/64metadata;ASCII identifier names<=128bytes,values<=2048bytes; tenant150/token1024bytes;16384protobuf fields/JSON depth8;256connections;32KiB/64headers;30s header/body,10s decision-write. Reserved __ stream labels and duplicate stream sets/keys rejected; strict push fields and signed i64 nanoseconds. Empty successful handler accepts; failed/multiple decisions503. No TLS/proxy/cloud auth, durable store, per-tenant ACL, querying, retention/order enforcement, partial acceptance, OTLP, retries, fuzz or pcap.").build()
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![ParameterDefinition{name:"auth_token".into(),type_hint:"string".into(),description:"Optional proxy-style Bearer token<=1024printable ASCII; never included in event data; absent means anonymous".into(),required:false,example:json!("collector-secret"),default:None},ParameterDefinition{name:"require_tenant".into(),type_hint:"bool".into(),description:"Require one valid X-Scope-OrgID. Identity is not authorization or a tenant database.".into(),required:false,example:json!(true),default:Some(json!(false))},ParameterDefinition{name:"llm_fallback".into(),type_hint:"bool".into(),description:"Opt unmatched pushes into model calls; explicit handlers always run".into(),required:false,example:json!(true),default:Some(json!(DEFAULT_LLM_FALLBACK))}]
+        vec![ParameterDefinition{name:"auth_token".into(),type_hint:"string".into(),description:"Optional proxy-style Bearer token<=1024printable ASCII; never included in event data; absent means anonymous".into(),required:false,example:json!("collector-secret"),default:None},ParameterDefinition{name:"require_tenant".into(),type_hint:"bool".into(),description:"Require one valid X-Scope-OrgID. Identity is not authorization or a tenant database.".into(),required:false,example:json!(true),default:Some(json!(DEFAULT_REQUIRE_TENANT))},ParameterDefinition{name:"llm_fallback".into(),type_hint:"bool".into(),description:"Opt unmatched pushes into model calls; explicit handlers always run".into(),required:false,example:json!(true),default:Some(json!(DEFAULT_LLM_FALLBACK))}]
     }
     fn get_startup_examples(&self) -> StartupExamples {
         StartupExamples::new(

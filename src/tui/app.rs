@@ -316,6 +316,7 @@ impl DashboardApp {
             .chain(self.snapshot.clients.iter().map(|c| UiKey::Client(c.id)))
             .collect();
         self.cards.metrics.retain(|key, _| live.contains(key));
+        self.cards.state.retain_snapshot(&self.snapshot);
     }
 
     /// Keep the cursor on a row that can take it.

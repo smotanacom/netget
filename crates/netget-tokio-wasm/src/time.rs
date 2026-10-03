@@ -15,6 +15,9 @@ use send_wrapper::SendWrapper;
 
 pub use std::time::Duration;
 
+#[path = "time_math.rs"]
+mod math;
+
 /// A monotonic instant on the browser clock.
 ///
 /// `performance.now()` starts at zero when the page loads. NetGet's rate limiter computes
@@ -137,14 +140,6 @@ pub mod error {
     }
 }
 
-/// `setTimeout` takes a 32-bit millisecond delay; anything longer is clamped. 49 days is
-/// far past any page's lifetime.
-const MAX_DELAY_MS: u64 = u32::MAX as u64;
-
-fn clamp_delay(d: Duration) -> u32 {
-    d.as_millis().min(MAX_DELAY_MS as u128) as u32
-}
-
 /// A future that completes at a deadline.
 pub struct Sleep {
     deadline: Instant,
@@ -184,7 +179,7 @@ impl Future for Sleep {
                 return Poll::Ready(());
             }
             if self.timer.is_none() {
-                let ms = clamp_delay(self.deadline.saturating_duration_since(now));
+                let ms = math::timer_delay_ms(self.deadline.saturating_duration_since(now));
                 self.timer = Some(SendWrapper::new(Box::pin(TimeoutFuture::new(ms))));
             }
             let timer = self.timer.as_mut().expect("armed above");
@@ -218,10 +213,10 @@ pub fn sleep_until(deadline: Instant) -> Sleep {
 }
 
 fn deadline_after(duration: Duration) -> Instant {
-    let bounded = Duration::from_millis(clamp_delay(duration) as u64);
+    // Keep the requested deadline; only individual host timer chunks are clamped.
     Instant::now()
-        .checked_add(bounded)
-        .unwrap_or_else(Instant::now)
+        .checked_add(duration)
+        .unwrap_or(Instant(Duration::MAX))
 }
 
 pin_project_lite::pin_project! {
@@ -307,11 +302,7 @@ impl Interval {
             MissedTickBehavior::Burst => fired + self.period,
             MissedTickBehavior::Delay => now + self.period,
             MissedTickBehavior::Skip => {
-                let mut next = fired + self.period;
-                while next <= now {
-                    next += self.period;
-                }
-                next
+                now + math::skip_delay(now.duration_since(fired), self.period)
             }
         };
         fired

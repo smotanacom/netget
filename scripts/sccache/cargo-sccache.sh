@@ -5,12 +5,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Check if sccache is available
 if ! command -v sccache &> /dev/null; then
     echo "Warning: sccache not found. Install with: cargo install sccache"
     echo "Falling back to cargo-isolated.sh without sccache..."
-    exec "$SCRIPT_DIR/cargo-isolated.sh" "$@"
+    RUSTC_WRAPPER= exec "$PROJECT_ROOT/cargo-isolated.sh" "$@"
 fi
 
 # Check if sccache is configured (either local or remote)
@@ -36,7 +37,7 @@ echo
 
 # Run cargo-isolated.sh with all arguments
 echo "Running cargo with sccache enabled..."
-"$SCRIPT_DIR/cargo-isolated.sh" "$@"
+"$PROJECT_ROOT/cargo-isolated.sh" "$@"
 
 # Show cache statistics after build
 echo

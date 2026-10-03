@@ -45,6 +45,7 @@ portable-base = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -55,6 +56,7 @@ portable-base = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -197,6 +199,7 @@ eapol = ["pnet", "dep:pcap", "dep:md-5"]  # EAPOL / 802.1X authenticator - libpc
 wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
 dc = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # DC (Direct Connect) - supports TLS (DCCS)
 dns = ["hickory-server", "hickory-proto", "dep:hickory-client"]
+doq = ["dns", "dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # RFC 9250 DNS over QUIC server and client
 dot = ["dns", "hickory-server/dns-over-rustls", "hickory-proto/dns-over-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # DNS-over-TLS server
 doh = ["dns", "hickory-server/dns-over-https-rustls", "hickory-proto/dns-over-https-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:h2"]  # DNS-over-HTTPS server
 dhcp = ["dhcproto"]
@@ -227,7 +230,8 @@ whois = []  # WHOIS uses only TCP, no extra deps
 nats = []  # NATS text-protocol pub/sub server - hand-rolled, no extra deps
 stomp = []  # STOMP 1.2 text-frame messaging server - hand-rolled, no extra deps
 ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra deps
-gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+gemini = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # Gemini (gemini://) capsule over TLS - rustls + rcgen, hand-rolled framing
+nut = [] # NUT UPS management client/server, pure Tokio
 dict = []  # DICT (RFC 2229) dictionary server - hand-rolled line protocol, no extra deps
 beanstalkd = []  # Beanstalkd work-queue server - hand-rolled text protocol, no extra deps
 zabbix = []  # Zabbix trapper (zabbix_sender) - hand-rolled ZBXD framing, serde_json only
@@ -339,7 +343,7 @@ etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
 tor = ["dep:tor-netdoc", "dep:tor-cert", "dep:tor-cell", "dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:ed25519-dalek", "dep:x25519-dalek", "dep:sha2", "dep:aes", "dep:ctr", "dep:hmac", "dep:hkdf", "dep:arti-client", "dep:tor-rtcompat", "dep:tor-dirmgr", "dep:tor-netdir"]  # Tor directory mirror and OR protocol relay (Guard/Middle/Exit) with cell handling + client with directory queries
-vnc = []  # VNC server and client with custom RFB protocol implementation
+vnc = ["dep:des"]  # VNC server and client with custom RFB protocol implementation
 reverse-shell = []  # Reverse-shell listener EMULATION (red-team/CTF); model role-plays the shell, nothing is executed
 rdp = []  # RDP server: TPKT/X.224 connection-negotiation slice of [MS-RDPBCGR] (hand-rolled, no crate)
 openapi = ["http", "dep:openapi-rs", "dep:matchit"]  # OpenAPI 3.1 server with runtime request validation and route matching
@@ -363,20 +367,20 @@ kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client 
 # HTTP stack and rustls for the optional TLS listener. Pure Rust, no system library.
 kubernetes-server = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
 prometheus = []  # Prometheus exporter (/metrics) - hyper only, exposition rendered by NetGet
-otlp = ["dep:opentelemetry-proto", "dep:prost", "dep:flate2"]  # OTLP/HTTP receiver - opentelemetry-proto message types (prost), gzip via flate2
+otlp = ["dep:opentelemetry-proto", "opentelemetry-proto/gen-tonic", "dep:prost", "dep:prost-types", "dep:flate2", "dep:tonic", "dep:tower", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots", "tonic/gzip", "tonic/tls-webpki-roots", "hyper-util/server-auto"] # OTLP HTTP/gRPC receiver and semantic exporter
 docker = ["urlencoding"]  # Docker Engine API (read-only) - hyper only, documents rendered by NetGet
 vault = []  # HashiCorp Vault KV v2 - hyper only, envelope rendered by NetGet; the model holds the secrets
 bolt = []  # Neo4j's Bolt protocol (graph database) - hand-written PackStream + chunking, no extra deps
 git = ["dep:git2"]  # Git client support
 mercurial = ["http", "urlencoding"]  # Mercurial HTTP server with LLM-controlled virtual repositories
 kafka = ["dep:kafka-protocol"]  # Apache Kafka broker and client, both pure Rust on kafka-protocol (rdkafka/librdkafka removed - aborted in malloc)
-# QUIC server (RFC 9000/9001): raw bidirectional QUIC streams under TLS 1.3. Deliberately
+# QUIC server and client (RFC 9000/9001): raw bidirectional QUIC streams under TLS 1.3. Deliberately
 # NOT HTTP/3 - no RFC 9114 framing, no QPACK - so it needs neither h3 nor h3-quinn. See
 # src/server/quic/CLAUDE.md.
 quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]
-# HTTP/3 client only (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
+# HTTP/3 server and client (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
 # NOT build the QUIC server, and the two cannot talk to each other.
-http3 = ["dep:quinn", "dep:rustls", "dep:h3", "dep:h3-quinn"]
+http3 = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "dep:h3", "dep:h3-quinn"]
 torrent-tracker = ["dep:serde_bencode", "urlencoding"]  # BitTorrent Tracker (HTTP-based peer discovery with announce/scrape)
 torrent-dht = ["dep:serde_bencode"]  # BitTorrent DHT (Kademlia-based distributed peer discovery)
 torrent-peer = ["dep:serde_bencode"]  # BitTorrent Peer Wire Protocol (peer-to-peer data transfer)
@@ -464,6 +468,7 @@ dist-windows = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -476,6 +481,7 @@ dist-windows = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -599,6 +605,7 @@ all-protocols = [
     "dc",
     "dns",
     "dot",
+    "doq",
     "doh",
     "dhcp",
     "bootp",
@@ -625,6 +632,7 @@ all-protocols = [
     "ident",
     "gopher",
     "dict",
+    "nut",
     "beanstalkd",
     "zabbix",
     "gearman",
@@ -791,6 +799,7 @@ futures = "0.3"
 textwrap = "0.16"
 
 # HTTP client for Ollama
+des = { version = "0.8", optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "http2"] }
 
 # Ollama Rust client
@@ -988,7 +997,7 @@ tower-http = { version = "0.5", optional = true, features = ["fs", "trace"] }
 uuid = { version = "1.11", features = ["v4"] }
 
 # gRPC server with dynamic schema support
-tonic = { version = "0.12", optional = true }
+tonic = { version = "0.12", optional = true, features = ["gzip"] }
 prost = { version = "0.13", optional = true }
 prost-reflect = { version = "0.14", optional = true }
 prost-types = { version = "0.13", optional = true }
@@ -1159,7 +1168,7 @@ llama-cpp-2 = { version = "0.1", optional = true }  # Rust bindings to llama.cpp
 hf-hub = { version = "0.3", optional = true, features = ["tokio"] }  # Hugging Face Hub API for model downloading
 
 # SQLite database support (in-memory or file-based)
-rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
+rusqlite = { version = "0.37", optional = true, features = ["bundled", "limits", "hooks"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
 tun = { version = "0.8.14", optional = true }
 sha1 = { version = "0.10", optional = true }
 
@@ -1183,7 +1192,7 @@ tui-textarea = "0.7"
 termbg = "0.5"  # Terminal background detection for adaptive theming
 ollama-rs = { version = "0.3.3", features = ["stream"] }
 socket2 = "0.5"  # Socket options (SO_REUSEADDR)
-fs2 = "0.4"  # File locking for cross-process synchronization (nothing in src/ uses it today)
+fs2 = "0.4"  # Cross-process lock for non-destructive legacy settings migration
 syntect = "5.3"
 
 # ---------------------------------------------------------------------------------------------
@@ -1214,6 +1223,14 @@ bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
 # clear Err naming the platform rather than being hidden, on every other OS.
 socketcan = { version = "3.5", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# These fixture dependencies expose Unix-only process/terminal APIs.
+pty-process = "0.5"
+nix = { version = "0.29", features = ["signal", "process", "term", "ioctl"] }
+
 [dev-dependencies]
 # For async tests
 tokio-test = "0.4"
@@ -1222,13 +1239,10 @@ ctor = "0.2"
 # For creating temporary mock config files
 tempfile = "3.13"
 
-# Terminal snapshot testing
-pty-process = "0.5"
+# Terminal snapshot parsing
 vt100 = "0.15"
 
 # E2E test dependencies (only used when protocol features are enabled via test files' cfg gates)
-# For process management in e2e tests (Unix signals) and PTY window size
-nix = { version = "0.29", features = ["signal", "process", "term", "ioctl"] }
 # Axum for creating test HTTP servers in proxy e2e tests
 axum = "0.7"
 # Axum server with TLS support for HTTPS test servers
@@ -1308,3 +1322,7 @@ panic = "abort"
 # tests/vendored_hyper_patch_test.rs fails when Cargo.lock and the vendored copy disagree.
 [patch.crates-io]
 hyper = { path = "vendor/hyper" }
+h3-quinn = { path = "vendor/h3-quinn" }
+# Bound tonic0.12.3 decompression with the configured receive limit in both directions.
+# See vendor/tonic/README.netget.md and tests/vendored_tonic_patch_test.rs.
+tonic = { path = "vendor/tonic" }

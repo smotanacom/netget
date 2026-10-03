@@ -81,6 +81,8 @@ struct ClientData {
 pub enum UsbApplied {
     /// This many payload bytes were delivered to the device.
     Sent(usize),
+    /// Invalid input was refused before a device operation.
+    Rejected(String),
     /// The action ran but wrote nothing; the string says what it did.
     Executed(String),
     /// The device was detached.
@@ -413,6 +415,7 @@ impl UsbClient {
                 .await
                 {
                     UsbApplied::Sent(bytes_sent) => ClientSendOutcome::Sent { bytes_sent },
+                    UsbApplied::Rejected(error) => ClientSendOutcome::Rejected { error },
                     UsbApplied::Executed(detail) => ClientSendOutcome::Executed { detail },
                     UsbApplied::Disconnected => ClientSendOutcome::Disconnected,
                 },
@@ -530,15 +533,25 @@ impl UsbClient {
                                     );
                                 }
                             };
-                            let out_data = data["data"]
-                                .as_array()
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_u64().map(|n| n as u8))
-                                        .collect::<Vec<u8>>()
-                                })
-                                .unwrap_or_default();
-                            let length = length_of(&data).unwrap_or(0);
+                            let out_data = match data.get("data") {
+                                None => Vec::new(),
+                                Some(value) => match value
+                                    .as_array()
+                                    .ok_or_else(|| anyhow::anyhow!("data must be a byte array"))
+                                    .and_then(|array| crate::client::wire_values::bytes(array))
+                                {
+                                    Ok(bytes) => bytes,
+                                    Err(error) => return UsbApplied::Rejected(error.to_string()),
+                                },
+                            };
+                            let length = match u16::try_from(length_of(&data).unwrap_or(0)) {
+                                Ok(length) if out_data.len() <= u16::MAX as usize => length,
+                                _ => {
+                                    return UsbApplied::Rejected(
+                                        "USB control transfer length exceeds u16".into(),
+                                    )
+                                }
+                            };
 
                             trace!(
                                 "USB client {} control transfer: type={:02x} req={:02x} val={:04x} idx={:04x}",
@@ -561,7 +574,7 @@ impl UsbClient {
                                     request,
                                     value,
                                     index,
-                                    length: length as u16,
+                                    length,
                                 };
                                 let completion = interface_clone.control_in(control_in).await;
                                 match completion.status {
@@ -676,14 +689,17 @@ impl UsbClient {
                                         .to_string(),
                                 );
                             };
-                            let out_data = data["data"]
-                                .as_array()
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_u64().map(|n| n as u8))
-                                        .collect::<Vec<u8>>()
-                                })
-                                .unwrap_or_default();
+                            let out_data = match data.get("data") {
+                                None => Vec::new(),
+                                Some(value) => match value
+                                    .as_array()
+                                    .ok_or_else(|| anyhow::anyhow!("data must be a byte array"))
+                                    .and_then(|array| crate::client::wire_values::bytes(array))
+                                {
+                                    Ok(bytes) => bytes,
+                                    Err(error) => return UsbApplied::Rejected(error.to_string()),
+                                },
+                            };
 
                             trace!(
                                 "USB client {} bulk OUT transfer: endpoint={:02x} length={}",

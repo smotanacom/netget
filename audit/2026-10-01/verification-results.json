@@ -1,0 +1,593 @@
+{
+  "date": "2026-10-01",
+  "host": "macOS; local CPU-only validation",
+  "base_commit": "d34d91c09ee1731ec13eb3977c17344aeda95497",
+  "gpu_or_real_model_execution": false,
+  "features": [
+    "tcp",
+    "http",
+    "dns",
+    "udp",
+    "redis",
+    "mcp-stdio",
+    "mcp-http",
+    "finger",
+    "tls",
+    "dot",
+    "pty",
+    "vnc",
+    "torrent-peer",
+    "proxy",
+    "ssh-agent",
+    "webrtc",
+    "ftp",
+    "nntp",
+    "pop3",
+    "http_proxy",
+    "sqlite"
+  ],
+  "cargo_environment": {
+    "CARGO_TARGET_DIR": "/Users/matus/dev/netget/target",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_BUILD_JOBS": "4",
+    "RUSTC_WRAPPER": "",
+    "NETGET_USE_OLLAMA": "(unset)"
+  },
+  "successful_final_test_executions": 273,
+  "counting_note": "260 Rust, 8 Node and 5 Python test executions. Shared helper tests can run in multiple binaries; this is not a count of unique or newly added regressions. Initial failed attempts are excluded from the successful-final total and preserved below.",
+  "native_regressions": {
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--no-default-features",
+      "--features",
+      "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+      "--no-fail-fast",
+      "--test",
+      "agent_queue_fifo_test",
+      "--test",
+      "audit_ci_coverage_test",
+      "--test",
+      "client_review_regression_test",
+      "--test",
+      "dashboard_frame_test",
+      "--test",
+      "display_rendering_test",
+      "--test",
+      "llm_rate_limiter_test",
+      "--test",
+      "log_template_injection_test",
+      "--test",
+      "log_template_test",
+      "--test",
+      "management_test",
+      "--test",
+      "mcp_startup_config_test",
+      "--test",
+      "prompt_growth_test",
+      "--test",
+      "proxy_cert_cache_test",
+      "--test",
+      "reference_parser_test",
+      "--test",
+      "scheduled_task_actions_test",
+      "--test",
+      "scheduled_task_claim_test",
+      "--test",
+      "scripting_highlight_test",
+      "--test",
+      "scripting_manager_test",
+      "--test",
+      "scripting_resident_test",
+      "--test",
+      "secret_redaction_test",
+      "--test",
+      "server_stop_cleans_scheduled_tasks_test",
+      "--test",
+      "sqlite_identifier_test",
+      "--test",
+      "startup_params_result_test",
+      "--test",
+      "test_infrastructure_review_test",
+      "--test",
+      "utils_save_load_test",
+      "--",
+      "--test-threads=32"
+    ],
+    "exit_code": 0,
+    "passed": 187,
+    "failed": 0,
+    "ignored": 0,
+    "targets": [
+      {
+        "target": "tests/agent_queue_fifo_test.rs",
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/audit_ci_coverage_test.rs",
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/client_review_regression_test.rs",
+        "status": "ok",
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/dashboard_frame_test.rs",
+        "status": "ok",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/display_rendering_test.rs",
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/llm_rate_limiter_test.rs",
+        "status": "ok",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/log_template_injection_test.rs",
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/log_template_test.rs",
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/management_test.rs",
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/mcp_startup_config_test.rs",
+        "status": "ok",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/prompt_growth_test.rs",
+        "status": "ok",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/proxy_cert_cache_test.rs",
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/reference_parser_test.rs",
+        "status": "ok",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/scheduled_task_actions_test.rs",
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/scheduled_task_claim_test.rs",
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/scripting_highlight_test.rs",
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/scripting_manager_test.rs",
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/scripting_resident_test.rs",
+        "status": "ok",
+        "passed": 15,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/secret_redaction_test.rs",
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/server_stop_cleans_scheduled_tasks_test.rs",
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/sqlite_identifier_test.rs",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/startup_params_result_test.rs",
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/test_infrastructure_review_test.rs",
+        "status": "ok",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/utils_save_load_test.rs",
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "log": "tmp/audit-2026-10-01/regression-final.log"
+  },
+  "focused_server_regressions": [
+    {
+      "name": "server-certificates",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+        "--test",
+        "server",
+        "certificate_validation_test",
+        "--",
+        "--test-threads=32"
+      ],
+      "exit_code": 0,
+      "seconds": 10.49,
+      "log": "tmp/audit-2026-10-01/server-certificates.log",
+      "target_results": 1,
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "nonempty": true
+    },
+    {
+      "name": "server-dot-body-timeout",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+        "--test",
+        "server",
+        "an_incomplete_dns_body_releases_its_connection",
+        "--",
+        "--test-threads=32"
+      ],
+      "exit_code": 0,
+      "seconds": 11.21,
+      "log": "tmp/audit-2026-10-01/server-dot-body-timeout.log",
+      "target_results": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "nonempty": true
+    },
+    {
+      "name": "server-pty-cleanup",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+        "--test",
+        "server",
+        "rejected_link_path_does_not_leak_pty_descriptors",
+        "--",
+        "--test-threads=32"
+      ],
+      "exit_code": 0,
+      "seconds": 1.66,
+      "log": "tmp/audit-2026-10-01/server-pty-cleanup.log",
+      "target_results": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "nonempty": true
+    },
+    {
+      "name": "server-peer-lifecycle",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+        "--test",
+        "server",
+        "server_removal_cancels_a_blocked_peer_write",
+        "--",
+        "--test-threads=32"
+      ],
+      "exit_code": 0,
+      "seconds": 2.07,
+      "log": "tmp/audit-2026-10-01/server-peer-lifecycle.log",
+      "target_results": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "nonempty": true
+    },
+    {
+      "name": "server-proxy-cache-bound",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+        "--test",
+        "server",
+        "certificate_cache_evicts_the_oldest_pair_at_its_capacity",
+        "--",
+        "--test-threads=32"
+      ],
+      "exit_code": 0,
+      "seconds": 1.84,
+      "log": "tmp/audit-2026-10-01/server-proxy-cache-bound.log",
+      "target_results": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "nonempty": true
+    }
+  ],
+  "source_ratchets": {
+    "final_status": "passed after correcting stale PTY documentation; no test expectation relaxed",
+    "passed": 51,
+    "failed": 0,
+    "ignored": 0,
+    "initial_run": {
+      "name": "source-ratchets",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-default-features",
+        "--features",
+        "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+        "--no-fail-fast",
+        "--test",
+        "affirmative_default_drift_test",
+        "--test",
+        "client_event_wiring_test",
+        "--test",
+        "decision_tag_ratchet_test",
+        "--test",
+        "doc_paths_exist_test",
+        "--test",
+        "doc_test_counts_test",
+        "--test",
+        "event_emit_sites_test",
+        "--test",
+        "example_hex_drift_test",
+        "--test",
+        "failure_mode_declaration_test",
+        "--test",
+        "handler_result_decides_the_bound_test",
+        "--test",
+        "narrowing_cast_drift_test",
+        "--test",
+        "no_protocol_is_hidden_from_the_model_test",
+        "--test",
+        "recursive_decoder_depth_test",
+        "--test",
+        "request_only_declaration_test",
+        "--test",
+        "startup_param_drift_test",
+        "--test",
+        "tcp_server_bounds_ratchet_test",
+        "--test",
+        "real_client_evidence_is_run_test",
+        "--test",
+        "test_suite_hygiene_test",
+        "--test",
+        "vendored_hyper_patch_test",
+        "--",
+        "--test-threads=32"
+      ],
+      "exit_code": 101,
+      "seconds": 64.09,
+      "log": "tmp/audit-2026-10-01/source-ratchets.log",
+      "target_results": 18,
+      "passed": 50,
+      "failed": 1,
+      "ignored": 0,
+      "nonempty": true
+    },
+    "corrected_target_rerun": {
+      "command": [
+        "/Users/matus/dev/netget/target/debug/deps/doc_test_counts_test-163593d1b2bfc2f9",
+        "--test-threads=32"
+      ],
+      "exit_code": 0,
+      "log": "tmp/audit-2026-10-01/doc-test-counts-final.log"
+    },
+    "rerun_note": "The already-built doc_test_counts_test binary was rerun after a documentation-only correction. Other 50 checks had passed and their source inputs did not change."
+  },
+  "wasm_compatibility_native_tests": {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "netget-tokio-wasm",
+      "--test",
+      "tcp_peek_test",
+      "--test",
+      "udp_receive_test",
+      "--test",
+      "time_math_test",
+      "--locked",
+      "--offline"
+    ],
+    "environment": {
+      "CARGO_TARGET_DIR": "/private/tmp/netget-audit-wasm-20261001",
+      "RUSTC_WRAPPER": "",
+      "CARGO_PROFILE_TEST_DEBUG": "0"
+    },
+    "passed": 14,
+    "failed": 0,
+    "ignored": 0,
+    "evidence": "Completed by surfaces reviewer; recorded in audit/2026-10-01/surfaces-review.md. Native in-memory shim tests, not a browser or wasm-target run."
+  },
+  "node_tests": {
+    "command": [
+      "node",
+      "--test",
+      "web/test/composer_model_test.mjs",
+      "web/test/telnet_test.mjs",
+      "tests/npm_launcher_test.cjs"
+    ],
+    "passed": 8,
+    "failed": 0,
+    "skipped": 0,
+    "log": "tmp/audit-2026-10-01/node-tests.log"
+  },
+  "python_tests": {
+    "command": [
+      "python3",
+      "tests/build_scripts_test.py"
+    ],
+    "passed": 5,
+    "failed": 0,
+    "log": "tmp/audit-2026-10-01/build-scripts-tests.log"
+  },
+  "clippy": {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--offline",
+      "--no-default-features",
+      "--features",
+      "tcp,http,dns,udp,redis,mcp-stdio,mcp-http,finger,tls,dot,pty,vnc,torrent-peer,proxy,ssh-agent,webrtc,ftp,nntp,pop3,http_proxy,sqlite",
+      "--all-targets",
+      "--",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "exit_code": 0,
+    "seconds": 85.45,
+    "log": "tmp/audit-2026-10-01/clippy.log",
+    "note": "Correctness and suspicious lint groups denied; existing style warnings remain. Not a warnings-free run."
+  },
+  "additional_checks": [
+    {
+      "check": "baseline offline cargo check --tests, narrower CPU feature subset",
+      "status": "passed",
+      "log": "tmp/audit-2026-10-01/baseline-check.log"
+    },
+    {
+      "check": "cargo fmt --all -- --check",
+      "status": "passed",
+      "log": "tmp/audit-2026-10-01/format-check.log"
+    },
+    {
+      "check": ".github/scripts/check-module-reachability.sh",
+      "status": "passed: 2255 files, 2 documented allowlisted files",
+      "log": "tmp/audit-2026-10-01/module-reachability.log"
+    },
+    {
+      "check": "40 tracked shell/Python/JavaScript syntax checks",
+      "status": "passed",
+      "details": "audit/2026-10-01/script-syntax-results.json"
+    },
+    {
+      "check": "python3 scripts/beta_evidence_table.py --check",
+      "status": "passed",
+      "log": "tmp/audit-2026-10-01/server-beta-evidence.log"
+    },
+    {
+      "check": "python3 scripts/beta_evidence_table.py --side client --check",
+      "status": "passed",
+      "log": "tmp/audit-2026-10-01/client-beta-evidence.log"
+    },
+    {
+      "check": "git diff --check",
+      "status": "passed"
+    }
+  ],
+  "not_executed": [
+    "GPU capability probes or GPU workloads",
+    "embedded or external real-model inference",
+    "full all-features or full test suite",
+    "live external protocol interoperability",
+    "fuzz campaigns",
+    "real browser/Playwright/model demo",
+    "Windows/Linux/mobile/hardware validation",
+    "deployment/publishing/commit/push"
+  ]
+}

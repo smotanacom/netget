@@ -1,0 +1,744 @@
+== cargo build (profile: dev)
+   Compiling unicode-ident v1.0.22
+   Compiling proc-macro2 v1.0.103
+   Compiling quote v1.0.42
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.7.6
+   Compiling rustversion v1.0.22
+   Compiling wasm-bindgen-shared v0.2.128
+   Compiling once_cell v1.21.3
+   Compiling bumpalo v3.19.0
+   Compiling pin-project-lite v0.2.16
+   Compiling futures-core v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling slab v0.4.11
+   Compiling futures-channel v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.189
+   Compiling serde v1.0.228
+   Compiling version_check v0.9.5
+   Compiling zeroize v1.8.2
+   Compiling itoa v1.0.15
+   Compiling libm v0.2.15
+   Compiling autocfg v1.5.0
+   Compiling equivalent v1.0.2
+   Compiling typenum v1.19.0
+   Compiling smallvec v1.15.1
+   Compiling generic-array v0.14.9
+   Compiling zerocopy v0.8.27
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.4
+   Compiling subtle v2.6.1
+   Compiling hashbrown v0.16.0
+   Compiling num-traits v0.2.19
+   Compiling wasm-bindgen v0.2.128
+   Compiling crossbeam-utils v0.8.21
+   Compiling const-oid v0.9.6
+   Compiling bytes v1.12.1
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
+   Compiling log v0.4.34
+   Compiling stable_deref_trait v1.2.1
+   Compiling either v1.15.0
+   Compiling zmij v1.0.23
+   Compiling rayon-core v1.13.0
+   Compiling anyhow v1.0.100
+   Compiling serde_json v1.0.151
+   Compiling syn v1.0.109
+   Compiling syn v2.0.109
+   Compiling syn v3.0.3
+   Compiling writeable v0.6.2
+   Compiling jobserver v0.1.34
+   Compiling litemap v0.8.1
+   Compiling fnv v1.0.7
+   Compiling base64ct v1.8.0
+   Compiling icu_normalizer_data v2.1.1
+   Compiling cc v1.2.44
+   Compiling indexmap v2.12.0
+   Compiling heck v0.5.0
+   Compiling arrayvec v0.7.6
+   Compiling icu_properties_data v2.1.1
+   Compiling pem-rfc7468 v0.7.0
+   Compiling der v0.7.10
+   Compiling getrandom v0.3.4
+   Compiling simd-adler32 v0.3.7
+   Compiling percent-encoding v2.3.2
+   Compiling ryu v1.0.20
+   Compiling thiserror v1.0.69
+   Compiling crossbeam-epoch v0.9.18
+   Compiling form_urlencoded v1.2.2
+   Compiling aho-corasick v1.1.4
+   Compiling time-core v0.1.6
+   Compiling semver v1.0.27
+   Compiling crypto-common v0.1.6
+   Compiling block-buffer v0.10.4
+   Compiling powerfmt v0.2.0
+   Compiling regex-syntax v0.8.8
+   Compiling digest v0.10.7
+   Compiling crc32fast v1.5.0
+   Compiling utf8_iter v1.0.4
+   Compiling num-conv v0.1.0
+   Compiling adler2 v2.0.1
+   Compiling num-integer v0.1.46
+   Compiling time-macros v0.2.24
+   Compiling miniz_oxide v0.8.9
+   Compiling rustc_version v0.4.1
+   Compiling deranged v0.5.5
+   Compiling spki v0.7.3
+   Compiling crossbeam-deque v0.8.6
+   Compiling pkcs8 v0.10.2
+   Compiling tracing-core v0.1.34
+   Compiling paste v1.0.15
+   Compiling rand_core v0.6.4
+   Compiling siphasher v1.0.1
+   Compiling spin v0.9.8
+   Compiling new_debug_unreachable v1.0.6
+   Compiling phf_shared v0.11.3
+   Compiling lazy_static v1.5.0
+   Compiling rand v0.8.5
+   Compiling ring v0.17.14
+   Compiling num-bigint v0.4.6
+   Compiling hmac v0.12.1
+   Compiling minimal-lexical v0.2.1
+   Compiling radium v0.7.0
+   Compiling heck v0.4.1
+   Compiling static_assertions v1.1.0
+   Compiling phf_generator v0.11.3
+   Compiling nom v7.1.3
+   Compiling flate2 v1.1.5
+   Compiling time v0.3.44
+   Compiling itertools v0.14.0
+   Compiling ahash v0.8.12
+   Compiling typewit_proc_macros v1.8.1
+   Compiling pkg-config v0.3.32
+   Compiling rustix v1.1.2
+   Compiling regex-automata v0.4.13
+   Compiling tinyvec_macros v0.1.1
+   Compiling owo-colors v4.2.3
+   Compiling base16ct v0.2.0
+   Compiling tap v1.0.1
+   Compiling bitflags v2.10.0
+   Compiling parking_lot_core v0.9.12
+   Compiling wyz v0.5.1
+   Compiling sec1 v0.7.3
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling tinyvec v1.10.0
+   Compiling typewit v1.14.2
+   Compiling rayon v1.11.0
+   Compiling hkdf v0.12.4
+   Compiling wasm-bindgen-macro-support v0.2.128
+   Compiling darling_core v0.24.0
+   Compiling http v1.3.1
+   Compiling errno v0.3.14
+   Compiling funty v2.0.0
+   Compiling prettyplease v0.2.37
+   Compiling synstructure v0.13.2
+   Compiling darling_core v0.20.11
+   Compiling darling_core v0.21.3
+   Compiling doc-comment v0.3.4
+   Compiling futures-macro v0.3.34
+   Compiling scopeguard v1.2.0
+   Compiling bitcoin-io v0.1.3
+   Compiling binrw_derive v0.15.0
+   Compiling thiserror v2.0.20
+   Compiling base64 v0.22.1
+   Compiling futures-util v0.3.34
+   Compiling serde_derive v1.0.228
+   Compiling zerocopy-derive v0.8.27
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling zerofrom v0.1.6
+   Compiling zerovec-derive v0.11.2
+   Compiling displaydoc v0.2.5
+   Compiling yoke v0.8.1
+   Compiling bytemuck_derive v1.10.2
+   Compiling tokio-macros v2.6.0
+   Compiling thiserror-impl v1.0.69
+   Compiling zerotrie v0.2.3
+   Compiling tracing-attributes v0.1.30
+   Compiling tokio v1.48.0
+   Compiling equator-macro v0.4.2
+   Compiling darling_macro v0.20.11
+   Compiling prost-derive v0.13.5
+   Compiling zerovec v0.11.5
+   Compiling equator v0.4.2
+   Compiling bytemuck v1.24.0
+   Compiling darling v0.20.11
+   Compiling aligned-vec v0.6.4
+   Compiling darling_macro v0.21.3
+   Compiling darling_macro v0.24.0
+   Compiling tinystr v0.8.2
+   Compiling potential_utf v0.1.4
+   Compiling tracing v0.1.41
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling lock_api v0.4.14
+   Compiling thiserror-impl v2.0.20
+   Compiling bitvec v1.0.1
+   Compiling prost v0.13.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling icu_provider v2.1.1
+   Compiling phf_codegen v0.11.3
+   Compiling string_cache_codegen v0.5.4
+   Compiling sha2 v0.10.9
+   Compiling icu_properties v2.1.1
+   Compiling wasm-bindgen-macro v0.2.128
+   Compiling icu_normalizer v2.1.1
+   Compiling nom v8.0.0
+   Compiling ucd-trie v0.1.7
+   Compiling unicode-segmentation v1.12.0
+   Compiling instability v0.3.13
+   Compiling fixedbitset v0.5.7
+   Compiling bitcoin-internals v0.3.0
+   Compiling untrusted v0.9.0
+   Compiling fastrand v2.3.0
+   Compiling allocator-api2 v0.2.21
+   Compiling binrw v0.15.0
+   Compiling unicode-width v0.1.14
+   Compiling built v0.7.7
+   Compiling foldhash v0.1.5
+   Compiling mac v0.1.1
+   Compiling pest v2.8.3
+   Compiling hashbrown v0.15.5
+   Compiling futf v0.1.5
+   Compiling rav1e v0.7.1
+   Compiling tempfile v3.23.0
+   Compiling regex v1.12.2
+   Compiling petgraph v0.7.1
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling markup5ever v0.12.1
+   Compiling tokio-util v0.7.17
+   Compiling url v2.5.7
+   Compiling parking_lot v0.12.5
+   Compiling serde_urlencoded v0.7.1
+   Compiling prost-types v0.13.5
+   Compiling js-sys v0.3.105
+   Compiling v_frame v0.3.9
+   Compiling darling v0.24.0
+   Compiling darling v0.21.3
+   Compiling font-types v0.7.3
+   Compiling derive_builder_core v0.20.2
+   Compiling strum_macros v0.26.4
+   Compiling profiling-procmacros v1.0.17
+   Compiling snafu-derive v0.7.5
+   Compiling modular-bitfield-impl v0.11.2
+   Compiling konst_kernel v0.3.15
+   Compiling const_panic v0.2.15
+   Compiling num-rational v0.4.2
+   Compiling rfc6979 v0.4.0
+   Compiling secp256k1-sys v0.10.1
+   Compiling lz4-sys v1.11.1+lz4-1.10.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling uuid v1.18.1
+   Compiling fdeflate v0.3.7
+   Compiling hex-conservative v0.2.1
+   Compiling itertools v0.13.0
+   Compiling castaway v0.2.4
+   Compiling slotmap v1.0.7
+   Compiling utf8parse v0.2.2
+   Compiling quick-error v2.0.1
+   Compiling unicode-width v0.2.0
+   Compiling unicode-bidi v0.3.18
+   Compiling array-init v2.1.0
+   Compiling precomputed-hash v0.1.1
+   Compiling httparse v1.10.1
+   Compiling multimap v0.10.1
+   Compiling utf-8 v0.7.6
+   Compiling indoc v2.0.7
+   Compiling zstd-safe v7.2.4
+   Compiling num-bigint-dig v0.8.5
+   Compiling base64 v0.21.7
+   Compiling tendril v0.4.3
+   Compiling strum v0.26.3
+   Compiling prost-build v0.13.5
+   Compiling snafu v0.7.5
+   Compiling av1-grain v0.2.5
+   Compiling string_cache v0.8.9
+   Compiling modular-bitfield v0.11.2
+   Compiling anstyle-parse v0.2.7
+   Compiling compact_str v0.8.2
+   Compiling bitcoin_hashes v0.14.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling konst v0.3.16
+   Compiling read-fonts v0.22.7
+   Compiling profiling v1.0.17
+   Compiling serde_with_macros v3.15.1
+   Compiling pest_meta v2.8.3
+   Compiling hashbrown v0.14.5
+   Compiling unicode-truncate v1.1.0
+   Compiling rand_core v0.9.3
+   Compiling rasn-derive v0.18.0
+   Compiling bitvec-nom2 v0.2.1
+   Compiling lru v0.12.5
+   Compiling ipnet v2.12.1
+   Compiling half v2.7.1
+   Compiling phf v0.11.3
+   Compiling maybe-rayon v0.1.1
+   Compiling html5ever v0.27.0
+   Compiling fax_derive v0.2.0
+   Compiling num-derive v0.4.2
+   Compiling arg_enum_proc_macro v0.3.4
+   Compiling http-body v1.0.1
+   Compiling unicode-normalization v0.1.25
+   Compiling num-iter v0.1.45
+   Compiling crc32c v0.6.8
+   Compiling http v0.2.12
+   Compiling simd_helpers v0.1.0
+   Compiling itertools v0.12.1
+   Compiling encoding_rs v0.8.35
+   Compiling tower-service v0.3.3
+   Compiling imgref v1.12.0
+   Compiling rustls v0.23.43
+   Compiling colorchoice v1.0.4
+   Compiling try-lock v0.2.5
+   Compiling zune-core v0.4.12
+   Compiling noop_proc_macro v0.3.0
+   Compiling atomic-waker v1.1.2
+   Compiling hex_lit v0.1.1
+   Compiling weezl v0.1.10
+   Compiling matches v0.1.10
+   Compiling bitstream-io v2.6.0
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling snap v1.1.1
+   Compiling sync_wrapper v0.1.2
+   Compiling pastey v0.1.1
+   Compiling anstyle v1.0.13
+   Compiling cassowary v0.3.0
+   Compiling anstyle-query v1.1.4
+   Compiling bit-vec v0.8.0
+   Compiling anstream v0.6.21
+   Compiling idna v0.2.3
+   Compiling bit-set v0.8.0
+   Compiling ratatui v0.29.0
+   Compiling zune-jpeg v0.4.21
+   Compiling h2 v0.4.12
+   Compiling loop9 v0.1.5
+   Compiling want v0.3.1
+   Compiling fax v0.2.6
+   Compiling pest_generator v2.8.3
+   Compiling serde_with v3.15.1
+   Compiling quick-xml v0.37.5
+   Compiling rand_chacha v0.9.0
+   Compiling tonic-build v0.12.3
+   Compiling derive_builder v0.20.2
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling futures-executor v0.3.34
+   Compiling matchers v0.2.0
+   Compiling strum_macros v0.27.2
+   Compiling async-trait v0.1.89
+   Compiling enum-as-inner v0.5.1
+   Compiling netgauze-locate v0.7.0
+   Compiling tracing-log v0.2.0
+   Compiling serde_path_to_error v0.1.20
+   Compiling serde_bytes v0.11.19
+   Compiling sharded-slab v0.1.7
+   Compiling pkcs1 v0.7.5
+   Compiling ordered-float v2.10.1
+   Compiling pxfm v0.1.25
+   Compiling inout v0.1.4
+   Compiling zune-inflate v0.2.54
+   Compiling avif-serialize v0.8.6
+   Compiling quick-xml v0.38.3
+   Compiling thread_local v1.1.9
+   Compiling strum v0.27.2
+   Compiling never v0.1.0
+   Compiling hex v0.4.3
+   Compiling color_quant v1.1.0
+   Compiling arrayref v0.3.9
+   Compiling ttf-parser v0.21.1
+   Compiling base64 v0.13.1
+   Compiling data-encoding v2.9.0
+   Compiling winnow v0.7.13
+   Compiling lebe v0.5.3
+   Compiling zeno v0.2.3
+   Compiling strict-num v0.1.1
+   Compiling humantime v2.3.0
+   Compiling unicode-properties v0.1.4
+   Compiling clap_lex v0.7.6
+   Compiling bitcoin v0.32.7
+   Compiling termcolor v1.4.1
+   Compiling bit_field v0.10.3
+   Compiling crc-catalog v2.4.0
+   Compiling bitflags v1.3.2
+   Compiling httpdate v1.0.3
+   Compiling unicode-bidi-mirroring v0.2.0
+   Compiling linked-hash-map v0.5.6
+   Compiling memmap2 v0.9.9
+   Compiling unsafe-libyaml v0.2.11
+   Compiling option-ext v0.2.0
+   Compiling is-terminal v0.4.17
+   Compiling nu-ansi-term v0.50.3
+   Compiling unicode-script v0.5.7
+   Compiling unicode-linebreak v0.1.5
+   Compiling byteorder-lite v0.1.0
+   Compiling rgb v0.8.52
+   Compiling same-file v1.0.6
+   Compiling ttf-parser v0.20.0
+   Compiling toml_write v0.1.2
+   Compiling yazi v0.1.6
+   Compiling pin-utils v0.1.0
+   Compiling unicode-ccc v0.2.0
+   Compiling image-webp v0.2.4
+   Compiling walkdir v2.5.0
+   Compiling clap_builder v4.5.51
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling tracing-subscriber v0.3.20
+   Compiling toml_edit v0.22.27
+   Compiling skrifa v0.22.3
+   Compiling rustybuzz v0.14.1
+   Compiling moxcms v0.7.9
+   Compiling env_logger v0.10.2
+   Compiling dirs-sys v0.4.1
+   Compiling yaml-rust v0.4.5
+   Compiling fontdb v0.16.2
+   Compiling png v0.17.16
+   Compiling crc v3.3.0
+   Compiling exr v1.73.0
+   Compiling netgauze-iana v0.7.0
+   Compiling plist v1.8.0
+   Compiling ravif v0.11.20
+   Compiling tiny-skia-path v0.11.4
+   Compiling gif v0.13.3
+   Compiling serde-value v0.7.0
+   Compiling tui-textarea v0.7.0
+   Compiling cipher v0.4.4
+   Compiling netgauze-parse-utils v0.7.0
+   Compiling lz4 v1.28.1
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+   Compiling futures v0.3.34
+   Compiling pest_derive v2.8.3
+   Compiling rand v0.9.2
+   Compiling tiff v0.10.3
+   Compiling zstd v0.13.3
+   Compiling secp256k1 v0.29.1
+   Compiling fancy-regex v0.16.2
+   Compiling validator v0.19.0
+   Compiling bitcoin-units v0.1.2
+   Compiling base58ck v0.1.0
+   Compiling swash v0.1.19
+   Compiling png v0.18.0
+   Compiling bincode v1.3.3
+   Compiling serde_plain v1.0.2
+   Compiling qoi v0.4.1
+   Compiling pem v3.0.6
+   Compiling netgauze-serde-macros v0.7.0
+   Compiling clap_derive v4.5.49
+   Compiling yasna v0.5.2
+   Compiling include_dir_macros v0.7.4
+   Compiling itertools v0.10.5
+   Compiling fern v0.6.2
+   Compiling send_wrapper v0.6.0
+   Compiling sync_wrapper v1.0.2
+   Compiling dyn-clone v1.0.20
+   Compiling self_cell v1.2.1
+   Compiling smawk v0.3.2
+   Compiling simdutf8 v0.1.5
+   Compiling rangemap v1.6.0
+   Compiling byteorder v1.5.0
+   Compiling rustc-hash v1.1.0
+   Compiling dhcproto-macros v0.1.0
+   Compiling sys-locale v0.3.2
+   Compiling bech32 v0.11.0
+   Compiling netgauze-bgp-pkt v0.7.0
+   Compiling textwrap v0.16.2
+   Compiling include_dir v0.7.4
+   Compiling syntect v5.3.0
+   Compiling html2text v0.12.5
+   Compiling kafka-protocol v0.14.1
+   Compiling handlebars v5.1.2
+   Compiling clap v4.5.51
+   Compiling tiny-skia v0.11.4
+   Compiling toml v0.8.23
+   Compiling netget-crossterm-wasm v0.1.0 (/Users/matus/dev/netget/crates/netget-crossterm-wasm)
+   Compiling getrandom v0.2.16
+   Compiling chrono v0.4.42
+   Compiling web-time v1.1.0
+   Compiling rand_chacha v0.3.1
+   Compiling rustls-pki-types v1.13.0
+   Compiling ff v0.13.1
+   Compiling signature v2.2.0
+   Compiling group v0.13.0
+   Compiling crypto-bigint v0.5.5
+   Compiling web-sys v0.3.105
+   Compiling wasm-bindgen-futures v0.4.78
+   Compiling smb-dtyp v0.10.3
+   Compiling diligent-date-parser v0.1.5
+   Compiling rasn v0.18.0
+   Compiling ed25519 v2.2.3
+   Compiling atom_syndication v0.12.7
+   Compiling trust-dns-proto v0.22.0
+   Compiling ed25519-dalek v2.2.0
+   Compiling elliptic-curve v0.13.8
+   Compiling webpki-roots v1.0.9
+   Compiling hyper v1.7.0 (/Users/matus/dev/netget/vendor/hyper)
+   Compiling ecdsa v0.16.9
+   Compiling primeorder v0.13.6
+   Compiling rsa v0.9.8
+   Compiling smb-fscc v0.10.3
+   Compiling p256 v0.13.2
+   Compiling rustls-webpki v0.103.15
+   Compiling p384 v0.13.1
+   Compiling gloo-timers v0.3.0
+   Compiling netget-tokio-wasm v0.1.0 (/Users/matus/dev/netget/crates/netget-tokio-wasm)
+   Compiling rcgen v0.14.5
+   Compiling rss v2.0.12
+   Compiling webpki-roots v0.26.11
+   Compiling hyper-util v0.1.17
+   Compiling syslog_loose v0.22.0
+   Compiling dhcproto v0.12.0
+   Compiling openapi-rs v0.1.0 (https://github.com/baerwang/openapi-rs#e410a2db)
+   Compiling cosmic-text v0.12.1
+   Compiling rustls-pemfile v2.2.0
+   Compiling bson v3.0.0
+   Compiling image v0.25.8
+   Compiling des v0.8.1
+   Compiling dirs v5.0.1
+   Compiling serde_bencode v0.2.4
+   Compiling http-body-util v0.1.3
+   Compiling rasn-smi v0.18.0
+   Compiling nectar v0.4.0
+   Compiling smb-msg v0.10.3
+   Compiling tokio-stream v0.1.17
+   Compiling rasn-snmp v0.18.0
+   Compiling sysinfo v0.32.1
+   Compiling md-5 v0.10.6
+   Compiling matchit v0.8.6
+   Compiling snmp v0.2.2
+   Compiling urlencoding v2.1.3
+   Compiling console_error_panic_hook v0.1.7
+   Compiling tokio-rustls v0.26.4
+   Compiling reqwest v0.11.27
+   Compiling reqwest v0.12.24
+   Compiling tracing-web v0.1.3
+   Compiling oauth2 v4.4.2
+   Compiling openidconnect v3.5.0
+warning: unused import: `tracing::debug`
+ --> src/cli/theme.rs:4:5
+  |
+4 | use tracing::debug;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow::Result`
+  --> src/cli/mod.rs:27:5
+   |
+27 | use anyhow::Result;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `clap::Parser`
+  --> src/cli/mod.rs:29:5
+   |
+29 | use clap::Parser;
+   |     ^^^^^^^^^^^^
+
+warning: unused import: `tracing::debug`
+  --> src/cli/mod.rs:30:5
+   |
+30 | use tracing::debug;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::events::EventHandler`
+  --> src/cli/mod.rs:32:5
+   |
+32 | use crate::events::EventHandler;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::llm::OllamaClient`
+  --> src/cli/mod.rs:33:5
+   |
+33 | use crate::llm::OllamaClient;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::settings::Settings`
+  --> src/cli/mod.rs:34:5
+   |
+34 | use crate::settings::Settings;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::state::app_state::AppState`
+  --> src/cli/mod.rs:35:5
+   |
+35 | use crate::state::app_state::AppState;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::ui::App`
+  --> src/cli/mod.rs:36:5
+   |
+36 | use crate::ui::App;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::Command`
+ --> src/protocol/dependencies.rs:6:5
+  |
+6 | use std::process::Command;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `info`
+ --> src/scripting/environment.rs:6:22
+  |
+6 | use tracing::{debug, info, warn};
+  |                      ^^^^
+
+warning: variable does not need to be mutable
+   --> src/server/dc/mod.rs:295:9
+    |
+295 |         mut read_half: R,
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> src/server/http2/h2_server.rs:197:14
+    |
+197 |             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+    |              ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+197 -             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+197 +             .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+    |
+
+warning: value assigned to `disconnect` is never read
+   --> src/client/tftp/mod.rs:576:75
+    |
+576 | ...                   Ok(ClientActionResult::Disconnect) => disconnect = true,
+    |                                                             ^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/scripting/process_io.rs:153:13
+    |
+153 |         let mut builder = std::fs::DirBuilder::new();
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: function `fetch_url` is never used
+   --> src/llm/actions/tools.rs:694:10
+    |
+694 | async fn fetch_url(url: &str) -> ToolResult {
+    |          ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `SearchResult` is never constructed
+   --> src/llm/actions/tools.rs:779:8
+    |
+779 | struct SearchResult {
+    |        ^^^^^^^^^^^^
+
+warning: function `parse_duckduckgo_results` is never used
+   --> src/llm/actions/tools.rs:786:4
+    |
+786 | fn parse_duckduckgo_results(html: &str) -> Vec<SearchResult> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_between` is never used
+   --> src/llm/actions/tools.rs:831:4
+    |
+831 | fn extract_between(text: &str, start: &str, end: &str) -> Option<String> {
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `decode_html_entities` is never used
+   --> src/llm/actions/tools.rs:839:4
+    |
+839 | fn decode_html_entities(text: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `format_search_results` is never used
+   --> src/llm/actions/tools.rs:849:4
+    |
+849 | fn format_search_results(results: &[SearchResult]) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `apply_to` is never used
+    --> src/llm/ollama_client.rs:1069:8
+     |
+1062 | impl SamplingOptions {
+     | -------------------- method in this implementation
+...
+1069 |     fn apply_to(&self, target: &mut serde_json::Value) {
+     |        ^^^^^^^^
+
+warning: function `is_running_as_root` is never used
+   --> src/privilege.rs:187:4
+    |
+187 | fn is_running_as_root() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `can_bind_privileged_port` is never used
+   --> src/privilege.rs:276:4
+    |
+276 | fn can_bind_privileged_port() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_raw_ip_socket_capability` is never used
+   --> src/privilege.rs:357:4
+    |
+357 | fn has_raw_ip_socket_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_packet_capture_capability` is never used
+   --> src/privilege.rs:402:4
+    |
+402 | fn has_packet_capture_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_bluetooth_capability` is never used
+   --> src/privilege.rs:508:4
+    |
+508 | fn has_bluetooth_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `has_usb_capability` is never used
+   --> src/privilege.rs:539:4
+    |
+539 | fn has_usb_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `has_nfc_capability` is never used
+   --> src/privilege.rs:561:4
+    |
+561 | fn has_nfc_capability() -> bool {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `detect_python`, `detect_javascript`, `detect_go`, and `detect_perl` are never used
+   --> src/scripting/environment.rs:186:8
+    |
+ 45 | impl ScriptingEnvironment {
+    | ------------------------- associated functions in this implementation
+...
+186 |     fn detect_python() -> Option<String> {
+    |        ^^^^^^^^^^^^^
+...
+191 |     fn detect_javascript() -> Option<String> {
+    |        ^^^^^^^^^^^^^^^^^
+...
+196 |     fn detect_go() -> Option<String> {
+    |        ^^^^^^^^^
+...
+201 |     fn detect_perl() -> Option<String> {
+    |        ^^^^^^^^^^^
+
+warning: `netget` (lib) generated 30 warnings (run `cargo fix --lib -p netget` to apply 14 suggestions)
+   Compiling netget-web v0.1.0 (/Users/matus/dev/netget/crates/netget-web)
+    Finished `dev` profile [unoptimized] target(s) in 4m 47s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+== wasm-bindgen -> site/demo/pkg
+total 160600
+drwxr-xr-x  4 matus  staff       128 Sep 22 17:03 .
+drwxr-xr-x  3 matus  staff        96 Sep 22 17:03 ..
+-rw-r--r--@ 1 matus  staff     42767 Oct  1 22:23 netget_web.js
+-rw-r--r--@ 1 matus  staff  82181801 Oct  1 22:23 netget_web_bg.wasm

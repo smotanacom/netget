@@ -848,3 +848,608 @@ batches can proceed on the same pattern.
 Check each with `git -C .claude/worktrees/agent-<id> log --oneline` and
 `git -C .claude/worktrees/agent-<id> status` before deciding — a worktree at
 base may still hold uncommitted work that is worth keeping.
+
+
+# Programme 3 — complete server and client protocol expansion
+
+Requested 1 October 2026. This is the durable implementation checklist for the researched catalogue: **52 new protocol families, 15 existing-protocol completions, and 5 explicitly separated extensions mentioned in the research**. The user authorized implementation of all items using sub-agents, with the coordinator managing integration and disk use. These are useful, documented protocol scopes; a checkbox never implies implementation of every optional part of a standard.
+
+## Completion rules
+
+- A top-level checkbox is checked only after the stated server/client scope is implemented, registered, documented, built, and validated. A source stub, matching homemade encoder/decoder, successful handshake alone, or a skipped test is not completion.
+- Record exact test commands/results, independent peer/version, implementation limitations and commit with each finished item. Runtime maturity must reflect the evidence; checklist completion does not automatically confer Stable status.
+- Rust owns framing, crypto, IDs, sequencing, bounds and timers. Structured actions/events expose decisions to script/static/manual/LLM handlers. Domain data uses existing shared state facilities, with no new protocol-specific storage engines.
+- Clients include command injection, event handlers, owned-task cleanup and cancellation. Servers register all tasks, expose startup parameters and release sockets/peers on stop.
+- Test an independent client against the server and the client against an independent server, as well as the NetGet pair. Where independent evidence is unavailable, leave the validation checkbox open and state the precise gap.
+- New features must be wired to module/registry/known-name tables and test roots, with portable build membership decided from actual dependencies. Preserve existing protocols and unrelated working-tree changes.
+
+## Research findings that affect implementation
+
+The research counted 169 server registration sites and 103 client registration sites, including device profiles and partial implementations. These are source counts, not runtime counts or conformance claims. At that research snapshot, HTTP/3 had a real client but no matching server; the QUIC server handled raw streams. The generic gRPC server is unary-only and does not serve reflection. SSH already contains an SFTP server but its client lacks SFTP. Existing AMQP is 0-9-1, so AMQP 1.0 is distinct. OTLP currently has an HTTP receiver.
+
+Redfish was previously deferred on the assumption that suitable peers were Python-only. [Gofish](https://github.com/stmcginnis/gofish) supplies an independent Go client, so that rationale should not prevent implementing it. DNP3's prominent Rust library is commercial; dependency choice must be resolved before integration. Current repository pins (Hickory 0.24, russh 0.45, tonic 0.12/prost 0.13) make current-library compatibility an explicit check, not an assumption.
+
+Priority is an engineering judgment: **A** strongest general fit, **B** useful follow-on, **C** workload-specific. Effort **S/M/L** is comparative and covers both roles, a useful documented scope and interoperability tests. API profiles such as SCIM and Redfish add schema/state semantics over HTTP. Collector/exporter and peer roles count as the two natural protocol sides where client/server is not the native terminology.
+
+## Disk and collaboration policy
+
+Initial free space was approximately 71 GiB. The active main checkout is heavily modified by other work. After temporary-directory cleanup, source worktrees were restored from their retained Git branches under `/Users/matus/dev/netget/.protocol-expansion-20261001/`; build artifacts share `/private/tmp/netget-protocol-target-20261002`. All programme builds now run through `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py ...`, which serializes them, disables debug symbols/incremental compilation and limits build jobs. New builds require 30 GiB free; the guard stops only its owned build if space drops below 25 GiB.
+
+Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or running processes. Reclaim only verified programme-owned build artifacts between builds. The coordinator checks disk before each batch and after builds. Agents commit within their assigned branches; the coordinator merges validated batches into local `master` and pushes to `origin/master`, as explicitly authorized on 2 October 2026. GitHub PRs are not part of this workflow. No duplicate per-agent target directories or full-feature build storms.
+
+## Active assignments and progress
+
+- Completed: **19 / 72**; **53 remain**. The complete scopes comprise eight new families and eleven existing-protocol completions. All checklist entries remain authorized, including the 44 new families, four existing completions and five extensions still open.
+- Integration branch: `protocol-expansion-20261001`. Implementations through InfluxDB and Prometheus were published on master; Docker, Loki and OTLP now pass coordinator validation. The concurrent, content-preserving `AGENTS.md` instruction migration remains integrated.
+- Agent `queue_continue`: Docker is complete; Vault client item 59 is in progress with a separately validated shared credential-logging correction. Nostr, Neo4j Bolt and OCI clients follow, then the assigned service APIs.
+- Agent `http3_continue`: OTLP HTTP/gRPC completion and the shared tonic receive-limit correction are validated. Generic gRPC streaming/reflection item 68 is in progress; gRPC-Web, Connect RPC and the assigned RPC/streaming families follow.
+- Agent `metrics_continue`: Loki is complete. IPFIX item 29 is in progress against independent Python ipfix and GoFlow2 peers; sFlow follows, then the assigned industrial and framed-service families.
+- Three workers maximum, one guarded build at a time. The coordinator reviews and merges signed scopes, records independent evidence, and pushes local master directly to origin/master. Thirteen blocking pair jobs now cover the completed scopes. Prior Linux failures have concrete integrated fixture corrections; the next remote run is pending, so full CI is not claimed green.
+
+## New protocol checklist
+
+- [x] **01. DoQ** — A/M; proposed feature `doq`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9250.html).
+  - Scope: RFC 9250 DNS queries over QUIC; correct ALPN, framing, TLS validation and stream lifecycle.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 9 server and 8 client tests passed with Knot `kdig 3.6.0` and AdGuard `dnsproxy 0.85.0`. Code `e900e753`, integration merge `07339b83`. Experimental; declared server DNS record subset and no AXFR/IXFR.
+
+- [ ] **02. NETCONF** — A/L; proposed feature `netconf`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6241.html).
+  - Scope: SSH subsystem, hello/capabilities, NETCONF 1.0/1.1 framing, get/get-config/edit-config, errors and explicitly supported datastores.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **03. RESTCONF** — B/M-L; proposed feature `restconf`. [Specification/reference](https://www.rfc-editor.org/info/rfc8040/).
+  - Scope: YANG-shaped HTTP resources, discovery, reads/edits, media types and protocol errors; declare modeled scope.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **04. gNMI** — A/L; proposed feature `gnmi`. [Specification/reference](https://github.com/openconfig/reference/blob/master/rpc/gnmi/gnmi-specification.md).
+  - Scope: Capabilities/Get/Set and ONCE/POLL/STREAM subscriptions, typed paths, synchronization and cancellation.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **05. Redfish** — A/M; proposed feature `redfish`. [Specification/reference](https://www.dmtf.org/standards/redfish).
+  - Scope: Service root, Systems/Chassis/Managers, inventory/sensors, sessions, a documented action set and tasks.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [x] **06. NUT UPS management** — A/S-M; proposed feature `nut`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9271.html).
+  - Scope: UPS discovery, variables, supported authenticated operations, errors and programmable power scenarios.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 13 server and 5 client tests passed with no skips. Official NUT 2.8.4 `upsc`/`upscmd` exercised discovery, variables and authenticated instant commands; the client read independent `upsd` + `dummy-ups`. Code `444dc681` and merge `b08302d9`; 30 shared checks also passed. Combined integration validation passed (see batch evidence below).
+
+- [ ] **07. TACACS+** — B/M; proposed feature `tacacs`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8907.html).
+  - Scope: Authentication, authorization, accounting and deterministic session/secret processing.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **08. Diameter** — C/L; proposed feature `diameter`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6733.html).
+  - Scope: Base peer lifecycle plus a documented useful AAA application; typed AVPs, requests/answers and errors.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **09. RPKI to Router** — B/M; proposed feature `rpki_rtr`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8210.html).
+  - Scope: Cache/router roles, route-validation records, session and serial management, reset and incremental updates.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **10. BMP** — B/M; proposed feature `bmp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc7854.html).
+  - Scope: Collector/exporter roles, peer up/down, route monitoring, statistics and bounded BGP payload parsing.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **11. GraphQL over HTTP** — A/M-L; proposed feature `graphql`. [Specification/reference](https://http-spec.graphql.org/draft/).
+  - Scope: Runtime schema, query/mutation execution, variables, introspection and spec-shaped errors; subscriptions tracked separately below.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **12. Socket.IO** — A/M; proposed feature `socketio`. [Specification/reference](https://socket.io/docs/v4/socket-io-protocol/).
+  - Scope: Explicit protocol revision, Engine.IO polling/WebSocket, events, namespaces, acknowledgments and disconnects.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **13. Connect RPC** — B/M-L; proposed feature `connect_rpc`. [Specification/reference](https://connectrpc.com/docs/protocol/).
+  - Scope: Protobuf-defined RPC with Connect framing, structured messages and errors; gRPC-Web tracked separately below.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **14. A2A** — B/M-L; proposed feature `a2a`. [Specification/reference](https://a2a-protocol.org/latest/specification/).
+  - Scope: Pin released version/binding; agent discovery, messages, tasks, streaming/cancellation as advertised.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **15. SCIM 2.0** — B/M-L; proposed feature `scim`. [Specification/reference](https://www.rfc-editor.org/info/rfc7644/).
+  - Scope: User/group provisioning, discovery, CRUD/PATCH, filtering and pagination within declared capabilities.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **16. ACME** — B/L; proposed feature `acme`. [Specification/reference](https://www.rfc-editor.org/info/rfc8555/).
+  - Scope: Account/order/challenge/finalize/certificate workflow with deterministic JWS, nonces and certificate processing.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **17. RDAP** — B/S-M; proposed feature `rdap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9082.html).
+  - Scope: Domain/IP/ASN queries, structured objects, links/notices, response schemas and errors.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **18. EPP** — C/L; proposed feature `epp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5730.html).
+  - Scope: Registry/client sessions and selected domain/host/contact mappings with check/create/renew/transfer operations.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **19. JMAP** — B/L; proposed feature `jmap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8620.html).
+  - Scope: JMAP Core plus Mail, session discovery, batched methods, object operations and change-state tokens.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **20. ManageSieve** — B/M; proposed feature `managesieve`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5804.html).
+  - Scope: List/upload/activate/delete filter scripts, authentication, literals and errors; script execution is not implicit.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **21. CalDAV** — B/L; proposed feature `caldav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc4791.html).
+  - Scope: Calendar discovery, resources, REPORT queries, event CRUD and documented iCalendar/recurrence coverage.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **22. CardDAV** — B/M-L; proposed feature `carddav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6352.html).
+  - Scope: Address-book discovery, vCard resource CRUD, REPORT queries and identifiers.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [x] **23. StatsD and DogStatsD** — A/S-M; proposed feature `statsd`. [Specification/reference](https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/).
+  - Scope: Collector/emitter, typed metrics, sample rates/tags, DogStatsD events/service checks and bounded datagram parsing.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 13 server and 5 client tests passed with Python `statsd==4.0.1` / `datadog==0.52.0` and Node `statsd@0.9.0`. Code `643eef1f`, integration merge `79b98590`; shared metadata and combined integration checks passed (see batch evidence below). No external DogStatsD Agent receiver, fuzz or packet-capture coverage is claimed.
+
+- [x] **24. Graphite Carbon plaintext** — B/S; proposed feature `graphite`. [Specification/reference](https://graphite.readthedocs.io/en/stable/feeding-carbon.html).
+  - Scope: Timestamped metric collection/emission with bounded lines and numeric validation.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 13 server and 5 client tests passed with Graphyte 1.7.1 and official Carbon 1.1.10/Twisted 25.5.0 (Python 3.11), including the NetGet pair. Code `56ec664b`, merge `ea66427a`. Experimental; TCP plaintext with bounded batches, no Pickle, UDP, TLS or storage/query service.
+
+- [x] **25. Fluent Forward** — B/M; proposed feature `fluent_forward`. [Specification/reference](https://docs.fluentd.org/input/forward).
+  - Scope: MessagePack event/batch modes, acknowledgments, bounded compression and explicit secure-transport scope.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 17 server and 7 client tests passed with fluent-logger 0.11.1/msgpack 1.1.2 and official Fluentd 1.19.4. Code `8342e85a`, integration `1d1b7a15`, published master `313ad42e`. Four bounded carriers, EventTime and correlated ACKs; no secure-forward/TLS, durable storage or retry claim. Experimental.
+
+- [x] **26. GELF** — B/M; proposed feature `gelf`. [Specification/reference](https://go2docs.graylog.org/current/getting_in_log_data/gelf_format.html).
+  - Scope: Structured logs over TCP/UDP, framing, bounded UDP reassembly and compression.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 17 server and 5 client tests passed with pygelf 0.4.3 and official Graylog Go reader sources pinned at `25db8704bc`; TCP/UDP, compressed/chunked framing, direct pairing, bounds and mixed handler failure are covered. Code `daa80399`, handler-failure fix `d58a4c0c`, published master `313ad42e`. Experimental; shared logs/memory, no collector persistence or acknowledgement invented.
+
+- [x] **27. Loki push API** — B/M; proposed feature `loki`. [Specification/reference](https://grafana.com/docs/loki/latest/reference/loki-http-api/).
+  - Scope: Labeled log ingestion/emission, authentication/tenancy, batch validation, compression and failure responses.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 30 checks (9 client, 21 server) passed at 100 test threads with official Loki 3.7.8 service readback, maintained Alloy 1.20.1 protobuf/Snappy emission and Python logging-loki 0.3.1 JSON emission. All three carriers preserve timestamps, labels, text and structured metadata; tenancy/authentication, error responses, decompression bounds and cancellation are exercised. Code `b576578c`, HTTP-token correction `bbce4898`, shared integration `9008eb88`. Experimental cleartext push API; no query, durable store, retention/order engine or automatic retries.
+
+- [x] **28. InfluxDB write API** — B/S-M; proposed feature `influxdb`. [Specification/reference](https://docs.influxdata.com/influxdb/v2/api/write/).
+  - Scope: Pinned write API, line protocol, types/escaping/timestamp precision, authentication and partial errors.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: code `cf9237ba`, signed integration `3d8f39d8`; all 18 server and 10 client checks pass at 100 threads against official influxdb-client 1.50.0, the unmodified official line-protocol/v2 2.2.1 decoder, and InfluxDB 2.9.1 daemon readback. Five field types, four precisions and identity/gzip carriers are covered. HTTP v2 writes only; no database/query engine or HTTPS transport claim. Experimental. The Linux independent-pair job also passed.
+
+- [ ] **29. IPFIX** — B/M-L; proposed feature `ipfix`. [Specification/reference](https://www.rfc-editor.org/info/rfc7011/).
+  - Scope: Collector/exporter, templates, typed data records, domain/sequence tracking and template lifecycle.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **30. sFlow v5** — B/M; proposed feature `sflow`. [Specification/reference](https://sflow.org/developers/specifications.php).
+  - Scope: Collector/agent, flow/counter samples, sampling metadata and extensible bounded records.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **31. AMQP 1.0** — B/L; proposed feature `amqp1`. [Specification/reference](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html).
+  - Scope: Separate from 0-9-1: connection/session/link lifecycle, credit, send/receive, settlement and outcomes.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **32. Zenoh** — B/M-L; proposed feature `zenoh`. [Specification/reference](https://zenoh.io/docs/overview/what-is-zenoh/).
+  - Scope: Listening/connecting peer roles, publication, subscriptions and query/queryable handlers using existing runtime.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **33. WAMP** — C/M-L; proposed feature `wamp`. [Specification/reference](https://wamp-proto.org/).
+  - Scope: Router/client sessions, realms, routed RPC and pub/sub with correlation and errors.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **34. Apache Thrift** — B/L; proposed feature `thrift`. [Specification/reference](https://thrift.apache.org/docs/).
+  - Scope: Explicit IDL/schema-driven RPC, selected transports/encodings and structured calls/results/errors.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **35. OPC UA** — B/L; proposed feature `opcua`. [Specification/reference](https://github.com/FreeOpcUa/async-opcua).
+  - Scope: Device address space and client browse/read/write/method/subscription operations; declare security policies.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **36. BACnet/IP** — B/M-L; proposed feature `bacnet`. [Specification/reference](https://github.com/bacnet-stack/bacnet-stack).
+  - Scope: Device discovery and property reads/writes, correct BACnet framing/errors; document segmentation/COV scope.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **37. MQTT-SN** — B/M; proposed feature `mqtt_sn`. [Specification/reference](https://mqtt.org/mqtt-specification/).
+  - Scope: Gateway/sensor roles, discovery, topic registration/IDs, publish/subscribe, datagram and sleeping-client behavior.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **38. LwM2M** — B/L; proposed feature `lwm2m`. [Specification/reference](https://www.openmobilealliance.org/release/LightweightM2M/V1_2-20201110-A/HTML-Version/OMA-TS-LightweightM2M_Core-V1_2-20201110-A.html).
+  - Scope: Management server/device client, registration, bootstrap, object resources, observation and declared security.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **39. OCPP** — B/M-L; proposed feature `ocpp`. [Specification/reference](https://openchargealliance.org/protocols/open-charge-point-protocol/).
+  - Scope: Charging-management server and simulated charge point; pin version with boot/heartbeat/status/transaction workflows.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **40. DNP3** — C/L; proposed feature `dnp3`. [Specification/reference](https://github.com/stepfunc/dnp3).
+  - Scope: Outstation/master, typed measurements, events, polling and declared controls, deterministic timing.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **41. IEC 60870-5-104** — C/L; proposed feature `iec104`. [Specification/reference](https://github.com/mz-automation/lib60870/blob/master/user_guide.adoc).
+  - Scope: Controlled/controlling stations, interrogation, telemetry, commands, sequence windows and timers.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **42. EtherNet/IP CIP** — C/L; proposed feature `ethernet_ip`. [Specification/reference](https://github.com/EIPStackGroup/OpENer).
+  - Scope: Adapter/scanner discovery and explicit object messaging; cyclic I/O is a separately declared scope.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **43. S7comm** — C/L; proposed feature `s7comm`. [Specification/reference](https://github.com/S7NetPlus/s7netplus).
+  - Scope: PLC simulator/client, TPKT/COTP, selected legacy data-area reads/writes and protocol errors.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **44. FastCGI** — B/M; proposed feature `fastcgi`. [Specification/reference](https://fastcgi-archives.github.io/FastCGI_Specification.html).
+  - Scope: Application responder/client, parameters, input/output streams, request IDs, abort/end and bounded framing.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **45. ICAP** — B/M-L; proposed feature `icap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc3507.html).
+  - Scope: Adaptation server/client, OPTIONS/REQMOD/RESPMOD, encapsulation offsets, preview, chunks and 204 behavior.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **46. NBD** — C/L; proposed feature `nbd`. [Specification/reference](https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md).
+  - Scope: Read-only scripted block target and userspace client, negotiation, bounds, read/errors and structured replies.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **47. RTMP** — C/L; proposed feature `rtmp`. [Specification/reference](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf).
+  - Scope: Playback/publication endpoints, handshake, chunks, AMF command handling and supplied media with timestamps.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **48. SRT** — C/L; proposed feature `srt`. [Specification/reference](https://github.com/Haivision/srt).
+  - Scope: Listening/connecting endpoints exchanging supplied media/data through a real retransmission/timing implementation.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **49. WebTransport HTTP/3** — B/L; proposed feature `webtransport`. [Specification/reference](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/).
+  - Scope: Pin draft/library compatibility; server/client sessions, streams, datagrams, cancellation and browser interop.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **50. HL7 v2 MLLP** — C/M; proposed feature `hl7`. [Specification/reference](https://www.hl7.eu/refactored/transport01mllp.html).
+  - Scope: Integration endpoint/client, MLLP framing, selected message profiles, control IDs and validated acknowledgments.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **51. DICOM DIMSE** — C/L; proposed feature `dicom`. [Specification/reference](https://dicom.nema.org/medical/dicom/current/output/html/part08.html).
+  - Scope: Association/transfer syntax negotiation, C-ECHO and an explicitly selected useful service set, structured actions.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+- [ ] **52. FIX** — C/L; proposed feature `fix`. [Specification/reference](https://fixtrading.org/packages/fix-session-layer-technical-proposal/).
+  - Scope: Acceptor/initiator session engine, dictionaries, heartbeat/resend/recovery and scripted application messages.
+  - [ ] Server or listening/collector role implemented and registered.
+  - [ ] Client or connecting/exporter role implemented and registered.
+  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [ ] Documentation, honest metadata and integrated commit recorded.
+
+## Existing protocol completion checklist
+
+- [x] **53. HTTP/3 server**.
+  - Scope: Real HTTP/3 headers/data/control/QPACK using h3/quinn and existing HTTP/3 client interoperability.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 8 server, 6 client and 2 standalone cancellation/early-hints tests passed with aioquic 1.3.0 and direct NetGet pairing at 100 threads in the final combined build. Code `168b8e82`, TE correction `c4ddd3df`, peer-port fix `73292cbc`, published master `313ad42e`. Authenticated TLS, real h3/QPACK/control, bounded UTF-8 headers/bodies/trailers and owned stream cancellation; no push, DATAGRAM/WebTransport, migration or 0-RTT. Experimental. Vendored h3-quinn 0.0.10 contains the tested pending-read cancellation fix.
+
+- [x] **54. Raw QUIC client**.
+  - Scope: Stream-oriented counterpart to existing raw QUIC server; explicit ALPN and stream lifecycle.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 6 client and 10 server tests passed with aioquic 1.3.0 in both independent roles and direct NetGet binary pairing. Code `5a872651`, allocation/pairing follow-up `7afc32e0`, final merge `b7a2e7c6`. Raw ALPN is now `netget-quic`; `h3` is reserved for HTTP/3. Verified TLS/custom trust, 1 MiB decoded/4 MiB encoded bounds, owned concurrent streams, cancellation and socket release. Experimental; no 0-RTT/datagrams/unidirectional application streams.
+
+- [x] **55. SFTP client**.
+  - Scope: Extend SSH with file/directory operations matching existing server SFTP, plus real external-server evidence.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: read-only SFTP v3 stat, directory listing and UTF-8 file windows are integrated as `4a4884b0` (accurate startup modes `2e905b45`). In the merged `tcp,gearman,ssh` build, all 16 SSH client and 14 existing SSH server tests passed at 100 threads with independent OpenSSH 10.3p1 and direct NetGet pairing. All 129 shared checks across 31 targets, correctness/suspicious/unused-must-use lint and whole formatting pass. SFTP requires an explicit SHA256 host pin; bounded framing/channel queues and owned socket shutdown are tested. Experimental; no writes, binary file action, known_hosts, forwarding, second independent SFTP implementation, fuzz or new pcap claim. Logs: `.protocol-expansion-20261001/logs/batch5-ssh-initial.log` and `batch5-{shared,clippy,format}-initial.log`.
+
+
+- [x] **56. OTLP client and gRPC receiver**.
+  - Scope: Export traces/metrics/logs, both HTTP and gRPC as advertised; gRPC server alongside existing HTTP receiver.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 40 checks (9 client, 31 receiver) passed at 100 test threads. Official core Collector 0.162.0 independently receives typed traces, gauge metrics and text logs over HTTP protobuf and gRPC; otel-cli 0.4.5 and telemetrygen 0.161.0 exercise the receiver. Verified TLS exports/custom CA, none/gzip, partial success, retry/status details, message/body limits, deadline cancellation and same-connection recovery are covered. Existing HTTP checks remain. Code `00a32c6c`, compression/deadline-header correction `481fb76b`; shared tonic patch `c2a589a5` separately passes three 4 MiB boundary regressions and 28 gRPC/etcd neighbor checks. Experimental: documented signal subset, same-port cleartext receiver, no receiver TLS or automatic retries.
+
+- [x] **57. Prometheus client**.
+  - Scope: Scrape, negotiate and parse metrics into structured events; remote write tracked separately.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: code `26854817`; all 20 client and 18 existing server checks pass at 100 threads with Prometheus/promtool 3.15.0 and prometheus-client 0.22.1, plus NetGet pairing. Text 0.0.4/OpenMetrics 1.0, negotiation, native metric families, limits, model/manual/script handlers and cancellation are covered. No remote write, PromQL, protobuf/native histograms or OpenMetrics 2.0 claim. Experimental. The Linux independent-pair job also passed.
+
+- [x] **58. Docker client**.
+  - Scope: Structured API actions paired with existing programmable Docker server.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 34 checks (16 client, 18 preserved server) passed at 100 test threads using real Docker Engine 29.7.2 and CLI 29.8.0. Native Unix socket and owned TCP relay cover eight read operations, API negotiation, filters, nullable/list/inspect shapes, bounded payloads, command injection and cancellation. Tests only read the existing daemon; they do not pull images or create resources. Code `ae95298a`, shared integration `9008eb88`. Experimental selected read-only Engine API with a 1.47 ceiling; existing mutation refusal remains, and TLS/named pipes are outside this scope.
+
+- [ ] **59. Vault client**.
+  - Scope: Structured authentication/secret operations paired with existing programmable Vault server.
+  - [ ] Missing functionality implemented and registered; existing side preserved.
+  - [ ] Both directions validated with external peers and the NetGet pair.
+  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+- [ ] **60. Nostr client**.
+  - Scope: Publish signed events, subscribe, handle relay notices/results and close subscriptions.
+  - [ ] Missing functionality implemented and registered; existing side preserved.
+  - [ ] Both directions validated with external peers and the NetGet pair.
+  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+- [ ] **61. Bolt client**.
+  - Scope: Negotiated Neo4j-compatible sessions, queries/results/errors against existing server and independent server.
+  - [ ] Missing functionality implemented and registered; existing side preserved.
+  - [ ] Both directions validated with external peers and the NetGet pair.
+  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+- [ ] **62. OCI Registry client**.
+  - Scope: Manifest/blob operations, digest validation and authentication flows.
+  - [ ] Missing functionality implemented and registered; existing side preserved.
+  - [ ] Both directions validated with external peers and the NetGet pair.
+  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+- [x] **63. Beanstalkd client**.
+  - Scope: Put/reserve/release/bury/delete jobs and command/reply framing.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 9 client and 30 existing server tests passed with beanstalkd 1.13 and greenstalk 2.1.1, including the NetGet pair. Code `5730ffeb`, scalar-only YAML hardening `222b0d74`, merges `492fc905`/`8ff3cda6`. Text jobs up to 65,535 bytes; bounded replies and responsive cancellation. Nested/recursive/expanding YAML rejected before traversal.
+
+- [x] **64. NSQ client**.
+  - Scope: Publish/subscribe, negotiated readiness, acknowledgments, requeue and heartbeat.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 20 client and 35 preserved server tests passed with nsqd, to_nsq and nsq_tail 1.3.0 and the NetGet pair. Code `9758dc00`, close-order fix `5002305d`, heartbeat test correction `7a981923`, published master `313ad42e`. PUB/MPUB/DPUB, subscription/RDY, heartbeat, FIN/REQ/TOUCH and graceful CLS correlation; no lookupd discovery, TLS/auth, compression, reconnect or binary outbound body claim. Experimental.
+
+- [x] **65. Gearman client**.
+  - Scope: Job submission and selected worker exchanges with correlation and errors.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: code `2a095a08`, compatible-peer corrections `f41cad44` and `7b39c75e`; all 19 client and 28 existing server checks pass at 100 threads with official gearmand/gearman/gearadmin 2.1.0. Submitter plus selected worker exchanges, correlation, exceptional outcomes, bounds, handlers and cancellation are covered. Existing server remains the documented model-as-worker role; no generic queue broker/storage claim. Experimental. Linux peer compilation is verified; the required existing packet-capture oracle exposed a missing tshark package, now added to CI and awaiting a rerun.
+
+- [x] **66. Gemini client**.
+  - Scope: TLS requests, certificate policy, status/meta/body handling and bounds.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 8 client and 24 existing server tests passed together with Agate 3.3.24, ignition-gemini 1.0.0 on supported Python 3.12, and the existing tshark TLS oracle. Code `d9b6f492`, merge `e3a682bb`; fixes server file-backed certificate provider startup. Experimental text/UTF-8 client with verified TLS/custom trust, structured gemtext, explicit input/redirects and bounded cancellation. No hidden TOFU, automatic cross-endpoint redirects, binary bodies or client certificate authentication.
+
+- [x] **67. DICT client**.
+  - Scope: Dictionary discovery, matching/definition operations, multiline replies and errors.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Validation: 8 client and 25 existing server tests passed with independent dictd, dictfmt and dict 1.13.3, including the NetGet pair. Code `434fc816`, merge `9146ee6d`. Experimental client; discovery/definitions/matches, bounded multiline decoding and cancellation. No AUTH, SASL, MIME negotiation or pipelining in the new client.
+
+## Separated extension checklist
+
+- [ ] **68. Generic gRPC streaming and reflection**.
+  - Scope: Add real streaming lifecycle and reflection; support new subscription-oriented services without false capability claims.
+  - [ ] Implementation and all required server/client integration complete.
+  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+
+- [ ] **69. gRPC-Web binding**.
+  - Scope: Implement a separately advertised client/server binding with framing, trailers and chosen streaming support.
+  - [ ] Implementation and all required server/client integration complete.
+  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+
+- [ ] **70. Prometheus remote write**.
+  - Scope: Sender/receiver for a pinned version, protobuf/compression, validation and retry/error semantics.
+  - [ ] Implementation and all required server/client integration complete.
+  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+
+- [ ] **71. NetFlow v9**.
+  - Scope: Collector/exporter extension alongside IPFIX, distinct headers/templates and lifecycle.
+  - [ ] Implementation and all required server/client integration complete.
+  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+
+- [ ] **72. GraphQL subscriptions**.
+  - Scope: Explicit subscription transport such as graphql-transport-ws; client/server lifecycle, typed execution and cancellation.
+  - [ ] Implementation and all required server/client integration complete.
+  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+
+## Integrated validation evidence
+
+- **Batch 4 — 25 Fluent Forward, 26 GELF, 53 HTTP/3 server/client, 64 NSQ client:** published master merge `313ad42e` preserves the separate codebase audit `314c819a`. Final evidence totals **213 protocol test executions**: GELF 22, NSQ 55, HTTP/3 16 including cancellation/early-hints, Forward 24, NUT 20, DoQ 18, raw QUIC 17 and Beanstalkd 41. Initial combined runs passed; after the TE and peer-port corrections, all 16 HTTP/3 and 17 raw-QUIC checks passed again at 100 test threads. No failed or ignored cases in those final runs.
+- Commands: `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --locked --offline --no-default-features --features tcp,nut,doq,gelf,beanstalkd,nsq,http3,quic,fluent-forward --test server --test client -- PROTOCOL:: --test-threads=4` for each named protocol. HTTP/3 final run additionally selects `--test http3_cancellation_test` with filter `http3` and `--test-threads=100`; raw QUIC reruns use `quic::` at 100 threads. Peer environments are specified in each protocol's test documentation and persistent `validate_batch4.py`.
+- **Batch 5 — 55 SFTP, 65 Gearman, 28 InfluxDB writes, 57 Prometheus client:** all **143 protocol checks** pass at 100 test threads, zero failed/ignored. Gearman 47 and SSH/SFTP 30 were run with `tcp,gearman,ssh`; InfluxDB 28 and Prometheus 38 were run with `tcp,gearman,ssh,influxdb,prometheus`. Commands use the serialized guard: `test --locked --offline --no-default-features --features FEATURES --test server --test client -- PROTOCOL:: --test-threads=100`. Both shared feature combinations pass **129 checks across 31 targets**, correctness/suspicious/unused-must-use clippy and whole-package formatting. Persistent logs are `logs/batch5-*-initial.log` and `logs/batch5-*-collectors.log` under the owned programme source root. [Linux SFTP, InfluxDB and Prometheus jobs passed](https://github.com/smotanacom/netget/actions/runs/37082508077). Gearman compiled its pinned peer, then its existing packet oracle failed for missing tshark; the CI dependency fix is included. No green full-CI claim.
+
+- Batch 4 shared checks: **130 checks across 31 targets** pass after two targeted source-check corrections. The clean published baseline reproduced the unclassified HTTP URL validator; its deliberate rejection is recorded without rewriting requested URLs. The obsolete three-sleep HTTP/3 baseline was removed. Combined correctness/suspicious/unused-must-use lint, workflow YAML/shell syntax, test discovery and guarded whole-package formatting pass. All Cargo commands use the serialized disk guard. Logs: `/Users/matus/dev/netget/.protocol-expansion-20261001/logs/batch4-*.log`.
+- The final HTTP/3 rerun exposed a fixture port reservation race before peer startup. `73292cbc` makes aioquic bind port zero itself and report its actual live socket; both affected suites pass at high concurrency. h3-quinn's pending-read cancellation panic is independently reproduced and corrected in the vendored adapter. The blocking pair workflow now includes HTTP/3, Forward, GELF and NSQ. [All six independent-pair jobs passed on Linux](https://github.com/smotanacom/netget/actions/runs/37079410969). General CI on the checklist publication is still running; no full-CI green claim.
+
+
+- Remote validation of `cf3f6a74`: [protocol pair run](https://github.com/smotanacom/netget/actions/runs/37015942511) passed NUT/DoQ/StatsD and Graphite, then failed Beanstalkd 1.12 interoperability. [General CI](https://github.com/smotanacom/netget/actions/runs/37015942450) found decision-tag, private-test discovery, peer-workflow evidence, silent failure declarations and Graphite validator declaration gaps. All four single-feature shards, browser build and blocking lint passed. Corrections are merged or in local verification; no claim of a green full CI run.
+
+- Recovery on 2 October: temporary sources, logs and artifacts had been removed; committed implementations were restored from Git. Historical test counts below were recorded before cleanup. Original temporary log paths are no longer available. Previously uncommitted HTTP/3, GELF and NSQ work was reconstructed and signed; their final integration evidence is tracked below. Free space at recovery: approximately 148 GiB.
+
+- **Batch 3 — 54 raw QUIC completion, 66 Gemini client:** all 48 protocol tests (16 QUIC, 32 Gemini) and 71 shared checks passed at merge `b7a2e7c6` with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic,gemini`. Same test command shape and shared targets as Batch 2; logs in `/private/tmp/netget-protocol-expansion-20261001/validation-third/`. No failed or ignored cases. Raw QUIC review is closed; the independent peers and direct NetGet pairing agree. CI's `stream-pairs` job now includes Gemini/Agate/ignition and tshark.
+
+- **Batch 2 — 24 Graphite, 63 Beanstalkd client, 67 DICT client; raw QUIC review in progress:** all 157 protocol tests passed with `tcp,nut,doq,statsd,graphite,beanstalkd,dict,quic` together at merge `08584d20`. This includes the first three protocols after the shared task-registration fix and 14 raw QUIC tests; its direct NetGet pairing review remains open. No failed or ignored tests in the final protocol runs.
+- Batch 2 commands use the Batch 1 protocol command with that expanded feature set and each of `graphite`, `beanstalkd`, `dict`, `quic`, `nut`, `statsd`, `doq`. All 71 shared checks passed, adding `task_registration_cancellation_test`, `server_task_registry_test` and `client_stop_releases_socket_test` to Batch 1's targets. An obsolete QUIC server-only pairing assertion was updated to require the implemented client, then the shared checks passed.
+- Lifecycle fix `7916e859`: a started child is owned before the registration future is first polled, and cancelled if registration is dropped. Both regression tests failed before the fix; successful registration/owner removal also remain covered.
+- Batch 2 logs: `/private/tmp/netget-protocol-expansion-20261001/validation-second/`. CI's separate `stream-pairs` job installs Graphite, queue, dictionary and aioquic peers. The first remote run reproduced Beanstalkd 1.12 legacy statistics incompatibility; a focused correction is being validated. The eight-scope batch was merged to master and pushed as `cf3f6a74`.
+
+- **Batch 1 — 01 DoQ, 06 NUT, 23 StatsD/DogStatsD:** all 53 protocol tests and 62 shared checks passed with `tcp,nut,doq,statsd` enabled together at merge `07339b83`; no ignored tests in this combined run. All three remain Experimental, with their selected scope and missing maturity evidence documented in their source/test `CLAUDE.md` files.
+- Protocol command, once for each `PROTOCOL` in `nut`, `statsd`, `doq`: `cargo test --locked --offline --no-default-features --features tcp,nut,doq,statsd --test server --test client -- PROTOCOL:: --test-threads=4`. The programme runs Cargo through its serialized guard and provides the documented local peer paths.
+- Shared checks: `event_action_declarations_test`, `advertised_actions_test`, `well_known_port_declaration_test`, `startup_param_defaults_test`, `startup_param_drift_test`, `protocol_startup_examples_test`, `dual_protocol_test`, `dashboard_wireshark_test`, `client_event_wiring_test`, `event_emit_sites_test` with the same feature set.
+- Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the first remote NUT/DoQ/StatsD interoperability job passed on Linux. The eight-scope batch is published on master as `cf3f6a74`. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
+
+- Documentation migration compatibility: both path and test-count checks discover `AGENTS.md` and legacy `CLAUDE.md`. Existing legacy citations resolve only when the migrated file actually exists; missing paths and stale foreign-path exemptions still fail. All four focused tests pass, including two new migration regressions. Workflow YAML and all 90 shell steps parse successfully.
+
+- **Batch 6 — 27 Loki, 56 OTLP completion, 58 Docker client:** the merged `tcp,docker,loki,otlp,grpc,quic,gearman,http` build passes 104 new-scope checks (30 Loki, 40 OTLP, 34 Docker), plus 47 Gearman, 17 QUIC, five HTTP transport and three tonic boundary checks: **176 total**, zero failed/ignored in the final protocol runs. Command: `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --locked --offline --no-default-features --features tcp,docker,loki,otlp,grpc,quic,gearman,http --test server --test client -- PROTOCOL:: --test-threads=100`; the HTTP fixture uses `http::transport`, and the tonic boundary target is `vendored_tonic_patch_test`. Local peer environment is documented in each test directory and the owned batch scripts.
+- All **132 shared checks across 31 targets** are green after 13 focused rerun checks corrected three initial audit failures: missing OTLP canonical catalogue membership, Loki's literal tenant default and two intentional control-rejection validators. The initial failure log is retained. `clippy --lib --bin netget` with correctness/suspicious/unused-must-use denied and whole-package formatting pass. Coordinator fixes `9008eb88`, CI gates `980e24c3`.
+- Concrete CI fixture corrections: `29f76b09` streams the 8 MiB-plus-one HTTP response from an owned, bounded test peer instead of exceeding the shared static-action budget; `4735e4c0` owns concurrent QUIC streams and deliberately tests six-second model replies within the existing server deadline; `276d24e8` adds Gearman's GNU argument delimiter. Runtime limits remain intact. Previous Linux run `37084245867` passed eight pair jobs but failed the old Gearman/QUIC fixtures; general run `37084245909` passed its other blocking jobs but failed the old HTTP fixture. The corrected remote run is pending, and full CI is not claimed green.
+- Three new blocking jobs require independent Docker, Loki/Alloy and OTLP Collector/exporter peers. Workflow YAML and **101 shell steps** parse; the Linux Collector installer syntax and official release SHA256 match are verified (actual Linux bootstrap awaits CI). The OTLP Wireshark display filter parses; this is syntax evidence, not packet-capture maturity evidence. Logs: `.protocol-expansion-20261001/logs/batch6-*` and `tonic-*`. Free space after final validation is approximately 31 GiB; owned package cleanup previously reclaimed 10.6 GiB while retaining dependency caches, sources, peers and unrelated work.
+
+## Implementation and independent peer plan
+
+1. NUT: start with discovery/variables and supported authenticated operations. Test server with [upsc](https://networkupstools.org/docs/man/upsc.html), client with [upsd](https://networkupstools.org/docs/man/upsd.html) using synthetic UPS data.
+2. DoQ: reuse DNS codec and quinn; test against [kdig](https://www.knot-dns.cz/docs/latest/html/man_kdig.html) and [AdGuard dnsproxy](https://github.com/AdguardTeam/dnsproxy).
+3. StatsD/DogStatsD: typed parsing/emission and bounded batches; avoid an LLM invocation for every metric.
+4. Socket.IO: evaluate [socketioxide](https://github.com/totodore/socketioxide) and [rust_socketio](https://github.com/1c3t3a/rust-socketio), test both sides against official JavaScript implementations.
+5. GraphQL: evaluate [async-graphql dynamic schemas](https://github.com/async-graphql/async-graphql); let the library enforce execution while handlers supply data, with batching at the operation boundary.
+6. NETCONF: SSH/XML layers and declared capabilities; [Netopeer2](https://github.com/CESNET/netopeer2) provides independent peers.
+7. gNMI: use [official protobuf definitions](https://github.com/openconfig/gnmi/blob/master/proto/gnmi/gnmi.proto) and [gNMIc](https://github.com/openconfig/gnmic); streaming cannot reuse the unary-only generic server unchanged.
+8. Redfish: DMTF schemas plus Gofish for server validation and [DMTF mockup server](https://github.com/DMTF/Redfish-Mockup-Server) for read-oriented client validation.
+9. ACME: evaluate [instant-acme](https://github.com/djc/instant-acme) for the client and [Pebble](https://github.com/letsencrypt/pebble) as an external server.
+10. AMQP 1.0: evaluate [fe2o3-amqp](https://github.com/minghuaw/fe2o3-amqp), which has acceptor support as well as client roles.
+11. OPC UA: evaluate async-opcua but validate with an independent stack. BACnet and IEC104 have independent reference tools linked above. LwM2M has [Eclipse Leshan](https://github.com/eclipse-leshan/leshan).
+
+Suggested scheduling order: bounded NUT/DoQ/StatsD work first; application Socket.IO/GraphQL and HTTP/3/SFTP/OTLP completion next; infrastructure NETCONF/gNMI/Redfish; then remaining messaging, identity, industrial and specialist families. All checklist entries remain in the authorized scope, regardless of research priority.

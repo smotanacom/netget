@@ -1,0 +1,35 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+warning: function `capture_screen_until` is never used
+   --> tests/terminal_snapshot/mod.rs:401:4
+    |
+401 | fn capture_screen_until(
+    |    ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `capture_screen_with_height` is never used
+   --> tests/terminal_snapshot/mod.rs:468:4
+    |
+468 | fn capture_screen_with_height(pty: &mut pty_process::blocking::Pty, height: u16) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `status_line_count` is never used
+   --> tests/terminal_snapshot/mod.rs:587:4
+    |
+587 | fn status_line_count(screen: &str) -> usize {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "terminal_snapshot") generated 3 warnings
+    Finished `test` profile [unoptimized] target(s) in 2.83s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/terminal_snapshot.rs (/Users/matus/dev/netget/target/debug/deps/terminal_snapshot-bce7e78ee50fda9b)
+
+running 4 tests
+test terminal_snapshot::child_lifecycle::failed_pty_death_tie_arming_kills_and_reaps_child ... ok
+test terminal_snapshot::child_lifecycle::already_reaped_pty_child_does_not_break_teardown ... ok
+test terminal_snapshot::child_lifecycle::normal_pty_teardown_is_bounded_and_reaps_child ... ok
+test terminal_snapshot::child_lifecycle::hard_killed_pty_parent_cannot_leave_child ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.06s
+

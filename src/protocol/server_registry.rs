@@ -96,6 +96,9 @@ impl ServerRegistry {
         #[cfg(feature = "dns")]
         self.register(Arc::new(crate::server::DnsProtocol::new()));
 
+        #[cfg(feature = "doq")]
+        self.register(Arc::new(crate::server::doq::actions::DoqProtocol::new()));
+
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::server::DotProtocol::new()));
 
@@ -113,6 +116,9 @@ impl ServerRegistry {
 
         #[cfg(feature = "tftp")]
         self.register(Arc::new(crate::server::TftpProtocol::new()));
+
+        #[cfg(feature = "nut")]
+        self.register(Arc::new(crate::server::nut::actions::NutProtocol::new()));
 
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
@@ -565,6 +571,9 @@ impl ServerRegistry {
 
         #[cfg(feature = "kafka")]
         self.register(Arc::new(crate::server::KafkaProtocol::new()));
+
+        #[cfg(feature = "http3")]
+        self.register(Arc::new(crate::server::Http3Protocol::new()));
 
         #[cfg(feature = "quic")]
         self.register(Arc::new(crate::server::QuicProtocol::new()));
@@ -1220,11 +1229,13 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("DC", "dc"),
     ("DNS", "dns"),
     ("DoT", "dot"),
+    ("DoQ", "doq"),
     ("DoH", "doh"),
     ("DHCP", "dhcp"),
     ("BOOTP", "bootp"),
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
+    ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("NDP", "ndp"),
     ("DHCPv6", "dhcpv6"),
@@ -1347,8 +1358,8 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("OpenAPI", "openapi"),
     ("OpenID", "openid"),
     ("KAFKA", "kafka"),
-    // Raw QUIC streams. There is deliberately no HTTP3 server entry: the `http3`
-    // feature builds the HTTP/3 *client* only (src/client/http3/).
+    // Separate raw QUIC and RFC 9114 HTTP/3 transports.
+    ("HTTP3", "http3"),
     ("QUIC", "quic"),
     ("Torrent-Tracker", "torrent-tracker"),
     ("Torrent-DHT", "torrent-dht"),

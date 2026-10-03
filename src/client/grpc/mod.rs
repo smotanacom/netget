@@ -1,6 +1,9 @@
 //! gRPC client implementation
 pub mod actions;
 
+pub use crate::server::grpc::value_codec::{
+    dynamic_message_to_json, json_to_dynamic_message, proto_value_to_json,
+};
 pub use actions::GrpcClientProtocol;
 
 use anyhow::{Context, Result};
@@ -8,16 +11,14 @@ use bytes::Bytes;
 use http::Request;
 use http_body_util::BodyExt;
 use prost::Message as ProstMessage;
-use prost_reflect::{
-    DescriptorPool, DynamicMessage, MapKey, MessageDescriptor, ReflectMessage, Value as ProtoValue,
-};
+use prost_reflect::{DescriptorPool, DynamicMessage};
 use prost_types::FileDescriptorSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tonic::transport::{Channel, Endpoint};
 use tower::{Service, ServiceExt};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::client::grpc::actions::{
     GRPC_CLIENT_CONNECTED_EVENT, GRPC_CLIENT_ERROR_EVENT, GRPC_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -651,7 +652,11 @@ fn make_grpc_call<'a>(
         // Encode gRPC message with 5-byte header (compression flag + length)
         let mut grpc_message = Vec::with_capacity(5 + request_bytes.len());
         grpc_message.push(0); // No compression
-        grpc_message.extend_from_slice(&(request_bytes.len() as u32).to_be_bytes());
+        grpc_message.extend_from_slice(
+            &u32::try_from(request_bytes.len())
+                .context("gRPC request length exceeds u32")?
+                .to_be_bytes(),
+        );
         grpc_message.extend_from_slice(&request_bytes);
 
         // Create body using UnsyncBoxBody which is compatible with tonic
@@ -1003,275 +1008,4 @@ fn grpc_message_of(headers: &http::HeaderMap) -> Option<String> {
         .get("grpc-message")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
-}
-
-/// Convert JSON to dynamic protobuf message
-///
-/// A field name the message does not declare is reported rather than dropped: silently
-/// discarding it made a hallucinated field look like success — the request encoded without
-/// it and the server saw a default value with no indication anything was wrong. This mirrors
-/// what `src/server/grpc/mod.rs` already does in the opposite direction.
-fn json_to_dynamic_message(
-    json: &serde_json::Value,
-    descriptor: &MessageDescriptor,
-) -> Result<DynamicMessage> {
-    let mut msg = DynamicMessage::new(descriptor.clone());
-
-    if let Some(obj) = json.as_object() {
-        for (field_name, value) in obj {
-            match descriptor.get_field_by_name(field_name) {
-                Some(field) => {
-                    let proto_value = json_to_field_value(value, &field)?;
-                    msg.set_field(&field, proto_value);
-                }
-                None => {
-                    warn!(
-                        "gRPC client: request field '{}' is not in message {}; ignoring",
-                        field_name,
-                        descriptor.full_name()
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(msg)
-}
-
-/// Convert a JSON value to the protobuf value for a field, honoring its cardinality.
-///
-/// [`json_to_proto_value`] looks only at `field.kind()`, which is the type of a single
-/// element. For a `repeated string` that is `Kind::String`, so `{"tags": ["a", "b"]}`
-/// produced `Value::String("")` — and `DynamicMessage::set_field` **panics** when the value
-/// does not match the field's cardinality, inside a `tokio::spawn`ed task that swallows the
-/// panic. Repeated and map fields could not be sent at all, and asking for one killed the
-/// call silently.
-///
-/// `is_map()` is tested first because a protobuf map field is also "repeated" (of its
-/// synthetic entry message), so `is_list()` would take the wrong branch.
-fn json_to_field_value(
-    json: &serde_json::Value,
-    field: &prost_reflect::FieldDescriptor,
-) -> Result<ProtoValue> {
-    if field.is_map() {
-        let entry = match field.kind() {
-            prost_reflect::Kind::Message(m) => m,
-            _ => anyhow::bail!("map field {} has no entry message", field.name()),
-        };
-        let key_field = entry.get_field(1).context("map entry has no key field")?;
-        let value_field = entry.get_field(2).context("map entry has no value field")?;
-
-        let obj = json
-            .as_object()
-            .with_context(|| format!("field {} is a map; expected a JSON object", field.name()))?;
-
-        let mut map = std::collections::HashMap::new();
-        for (k, v) in obj {
-            let key = match key_field.kind() {
-                prost_reflect::Kind::String => MapKey::String(k.clone()),
-                prost_reflect::Kind::Bool => MapKey::Bool(
-                    k.parse()
-                        .with_context(|| format!("map key '{}' is not a boolean", k))?,
-                ),
-                prost_reflect::Kind::Int32
-                | prost_reflect::Kind::Sint32
-                | prost_reflect::Kind::Sfixed32 => MapKey::I32(
-                    k.parse()
-                        .with_context(|| format!("map key '{}' is not an int32", k))?,
-                ),
-                prost_reflect::Kind::Int64
-                | prost_reflect::Kind::Sint64
-                | prost_reflect::Kind::Sfixed64 => MapKey::I64(
-                    k.parse()
-                        .with_context(|| format!("map key '{}' is not an int64", k))?,
-                ),
-                prost_reflect::Kind::Uint32 | prost_reflect::Kind::Fixed32 => MapKey::U32(
-                    k.parse()
-                        .with_context(|| format!("map key '{}' is not a uint32", k))?,
-                ),
-                prost_reflect::Kind::Uint64 | prost_reflect::Kind::Fixed64 => MapKey::U64(
-                    k.parse()
-                        .with_context(|| format!("map key '{}' is not a uint64", k))?,
-                ),
-                other => anyhow::bail!("unsupported protobuf map key type: {:?}", other),
-            };
-            map.insert(key, json_to_proto_value(v, &value_field)?);
-        }
-        return Ok(ProtoValue::Map(map));
-    }
-
-    if field.is_list() {
-        let arr = json.as_array().with_context(|| {
-            format!("field {} is repeated; expected a JSON array", field.name())
-        })?;
-        let mut list = Vec::with_capacity(arr.len());
-        for item in arr {
-            list.push(json_to_proto_value(item, field)?);
-        }
-        return Ok(ProtoValue::List(list));
-    }
-
-    json_to_proto_value(json, field)
-}
-
-/// Convert a single JSON value to a protobuf value of the field's element type.
-///
-/// Every branch used to end in `unwrap_or(0)` / `unwrap_or("")` / `unwrap_or_default()`, so a
-/// request the model got wrong was not refused — it went out carrying a **different value**
-/// than the one asked for, and the server had no way to tell. `{"a": "five"}` became `a = 0`
-/// and the reply answered a question nobody asked. Numbers are range-checked rather than
-/// truncated with `as` for the same reason, and an enum given a number is validated against
-/// the enum's declared values instead of silently becoming a valid-looking wrong variant.
-/// `src/server/grpc/mod.rs` had the same repair on its response path.
-fn json_to_proto_value(
-    json: &serde_json::Value,
-    field: &prost_reflect::FieldDescriptor,
-) -> Result<ProtoValue> {
-    use prost_reflect::Kind;
-
-    Ok(match field.kind() {
-        Kind::Double => {
-            ProtoValue::F64(json.as_f64().with_context(|| {
-                format!("field {} is a double; expected a number", field.name())
-            })?)
-        }
-        Kind::Float => ProtoValue::F32(
-            json.as_f64()
-                .with_context(|| format!("field {} is a float; expected a number", field.name()))?
-                as f32,
-        ),
-        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => {
-            let n = json.as_i64().with_context(|| {
-                format!("field {} is an int32; expected an integer", field.name())
-            })?;
-            ProtoValue::I32(
-                i32::try_from(n).with_context(|| format!("{} does not fit in an int32", n))?,
-            )
-        }
-        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
-            ProtoValue::I64(json.as_i64().with_context(|| {
-                format!("field {} is an int64; expected an integer", field.name())
-            })?)
-        }
-        Kind::Uint32 | Kind::Fixed32 => {
-            let n = json.as_u64().with_context(|| {
-                format!(
-                    "field {} is a uint32; expected a non-negative integer",
-                    field.name()
-                )
-            })?;
-            ProtoValue::U32(
-                u32::try_from(n).with_context(|| format!("{} does not fit in a uint32", n))?,
-            )
-        }
-        Kind::Uint64 | Kind::Fixed64 => ProtoValue::U64(json.as_u64().with_context(|| {
-            format!(
-                "field {} is a uint64; expected a non-negative integer",
-                field.name()
-            )
-        })?),
-        Kind::Bool => ProtoValue::Bool(json.as_bool().with_context(|| {
-            format!("field {} is a bool; expected true or false", field.name())
-        })?),
-        Kind::String => ProtoValue::String(
-            json.as_str()
-                .with_context(|| format!("field {} is a string; expected a string", field.name()))?
-                .to_string(),
-        ),
-        Kind::Bytes => {
-            use base64::{engine::general_purpose, Engine as _};
-            let s = json.as_str().with_context(|| {
-                format!("field {} is bytes; expected a base64 string", field.name())
-            })?;
-            let bytes = general_purpose::STANDARD
-                .decode(s)
-                .with_context(|| format!("field {} is not valid base64", field.name()))?;
-            ProtoValue::Bytes(bytes.into())
-        }
-        Kind::Message(msg_desc) => ProtoValue::Message(json_to_dynamic_message(json, &msg_desc)?),
-        Kind::Enum(enum_desc) => {
-            if let Some(n) = json.as_i64() {
-                let n = i32::try_from(n)
-                    .with_context(|| format!("{} is not a valid enum number", n))?;
-                if enum_desc.get_value(n).is_none() {
-                    anyhow::bail!("{} is not a value of enum {}", n, enum_desc.full_name());
-                }
-                ProtoValue::EnumNumber(n)
-            } else if let Some(s) = json.as_str() {
-                match enum_desc.get_value_by_name(s) {
-                    Some(value) => ProtoValue::EnumNumber(value.number()),
-                    None => {
-                        anyhow::bail!("'{}' is not a value of enum {}", s, enum_desc.full_name())
-                    }
-                }
-            } else {
-                anyhow::bail!(
-                    "field {} is an enum; expected its name or its number",
-                    field.name()
-                )
-            }
-        }
-    })
-}
-
-/// Convert dynamic protobuf message to JSON
-fn dynamic_message_to_json(msg: &DynamicMessage) -> Result<serde_json::Value> {
-    let mut map = serde_json::Map::new();
-
-    for field in msg.descriptor().fields() {
-        if msg.has_field(&field) {
-            let value = msg.get_field(&field);
-            let json_value = proto_value_to_json(&value)?;
-            map.insert(field.name().to_string(), json_value);
-        }
-    }
-
-    Ok(serde_json::Value::Object(map))
-}
-
-/// Convert protobuf value to JSON
-fn proto_value_to_json(value: &ProtoValue) -> Result<serde_json::Value> {
-    use base64::{engine::general_purpose, Engine as _};
-
-    Ok(match value {
-        ProtoValue::Bool(b) => serde_json::Value::Bool(*b),
-        ProtoValue::I32(i) => serde_json::Value::Number((*i).into()),
-        ProtoValue::I64(i) => serde_json::Value::Number((*i).into()),
-        ProtoValue::U32(u) => serde_json::Value::Number((*u).into()),
-        ProtoValue::U64(u) => serde_json::Value::Number((*u).into()),
-        ProtoValue::F32(f) => serde_json::Value::Number(
-            serde_json::Number::from_f64(*f as f64).unwrap_or(serde_json::Number::from(0)),
-        ),
-        ProtoValue::F64(f) => serde_json::Value::Number(
-            serde_json::Number::from_f64(*f).unwrap_or(serde_json::Number::from(0)),
-        ),
-        ProtoValue::String(s) => serde_json::Value::String(s.clone()),
-        ProtoValue::Bytes(b) => serde_json::Value::String(general_purpose::STANDARD.encode(b)),
-        ProtoValue::EnumNumber(n) => serde_json::Value::Number((*n).into()),
-        ProtoValue::Message(msg) => dynamic_message_to_json(msg)?,
-        ProtoValue::List(list) => {
-            let items: Result<Vec<_>> = list.iter().map(proto_value_to_json).collect();
-            serde_json::Value::Array(items?)
-        }
-        ProtoValue::Map(map) => {
-            let mut json_map = serde_json::Map::new();
-            for (k, v) in map.iter() {
-                let key_str = map_key_to_string(k);
-                json_map.insert(key_str, proto_value_to_json(v)?);
-            }
-            serde_json::Value::Object(json_map)
-        }
-    })
-}
-
-/// Convert MapKey to string
-fn map_key_to_string(key: &MapKey) -> String {
-    match key {
-        MapKey::Bool(b) => b.to_string(),
-        MapKey::I32(i) => i.to_string(),
-        MapKey::I64(i) => i.to_string(),
-        MapKey::U32(u) => u.to_string(),
-        MapKey::U64(u) => u.to_string(),
-        MapKey::String(s) => s.clone(),
-    }
 }

@@ -94,7 +94,13 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
 
     // Every entry becomes one or more rows; the scroll is in rows.
     let width = inner.width as usize;
-    let cursor = if focused { app.activity.cursor } else { None };
+    let cursor = if focused {
+        app.activity
+            .cursor
+            .and_then(|seq| entries.iter().position(|entry| entry.seq >= seq))
+    } else {
+        None
+    };
     let mut rows: Vec<(usize, Line)> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let is_cursor = cursor == Some(index);
@@ -109,6 +115,27 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         ScrollPos::Follow => max_offset,
         ScrollPos::Up(up) => max_offset.saturating_sub(up),
     };
+    if app.activity.scroll != ScrollPos::Follow {
+        if let Some((seq, line)) = app.activity.scroll_anchor {
+            if let Some(first) = rows
+                .iter()
+                .position(|(index, _)| entries[*index].seq >= seq)
+            {
+                let same = entries[rows[first].0].seq == seq;
+                let count = rows[first..]
+                    .iter()
+                    .take_while(|(index, _)| *index == rows[first].0)
+                    .count();
+                offset = (first
+                    + if same {
+                        line.min(count.saturating_sub(1))
+                    } else {
+                        0
+                    })
+                .min(max_offset);
+            }
+        }
+    }
     if let Some(cursor) = cursor {
         let first = rows.iter().position(|(i, _)| *i == cursor).unwrap_or(0);
         let last = rows
@@ -122,6 +149,14 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         }
     }
 
+    let anchor = rows.get(offset).map(|(index, _)| {
+        let first = rows
+            .iter()
+            .position(|(other, _)| other == index)
+            .unwrap_or(offset);
+        (entries[*index].seq, offset - first)
+    });
+    let selected_seq = cursor.map(|index| entries[index].seq);
     let shown = total.saturating_sub(offset).min(viewport);
     let pad = viewport - shown;
     let mut lines: Vec<Line> = Vec::with_capacity(viewport);
@@ -140,10 +175,17 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
                 width: inner.width,
                 height: 1,
             },
-            HitTarget::StreamRow(entry_index),
+            HitTarget::StreamRow(entries[entry_index].seq),
         ));
     }
     drop(entries);
+    if focused {
+        app.activity.cursor = selected_seq;
+    }
+    if app.activity.scroll != ScrollPos::Follow {
+        app.activity.scroll_anchor = anchor;
+        app.activity.scroll = ScrollPos::Up(max_offset.saturating_sub(offset));
+    }
     for (rect, target) in hits {
         app.hits.push(rect, target);
     }
@@ -198,22 +240,27 @@ fn entry_lines<'a>(
         let body_width = width.saturating_sub(2).max(1);
         let mut rows = Vec::new();
         for (i, text_line) in entry.event.text.split('\n').enumerate() {
-            let chars: Vec<char> = text_line.chars().collect();
-            let chunks: Vec<String> = if chars.is_empty() {
-                vec![String::new()]
-            } else {
-                chars
-                    .chunks(body_width)
-                    .map(|c| c.iter().collect())
-                    .collect()
-            };
+            let span = Span::raw(text_line);
+            let mut chunks = Vec::new();
+            let mut chunk = String::new();
+            let mut cells = 0;
+            for grapheme in span.styled_graphemes(Style::default()) {
+                let glyph_width = Span::raw(grapheme.symbol).width();
+                if cells + glyph_width > body_width && !chunk.is_empty() {
+                    chunks.push(std::mem::take(&mut chunk));
+                    cells = 0;
+                }
+                chunk.push_str(grapheme.symbol);
+                cells += glyph_width;
+            }
+            chunks.push(chunk);
             for (j, chunk) in chunks.into_iter().enumerate() {
                 let prefix = if i == 0 && j == 0 { glyph } else { "  " };
                 let mut spans = vec![
                     Span::styled(prefix, sel(style)),
                     Span::styled(chunk.clone(), sel(style)),
                 ];
-                let filled = 2 + chunk.chars().count();
+                let filled = 2 + Span::raw(chunk.as_str()).width();
                 if cursor && filled < width {
                     spans.push(Span::styled(
                         " ".repeat(width - filled),

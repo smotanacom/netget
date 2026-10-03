@@ -347,7 +347,15 @@ impl Client for SshAgentClientProtocol {
                 let data_hex = action["data_hex"]
                     .as_str()
                     .context("Missing 'data_hex' field")?;
-                let flags = action["flags"].as_u64().unwrap_or(0) as u32;
+                let flags = match action.get("flags") {
+                    None => 0,
+                    Some(value) => u32::try_from(
+                        value
+                            .as_u64()
+                            .context("flags must be an unsigned integer")?,
+                    )
+                    .context("flags exceed u32")?,
+                };
 
                 Ok(ClientActionResult::Custom {
                     name: "sign_request".to_string(),

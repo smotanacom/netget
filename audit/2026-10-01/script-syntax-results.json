@@ -1,0 +1,242 @@
+[
+  [
+    ".github/scripts/check-module-reachability.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "am_i_claude_code_for_web.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "build-termux.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "cargo-isolated-kill.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "cargo-isolated.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "cargo.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "fuzz/seed_corpus.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "lines-of-code.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "npm/netget/bin/netget.js",
+    "node --check",
+    0,
+    ""
+  ],
+  [
+    "run-eval.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/add_is_tool_field.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/add_mocks_helper.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/add_test_timeouts.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/apply_test_timeouts.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/fix_all_e2e_references.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/fix_all_protocols.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/fix_event_params.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/fix_inline_action_defs.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/fix_param_def.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/migrate_event_types.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/archive/update_test_feature_gates.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/beta_evidence_table.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "scripts/npm/prepare-packages.mjs",
+    "node --check",
+    0,
+    ""
+  ],
+  [
+    "scripts/sccache/cargo-sccache.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/sccache/setup-sccache-r2.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "scripts/sccache/setup-sccache-upstash.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "site/deploy.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "site/js/composer.js",
+    "node --check",
+    0,
+    ""
+  ],
+  [
+    "site/js/demo.js",
+    "node --check",
+    0,
+    ""
+  ],
+  [
+    "site/js/main.js",
+    "node --check",
+    0,
+    ""
+  ],
+  [
+    "site/js/thinking.js",
+    "node --check",
+    0,
+    ""
+  ],
+  [
+    "test-e2e.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "test-examples.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "test-models.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "test-snapshot.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "test-unit.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "tests/prompt/update_snapshots.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "web/build.sh",
+    "bash -n",
+    0,
+    ""
+  ],
+  [
+    "web/test/page_composer.py",
+    "python AST",
+    0,
+    ""
+  ],
+  [
+    "web/test/smoke.mjs",
+    "node --check",
+    0,
+    ""
+  ]
+]

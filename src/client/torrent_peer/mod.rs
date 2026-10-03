@@ -3,7 +3,7 @@ pub mod actions;
 
 pub use actions::TorrentPeerClientProtocol;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,6 +18,36 @@ use crate::llm::ClientLlmResult;
 use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
+
+/// Maximum inbound peer message, including its message ID. Normal block messages
+/// are much smaller; this also leaves room for large bitfields and extensions.
+pub const MAX_PEER_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Read one length-prefixed peer message without trusting its allocation size.
+/// An empty message is the protocol's keepalive. Do not cancel this read midway.
+pub async fn read_peer_message<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+    read_peer_message_with_timeout(reader, crate::client::response_reader::RESPONSE_DEADLINE).await
+}
+
+pub async fn read_peer_message_with_timeout<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+    deadline: std::time::Duration,
+) -> Result<Vec<u8>> {
+    let first = reader.read_u8().await?;
+    tokio::time::timeout(deadline, async {
+        let mut length = [first, 0, 0, 0];
+        reader.read_exact(&mut length[1..]).await?;
+        let len = u32::from_be_bytes(length) as usize;
+        if len > MAX_PEER_MESSAGE_BYTES {
+            bail!("peer message length {len} exceeds the {MAX_PEER_MESSAGE_BYTES}-byte cap");
+        }
+        let mut message = vec![0; len];
+        reader.read_exact(&mut message).await?;
+        Ok(message)
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("peer message deadline exceeded"))?
+}
 
 /// Peer wire message types
 #[repr(u8)]
@@ -109,7 +139,18 @@ impl TorrentPeerClient {
         let task_handle = tokio::spawn(async move {
             // First, wait for handshake
             let mut handshake_buf = vec![0u8; 68]; // 1 + 19 + 8 + 20 + 20
-            match read_half.read_exact(&mut handshake_buf).await {
+            let handshake_result = tokio::time::timeout(
+                crate::client::response_reader::RESPONSE_DEADLINE,
+                read_half.read_exact(&mut handshake_buf),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "peer handshake deadline exceeded",
+                ))
+            });
+            match handshake_result {
                 Ok(_) => {
                     trace!("Peer client {} received handshake", client_id);
 
@@ -185,109 +226,87 @@ impl TorrentPeerClient {
                         }
                     }
 
-                    // Now read peer wire messages
+                    // Now read peer wire messages. Refuse an oversized announcement
+                    // before allocating or waiting for any of its body bytes.
                     loop {
-                        // Read message length (4 bytes)
-                        let mut len_buf = [0u8; 4];
-                        match read_half.read_exact(&mut len_buf).await {
-                            Ok(_) => {
-                                let msg_len = u32::from_be_bytes(len_buf);
-
-                                if msg_len == 0 {
-                                    // Keep-alive message
+                        match read_peer_message(&mut read_half).await {
+                            Ok(msg_buf) => {
+                                if msg_buf.is_empty() {
                                     trace!("Peer client {} received keep-alive", client_id);
                                     continue;
                                 }
+                                let msg_type = msg_buf[0];
+                                let payload = &msg_buf[1..];
 
-                                // Read message
-                                let mut msg_buf = vec![0u8; msg_len as usize];
-                                match read_half.read_exact(&mut msg_buf).await {
-                                    Ok(_) => {
-                                        let msg_type = msg_buf[0];
-                                        let payload = &msg_buf[1..];
+                                trace!(
+                                    "Peer client {} received message type {}, len {}",
+                                    client_id,
+                                    msg_type,
+                                    payload.len()
+                                );
 
-                                        trace!(
-                                            "Peer client {} received message type {}, len {}",
-                                            client_id,
-                                            msg_type,
-                                            payload.len()
-                                        );
+                                // Call LLM with message event
+                                if let Some(instruction) =
+                                    app_state_clone.get_instruction_for_client(client_id).await
+                                {
+                                    let protocol = Arc::new(crate::client::torrent_peer::actions::TorrentPeerClientProtocol::new());
+                                    let event = Event::new(
+                                        &PEER_MESSAGE_EVENT,
+                                        serde_json::json!({
+                                            "message_type": msg_type,
+                                            "payload_len": payload.len(),
+                                            "payload_hex": hex::encode(payload),
+                                        }),
+                                    );
 
-                                        // Call LLM with message event
-                                        if let Some(instruction) = app_state_clone
-                                            .get_instruction_for_client(client_id)
-                                            .await
-                                        {
-                                            let protocol = Arc::new(crate::client::torrent_peer::actions::TorrentPeerClientProtocol::new());
-                                            let event = Event::new(
-                                                &PEER_MESSAGE_EVENT,
-                                                serde_json::json!({
-                                                    "message_type": msg_type,
-                                                    "payload_len": payload.len(),
-                                                    "payload_hex": hex::encode(payload),
-                                                }),
-                                            );
+                                    let memory = app_state_clone
+                                        .get_memory_for_client(client_id)
+                                        .await
+                                        .unwrap_or_default();
 
-                                            let memory = app_state_clone
-                                                .get_memory_for_client(client_id)
+                                    match call_llm_for_client(
+                                        &llm_client_clone,
+                                        &app_state_clone,
+                                        client_id.to_string(),
+                                        &instruction,
+                                        &memory,
+                                        Some(&event),
+                                        protocol.as_ref(),
+                                        &status_tx_clone,
+                                    )
+                                    .await
+                                    {
+                                        Ok(ClientLlmResult {
+                                            actions,
+                                            memory_updates,
+                                        }) => {
+                                            if let Some(mem) = memory_updates {
+                                                app_state_clone
+                                                    .set_memory_for_client(client_id, mem)
+                                                    .await;
+                                            }
+
+                                            for action in actions {
+                                                if let Err(e) = Self::execute_peer_action(
+                                                    client_id,
+                                                    action,
+                                                    &write_half_clone,
+                                                    protocol.as_ref(),
+                                                )
                                                 .await
-                                                .unwrap_or_default();
-
-                                            match call_llm_for_client(
-                                                &llm_client_clone,
-                                                &app_state_clone,
-                                                client_id.to_string(),
-                                                &instruction,
-                                                &memory,
-                                                Some(&event),
-                                                protocol.as_ref(),
-                                                &status_tx_clone,
-                                            )
-                                            .await
-                                            {
-                                                Ok(ClientLlmResult {
-                                                    actions,
-                                                    memory_updates,
-                                                }) => {
-                                                    if let Some(mem) = memory_updates {
-                                                        app_state_clone
-                                                            .set_memory_for_client(client_id, mem)
-                                                            .await;
-                                                    }
-
-                                                    for action in actions {
-                                                        if let Err(e) = Self::execute_peer_action(
-                                                            client_id,
-                                                            action,
-                                                            &write_half_clone,
-                                                            protocol.as_ref(),
-                                                        )
-                                                        .await
-                                                        {
-                                                            error!(
-                                                                "Failed to execute peer action: {}",
-                                                                e
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!("LLM error: {}", e);
+                                                {
+                                                    error!("Failed to execute peer action: {}", e);
                                                 }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Peer client {} message read error: {}",
-                                            client_id, e
-                                        );
-                                        break;
+                                        Err(e) => {
+                                            error!("LLM error: {}", e);
+                                        }
                                     }
                                 }
                             }
                             Err(e) => {
-                                error!("Peer client {} length read error: {}", client_id, e);
+                                error!("Peer client {} message read error: {}", client_id, e);
                                 break;
                             }
                         }
@@ -423,7 +442,8 @@ impl TorrentPeerClient {
                 let msg_type = data
                     .get("message_type")
                     .and_then(|v| v.as_u64())
-                    .context("Missing message_type")? as u8;
+                    .context("Missing message_type")?;
+                let msg_type = u8::try_from(msg_type).context("peer message_type exceeds u8")?;
                 let payload_hex = data.get("payload").and_then(|v| v.as_str()).unwrap_or("");
                 let payload = if !payload_hex.is_empty() {
                     hex::decode(payload_hex)?
@@ -432,7 +452,11 @@ impl TorrentPeerClient {
                 };
 
                 // Build message
-                let msg_len = (1 + payload.len()) as u32;
+                if payload.len() >= MAX_PEER_MESSAGE_BYTES {
+                    anyhow::bail!("peer message exceeds byte cap");
+                }
+                let msg_len =
+                    u32::try_from(1 + payload.len()).context("peer message length exceeds u32")?;
                 let mut message = Vec::new();
                 message.extend_from_slice(&msg_len.to_be_bytes());
                 message.push(msg_type);

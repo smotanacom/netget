@@ -3,8 +3,8 @@
 //! A raw QUIC stream has no error frame of its own — there is no status line, no reply code,
 //! nothing netget could fill in. The protocol-level way to say "this stream is over and it did
 //! not succeed" is `RESET_STREAM` with an application error code, which is what this server
-//! now sends. It negotiates ALPN `h3`, so the two RFC 9114 codes whose meaning matches are the
-//! honest choice: `H3_INTERNAL_ERROR` (0x0102) for a backend that erred, `H3_EXCESSIVE_LOAD`
+//! now sends. It negotiates ALPN `netget-quic`, so the two application-local codes whose meaning matches are the
+//! honest choice: `RAW_INTERNAL_ERROR` (0x0102) for a backend that erred, `RAW_EXCESSIVE_LOAD`
 //! (0x0107) for one that is saturated.
 //!
 //! Before this, the data path logged a warning, put the stream back in `Idle` and wrote
@@ -24,9 +24,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-/// RFC 9114 `H3_INTERNAL_ERROR`. A mock that returns HTTP 500 is not an overload, so this is
+/// application-local `RAW_INTERNAL_ERROR`. A mock that returns HTTP 500 is not an overload, so this is
 /// the code the classifier must land on.
-const H3_INTERNAL_ERROR: u64 = 0x0102;
+const RAW_INTERNAL_ERROR: u64 = 0x0102;
 
 #[tokio::test]
 async fn test_quic_resets_the_stream_when_the_llm_fails() -> E2EResult<()> {
@@ -62,7 +62,7 @@ async fn test_quic_resets_the_stream_when_the_llm_fails() -> E2EResult<()> {
     client_crypto
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
-    client_crypto.alpn_protocols = vec![b"h3".to_vec()];
+    client_crypto.alpn_protocols = vec![b"netget-quic".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)
@@ -104,9 +104,9 @@ async fn test_quic_resets_the_stream_when_the_llm_fails() -> E2EResult<()> {
         Err(quinn::ReadToEndError::Read(quinn::ReadError::Reset(code))) => {
             assert_eq!(
                 code.into_inner(),
-                H3_INTERNAL_ERROR,
-                "a backend error must reset with H3_INTERNAL_ERROR (0x0102); \
-                 H3_EXCESSIVE_LOAD (0x0107) is reserved for an overloaded backend so a client \
+                RAW_INTERNAL_ERROR,
+                "a backend error must reset with RAW_INTERNAL_ERROR (0x0102); \
+                 RAW_EXCESSIVE_LOAD (0x0107) is reserved for an overloaded backend so a client \
                  can tell a retryable failure from a permanent one"
             );
         }

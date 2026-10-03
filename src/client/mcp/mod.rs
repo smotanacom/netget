@@ -332,7 +332,11 @@ impl McpClient {
             .context("Failed to send initialize request")?;
 
         let status = response.status();
-        let response_text = response.text().await?;
+        let response_text = crate::client::http_fetch::read_response_text(
+            response,
+            crate::client::http_fetch::transport::MAX_RESPONSE_BODY_BYTES,
+        )
+        .await?;
 
         debug!(
             "Initialize response status: {}, body: {}",
@@ -788,7 +792,11 @@ impl McpClient {
             .context("Failed to send MCP request")?;
 
         let status = response.status();
-        let response_text = response.text().await?;
+        let response_text = crate::client::http_fetch::read_response_text(
+            response,
+            crate::client::http_fetch::transport::MAX_RESPONSE_BODY_BYTES,
+        )
+        .await?;
 
         debug!("MCP response status: {}, body: {}", status, response_text);
 

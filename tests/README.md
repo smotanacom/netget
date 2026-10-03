@@ -257,13 +257,14 @@ Example:
 #[tokio::test]
 async fn test_dns_a_record_query() -> E2EResult<()> {
     // PROMPT: Tell LLM to act as DNS server
-    let port = helpers::get_available_port().await?;
+    let port = 0; // the server owns its ephemeral socket until stopped
     let prompt = format!("listen on port {} via dns. Respond to A queries with 1.2.3.4", port);
 
     // Start server
     let server = helpers::start_netget_server(ServerConfig::new(prompt)).await?;
 
-    // VALIDATION: Use hickory-client to query
+    // VALIDATION: Use the actual bound port reported by the server.
+    let address = format!("127.0.0.1:{}", server.port).parse()?;
     let client = SyncClient::new(UdpClientConnection::new(address)?);
     let response = client.query(&name, DNSClass::IN, RecordType::A)?;
     assert!(!response.answers().is_empty());

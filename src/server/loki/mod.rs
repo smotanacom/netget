@@ -63,7 +63,7 @@ impl LokiServer {
             .map(|p| p.get_optional_bool("require_tenant"))
             .transpose()?
             .flatten()
-            .unwrap_or(false);
+            .unwrap_or(codec::DEFAULT_REQUIRE_TENANT);
         let config = Arc::new(Config {
             token,
             llm_fallback,

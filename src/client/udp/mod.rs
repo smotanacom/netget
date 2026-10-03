@@ -412,12 +412,11 @@ impl UdpClient {
             }
             ClientActionResult::Custom { name, data } => {
                 if name == "send_udp_datagram" {
-                    let data_bytes = data["data"]
-                        .as_array()
-                        .context("Missing 'data' array in send_udp_datagram")?
-                        .iter()
-                        .map(|v| v.as_u64().unwrap_or(0) as u8)
-                        .collect::<Vec<u8>>();
+                    let data_bytes = crate::client::wire_values::bytes(
+                        data["data"]
+                            .as_array()
+                            .context("Missing 'data' array in send_udp_datagram")?,
+                    )?;
 
                     let target_addr = if let Some(target) = data["target_addr"].as_str() {
                         target

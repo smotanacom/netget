@@ -1,0 +1,35 @@
+{
+  "completed_utc": "2026-10-02T02:49:39.127233+00:00",
+  "source_inventory": "audit/2026-10-01/wasm-final-source-sha256.json",
+  "source_files": 839,
+  "changed_source_files": [],
+  "commands": [
+    {
+      "command": "env CARGO_TARGET_DIR=/private/tmp/netget-audit-web-20261001 RUSTC_WRAPPER= CARGO_NET_OFFLINE=true CARGO_PROFILE_DEV_DEBUG=0 ./web/build.sh --dev",
+      "exit_code": 0,
+      "cargo_build_seconds": 22.38,
+      "log": "tmp/audit-2026-10-01/followup/wasm-build-final-snapshot.log"
+    },
+    {
+      "command": "node web/test/smoke.mjs",
+      "exit_code": 0,
+      "synthetic_requests": 43,
+      "log": "tmp/audit-2026-10-01/followup/wasm-smoke-final-snapshot.log"
+    }
+  ],
+  "artifacts": {
+    "site/demo/pkg/netget_web.js": {
+      "bytes": 42767,
+      "sha256": "9265cac2c7dfd8fafc1f02f0193ed577003d064e4f0fb13d3a1934914237a9c4"
+    },
+    "site/demo/pkg/netget_web_bg.wasm": {
+      "bytes": 82131285,
+      "sha256": "f6e45023e92f444ec496e2e2091347d61d64066597eed2b4bd2e7aab63962275"
+    }
+  },
+  "boundaries": [
+    "CPU only; no GPU API/model endpoints/model downloads",
+    "Synthetic in-process virtual protocol fixtures and JavaScript model bridge",
+    "Earlier CPU Chromium DOM interaction run retained; no browser interaction source change required another run"
+  ]
+}

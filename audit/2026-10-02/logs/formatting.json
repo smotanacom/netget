@@ -1,0 +1,11 @@
+{
+  "command": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--check"
+  ],
+  "exit_code": 0,
+  "seconds": 35.05,
+  "log": "/Users/matus/dev/netget/tmp/audit-2026-10-02/formatting.log"
+}
