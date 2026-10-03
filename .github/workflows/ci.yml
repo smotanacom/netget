@@ -181,6 +181,9 @@ jobs:
         with:
           key: clippy-wide
 
+      - name: Install protobuf compiler for the wide feature build
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: "cargo clippy (advisory: wide feature set)"
         continue-on-error: true
         shell: bash
