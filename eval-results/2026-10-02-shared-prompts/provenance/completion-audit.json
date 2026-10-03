@@ -1,0 +1,54 @@
+{
+  "checked_at": "2026-10-03T03:03:14.324024+00:00",
+  "phase": "complete",
+  "sleep_event_source": "pmset -g log; only Sleep/Wake/DarkWake event timestamps retained",
+  "sleep_check_interval_start": "2026-10-02T22:56:32.516972+00:00",
+  "sleep_events_during_resumed_measurements": [],
+  "owned_sleep_prevention_observation": {
+    "controller_pid": 67992,
+    "caffeinate_pid": 67993,
+    "running": true,
+    "purpose": "Preserve all remaining full model trials and paired replay from idle sleep.",
+    "observed_at": "2026-10-03T03:03:14.324024+00:00"
+  },
+  "after_full_harness": {
+    "source": "3e2d24bd935fe822296bad2962c82675dfcd820b",
+    "started_at": "2026-10-03T01:29:34.853610+00:00",
+    "finished_at": "2026-10-03T03:01:04.428614+00:00",
+    "elapsed_seconds": 5489.397871292,
+    "exit_code": 0,
+    "report_sha256": "ca45176ff0ff704384a2bc68d633d972eb9c7901e800c8652826870aad4ebc01",
+    "binary_sha256": "e5b9c4c80e5d456309ed4d8d975ace596ac092ba3bdc08624891669e24c03aa2",
+    "harness_sha256": "467641b6cbe5dccb9929176be8b004180f24c5b16f39d3a3c36196d306651290"
+  },
+  "model": {
+    "name": "llama3.1:8b",
+    "model": "llama3.1:8b",
+    "modified_at": "2026-06-25T22:35:16.282595214-04:00",
+    "size": 4920753328,
+    "digest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+    "details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "llama",
+      "families": [
+        "llama"
+      ],
+      "parameter_size": "8.0B",
+      "quantization_level": "Q4_K_M",
+      "context_length": 131072,
+      "embedding_length": 4096
+    },
+    "capabilities": [
+      "completion",
+      "tools"
+    ]
+  },
+  "ollama_version": {
+    "version": "0.35.0"
+  },
+  "completed_at": "2026-10-03T03:05:45.482551+00:00",
+  "final_sleep_check_at": "2026-10-03T03:09:40.399374+00:00",
+  "sleep_check_interval_end": "2026-10-03T03:09:40.399374+00:00",
+  "replay_results_sha256": "e27994931c4174854fecb84866fefe76551c509011d96624605e301c9ef784d4"
+}
