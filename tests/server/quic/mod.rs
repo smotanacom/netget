@@ -10,3 +10,6 @@ mod independent_peer_test;
 
 #[cfg(all(test, feature = "quic"))]
 mod certificate_validation_test;
+
+#[cfg(all(test, feature = "quic"))]
+mod state_contention_test;
