@@ -104,6 +104,16 @@ pub fn contains_credentials(value: &Value) -> bool {
     false
 }
 
+/// Remove untyped context from a private request's error while preserving the
+/// numeric overload category that protocols use to choose a retryable wire reply.
+pub fn hide_error_details(error: anyhow::Error) -> anyhow::Error {
+    if let Some(category) = error.downcast_ref::<crate::llm::rate_limiter::RateLimitError>() {
+        anyhow::Error::new(*category)
+    } else {
+        anyhow::anyhow!("credential-bearing request failed; diagnostics hidden")
+    }
+}
+
 /// Deepest nesting walked. `serde_json` refuses to parse past 128 levels, so a parsed value
 /// never reaches this; a value built in code might, and past it the subtree is shown as
 /// [`REDACTED`] whole rather than walked on a shrinking stack.

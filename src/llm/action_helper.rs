@@ -426,7 +426,7 @@ pub async fn call_llm(
         // Suppress that request's tracing, preserving execution and typed access-log input.
         run.with_subscriber(tracing::subscriber::NoSubscriber::default())
             .await
-            .map_err(|_| anyhow::anyhow!("credential-bearing event failed; diagnostics hidden"))
+            .map_err(crate::utils::redact::hide_error_details)
     } else {
         run.await
     };
@@ -741,6 +741,55 @@ pub async fn call_llm_for_client(
     protocol: &dyn crate::llm::actions::client_trait::Client,
     status_tx: &tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<ClientLlmResult> {
+    if let Some(event) = event {
+        anyhow::ensure!(
+            crate::utils::json_budget::within_budget(
+                &event.data,
+                crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+                crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+                crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+            ),
+            "event exceeds the shared JSON budget"
+        );
+    }
+    let private_payloads = event
+        .is_some_and(|event| crate::utils::redact::contains_credentials(&event.data))
+        || crate::utils::redact::actions_have_credentials(
+            &crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event),
+        );
+    let run = call_llm_for_client_inner(
+        llm_client,
+        state,
+        client_id,
+        instruction,
+        memory,
+        event,
+        protocol,
+        status_tx,
+        private_payloads,
+    );
+    if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(crate::utils::redact::hide_error_details)
+    } else {
+        run.await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_llm_for_client_inner(
+    llm_client: &OllamaClient,
+    state: &AppState,
+    client_id: String,
+    instruction: &str,
+    memory: &str,
+    event: Option<&Event>,
+    protocol: &dyn crate::llm::actions::client_trait::Client,
+    status_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    private_payloads: bool,
+) -> Result<ClientLlmResult> {
     // Get client actions.
     //
     // This used to be `protocol.get_async_actions(state)` and nothing else — not
@@ -837,7 +886,8 @@ pub async fn call_llm_for_client(
     // construction — see tests/llm_native_tools_test.rs. Not separately measured:
     // the 6/6 evidence comes from server protocols, and this is inferred from the
     // paths being identical rather than from a client A/B.
-    .with_status_tx(status_tx.clone());
+    .with_status_tx(status_tx.clone())
+    .with_private_payloads(private_payloads);
 
     // Add user message
     conversation.add_user_message(full_message);
@@ -890,8 +940,13 @@ pub async fn call_llm_for_client(
                 )
                 .await
                 {
-                    tracing::warn!("Client common action execution failed: {}", e);
-                    let _ = status_tx.send(format!("[CLIENT] feedback action failed: {e}"));
+                    let error = if private_payloads {
+                        crate::utils::redact::hide_error_details(e)
+                    } else {
+                        e
+                    };
+                    tracing::warn!("Client common action execution failed: {}", error);
+                    let _ = status_tx.send(format!("[CLIENT] feedback action failed: {error}"));
                 }
             }
             None => {
