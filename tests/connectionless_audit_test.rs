@@ -66,6 +66,11 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // parked manual/model handler would hide a live request. No per-remote rows await
     // the idle sweep; template/session state has a separate owned 1-second expiry timer.
     "IPFIX",
+    // sFlow also removes each temporary datagram row when its common handler ends.
+    // Reaping it while manual/model work is parked would hide a live request;
+    // diagnostic sequence state expires independently on its owned 1-second timer.
+    #[cfg(feature = "sflow")]
+    "sFlow",
 ];
 
 /// Registry names whose source directory does not follow any of the mechanical
