@@ -1,22 +1,22 @@
-//! Every file path a protocol's `CLAUDE.md` names in backticks must exist.
+//! Every file path a protocol's `AGENTS.md` names in backticks must exist.
 //!
-//! The root `CLAUDE.md` warns that the per-protocol docs "are frequently more aspirational than
+//! The root `AGENTS.md` warns that the per-protocol docs "are frequently more aspirational than
 //! the code". The most expensive shape of that is **fiction**: a doc that describes files,
 //! suites and test cases which were never written. It reads exactly like a doc that describes
 //! something real, and nothing in the tree disagrees with it, so the next person plans around
-//! it. `tests/server/bluetooth_ble_remote/CLAUDE.md` described three btleplug test cases with
+//! it. `tests/server/bluetooth_ble_remote/AGENTS.md` described three btleplug test cases with
 //! per-test LLM budgets and an explanation of why they were `#[ignore]`d; none of the three
-//! existed. `src/client/smtp/CLAUDE.md` gave the full call signature of a
+//! existed. `src/client/smtp/AGENTS.md` gave the full call signature of a
 //! `SmtpClient::send_email` that has no definition.
 //!
 //! A path is the one part of that prose a machine can settle. This test walks every
-//! `src/**/CLAUDE.md` and `tests/**/CLAUDE.md`, takes every backticked span that looks like a
+//! `src/**/AGENTS.md` and `tests/**/AGENTS.md`, takes every backticked span that looks like a
 //! path into this repository, and requires it to resolve on disk.
 //!
 //! # What counts as a path, and why the rule is this narrow
 //!
 //! The rule is deliberately conservative, because a build-failing check with false positives
-//! teaches people to edit the baseline instead of the code — the lesson the root `CLAUDE.md`
+//! teaches people to edit the baseline instead of the code — the lesson the root `AGENTS.md`
 //! draws from the strict version of the startup-parameter scan. A span is a candidate only if
 //! it contains a `/`, ends in a known source extension, has no whitespace, no glob or
 //! `<placeholder>` metacharacter, no URL scheme, and is not absolute. Every one of those
@@ -34,7 +34,7 @@
 //!   full repo-relative spelling would flag 26 correct citations, so a candidate resolves if it
 //!   is a component-aligned suffix of any file in the tree.
 //! - **Directories are not checked.** The one non-URL directory span that fails to resolve is
-//!   `src/client/eapol/` in `src/server/eapol/CLAUDE.md`, in a sentence whose point is that
+//!   `src/client/eapol/` in `src/server/eapol/AGENTS.md`, in a sentence whose point is that
 //!   there *is* no such directory. A rule that fails a doc for correctly saying something is
 //!   absent is worse than no rule.
 //!
@@ -67,7 +67,7 @@
 //! async-openai's, `Message::from_vec()` is hickory-dns's, and `ImapServer::spawn_with_tls` is
 //! a deliberate reference to something that *used* to exist. A source-only scan cannot resolve
 //! a name against the crate that owns it, so the check would fail eight correct docs to catch
-//! two — the shape the root `CLAUDE.md` warns trains people to edit the baseline instead of the
+//! two — the shape the root `AGENTS.md` warns trains people to edit the baseline instead of the
 //! code. The two it did catch were found by running the measurement once, by hand, and fixed.
 //!
 //! Run with:
@@ -92,78 +92,78 @@ const SKIP_DIRS: &[&str] = &["target", ".git", ".claude", "node_modules", "tmp"]
 /// *serves* rather than contains.
 const FOREIGN_PATHS: &[(&str, &str, &str)] = &[
     (
-        "src/server/bluetooth_ble_beacon/CLAUDE.md",
+        "src/server/bluetooth_ble_beacon/AGENTS.md",
         "src/adv.rs",
         "bluer 0.17.4's own sources, cited for how it builds an advertisement",
     ),
     (
-        "src/server/bluetooth_ble_beacon/CLAUDE.md",
+        "src/server/bluetooth_ble_beacon/AGENTS.md",
         "src/adapter.rs",
         "bluer 0.17.4's own sources",
     ),
     (
-        "src/server/bluetooth_ble_beacon/CLAUDE.md",
+        "src/server/bluetooth_ble_beacon/AGENTS.md",
         "src/session.rs",
         "bluer 0.17.4's own sources",
     ),
     (
-        "src/server/can/CLAUDE.md",
+        "src/server/can/AGENTS.md",
         "src/socket.rs",
         "socketcan 3.6's own sources, which this server was written against",
     ),
     (
-        "src/server/can/CLAUDE.md",
+        "src/server/can/AGENTS.md",
         "src/frame.rs",
         "socketcan 3.6's own sources",
     ),
     (
-        "src/server/ssdp/CLAUDE.md",
+        "src/server/ssdp/AGENTS.md",
         "src/search.rs",
         "ssdp-client 2.1.0's own sources, where the multicast destination is a literal",
     ),
     (
-        "tests/server/ntp/CLAUDE.md",
+        "tests/server/ntp/AGENTS.md",
         "src/core_logic.rs",
         "rsntp's own sources, whose checks the test relies on",
     ),
     (
-        "src/server/git/CLAUDE.md",
+        "src/server/git/AGENTS.md",
         "src/main.rs",
         "a file inside the git repository this server serves, not in this tree",
     ),
     (
-        "tests/server/git/CLAUDE.md",
+        "tests/server/git/AGENTS.md",
         "src/main.rs",
         "a file inside the git repository the test serves and clones",
     ),
     (
-        "tests/server/git/CLAUDE.md",
+        "tests/server/git/AGENTS.md",
         "bin/run.sh",
         "a file inside the git repository the test serves, checked for its executable bit",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "src/client/svn/protocol.rs",
         "a planning document for an unimplemented client; the header says so in its first line",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "src/client/svn/mod.rs",
         "a planning document for an unimplemented client",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "src/client/svn/actions.rs",
         "a planning document for an unimplemented client",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "tests/client/svn/e2e_test.rs",
         "a planning document for an unimplemented client",
     ),
     (
-        "src/client/svn/CLAUDE.md",
-        "tests/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
+        "tests/client/svn/AGENTS.md",
         "a planning document for an unimplemented client",
     ),
 ];
@@ -172,7 +172,7 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Every `CLAUDE.md` under `src/` and `tests/`.
+/// Instruction documents under `src/` and `tests/`, including the legacy filename.
 fn protocol_docs(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -187,7 +187,10 @@ fn protocol_docs(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 walk(&p, out);
-            } else if p.file_name().is_some_and(|n| n == "CLAUDE.md") {
+            } else if p
+                .file_name()
+                .is_some_and(|n| n == "AGENTS.md" || n == "CLAUDE.md")
+            {
                 out.push(p);
             }
         }
@@ -329,7 +332,33 @@ fn is_repo_path_candidate(span: &str) -> bool {
 /// Three spellings count, in decreasing strictness: the full repo-relative path, a
 /// component-aligned suffix of one (`state/server.rs` for `src/state/server.rs`), and a path
 /// relative to the directory the doc itself lives in.
+// The instruction migration retained document contents, including legacy citations.
+// Resolve that filename only to an AGENTS.md file that actually exists. Other missing
+// paths still fail, and exemption identities use the current document filename.
+fn current_instruction_path(path: &str) -> String {
+    let parsed = Path::new(path);
+    if parsed.file_name().is_some_and(|name| name == "CLAUDE.md") {
+        parsed
+            .with_file_name("AGENTS.md")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        path.to_string()
+    }
+}
+
+fn existing_instruction_target(path: &Path) -> bool {
+    path.exists()
+        || (path.file_name().is_some_and(|name| name == "CLAUDE.md")
+            && path.with_file_name("AGENTS.md").exists())
+}
+
 fn resolves(span: &str, doc_dir_rel: &str, files: &BTreeSet<String>) -> bool {
+    resolves_current(span, doc_dir_rel, files)
+        || resolves_current(&current_instruction_path(span), doc_dir_rel, files)
+}
+
+fn resolves_current(span: &str, doc_dir_rel: &str, files: &BTreeSet<String>) -> bool {
     let s = span.strip_prefix("./").unwrap_or(span);
     if files.contains(s) {
         return true;
@@ -367,6 +396,7 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
             .unwrap_or(&doc)
             .to_string_lossy()
             .replace('\\', "/");
+        let exemption_doc = current_instruction_path(&doc_rel);
         let doc_dir_rel = doc_rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         let text = std::fs::read_to_string(&doc).unwrap_or_default();
 
@@ -381,13 +411,13 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
                 if resolves(span, doc_dir_rel, &files) {
                     continue;
                 }
-                let normalised = span.strip_prefix("./").unwrap_or(span);
-                if unused_exemptions.remove(&(doc_rel.clone(), normalised.to_string())) {
+                let normalised = current_instruction_path(span.strip_prefix("./").unwrap_or(span));
+                if unused_exemptions.remove(&(exemption_doc.clone(), normalised.to_string())) {
                     continue;
                 }
                 if FOREIGN_PATHS
                     .iter()
-                    .any(|(d, p, _)| *d == doc_rel && *p == normalised)
+                    .any(|(d, p, _)| *d == exemption_doc && *p == normalised)
                 {
                     continue;
                 }
@@ -403,7 +433,9 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
             for target in markdown_link_targets(line) {
                 link_targets += 1;
                 let joined = doc.parent().unwrap_or(Path::new(".")).join(&target);
-                if joined.exists() || root.join(&target).exists() {
+                if existing_instruction_target(&joined)
+                    || existing_instruction_target(&root.join(&target))
+                {
                     continue;
                 }
                 dead_links.push(format!("{}:{}: [..]({})", doc_rel, lineno + 1, target));
@@ -418,7 +450,7 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
 
     assert!(
         unresolved.is_empty(),
-        "{} backticked path(s) in a protocol CLAUDE.md name a file that does not exist.\n\n{}\n\n\
+        "{} backticked path(s) in a protocol AGENTS.md name a file that does not exist.\n\n{}\n\n\
          Fix the doc against the source. If a path really does name a file in ANOTHER \
          repository — a dependency's own sources, or content this repo serves rather than \
          contains — add it to FOREIGN_PATHS in {} with the reason.",
@@ -435,7 +467,7 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
 
     assert!(
         dead_links.is_empty(),
-        "{} markdown link(s) in a protocol CLAUDE.md point at a file that does not exist.\n\n{}\n\n\
+        "{} markdown link(s) in a protocol AGENTS.md point at a file that does not exist.\n\n{}\n\n\
          Point the link at what the reader should actually open, or delete the bullet.",
         dead_links.len(),
         dead_links.join("\n"),
@@ -452,4 +484,28 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
+}
+
+#[test]
+fn instruction_migration_keeps_discovery_and_legacy_citations_checked() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("src/server/example");
+    let tests = root.path().join("tests/server/example");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&tests).unwrap();
+    let current = source.join("AGENTS.md");
+    let legacy = tests.join("CLAUDE.md");
+    std::fs::write(&current, "Current instruction document").unwrap();
+    std::fs::write(&legacy, "Legacy instruction document").unwrap();
+    let docs = protocol_docs(root.path());
+    assert_eq!(docs, vec![current.clone(), legacy]);
+    let files = all_files(root.path());
+    assert!(resolves("src/server/example/CLAUDE.md", "", &files));
+    assert!(existing_instruction_target(&source.join("CLAUDE.md")));
+    assert!(!resolves("src/server/missing/CLAUDE.md", "", &files));
+    assert!(!existing_instruction_target(
+        &source.join("missing/CLAUDE.md")
+    ));
+    assert!(!resolves("src/server/example/missing.rs", "", &files));
+    assert!(!resolves("src/server/example/OTHER.md", "", &files));
 }
