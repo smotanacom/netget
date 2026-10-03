@@ -218,3 +218,6 @@ pub mod gelf;
 
 #[cfg(feature = "fluent-forward")]
 pub mod fluent_forward;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;
