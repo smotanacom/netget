@@ -1,0 +1,16 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+    Finished `test` profile [unoptimized] target(s) in 29.46s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/non_interactive_run_limits_test.rs (target/debug/deps/non_interactive_run_limits_test-7ed0a911c01d4c26)
+
+running 5 tests
+test a_server_that_fails_to_start_exits_non_zero ... ok
+test exit_after_events_counts_events_across_every_server ... ok
+test restored_global_task_keeps_cli_alive_and_reaches_the_task_ticker ... ok
+test loaded_client_runs_until_it_disconnects ... ok
+run-for timing: startup=1.907018625s, after_ready=2.233383083s, total=4.140402s
+test run_for_exits_zero_when_the_duration_elapses ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.14s
+

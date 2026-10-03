@@ -83,8 +83,8 @@ pub async fn run(app: DashboardApp, ctx: LoopContext) -> Result<()> {
     crate::cli::crash_restore::install(crate::cli::crash_restore::ALT_SCREEN_EXTRA);
 
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let _guard = TerminalGuard;
+    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
 
     // A panic must restore the terminal before the message is printed, or the
     // backtrace lands in the alternate screen and vanishes.

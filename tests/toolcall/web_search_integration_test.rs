@@ -3,39 +3,18 @@
 //! These tests verify end-to-end web_search functionality by starting NetGet
 //! and having the LLM use web_search to gather information.
 
-/// The death tie that keeps a spawned `netget` from outliving this binary.
-///
-/// Pulled in by path rather than through the shared harness because this file needs exactly one
-/// module out of it: `child_guard.rs` depends only on `std` and `libc`, so it compiles
-/// standalone. `Drop` alone is not enough — it does not run when the test binary is
-/// `SIGKILL`ed, aborts, or is interrupted, which is how 78 orphaned `netget` processes
-/// accumulated on one machine in ten hours. Every test here waits 30–45 seconds against a real
-/// model, so an interrupted run is the normal way for one of these children to be abandoned.
-#[path = "../helpers/child_guard.rs"]
-mod child_guard;
+// Share one death-tie registry with the parent integration test target.
+// Loading child_guard twice would give each module a separate watcher registry.
+use crate::helpers::child_guard;
 
-use reqwest;
+use crate::helpers::{start_netget_server, NetGetConfig};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::time::sleep;
 
 /// Helper to get the netget binary path from cargo
 fn get_netget_binary() -> &'static str {
     env!("CARGO_BIN_EXE_netget")
-}
-
-/// Helper to get an available port
-async fn get_available_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("Failed to bind to port 0");
-    let port = listener
-        .local_addr()
-        .expect("Failed to get local addr")
-        .port();
-    drop(listener); // Release the port
-    port
 }
 
 /// Test that HTTP server reads RFC 7168 (HTCPCP-TEA) and accepts message/teapot
@@ -50,8 +29,8 @@ async fn get_available_port() -> u16 {
 #[tokio::test]
 #[ignore = "Requires real Ollama, tests experimental HTCPCP feature, inherently flaky"]
 async fn test_htcpcp_tea_accepts_message_teapot() {
-    // 1. Get an available port to avoid conflicts
-    let port = get_available_port().await;
+    // Discover the port only after the server owns its ephemeral socket.
+    let port = 0;
 
     // Start NetGet HTTP server with RFC 7168 instructions
     // LLM should learn to accept message/teapot
@@ -68,43 +47,10 @@ async fn test_htcpcp_tea_accepts_message_teapot() {
 
     println!("Starting NetGet with RFC 7168 prompt on port {}...", port);
 
-    let mut child = Command::new(get_netget_binary())
-        .arg(prompt)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let server = start_netget_server(NetGetConfig::new(prompt).with_ollama())
+        .await
         .expect("Failed to start netget");
-    let pid = child.id();
-    child_guard::tie_child(pid);
-
-    // 2. Wait for server to start (needs time for web_search + LLM processing)
-    println!("Waiting for server to start and read RFC...");
-    sleep(Duration::from_secs(30)).await;
-
-    // 3. Check that the process is still running
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            let output = child.wait_with_output().unwrap();
-            // Exited on its own, so the pid is free; release the tie before it is recycled.
-            child_guard::untie_child(pid);
-            eprintln!(
-                "NetGet stdout:\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            eprintln!(
-                "NetGet stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            panic!("NetGet exited early with status: {}", status);
-        }
-        Ok(None) => {
-            println!("NetGet is running, proceeding with test...");
-        }
-        Err(e) => {
-            panic!("Error checking NetGet status: {}", e);
-        }
-    }
+    let port = server.port;
 
     // 4. Send BREW request with Content-Type: message/teapot
     println!("Sending BREW request with Content-Type: message/teapot...");
@@ -119,11 +65,7 @@ async fn test_htcpcp_tea_accepts_message_teapot() {
         .send()
         .await;
 
-    // 5. Kill the NetGet process
-    let _ = child.kill();
-    let _ = child.wait();
-    // After the kill, never before: a tie released first leaves nothing watching.
-    child_guard::untie_child(pid);
+    server.stop().await.expect("Failed to stop netget");
 
     // 6. Assert the request succeeded and did NOT return 415
     match result {
@@ -164,8 +106,8 @@ async fn test_htcpcp_tea_accepts_message_teapot() {
 #[tokio::test]
 #[ignore = "Requires real Ollama, tests experimental HTCPCP feature, inherently flaky"]
 async fn test_htcpcp_coffeepot_rejects_message_teapot() {
-    // 1. Get an available port to avoid conflicts
-    let port = get_available_port().await;
+    // Discover the port only after the server owns its ephemeral socket.
+    let port = 0;
 
     // Start NetGet HTTP server with RFC 2324 instructions
     // This should only accept message/coffeepot, not message/teapot
@@ -182,43 +124,10 @@ async fn test_htcpcp_coffeepot_rejects_message_teapot() {
 
     println!("Starting NetGet with RFC 2324 prompt on port {}...", port);
 
-    let mut child = Command::new(get_netget_binary())
-        .arg(prompt)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let server = start_netget_server(NetGetConfig::new(prompt).with_ollama())
+        .await
         .expect("Failed to start netget");
-    let pid = child.id();
-    child_guard::tie_child(pid);
-
-    // 2. Wait for server to start (needs time for web_search + LLM processing)
-    println!("Waiting for server to start and read RFC...");
-    sleep(Duration::from_secs(30)).await;
-
-    // 3. Check that the process is still running
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            let output = child.wait_with_output().unwrap();
-            // Exited on its own, so the pid is free; release the tie before it is recycled.
-            child_guard::untie_child(pid);
-            eprintln!(
-                "NetGet stdout:\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            eprintln!(
-                "NetGet stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            panic!("NetGet exited early with status: {}", status);
-        }
-        Ok(None) => {
-            println!("NetGet is running, proceeding with test...");
-        }
-        Err(e) => {
-            panic!("Error checking NetGet status: {}", e);
-        }
-    }
+    let port = server.port;
 
     // 4. Send BREW request with Content-Type: message/teapot
     println!("Sending BREW request with Content-Type: message/teapot...");
@@ -233,11 +142,7 @@ async fn test_htcpcp_coffeepot_rejects_message_teapot() {
         .send()
         .await;
 
-    // 5. Kill the NetGet process
-    let _ = child.kill();
-    let _ = child.wait();
-    // After the kill, never before: a tie released first leaves nothing watching.
-    child_guard::untie_child(pid);
+    server.stop().await.expect("Failed to stop netget");
 
     // 6. Assert the request succeeded and DID return 415
     match result {

@@ -1,0 +1,354 @@
+# IPP Protocol Implementation
+
+**Status**: `DevelopmentState::Experimental`.
+**Privilege**: `PrivilegeRequirement::PrivilegedPort(631)` — 631 is below 1024 and is where every
+IPP client looks by default, so the preflight check in `server_startup.rs` fires rather than
+letting the bind fail with a bare EPERM.
+
+IPP/1.1 and 2.0 (RFC 8010 wire format, RFC 8011 semantics) over HTTP POST. `hyper` carries the
+HTTP; the IPP body is parsed and built here.
+
+## No storage
+
+There is no job queue and no printer state. A `Print-Job` is not recorded anywhere; a
+following `Get-Job-Attributes` is answered by the model out of its own memory. Printer
+attributes likewise come from the model on every request.
+
+`list_print_jobs` used to be declared as an async action and returned a hardcoded
+`{"jobs": []}` next to a `// This is a placeholder` comment. It was removed rather than
+implemented: implementing it would mean keeping a job store, which is exactly what a protocol
+must not do.
+
+## Actions
+
+Three, all advertised on `ipp_request_received`:
+
+| action | purpose | key fields |
+|---|---|---|
+| `ipp_response` | status-only answer (acknowledge, reject) | `ipp_status`, `status_message`, `http_status` |
+| `ipp_printer_attributes` | Get-Printer-Attributes | `attributes` (object), `ipp_status` |
+| `ipp_job_attributes` | Print-Job / Get-Job-Attributes / Create-Job | `attributes` (object), `ipp_status` |
+
+`ipp_status` is a **name**, not a number: `successful-ok`, `client-error-not-found`,
+`server-error-not-accepting-jobs`, and so on (full list in `ipp_status_code`). An unrecognised
+name encodes `server-error-internal-error` and logs a warning — telling a client everything is
+fine because the model invented a status name is the worse failure.
+
+`http_status` is separate and rarely needed: IPP errors belong in `ipp_status` with HTTP 200.
+`status` is accepted as an alias for `http_status` because prompts in the wild use it.
+
+### One response per request, and the server says which
+
+The server answers with the **first** response action the model returns; any later one is
+executed and ignored. So the order the model writes them in decides the wire, and the real-model
+eval (`./run-eval.sh ipp`) showed llama3.1:8b writing a status-only `ipp_response` *before* its
+`ipp_printer_attributes` — the client got `successful-ok` and no printer. Told a printer "is
+stopped and not accepting jobs", it answered Get-Printer-Attributes with
+`server-error-not-accepting-jobs`, a status that belongs to Print-Job, every run. The event's own
+alternative example taught that: it was an `ipp_response` carrying exactly that status with
+"Printer is offline".
+
+Three changes, measured together at 0/10 → 10/10 (seed 42, five runs per case):
+
+- `ipp_request_received` carries **`answer_with`**, derived from the operation id by
+  `actions::answer_with_for_operation`: `ipp_printer_attributes` alone for
+  Get-Printer-Attributes (a stopped printer is `printer-state: stopped`, not an error),
+  `ipp_job_attributes` or a not-accepting-jobs refusal for Print-Job/Print-URI/Create-Job,
+  `ipp_job_attributes` or not-found for Get-Job-Attributes/Get-Jobs, `ipp_response` otherwise.
+  The server knows the operation exactly; a small model mapping RFC 8011 in its head does not.
+- `ipp_printer_attributes` says it is sent alone and is the answer whatever the printer's state;
+  `ipp_response` says it is never sent beside an attributes action.
+- The alternative example for `ipp_response` is `client-error-not-found` / "No such printer"
+  rather than the not-accepting-jobs refusal it used to model.
+
+### The bytes-in-an-action bug that was removed
+
+`ipp_response` used to take a `body` parameter documented in three places as
+"hex-encoded IPP response data", with examples like `"body": "02000000000000010347001200..."`.
+The executor did:
+
+```rust
+let body = action.get("body").and_then(|v| v.as_str()).unwrap_or("");
+... "body": hex::encode(body.as_bytes())
+```
+
+`hex::encode` of the *ASCII text*. A model following the documentation put the literal
+characters `0`, `2`, `0`, `0`, … on the wire as the IPP response body. Every such response was
+unparseable garbage.
+
+The parameter is gone. Nothing the model writes reaches the wire as bytes; it names a status
+and supplies attributes, and the encoder here produces the message. (Hex still appears in
+`ActionResult::Custom`'s `body_hex` between the executor and the HTTP handler, because
+`Custom` carries a `serde_json::Value` and JSON has no byte type. That is server-internal —
+the model never sees or writes it.)
+
+## Attribute encoding
+
+`push_attribute_value` picks the IPP value tag from the JSON type and the attribute name:
+
+| JSON | attribute name | tag |
+|---|---|---|
+| number | any | `integer` (0x21) |
+| bool | any | `boolean` (0x22) |
+| string | `printer-state`, `job-state` | `enum` (0x23), mapped from `idle`/`processing`/`completed`/… |
+| string | contains `charset` | `charset` (0x47) |
+| string | contains `natural-language` | `naturalLanguage` (0x48) |
+| string | ends `-uri` / `-uri-supported` | `uri` (0x45) |
+| string | contains `document-format` | `mimeMediaType` (0x49) |
+| string | ends `-name` | `nameWithoutLanguage` (0x42) |
+| string | ends `-supported`/`-default`/`-requested`/`-reasons` | `keyword` (0x44) |
+| string | otherwise | `textWithoutLanguage` (0x41) |
+| array | any | first value carries the name, the rest a zero-length name (RFC 8010 additional value) |
+
+Everything used to be encoded as `nameWithoutLanguage` regardless of type, so integers went
+out as decimal text and `printer-state` as a keyword where clients expect an enum. Name
+lengths were also written as `[0x00, len as u8]`, silently truncating any name of 256 bytes or
+more into an unparseable message; they are now proper two-byte big-endian.
+
+Known gap: `operations-supported` is `1setOf type2 enum` in the spec and is encoded here as
+`1setOf integer` because the values arrive as JSON numbers. `ipptool` accepts it; a strict
+client might not.
+
+### Numbers are range-checked before they are narrowed
+
+`validate_attributes` runs in the executor, **before** `build_ipp_response`, and refuses any
+integer outside i32 and any name or value past 65535 bytes. Both are cases where the encoder
+used to rewrite the model's answer in silence:
+
+- `n.as_i64().unwrap_or(0) as i32` made `job-id: 4294967296` into **0**, and a client reading
+  job 0 has no way to know it was ever anything else. Same for `1.5`, which `unwrap_or(0)` also
+  turned into 0 rather than reporting that IPP's `integer` syntax has no fractional form.
+- `push_len_prefixed` clamped to `u16::MAX` and then wrote a message *declaring* the truncated
+  length — self-consistent, parseable, and not what the model said.
+
+The check has to come first: `as i32` on an out-of-range value leaves nothing to check
+afterwards. That is the property `tests/narrowing_cast_drift_test.rs` encodes generally, and
+`tests/server/ipp/attribute_range_test.rs` encodes for this encoder, arrays included — a
+multi-valued attribute is the easy place for a bound to be forgotten, because the value the
+encoder narrows is one level below the one a naive check looks at.
+
+Refusing beats clamping: `i32::MAX` is not what the model asked for either, and the message is
+what the repair loop reads.
+
+## Request-id and version are echoed by the server, not by the model
+
+RFC 8011 requires a response to carry the request's request-id and the request's version. Both
+are parsed from the 8-byte header in `parse_ipp_header` and written into the encoded response
+by `stamp_response_header` — the encoders emit version 2.0 and request-id 0 as placeholders.
+
+No action carries either field, deliberately: correlation must not depend on a model repeating
+a number back. That is the same failure mode that made DNS and NTP responses go unmatched.
+
+Both were real bugs, both caught by a real client:
+
+- request-id was **hardcoded to 1** in the attribute builders. A client using any other id got
+  a response it should discard as unmatched.
+- version was **hardcoded to 2.0**. `ipptool` speaks 1.1 by default and failed every response
+  with `Bad version 2.0 in response - expected 1.1 (RFC 2911 section 3.1.8)` — this was the
+  only failure in an otherwise perfect decode, and it would have failed against CUPS too.
+
+## Events
+
+One: `ipp_request_received`, carrying `method`, `uri`, `operation`, `request_id`,
+`ipp_version`. It advertises all three response actions via `.with_actions(...)`.
+
+The response example used to be `{"type": "placeholder", "event_id": "ipp_request_received"}`,
+which is rendered verbatim into the prompt and taught the model an action named `placeholder`.
+It is now a real `ipp_printer_attributes` response, with `ipp_job_attributes` and a rejecting
+`ipp_response` as alternatives.
+
+## Request parsing is shallow
+
+Only the 8-byte header is decoded. **Attribute groups in the request are not parsed**, so the
+model is told the operation name but not which `printer-uri` was asked about, which
+`document-format` was requested, or what a `Print-Job`'s document data contains. If the model
+needs any of that, decode the request's attribute groups in `handle_ipp_request_with_llm` and
+add them to the event.
+
+`parse_ipp_header` reads five fixed offsets after one `body.len() < 8` check; there is no
+attacker-controlled length arithmetic in it.
+
+## The body is bounded before it is buffered
+
+`Incoming` has no default limit, so `req.into_body().collect()` let an unauthenticated `POST`
+to port 631 decide how much memory this server allocated. `read_body_bounded` reads it frame by
+frame against `MAX_IPP_BODY_BYTES` (8 MiB, the same figure `http_common` uses; spelled out
+locally because that module is gated behind the `http`/`http2` features and `ipp` implies
+neither), and drops what it has buffered the moment the cap is passed — the refusal is already
+decided, so holding the partial body while draining would double what an oversized request
+costs.
+
+A refusal is expressed twice: HTTP **413** for a generic client, and
+`client-error-request-entity-too-large` (0x0408) in the body for one that reads only the IPP
+layer. It costs **no LLM call**, and that is the assertion `tests/server/ipp/body_limit_test.rs`
+actually makes (`expect_calls(0)`), because the old code turned a read failure into
+`Bytes::new()` — which `parse_ipp_header` reports as the operation `Empty`, so the model would
+have been asked to answer a request nobody sent.
+
+### …and then drained, boundedly, so the peer can read the refusal
+
+Expressing the refusal twice buys nothing if the peer never receives it, and it did not. The
+server stops reading at 8 MiB; a peer sending more is still blocked in `write` when the 413 is
+produced, and **closing a socket with unread data in the receive queue sends `RST`** — which
+discards the response bytes already written along with it. The peer's `write` fails with
+`ECONNRESET` and it sees a connection error where a refusal was sent.
+
+That was this suite's own intermittent failure, and it was a server defect wearing a test's
+clothes: `body_limit_test` passed whenever the oversized write happened to fit in the socket
+buffers and failed when it did not. The old reading of it — "the server is right and the test
+should tolerate a reset" — would have kept a refusal nobody can read.
+
+`LINGER_DRAIN_BYTES` (8 MiB) and `LINGER_DRAIN_TIMEOUT` (5s) are nginx's `lingering_close`.
+Nothing is buffered: the octets are counted and dropped, so the cost is bandwidth. Both bounds
+are there because draining is politeness, not an obligation — a peer that keeps writing past
+either gets the abrupt close it earned. The deadline applies **only** to the drain; a body
+inside the cap is hyper's to time out, and borrowing this deadline for it would cap how long a
+legitimate 8 MiB `Print-Job` may take to arrive.
+
+The `decision=fail_closed_body_too_large` line carries how much was drained and whether the
+peer finished writing, which is the difference between "it read the refusal" and "it got a
+reset and we could not help it".
+
+The inbound IPP parser reads only the 8-byte header. Model-supplied response attributes are
+different: their JSON arrays and objects are checked iteratively against
+`MAX_IPP_ATTRIBUTE_DEPTH` (32 container levels, excluding the attribute map) before any
+serialization. This also covers values constructed directly in memory, independently of
+serde_json's parser limit. JSON fallback fields are counted after escaping and refused if
+their complete representation exceeds the two-byte value-length field; they are never
+silently truncated. The range checks on ordinary IPP integers and sets still apply, while
+numbers inside JSON objects retain their JSON representation.
+
+`tests/audit_server_decoder_bounds_test.rs` tests the exact limit, the next level, 20,000-level
+in-memory trees with iterative teardown, and the serialized-length boundary without any model
+or network access. If request attribute groups are ever decoded, their walk must also stay
+bounded: a Rust stack overflow aborts the process rather than producing a catchable panic.
+
+## Failure behaviour
+
+Every outcome answers with a parseable IPP message, and the `decision=` tag is what tells them
+apart — on the wire three of them are byte-identical, and one of those is a status the model
+can also choose deliberately.
+
+| Outcome | Wire | `decision=` tag |
+|---|---|---|
+| The model answered | its `ipp_status`, its `http_status` | `model_answer` |
+| No `ipp_*` action came back | 200 + `server-error-internal-error` | `model_silent` |
+| An action came back and the executor refused it | 200 + `server-error-internal-error` | `fail_closed_action_error` |
+| The backend failed, saturated | 200 + `server-error-busy` | `fail_closed_llm_error` |
+| The backend failed otherwise | 200 + `server-error-internal-error` | `fail_closed_llm_error` |
+| Body over the cap | 413 + `client-error-request-entity-too-large` | `fail_closed_body_too_large` |
+| The encoder's own hex would not decode | 200 + `server-error-internal-error` | `fail_closed_encoding_bug` |
+
+`WireFailure::classify` picks between the saturated and the general case; the error **text**
+never reaches the wire, only the log. `server-error-busy` rather than
+`server-error-internal-error` for a saturated backend is the same distinction `http` draws with
+503 vs 500 — it is what a client retries on.
+
+Two paths used to give a client something it could not parse, and both are gone:
+
+- **LLM error** → HTTP 500 with the text body `Internal Server Error`. An IPP client reports
+  that as a protocol error with no useful detail.
+- **LLM returned no `ipp_*` action** → HTTP 200 with an *empty* body, which is not a valid IPP
+  message; clients report a truncated response.
+
+A third was still live until this pass: `hex::decode(body_hex).unwrap_or_default()` turned a
+decode failure into that same empty body. The hex is written and read entirely inside this
+protocol, so a failure means the two halves have drifted; it is now loud and answered with
+something parseable.
+
+## Connection tracking
+
+`update_connection_stats` is called for the request body and every response, so an IPP server's
+peers show live byte counters in the dashboard rail. Nothing did this before; the counters read
+zero for the life of the server however much it printed.
+
+`call_llm` is passed `Some(connection_id)`. It was `None` behind a `// TODO: Add connection_id
+when available` while the id had been in scope the whole time, which made connection-scoped
+event handlers and connection-scoped scheduled tasks silently inapplicable to every IPP request.
+
+## Limitations
+
+- Every request is one LLM call and nothing bounds the rate, so an unauthenticated request loop
+  is an unauthenticated model-call loop. This is protocol-wide in netget rather than specific to
+  IPP; `src/server/tuntap/` is the one protocol here that solves it (a filter plus a rolling
+  per-minute window).
+- No IPPS (IPP over TLS), no authentication.
+- No CUPS extensions.
+- Request attribute groups not parsed (above).
+- No document data: `Print-Job` bodies are read into memory to size them and then discarded.
+- `operations-supported` encoded as integer rather than enum (above).
+- No job store, by design (above).
+- Request-only. `metadata()` declares `.request_only(…)`: "IPP is HTTP request/response; a server
+  cannot send a peer anything unprompted". The dashboard's `[ send message ]` on a peer is
+  disabled and shows that reason, and MCP `send_to_peer` refuses with it.
+
+## Manual verification
+
+```bash
+./cargo-isolated.sh run --release --no-default-features --features ipp
+# start on 10631 with a static ipp_printer_attributes handler, then:
+
+cat > /tmp/getattrs.test <<'EOF'
+{
+    NAME "Get-Printer-Attributes"
+    OPERATION Get-Printer-Attributes
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR language attributes-natural-language en
+    ATTR uri printer-uri $uri
+    STATUS successful-ok
+    DISPLAY printer-name
+    DISPLAY printer-state
+}
+EOF
+ipptool -tv ipp://127.0.0.1:10631/printers/netget /tmp/getattrs.test
+```
+
+Verified output (2026-08-05): `[PASS]`, with `printer-name (nameWithoutLanguage)`,
+`printer-state (enum) = idle`, `printer-is-accepting-jobs (boolean) = true`,
+`printer-uri-supported (uri)`, `document-format-supported (1setOf mimeMediaType)`,
+`operations-supported (1setOf integer)` — i.e. every value tag decoded as intended. A raw POST
+with request-id `0x12345678` and version 1.1 came back with exactly that id and version.
+
+## Testing
+
+Four files, 14 tests, none `#[ignore]`d and none skip-when-missing:
+
+- `tests/server/ipp/test.rs` — Get-Printer-Attributes, Print-Job and a status-only reply, each
+  decoded with a hand-written strict decoder. An earlier version asserted only HTTP 200 and
+  printed the first bytes, which is why the value-tag and version bugs survived it.
+- `status_range_test.rs` — `http_status` refused rather than wrapped.
+- `attribute_range_test.rs` — attribute integers and lengths refused rather than narrowed or
+  truncated, arrays included.
+- `body_limit_test.rs` — an oversized body refused with 413 and **zero** LLM calls, a 1 MiB one
+  still served, the refusal reaching a peer that is still writing, and a peer that stops
+  writing being unable to hold the drain open.
+
+  The third of those uses a **raw socket** rather than `reqwest`, deliberately: a hyper client
+  polls the read side while it writes, so it can parse the 413 out of its receive buffer
+  before the `RST` lands and win the race in the test's favour. Measured with the drain
+  disabled — 5 failures in 8 runs through `reqwest`, 5 in 5 through a socket that finishes
+  writing first. If you make a test here tolerant of a transport error, it will stop being able
+  to see this defect.
+
+  The fourth tests `LINGER_DRAIN_TIMEOUT` rather than `LINGER_DRAIN_BYTES`, and the choice is
+  the point: the byte bound only binds a peer that writes *fast*, which has already spent the
+  bandwidth, while a peer that declares 64 MiB, sends just past the cap and then says nothing
+  costs itself nothing at all. Without the deadline that test does not fail, it hangs.
+
+  **All three oversized-body tests hold `ONE_OVERSIZED_BODY_AT_A_TIME`.** Each makes the server
+  buffer a full 8 MiB and keeps a `netget` process alive for seconds; with three overlapping at
+  `--test-threads=100`, five `tuntap` tests timed out waiting for an in-process model in half
+  of all runs and the four-protocol binary went from 14s to 45s. The fragility is not here —
+  `OllamaClient` builds a `reqwest::Client` per instance, and on macOS that reads the keychain
+  through Security.framework, serialised across processes — but this file can avoid lengthening
+  that queue.
+
+`ipptool` remains the check for spec compliance that no in-tree test covers; see Manual
+verification above.
+
+## References
+
+- [RFC 8010: IPP/1.1 Encoding and Transport](https://tools.ietf.org/html/rfc8010)
+- [RFC 8011: IPP/1.1 Model and Semantics](https://tools.ietf.org/html/rfc8011)
+- [PWG IPP registrations](https://www.pwg.org/ipp/ipp-registrations.xml)

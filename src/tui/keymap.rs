@@ -397,41 +397,49 @@ async fn handle_cards_key(app: &mut DashboardApp, key: KeyEvent, state: &AppStat
 }
 
 async fn handle_stream_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    let visible = crate::tui::render::stream::visible_entries(app).len();
+    let sequences: Vec<u64> = crate::tui::render::stream::visible_entries(app)
+        .iter()
+        .map(|entry| entry.seq)
+        .collect();
+    let visible = sequences.len();
+    let current = app
+        .activity
+        .cursor
+        .and_then(|seq| sequences.iter().position(|&entry| entry >= seq));
     match key.code {
         KeyCode::Esc | KeyCode::End => {
             app.activity.scroll_to_follow();
             app.focus = Focus::ChatInput;
         }
         KeyCode::Up => {
-            let cursor = match app.activity.cursor {
+            let cursor = match current {
                 None => visible.checked_sub(1),
                 Some(c) => Some(c.saturating_sub(1)),
             };
-            app.activity.cursor = cursor;
+            app.activity.cursor = cursor.and_then(|index| sequences.get(index).copied());
             if cursor.is_some() && app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
                 app.activity.scroll_up(0);
             }
         }
         // ↓ past the newest line walks on into the chat box.
-        KeyCode::Down => match app.activity.cursor {
-            Some(c) if c + 1 < visible => app.activity.cursor = Some(c + 1),
+        KeyCode::Down => match current {
+            Some(c) if c + 1 < visible => app.activity.cursor = sequences.get(c + 1).copied(),
             _ => {
                 app.activity.scroll_to_follow();
                 app.focus = Focus::ChatInput;
             }
         },
         KeyCode::PageUp => {
-            let cursor = app.activity.cursor.unwrap_or(visible).saturating_sub(10);
-            app.activity.cursor = Some(cursor);
+            let cursor = current.unwrap_or(visible).saturating_sub(10);
+            app.activity.cursor = sequences.get(cursor).copied();
             if app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
                 app.activity.scroll_up(0);
             }
         }
         KeyCode::PageDown => {
-            if let Some(c) = app.activity.cursor {
+            if let Some(c) = current {
                 if c + 10 < visible {
-                    app.activity.cursor = Some(c + 10);
+                    app.activity.cursor = sequences.get(c + 10).copied();
                 } else {
                     app.activity.scroll_to_follow();
                     app.focus = Focus::ChatInput;
@@ -440,7 +448,7 @@ async fn handle_stream_key(app: &mut DashboardApp, key: KeyEvent, state: &AppSta
         }
         KeyCode::Home => {
             if visible > 0 {
-                app.activity.cursor = Some(0);
+                app.activity.cursor = sequences.first().copied();
                 app.activity.scroll_up(0);
             }
         }
@@ -451,7 +459,8 @@ async fn handle_stream_key(app: &mut DashboardApp, key: KeyEvent, state: &AppSta
         KeyCode::Enter => {
             if let Some(cursor) = app.activity.cursor {
                 let link = crate::tui::render::stream::visible_entries(app)
-                    .get(cursor)
+                    .into_iter()
+                    .find(|entry| entry.seq == cursor)
                     .and_then(|e| e.event.link);
                 follow_link(app, link, state).await;
             }
@@ -551,15 +560,16 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
     match target {
         HitTarget::ChatInput => app.focus = Focus::ChatInput,
         HitTarget::Stream => app.focus = Focus::Stream,
-        HitTarget::StreamRow(index) => {
+        HitTarget::StreamRow(seq) => {
             app.focus = Focus::Stream;
-            if app.activity.cursor == Some(index) {
+            if app.activity.cursor == Some(seq) {
                 let link = crate::tui::render::stream::visible_entries(app)
-                    .get(index)
+                    .into_iter()
+                    .find(|entry| entry.seq == seq)
                     .and_then(|e| e.event.link);
                 follow_link(app, link, state).await;
             } else {
-                app.activity.cursor = Some(index);
+                app.activity.cursor = Some(seq);
                 if app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
                     app.activity.scroll_up(0);
                 }

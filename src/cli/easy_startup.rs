@@ -62,9 +62,15 @@ pub async fn start_easy_protocol(
         .await;
 
     // Generate startup action for underlying protocol
-    let action = easy_protocol
-        .generate_startup_action(user_instruction.clone(), port)
-        .context("Failed to generate startup action")?;
+    let action = match easy_protocol.generate_startup_action(user_instruction.clone(), port) {
+        Ok(action) => action,
+        Err(error) => {
+            state
+                .update_easy_status(easy_id, EasyStatus::Error(error.to_string()))
+                .await;
+            return Err(error).context("Failed to generate startup action");
+        }
+    };
 
     info!(
         "Generated startup action: {}",
@@ -72,20 +78,14 @@ pub async fn start_easy_protocol(
     );
 
     // Execute the startup action (open_server or open_client)
-    match execute_startup_action(&action, &state, &llm_client).await {
+    match execute_easy_startup_action(&action, &state, &llm_client).await {
         Ok(underlying_id) => {
-            // Link underlying server/client to easy instance
-            if action["type"] == "open_server" {
-                if let Some(server_id) = underlying_id.as_u64() {
-                    let server_id = crate::state::ServerId::new(server_id as u32);
-                    state.link_server_to_easy(server_id, easy_id).await;
-                    info!("Linked easy instance {} to server {}", easy_id, server_id);
+            match underlying_id {
+                EasyUnderlyingId::Server(server_id) => {
+                    state.link_server_to_easy(server_id, easy_id).await
                 }
-            } else if action["type"] == "open_client" {
-                if let Some(client_id) = underlying_id.as_u64() {
-                    let client_id = crate::state::ClientId::new(client_id as u32);
-                    state.link_client_to_easy(client_id, easy_id).await;
-                    info!("Linked easy instance {} to client {}", easy_id, client_id);
+                EasyUnderlyingId::Client(client_id) => {
+                    state.link_client_to_easy(client_id, easy_id).await
                 }
             }
 
@@ -104,61 +104,45 @@ pub async fn start_easy_protocol(
     }
 }
 
-/// Execute a startup action (open_server or open_client) and return the ID of the created instance
-async fn execute_startup_action(
+/// Typed ownership avoids narrowing arbitrary JSON integers when linking wrappers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EasyUnderlyingId {
+    Server(crate::state::ServerId),
+    Client(crate::state::ClientId),
+}
+
+/// Execute a generated easy action through the same validated forms as normal
+/// startup. Optional handlers, memory, parameters and tasks are preserved.
+pub async fn execute_easy_startup_action(
     action: &JsonValue,
-    state: &Arc<AppState>,
-    _llm_client: &Arc<OllamaClient>,
-) -> Result<JsonValue> {
-    let action_type = action["type"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Startup action missing 'type' field"))?;
-
-    match action_type {
-        "open_server" => {
-            // Extract server parameters
-            let protocol = action["protocol"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing 'protocol' field"))?;
-            let port = action["port"]
-                .as_u64()
-                .ok_or_else(|| anyhow::anyhow!("Missing 'port' field"))?
-                as u16;
-            let instruction = action["instruction"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing 'instruction' field"))?;
-
-            // Create status channel for server startup messages
-            let (status_tx, _status_rx) = tokio::sync::mpsc::unbounded_channel();
-
-            // Call server_startup to create the server
-            let server_id = crate::cli::server_startup::start_server_from_action(
-                &state,
-                None,       // mac_address
-                None,       // interface
-                None,       // host
-                Some(port), // port
-                protocol,
-                false, // send_first
-                None,  // initial_memory
-                instruction.to_string(),
-                None, // startup_params
-                None, // event_handlers
-                None, // scheduled_tasks
-                None, // feedback_instructions
-                status_tx,
-            )
-            .await
-            .context("Failed to start server")?;
-
-            Ok(JsonValue::Number(server_id.as_u32().into()))
+    state: &AppState,
+    llm_client: &OllamaClient,
+) -> Result<EasyUnderlyingId> {
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Keep lifecycle messages observable without needing a dashboard receiver.
+    tokio::spawn(async move {
+        while let Some(message) = status_rx.recv().await {
+            tracing::info!("{}", message);
         }
-        "open_client" => {
-            // Not implemented yet - would need similar approach for clients
-            Err(anyhow::anyhow!(
-                "open_client not yet supported for easy protocols"
+    });
+    match action.get("type").and_then(JsonValue::as_str) {
+        Some("open_server") => {
+            let form: crate::cli::management::ServerForm =
+                serde_json::from_value(action.clone())
+                    .context("Invalid easy open_server action")?;
+            Ok(EasyUnderlyingId::Server(
+                form.create(state, status_tx).await?,
             ))
         }
-        _ => Err(anyhow::anyhow!("Unknown action type: {}", action_type)),
+        Some("open_client") => {
+            let form: crate::cli::management::ClientForm =
+                serde_json::from_value(action.clone())
+                    .context("Invalid easy open_client action")?;
+            Ok(EasyUnderlyingId::Client(
+                form.create(state, llm_client.clone(), status_tx).await?,
+            ))
+        }
+        Some(other) => anyhow::bail!("Unknown easy startup action type: {}", other),
+        None => anyhow::bail!("Startup action missing string 'type' field"),
     }
 }

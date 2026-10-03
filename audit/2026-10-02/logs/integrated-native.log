@@ -1,0 +1,602 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget/.audit-integration-20261002)
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:461:9
+    |
+461 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:553:9
+    |
+553 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `expected_value`
+   --> tests/helpers/ollama_test_builder.rs:884:36
+    |
+884 |         Expectation::StaticHandler(expected_value) => {
+    |                                    ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_expected_value`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `netget` (test "scheduled_task_claim_test") generated 3 warnings (run `cargo fix --test "scheduled_task_claim_test" -p netget` to apply 3 suggestions)
+warning: `netget` (test "test_infrastructure_review_test") generated 3 warnings (3 duplicates)
+    Finished `test` profile [unoptimized] target(s) in 56.74s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/agent_queue_fifo_test.rs (/Users/matus/dev/netget/target/debug/deps/agent_queue_fifo_test-cafa475b3cb5d096)
+
+running 2 tests
+test a_real_fifo_still_receives_the_queued_request_id ... ok
+test notification_does_not_overwrite_a_replacement_file_or_symlink_target ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_ci_coverage_test.rs (/Users/matus/dev/netget/target/debug/deps/audit_ci_coverage_test-1c3792e88cbfea9c)
+
+running 2 tests
+test manual_workflow_inputs_are_passed_as_environment_data ... ok
+test every_fuzz_target_is_scheduled_by_the_fuzz_workflow ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/client_followup_test.rs (/Users/matus/dev/netget/target/debug/deps/client_followup_test-760794d547129cef)
+
+running 18 tests
+test http_target_refuses_invalid_explicit_ports_and_userinfo ... ok
+test vnc_des_matches_independent_openssl_fixture_and_password_truncation ... ok
+test vnc_actions_reject_values_before_custom_results_can_truncate_them ... ok
+test wire_values_reject_overflow_and_invalid_array_elements ... ok
+test pop3_framing_tracks_each_written_command_not_status_wording ... ok
+test bounded_native_response_helpers_keep_charset_and_json ... ok
+test aborted_client_owner_closes_the_webrtc_peer ... ok
+test native_buffered_cap_counts_chunked_body_but_download_chunks_still_stream ... ok
+test pop3_interrupted_write_poisoning_prevents_wrong_response_correlation ... ok
+test binary_frame_deadline_excludes_idle_and_completed_event_handling ... ok
+test incomplete_text_lines_have_a_deadline_after_the_first_byte ... ok
+test peer_partial_headers_have_an_absolute_deadline ... ok
+test agent_write_deadline_covers_lock_wait_without_poisoning_an_untouched_transport ... ok
+test smb_buffered_file_read_refuses_oversize_without_returning_partial_success ... ok
+test agent_partial_body_deadline_survives_cancelled_next_calls ... ok
+test agent_incomplete_writes_close_and_poison_the_transport ... ok
+test injected_agent_request_writes_a_framed_packet_and_reports_actual_bytes ... ok
+test agent_expired_deadline_rejects_a_body_completed_between_polls ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/client_review_regression_test.rs (/Users/matus/dev/netget/target/debug/deps/client_review_regression_test-10e70aecbe209255)
+
+running 22 tests
+test http::easy_markdown_pairs_tags_and_preserves_code_contents ... ok
+test http::easy_markdown_closes_a_list_before_starting_a_code_block ... ok
+test http::easy_markdown_keeps_unmatched_delimiters_and_identifiers_literal ... ok
+test pipe_refuses_excessive_expansion_before_decoding ... ok
+test pipe_preserves_missing_fields_json_values_and_unterminated_placeholders ... ok
+test text_responses::response_lines_reject_overflow_and_truncated_eof ... ok
+test ssh_agent::ssh_agent_keeps_partial_frames_across_cancelled_reads ... ok
+test torrent_peer::peer_frames_reject_oversized_lengths_before_reading_a_body ... ok
+test ssh_agent::ssh_agent_rejects_oversized_and_truncated_frames ... ok
+test text_responses::dot_responses_unstuff_preserve_whitespace_and_stop_exactly_at_terminator ... ok
+test vnc::vnc_raw_pixels_preserve_the_next_message_and_reject_invalid_sizes ... ok
+test text_responses::bounded_response_lines_accept_the_limit_and_leave_the_next_line ... ok
+test http::cancelled_http1_exchange_releases_its_io ... ok
+test text_responses::dot_responses_fail_on_eof_and_aggregate_overflow ... ok
+test ssh_agent::ssh_agent_strips_prefixes_and_separates_coalesced_responses ... ok
+test vnc::vnc_strings_are_bounded_before_allocating_or_reading ... ok
+test http::cancelled_http2_exchange_releases_its_io ... ok
+test http::transport_preserves_extension_method_case_and_normalizes_known_methods ... ok
+test pipe_accepts_exact_decoded_bound_in_utf8_and_separated_hex ... ok
+test pipe_bounds_non_string_json_substitutions_and_encoding ... ok
+test torrent_peer::peer_frames_preserve_keepalives_boundaries_and_fragment_errors ... ok
+test pipe_rejects_malformed_explicit_source_and_mapping ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/core_followup_test.rs (/Users/matus/dev/netget/target/debug/deps/core_followup_test-ce5d6d054c6b9c06)
+
+running 9 tests
+test outcomes_from_before_a_trip_or_reset_do_not_override_new_state ... ok
+test half_open_has_one_probe_and_cancellation_releases_the_lease ... ok
+test cancelled_user_wait_does_not_leak_statistics_or_queue_position ... ok
+test conversation_metadata_is_bounded_and_deep_values_are_rejected_without_recursive_drop ... ok
+test resized_concurrency_counts_old_permits_and_preserves_queued_requests ... ok
+test bounded_reads_and_failed_atomic_replacement_keep_existing_data ... ok
+test concurrent_migration_preserves_settings_once ... ok
+test migration_rejects_conflicting_backups_and_recovers_interrupted_installation ... ok
+test settings_migrate_with_an_exact_backup_and_do_not_conflict_with_config ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/dashboard_frame_test.rs (/Users/matus/dev/netget/target/debug/deps/dashboard_frame_test-42be27bc09c5a0bc)
+
+running 20 tests
+test opening_the_text_editor_preserves_trailing_newlines ... ok
+test input_keeps_the_cursor_and_end_of_long_multiline_text_visible ... ok
+test fold_state_is_forgotten_after_instances_and_peers_disappear ... ok
+test an_instance_that_just_appeared_gets_the_cursor ... ok
+test conversation_wrapping_preserves_every_wide_grapheme ... ok
+test the_stream_holds_the_conversation_and_the_activity_together ... ok
+test a_modal_takes_the_whole_width_of_a_narrow_terminal ... ok
+test an_empty_dashboard_says_what_to_do_at_the_minimum_size ... ok
+test activity_selection_survives_ring_eviction_by_entry_identity ... ok
+test the_button_grid_walks_with_the_arrows ... ok
+test scrolled_activity_keeps_its_top_line_as_new_wrapped_entries_arrive ... ok
+test the_cursor_survives_its_card_vanishing ... ok
+test the_stream_keeps_its_newest_line_visible_when_older_ones_wrap ... ok
+test input_cursor_uses_terminal_cells_for_wide_and_combining_text ... ok
+test a_populated_dashboard_shows_every_instance_with_its_buttons_and_sections ... ok
+test the_picker_shows_the_well_known_port ... ok
+test the_picker_says_why_a_privileged_well_known_port_is_not_used ... ok
+test a_narrow_terminal_stacks_the_canvas_over_the_stream ... ok
+test a_peer_that_cannot_be_messaged_says_why_in_the_protocols_own_terms ... ok
+test every_section_renders_unfolded_at_the_minimum_size ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/display_rendering_test.rs (/Users/matus/dev/netget/target/debug/deps/display_rendering_test-0de62161c7239ad7)
+
+running 6 tests
+test empty_canvases_and_degenerate_shapes_do_not_panic ... ok
+test oversized_surfaces_and_command_trees_are_fallible_without_allocating_pixels ... ok
+test nested_windows_preserve_draw_order_and_accumulated_coordinates ... ok
+test zero_font_size_and_extreme_origins_are_noops ... ok
+test offscreen_nested_window_coordinates_do_not_wrap_or_panic ... ok
+test text_alpha_and_line_baselines_are_preserved ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/easy_startup_test.rs (/Users/matus/dev/netget/target/debug/deps/easy_startup_test-5e61394a6c3518dd)
+
+running 2 tests
+test easy_client_starts_through_normal_forms_and_preserves_handlers_and_memory ... ok
+test easy_server_preserves_static_handlers_and_rejects_out_of_range_ports ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/eval_probe_classification_test.rs (/Users/matus/dev/netget/target/debug/deps/eval_probe_classification_test-7cc0996b45c6c5c2)
+
+running 4 tests
+test complete_output_still_distinguishes_passes_from_model_failures ... ok
+test action_names_in_rejected_output_cannot_satisfy_execution_expectations ... ok
+test invalid_expectation_regex_is_a_harness_error_with_existing_evidence ... ok
+test truncated_output_is_a_harness_error_even_when_the_retained_prefix_matches ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/eval_probe_followup_test.rs (/Users/matus/dev/netget/target/debug/deps/eval_probe_followup_test-6968ed4878f94266)
+
+running 5 tests
+test probe_availability_requires_a_regular_executable ... ok
+test probe_drains_both_outputs_while_sending_large_stdin ... ok
+test probe_output_overflow_is_explicit_and_bounded ... ok
+test probe_deadline_covers_a_child_that_never_reads_stdin ... ok
+test probe_preserves_held_stdin_until_the_exchange_finishes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/harness_port_allocation_test.rs (/Users/matus/dev/netget/target/debug/deps/harness_port_allocation_test-9e3de6a1f8f1eaba)
+
+running 2 tests
+test bound_confirmations_merge_by_identity_in_any_order ... ok
+test ephemeral_sockets_remain_owned_while_their_ports_are_used ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/llm_circuit_breaker_test.rs (/Users/matus/dev/netget/target/debug/deps/llm_circuit_breaker_test-bba6848e6d89b75b)
+
+running 10 tests
+test closed_until_the_threshold_is_reached ... ok
+test an_open_breaker_says_so ... ok
+test a_success_resets_the_streak ... ok
+test the_agent_queue_backend_is_not_guarded ... ok
+test only_transport_failures_count ... ok
+test a_reachable_backend_never_trips_the_breaker ... ok
+test a_probe_is_allowed_after_the_cooldown_and_a_failing_probe_reopens ... ok
+test the_breaker_is_shared_across_clones ... ok
+test fails_fast_once_tripped ... ok
+test trips_fails_fast_and_recovers_through_the_real_call_path ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+
+     Running tests/llm_config_test.rs (/Users/matus/dev/netget/target/debug/deps/llm_config_test-b62b172fa39f8178)
+
+running 2 tests
+test test_default_config ... ok
+test test_serialize_deserialize ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/llm_rate_limiter_test.rs (/Users/matus/dev/netget/target/debug/deps/llm_rate_limiter_test-eeb252ac84777a53)
+
+running 11 tests
+test shipped_default_is_one_concurrent_request_with_a_bounded_queue ... ok
+test an_exhausted_token_budget_refuses_network_requests_immediately ... ok
+test extreme_backend_usage_and_window_values_do_not_overflow_or_reopen_budget ... ok
+test queued_requests_recheck_the_budget_after_the_preceding_call_finishes ... ok
+test every_concurrent_network_request_is_eventually_served ... ok
+test the_queue_depth_is_bounded_by_max_queued ... ok
+test a_second_network_request_queues_instead_of_being_dropped ... ok
+test the_queue_wait_is_bounded_by_queue_timeout ... ok
+test token_history_is_pruned_even_with_no_token_limit ... ok
+test user_requests_still_wait_without_a_deadline ... ok
+test refused_requests_release_their_queue_slot ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s
+
+     Running tests/log_template_injection_test.rs (/Users/matus/dev/netget/target/debug/deps/log_template_injection_test-3a83d9899fe512c9)
+
+running 5 tests
+test escape_sequences_do_not_survive_into_a_log_line ... ok
+test stripping_does_not_merge_the_two_sides_of_the_control_character ... ok
+test a_newline_in_a_value_cannot_forge_a_second_log_line ... ok
+test c1_controls_go_but_real_text_stays ... ok
+test every_placeholder_form_is_covered ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/log_template_test.rs (/Users/matus/dev/netget/target/debug/deps/log_template_test-6fcc4354779f7b31)
+
+running 10 tests
+test test_has_any ... ok
+test test_no_template_returns_none ... ok
+test field_values_containing_placeholders_remain_literal ... ok
+test test_simple_field_access ... ok
+test test_preview_function ... ok
+test test_nested_field_access ... ok
+test test_missing_field ... ok
+test test_length_function ... ok
+test test_json_pretty ... ok
+test test_hex_function ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/management_test.rs (/Users/matus/dev/netget/target/debug/deps/management_test-e7dba588c5e857c3)
+
+running 8 tests
+test update_nonexistent_client_errors ... ok
+test update_nonexistent_server_errors ... ok
+test update_client_hot_changes_instruction ... ok
+test update_server_port_triggers_restart_and_preserves_handler ... ok
+test update_server_hot_swaps_http_handler ... ok
+test update_bad_param_rejected_and_old_server_survives ... ok
+test invalid_types_tls_material_and_task_delays_preserve_running_server ... ok
+test non_object_startup_update_keeps_the_existing_server ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/mcp_startup_config_test.rs (/Users/matus/dev/netget/target/debug/deps/mcp_startup_config_test-cd95160bcd54588d)
+
+running 13 tests
+test mcp_honours_event_handler_mode ... ok
+test mcp_never_selects_ask_web_search_mode ... ok
+test mcp_honours_token_limit_and_window ... ok
+test mcp_honours_include_disabled_protocols ... ok
+test mcp_honours_llm_queue_bounds ... ok
+test agent_notification_pipe_creates_and_reuses_a_real_fifo ... ok
+test mcp_honours_no_scripts ... ok
+test agent_notification_pipe_refuses_existing_files_and_symlinks ... ok
+test mcp_honours_llm_max_concurrent ... ok
+test mcp_defaults_match_the_shipped_rate_limiter_defaults ... ok
+test mcp_honours_scripting_env ... ok
+test closing_service_cancels_its_execution_but_preserves_other_owners_and_definitions ... ok
+test background_ticker_stops_when_the_last_service_clone_is_dropped ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.32s
+
+     Running tests/mcp_stop_cleanup_test.rs (/Users/matus/dev/netget/target/debug/deps/mcp_stop_cleanup_test-1c3573c186c44489)
+
+running 3 tests
+test mcp_stop_all_cancels_every_servers_scheduled_tasks ... ok
+test mcp_stop_server_leaves_other_servers_tasks_alone ... ok
+test mcp_stop_server_cancels_that_servers_scheduled_tasks ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/non_interactive_run_limits_test.rs (/Users/matus/dev/netget/target/debug/deps/non_interactive_run_limits_test-1859ec2c8b6c9e1f)
+
+running 5 tests
+test a_server_that_fails_to_start_exits_non_zero ... ok
+test exit_after_events_counts_events_across_every_server ... ok
+test restored_global_task_keeps_cli_alive_and_reaches_the_task_ticker ... ok
+test loaded_client_runs_until_it_disconnects ... ok
+test run_for_exits_zero_when_the_duration_elapses ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s
+
+     Running tests/prompt_growth_test.rs (/Users/matus/dev/netget/target/debug/deps/prompt_growth_test-13c6799553c92f38)
+
+running 14 tests
+test short_memory_is_untouched ... ok
+test the_window_still_holds_several_normal_messages ... ok
+test empty_messages_do_not_accumulate_outside_the_history_byte_budget ... ok
+test a_single_oversized_message_cannot_exceed_the_window ... ok
+test a_short_conversation_is_left_alone ... ok
+test tiny_history_windows_include_truncation_markers_in_their_budget ... ok
+test one_oversized_line_is_truncated_rather_than_dropped_whole ... ok
+test bounding_is_char_safe ... ok
+test bounding_is_idempotent ... ok
+test trimming_is_idempotent_and_stable ... ok
+test trimming_keeps_the_system_message_and_the_original_request ... ok
+test history_is_bounded_by_message_count ... ok
+test history_is_bounded_by_total_size ... ok
+test appended_memory_is_bounded_and_keeps_the_newest_lines ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests/proxy_cert_cache_test.rs (/Users/matus/dev/netget/target/debug/deps/proxy_cert_cache_test-cc79ab05602116ea)
+
+running 3 tests
+test test_cert_cache_normalization ... ok
+test test_cert_and_key_match ... ok
+test test_cert_cache_generation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reference_parser_test.rs (/Users/matus/dev/netget/target/debug/deps/reference_parser_test-cde4a8414e0ab2be)
+
+running 12 tests
+test test_extract_simplified_xml ... ok
+test references_escape_every_json_control_character ... ok
+test replacement_contents_are_not_reinterpreted_as_other_references ... ok
+test nested_reference_like_tags_are_preserved_as_body_text ... ok
+test test_extract_standard_xml ... ok
+test test_resolve_references ... ok
+test test_no_references ... ok
+test test_duplicate_tags_first_wins ... ok
+test test_contains_references ... ok
+test test_html_in_json_not_extracted ... ok
+test test_extract_multiple_refs ... ok
+test inline_placeholders_survive_extraction_including_escaped_json_quotes ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scheduled_task_actions_test.rs (/Users/matus/dev/netget/target/debug/deps/scheduled_task_actions_test-9a2257516b49b7c3)
+
+running 2 tests
+test test_server_scoped_task_actions_match_prompt ... ok
+test test_global_task_actions_match_prompt ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/scheduled_task_claim_test.rs (/Users/matus/dev/netget/target/debug/deps/scheduled_task_claim_test-457a675a39324494)
+
+running 8 tests
+test helpers::event_trigger::tests::test_trigger_descriptions ... ok
+test helpers::event_trigger::tests::test_dns_query_builder ... ok
+test helpers::event_trigger::tests::test_stun_request_builder ... ok
+test allocated_task_id_controls_lookup_status_and_removal ... ok
+test concurrent_scheduler_ticks_claim_due_tasks_once ... ok
+test helpers::example_test_framework::tests::test_protocol_lookup ... ok
+test helpers::example_test_framework::tests::test_event_type_stats ... ok
+test recurring_task_stops_after_its_first_allowed_execution ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/scheduled_task_lifecycle_test.rs (/Users/matus/dev/netget/target/debug/deps/scheduled_task_lifecycle_test-f56ee22508202efd)
+
+running 4 tests
+test nested_recurring_tasks_honor_initial_delay ... ok
+test invalid_delays_and_zero_recurrence_return_errors ... ok
+test removed_claim_cannot_start_and_finishing_execution_cannot_be_reclaimed ... ok
+test removal_of_each_scope_cancels_in_flight_work ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/scripting_environment_test.rs (/Users/matus/dev/netget/target/debug/deps/scripting_environment_test-4705bd464a6bf77d)
+
+running 3 tests
+test test_format_available_none ... ok
+test test_format_available ... ok
+test test_environment_detection ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/scripting_executor_test.rs (/Users/matus/dev/netget/target/debug/deps/scripting_executor_test-4d11026ecb7ac5ed)
+
+running 11 tests
+test test_execute_perl_with_event_data ... ok
+test test_execute_perl_simple ... ok
+test test_execute_python_simple ... ok
+test test_execute_python_with_event_data ... ok
+test test_async_script_exits_normally ... ok
+test test_async_script_large_stdout ... ok
+test test_execute_javascript_simple ... ok
+test test_async_script_large_stdin_does_not_deadlock ... ok
+test test_execute_go_simple ... ok
+test test_slow_scripts_do_not_park_worker_threads ... ok
+test test_async_script_timeout_returns_error ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+
+     Running tests/scripting_highlight_test.rs (/Users/matus/dev/netget/target/debug/deps/scripting_highlight_test-175a4582a3e2de65)
+
+running 2 tests
+test test_highlight_python ... ok
+test test_format_script_for_log ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/scripting_manager_test.rs (/Users/matus/dev/netget/target/debug/deps/scripting_manager_test-dcd6c8a310f21ded)
+
+running 8 tests
+test test_build_config_no_language ... ok
+test test_build_config_no_source ... ok
+test test_extract_context_type_unknown ... ok
+test test_extract_context_type_http ... ok
+test test_build_config_python_inline ... ok
+test test_try_execute_wrong_context ... ok
+test test_extract_context_type_ssh ... ok
+test test_try_execute_no_config ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scripting_resident_test.rs (/Users/matus/dev/netget/target/debug/deps/scripting_resident_test-3400be8da78b9e8c)
+
+running 15 tests
+test resident_go_is_unsupported ... ok
+test resident_handle_error_keeps_process_and_state ... ok
+test resident_counts_events_across_dispatches ... ok
+test resident_switches_on_event_type ... ok
+test resident_cancelled_exchange_cannot_supply_the_next_events_reply ... ok
+test resident_extreme_timeout_is_an_error_without_panicking ... ok
+test resident_queue_wait_is_inside_the_events_timeout ... ok
+test resident_javascript_counts_across_events ... ok
+test resident_connection_scope_isolates_state ... ok
+test resident_javascript_awaits_async_handlers ... ok
+test resident_shutdown_resets_state ... ok
+test resident_death_is_detected_and_recovers ... ok
+test resident_shutdown_connection_is_targeted ... ok
+test resident_hang_times_out_and_recovers ... ok
+test resident_invalid_return_is_an_error_without_losing_process_state ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+
+     Running tests/scripting_resources_test.rs (/Users/matus/dev/netget/target/debug/deps/scripting_resources_test-7c91266b0fa91255)
+
+running 8 tests
+test fifo_script_source_is_rejected_without_waiting_for_a_writer ... ok
+test source_loading_rejects_oversize_and_non_regular_files ... ok
+test cancellation_terminates_interpreter_descendants ... ok
+test cancelled_go_execution_removes_its_private_source_directory ... ok
+test probe_deadline_includes_pipes_inherited_by_descendants ... ok
+test probe_caps_output_while_draining_both_pipes ... ok
+test per_event_output_caps_fail_before_the_script_timeout ... ok
+test resident_response_cap_kills_and_evicts_the_process ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+
+     Running tests/secret_redaction_test.rs (/Users/matus/dev/netget/target/debug/deps/secret_redaction_test-4a94a43073ea7ac6)
+
+running 3 tests
+test bearer_credentials_and_http_auth_headers_are_hidden_without_hiding_usage ... ok
+test credential_named_keys_are_redacted_at_any_depth_and_nothing_else_is ... ok
+test nesting_past_the_bound_is_hidden_rather_than_walked ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/server_stop_cleans_scheduled_tasks_test.rs (/Users/matus/dev/netget/target/debug/deps/server_stop_cleans_scheduled_tasks_test-577313e8c900f665)
+
+running 3 tests
+test reaper_leaves_running_servers_and_their_tasks_alone ... ok
+test remove_server_cancels_server_and_connection_scoped_tasks ... ok
+test reaping_a_stopped_server_cancels_its_tasks ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/sqlite_identifier_test.rs (/Users/matus/dev/netget/target/debug/deps/sqlite_identifier_test-f4349c5110dba13a)
+
+running 1 test
+test quoted_table_names_survive_schema_and_dml_refreshes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sqlite_query_bounds_test.rs (/Users/matus/dev/netget/target/debug/deps/sqlite_query_bounds_test-6cf4f2b37c543c3d)
+
+running 4 tests
+test multiple_statements_are_rejected_before_execution ... ok
+test prepared_statement_metadata_handles_comments_ctes_and_returning ... ok
+test result_rows_bytes_and_sqlite_value_allocations_are_bounded ... ok
+test work_budget_interrupts_unbounded_cte_and_resets_for_next_query ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.72s
+
+     Running tests/startup_cancellation_test.rs (/Users/matus/dev/netget/target/debug/deps/startup_cancellation_test-a0137bc23e8cd972)
+
+running 2 tests
+test failed_client_handshake_cleans_registration_before_returning_error ... ok
+test cancelled_restore_cleans_client_that_has_not_returned_its_id ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/startup_params_result_test.rs (/Users/matus/dev/netget/target/debug/deps/startup_params_result_test-15d34e51acbb24dd)
+
+running 11 tests
+test declared_keys_are_accepted_by_new ... ok
+test absent_optional_values_are_none ... ok
+test accessing_a_key_the_protocol_never_declared_is_an_error ... ok
+test present_values_round_trip ... ok
+test explicit_null_reads_as_absent ... ok
+test u32_overflow_is_an_error ... ok
+test undeclared_key_is_rejected_by_new ... ok
+test parameter_container_must_be_an_object ... ok
+test missing_required_value_is_an_error ... ok
+test preflight_checks_required_types_typed_arrays_and_unions ... ok
+test wrong_typed_value_is_an_error_not_a_panic ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/static_handler_interpolation_test.rs (/Users/matus/dev/netget/target/debug/deps/static_handler_interpolation_test-34dd714ed5547d3e)
+
+running 34 tests
+test contains_event_reference_detects_only_event_rooted_refs ... ok
+test actions_without_references_never_need_event_data ... ok
+test literal_braces_are_untouched ... ok
+test embedded_reference_produces_a_string ... ok
+test interpolation_refuses_colliding_resolved_keys ... ok
+test multiple_embedded_references_all_substitute ... ok
+test nested_path_resolves_through_objects ... ok
+test deeply_nested_path_resolves ... ok
+test interpolation_rejects_deep_programmatic_json_without_recursive_inspection ... ok
+test non_ascii_text_around_a_reference_survives ... ok
+test indexing_a_scalar_errors_clearly ... ok
+test malformed_paths_are_rejected ... ok
+test numeric_segment_indexes_arrays ... ok
+test dns_static_handler_echoes_the_clients_random_query_id ... ok
+test object_keys_are_interpolated_as_text ... ok
+test triple_brace_resolves_the_inner_reference_and_keeps_the_outer_braces ... ok
+test reference_without_event_data_errors_instead_of_nulling ... ok
+test reference_surrounded_by_whitespace_is_embedded_not_whole ... ok
+test out_of_range_array_index_errors ... ok
+test adjacent_references_concatenate_as_text ... ok
+test unclosed_reference_is_left_alone ... ok
+test references_resolve_inside_nested_action_structures ... ok
+test whole_string_reference_preserves_every_json_type ... ok
+test whole_string_reference_preserves_number_type ... ok
+test whole_string_reference_tolerates_inner_whitespace ... ok
+test embedded_non_string_values_render_in_json_form ... ok
+test actions_without_references_pass_through_byte_identical ... ok
+test validate_catches_malformed_references_without_an_event ... ok
+test missing_field_errors_and_names_the_field_and_alternatives ... ok
+test missing_nested_field_reports_the_resolved_prefix ... ok
+test script_entry_detection_ignores_language_comments_and_strings ... ok
+test expansion_has_a_shared_budget_across_repeated_references_and_actions ... ok
+test executor_fails_loudly_on_a_typod_field ... ok
+test dns_static_handler_interpolates_through_the_event_handler_executor ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/test_infrastructure_review_test.rs (/Users/matus/dev/netget/target/debug/deps/test_infrastructure_review_test-a8ff3b045ccc2fba)
+
+running 12 tests
+test binary_resolution_uses_the_cargo_built_executable ... ok
+test real_inference_requires_an_explicit_affirmative_opt_in ... ok
+test helpers::event_trigger::tests::test_trigger_descriptions ... ok
+test helpers::event_trigger::tests::test_dns_query_builder ... ok
+test helpers::event_trigger::tests::test_stun_request_builder ... ok
+test external_protocol_example_tracks_current_traits_and_action_encoding ... ok
+test retry_still_returns_success_after_transient_failures ... ok
+test retry_timeout_bounds_a_condition_that_never_completes ... ok
+test retry_timeout_also_bounds_the_backoff_sleep ... ok
+test helpers::example_test_framework::tests::test_protocol_lookup ... ok
+test helpers::example_test_framework::tests::test_event_type_stats ... ok
+test external_echo_stops_listener_and_connected_peers ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/utils_save_load_test.rs (/Users/matus/dev/netget/target/debug/deps/utils_save_load_test-ebb9199148fed70d)
+
+running 5 tests
+test test_normalize_filename ... ok
+test test_is_actions_json ... ok
+test malformed_session_references_fail_before_starting_any_resource ... ok
+test session_relationships_and_tasks_restore_with_fresh_ids ... ok
+test saved_instances_retain_handlers_and_feedback_in_the_requested_directory ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+

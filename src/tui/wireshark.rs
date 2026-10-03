@@ -178,9 +178,9 @@ const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is re
     loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
     at all, so there would be nothing to see there anyway. Same trap as isis.";
 
-const QUIC_ALPN_NOTE: &str = "NetGet's QUIC server negotiates ALPN `h3` while sending raw stream \
-    bytes rather than RFC 9114 frames, so Wireshark hands the payload to its HTTP/3 sub-dissector \
-    and reports malformed frames. That is expected - read the QUIC stream payload directly.";
+const QUIC_ALPN_NOTE: &str = "NetGet's raw QUIC protocol negotiates ALPN `netget-quic`. \
+    Its bidirectional streams contain application bytes delimited by FIN. HTTP/3 uses \
+    the separate `http3` protocol and ALPN `h3`.";
 
 const USB_NOTE: &str = "USB is not network traffic. Wireshark can capture it from usbmon on \
                         Linux (tshark -D lists usbmonN) or the XHC20 device on macOS after \
@@ -204,8 +204,17 @@ pub fn wire_for(protocol: &str) -> Wire {
     match name.as_str() {
         // ---- transports --------------------------------------------------
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
-        "udp" => PLAIN_UDP,
+        "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
+        "gelf" | "graylog" => Wire {
+            transport: Transport::TcpOrUdp,
+            decode_as: None,
+            display: None,
+            note: Some("GELF supports UDP and TCP on this port. For UDP add `-d udp.port==PORT,gelf`; the GELF dissector does not accept TCP decode-as. TCP messages are NUL-delimited JSON."),
+        },
         "tls" | "dot" | "tor_relay" => tcp("tls"),
+        "doq" => udp("quic"),
+        // RFC 7011 version 10 over UDP. Decode-as and display syntax checked with tshark.
+        "ipfix" => udp("cflow"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
         // The discovery family. All three are UDP and all three were falling through to the
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
@@ -257,20 +266,33 @@ pub fn wire_for(protocol: &str) -> Wire {
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
-        // http3 is a client-only protocol name, and it reaches wire_for through
-        // CaptureTarget::client. Without an arm it defaulted to plain TCP; it is QUIC.
-        "http3" => with_display(udp("quic"), "http3 || quic"),
+        // Both HTTP/3 roles use QUIC. Application fields require TLS secrets.
+        "http3" | "http/3" | "h3" => with_note(
+            with_display(udp("quic"), "http3 || quic"),
+            "HTTP/3 uses ALPN h3 over UDP. Wireshark needs TLS session secrets to inspect HTTP/3 headers and data; otherwise the capture shows QUIC.",
+        ),
+        "fluentforward" | "fluent_forward" | "fluentd" => with_note(
+            PLAIN_TCP,
+            "Fluent Forward uses MessagePack over TCP. This Wireshark build has no Forward dissector; inspect the stream bytes and correlated ACKs.",
+        ),
         // ---- web ---------------------------------------------------------
         "http" | "websocket" | "proxy" | "webdav" | "jsonrpc" | "xmlrpc" | "openapi" | "openai"
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "docker" | "vault" => tcp("http"),
-        // OTLP/HTTP (TCP 4318) is HTTP to Wireshark: `tshark -G protocols` has no otlp dissector.
-        // Its `protobuf` dissector reads an application/x-protobuf body only once the
-        // OpenTelemetry .proto files are on its protobuf search path, so HTTP is what a capture
-        // shows by default; the JSON encoding reads as text.
-        "otlp" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "vault" | "influxdb" | "loki" => tcp("http"),
+        "docker" => with_note(
+            tcp("http"),
+            "This captures Docker HTTP TCP connections. A native Unix socket has no IP packets to capture.",
+        ),
+        // The receiver admits both HTTP/1.1 and gRPC/HTTP2 on the same port. Do not
+        // force one dissector before the instance's selected transport is known.
+        "otlp" => Wire {
+            transport: Transport::Tcp,
+            decode_as: None,
+            display: Some("http || http2 || grpc"),
+            note: Some("Choose HTTP for OTLP/HTTP or HTTP/2 for OTLP/gRPC in Wireshark Decode As. TLS exports require TLS session keys."),
+        },
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),

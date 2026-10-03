@@ -73,7 +73,7 @@ use netget::state::ServerId;
 /// suite uses: `test-e2e.sh --use-ollama` exports `NETGET_USE_OLLAMA=1`
 /// (`tests/helpers/netget.rs::should_use_ollama` reads the same variable).
 fn ollama_opt_in() -> bool {
-    std::env::var("NETGET_USE_OLLAMA").is_ok()
+    helpers::common::real_ollama_requested()
 }
 
 /// Skip the calling test unless the `--use-ollama` opt-in is active.

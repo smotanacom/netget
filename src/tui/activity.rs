@@ -72,8 +72,10 @@ pub struct ActivityFeed {
     pub scroll: ScrollPos,
     /// Entries that arrived while scrolled away from the tail.
     pub unseen: usize,
-    /// Cursor into the *visible* entries while the feed has focus.
-    pub cursor: Option<usize>,
+    /// Stable entry sequence selected while the feed has focus.
+    pub cursor: Option<u64>,
+    /// Top entry and wrapped-line offset at the last scrolled paint.
+    pub(crate) scroll_anchor: Option<(u64, usize)>,
     /// Show only the selected instance's entries (and global ones).
     pub only_selected: bool,
     next_seq: u64,
@@ -92,6 +94,7 @@ impl ActivityFeed {
             scroll: ScrollPos::Follow,
             unseen: 0,
             cursor: None,
+            scroll_anchor: None,
             only_selected: false,
             next_seq: 1,
         }
@@ -104,12 +107,18 @@ impl ActivityFeed {
             time,
             event,
         });
-        self.next_seq += 1;
+        self.next_seq = self.next_seq.saturating_add(1);
         if self.entries.len() > ACTIVITY_CAPACITY {
-            self.entries.pop_front();
+            let removed = self.entries.pop_front();
+            if removed
+                .as_ref()
+                .is_some_and(|entry| Some(entry.seq) == self.cursor)
+            {
+                self.cursor = self.entries.front().map(|entry| entry.seq);
+            }
         }
         if self.scroll != ScrollPos::Follow {
-            self.unseen += 1;
+            self.unseen = self.unseen.saturating_add(1).min(ACTIVITY_CAPACITY);
         }
     }
 
@@ -140,12 +149,14 @@ impl ActivityFeed {
     }
 
     pub fn scroll_to_follow(&mut self) {
+        self.scroll_anchor = None;
         self.scroll = ScrollPos::Follow;
         self.unseen = 0;
         self.cursor = None;
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_anchor = None;
         self.scroll = match self.scroll {
             ScrollPos::Follow => ScrollPos::Up(lines),
             ScrollPos::Up(n) => ScrollPos::Up(n.saturating_add(lines)),
@@ -153,6 +164,7 @@ impl ActivityFeed {
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_anchor = None;
         self.scroll = match self.scroll {
             ScrollPos::Follow => ScrollPos::Follow,
             ScrollPos::Up(n) => {

@@ -52,3 +52,46 @@ fn nesting_past_the_bound_is_hidden_rather_than_walked() {
     );
     assert!(shown.contains(REDACTED));
 }
+
+#[test]
+fn bearer_credentials_and_http_auth_headers_are_hidden_without_hiding_usage() {
+    let original = json!({
+        "access_token": "access credential",
+        "refreshToken": "refresh credential",
+        "id_token": "identity credential",
+        "idToken": "camel case identity credential",
+        "authToken": "camel case auth credential",
+        "token": "generic credential",
+        "headers": {
+            "Authorization": "Bearer credential",
+            "Proxy-Authorization": "Basic credential",
+            "X-API-Key": "API credential",
+            "Cookie": "session=credential",
+            "Set-Cookie": "session=credential; HttpOnly"
+        },
+        "input_tokens": 100,
+        "max_tokens": 200,
+        "token_url": "https://example.test/token"
+    });
+    let shown = redact_sensitive(&original);
+    for key in [
+        "access_token",
+        "refreshToken",
+        "id_token",
+        "idToken",
+        "authToken",
+        "token",
+    ] {
+        assert_eq!(shown[key], REDACTED, "{key}");
+    }
+    for value in shown["headers"].as_object().unwrap().values() {
+        assert_eq!(value, REDACTED);
+    }
+    for key in ["input_tokens", "max_tokens", "token_url"] {
+        assert_eq!(shown[key], original[key]);
+    }
+    assert_eq!(
+        original["access_token"], "access credential",
+        "redaction must not change the credential used on the wire"
+    );
+}

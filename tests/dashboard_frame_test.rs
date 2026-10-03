@@ -172,6 +172,73 @@ fn dump(lines: &[String]) -> String {
 }
 
 #[test]
+fn input_keeps_the_cursor_and_end_of_long_multiline_text_visible() {
+    use netget::cli::input_state::InputState;
+    use ratatui::backend::Backend;
+    let mut app = app();
+    app.input = InputState::from_lines(
+        (0..9)
+            .map(|n| format!("{} tail-{n}", "界".repeat(30)))
+            .collect(),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(24, 7)).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            render::chat::draw_input(f, &mut app, area);
+        })
+        .unwrap();
+    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+    assert_eq!(
+        cursor.y, 5,
+        "the ninth line is visible in the five-row input"
+    );
+    assert!(cursor.x < 23);
+    let row: String = (0..24)
+        .map(|x| terminal.backend().buffer()[(x, 5)].symbol())
+        .collect();
+    assert!(
+        row.contains("tail-8"),
+        "last input line must be visible: {row}"
+    );
+}
+
+#[test]
+fn input_cursor_uses_terminal_cells_for_wide_and_combining_text() {
+    use netget::cli::input_state::InputState;
+    use ratatui::backend::Backend;
+    let mut app = app();
+    app.input = InputState::from_lines(vec!["界e\u{301}".into()]);
+    let mut terminal = Terminal::new(TestBackend::new(24, 3)).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            render::chat::draw_input(f, &mut app, area);
+        })
+        .unwrap();
+    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+    assert_eq!((cursor.x, cursor.y), (6, 1));
+}
+
+#[test]
+fn opening_the_text_editor_preserves_trailing_newlines() {
+    use netget::tui::modal::text_editor::TextEditorModel;
+    for initial in ["command\n", "command\n\n", "\n", "", "a\r\nb\n"] {
+        let mut editor = TextEditorModel::new("text", "", initial, false);
+        assert_eq!(editor.accept().as_deref(), Some(initial));
+    }
+}
+
+#[test]
+fn conversation_wrapping_preserves_every_wide_grapheme() {
+    let mut app = app();
+    app.push_system("界".repeat(30));
+    let lines = frame(&mut app, 40, 30);
+    let count = dump(&lines).chars().filter(|c| *c == '界').count();
+    assert_eq!(count, 30, "wide glyphs must wrap before they are clipped");
+}
+
+#[test]
 fn an_empty_dashboard_says_what_to_do_at_the_minimum_size() {
     let mut app = app();
     app.push_system("NetGet — a starts a server or client");
@@ -582,4 +649,85 @@ fn a_modal_takes_the_whole_width_of_a_narrow_terminal() {
     assert_eq!(chars.len(), 48, "{top}");
     assert!(matches!(chars.first(), Some('╭' | '┌')), "{top}");
     assert!(matches!(chars.last(), Some('╮' | '┐')), "{top}");
+}
+
+#[test]
+fn activity_selection_survives_ring_eviction_by_entry_identity() {
+    use netget::tui::activity::{ActivityFeed, ACTIVITY_CAPACITY};
+    use netget::ui::app::LogLevel;
+    let mut feed = ActivityFeed::new();
+    for index in 0..ACTIVITY_CAPACITY {
+        feed.push_log(LogLevel::Info, index.to_string());
+    }
+    let selected = feed.entries[100].seq;
+    feed.cursor = Some(selected);
+    for index in 0..50 {
+        feed.push_log(LogLevel::Info, format!("new-{index}"));
+    }
+    assert_eq!(feed.cursor, Some(selected));
+    assert_eq!(
+        feed.entries
+            .iter()
+            .find(|entry| Some(entry.seq) == feed.cursor)
+            .unwrap()
+            .event
+            .text,
+        "100"
+    );
+    for index in 0..100 {
+        feed.push_log(LogLevel::Info, format!("newer-{index}"));
+    }
+    assert_eq!(feed.cursor, feed.entries.front().map(|entry| entry.seq));
+}
+
+#[test]
+fn scrolled_activity_keeps_its_top_line_as_new_wrapped_entries_arrive() {
+    use netget::ui::app::LogLevel;
+    let mut app = app();
+    for index in 0..40 {
+        app.activity
+            .push_log(LogLevel::Info, format!("entry-{index:02}"));
+    }
+    app.activity.scroll_up(15);
+    let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    let paint = |terminal: &mut Terminal<TestBackend>, app: &mut DashboardApp| {
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render::stream::draw(frame, app, area);
+            })
+            .unwrap();
+        (0..60)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .collect::<String>()
+    };
+    let before = paint(&mut terminal, &mut app);
+    for index in 0..10 {
+        app.activity
+            .push_log(LogLevel::Info, format!("appended-{index}"));
+    }
+    let after = paint(&mut terminal, &mut app);
+    assert_eq!(
+        after, before,
+        "the viewport must stay anchored to retained entries"
+    );
+}
+
+#[test]
+fn fold_state_is_forgotten_after_instances_and_peers_disappear() {
+    use netget::tui::cards::{CardState, Group, NodeId};
+    let key = UiKey::Server(ServerId::new(1));
+    let peer = NodeId::Peer(key, Some(7));
+    let config = NodeId::Group(key, Group::Config);
+    let mut state = CardState::default();
+    state.close(&peer);
+    state.open(&config);
+    let snapshot = populated();
+    state.retain_snapshot(&snapshot);
+    assert!(!state.is_open(&peer));
+    assert!(state.is_open(&config));
+    state.retain_snapshot(&RailSnapshot::default());
+    state.retain_snapshot(&snapshot);
+    assert!(state.is_open(&peer));
+    assert!(!state.is_open(&config));
 }

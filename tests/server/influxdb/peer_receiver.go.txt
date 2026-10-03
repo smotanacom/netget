@@ -1,0 +1,45 @@
+// HTTP test adapter around the unmodified MIT InfluxData decoder. This is not influxd.
+package main
+import("compress/gzip";"encoding/json";"fmt";"io";"net";"net/http";"os";"strings";"time";lp "netget-influx-peer/lineprotocol")
+func fail(w http.ResponseWriter,status int,message string){w.Header().Set("Content-Type","application/json");w.WriteHeader(status);json.NewEncoder(w).Encode(map[string]any{"code":"invalid","message":message})}
+func main(){
+ listener,err:=net.Listen("tcp","127.0.0.1:0");if err!=nil{panic(err)}
+ fmt.Println("NETGET_ADDR http://"+listener.Addr().String())
+ server:=&http.Server{ReadHeaderTimeout:5*time.Second,ReadTimeout:10*time.Second,WriteTimeout:5*time.Second,MaxHeaderBytes:32768}
+ server.Handler=http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  if r.Method!="POST"||r.URL.Path!="/api/v2/write" {fail(w,400,"wrong route/method");return}
+  q,err:=parseQuery(r);if err!=nil {fail(w,400,err.Error());return}
+  if r.Header.Get("Authorization")!="Token peer-secret"||len(r.Header.Values("Authorization"))!=1 {fail(w,401,"wrong token");return}
+  if r.Header.Get("Content-Type")!="text/plain; charset=utf-8" {fail(w,415,"wrong content type");return}
+  if len(r.Header.Values("Content-Encoding"))!=1 {fail(w,415,"encoding required once");return}
+  encoding:=r.Header.Get("Content-Encoding");if encoding!="identity"&&encoding!="gzip" {fail(w,415,"wrong encoding");return}
+  raw,err:=io.ReadAll(io.LimitReader(r.Body,262145));if err!=nil||len(raw)>262144 {fail(w,413,"body limit");return}
+  data:=raw
+  if encoding=="gzip" {z,err:=gzip.NewReader(strings.NewReader(string(raw)));if err!=nil {fail(w,400,"gzip invalid");return};data,err=io.ReadAll(io.LimitReader(z,262145));z.Close();if err!=nil||len(data)>262144 {fail(w,400,"gzip invalid/oversized");return}}
+  precision:=map[string]lp.Precision{"ns":lp.Nanosecond,"us":lp.Microsecond,"ms":lp.Millisecond,"s":lp.Second}[q["precision"]]
+  decoder:=lp.NewDecoderWithBytes(data);points:=[]any{}
+  for decoder.Next(){
+   measurement,err:=decoder.Measurement();if err!=nil {fail(w,400,"measurement invalid");return};m:=string(measurement)
+   tags:=map[string]string{};for {key,val,err:=decoder.NextTag();if err!=nil {fail(w,400,"tag invalid");return};if key==nil {break};tags[string(key)]=string(val)}
+   fields:=map[string]any{};for {key,val,err:=decoder.NextField();if err!=nil {fail(w,400,"field invalid");return};if key==nil {break};var kind string;var value any
+    switch val.Kind(){case lp.Float:kind="float";value=val.FloatV();case lp.Int:kind="integer";value=val.IntV();case lp.Uint:kind="unsigned";value=val.UintV();case lp.Bool:kind="boolean";value=val.BoolV();case lp.String:kind="string";value=string(val.StringV());default:panic("unexpected decoder kind")}
+    fields[string(key)]=map[string]any{"type":kind,"value":value}
+   }
+   ts,err:=decoder.Time(precision,time.Unix(0,123));if err!=nil {fail(w,400,"timestamp invalid");return}
+   points=append(points,map[string]any{"measurement":m,"tags":tags,"fields":fields,"timestamp_ns":ts.UnixNano()})
+  }
+  if decoder.Err()!=nil||len(points)==0 {fail(w,400,"empty/invalid decoder output");return}
+  observed:=map[string]any{"org":q["org"],"bucket":q["bucket"],"precision":q["precision"],"encoding":encoding,"points":points}
+  bytes,_:=json.Marshal(observed);fmt.Println("NETGET_RECORD "+string(bytes))
+  if q["bucket"]=="reject" {w.Header().Set("Retry-After","3");fail(w,429,"rate limited");return}
+  w.WriteHeader(http.StatusNoContent)
+ })
+ go func(){time.Sleep(60*time.Second);server.Close()}()
+ if err:=server.Serve(listener);err!=nil&&err!=http.ErrServerClosed {fmt.Fprintln(os.Stderr,err);os.Exit(1)}
+}
+func parseQuery(r *http.Request)(map[string]string,error){
+ q,err:=r.URL.Query(),error(nil);out:=map[string]string{}
+ for key,val:=range q {if (key!="org"&&key!="bucket"&&key!="precision")||len(val)!=1||val[0]=="" {return nil,fmt.Errorf("unexpected/duplicate/empty query")};out[key]=val[0]}
+ if len(out)!=3||out["org"]!="org 名 &"||!map[string]bool{"ns":true,"us":true,"ms":true,"s":true}[out["precision"]] {err=fmt.Errorf("wrong query semantics")}
+ return out,err
+}

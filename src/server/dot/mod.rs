@@ -41,6 +41,10 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// TLS connection and reuse it — but finite.
 const IDLE_READ_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Once a length prefix arrives, the peer must finish that DNS message promptly. The
+/// between-query idle timeout cannot bound a read that is already waiting for its body.
+const MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Pause after a failed `accept()` before trying again.
 ///
 /// `accept` failing is usually transient (the peer went away between the SYN and the accept)
@@ -346,9 +350,20 @@ impl DotServer {
 
             // Read DNS message
             let mut dns_buf = vec![0u8; dns_len];
-            if let Err(e) = tls_stream.read_exact(&mut dns_buf).await {
-                Log::new(Some(&status_tx)).error(format!("Failed to read DoT DNS message: {}", e));
-                break;
+            match timeout(MESSAGE_READ_TIMEOUT, tls_stream.read_exact(&mut dns_buf)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    Log::new(Some(&status_tx))
+                        .error(format!("Failed to read DoT DNS message: {}", e));
+                    break;
+                }
+                Err(_) => {
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "DoT message from {peer_addr} incomplete after {MESSAGE_READ_TIMEOUT:?} \
+                         decision=fail_closed_read_timeout"
+                    ));
+                    break;
+                }
             }
 
             app_state

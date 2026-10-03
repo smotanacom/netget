@@ -579,7 +579,9 @@ impl TurnClient {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(600);
 
-                    let message = Self::build_allocate_request(lifetime as u32)?;
+                    let message = Self::build_allocate_request(
+                        u32::try_from(lifetime).context("TURN lifetime exceeds u32")?,
+                    )?;
                     let sent = socket.send_to(&message, remote_addr).await?;
 
                     Log::new(Some(status_tx)).debug(format!(
@@ -631,12 +633,8 @@ impl TurnClient {
                     let send_data = data
                         .get("data")
                         .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_u64().map(|n| n as u8))
-                                .collect::<Vec<u8>>()
-                        })
-                        .context("Missing or invalid data")?;
+                        .map(|arr| crate::client::wire_values::bytes(arr))
+                        .context("Missing or invalid data")??;
 
                     let message = Self::build_send_indication(peer_addr, &send_data)?;
                     let sent = socket.send_to(&message, remote_addr).await?;
@@ -655,7 +653,9 @@ impl TurnClient {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(600);
 
-                    let message = Self::build_refresh_request(lifetime as u32)?;
+                    let message = Self::build_refresh_request(
+                        u32::try_from(lifetime).context("TURN lifetime exceeds u32")?,
+                    )?;
                     let sent = socket.send_to(&message, remote_addr).await?;
 
                     Log::new(Some(status_tx)).debug(format!(
@@ -722,7 +722,8 @@ impl TurnClient {
         message.extend_from_slice(&[0, 0, 0]); // Reserved
 
         // Update message length
-        let total_length = (message.len() - 20) as u16;
+        let total_length =
+            u16::try_from(message.len() - 20).context("TURN message exceeds u16 length")?;
         message[length_pos..length_pos + 2].copy_from_slice(&total_length.to_be_bytes());
 
         Ok(message)
@@ -754,7 +755,8 @@ impl TurnClient {
         Self::add_xor_peer_address(&mut message, peer_addr, &transaction_id)?;
 
         // Update message length
-        let total_length = (message.len() - 20) as u16;
+        let total_length =
+            u16::try_from(message.len() - 20).context("TURN message exceeds u16 length")?;
         message[length_pos..length_pos + 2].copy_from_slice(&total_length.to_be_bytes());
 
         Ok((message, hex::encode(&transaction_id)))
@@ -783,7 +785,7 @@ impl TurnClient {
 
         // DATA attribute (0x0013)
         let attr_type = 0x0013u16;
-        let attr_length = data.len() as u16;
+        let attr_length = u16::try_from(data.len()).context("TURN data exceeds u16 length")?;
         message.extend_from_slice(&attr_type.to_be_bytes());
         message.extend_from_slice(&attr_length.to_be_bytes());
         message.extend_from_slice(data);
@@ -793,7 +795,8 @@ impl TurnClient {
         message.extend_from_slice(&vec![0u8; padding]);
 
         // Update message length
-        let total_length = (message.len() - 20) as u16;
+        let total_length =
+            u16::try_from(message.len() - 20).context("TURN message exceeds u16 length")?;
         message[length_pos..length_pos + 2].copy_from_slice(&total_length.to_be_bytes());
 
         Ok(message)
@@ -825,7 +828,8 @@ impl TurnClient {
         message.extend_from_slice(&lifetime_seconds.to_be_bytes());
 
         // Update message length
-        let total_length = (message.len() - 20) as u16;
+        let total_length =
+            u16::try_from(message.len() - 20).context("TURN message exceeds u16 length")?;
         message[length_pos..length_pos + 2].copy_from_slice(&total_length.to_be_bytes());
 
         Ok(message)

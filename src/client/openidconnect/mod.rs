@@ -1047,7 +1047,7 @@ impl OpenIdConnectClient {
             .and_then(|v| v.as_str())
             .unwrap_or("openid profile email");
 
-        let callback_port = data.get("port").and_then(|v| v.as_u64()).unwrap_or(8080) as u16;
+        let callback_port = crate::client::wire_values::number::<u16>(&data, "port", 8080)?;
 
         let issuer_url = IssuerUrl::new(provider_url)?;
         let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_hook).await?;

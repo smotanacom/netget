@@ -104,6 +104,10 @@ where
     // fails here, naming the rule that went unanswered.
     server.verify_mocks().await?;
     assert!(
+        !outcome.output_truncated,
+        "probe output exceeded capture budget"
+    );
+    assert!(
         !outcome.timed_out,
         "{id}: the probe was still running after 120s"
     );

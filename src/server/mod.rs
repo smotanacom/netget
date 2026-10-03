@@ -46,10 +46,12 @@ pub mod http_common;
 // so POP3S could not be built at all.
 #[cfg(any(
     feature = "dot",
+    feature = "doq",
     feature = "doh",
     feature = "http",
     feature = "http2",
     feature = "quic",
+    feature = "http3",
     feature = "smtp",
     feature = "pop3",
     feature = "tls",
@@ -1218,5 +1220,31 @@ pub use bluetooth_ble_weight_scale::BluetoothBleWeightScale;
 
 pub use connection::{Connection, ConnectionId};
 
+#[cfg(feature = "doq")]
+pub mod doq;
 #[cfg(feature = "nut")]
 pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
+
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
+
+#[cfg(feature = "http3")]
+pub mod http3;
+#[cfg(feature = "http3")]
+pub use http3::actions::Http3Protocol;
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;
+
+#[cfg(feature = "ipfix")]
+pub mod ipfix;
+
+#[cfg(feature = "loki")]
+pub mod loki;

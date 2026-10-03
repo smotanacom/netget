@@ -37,7 +37,7 @@ const SSH_KEYGEN: InstallHint = InstallHint {
 };
 
 /// The user the test process runs as — the only account an unprivileged `sshd` can log in.
-fn current_user() -> String {
+pub(super) fn current_user() -> String {
     // SAFETY: getpwuid returns a pointer into static storage or null; it is read immediately,
     // before anything else in this thread can call it again.
     unsafe {
@@ -56,7 +56,13 @@ fn current_user() -> String {
 /// because the temp dir's permissions are the test harness's, not a home directory's; `UsePAM
 /// no` and no password or keyboard-interactive auth, because an unprivileged sshd can check
 /// neither.
-async fn start_sshd() -> E2EResult<RealServer> {
+pub(super) async fn start_sshd() -> E2EResult<RealServer> {
+    start_sshd_with_subsystem("internal-sftp", "").await
+}
+pub(super) async fn start_sshd_with_subsystem(
+    subsystem: &str,
+    script: &str,
+) -> E2EResult<RealServer> {
     let keygen = |name: &str| {
         [
             "-q".to_string(),
@@ -73,18 +79,22 @@ async fn start_sshd() -> E2EResult<RealServer> {
     RealServer::builder("sshd", SSHD)
         .config_file(
             "sshd_config",
-            "ListenAddress 127.0.0.1\n\
-             Port {port}\n\
-             HostKey {dir}/host_key\n\
-             PidFile {dir}/sshd.pid\n\
-             AuthorizedKeysFile {dir}/authorized_keys\n\
+            &format!(
+                "ListenAddress 127.0.0.1\n\
+             Port {{port}}\n\
+             HostKey {{dir}}/host_key\n\
+             PidFile {{dir}}/sshd.pid\n\
+             AuthorizedKeysFile {{dir}}/authorized_keys\n\
              StrictModes no\n\
              UsePAM no\n\
              PasswordAuthentication no\n\
              KbdInteractiveAuthentication no\n\
              PubkeyAuthentication yes\n\
-             LogLevel VERBOSE\n",
+             LogLevel VERBOSE\n\
+             Subsystem sftp {subsystem}\n"
+            ),
         )
+        .config_file("sftp_peer.py", script)
         .setup_command("ssh-keygen", SSH_KEYGEN, keygen("host_key"))
         .setup_command("ssh-keygen", SSH_KEYGEN, keygen("user_key"))
         .setup_command("ssh-keygen", SSH_KEYGEN, keygen("stranger_key"))

@@ -1,0 +1,105 @@
+   Compiling netget v0.2.1 (/Users/matus/dev/netget)
+    Checking des v0.8.1
+error[E0433]: cannot find `limits` in `rusqlite`
+   --> src/state/sqlite.rs:304:34
+    |
+304 |         conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, MAX_QUERY_VALUE_BYTES);
+    |                                  ^^^^^^ could not find `limits` in `rusqlite`
+    |
+note: found an item that was configured out
+   --> /Users/matus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/src/lib.rs:123:9
+    |
+122 | #[cfg(feature = "limits")]
+    |       ------------------ the item is gated behind the `limits` feature
+123 | pub mod limits;
+    |         ^^^^^^
+
+error[E0433]: cannot find `limits` in `rusqlite`
+   --> src/state/sqlite.rs:305:34
+    |
+305 |         conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_QUERY_SQL_BYTES);
+    |                                  ^^^^^^ could not find `limits` in `rusqlite`
+    |
+note: found an item that was configured out
+   --> /Users/matus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/src/lib.rs:123:9
+    |
+122 | #[cfg(feature = "limits")]
+    |       ------------------ the item is gated behind the `limits` feature
+123 | pub mod limits;
+    |         ^^^^^^
+
+warning: use of deprecated struct `des::cipher::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:148:32
+    |
+148 |     let cipher = des::Des::new(GenericArray::from_slice(&key));
+    |                                ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `des::cipher::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:150:30
+    |
+150 |         cipher.encrypt_block(GenericArray::from_mut_slice(block));
+    |                              ^^^^^^^^^^^^
+
+warning: use of deprecated struct `des::cipher::generic_array::GenericArray`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:143:38
+    |
+143 |     use des::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
+    |                                      ^^^^^^^^^^^^
+
+warning: use of deprecated associated function `des::cipher::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:148:46
+    |
+148 |     let cipher = des::Des::new(GenericArray::from_slice(&key));
+    |                                              ^^^^^^^^^^
+
+warning: use of deprecated associated function `des::cipher::generic_array::GenericArray::<T, N>::from_mut_slice`: please upgrade to generic-array 1.x
+   --> src/client/vnc/mod.rs:150:44
+    |
+150 |         cipher.encrypt_block(GenericArray::from_mut_slice(block));
+    |                                            ^^^^^^^^^^^^^^
+
+error[E0599]: no method named `set_limit` found for struct `rusqlite::Connection` in the current scope
+   --> src/state/sqlite.rs:304:14
+    |
+304 |         conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, MAX_QUERY_VALUE_BYTES);
+    |              ^^^^^^^^^ method not found in `rusqlite::Connection`
+
+error[E0599]: no method named `set_limit` found for struct `rusqlite::Connection` in the current scope
+   --> src/state/sqlite.rs:305:14
+    |
+305 |         conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_QUERY_SQL_BYTES);
+    |              ^^^^^^^^^ method not found in `rusqlite::Connection`
+
+error[E0599]: no method named `progress_handler` found for struct `std::sync::MutexGuard<'_, rusqlite::Connection>` in the current scope
+   --> src/state/sqlite.rs:336:14
+    |
+336 |         conn.progress_handler(1000, Some(move || {
+    |         -----^^^^^^^^^^^^^^^^
+    |
+help: there is a method `busy_handler` with a similar name, but with different arguments
+   --> /Users/matus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/src/busy.rs:57:5
+    |
+ 57 |     pub fn busy_handler(&self, callback: Option<fn(i32) -> bool>) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `progress_handler` found for struct `std::sync::MutexGuard<'_, rusqlite::Connection>` in the current scope
+   --> src/state/sqlite.rs:385:14
+    |
+385 |         conn.progress_handler(0, None::<fn() -> bool>);
+    |              ^^^^^^^^^^^^^^^^
+    |
+help: there is a method `busy_handler` with a similar name, but with different arguments
+   --> /Users/matus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rusqlite-0.37.0/src/busy.rs:57:5
+    |
+ 57 |     pub fn busy_handler(&self, callback: Option<fn(i32) -> bool>) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0433, E0599.
+For more information about an error, try `rustc --explain E0433`.
+warning: `netget` (lib) generated 5 warnings (2 duplicates)
+error: could not compile `netget` (lib) due to 6 previous errors; 5 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `netget` (lib test) generated 5 warnings (3 duplicates)
+error: could not compile `netget` (lib test) due to 6 previous errors; 5 warnings emitted

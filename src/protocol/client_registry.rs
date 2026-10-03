@@ -86,6 +86,11 @@ impl ClientRegistry {
         #[cfg(feature = "doh")]
         self.register(Arc::new(crate::client::doh::DohClientProtocol::new()));
 
+        #[cfg(feature = "doq")]
+        self.register(Arc::new(
+            crate::client::doq::actions::DoqClientProtocol::new(),
+        ));
+
         #[cfg(feature = "dot")]
         self.register(Arc::new(crate::client::dot::DotClientProtocol::new()));
 
@@ -123,9 +128,12 @@ impl ClientRegistry {
         #[cfg(feature = "http2")]
         self.register(Arc::new(crate::client::http2::Http2ClientProtocol::new()));
 
-        // Real RFC 9114 HTTP/3 (the `h3` crate), so it keeps the `http3` name.
-        // The `http3` feature no longer builds a server - NetGet's QUIC server
-        // lives behind `quic` and cannot be spoken to by this client.
+        // Raw QUIC and RFC 9114 HTTP/3 have distinct client/server registrations.
+        #[cfg(feature = "quic")]
+        self.register(Arc::new(
+            crate::client::quic::actions::QuicClientProtocol::new(),
+        ));
+
         #[cfg(feature = "http3")]
         self.register(Arc::new(crate::client::http3::Http3ClientProtocol::new()));
 
@@ -225,6 +233,11 @@ impl ClientRegistry {
         #[cfg(feature = "ospf")]
         self.register(Arc::new(crate::client::ospf::OspfClientProtocol::new()));
 
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(
+            crate::client::otlp::actions::OtlpClientProtocol::new(),
+        ));
+
         #[cfg(feature = "postgresql")]
         self.register(Arc::new(
             crate::client::postgresql::PostgresqlClientProtocol::new(),
@@ -301,6 +314,39 @@ impl ClientRegistry {
 
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
+
+        #[cfg(feature = "ipfix")]
+        self.register(Arc::new(
+            crate::client::ipfix::actions::IpfixClientProtocol::new(),
+        ));
+        #[cfg(feature = "loki")]
+        self.register(Arc::new(
+            crate::client::loki::actions::LokiClientProtocol::new(),
+        ));
+        #[cfg(feature = "influxdb")]
+        self.register(Arc::new(
+            crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::client::fluent_forward::actions::FluentForwardClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(
+            crate::client::gelf::actions::GelfClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "graphite")]
+        self.register(Arc::new(
+            crate::client::graphite::actions::GraphiteClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "statsd")]
+        self.register(Arc::new(
+            crate::client::statsd::actions::StatsdClientProtocol::new(),
+        ));
 
         #[cfg(feature = "syslog")]
         self.register(Arc::new(crate::client::syslog::SyslogClientProtocol::new()));
@@ -722,12 +768,14 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("DNS", "dns"),
     ("DNS-over-HTTPS", "doh"),
     ("DoT", "dot"),
+    ("DoQ", "doq"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
+    ("QUIC", "quic"),
     ("igmp", "igmp"),
     ("IPP", "ipp"),
     ("IS-IS", "isis"),
@@ -739,6 +787,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("nfc", "nfc-client"),
     ("NTP", "ntp"),
     ("OpenAI", "openai"),
+    ("OTLP", "otlp"),
     ("PostgreSQL", "postgresql"),
     ("PyPI", "pypi"),
     ("MSSQL", "mssql"),
@@ -756,6 +805,18 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
+    ("IPFIX", "ipfix"),
+    ("IPFIX-UDP", "ipfix"),
+    ("Loki", "loki"),
+    ("LokiPush", "loki"),
+    ("InfluxDB", "influxdb"),
+    ("InfluxDB2", "influxdb"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
+    ("Graphite", "graphite"),
+    ("StatsD", "statsd"),
+    ("DogStatsD", "statsd"),
     ("TCP", "tcp"),
     ("Telnet", "telnet"),
     ("TLS", "tls"),

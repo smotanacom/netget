@@ -5,6 +5,9 @@
 //! - web_search tool tests
 //! - Integration tests with full NetGet runs
 
+#[allow(dead_code, unused_imports)]
+mod helpers;
+
 #[path = "toolcall/read_file_test.rs"]
 mod read_file_test;
 

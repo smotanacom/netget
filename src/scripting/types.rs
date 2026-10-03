@@ -95,11 +95,69 @@ pub enum ScriptSource {
 }
 
 impl ScriptSource {
+    /// Source code is configuration, not an unbounded stream.
+    pub const MAX_CODE_BYTES: usize = 4 * 1024 * 1024;
+
     /// Get the script code (either by reading file or returning inline code)
     pub fn get_code(&self) -> Result<String, std::io::Error> {
         match self {
-            ScriptSource::FilePath(path) => std::fs::read_to_string(path),
-            ScriptSource::Inline(code) => Ok(code.clone()),
+            ScriptSource::FilePath(path) => {
+                use std::io::Read;
+                let mut options = std::fs::OpenOptions::new();
+                options.read(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    // Opening a FIFO must not wait for a writer before metadata can
+                    // reject it; validate the opened descriptor to avoid a path race.
+                    options.custom_flags(libc::O_NONBLOCK);
+                }
+                let file = options.open(path)?;
+                if !file.metadata()?.is_file() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "script source must be a regular file",
+                    ));
+                }
+                let mut code = String::new();
+                file.take(Self::MAX_CODE_BYTES as u64 + 1)
+                    .read_to_string(&mut code)?;
+                Self::check_size(&code)?;
+                Ok(code)
+            }
+            ScriptSource::Inline(code) => {
+                Self::check_size(code)?;
+                Ok(code.clone())
+            }
+        }
+    }
+
+    fn check_size(code: &str) -> std::io::Result<()> {
+        if code.len() > Self::MAX_CODE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "script source exceeds the 4 MiB cap",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Keep filesystem work off async workers; callers include this in their budget.
+    pub async fn get_code_async(&self) -> std::io::Result<String> {
+        if let Self::Inline(_) = self {
+            return self.get_code();
+        }
+        #[cfg(target_arch = "wasm32")]
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "file-backed scripts are not available in the browser",
+        ));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let source = self.clone();
+            tokio::task::spawn_blocking(move || source.get_code())
+                .await
+                .map_err(std::io::Error::other)?
         }
     }
 }
@@ -120,8 +178,9 @@ pub struct ScriptConfig {
 impl ScriptConfig {
     /// Check if this script handles a given event type
     pub fn handles_context(&self, event_type_id: &str) -> bool {
-        self.handles_contexts.contains(&"all".to_string())
-            || self.handles_contexts.contains(&event_type_id.to_string())
+        self.handles_contexts
+            .iter()
+            .any(|context| context == "all" || context == event_type_id)
     }
 
     /// Add context types to the handles list

@@ -17,14 +17,16 @@
 //! thread with its own current-thread runtime, so it never nests runtimes, but
 //! it *does* block the calling thread and must not be used from async code.
 
+use super::process_io::{
+    read_bounded, ProcessGroup, ScriptDirectory, MAX_STDERR_BYTES, MAX_STDOUT_BYTES,
+};
 use super::types::{
     parse_script_response, ScriptConfig, ScriptInput, ScriptLanguage, ScriptResponse,
 };
 use anyhow::{Context as AnyhowContext, Result};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tracing::{debug, error, trace, warn};
 
@@ -43,10 +45,6 @@ pub const DEFAULT_SCRIPT_TIMEOUT: Duration = Duration::from_secs(SCRIPT_TIMEOUT_
 
 /// How long to wait for a killed child to actually be reaped before giving up.
 const KILL_REAP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Monotonic counter used to give concurrently executing Go scripts distinct
-/// temporary file names (the process id alone is not unique per invocation).
-static SCRIPT_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Execute a script with the given input (async, non-blocking).
 ///
@@ -86,10 +84,26 @@ pub async fn execute_script_with_timeout_async(
     input: &ScriptInput,
     timeout: Duration,
 ) -> Result<ScriptResponse> {
-    // Get the script code
+    tokio::time::timeout(timeout, execute_script_inner(config, input, timeout))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "script execution timed out after {:?} (process killed)",
+                timeout
+            )
+        })?
+}
+
+async fn execute_script_inner(
+    config: &ScriptConfig,
+    input: &ScriptInput,
+    timeout: Duration,
+) -> Result<ScriptResponse> {
+    // Source loading and Go staging are inside the outer wall-clock budget.
     let code = config
         .source
-        .get_code()
+        .get_code_async()
+        .await
         .context("Failed to load script code")?;
 
     // Serialize input to JSON (pretty-printed for logs)
@@ -270,15 +284,10 @@ async fn execute_perl(code: &str, input_json: &str, timeout: Duration) -> Result
 /// Go requires a file, so we create a temporary .go file and use `go run`
 /// Returns (stdout, stderr) tuple
 async fn execute_go(code: &str, input_json: &str, timeout: Duration) -> Result<(String, String)> {
-    // Create a temporary file. The name must be unique *per invocation*, not
-    // per process: several Go scripts can run concurrently inside netget.
-    let temp_dir = std::env::temp_dir();
-    let script_name = format!(
-        "netget_script_{}_{}.go",
-        crate::utils::clock::process_id(),
-        SCRIPT_TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let script_path = temp_dir.join(script_name);
+    let directory = tokio::task::spawn_blocking(ScriptDirectory::new)
+        .await
+        .context("failed to create Go staging worker")??;
+    let script_path = directory.script_path();
 
     // Wrap the user's code in a complete Go program
     let wrapped_code = format!(
@@ -332,8 +341,8 @@ func main() {{
     )
     .await;
 
-    // Clean up the temp file
-    let _ = tokio::fs::remove_file(&script_path).await;
+    // The private directory is removed on completion and future cancellation.
+    drop(directory);
 
     result
 }
@@ -372,16 +381,18 @@ async fn execute_with_command(
         // make sure we do not leak the interpreter process.
         .kill_on_drop(true);
 
+    ProcessGroup::configure(&mut builder);
     let mut child = builder
         .spawn()
         .map_err(|e| spawn_error(language, command, e))?;
+    let group = ProcessGroup::new(&child)?;
 
     let mut stdin = child.stdin.take();
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .context("Failed to capture script stdout")?;
-    let mut stderr = child
+    let stderr = child
         .stderr
         .take()
         .context("Failed to capture script stderr")?;
@@ -401,59 +412,36 @@ async fn execute_with_command(
         }
         Ok::<(), std::io::Error>(())
     };
-    let stdout_fut = async move {
-        let mut buf = Vec::new();
-        stdout.read_to_end(&mut buf).await?;
-        Ok::<Vec<u8>, std::io::Error>(buf)
+    let stdout_fut = read_bounded(stdout, MAX_STDOUT_BYTES);
+    let stderr_fut = read_bounded(stderr, MAX_STDERR_BYTES);
+    // BrokenPipe is benign; every other failure cancels the other collectors
+    // immediately, so a noisy child cannot hide behind an unfinished wait().
+    let write_fut = async {
+        match write_fut.await {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        }
     };
-    let stderr_fut = async move {
-        let mut buf = Vec::new();
-        stderr.read_to_end(&mut buf).await?;
-        Ok::<Vec<u8>, std::io::Error>(buf)
-    };
-
-    let interaction = async { tokio::join!(write_fut, stdout_fut, stderr_fut, child.wait()) };
-
+    let interaction = async { tokio::try_join!(write_fut, stdout_fut, stderr_fut, child.wait()) };
     let joined = tokio::time::timeout(timeout, interaction).await;
-
-    let (write_result, stdout_result, stderr_result, status_result) = match joined {
-        Ok(results) => results,
-        Err(_elapsed) => {
-            // Kill the child and *await* its exit so it is reaped rather than
-            // left as a zombie.
-            warn!(
-                "{} script exceeded {:?} timeout, killing interpreter process",
-                language.as_str(),
-                timeout
-            );
-            if let Err(e) = child.start_kill() {
-                warn!("Failed to signal script process for termination: {}", e);
-            }
+    let (_, stdout_bytes, stderr_bytes, status) = match joined {
+        Ok(Ok(results)) => results,
+        failed => {
+            group.kill();
+            let _ = child.start_kill();
             reap(&mut child).await;
-            anyhow::bail!(
-                "{} script execution timed out after {:?} (process killed)",
-                language.as_str(),
-                timeout
-            );
+            return match failed {
+                Ok(Err(error)) => Err(error).context("script input/output failed"),
+                Err(_) => Err(anyhow::anyhow!(
+                    "{} script execution timed out after {:?} (process killed)",
+                    language.as_str(),
+                    timeout
+                )),
+                Ok(Ok(_)) => unreachable!(),
+            };
         }
     };
-
-    // A script that never reads stdin (or exits early) gives us EPIPE. That is
-    // not an error from our side — the child's exit status is what matters.
-    if let Err(e) = write_result {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            debug!(
-                "{} script closed stdin before the full input was written (script did not read all input)",
-                language.as_str()
-            );
-        } else {
-            return Err(e).context("Failed to write event JSON to script stdin");
-        }
-    }
-
-    let stdout_bytes = stdout_result.context("Failed to read script stdout")?;
-    let stderr_bytes = stderr_result.context("Failed to read script stderr")?;
-    let status = status_result.context("Failed to wait for script process")?;
+    drop(group);
 
     let stdout = String::from_utf8(stdout_bytes).context("Script stdout is not valid UTF-8")?;
     let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();

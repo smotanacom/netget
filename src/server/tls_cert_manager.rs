@@ -83,13 +83,29 @@ pub fn generate_self_signed_cert(spec: &CertificateSpec) -> Result<(Certificate,
     params.subject_alt_names = spec
         .san_dns_names
         .iter()
-        .map(|name| SanType::DnsName(name.to_string().try_into().unwrap()))
-        .collect();
+        .map(|name| {
+            name.clone()
+                .try_into()
+                .map(SanType::DnsName)
+                .with_context(|| format!("Invalid certificate DNS name: {name:?}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    // Set validity period
+    // Startup parameters can contain the full i64 range. Both constructing a duration
+    // and adding it to a date can overflow, so reject invalid lifetimes before signing.
+    anyhow::ensure!(
+        spec.validity_days > 0,
+        "Certificate validity_days must be positive"
+    );
+    let validity_seconds = spec
+        .validity_days
+        .checked_mul(86_400)
+        .context("Certificate validity_days is too large")?;
     let now = OffsetDateTime::now_utc();
     params.not_before = now;
-    params.not_after = now + Duration::days(spec.validity_days);
+    params.not_after = now
+        .checked_add(Duration::seconds(validity_seconds))
+        .context("Certificate validity_days exceeds the supported date range")?;
 
     // Generate key pair and self-sign
     let key_pair = KeyPair::generate().context("Failed to generate key pair")?;
@@ -312,7 +328,7 @@ pub fn get_tls_startup_parameters() -> Vec<crate::llm::actions::ParameterDefinit
         ParameterDefinition {
             name: "validity_days".to_string(),
             type_hint: "number".to_string(),
-            description: "Certificate validity period in days for self-signed certificate (default: 365)".to_string(),
+            description: "Positive certificate validity period in days for self-signed certificate, within the supported date range (default: 365)".to_string(),
             required: false,
             example: serde_json::json!(365),
             default: None,
@@ -347,15 +363,31 @@ pub fn extract_tls_config_from_params(
         return Ok(None);
     }
 
+    extract_required_tls_config_from_params(params).map(Some)
+}
+
+/// Build mandatory TLS (for QUIC) with the same validation as optional TLS.
+pub fn extract_required_tls_config_from_params(
+    params: &crate::protocol::StartupParams,
+) -> Result<Arc<ServerConfig>> {
     // Extract TLS parameters
     let cert_path = params.get_optional_string("cert_path")?;
     let key_path = params.get_optional_string("key_path")?;
     let common_name = params.get_optional_string("common_name")?;
-    let san_dns_names = params.get_optional_array("san_dns_names")?.map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect()
-    });
+    let san_dns_names = params
+        .get_optional_array("san_dns_names")?
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .with_context(|| format!("san_dns_names[{index}] must be a string"))
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
     let validity_days = params.get_optional_i64("validity_days")?;
     let organization = params.get_optional_string("organization")?;
     let organizational_unit = params.get_optional_string("organizational_unit")?;
@@ -370,5 +402,4 @@ pub fn extract_tls_config_from_params(
         organization,
         organizational_unit,
     )
-    .map(Some)
 }

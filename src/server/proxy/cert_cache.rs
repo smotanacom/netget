@@ -30,6 +30,11 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace};
 
+/// Bound retained leaf certificates and private keys independently of connection count.
+/// One peer can request arbitrarily many distinct hosts over the cache's 24-hour TTL.
+/// Eviction only affects future handshakes; active sessions own their certificate copy.
+pub const MAX_CACHED_CERTIFICATES: usize = 1024;
+
 /// Certificate cache entry.
 ///
 /// Both halves of the identity are stored together: a leaf certificate is only
@@ -128,6 +133,18 @@ impl CertificateCache {
         // Cache the certificate together with the key it certifies
         {
             let mut cache = self.cache.write().await;
+            if !cache.contains_key(&domain_normalized) && cache.len() >= MAX_CACHED_CERTIFICATES {
+                // The oldest generated certificate also expires first. Hold the write
+                // lock across eviction and insertion so concurrent misses cannot exceed
+                // the cap. A replacement for the same host consumes no additional slot.
+                let oldest = cache
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.generated_at)
+                    .map(|(domain, _)| domain.clone());
+                if let Some(oldest) = oldest {
+                    cache.remove(&oldest);
+                }
+            }
             cache.insert(
                 domain_normalized.clone(),
                 CachedCert {

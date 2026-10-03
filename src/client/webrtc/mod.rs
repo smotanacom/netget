@@ -63,10 +63,8 @@ enum ConnectionState {
 /// Per-channel LLM state
 struct ChannelData {
     state: ConnectionState,
-    /// Messages that arrived while an LLM call was in flight. Cleared (with a
-    /// WARN) when the call finishes; see the reset site for why this is not a
-    /// real queue yet.
-    queued_messages: Vec<(String, bool)>, // (message, is_binary)
+    /// Bounded FIFO drained by the active processor before returning to Idle.
+    queued_messages: std::collections::VecDeque<(String, bool)>, // (message, is_binary)
     /// The live channel, used to send on it from outside the on_message closure
     /// (injected commands go through this).
     channel: Arc<RTCDataChannel>,
@@ -74,8 +72,41 @@ struct ChannelData {
 
 /// Per-client data for LLM handling
 struct ClientData {
+    shutdown: tokio_util::sync::CancellationToken,
     memory: String,
     channels: HashMap<String, ChannelData>, // channel_label -> data
+}
+
+/// Owns the async close operation even when AppState aborts the client tasks.
+#[derive(Clone)]
+pub struct PeerConnectionGuard(Arc<PeerCleanup>);
+struct PeerCleanup {
+    peer: Arc<RTCPeerConnection>,
+    shutdown: tokio_util::sync::CancellationToken,
+}
+impl PeerConnectionGuard {
+    pub fn new(peer: Arc<RTCPeerConnection>) -> Self {
+        Self(Arc::new(PeerCleanup {
+            peer,
+            shutdown: tokio_util::sync::CancellationToken::new(),
+        }))
+    }
+    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.0.shutdown.clone()
+    }
+}
+impl Drop for PeerCleanup {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        let peer = self.peer.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = peer.close().await {
+                    tracing::warn!("WebRTC close failed: {error}");
+                }
+            });
+        }
+    }
 }
 
 /// WebRTC client that connects via data channels (no media)
@@ -182,10 +213,12 @@ impl WebRtcClient {
 
         // Create peer connection
         let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+        let lifetime = PeerConnectionGuard::new(peer_connection.clone());
         info!("WebRTC client {} created peer connection", client_id);
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
+            shutdown: lifetime.cancellation_token(),
             memory: String::new(),
             channels: HashMap::new(),
         }));
@@ -211,7 +244,7 @@ impl WebRtcClient {
             "netget".to_string(),
             ChannelData {
                 state: ConnectionState::Idle,
-                queued_messages: Vec::new(),
+                queued_messages: std::collections::VecDeque::new(),
                 channel: Arc::clone(&data_channel),
             },
         );
@@ -251,14 +284,10 @@ impl WebRtcClient {
             },
         ));
 
-        // Store peer connection and data channel for later use
-        let pc_ptr = Arc::into_raw(peer_connection.clone()) as usize;
+        // Command and signaling tasks own the peer connection through real Arcs.
+        // Keep only serializable signaling metadata in the client state.
         app_state
             .with_client_mut(client_id, |client| {
-                client.set_protocol_field(
-                    "peer_connection_ptr".to_string(),
-                    serde_json::json!(pc_ptr),
-                );
                 client.set_protocol_field(
                     "signaling_mode".to_string(),
                     match &signaling_mode {
@@ -284,7 +313,9 @@ impl WebRtcClient {
         let cmd_state = Arc::clone(&app_state);
         let cmd_status_tx = status_tx.clone();
         let cmd_llm = llm_client.clone();
+        let cmd_lifetime = lifetime.clone();
         let cmd_task = tokio::spawn(async move {
+            let _lifetime = cmd_lifetime;
             Self::command_loop(
                 command_rx,
                 cmd_pc,
@@ -298,21 +329,21 @@ impl WebRtcClient {
         });
         app_state.register_client_task(client_id, cmd_task).await;
 
-        match signaling_mode {
+        let signaling_result = match signaling_mode {
             SignalingMode::Manual => {
                 // Manual mode: create offer and display to user
                 Self::manual_signaling(
-                    peer_connection,
+                    peer_connection.clone(),
                     client_id,
                     Arc::clone(&app_state),
                     status_tx.clone(),
                 )
-                .await?;
+                .await
             }
             SignalingMode::WebSocket { url, peer_id } => {
                 // WebSocket mode: connect to signaling server
                 Self::websocket_signaling(
-                    peer_connection,
+                    peer_connection.clone(),
                     client_id,
                     url,
                     peer_id,
@@ -320,8 +351,13 @@ impl WebRtcClient {
                     status_tx.clone(),
                     llm_client,
                 )
-                .await?;
+                .await
             }
+        };
+        if let Err(error) = signaling_result {
+            app_state.remove_client_handle(client_id).await;
+            let _ = peer_connection.close().await;
+            return Err(error);
         }
 
         // Spawn cleanup task
@@ -338,12 +374,6 @@ impl WebRtcClient {
                     info!("WebRTC client {} stopped", client_id);
                     // Also ends `command_loop`, whose channel closes with the handle.
                     app_state_cleanup.remove_client_handle(client_id).await;
-                    // Clean up Arc pointer
-                    unsafe {
-                        if pc_ptr != 0 {
-                            let _ = Arc::from_raw(pc_ptr as *const RTCPeerConnection);
-                        }
-                    }
                     break;
                 }
             }
@@ -650,24 +680,27 @@ impl WebRtcClient {
         llm_client: OllamaClient,
     ) {
         // On open handler
-        let client_data_on_open = Arc::clone(&client_data);
+        let client_data_on_open = Arc::downgrade(&client_data);
         let app_state_on_open = Arc::clone(&app_state);
         let status_tx_on_open = status_tx.clone();
         let llm_on_open = llm_client.clone();
         let label_on_open = channel_label.clone();
         // The channel itself, so an action the model returns when the channel opens can
         // actually be sent. Without it the answer had nowhere to go and was dropped.
-        let dc_on_open = Arc::clone(&data_channel);
+        let dc_on_open = Arc::downgrade(&data_channel);
 
         data_channel.on_open(Box::new(move || {
             let app_state = Arc::clone(&app_state_on_open);
             let status_tx = status_tx_on_open.clone();
-            let client_data = Arc::clone(&client_data_on_open);
+            let client_data = client_data_on_open.upgrade();
             let llm_client = llm_on_open.clone();
             let label = label_on_open.clone();
-            let dc = Arc::clone(&dc_on_open);
+            let dc = dc_on_open.upgrade();
 
             Box::pin(async move {
+                let (Some(client_data), Some(dc)) = (client_data, dc) else {
+                    return;
+                };
                 info!(
                     "WebRTC client {} data channel '{}' opened",
                     client_id, label
@@ -691,7 +724,8 @@ impl WebRtcClient {
 
                     let memory = client_data.lock().await.memory.clone();
 
-                    match call_llm_for_client(
+                    let shutdown = client_data.lock().await.shutdown.clone();
+                    let call = call_llm_for_client(
                         &llm_client,
                         &app_state,
                         client_id.to_string(),
@@ -700,9 +734,9 @@ impl WebRtcClient {
                         Some(&event),
                         protocol.as_ref(),
                         &status_tx,
-                    )
-                    .await
-                    {
+                    );
+                    let result = tokio::select! { _ = shutdown.cancelled() => return, result = call => result };
+                    match result {
                         Ok(ClientLlmResult {
                             actions,
                             memory_updates,
@@ -763,26 +797,32 @@ impl WebRtcClient {
         }));
 
         // On message handler
-        let client_data_on_msg = Arc::clone(&client_data);
+        let client_data_on_msg = Arc::downgrade(&client_data);
         let app_state_on_msg = Arc::clone(&app_state);
         let status_tx_on_msg = status_tx.clone();
         let llm_on_msg = llm_client.clone();
         let label_on_msg = channel_label.clone();
-        let dc_on_msg = Arc::clone(&data_channel);
+        let dc_on_msg = Arc::downgrade(&data_channel);
 
         data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
             let app_state = Arc::clone(&app_state_on_msg);
             let status_tx = status_tx_on_msg.clone();
-            let client_data = Arc::clone(&client_data_on_msg);
+            let client_data = client_data_on_msg.upgrade();
             let llm_client = llm_on_msg.clone();
-            let dc = Arc::clone(&dc_on_msg);
+            let dc = dc_on_msg.upgrade();
             let label = label_on_msg.clone();
 
             Box::pin(async move {
+                let (Some(client_data), Some(dc)) = (client_data, dc) else { return; };
+                if msg.data.len() > 1024 * 1024 {
+                    warn!("WebRTC data message exceeds 1 MiB; closing channel");
+                    let _ = dc.close().await;
+                    return;
+                }
                 // Detect if message is binary
-                let is_binary = !msg.data.is_empty() && !msg.data.iter().all(|&b| b.is_ascii());
+                let mut is_binary = !msg.is_string;
 
-                let message_text = if is_binary {
+                let mut message_text = if is_binary {
                     // Hex encode binary data
                     hex::encode(&msg.data)
                 } else {
@@ -820,7 +860,8 @@ impl WebRtcClient {
                         }
                         drop(client_data_lock);
 
-                        // Call LLM
+                        loop {
+                        // Drain all queued messages in order through the same event path.
                         if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
                             let protocol = Arc::new(crate::client::webrtc::actions::WebRtcClientProtocol::new());
                             let event = Event::new(
@@ -834,7 +875,8 @@ impl WebRtcClient {
 
                             let memory = client_data.lock().await.memory.clone();
 
-                            match call_llm_for_client(
+                            let shutdown = client_data.lock().await.shutdown.clone();
+                            let call = call_llm_for_client(
                                 &llm_client,
                                 &app_state,
                                 client_id.to_string(),
@@ -843,7 +885,9 @@ impl WebRtcClient {
                                 Some(&event),
                                 protocol.as_ref(),
                                 &status_tx,
-                            ).await {
+                            );
+                            let result = tokio::select! { _ = shutdown.cancelled() => return, result = call => result };
+                            match result {
                                 Ok(ClientLlmResult { actions, memory_updates }) => {
                                     // Update memory
                                     if let Some(mem) = memory_updates {
@@ -882,44 +926,30 @@ impl WebRtcClient {
                             }
                         }
 
-                        // Return to Idle, unconditionally.
-                        //
-                        // This used to latch into `Accumulating` whenever the queue
-                        // was non-empty — and **nothing ever drained that queue**.
-                        // `queued_messages` was pushed to in two places and popped in
-                        // none, and there was no `Accumulating` arm that processed
-                        // anything, so the first message to arrive during an LLM call
-                        // made the channel permanently deaf: every later message was
-                        // pushed onto a Vec nobody read, silently, for the life of
-                        // the connection. The client's own CLAUDE.md advertised "no
-                        // message loss during LLM processing".
-                        //
-                        // Overlapping messages are now dropped **loudly** and the
-                        // channel keeps working. That is strictly better than the
-                        // old behaviour on both counts: the same messages were
-                        // already lost, and they took the channel with them. A real
-                        // drain belongs here — the server does it properly in
-                        // `PeerCtx::handle_peer_event` — but it needs this closure's
-                        // body extracted first, and a silent permanent hang is not
-                        // something to leave standing while that waits.
                         let mut client_data_lock = client_data.lock().await;
                         if let Some(channel_data) = client_data_lock.channels.get_mut(&label) {
-                            let dropped = channel_data.queued_messages.len();
-                            if dropped > 0 {
-                                channel_data.queued_messages.clear();
-                                warn!(
-                                    "WebRTC client {} dropped {} message(s) that arrived on \
-                                     '{}' during an LLM call; the channel stays open",
-                                    client_id, dropped, label
-                                );
+                            if let Some((next, binary)) = channel_data.queued_messages.pop_front() {
+                                message_text = next;
+                                is_binary = binary;
+                                drop(client_data_lock);
+                                continue;
                             }
                             channel_data.state = ConnectionState::Idle;
+                        }
+                        break;
                         }
                     }
                     ConnectionState::Processing => {
                         // Queue the message
                         if let Some(channel_data) = client_data_lock.channels.get_mut(&label) {
-                            channel_data.queued_messages.push((message_text, is_binary));
+                            let queued_bytes: usize = channel_data.queued_messages.iter().map(|(message, _)| message.len()).sum();
+                            if channel_data.queued_messages.len() >= 128 || queued_bytes.saturating_add(message_text.len()) > 8 * 1024 * 1024 {
+                                drop(client_data_lock);
+                                warn!("WebRTC pending message queue full; closing channel");
+                                let _ = dc.close().await;
+                                return;
+                            }
+                            channel_data.queued_messages.push_back((message_text, is_binary));
                             trace!("WebRTC client {} queued message on '{}' (already processing)", client_id, label);
                         }
                     }
@@ -1033,7 +1063,7 @@ impl WebRtcClient {
                                     new_label.clone(),
                                     ChannelData {
                                         state: ConnectionState::Idle,
-                                        queued_messages: Vec::new(),
+                                        queued_messages: std::collections::VecDeque::new(),
                                         channel,
                                     },
                                 );

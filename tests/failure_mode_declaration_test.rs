@@ -72,9 +72,17 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "cdp",
     "datalink",
     "dhcp",
+    // Forward has no negative ACK; failed handling closes without acknowledgement.
+    "fluent_forward",
+    // GELF TCP and UDP collectors define no application acknowledgement or negative reply.
+    "gelf",
+    // One-way Carbon metrics have no application acknowledgement or negative reply.
+    "graphite",
     "hsrp",
     "icmp",
     "igmp",
+    // RFC 7011 UDP collection has no acknowledgement or negative response.
+    "ipfix",
     "ipsec",
     "isis",
     "lldp",
@@ -87,6 +95,8 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "rip",
     "rtp",
     "ssdp",
+    // UDP metrics/events/service checks define no collector response.
+    "statsd",
     "stp",
     "syslog",
     "tuntap",
