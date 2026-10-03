@@ -119,33 +119,173 @@ impl IpfixClient {
             id,
             peer
         );
-        owner.spawn_client_task(id,async move{
-   let protocol=IpfixClientProtocol::new();let mut catalog=transport::Catalog::default();let mut current=Some((handler(ctx.clone(),Event::new(&actions::IPFIX_CONNECTED_EVENT,json!({"remote_addr":peer.to_string(),"local_addr":local.to_string()}))),0));let mut events=VecDeque::new();let mut actions=VecDeque::new();let mut pending:Option<Inflight>=None;
-   let period=Duration::from_secs(refresh);let mut refresh_tick=tokio::time::interval_at(tokio::time::Instant::now()+period,period);refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);let mut incoming=[0u8;1];
-   'session:loop{
-    if current.is_none(){if let Some((event,depth))=events.pop_front(){current=Some((handler(ctx.clone(),event),depth));}}
-    if pending.is_none(){if let Some((action,depth))=actions.pop_front(){match prepare(&protocol,action,depth,&catalog){Ok(Prepared::Write(p))=>{pending=Some(inflight(socket.clone(),p,None,depth));},Ok(Prepared::Disconnect)=>break,Err(e)=>console_error!(ctx.status_tx,"IPFIX handler action rejected: {}",e)}continue;}}
-    tokio::select!{
-     result=socket.recv(&mut incoming)=>{match result{Ok(_)=>console_error!(ctx.status_tx,"IPFIX collector sent unexpected UDP reply; closing"),Err(e)=>console_error!(ctx.status_tx,"IPFIX UDP transport failed: {}",e)}break;},
-     result=async{pending.as_mut().unwrap().send.as_mut().await},if pending.is_some()=>{
-      let p=pending.take().unwrap();match result{
-       Ok(count)=>if let Some(prepared)=p.prepared{catalog.domains.insert(prepared.info.observation_domain_id,prepared.domain);if let Some(command)=p.command{finish(&ctx,command,Ok(ClientSendOutcome::Executed{detail:format!("IPFIX local UDP send: {} records",prepared.info.record_count)})).await;}
-        if events.len()==MAX_QUEUED_EVENTS{console_error!(ctx.status_tx,"IPFIX export-event queue limit");break;}events.push_back((Event::new(&actions::IPFIX_EXPORTED_EVENT,serde_json::to_value(prepared.info).unwrap_or(Value::Null)),p.depth));}else{ctx.state.record_access_log(AccessLogOwner::Client(id.as_u32()),"IPFIX",None,"ipfix_template_refresh",json!({"message_count":count,"local_transport_only":true}),vec![]).await;},
-       Err(e)=>{if let Some(command)=p.command{finish(&ctx,command,Err(anyhow::anyhow!("IPFIX UDP send failed"))).await;}console_error!(ctx.status_tx,"IPFIX UDP send failed: {}",e);break;}
-      }
-     },
-     result=async{current.as_mut().unwrap().0.as_mut().await},if current.is_some()=>{
-      let(_,depth)=current.take().unwrap();match result{Ok(result)=>{if let Some(memory)=result.memory_updates{ctx.state.set_memory_for_client(id,memory).await;}
-       if result.actions.len()>MAX_HANDLER_ACTIONS||actions.len()+result.actions.len()>MAX_HANDLER_ACTIONS{console_error!(ctx.status_tx,"IPFIX handler action count limit");break;}actions.extend(result.actions.into_iter().map(|a|(a,depth+1)));},Err(e)=>console_error!(ctx.status_tx,"IPFIX handler failed: {}",e)}
-     },
-     command=commands.recv()=>{let Some(command)=command else{break;};match prepare(&protocol,command.action.clone(),0,&catalog){Ok(Prepared::Disconnect)=>{finish(&ctx,command,Ok(ClientSendOutcome::Disconnected)).await;break 'session;},Ok(Prepared::Write(p))if pending.is_none()=>pending=Some(inflight(socket.clone(),p,Some(command),0)),Ok(Prepared::Write(_))=>finish(&ctx,command,Ok(ClientSendOutcome::Rejected{error:"One UDP send is already in flight".into()})).await,Err(e)=>finish(&ctx,command,Ok(ClientSendOutcome::Rejected{error:e.to_string()})).await}},
-     _=refresh_tick.tick(),if pending.is_none()&&!catalog.domains.is_empty()=>{match catalog.refresh(){Ok(messages)=>pending=Some(Inflight{send:Box::pin(transport::send(socket.clone(),messages)),prepared:None,command:None,depth:0}),Err(e)=>{console_error!(ctx.status_tx,"IPFIX template refresh failed: {}",e);break;}}},
-    }let _=ctx.status_tx.send("__UPDATE_UI__".into());
-   }
-   if let Some(p)=pending.take(){if let Some(command)=p.command{finish(&ctx,command,Err(anyhow::anyhow!("IPFIX UDP send cancelled"))).await;}}
-   current.take();events.clear();actions.clear();
-   ctx.state.remove_client_handle(id).await;ctx.state.update_client_status(id,ClientStatus::Disconnected).await;let _=ctx.status_tx.send("__UPDATE_UI__".into());
-  }).await;
+        owner
+            .spawn_client_task(id, async move {
+                let protocol = IpfixClientProtocol::new();
+                let mut catalog = transport::Catalog::default();
+                let mut current = Some((
+                    handler(ctx.clone(), Event::new(
+                        &actions::IPFIX_CONNECTED_EVENT,
+                        json!({"remote_addr": peer.to_string(), "local_addr": local.to_string()})
+                    )),
+                    0
+                ));
+                let mut events = VecDeque::new();
+                let mut actions = VecDeque::new();
+                let mut pending: Option<Inflight> = None;
+                let period = Duration::from_secs(refresh);
+                let mut refresh_tick = tokio::time::interval_at(
+                    tokio::time::Instant::now() + period, period
+                );
+                refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut incoming = [0u8; 1];
+                'session: loop {
+                    if current.is_none() {
+                        if let Some((event, depth)) = events.pop_front() {
+                            current = Some((handler(ctx.clone(), event), depth));
+                        }
+                    }
+                    if pending.is_none() {
+                        if let Some((action, depth)) = actions.pop_front() {
+                            match prepare(&protocol, action, depth, &catalog) {
+                                Ok(Prepared::Write(p)) => {
+                                    pending = Some(inflight(socket.clone(), p, None, depth));
+                                },
+                                Ok(Prepared::Disconnect) => break,
+                                Err(e) => console_error!(
+                                    ctx.status_tx, "IPFIX handler action rejected: {}", e
+                                )
+                            }
+                            continue;
+                        }
+                    }
+                    tokio::select! {
+                        result = socket.recv(&mut incoming) => {
+                            match result {
+                                Ok(_) => console_error!(
+                                    ctx.status_tx,
+                                    "IPFIX collector sent unexpected UDP reply; closing"
+                                ),
+                                Err(e) => console_error!(
+                                    ctx.status_tx, "IPFIX UDP transport failed: {}", e
+                                )
+                            }
+                            break;
+                        },
+                        result = async {
+                            pending.as_mut().unwrap().send.as_mut().await
+                        }, if pending.is_some() => {
+                            let p = pending.take().unwrap();
+                            match result {
+                                Ok(count) => if let Some(prepared) = p.prepared {
+                                    catalog.domains.insert(
+                                        prepared.info.observation_domain_id, prepared.domain
+                                    );
+                                    if let Some(command) = p.command {
+                                        finish(&ctx, command, Ok(ClientSendOutcome::Executed {
+                                            detail: format!(
+                                                "IPFIX local UDP send: {} records",
+                                                prepared.info.record_count
+                                            )
+                                        })).await;
+                                    }
+                                    if events.len() == MAX_QUEUED_EVENTS {
+                                        console_error!(ctx.status_tx, "IPFIX export-event queue limit");
+                                        break;
+                                    }
+                                    events.push_back((Event::new(
+                                        &actions::IPFIX_EXPORTED_EVENT,
+                                        serde_json::to_value(prepared.info).unwrap_or(Value::Null)
+                                    ), p.depth));
+                                } else {
+                                    ctx.state.record_access_log(
+                                        AccessLogOwner::Client(id.as_u32()),
+                                        "IPFIX",
+                                        None,
+                                        "ipfix_template_refresh",
+                                        json!({"message_count": count, "local_transport_only": true}),
+                                        vec![]
+                                    ).await;
+                                },
+                                Err(e) => {
+                                    if let Some(command) = p.command {
+                                        finish(&ctx, command, Err(anyhow::anyhow!(
+                                            "IPFIX UDP send failed"
+                                        ))).await;
+                                    }
+                                    console_error!(ctx.status_tx, "IPFIX UDP send failed: {}", e);
+                                    break;
+                                }
+                            }
+                        },
+                        result = async {
+                            current.as_mut().unwrap().0.as_mut().await
+                        }, if current.is_some() => {
+                            let (_, depth) = current.take().unwrap();
+                            match result {
+                                Ok(result) => {
+                                    if let Some(memory) = result.memory_updates {
+                                        ctx.state.set_memory_for_client(id, memory).await;
+                                    }
+                                    if result.actions.len() > MAX_HANDLER_ACTIONS
+                                        || actions.len() + result.actions.len() > MAX_HANDLER_ACTIONS
+                                    {
+                                        console_error!(ctx.status_tx, "IPFIX handler action count limit");
+                                        break;
+                                    }
+                                    actions.extend(result.actions.into_iter().map(|a| (a, depth + 1)));
+                                },
+                                Err(e) => console_error!(ctx.status_tx, "IPFIX handler failed: {}", e)
+                            }
+                        },
+                        command = commands.recv() => {
+                            let Some(command) = command else { break; };
+                            match prepare(&protocol, command.action.clone(), 0, &catalog) {
+                                Ok(Prepared::Disconnect) => {
+                                    finish(&ctx, command, Ok(ClientSendOutcome::Disconnected)).await;
+                                    break 'session;
+                                },
+                                Ok(Prepared::Write(p)) if pending.is_none() =>
+                                    pending = Some(inflight(socket.clone(), p, Some(command), 0)),
+                                Ok(Prepared::Write(_)) => finish(
+                                    &ctx, command, Ok(ClientSendOutcome::Rejected {
+                                        error: "One UDP send is already in flight".into()
+                                    })
+                                ).await,
+                                Err(e) => finish(
+                                    &ctx, command, Ok(ClientSendOutcome::Rejected { error: e.to_string() })
+                                ).await
+                            }
+                        },
+                        _ = refresh_tick.tick(), if pending.is_none() && !catalog.domains.is_empty() => {
+                            match catalog.refresh() {
+                                Ok(messages) => pending = Some(Inflight {
+                                    send: Box::pin(transport::send(socket.clone(), messages)),
+                                    prepared: None,
+                                    command: None,
+                                    depth: 0
+                                }),
+                                Err(e) => {
+                                    console_error!(ctx.status_tx, "IPFIX template refresh failed: {}", e);
+                                    break;
+                                }
+                            }
+                        },
+                    }
+                    let _ = ctx.status_tx.send("__UPDATE_UI__".into());
+                }
+                if let Some(p) = pending.take() {
+                    if let Some(command) = p.command {
+                        finish(&ctx, command, Err(anyhow::anyhow!("IPFIX UDP send cancelled"))).await;
+                    }
+                }
+                current.take();
+                events.clear();
+                actions.clear();
+                ctx.state.remove_client_handle(id).await;
+                ctx.state.update_client_status(id, ClientStatus::Disconnected).await;
+                let _ = ctx.status_tx.send("__UPDATE_UI__".into());
+            }).await;
         Ok(local)
     }
 }
