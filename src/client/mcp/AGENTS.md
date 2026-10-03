@@ -364,7 +364,7 @@ List available tools, then call the 'calculate' tool with expression "2+2".
 ## References
 
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/)
-- [MCP Server Implementation](../../server/mcp/CLAUDE.md)
+- [MCP Server Implementation](../../server/mcp/AGENTS.md)
 - [reqwest Documentation](https://docs.rs/reqwest/)
 - [JSON-RPC 2.0 Specification](https://www.jsonrpc.org/specification)
 

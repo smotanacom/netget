@@ -102,7 +102,7 @@ d1:t2:aa1:y1:e1:eli201e23:Generic Error Messageee
 
 ## Testing Strategy
 
-See `tests/client/torrent_dht/CLAUDE.md` for E2E testing details.
+See `tests/client/torrent_dht/AGENTS.md` for E2E testing details.
 
 ## Example LLM Prompts
 

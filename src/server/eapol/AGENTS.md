@@ -10,7 +10,7 @@ Files: `codec.rs` (pure codec, no I/O), `actions.rs` (LLM vocabulary + executor)
 ## The single most important property: it fails closed
 
 **An `EAP-Success` frame is an admission decision.** It is the octet that opens a switch port.
-So the OAuth2 post-mortem in the root `CLAUDE.md` applies here with more force than anywhere
+So the OAuth2 post-mortem in the root `AGENTS.md` applies here with more force than anywhere
 else in the tree: there, "the LLM returned nothing" fell through to a hardcoded access token,
 and a model's explicit denial became indistinguishable from its silence.
 
@@ -243,7 +243,7 @@ returns owned data.
 `metadata()` deliberately does **not** set `connectionless()`. The 10-second idle sweep exists
 for UDP/raw servers whose per-remote entries nothing ever closes; an EAPOL exchange parked on
 a manual handler waiting for a human routinely outlives 10 seconds, and the sweep would draw
-it `(closed)` while it was still live — the telnet bug the root `CLAUDE.md` records. Sessions
+it `(closed)` while it was still live — the telnet bug the root `AGENTS.md` records. Sessions
 are ended explicitly instead, on Success, Failure or Logoff.
 
 ## Pairing with `radius` — the complete NAC lab
@@ -321,7 +321,7 @@ here that it can complete end to end. **This has not been run** — it needs roo
 environment does not have — so nothing above is a claim about it. Do not promote on the
 strength of the plan.
 
-Note also the bar the root `CLAUDE.md` sets and the mistake it records: `wireguard` was
+Note also the bar the root `AGENTS.md` sets and the mistake it records: `wireguard` was
 demoted Stable→Beta for never having been validated against a real client, which is *also* the
 definition of Beta, and nobody noticed for months. If this protocol is ever demoted, check
 which rating the evidence actually supports rather than stepping down one notch by reflex.

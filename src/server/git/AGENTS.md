@@ -108,7 +108,7 @@ design: it drives libgit2 against real directories.)
 `http_body_util::Limited` at 1 MiB and refused with `413` beyond it. A plain
 `collect()` would let one unauthenticated client grow the process by whatever it
 cared to send — the shape of the `nfsserve` pre-auth DoS in the root
-`CLAUDE.md`. The wire *is* length-prefixed (pkt-line), and `pktline.rs` never
+`AGENTS.md`. The wire *is* length-prefixed (pkt-line), and `pktline.rs` never
 allocates from that length: it slices the buffer it already has and stops at the
 first header that runs past the end.
 

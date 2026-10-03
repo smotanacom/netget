@@ -296,7 +296,7 @@ This flow is **automatic** and requires **no LLM involvement**. The LLM is only 
 
 ## References
 
-- Main implementation: `src/server/webrtc_signaling/CLAUDE.md`
-- WebRTC server tests: `tests/server/webrtc/CLAUDE.md`
+- Main implementation: `src/server/webrtc_signaling/AGENTS.md`
+- WebRTC server tests: `tests/server/webrtc/AGENTS.md`
 - Test helpers: `tests/helpers/mod.rs`
 - Mock framework: `tests/helpers/mock_ollama.rs`

@@ -249,7 +249,7 @@ if Device::list().is_err() {
 ```
 
 Note also that this shape — print a skip message and return `Ok(())` — is *not* evidence
-even when it does fire. A skipped test is a silent pass. See the root `CLAUDE.md` on
+even when it does fire. A skipped test is a silent pass. See the root `AGENTS.md` on
 skip-when-missing gates.
 
 **CI Considerations**: CI runners may not grant raw socket access. Tests must tolerate skips.

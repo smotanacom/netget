@@ -529,7 +529,7 @@ see, because our decoder does not care what id it reads.
 was left over from the pass that began before condition 4 was satisfied; a reader skimming
 headings would have taken the opposite of what the section says.)
 
-The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
+The root `AGENTS.md` defines `Stable` as six conditions. Re-derived against source on
 16 September 2026 rather than inherited:
 
 | # | condition | holds? |
@@ -538,7 +538,7 @@ The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against sour
 | 2 | the pcap oracle is green over its wire traffic | **yes** — `llm_failure_test.rs` over both SERVFAIL paths, `bounds_test.rs` over a NOERROR answer with rdata |
 | 3 | a fuzz target exists and has run clean, with a corpus | **yes** — `fuzz/fuzz_targets/dns_message.rs`; 2,777,883 runs in 91s clean, corpus includes `compression_pointer_loop` |
 | 4 | every declared bound has a test | **yes, as of this pass** — see Bounds above, each verified by removal |
-| 5 | both `CLAUDE.md` files verified against source in this pass | **yes** — this file and `tests/server/dns/CLAUDE.md` |
+| 5 | both `AGENTS.md` files verified against source in this pass | **yes** — this file and `tests/server/dns/AGENTS.md` |
 | 6 | no `#[ignore]`, no skip-when-missing gate | **yes** — `grep -rn '#\[ignore\]' tests/server/dns/` is empty |
 
 **Two things about condition 1 were checked in this pass rather than assumed, because on the

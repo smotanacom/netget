@@ -31,7 +31,7 @@ Opening a pcap handle needs packet-capture privilege, which the test environment
 does not have. If the wire format lived inside the transport it would be
 untestable, and the protocol's only evidence would be "it compiles" — which is
 how `wireguard` ended up rated `Stable` on a test that mocked events and actions
-that did not exist (root `CLAUDE.md`).
+that did not exist (root `AGENTS.md`).
 
 So `codec.rs` performs **no I/O of any kind**: no socket, no capture handle, no
 `AppState`, no LLM. It is a total function between bytes and structured values,
@@ -148,7 +148,7 @@ nothing saying so.
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-CDP is in the **deliberately-silent** class (root `CLAUDE.md`). Every frame the
+CDP is in the **deliberately-silent** class (root `AGENTS.md`). Every frame the
 protocol defines is a positive assertion — *a device with this identity exists on
 this link* — which the neighbour caches for `ttl` seconds and an operator reads
 back from `show cdp neighbors detail`. There is no CDP error frame, no NAK, no
@@ -198,7 +198,7 @@ Opening the handle is the privileged step, so it is **not** fire-and-forget: it
 happens on a blocking thread whose outcome comes back over a oneshot, and
 `spawn()` only returns `Ok` once the capture is genuinely live. A failure
 surfaces as `ServerStatus::Error`, not as a server reporting `Running` while
-capturing nothing — the defect root `CLAUDE.md` records for ARP, DataLink and
+capturing nothing — the defect root `AGENTS.md` records for ARP, DataLink and
 ICMP.
 
 `JoinHandle::abort()` cannot interrupt a thread parked in `next_packet()`, so the
@@ -228,7 +228,7 @@ protocols — all declare `PacketCapture`, and so does this.
 Declaring `RawSockets` would claim more than the protocol needs and refuse to
 start on a machine that has `/dev/bpf*` access but is not root, which is a real
 and common configuration (macOS with ChmodBPF; Linux with `CAP_NET_RAW` only).
-That is the mistake root `CLAUDE.md` records for `ospf` declaring `Root` when it
+That is the mistake root `AGENTS.md` records for `ospf` declaring `Root` when it
 wanted `CAP_NET_RAW`.
 
 **One consequence to know before running the tests.** The privilege gate lives in
@@ -317,6 +317,6 @@ above evidence about *our emitted frames* rather than about our parser. Better
 still, plug into a real Cisco switch and read `show cdp neighbors detail`.
 
 **Neither has been done, and neither may be claimed until it is.** Root
-`CLAUDE.md` records three protocols demoted for treating a codec or a skipped
+`AGENTS.md` records three protocols demoted for treating a codec or a skipped
 test as evidence of a real peer; a capture decoded by scapy is evidence about the
 codec and nothing more.

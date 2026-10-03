@@ -57,7 +57,7 @@ interactive session shows comes from the pty's `ONLCR`, not from the server. So
 compare against a string the same test wrote, so `\r\n` on both sides agrees with itself. The
 test asserts the current behaviour **and names it as a deviation**, so a fix fails a test that
 describes the defect rather than quietly satisfying one that never looked. See
-`src/server/ssh/CLAUDE.md` → Known limitations for why the fix is not a one-liner.
+`src/server/ssh/AGENTS.md` → Known limitations for why the fix is not a one-liner.
 
 ## Test Strategy
 

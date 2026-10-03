@@ -164,6 +164,6 @@ docker run -d -p 8080:8080 \
 
 ## References
 
-- See `src/client/saml/CLAUDE.md` for implementation details
+- See `src/client/saml/AGENTS.md` for implementation details
 - [SAML 2.0 Test IdP](https://samltest.id/) - For manual testing
 - [SimpleSAMLphp](https://simplesamlphp.org/) - For mock IdP setup

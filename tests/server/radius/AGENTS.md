@@ -38,7 +38,7 @@ Total: **9 LLM calls**, inside the ~10 budget.
 
 ### On `respond_with_actions_from_event`
 
-Three of the four use it. The UDP rule in the root `CLAUDE.md` exists because a static mock
+Three of the four use it. The UDP rule in the root `AGENTS.md` exists because a static mock
 with a hardcoded transaction ID makes the client time out; here the mechanism matters for a
 slightly different reason worth writing down:
 
@@ -99,7 +99,7 @@ the MD5 is genuinely right, not merely self-consistent.
 
 **Both tests FAIL when `radclient` is absent.** `require_radclient()` returns `Err`; it does
 not print SKIPPED and return `Ok(())`, which is what it used to do. That single line is the
-whole reason RADIUS may be rated `Beta` — the root `CLAUDE.md` is explicit that a
+whole reason RADIUS may be rated `Beta` — the root `AGENTS.md` is explicit that a
 skip-when-missing gate is a silent pass rather than evidence, and it names four protocols
 (`kubernetes`, `oci_registry`, `maven`, `websocket`) held back from `Beta` for exactly this.
 `tests/server/npm/e2e_test.rs` is the shape copied.
@@ -128,7 +128,7 @@ not among them. If `radius` is ever added to `CI_FEATURES`, the workflow must in
 
 Note that `radclient` sends a **Message-Authenticator** (attribute 80) by default. NetGet
 neither verifies nor returns one; `radclient` 3.2.x does not require it, so the exchange
-succeeds. This is stated in `src/server/radius/CLAUDE.md` and in `metadata()` rather than
+succeeds. This is stated in `src/server/radius/AGENTS.md` and in `metadata()` rather than
 papered over: a NAS configured to demand Message-Authenticator will reject our replies.
 
 ## What is deliberately not tested, because it is not implemented

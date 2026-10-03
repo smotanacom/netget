@@ -399,7 +399,7 @@ This allows:
 
 ## Testing Strategy
 
-See `tests/client/bootp/CLAUDE.md` for detailed testing approach.
+See `tests/client/bootp/AGENTS.md` for detailed testing approach.
 
 **Key Testing Scenarios:**
 

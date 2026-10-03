@@ -201,7 +201,7 @@ tagged `decision=fail_closed_decode_error`.
 It used to build that `reply_text` as `format!("UNEXPECTED_FRAME - {}", e)`, so the peer got
 netget's internal diagnostics: `"AMQP payload truncated: 24 bytes wanted at offset 6, only 2
 available"` hands an unauthenticated stranger our buffer offsets, and an `anyhow` context
-chain reaches further than that. That is the leak class the project `CLAUDE.md` records
+chain reaches further than that. That is the leak class the project `AGENTS.md` records
 across ~25 protocols, arriving here by a different door — this is a *decode* failure, so
 `crate::utils::WireFailure` is not the tool (neither `Overloaded` nor `Unavailable`
 describes it), but the rule it encodes is the same one. The reply text is a `&'static str`
@@ -332,11 +332,11 @@ Both are read in `spawn_with_llm_actions`; neither is declared and unused.
 
 `tests/server/amqp/e2e_test.rs` (declared in `tests/server/mod.rs`), four tests, five LLM
 calls in the round-trip test and two in each refusal test. See
-`tests/server/amqp/CLAUDE.md`.
+`tests/server/amqp/AGENTS.md`.
 
 ## References
 
 - [AMQP 0-9-1 specification](https://www.rabbitmq.com/resources/specs/amqp0-9-1.pdf)
 - [AMQP 0-9-1 protocol reference](https://www.rabbitmq.com/amqp-0-9-1-reference.html)
 - [lapin](https://docs.rs/lapin/) — client used by the E2E tests and by `src/client/amqp`
-- Testing notes: `tests/server/amqp/CLAUDE.md`
+- Testing notes: `tests/server/amqp/AGENTS.md`

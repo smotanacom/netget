@@ -183,7 +183,7 @@ Deterministic equivalent — no LLM call per request:
 `reqwest` as a plain HTTP client — there is no SAML library anywhere in the suite, so the
 tests assert on the *binding* (base64 `SAMLResponse` posted to the caller's `acs_url`,
 `RelayState` echoed and escaped, metadata media type, model-chosen error status) and never on
-authenticity. See `tests/server/saml_idp/CLAUDE.md`.
+authenticity. See `tests/server/saml_idp/AGENTS.md`.
 
 Pairs naturally with `saml_sp` on another port: point `acs_url` at the SP's `/acs`.
 
@@ -216,7 +216,7 @@ watchdog over `ConnectionActivity` instead, which reports a connection with work
 idle at all. The model round-trip, and an event a `manual` rule parked for a human
 (`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
 construction: an answer that takes minutes can never close the connection it is an answer for.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless

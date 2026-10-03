@@ -101,7 +101,7 @@ responder does not have.
 
 ## Fail-closed: an LLM failure produces silence
 
-**This protocol is in the deliberately-silent class the root `CLAUDE.md` catalogues, and its
+**This protocol is in the deliberately-silent class the root `AGENTS.md` catalogues, and its
 case is the strongest one in it.** `metadata()` declares it with `.deliberately_silent()`, which
 `tests/failure_mode_declaration_test.rs` checks.
 
@@ -124,7 +124,7 @@ protocol is built for. So: **nothing is written, ever, on any failure path.**
 
 Copied from `src/server/radius/`, for the reason that file gives: *the model said no* and *the
 model was never reached* produce identical bytes here — none — and must never be identical in
-the log. That collapse is the OAuth2 defect the root `CLAUDE.md` records, and here it would
+the log. That collapse is the OAuth2 defect the root `AGENTS.md` records, and here it would
 hide a total backend outage as protocol-correct silence, indefinitely.
 
 `Decision` in `mod.rs` is logged as `decision=<token>` on every query:
@@ -240,12 +240,12 @@ independent implementation actually passes. That evidence cannot be produced her
   else. `hickory-resolver` does DNS, not LLMNR; `mdns-sd`/`simple-mdns` do mDNS, a different
   protocol on a different group and port.
 * So the e2e test builds its queries with **`hickory-proto`, which is the crate this server
-  encodes with**. That is exactly the circular-evidence failure the root `CLAUDE.md` names for
+  encodes with**. That is exactly the circular-evidence failure the root `AGENTS.md` names for
   `webrtc_signaling`/`websocket`: the "independent peer" is the library the server itself
   frames with, so the test proves the codec round-trips through itself, not that anything else
   would accept the result. `tests/server/websocket/e2e_test.rs` escapes this by hand-writing a
   raw RFC 6455 client; a hand-written client would not help here either, since the root
-  `CLAUDE.md` is explicit that an in-test hand-rolled client is not a third-party client (the
+  `AGENTS.md` is explicit that an in-test hand-rolled client is not a third-party client (the
   `dhcp` and `usb/serial` cases).
 
 What the test *does* prove is still worth having: NetGet's own wiring is correct end to end —
@@ -273,7 +273,7 @@ there is no unsolicited message worth sending.
 **Worth knowing rather than fixing here:** a TCP querier whose event is parked for a human is
 swept out of `AppState` after ten seconds while its socket is alive, because `connectionless` is
 declared per protocol and LLMNR serves both transports from one declaration. The project
-`CLAUDE.md` describes exactly this hazard for the general case.
+`AGENTS.md` describes exactly this hazard for the general case.
 
 The dashboard renders that as a dim button reading "this protocol cannot message a peer from
 here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries

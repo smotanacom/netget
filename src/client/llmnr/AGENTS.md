@@ -1,7 +1,7 @@
 # LLMNR Client (Querier) Implementation
 
 LLMNR (RFC 4795) **querier**: asks the link to resolve a name, and reports *every* host that
-answers. The responder half lives in `src/server/llmnr/` — read its `CLAUDE.md` too, especially
+answers. The responder half lives in `src/server/llmnr/` — read its `AGENTS.md` too, especially
 the header-flag table, because the two halves must agree bit for bit.
 
 **State**: Experimental — see [Maturity](#maturity-why-experimental). **Privilege**:
@@ -197,7 +197,7 @@ independent **responder**. The evidence here fails on two axes at once:
 
 * **Same project.** Three of four tests use NetGet's own LLMNR responder as the peer.
 * **Same codec.** Both halves encode with `hickory-proto`, so the test asserts that one library
-  round-trips through itself. This is the failure the root `CLAUDE.md` names for
+  round-trips through itself. This is the failure the root `AGENTS.md` names for
   `webrtc_signaling`/`websocket`.
 
 The real independent peers are the Windows resolver and systemd-resolved; neither exists on
@@ -205,7 +205,7 @@ macOS, and `resolvectl`/`systemd-resolve`/`avahi-resolve` are all absent here.
 
 ### `llmnr-poison` — the server half's note about it is wrong, and this matters
 
-`src/server/llmnr/CLAUDE.md` records `llmnr-poison` as "a Responder-style *responder* — the same
+`src/server/llmnr/AGENTS.md` records `llmnr-poison` as "a Responder-style *responder* — the same
 role as this server, not a querier" and dismisses it. For the **server** that conclusion is right
 (a responder cannot test a responder). For this **client** the role is exactly right, and the
 crate is more usable than that note suggests:

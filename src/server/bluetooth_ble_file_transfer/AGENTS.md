@@ -73,7 +73,7 @@ each characteristic, `start_advertising` for the advertised service list, and
 
 This section used to say the exact opposite: that the shorthand is rejected, that `add_service`
 fails with "Invalid service UUID", that no expansion helper exists anywhere in the tree, and
-that `src/server/bluetooth_ble/CLAUDE.md` was wrong to claim `"180D"` is "expanded to" the full
+that `src/server/bluetooth_ble/AGENTS.md` was wrong to claim `"180D"` is "expanded to" the full
 form. Every part of that was false and the base's own documentation was right. Read
 `parse_ble_uuid` before repeating any of it.
 

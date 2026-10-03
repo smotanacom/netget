@@ -23,7 +23,7 @@ were.
 
 `e2e_test.rs` used to be a single `#[ignore]`d `fn test_nfc_client_basic()` whose body was a
 TODO comment. It asserted nothing and needed hardware it could never have — an `#[ignore]`d
-test is not evidence, which the root `CLAUDE.md` says in as many words. It now holds 22 tests
+test is not evidence, which the root `AGENTS.md` says in as many words. It now holds 22 tests
 that need nothing but the crate.
 
 **The insight worth reusing: the parts most likely to be wrong were the pure ones.** NDEF

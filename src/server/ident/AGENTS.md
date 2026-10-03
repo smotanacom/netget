@@ -111,7 +111,7 @@ because leaving a client to time out is worse. Its action description says so.
 ## Failure behavior — answer, never silence
 
 Ident has an error frame, so it is **not** in the deliberate-silence class the root
-`CLAUDE.md` lists for ARP/OSPF/DHCP. Every failure produces `ERROR : UNKNOWN-ERROR`, which is
+`AGENTS.md` lists for ARP/OSPF/DHCP. Every failure produces `ERROR : UNKNOWN-ERROR`, which is
 also the correct fail-closed answer: it asserts nothing about any account. A USERID line is a
 positive claim, and a backend outage must never be able to manufacture one.
 

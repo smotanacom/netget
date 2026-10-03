@@ -9,7 +9,7 @@
 **Nothing here is `#[ignore]`d or privilege-gated.** `cargo test --no-default-features
 --features igmp --test client -- client::igmp` runs 4 tests and all 4 pass. That is the whole
 difference from the *server* suite, whose four cases are ignored behind root — see
-`tests/server/igmp/CLAUDE.md`.
+`tests/server/igmp/AGENTS.md`.
 
 ## Test Organization
 

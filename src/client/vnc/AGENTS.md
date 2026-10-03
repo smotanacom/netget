@@ -258,7 +258,7 @@ Full list: https://cgit.freedesktop.org/xorg/proto/x11proto/plain/keysymdef.h
 
 ## Testing Strategy
 
-See `tests/client/vnc/CLAUDE.md` for E2E testing approach.
+See `tests/client/vnc/AGENTS.md` for E2E testing approach.
 
 ## Future Enhancements
 

@@ -13,7 +13,7 @@ aggregation perform that work. Harness compatibility shims supply removed Node `
 force ephemeral loopback listening ports (StatsD otherwise interprets port zero as 8125/8126).
 No parser or aggregation replacement is used. Process/import/timeouts fail, never skip.
 
-Setup and combined commands are in `tests/server/statsd/CLAUDE.md`. Requires Node and Python
+Setup and combined commands are in `tests/server/statsd/AGENTS.md`. Requires Node and Python
 peers; environment `NODE_PATH` points to the extracted pinned reference source, `PYTHONPATH`
 to the pinned emitter installation. `kill_on_drop` and explicit kill/wait bound peer lifetime.
 All deterministic tests use zero model calls. External DogStatsD Agent receiver, pcap and fuzz

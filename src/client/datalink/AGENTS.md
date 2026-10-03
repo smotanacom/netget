@@ -295,7 +295,7 @@ Example:
 
 ## Testing Strategy
 
-See `tests/client/datalink/CLAUDE.md` for E2E testing approach.
+See `tests/client/datalink/AGENTS.md` for E2E testing approach.
 
 ## Security Considerations
 

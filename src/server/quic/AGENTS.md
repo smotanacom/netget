@@ -41,7 +41,7 @@ unidirectional streams, DATAGRAM, 0-RTT, or HTTP/3 framing is implemented.
 The server retains its existing Beta rating. Existing Quinn tests cover text and
 binary echo, custom responses, concurrent streams and backend failure. An
 additional independent aioquic 1.3.0 client checks certificate authentication,
-binary payloads and concurrent streams. See `tests/server/quic/CLAUDE.md`.
+binary payloads and concurrent streams. See `tests/server/quic/AGENTS.md`.
 
 ## Shared certificate validation
 

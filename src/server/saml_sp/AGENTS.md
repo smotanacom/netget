@@ -168,7 +168,7 @@ stream. `tests/wire_failure_test.rs` fails the build if the leaked idioms reappe
 ## Tests
 
 `tests/server/saml_sp/` exists and is declared in `tests/server/mod.rs`; see
-`tests/server/saml_sp/CLAUDE.md` for the strategy, the call budget and the known gaps.
+`tests/server/saml_sp/AGENTS.md` for the strategy, the call budget and the known gaps.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features saml-sp --test server -- \
@@ -207,7 +207,7 @@ watchdog over `ConnectionActivity` instead, which reports a connection with work
 idle at all. The model round-trip, and an event a `manual` rule parked for a human
 (`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
 construction: an answer that takes minutes can never close the connection it is an answer for.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless

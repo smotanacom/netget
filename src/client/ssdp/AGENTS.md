@@ -10,7 +10,7 @@ what to search for next. That is the point of it; the loopback tests are scaffol
 ## Maturity: `Experimental`, and the reason is the peer, not the code
 
 Every test peer is either NetGet's own SSDP server (same project, **same HTTPU codec**, written
-in the same pass — the circular-evidence class the root `CLAUDE.md` names) or a device
+in the same pass — the circular-evidence class the root `AGENTS.md` names) or a device
 hand-written inside the test from UDA 1.1 (an independent *reading* of the spec, not an
 independent *implementation* — the `dhcp` / `usbip_client` class). Neither is a third-party
 client, so neither can support a `Beta` rating.
@@ -94,7 +94,7 @@ the limit. Refusing silently would be the same defect as discarding the model's 
 a boxed recursive call. The cycle already passes through a queue: `send_msearch` only
 *enqueues* a search, the session loop starts it, the socket delivers answers later, and the
 events those raise are handled on a later turn of the same loop. No `async fn` awaits itself,
-so there is no infinitely-sized future (E0391) to box — the situation the root `CLAUDE.md`
+so there is no infinitely-sized future (E0391) to box — the situation the root `AGENTS.md`
 describes for `datalink`'s pcap loop. Queuing rather than replacing also means a `send_msearch`
 returned in reply to an `ssdp_search_response` does not truncate the window it was answering
 inside.
