@@ -48,6 +48,8 @@ pub mod quic_peer;
 #[cfg(feature = "prometheus-remote-write")]
 pub mod prometheus_remote_write;
 
+#[cfg(feature = "gnmi")]
+pub mod gnmi_peer;
 #[cfg(feature = "grpc")]
 pub mod grpc_peer;
 

@@ -144,6 +144,7 @@ portable-base = [
     "grpc",
     "grpc-web",
     "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "tor",
     "vnc",
@@ -349,6 +350,7 @@ mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 ove
 grpc = ["dep:tonic", "tonic/tls-webpki-roots", "dep:h2", "dep:rustls", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # Dynamic unary/streaming gRPC and bounded reflection
 grpc-web = ["grpc", "dep:tonic-web", "dep:flate2"] # Binary HTTP/1.1 unary and server-streaming binding
 connect_rpc = ["grpc", "dep:flate2"] # Binary HTTP/1.1 Connect unary and server-streaming binding
+gnmi = ["grpc", "dep:tokio-rustls", "dep:rustls-pemfile"] # Typed native OpenConfig gNMI
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
@@ -573,6 +575,7 @@ dist-windows = [
     "grpc",
     "grpc-web",
     "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "vnc",
     "reverse-shell",
@@ -739,6 +742,7 @@ all-protocols = [
     "grpc",
     "grpc-web",
     "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "tor",
     "vnc",

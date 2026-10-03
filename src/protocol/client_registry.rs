@@ -117,6 +117,10 @@ impl ClientRegistry {
 
         #[cfg(feature = "grpc")]
         self.register(Arc::new(crate::client::grpc::GrpcClientProtocol::new()));
+        #[cfg(feature = "gnmi")]
+        self.register(Arc::new(
+            crate::client::gnmi::actions::GnmiClientProtocol::new(),
+        ));
         #[cfg(feature = "grpc-web")]
         self.register(Arc::new(
             crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
@@ -794,6 +798,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("gNMI", "gnmi"),
     ("ConnectRPC", "connect-rpc"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
