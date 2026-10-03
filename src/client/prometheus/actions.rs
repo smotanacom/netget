@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::AppState;
 use anyhow::{bail, Result};
@@ -27,7 +28,7 @@ fn scrape() -> ActionDefinition {
     ActionDefinition{name:"scrape_metrics".into(),description:"GET metrics from this exporter's origin, negotiate text 0.0.4 or OpenMetrics 1.0.0 and parse families/samples. No raw body or PromQL service.".into(),parameters:vec![
         p("path","string","Optional origin path/query; defaults to startup metrics_path",false),
         p("format","string","auto (prefer OpenMetrics with text fallback), text, or openmetrics; default auto",false),
-    ],example:json!({"type":"scrape_metrics","format":"auto"}),log_template:None}
+    ],example:json!({"type":"scrape_metrics","format":"auto"}),log_template: Some(LogTemplate::new().with_info("Scrape Prometheus exporter metrics"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -35,7 +36,9 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel the scrape and close this logical client".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(
+            LogTemplate::new().with_info("Cancel Prometheus scrape and close exporter client"),
+        ),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
@@ -60,12 +63,12 @@ pub static METRICS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     event("prometheus_metrics","Complete, parsed exposition from one successful scrape",vec![
     p("request","object","Typed originating action",true),p("path","string","Scraped path/query",true),
     p("format","string","text or openmetrics from Content-Type",true),p("content_type","string","Exporter Content-Type",true),
-    p("sample_count","integer","Total samples",true),
+    p("sample_count","integer","Number of samples in the complete parsed exposition",true),
     p("metrics","array","Families {name,type,help?,unit?,samples:[{name,suffix,labels,value,timestamp_ms? or timestamp_seconds?,exemplar?}]}; finite values are numbers, NaN/+Inf/-Inf are strings. Text timestamps are integer milliseconds; OpenMetrics and exemplar timestamps are seconds. Counter family names differ by format.",true),
 ])
 });
 pub static ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    event("prometheus_scrape_error","Scrape failed; no partial metrics are accepted. The client remains available for a new request",vec![p("request","object","Originating action",true),p("path","string","Scrape path",true),p("error","string","Transport, HTTP, format or parse refusal",true)])
+    event("prometheus_scrape_error","Scrape failed; no partial metrics are accepted. The client remains available for a new request",vec![p("request","object","Originating action",true),p("path","string","Requested exporter path and query string",true),p("error","string","Transport, HTTP, format or parse refusal",true)])
 });
 impl Protocol for PrometheusClientProtocol {
     fn protocol_name(&self) -> &'static str {

@@ -29,5 +29,5 @@ unidirectional streams, DATAGRAM, reconnect, 0-RTT or a connection migration
 policy. This finite request/response API is suitable for peers that end their
 response with FIN; it is not an interactive append API.
 
-Maturity: Experimental. See `tests/client/quic/CLAUDE.md` for independent aioquic
+Maturity: Experimental. See `tests/client/quic/AGENTS.md` for independent aioquic
 1.3.0 evidence and setup. The Rust transport is quinn 0.11/rustls.

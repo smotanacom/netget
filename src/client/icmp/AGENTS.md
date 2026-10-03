@@ -339,7 +339,7 @@ an `.await`", and a `match` scrutinee is the shape that hides it.
 
 ## Testing Notes
 
-See `tests/client/icmp/CLAUDE.md` for test strategy and E2E test details.
+See `tests/client/icmp/AGENTS.md` for test strategy and E2E test details.
 
 **What is actually proven** (`tests/client/icmp/action_codec_test.rs`, unprivileged): the echo
 request's bytes, field by field at their RFC 791 / RFC 792 offsets with both checksums

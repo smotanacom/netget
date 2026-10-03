@@ -365,6 +365,7 @@ fn cycle_driver(app: &mut DashboardApp, key: UiKey, state: &AppState) {
 /// The create form `[ + <proto> client ]` applies for a server: a client of the server
 /// protocol's compiled counterpart (`protocol::compiled_client_protocol_for_server`), pointed
 /// at 127.0.0.1 on the port the server actually bound, with an instruction naming the pair.
+/// Copies usable server configuration (OpenAPI spec) and supplies known local endpoints.
 /// `Err` says why there is none. Shared with the browser build's page API, so a page that
 /// connects a client to one of its servers goes through exactly what the button does.
 pub fn client_form_for_server(
@@ -372,6 +373,7 @@ pub fn client_form_for_server(
     server_protocol: &str,
     local_addr: Option<&str>,
     port: u16,
+    server_startup_params: Option<&serde_json::Value>,
 ) -> Result<crate::tui::modal::form::FormModel, String> {
     use crate::tui::modal::form::{FieldTarget, FormModel};
     let Some(client_protocol) =
@@ -381,10 +383,39 @@ pub fn client_form_for_server(
             "{server_protocol} has no client implementation compiled into this build"
         ));
     };
-    let remote = loopback_target(local_addr, port);
+    let address = loopback_target(local_addr, port);
+    let http_url = format!("http://{address}");
+    // These clients either default a bare address to HTTPS or require an absolute URL.
+    // Our paired servers listen on plain HTTP, so make that choice explicit.
+    let remote = match client_protocol.to_ascii_lowercase().as_str() {
+        "npm" | "pypi" | "maven" | "openidconnect" => http_url.clone(),
+        _ => address,
+    };
 
     let mut model = FormModel::for_create(Section::Clients, &client_protocol, None);
     model.set_field_value(&FieldTarget::RemoteAddr, remote.clone());
+    match client_protocol.to_ascii_lowercase().as_str() {
+        "openapi" => {
+            if let Some(spec) = server_startup_params
+                .and_then(|params| params.get("spec"))
+                .and_then(|spec| spec.as_str())
+            {
+                model.set_field_value(&FieldTarget::StartupParam("spec".into()), spec.into());
+            }
+            model.set_field_value(&FieldTarget::StartupParam("base_url".into()), http_url);
+        }
+        "oauth2" => {
+            model.set_field_value(
+                &FieldTarget::StartupParam("auth_url".into()),
+                format!("{http_url}/authorize"),
+            );
+            model.set_field_value(
+                &FieldTarget::StartupParam("token_url".into()),
+                format!("{http_url}/token"),
+            );
+        }
+        _ => {}
+    }
     model.set_field_value(
         &FieldTarget::Instruction,
         format!(
@@ -419,6 +450,7 @@ async fn open_client_for_server(
         &row.protocol,
         row.local_addr.as_deref(),
         row.port,
+        row.startup_params.as_ref(),
     ) {
         Ok(model) => model,
         Err(why) => {

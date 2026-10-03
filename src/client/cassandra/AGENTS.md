@@ -329,7 +329,7 @@ SessionBuilder::new()
 
 ## Testing Strategy
 
-See `tests/client/cassandra/CLAUDE.md` for E2E testing approach.
+See `tests/client/cassandra/AGENTS.md` for E2E testing approach.
 
 ## Future Enhancements
 

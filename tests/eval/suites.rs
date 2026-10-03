@@ -604,8 +604,12 @@ fn nsq() -> Vec<EvalCase> {
             "nsq",
             "You are an NSQ broker. Accept every message published to any topic.",
             to_nsq_probe("events", "user signed up\n"),
-            // to_nsq logs "exiting router" only on a clean stop; a refusal is fatal to it.
-            Expect::contains(&["exiting router"]).not_containing(&["E_PUB_FAILED"]),
+            // to_nsq exits zero after each synchronous Publish read its OK. go-nsq 1.1.0
+            // releases the router WaitGroup before logging "exiting router", so main can
+            // return before that goroutine writes its last line. A refusal is fatal.
+            Expect::default()
+                .exits_with(0)
+                .not_containing(&["E_PUB_FAILED"]),
         ),
         EvalCase::new(
             "nsq/refuse-closed-topic",
@@ -838,7 +842,7 @@ fn postgresql() -> Vec<EvalCase> {
 //     cannot be loaded: dlopen(…/mysql/9.3.0/lib/plugin/mysql_native_password.so)
 //
 // — recorded as `event_never_reached_model`, which is exactly right: the model
-// was never asked. `src/server/mysql/CLAUDE.md` already says to use an 8.0
+// was never asked. `src/server/mysql/AGENTS.md` already says to use an 8.0
 // client, so this is confirmation rather than news; what it *does* show is that
 // MySQL's Beta rating rests on `mysql_async`, which still supports the old
 // plugin and is therefore more permissive than the shipping client. That is the

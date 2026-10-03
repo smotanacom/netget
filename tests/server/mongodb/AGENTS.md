@@ -20,7 +20,7 @@
 - `tests/server/mongodb/connection_bounds_test.rs` - the read deadlines, from a raw socket
 - `tests/server/mongodb/bson_depth_test.rs` - a BSON nesting bomb is refused before `bson` decodes it
 - `tests/server/mongodb/document_sequence_test.rs` - OP_MSG kind-1 document sequences reach the event
-- `tests/server/mongodb/CLAUDE.md` - This file (test strategy)
+- `tests/server/mongodb/AGENTS.md` - This file (test strategy)
 
 ### `document_sequence_test.rs` — a driver's write batch reaches the model
 
@@ -456,7 +456,7 @@ cargo test --features mysql,postgresql,redis,mongodb-server,cassandra -- --test-
 on the Node.js driver — against this server. It is **not** `#[ignore]`d and it **fails** rather
 than skipping when mongosh is absent. The Rust `mongodb` driver was already independent of this
 server, so this is a second independent client rather than a first, and that is the point: the
-root `CLAUDE.md`'s Stable bar asks for two because one client can agree with one bug.
+root `AGENTS.md`'s Stable bar asks for two because one client can agree with one bug.
 
 The session is a handshake plus `db.users.find({})`, and the assertion is on the documents the
 **Node driver decoded** out of the cursor batch — name and age, per document, parsed back out of

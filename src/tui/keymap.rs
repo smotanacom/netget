@@ -662,6 +662,10 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
 pub fn handle_ui_msg(app: &mut DashboardApp, msg: UiMsg) {
     app.dirty = true;
     let (origin, result) = match msg {
+        UiMsg::OpenForm(model) => {
+            app.modals.push(Modal::Form(model));
+            return;
+        }
         UiMsg::Chat(text) => {
             app.push_system(text);
             return;

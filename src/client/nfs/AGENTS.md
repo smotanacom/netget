@@ -474,7 +474,7 @@ The ten operations:
     - Operations are wired into the LLM event system and raise `nfs_operation_result` on both
       success and failure
     - Recursive action execution for multi-step workflows — **with no depth bound**. The
-      root `CLAUDE.md` prescribes a `MAX_FOLLOWUP_DEPTH` of 4-8 for exactly this shape; here
+      root `AGENTS.md` prescribes a `MAX_FOLLOWUP_DEPTH` of 4-8 for exactly this shape; here
       the only backstop is the LLM budget, so a model that answers every result with another
       operation runs until the budget is spent.
     - `disconnect` sets the status and drops the command handle but sends no UMNT and closes

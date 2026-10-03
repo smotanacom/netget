@@ -29,7 +29,7 @@ The shipped default is 300 seconds — the window a `manual` rule gives a human,
 is most often NetGet's own client waiting for someone to use `[ send message ]`. A test cannot
 wait five minutes, and one that asserted the default by waiting it out would be the slowest
 thing in the suite. What is asserted here is that the deadline is *applied* and that work in
-flight suspends it; the value is argued in `src/server/tcp/CLAUDE.md`, where an operator will
+flight suspends it; the value is argued in `src/server/tcp/AGENTS.md`, where an operator will
 look for it.
 
 **TCP is the only server whose read loop keeps reading while a request is answered**, so it is

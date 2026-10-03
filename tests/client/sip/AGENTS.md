@@ -114,7 +114,7 @@ server and client processes, then asserting on behavior and output.
 - Process exits cleanly
 
 **Known Issues**: none. (This used to say "ACK after 200 OK not implemented"; it is, and has
-been for some time — `SipClient` sends it automatically. The client's own `CLAUDE.md` said so on
+been for some time — `SipClient` sends it automatically. The client's own `AGENTS.md` said so on
 the same day this said the opposite.)
 
 ---

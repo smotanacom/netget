@@ -223,3 +223,12 @@ implement. Known limits a user should weigh: the model's events are authored by 
 nothing is stored, so a client that publishes and then queries sees only what the model chooses
 to supply; NIP-42 and NIP-45 are absent. rust-nostr's WebSocket layer is tungstenite, like the
 server's, so it is protocol evidence only; nak carries the framing evidence.
+
+## Browser interoperability
+
+`web/test/nostr_browser.mjs` starts a native relay and drives it through real Chromium's
+WebSocket and fetch APIs. A page on another localhost origin reads NIP-11 under browser CORS,
+subscribes through EVENT/EOSE, publishes a nak-signed note, receives live delivery, checks that
+a tampered note gets OK false, and completes the WebSocket close handshake. `nak verify`
+independently checks the relay's returned event signature. The test fails if the native nostr
+binary, nak, Playwright or Chromium is unavailable; `web/README.md` has the command.

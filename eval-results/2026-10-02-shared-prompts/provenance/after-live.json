@@ -1,0 +1,157 @@
+{
+  "source": "3e2d24bd935fe822296bad2962c82675dfcd820b",
+  "phase": "after",
+  "started_at": "2026-10-03T01:29:34.853610+00:00",
+  "command": [
+    "/Users/matus/dev/netget/.netget-handoff/evals/after-target/debug/deps/eval-02a2a94d62b715a2",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "command_equivalence": "Prebuilt executable and environment from run-eval.sh; cargo compilation and preflight printing omitted.",
+  "protocols": [
+    "http",
+    "dns",
+    "whois",
+    "gopher",
+    "dict",
+    "gemini",
+    "beanstalkd",
+    "zabbix",
+    "gearman",
+    "nsq",
+    "otlp",
+    "finger",
+    "redis",
+    "postgresql",
+    "mysql",
+    "ldap",
+    "ipp",
+    "syslog",
+    "ntp",
+    "telnet",
+    "tcp",
+    "ftp",
+    "udp",
+    "prometheus",
+    "docker",
+    "vault",
+    "bolt",
+    "smtp",
+    "pop3",
+    "imap",
+    "nntp",
+    "memcached",
+    "mqtt",
+    "coap",
+    "modbus",
+    "snmp",
+    "sip",
+    "websocket",
+    "nostr"
+  ],
+  "environment": {
+    "PATH": "/Users/matus/dev/netget/.netget-handoff/evals/tools:/opt/homebrew/Caskroom/codex/0.160.0/codex-path:/Users/matus/.opencode/bin:/Users/matus/.local/bin:/Users/matus/.claude/local:/Users/matus/.asdf/shims:/opt/homebrew/opt/python@3.10/libexec/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/matus/.nvm/versions/node/v22.17.0/bin:/Users/matus/bin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/opt/X11/bin:/Library/Apple/usr/bin:/Applications/Wireshark.app/Contents/MacOS:/Users/matus/.codex/tmp/arg0/codex-arg0yXWV3R:/opt/homebrew/Caskroom/codex/0.160.0/codex-path:/Users/matus/.opencode/bin:/Users/matus/.local/bin:/Users/matus/.claude/local:/Users/matus/.asdf/shims:/opt/homebrew/opt/python@3.10/libexec/bin:/Users/matus/Library/pnpm:/Users/matus/.sdkman/candidates/scala/current/bin:/Users/matus/.sdkman/candidates/sbt/current/bin:/Users/matus/.sdkman/candidates/maven/current/bin:/Users/matus/.sdkman/candidates/java/current/bin:/Users/matus/.sdkman/candidates/grails/current/bin:/Users/matus/.sdkman/candidates/gradle/current/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/matus/.nvm/versions/node/v22.17.0/bin:/Users/matus/bin:/Users/matus/.cargo/bin:/Users/matus/.docker/bin:/Users/matus/.lmstudio/bin:/Users/matus/Library/Application Support/JetBrains/Toolbox/scripts:/Users/matus/go/bin:/Users/matus/.docker/bin:/Users/matus/.docker/bin:/Users/matus/.lmstudio/bin:/Users/matus/Library/Application Support/JetBrains/Toolbox/scripts:/Users/matus/go/bin:/Users/matus/.lmstudio/bin",
+    "CARGO_BIN_EXE_netget": "/Users/matus/dev/netget/.netget-handoff/evals/after/netget",
+    "NETGET_USE_OLLAMA": "1",
+    "NETGET_LLM_TEST_MODEL": "llama3.1:8b",
+    "NETGET_EVAL_RUNS": "5",
+    "NETGET_EVAL_SEED": "42",
+    "NETGET_EVAL_TEMPERATURE": "",
+    "NETGET_EVAL_PROTOCOLS": "http,dns,whois,gopher,dict,gemini,beanstalkd,zabbix,gearman,nsq,otlp,finger,redis,postgresql,mysql,ldap,ipp,syslog,ntp,telnet,tcp,ftp,udp,prometheus,docker,vault,bolt,smtp,pop3,imap,nntp,memcached,mqtt,coap,modbus,snmp,sip,websocket,nostr",
+    "NETGET_EVAL_OUT_DIR": "/Users/matus/dev/netget/.netget-handoff/evals/after-live",
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434"
+  },
+  "binary_sha256": "e5b9c4c80e5d456309ed4d8d975ace596ac092ba3bdc08624891669e24c03aa2",
+  "harness_sha256": "467641b6cbe5dccb9929176be8b004180f24c5b16f39d3a3c36196d306651290",
+  "build_provenance": {
+    "phase": "after",
+    "source": "3e2d24bd935fe822296bad2962c82675dfcd820b",
+    "source_directory": "/Users/matus/dev/netget/.netget-handoff/evals/after-measurement",
+    "command": [
+      "./cargo-isolated.sh",
+      "test",
+      "--no-default-features",
+      "--features",
+      "http,dns,whois,gopher,finger,dict,gemini,beanstalkd,zabbix,gearman,nsq,redis,postgresql,mysql,ldap,ipp,syslog,ntp,telnet,tcp,ftp,udp,prometheus,otlp,docker,vault,bolt,smtp,pop3,imap,nntp,memcached,mqtt,coap,modbus,snmp,sip,websocket,nostr",
+      "--test=eval",
+      "--no-run"
+    ],
+    "started_at": "2026-10-02T14:27:56.322557+00:00",
+    "model": {
+      "name": "llama3.1:8b",
+      "model": "llama3.1:8b",
+      "modified_at": "2026-06-25T22:35:16.282595214-04:00",
+      "size": 4920753328,
+      "digest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "llama",
+        "families": [
+          "llama"
+        ],
+        "parameter_size": "8.0B",
+        "quantization_level": "Q4_K_M",
+        "context_length": 131072,
+        "embedding_length": 4096
+      },
+      "capabilities": [
+        "completion",
+        "tools"
+      ]
+    },
+    "ollama_version": {
+      "version": "0.35.0"
+    },
+    "python": "Python 3.10.21",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew)",
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05) (Homebrew)",
+    "build_environment": {
+      "CARGO_TARGET_DIR": "/Users/matus/dev/netget/.netget-handoff/evals/after-target",
+      "CARGO_BUILD_JOBS": "3",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "OLLAMA_BASE_URL": "http://127.0.0.1:11434"
+    },
+    "build_only": true,
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "runner_pid": 433,
+    "finished_at": "2026-10-02T15:35:02.923894+00:00",
+    "elapsed_seconds": 392.4208829170002,
+    "exit_code": 0,
+    "source_tracked_changes_after": "",
+    "binary_sha256": "e5b9c4c80e5d456309ed4d8d975ace596ac092ba3bdc08624891669e24c03aa2",
+    "binary_bytes": 141923344
+  },
+  "model": {
+    "name": "llama3.1:8b",
+    "model": "llama3.1:8b",
+    "modified_at": "2026-06-25T22:35:16.282595214-04:00",
+    "size": 4920753328,
+    "digest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+    "details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "llama",
+      "families": [
+        "llama"
+      ],
+      "parameter_size": "8.0B",
+      "quantization_level": "Q4_K_M",
+      "context_length": 131072,
+      "embedding_length": 4096
+    },
+    "capabilities": [
+      "completion",
+      "tools"
+    ]
+  },
+  "ollama_version": {
+    "version": "0.35.0"
+  },
+  "finished_at": "2026-10-03T03:01:04.428614+00:00",
+  "elapsed_seconds": 5489.397871292,
+  "exit_code": 0,
+  "report_sha256": "ca45176ff0ff704384a2bc68d633d972eb9c7901e800c8652826870aad4ebc01"
+}

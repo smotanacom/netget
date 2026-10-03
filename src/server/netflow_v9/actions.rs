@@ -5,6 +5,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -29,7 +30,7 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
     }
 }
 fn collect() -> ActionDefinition {
-    ActionDefinition{name:"collect_netflow_v9_records".into(),description:"Observe validated typed NETFLOW_V9 records in the bounded common access log. UDP has no acknowledgment; no persistence or aggregation.".into(),parameters:vec![],example:json!({"type":"collect_netflow_v9_records"}),log_template:None}
+    ActionDefinition{name:"collect_netflow_v9_records".into(),description:"Observe validated typed NETFLOW_V9 records in the bounded common access log. UDP has no acknowledgment; no persistence or aggregation.".into(),parameters:vec![],example:json!({"type":"collect_netflow_v9_records"}),log_template:Some(LogTemplate::new().with_info("NetFlow v9 records observed without acknowledgment"))}
 }
 pub static NETFLOW_V9_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("netflow_v9_message","One validated UDP NETFLOW_V9 message. Ordered field values align with each set's template; unsupported v9 fields retain descriptors and null values without raw bytes. Sequence gaps are observations, not recovery.",collect().example).with_parameters(vec![parameter("message","object","Export time, domain, sequence/tracking, template changes, header total record Count/status, sysUpTime, typed data sets, unknown-set descriptors and record count. Scope fields are the first scope_count ordered fields; duplicate IE occurrences preserve order.",true),parameter("source_addr","string","Exporter IP and UDP source port, scoped to this collector socket",true)]).with_actions(vec![collect()])
@@ -93,7 +94,7 @@ impl Protocol for NetflowV9Protocol {
             ),
             ParameterDefinition {
                 name: "llm_fallback".into(),
-                type_hint: "bool".into(),
+                type_hint: "boolean".into(),
                 description:
                     "Opt unmatched messages into model calls; explicit handlers always run".into(),
                 required: false,

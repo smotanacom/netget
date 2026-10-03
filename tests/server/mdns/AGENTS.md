@@ -198,6 +198,6 @@ failure is logged with `decision=fail_closed_llm_error` and **not** `decision=mo
 
 That pair is the contract. Silence on the wire is correct here and is the same silence a
 handler that asked for no services produces, so without the tag an outage and a policy are one
-log line. See the failure-behaviour table in `src/server/mdns/CLAUDE.md`.
+log line. See the failure-behaviour table in `src/server/mdns/AGENTS.md`.
 
 LLM call budget: 1 (startup); the mDNS startup-event call is *made to fail on purpose*.

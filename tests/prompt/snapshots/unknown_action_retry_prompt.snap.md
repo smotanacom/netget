@@ -19,4 +19,4 @@ You used action name(s) that are not in the Available Actions list. This is NOT 
 
 ---
 
-**Please retry:** Use ONLY actions from the Available Actions list. If you're unsure what actions exist for a protocol, use the documentation tools first.
+**Please retry:** Use ONLY names from the Available Actions list. Return the complete corrected response; no action from the rejected response has been executed.

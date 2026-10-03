@@ -248,7 +248,7 @@ let _ = status_tx.send(format!("[CLIENT] RIP response: {} routes", route_count))
 
 ## Testing Strategy
 
-See `tests/client/rip/CLAUDE.md` for E2E testing approach.
+See `tests/client/rip/AGENTS.md` for E2E testing approach.
 
 **Mock Router**: Simple UDP server responding with fake routing table
 **Real Router**: Test against Quagga/FRRouting RIP daemon (if available)

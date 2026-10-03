@@ -46,7 +46,7 @@ MAC owns the queried IP — and that MAC is exactly what the failed LLM call was
 Fabricating one would poison the requester's neighbour cache; a requester that hears nothing simply
 times out, which is RFC 826's normal outcome for "nobody here owns that address". So on an LLM
 error the server deliberately puts **nothing** on the wire. This is the documented exception to the
-"answer the peer on backend failure" rule in the root `CLAUDE.md`, not an oversight.
+"answer the peer on backend failure" rule in the root `AGENTS.md`, not an oversight.
 
 Because all outcomes look identical on the wire, they are separated **in the log** by a `decision=`
 tag, the same way `radius` separates its cases:

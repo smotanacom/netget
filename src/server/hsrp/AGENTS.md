@@ -130,7 +130,7 @@ your election by accident — and nothing more. The action description says so t
 
 * *Parsed*: an inbound MD5 TLV is reported to the model structurally — `algorithm`, `flags`,
   `sender_address`, `key_id`. The 16-byte digest is deliberately **not** in the event: it is raw
-  bytes, which the root `CLAUDE.md` forbids in event data, and it is unverifiable anyway.
+  bytes, which the root `AGENTS.md` forbids in event data, and it is unverifiable anyway.
 * *Not verified*: verification needs the shared key. NetGet holds no key material and protocols
   here implement no storage.
 * *Not generated*: `execute_action` **refuses** an action carrying `md5_key`/`md5_key_id`, with
@@ -203,7 +203,7 @@ oversight.
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-HSRP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and its case is
+HSRP is in the **deliberately-silent** class the root `AGENTS.md` catalogues, and its case is
 one of the strongest in it:
 
 * **The protocol has no negative message at all.** There is no error frame, no NAK, no refusal.
@@ -326,7 +326,7 @@ has ever accepted a packet from this server.** Checked, briefly:
 | a real Cisco device | the only genuine HSRP peer, and there is none here |
 
 So the peer in the test suite is **hand-written from RFC 2281 and Cisco's HSRPv2
-documentation**. The root `CLAUDE.md` is explicit that this is an independent *reading* of the
+documentation**. The root `AGENTS.md` is explicit that this is an independent *reading* of the
 spec, not an independent implementation — the same standing as `dhcp`'s in-test RFC 2131 decoder
 and `usb/serial`'s USB/IP client. It is the strongest evidence available, and it is not Beta
 evidence.

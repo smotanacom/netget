@@ -5,7 +5,7 @@
 **The Prometheus project's own tools are the peers.** `promtool check metrics` parses and lints
 a body NetGet served; a real `prometheus` binary scrapes NetGet on a one-second interval and is
 queried through its own PromQL API. Neither is linked, and neither was written by us — which is
-the bar the root `CLAUDE.md` sets for an HTTP-layered protocol (a generic HTTP client proves only
+the bar the root `AGENTS.md` sets for an HTTP-layered protocol (a generic HTTP client proves only
 that HTTP works).
 
 Both binaries **hard-fail** when absent (`require_binary` in `real_client_test.rs`). A skip would

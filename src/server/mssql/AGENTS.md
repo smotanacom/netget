@@ -211,7 +211,7 @@ shows a peer as live after the operator hung up on it.
   The *decision*, however, is now the model's. Every TDS Login used to be accepted
   unconditionally — there was no `mssql_login` event and no action that could decline one, so
   an instruction like "only allow the user `reporting`" could not be enforced and the model was
-  never asked. Authentication decided by default is the pattern the root `CLAUDE.md` calls the
+  never asked. Authentication decided by default is the pattern the root `AGENTS.md` calls the
   most dangerous in this codebase.
 
   `mssql_login` now fires with `username`, `database` and `app_name` parsed from LOGIN7
@@ -306,7 +306,7 @@ and LOGIN7 before returning — `PROTOCOL_QUALITY.md`'s three-state test.
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

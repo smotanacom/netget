@@ -26,7 +26,7 @@ impersonates a service without being one. Concretely:
   ```
 
 - The capability to run real commands already exists, separately, through the **scripting
-  layer** (`src/scripting/`, see the top-level `CLAUDE.md`). That layer is **opt-in and
+  layer** (`src/scripting/`, see the top-level `AGENTS.md`). That layer is **opt-in and
   unsandboxed** — a script handler runs in-process with NetGet's privileges. This protocol does
   not invoke it and does not add a "really execute" mode. If an operator wires a script handler
   onto `reverse_shell_command` that shells out, that is the pre-existing, documented,

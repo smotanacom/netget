@@ -1,227 +1,45 @@
-# Ollama Server E2E Tests
+# Ollama Server Tests
 
-## Overview
+The `server` integration target includes these suites whenever the `ollama` feature is enabled.
+They use mock model backends or static handlers; no running Ollama installation or downloaded
+model is required. Child processes use isolated temporary directories and random bound ports.
 
-End-to-end tests for the Ollama server protocol. Tests spawn the actual NetGet binary with Ollama API prompts and
-validate responses using HTTP clients.
+## Coverage
 
-## Test Strategy
+- `e2e_test.rs`: the real NetGet process serves list, generate, chat and an invalid endpoint.
+  HTTP requests are made with reqwest, and the model decisions are mocked.
+- `real_client_test.rs`: independent `ollama-rs` decodes `/api/tags`, `/api/generate` and
+  `/api/chat`; reqwest checks the embeddings decision/refusal and a 9 MiB request refused by
+  the 8 MiB body cap. The size test also sends an ordinary request so a blanket refusal fails.
+- `connection_bounds_test.rs`: raw sockets exercise the first-byte and idle deadlines,
+  validate the connection-cap refusal framing, and hold a refused upload's final MiB back
+  until the 413 and EOF arrive. Both Content-Length and chunked requests must allow this tail
+  to drain without resetting the client. Oversized requests create no access-log event.
+- `refusal_status_test.rs`: model-selected HTTP refusal statuses cannot wrap into success,
+  accept out-of-range values or turn an error into a 2xx response.
+- `embeddings_test.rs`: explicit vectors, dimensions, validation and the deterministic ramp.
+- `src/server/accept_bounded.rs::response_drain_tests`: the post-response drain ends at its byte budget or
+  deadline, including a peer that leaves its write half open indefinitely.
 
-**Black-box testing**: Tests interact with NetGet as a user would, sending prompts and validating behavior.
+The connection-bound tests construct the server in-process through `ServerForm`, with a dead
+model endpoint and an empty instruction. They do not consume model calls. E2E mock expectations
+are local to each test; there is no fixed suite-wide model-call count.
 
-**No unit tests**: Protocol implementation is tested end-to-end to ensure LLM integration works correctly.
-
-## LLM Call Budget
-
-**Target**: < 10 LLM calls total for the entire test suite
-
-**Actual**: 4 LLM calls (well under budget)
-
-1. `test_ollama_list_models` - 1 LLM call (server startup)
-2. `test_ollama_generate` - 1 LLM call (server startup)
-3. `test_ollama_chat` - 1 LLM call (server startup)
-4. `test_ollama_invalid_endpoint` - 1 LLM call (server startup)
-
-## Test Cases
-
-### 1. List Models (`test_ollama_list_models`)
-
-**Purpose**: Verify `/api/tags` endpoint returns model list
-
-**Steps**:
-
-1. Start Ollama server on random port
-2. Send `GET /api/tags`
-3. Validate response format:
-    - HTTP 200 OK
-    - JSON with `models` array
-    - Each model has `name` field
-
-**Runtime**: ~15 seconds (includes server startup)
-
-**LLM Calls**: 1
-
-### 2. Generate Text (`test_ollama_generate`)
-
-**Purpose**: Verify `/api/generate` endpoint generates text
-
-**Steps**:
-
-1. Start Ollama server
-2. Send `POST /api/generate` with:
-    - `model`: "qwen2.5-coder:0.5b"
-    - `prompt`: "Say 'Hello from NetGet Ollama' and nothing else."
-    - `stream`: false
-3. Validate response:
-    - HTTP 200 OK
-    - JSON with `model`, `response`, `done` fields
-    - `response` is non-empty string
-    - `done` is true
-
-**Runtime**: ~30 seconds (includes LLM generation)
-
-**LLM Calls**: 1 (NetGet startup) + actual Ollama generation (not counted - backend)
-
-### 3. Chat Completion (`test_ollama_chat`)
-
-**Purpose**: Verify `/api/chat` endpoint works
-
-**Steps**:
-
-1. Start Ollama server
-2. Send `POST /api/chat` with:
-    - `model`: "qwen2.5-coder:0.5b"
-    - `messages`: Array with one user message
-    - `stream`: false
-3. Validate response:
-    - HTTP 200 OK
-    - JSON with `model`, `message`, `done` fields
-    - `message.role` is "assistant"
-    - `message.content` is non-empty
-    - `done` is true
-
-**Runtime**: ~30 seconds
-
-**LLM Calls**: 1
-
-### 4. Invalid Endpoint (`test_ollama_invalid_endpoint`)
-
-**Purpose**: Verify error handling for unknown endpoints
-
-**Steps**:
-
-1. Start Ollama server
-2. Send `GET /api/nonexistent`
-3. Validate response:
-    - HTTP 404 Not Found
-    - JSON with `error` field
-
-**Runtime**: ~5 seconds
-
-**LLM Calls**: 1
-
-## Running Tests
-
-**Feature-specific** (recommended):
+## Running
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features ollama --test server::ollama::e2e_test
+./cargo-isolated.sh test --no-default-features --features ollama --test server -- \
+  server::ollama:: --test-threads=32
+./cargo-isolated.sh test --no-default-features --features ollama --lib -- \
+  server::accept_bounded::response_drain_tests --test-threads=32
 ```
 
-**All features** (slow):
+For upload-race stress, repeat the server suite at `--test-threads=100`. Keep one Rust build
+running at a time and use the same compiled binary for all repetitions.
 
-```bash
-./cargo-isolated.sh test --all-features --test server::ollama::e2e_test
-```
+## Limits of the evidence
 
-## Requirements
-
-- **Ollama backend**: Tests require real Ollama running (usually on localhost:11434)
-- **Model**: `qwen2.5-coder:0.5b` must be pulled (`ollama pull qwen2.5-coder:0.5b`)
-- **Network**: Tests bind to 127.0.0.1 (localhost only)
-
-## Expected Output
-
-```
-=== E2E Test: Ollama List Models ===
-Server started on port 54321
-Sending GET /api/tags request...
-✓ Received HTTP response: 200 OK
-Response JSON: {
-  "models": [
-    {
-      "name": "qwen2.5-coder:0.5b",
-      ...
-    }
-  ]
-}
-✓ Found 3 models
-✓ First model: "qwen2.5-coder:0.5b"
-✓ Ollama List Models test completed
-
-=== E2E Test: Ollama Generate ===
-...
-```
-
-## Known Issues
-
-### 1. Ollama Availability
-
-Tests assume Ollama backend is running. If Ollama is down, tests will fail with connection errors.
-
-**Workaround**: Start Ollama before running tests: `ollama serve`
-
-### 2. Model Availability
-
-Tests use `qwen2.5-coder:0.5b` which must be pulled first.
-
-**Workaround**: `ollama pull qwen2.5-coder:0.5b`
-
-### 3. Port Conflicts
-
-Tests use random available ports (`{AVAILABLE_PORT}` placeholder), so port conflicts are rare.
-
-### 4. Timing Sensitivity
-
-LLM generation can be slow. Tests use 30-second timeouts, which should be sufficient for most systems.
-
-**If tests timeout**: Increase timeout in test code or use a faster model.
-
-## Performance
-
-- **Total runtime**: ~80 seconds (4 tests)
-- **Per test**: 5-30 seconds
-- **Bottleneck**: Ollama LLM generation time
-- **Parallelization**: Not recommended (Ollama lock serializes)
-
-## Test Efficiency
-
-**Why < 10 LLM calls is efficient**:
-
-- Tests focus on API endpoints (HTTP layer)
-- Each test validates one core scenario
-- LLM is used only for server startup (parsing prompt)
-- Actual generation is handled by Ollama backend (not counted)
-
-**Trade-offs**:
-
-- ✅ Fast test suite
-- ✅ Low LLM cost
-- ✅ Good API coverage
-- ⚠️ Doesn't test every endpoint combination
-- ⚠️ Doesn't test streaming (future enhancement)
-
-## Future Enhancements
-
-1. **Streaming tests**: Test `stream: true` with NDJSON parsing
-2. **Model management**: Test `/api/pull`, `/api/create`, `/api/delete`
-3. **Embeddings**: Test `/api/embeddings` endpoint
-4. **Error cases**: Test malformed JSON, missing fields
-5. **Concurrent requests**: Test multiple simultaneous clients
-6. **Large payloads**: Test with long prompts/contexts
-
-## Debugging
-
-**Enable verbose logging**:
-
-```bash
-RUST_LOG=debug ./cargo-isolated.sh test --features ollama --test server::ollama::e2e_test -- --nocapture
-```
-
-**Check NetGet logs**:
-
-```bash
-tail -f netget.log
-```
-
-**Manual testing**:
-
-```bash
-# Start server
-./target/debug/netget "Open Ollama on port 11435"
-
-# Test in another terminal
-curl http://localhost:11435/api/tags
-curl -X POST http://localhost:11435/api/generate \
-  -d '{"model":"qwen2.5-coder:0.5b","prompt":"Hello"}'
-```
+Ollama remains Beta. The independent client proves the three core endpoints, but no real
+client currently drives all four model-management endpoints. NDJSON responses are assembled
+whole in memory, and no Authorization header is validated. There is no Ollama-specific pcap
+oracle or fuzz target here.

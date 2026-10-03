@@ -222,7 +222,7 @@ tail -f netget.log | grep TURN
 
 ## References
 
-- Parent implementation: `src/client/turn/CLAUDE.md`
+- Parent implementation: `src/client/turn/AGENTS.md`
 - TURN RFC: RFC 8656
 - Test helpers: `tests/server/helpers.rs`
 - Similar tests: `tests/client/tcp/e2e_test.rs`

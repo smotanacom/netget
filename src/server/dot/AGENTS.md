@@ -140,7 +140,7 @@ DoT reuses all DNS actions, and only those:
 - `send_dns_response` - Hand-assembled response, hex-encoded (escape hatch)
 - `ignore_query` - Don't send response
 
-See `src/server/dns/CLAUDE.md` for detailed action documentation.
+See `src/server/dns/AGENTS.md` for detailed action documentation.
 
 Two actions previously listed here do not exist and never did: `dns_response`
 (the real name is `send_dns_response`) and `close_connection`. The connection
@@ -234,7 +234,7 @@ All limitations from standard DNS protocol apply:
 - Limited record type support
 - No DNSSEC
 - No recursive resolution
-- See `src/server/dns/CLAUDE.md` for full list
+- See `src/server/dns/AGENTS.md` for full list
 
 ### 4. No Connection Pooling
 

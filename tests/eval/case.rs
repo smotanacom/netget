@@ -137,6 +137,8 @@ pub struct Expect {
     pub none_of: Vec<String>,
     /// Optional regex over the probe's combined output.
     pub regex: Option<String>,
+    /// Require the client to complete within the probe deadline with this exit code.
+    pub exit_code: Option<i32>,
     /// Every one of these must name an action netget actually **executed**.
     ///
     /// The only observable for one-way protocols — syslog writes nothing back,
@@ -169,6 +171,11 @@ impl Expect {
         self
     }
 
+    pub fn exits_with(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
+    }
+
     /// Assert netget executed an action of each name, for protocols with no
     /// reply to inspect.
     pub fn executed_action(needles: &[&str]) -> Self {
@@ -194,6 +201,9 @@ impl Expect {
         if let Some(r) = &self.regex {
             parts.push(format!("matches /{}/", r));
         }
+        if let Some(code) = self.exit_code {
+            parts.push(format!("exits with {code}"));
+        }
         if !self.executed_actions_all_of.is_empty() {
             parts.push(format!("executes {:?}", self.executed_actions_all_of));
         }
@@ -201,7 +211,13 @@ impl Expect {
     }
 
     /// Evaluate against one probe run. `Ok(())` is a pass.
-    pub fn check(&self, probe_output: &str, executed: &str) -> Result<(), String> {
+    pub fn check(
+        &self,
+        probe_output: &str,
+        executed: &str,
+        exit_code: Option<i32>,
+        timed_out: bool,
+    ) -> Result<(), String> {
         let hay = probe_output.to_lowercase();
         for needle in &self.all_of {
             if !hay.contains(&needle.to_lowercase()) {
@@ -231,6 +247,16 @@ impl Expect {
         for needle in &self.executed_actions_all_of {
             if !executed_lc.contains(&needle.to_lowercase()) {
                 return Err(format!("netget executed no {:?} action", needle));
+            }
+        }
+        if let Some(code) = self.exit_code {
+            if timed_out {
+                return Err("client did not complete within the probe deadline".into());
+            }
+            if exit_code != Some(code) {
+                return Err(format!(
+                    "client exit code {exit_code:?} does not match expected {code}"
+                ));
             }
         }
         Ok(())

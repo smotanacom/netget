@@ -1,3 +1,4 @@
+use crate::protocol::log_template::LogTemplate;
 use crate::{
     llm::actions::{
         client_trait::{Client, ClientActionResult},
@@ -26,13 +27,13 @@ fn p(name: &str, kind: &str, description: &str, required: bool) -> Parameter {
     }
 }
 fn request() -> ActionDefinition {
-    ActionDefinition{name:"vault_request".into(),description:"Selected Vault system reads and KV v2 read/write/list/metadata operations. No raw HTTP routes, dynamic-secret engines or administration.".into(),parameters:vec![p("operation","string","seal_status, health, leader, read, write, list, or metadata",true),p("mount","string","KV v2 mount override; default startup kv_mount",false),p("path","string","KV relative ASCII name segments; list accepts a folder slash; empty only for mount-root list",false),p("version","integer","read: nonnegative version; omitted/0 reads latest",false),p("data","object","write: secret object, encoded into native KV v2 data envelope",false),p("cas","integer","write: expected current version;0 creates only when no versions exist",false)],example:json!({"type":"vault_request","operation":"read","path":"fixture/app","version":1}),log_template:None}
+    ActionDefinition{name:"vault_request".into(),description:"Selected Vault system reads and KV v2 read/write/list/metadata operations. No raw HTTP routes, dynamic-secret engines or administration.".into(),parameters:vec![p("operation","string","seal_status, health, leader, read, write, list, or metadata",true),p("mount","string","KV v2 mount override; default startup kv_mount",false),p("path","string","KV relative ASCII name segments; list accepts a folder slash; empty only for mount-root list",false),p("version","integer","read: nonnegative version; omitted/0 reads latest",false),p("data","object","write: secret object, encoded into native KV v2 data envelope",false),p("cas","integer","write: expected current version;0 creates only when no versions exist",false)],example:json!({"type":"vault_request","operation":"read","path":"fixture/app","version":1}),log_template:Some(LogTemplate::new().with_info("Vault {operation} request queued"))}
 }
 fn login() -> ActionDefinition {
-    ActionDefinition{name:"vault_userpass_login".into(),description:"Authenticate selected userpass credentials. A new attempt discards the previous session token; only a complete validated success installs one token. Login password and returned token are omitted from events and incidental diagnostics.".into(),parameters:vec![p("username","string","Bounded ASCII userpass username",true),p("password","string","Userpass password; not included in result metadata",true),p("auth_mount","string","Userpass mount override; default startup auth_mount",false)],example:json!({"type":"vault_userpass_login","username":"fixture-reader","password":"fixture-password"}),log_template:None}
+    ActionDefinition{name:"vault_userpass_login".into(),description:"Authenticate selected userpass credentials. A new attempt discards the previous session token; only a complete validated success installs one token. Login password and returned token are omitted from events and incidental diagnostics.".into(),parameters:vec![p("username","string","Bounded ASCII userpass username",true),p("password","string","Userpass password; not included in result metadata",true),p("auth_mount","string","Userpass mount override; default startup auth_mount",false)],example:json!({"type":"vault_userpass_login","username":"fixture-reader","password":"fixture-password"}),log_template:Some(LogTemplate::new().with_info("Vault userpass authentication queued"))}
 }
 fn clear() -> ActionDefinition {
-    ActionDefinition{name:"vault_clear_token".into(),description:"Forget this client's credential locally. Does not revoke a Vault token or end any backend lease.".into(),parameters:vec![],example:json!({"type":"vault_clear_token"}),log_template:None}
+    ActionDefinition{name:"vault_clear_token".into(),description:"Forget this client's credential locally. Does not revoke a Vault token or end any backend lease.".into(),parameters:vec![],example:json!({"type":"vault_clear_token"}),log_template:Some(LogTemplate::new().with_info("Vault local credential cleared"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -40,7 +41,7 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel pending I/O and stop this logical client".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("Vault client disconnected")),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
@@ -56,7 +57,12 @@ pub static CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "vault_connected",
         "Public seal status succeeded; configured token has not been verified",
         vec![
-            p("origin", "string", "HTTP(S) origin", true),
+            p(
+                "origin",
+                "string",
+                "Vault service HTTP or HTTPS origin",
+                true,
+            ),
             p("kv_mount", "string", "Default KV v2 mount", true),
             p("auth_mount", "string", "Default userpass mount", true),
             p(

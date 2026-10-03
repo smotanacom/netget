@@ -158,7 +158,7 @@ Covered in that file's own header: an LLM failure must produce a `<fault>` carry
 
 The **client** is a different matter, and its exposure is not testable from here: `xmlrpc`
 0.15's parser recurses without a depth bound, so a hostile XML-RPC *server* can stack-overflow
-(and so kill) the NetGet process that points a client at it. See `src/client/xmlrpc/CLAUDE.md`.
+(and so kill) the NetGet process that points a client at it. See `src/client/xmlrpc/AGENTS.md`.
 A test for it would have to deliberately crash the process, which is why there isn't one.
 
 ## Test Execution

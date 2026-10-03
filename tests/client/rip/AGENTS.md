@@ -63,7 +63,7 @@ exercised `connect_with_llm_actions`'s LLM branch at all, which is how two
   no test drives a v1 exchange end to end.
 - **Authentication** (RFC 4822) — not implemented.
 - **Bursty input.** `Processing`/`Accumulating` are unreachable in this client (see
-  `src/client/rip/CLAUDE.md`), so there is nothing to test and the queue drain has never run.
+  `src/client/rip/AGENTS.md`), so there is nothing to test and the queue drain has never run.
 - **Router timeout, malformed datagrams, an empty routing table, a 25-entry maximum response.**
 
 ## Running

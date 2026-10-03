@@ -26,6 +26,8 @@ idle timeout. Receive credit is bounded; unidirectional streams and migration ar
 disabled. Client STOP_SENDING cancels pending stream work. FIN or close_this_stream
 finishes the response and releases the stream. Removing the server releases its
 UDP endpoint and all owned sessions. Counters update against the actual connection.
+Stream IDs are allocated inside their owned futures: the accept branch must keep
+polling older streams which may already be queued for the fair AppState lock.
 
 TLS 1.3 is mandatory. Existing TLS parameters are supported: cert_path/key_path,
 common_name, san_dns_names, validity_days, organization, organizational_unit.
@@ -41,7 +43,7 @@ unidirectional streams, DATAGRAM, 0-RTT, or HTTP/3 framing is implemented.
 The server retains its existing Beta rating. Existing Quinn tests cover text and
 binary echo, custom responses, concurrent streams and backend failure. An
 additional independent aioquic 1.3.0 client checks certificate authentication,
-binary payloads and concurrent streams. See `tests/server/quic/CLAUDE.md`.
+binary payloads and concurrent streams. See `tests/server/quic/AGENTS.md`.
 
 ## Shared certificate validation
 

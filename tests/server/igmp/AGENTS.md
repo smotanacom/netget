@@ -316,4 +316,4 @@ println!("Packet hex: {}", hex::encode(&packet));
 
 - RFC 2236: Internet Group Management Protocol, Version 2
 - RFC 3376: Internet Group Management Protocol, Version 3
-- Implementation: `src/server/igmp/CLAUDE.md`
+- Implementation: `src/server/igmp/AGENTS.md`

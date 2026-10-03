@@ -55,12 +55,6 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          remove them and change the requested target; no URL bytes are filtered or rewritten",
     ),
     (
-        "src/server/graphite/codec.rs",
-        1,
-        "validator: a Carbon metric path is a whitespace-delimited identifier; reject controls \
-         rather than changing the identity of the metric the caller requested",
-    ),
-    (
         "src/client/nats/actions.rs",
         1,
         "validator: a NATS control line is space-delimited and CRLF-terminated, so check_token \
@@ -94,6 +88,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         1,
         "validator: a branch name containing whitespace or a control character is one git \
          itself refuses, so the model gets an error rather than a silently different ref",
+    ),
+    (
+        "src/server/graphite/codec.rs",
+        1,
+        "validator: Metric::validate rejects whitespace and control characters in a Carbon \
+         path; rewriting it would collect a different metric from the one the sender named",
     ),
     (
         "src/server/kafka/mod.rs",

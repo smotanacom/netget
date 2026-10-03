@@ -50,7 +50,7 @@ via `mock_server.verify_calls()`.
    `http://`, `11434`, `qwen`, `/Users/`) — the per-protocol counterpart of
    `tests/wire_failure_test.rs`.
 
-## Bootstrap facts (both now fixed — see `src/server/stdio/CLAUDE.md`)
+## Bootstrap facts (both now fixed — see `src/server/stdio/AGENTS.md`)
 
 - **stdin is not drained when a trailing prompt or `--load` is present.** `Args::get_actions_json`
   / `get_prompt` (`src/cli/args.rs`) only call the blocking `piped_stdin()` when stdin is genuinely

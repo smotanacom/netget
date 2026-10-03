@@ -13,9 +13,13 @@ scope and sequence 0 then 3. Its readiness line announces the bound port.
 On Linux/macOS the second required test runs the actual official GoFlow2 2.2.7
 service with the raw producer. An independent fixture-only version-10 header
 proves its UDP listener is ready, then each production export is sent once.
-The service output must contain the templates/options and every field's exact
-expected wire value. Decoding the external producer's base64 output is confined
-to the test; no raw/base64 field reaches NetGet's model-facing API.
+The service output must contain exactly two domain-42 exports, with unique
+sequences 0 and 3, the templates/options and every field's exact expected wire
+value. Match each export by sequence: GoFlow2's parallel decoder workers may
+write their output in a different order from UDP receipt. The independent Python
+decoder still checks wire sequence 0 then 3. Decoding the external producer's
+base64 output is confined to the test; no raw/base64 field reaches NetGet's
+model-facing API.
 
 Use `tests/server/ipfix/install_peers.py` and its documented environment and
 platform contract. Both services use loopback, temporary files, process cleanup

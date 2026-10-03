@@ -25,7 +25,7 @@ a protocol ends up rated on evidence that does not exist. The suite therefore se
    (`transport: "udp"`, which carries whole IP packets inside datagrams). Same decoder, same
    event, same executor, same emit path.
 3. **The raw socket itself: not tested, anywhere.** Nothing binds one, sends on one, or receives
-   on one. `src/server/rawip/CLAUDE.md` lists exactly what that leaves unproven.
+   on one. `src/server/rawip/AGENTS.md` lists exactly what that leaves unproven.
 
 ## Why the transport tests bypass `ServerForm::create`
 
@@ -63,7 +63,7 @@ protocol numbers (0, 1, 41, 47, 50, 51, 89, 112, 132, 200, 253, 255) and require
 **including the payload slice** — to be identical apart from `protocol` itself.
 
 **This is the test that should fail if someone adds a `match protocol_number` to this module.**
-It is the executable form of the rule in `src/server/rawip/CLAUDE.md`: if GRE ever gets special
+It is the executable form of the rule in `src/server/rawip/AGENTS.md`: if GRE ever gets special
 framing here, the protocol has stopped being generic and belongs in its own module.
 
 ### Startup parameters (4)
@@ -132,7 +132,7 @@ Everything binds 127.0.0.1 only. Nothing contacts an external endpoint.
   between this protocol and Beta, and no amount of additional mocked coverage substitutes for it.
 * IPv6 over the UDP transport. The IPv6 decoder is covered against literal bytes but no
   end-to-end test runs `ip_version: "ipv6"`; on a real IPv6 raw socket the kernel strips the
-  header anyway (see `src/server/rawip/CLAUDE.md`), so this would exercise the transport, not
+  header anyway (see `src/server/rawip/AGENTS.md`), so this would exercise the transport, not
   close that gap.
 * A payload larger than `EVENT_PAYLOAD_LIMIT`, asserting `payload_truncated` and that
   `payload_length` still reports the full size.

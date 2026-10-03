@@ -219,7 +219,7 @@ status_tx.send("[CLIENT] PostgreSQL client connected");      // → TUI
 
 ## Testing Strategy
 
-See `tests/client/postgresql/CLAUDE.md` for E2E testing approach.
+See `tests/client/postgresql/AGENTS.md` for E2E testing approach.
 
 ## Future Enhancements
 
@@ -267,8 +267,8 @@ server with a `*` static handler receives the injected query).
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/postgresql/real_server_test.rs` (see `tests/client/postgresql/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/postgresql/real_server_test.rs` (see `tests/client/postgresql/AGENTS.md`):
 
 1. **Real third-party server** — the PostgreSQL server itself (C), initialised per test with
    `initdb` and read back with `psql` (libpq). NetGet's side is `tokio-postgres`, which shares

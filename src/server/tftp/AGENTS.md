@@ -276,7 +276,7 @@ tear the transfer down, keep the tag.
 **TFTP is not `connectionless`, and the ERROR frame is why that matters here.** A transfer is
 stateful and is idle for the whole of an LLM call, so declaring `.connectionless()` would let
 the 10-second idle sweep evict live transfers out from under themselves — see the root
-`CLAUDE.md`. Riding UDP is not the test; having no connection concept is.
+`AGENTS.md`. Riding UDP is not the test; having no connection concept is.
 
 ### Example LLM Responses
 

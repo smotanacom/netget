@@ -226,7 +226,7 @@ before any handler is consulted.
 
 `mqtt_connect` + `decision=model_silent` sends **CONNACK 0, an accepted session**. A model that
 is asked about a CONNECT carrying a username and password and answers with nothing gets that
-client admitted. That is the OAuth2 shape the root `CLAUDE.md` describes, narrowed to the case
+client admitted. That is the OAuth2 shape the root `AGENTS.md` describes, narrowed to the case
 where the handler demonstrably ran — a backend failure refuses (CONNACK 3) and an explicit
 refusal is `mqtt_connack` with return code 1-5, so the three are now three different log lines.
 
@@ -309,4 +309,4 @@ echoing the packet identifier, and PINGRESP.
 
 - [MQTT 3.1.1 (OASIS)](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html)
 - [rumqttc](https://docs.rs/rumqttc/) — client used by the E2E tests
-- Testing notes: `tests/server/mqtt/CLAUDE.md`
+- Testing notes: `tests/server/mqtt/AGENTS.md`

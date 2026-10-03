@@ -141,7 +141,7 @@ in-process, every socket binds `127.0.0.1:0`, and no test is `#[ignore]`d.
 
 - **`svn checkout` / `update` / `commit`.** Not a test gap — the editor command
   set and svndiff are not implemented, so there is nothing to test yet. The Beta
-  rating is written with that limit attached; see `src/server/svn/CLAUDE.md`.
+  rating is written with that limit attached; see `src/server/svn/AGENTS.md`.
 - **A second independent client.** The Stable bar asks for two, and there is one.
   A `pysvn` or `subversion`-bindings driver would be the cheapest second.
 - **Authentication that is refused.** `send_svn_failure` on `svn_auth_response`
@@ -151,5 +151,5 @@ in-process, every socket binds `127.0.0.1:0`, and no test is `#[ignore]`d.
 ## References
 
 - [SVN Protocol Specification](https://svn.apache.org/repos/asf/subversion/trunk/subversion/libsvn_ra_svn/protocol)
-- `src/server/svn/CLAUDE.md` — the framing, the handshake and the action table
+- `src/server/svn/AGENTS.md` — the framing, the handshake and the action table
 - `src/server/svn/wire.rs` — the tuple reader and its bounds

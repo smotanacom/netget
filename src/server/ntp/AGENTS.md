@@ -395,7 +395,7 @@ That argument is about the *content* of the reply and misses what the reply **is
 stratum-2 packet is a positive assertion that this server is a usable time source, and the
 client steps its clock from it. An operator who pointed NTP at a model asked for the model to
 decide; answering anyway on the server's own authority when the backend is unreachable is
-exactly the fail-open shape the root `CLAUDE.md` calls the most dangerous pattern in this
+exactly the fail-open shape the root `AGENTS.md` calls the most dangerous pattern in this
 codebase.
 
 A KoD is the one reply NTP defines that is **not** a time sample. `chrony`, `ntpd` and

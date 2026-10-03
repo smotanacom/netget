@@ -389,6 +389,6 @@ sudo python3 inject_isis_hello.py eth0
 
 - IS-IS Protocol: ISO/IEC 10589, RFC 1195
 - Test implementation: `tests/client/isis/e2e_test.rs`
-- Client implementation: `src/client/isis/CLAUDE.md`
+- Client implementation: `src/client/isis/AGENTS.md`
 - pcap: https://www.tcpdump.org/
 - scapy IS-IS: https://scapy.readthedocs.io/en/latest/layers/isis.html

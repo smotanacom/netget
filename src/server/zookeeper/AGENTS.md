@@ -55,7 +55,7 @@ The handshake, `ping` (opcode 11) and `closeSession` (opcode -11) never reach th
 
 They carry no content decision, and routing them through the model would make an outage or a
 refusal indistinguishable from a successful session — the fail-open shape called out as the
-most dangerous pattern in the root `CLAUDE.md`. A ping also arrives every `timeout / 3` on an
+most dangerous pattern in the root `AGENTS.md`. A ping also arrives every `timeout / 3` on an
 idle connection, so an LLM round-trip per ping would be the cost of doing nothing.
 
 Everything a handler can actually decide still goes through `call_llm`.
@@ -178,7 +178,7 @@ The accept-loop `JoinHandle` is registered via `AppState::register_server_task()
 ## Testing
 
 `tests/server/zookeeper/e2e_test.rs` drives the real `zookeeper-async` client plus one
-byte-level handshake test. See `tests/server/zookeeper/CLAUDE.md`.
+byte-level handshake test. See `tests/server/zookeeper/AGENTS.md`.
 
 ## Connection bounds
 
@@ -202,7 +202,7 @@ test.
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

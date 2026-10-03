@@ -227,7 +227,7 @@ Needs `libusb-1.0` (the `usbip` crate links it): `brew install libusb pkg-config
     --test server -- --test-threads=100 usb_msc
 ```
 
-See `tests/server/usb_msc/CLAUDE.md`.
+See `tests/server/usb_msc/AGENTS.md`.
 
 ## References
 
@@ -257,5 +257,5 @@ sits below the crate and cannot synthesise a `USBIP_RET_SUBMIT` for a sequence t
 saw — and logs at ERROR with a `decision=fail_closed_*` tag.
 
 `MAX_TRANSFER_BUFFER_BYTES` is declared in `metadata()` via `.max_inbound_bytes(...)`.
-`src/server/usb/CLAUDE.md` has the full reasoning, the constants and what is still unguarded;
+`src/server/usb/AGENTS.md` has the full reasoning, the constants and what is still unguarded;
 `tests/server/usb_msc/guard_test.rs` is the wire-level test.

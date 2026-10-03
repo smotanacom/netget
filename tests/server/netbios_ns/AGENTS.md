@@ -65,7 +65,7 @@ Total: **10 LLM calls**, at the ~10 budget.
 
 ### On `respond_with_actions_from_event`, and why the transaction id is not echoed by the mock
 
-The root `CLAUDE.md` rule for UDP protocols is that a static mock with a hardcoded transaction
+The root `AGENTS.md` rule for UDP protocols is that a static mock with a hardcoded transaction
 id makes the client time out. Here the mechanism is different and the rule still applies for a
 different reason, which is worth writing down.
 
@@ -126,7 +126,7 @@ to wait for the `decision=` log line *first* and only then assert the socket is 
 WINS name-table state, conflict detection, NAME RELEASE / REFRESH / WACK, redirects, name
 compression, the datagram service (UDP 138) and the session service (TCP 139). There is no test
 asserting any of them, because a test that merely asserted "the datagram is dropped" would read
-as coverage of a feature that does not exist. `src/server/netbios_ns/CLAUDE.md` lists them.
+as coverage of a feature that does not exist. `src/server/netbios_ns/AGENTS.md` lists them.
 
 ## Why there is no real-client layer
 
@@ -142,7 +142,7 @@ verified rather than assumed:
   13137 received nothing.
 - Binding UDP 137 needs root on macOS.
 
-So a real-client exchange requires a privileged run. The root `CLAUDE.md` is explicit that an
+So a real-client exchange requires a privileged run. The root `AGENTS.md` is explicit that an
 `#[ignore]`d root test is not evidence and that a skip-when-missing gate is a silent pass, so
 neither was written. The protocol is rated **Experimental** accordingly, and
 `metadata().notes` states the reason.

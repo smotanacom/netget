@@ -263,7 +263,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 **The deadline covers the read and nothing else.** hyper owns every read once `serve_connection` starts, and it keeps polling the connection for new frames *while a request is being answered* — so a deadline on reads would be wrong here, not merely awkward. The idle bound is a watchdog over `ConnectionActivity` instead, which reports a connection with work in flight as not idle at all. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

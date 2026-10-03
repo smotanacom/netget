@@ -296,10 +296,7 @@ impl EventCase {
         let mut all_actions = get_network_event_common_actions();
         all_actions.extend(advertised);
 
-        // Build the prompt exactly as `call_llm` does, and — critically — keep
-        // the list it actually advertises. `advertised_network_event_actions`
-        // adds the network-event *tools* (`generate_random`, `read_file`, …),
-        // so the model is genuinely offered them here too.
+        // Build and validate the same action-only network-event prompt as call_llm.
         let (system_prompt, advertised_actions) =
             PromptBuilder::build_network_event_action_prompt_for_server_with_actions(
                 &state,
@@ -325,13 +322,8 @@ impl EventCase {
         // Go through `ConversationHandler::generate_with_tools_and_retry`, which
         // is what `call_llm` calls — not the one-shot `generate_with_retry`.
         //
-        // The difference is not cosmetic and this suite proved it: the
-        // network-event prompt advertises tools, so a model answering "issue a
-        // session token" or "sign this assertion" quite reasonably asks for
-        // `generate_random` first. Production runs that tool and lets the model
-        // finish; the one-shot path could only fail. Two cases (Snowflake login,
-        // SAML SSO) failed here for a reason that does not exist in the server,
-        // which is a harness bug reported as a model bug — the worst kind.
+        // This preserves production validation and retries. Network events do not
+        // advertise tools; operator and scheduled-task conversations still can.
         let mut conversation = ConversationHandler::new(
             system_prompt,
             std::sync::Arc::new(client),
@@ -344,8 +336,7 @@ impl EventCase {
         // see tests/llm_native_tools_test.rs. This suite is what established that:
         // with schemas attached, 6 of 6 failing protocol cases (modbus x2, radius,
         // memcached, etcd, ldap) passed the moment they were removed, same model
-        // and same prompts. Tool *capability* is unaffected; the model still asks
-        // with {"tools": [...]} and the loop below executes it.
+        // and same prompts. Event responses use only the advertised actions.
         //
         // `NETGET_LIVE_NATIVE_TOOLS=1` attaches them again. That is a diagnostic for
         // re-measuring the effect, not a supported mode — it makes the harness
