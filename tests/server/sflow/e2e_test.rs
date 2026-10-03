@@ -120,6 +120,71 @@ async fn parked_handler_preserves_parser_capacity_and_owned_socket_intercept_cle
     released(&state, addr).await;
 }
 #[tokio::test]
+async fn aged_parked_datagram_row_survives_common_cleanup_until_the_handler_finishes() {
+    let (state, id, addr, _) = start(
+        Some(vec![
+            json!({"event_pattern":"sflow_message","handler":{"type":"manual","timeout_secs":300}}),
+        ]),
+        None,
+    )
+    .await;
+    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sender
+        .send_to(&crate::helpers::sflow::golden(), addr)
+        .await
+        .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = state.list_intercepts().await.into_iter().next() {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let cid = netget::server::connection::ConnectionId::new(request.connection_id.unwrap());
+    state
+        .with_server_mut(id, |server| {
+            server.connections.get_mut(&cid).unwrap().last_activity =
+                std::time::Instant::now() - Duration::from_secs(60);
+        })
+        .await
+        .unwrap();
+    state.cleanup_old_connections(10).await;
+    assert!(
+        state
+            .get_server(id)
+            .await
+            .unwrap()
+            .connections
+            .contains_key(&cid),
+        "the idle sweep must preserve a live parked sFlow request"
+    );
+    assert_eq!(state.list_intercepts().await[0].id, request.id);
+    state
+        .resolve_intercept(request.id, vec![json!({"type":"collect_sflow_samples"})])
+        .await
+        .unwrap();
+    logs(&state, id, "sflow_handler_decision", 1).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while state
+            .get_server(id)
+            .await
+            .unwrap()
+            .connections
+            .contains_key(&cid)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the dispatcher must remove its row when the handler finishes");
+    assert!(state.list_intercepts().await.is_empty());
+    state.remove_server(id).await;
+    released(&state, addr).await;
+}
+#[tokio::test]
 async fn live_idle_expiry_resets_sequence_expectation() {
     let (state, id, addr, _) = start(None, Some(json!({"session_idle_seconds":1}))).await;
     let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
