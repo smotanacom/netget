@@ -28,7 +28,9 @@ gRPC paths are the standard opentelemetry.proto.collector.{trace,metrics,logs}.v
 none/gzip compression. One framed Export message is required. The guard bounds the total
 wire body at 4 MiB+5, validates the declared message length before further accumulation, and
 rejects extra or incomplete frames before tonic decoding. It prevents tonic's unary trailer
-drain from consuming arbitrary additional messages. Request trailer metadata is ignored.
+drain from consuming arbitrary additional messages. `compressed` comes from the validated
+message prefix: `grpc-encoding: gzip` also permits a message with flag 0. Tonic validates
+the compression flag and encoding before dispatch. Request trailer metadata is ignored.
 
 Both transports raise `otlp_export` with a bounded summary, never raw telemetry or IDs:
 transport, signal, encoding, compressed, body_bytes, resource_count, service name(s), up to 20
@@ -72,7 +74,7 @@ remain inside a child task. Operation permits drop on completion, cancellation o
 | HTTP/2 initial stream/connection window |64KiB /1MiB|
 | HTTP/2 header list/frame |32KiB /16KiB|
 | Global active gRPC exports |64, acquired before reading/decoding; overflow UNAVAILABLE|
-| Whole gRPC request |30s, including body and model; smaller valid grpc-timeout honored|
+| Whole gRPC request |30s, including body and model; smaller valid grpc-timeout honored; duplicates invalid|
 | Nesting |prost 100 / serde_json 128; NetGet summaries do not recurse into attributes|
 
 HTTP routing failures retain 404/405+Allow/415/400/413 behavior. A gRPC prefix/body bound
