@@ -67,7 +67,7 @@ impl Protocol for GelfProtocol {
         vec![GELF_MESSAGE_EVENT.clone()]
     }
     fn metadata(&self) -> ProtocolMetadataV2 {
-        ProtocolMetadataV2::builder().deliberately_silent().state(DevelopmentState::Experimental).well_known_udp_port(12201).max_inbound_bytes(MAX_MESSAGE_BYTES)
+        ProtocolMetadataV2::builder().request_only("GELF is a one-way log stream; collecting a received message has no reply or unsolicited server-message operation.").deliberately_silent().state(DevelopmentState::Experimental).well_known_udp_port(12201).max_inbound_bytes(MAX_MESSAGE_BYTES)
  .implementation("Native bounded GELF 1.1 JSON, UDP chunks/gzip/zlib and NUL-delimited TCP; flate2 compression")
  .llm_control("Explicit static/script/manual/model handlers; llm_fallback=false collects unmatched messages without model calls")
  .e2e_testing("Codec bounds/negative cases, both transports, lifecycle and independent pygelf emitter / official Graylog go-gelf readers")

@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 use crate::protocol::{EventType, SpawnContext};
 use crate::state::app_state::AppState;
@@ -34,7 +35,7 @@ pub fn dialect_parameter() -> ParameterDefinition {
     ParameterDefinition { name: "dialect".into(), type_hint: "string".into(), description: "dogstatsd accepts StatsD metrics plus histogram/distribution, tags, events and service checks. statsd rejects these extensions.".into(), required: false, example: json!("statsd"), default: Some(json!(DEFAULT_DIALECT)) }
 }
 pub fn collect_action() -> ActionDefinition {
-    ActionDefinition { name: "collect_statsd_batch".into(), description: "Observe this batch in the bounded access log. Does not aggregate, persist, or acknowledge metrics; UDP has no response.".into(), parameters: vec![], example: json!({"type":"collect_statsd_batch"}), log_template: None }
+    ActionDefinition { name: "collect_statsd_batch".into(), description: "Observe this batch in the bounded access log. Does not aggregate, persist, or acknowledge metrics; UDP has no response.".into(), parameters: vec![], example: json!({"type":"collect_statsd_batch"}), log_template: Some(LogTemplate::new().with_info("StatsD batch observed")) }
 }
 pub static STATSD_BATCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("statsd_batch", "One validated UDP datagram containing typed metric/event/service_check records. Defaults to access-log collection without model calls; explicit handlers always run.", json!({"type":"collect_statsd_batch"}))
@@ -81,7 +82,7 @@ impl Protocol for StatsdProtocol {
             .build()
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![dialect_parameter(), ParameterDefinition { name: "llm_fallback".into(), type_hint: "bool".into(), description: "Opt unmatched batches into LLM reasoning. False records them without model calls. Configured script/static/manual/LLM handlers always run.".into(), required: false, example: json!(true), default: Some(json!(DEFAULT_LLM_FALLBACK)) }]
+        vec![dialect_parameter(), ParameterDefinition { name: "llm_fallback".into(), type_hint: "boolean".into(), description: "Opt unmatched batches into LLM reasoning. False records them without model calls. Configured script/static/manual/LLM handlers always run.".into(), required: false, example: json!(true), default: Some(json!(DEFAULT_LLM_FALLBACK)) }]
     }
     fn get_startup_examples(&self) -> StartupExamples {
         StartupExamples::new(

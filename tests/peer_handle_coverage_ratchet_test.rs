@@ -115,6 +115,10 @@ enum Reason {
     RusshOwnsSocket,
     /// A Carbon plaintext collector receives metrics but has no server-message grammar.
     OneWayMetricCollector,
+    /// A GELF collector observes incoming logs; GELF defines no server replies.
+    OneWayLogCollector,
+    /// Forward ACKs echo the current inbound batch's transport-owned chunk token.
+    CorrelatedForwardReplies,
     /// NUT renders a reply against the current parsed request and authentication state.
     CorrelatedRequestReplies,
     /// Reviewed by hand in the September 2026 peer-handle pass; see the table below.
@@ -135,6 +139,8 @@ impl Reason {
             Reason::Tunnel => Some("copy_bidirectional"),
             Reason::RusshOwnsSocket => Some("russh"),
             Reason::OneWayMetricCollector => Some("GRAPHITE_BATCH_EVENT"),
+            Reason::OneWayLogCollector => Some("actions::GELF_MESSAGE_EVENT"),
+            Reason::CorrelatedForwardReplies => Some("codec::encode_ack(&chunk)"),
             Reason::CorrelatedRequestReplies => Some("wire::render(&request"),
             Reason::Reviewed | Reason::Unreviewed => None,
         }
@@ -189,6 +195,11 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("dot", Reason::Reviewed),
     ("dynamo", Reason::HyperOwnsSocket),
     ("elasticsearch", Reason::HyperOwnsSocket),
+    // Acceptance/rejection applies to one inbound batch; only its hidden chunk token can
+    // produce the correlated ACK. Injected bytes have no unsolicited Forward reply meaning.
+    ("fluent_forward", Reason::CorrelatedForwardReplies),
+    // collect_gelf_message only observes; neither UDP nor TCP defines collector reply bytes.
+    ("gelf", Reason::OneWayLogCollector),
     ("etcd", Reason::HyperOwnsSocket),
     ("git", Reason::HyperOwnsSocket),
     // Carbon plaintext defines no replies; collect_graphite_batch observes received metrics.

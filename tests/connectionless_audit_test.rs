@@ -56,6 +56,11 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // 802.1X is a session machine — EAP identity, challenge, then the admission decision.
     // The gap between request and response is exactly where the model sits.
     "EAPOL",
+    // GELF also serves live TCP sessions, which must survive a slow handler. Its UDP
+    // path creates only a temporary entry for one decoded message and explicitly
+    // removes it after dispatch on success or error. Chunk reassembly is bounded and
+    // expired by its own 1-second timer; no per-remote UDP entries await the idle sweep.
+    "GELF",
 ];
 
 /// Registry names whose source directory does not follow any of the mechanical
@@ -67,6 +72,7 @@ fn dir_alias(protocol_name: &str) -> Option<&'static str> {
         "DynamoDB" => Some("dynamo"),
         "SamlIdp" => Some("saml_idp"),
         "SamlSp" => Some("saml_sp"),
+        "FluentForward" => Some("fluent_forward"),
         _ => None,
     }
 }
