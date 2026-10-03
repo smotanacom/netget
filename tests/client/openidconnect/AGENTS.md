@@ -28,7 +28,7 @@ This document previously recommended "Option 3: Public Test Providers (Current)"
 
 So the suite was in the worst of both states — it proved nothing on any runner, and the only
 way to make it run was to send live traffic to Google with whatever ambient configuration the
-machine had. That is the client-side shape of the defect the root `CLAUDE.md` records for the
+machine had. That is the client-side shape of the defect the root `AGENTS.md` records for the
 DynamoDB client: *a client that loses its target must fail, never fall back to the real
 service*. Here it was the test rather than the code pointing at production, which is not
 better — a test is the thing people run without reading.
@@ -63,5 +63,5 @@ token value *in an event* — assert on `protocol_data`, as `command_channel_tes
 
 The native suites here drive the reqwest backend. The browser path — the same client code over
 `src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
-bundle (see `src/client/openidconnect/CLAUDE.md`, "Browser build").
+bundle (see `src/client/openidconnect/AGENTS.md`, "Browser build").
 

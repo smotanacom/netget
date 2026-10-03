@@ -9,7 +9,7 @@ body, plus optional server pushes.
 requested port is actually below 1024. **RFC**: 7540 / 7541.
 
 Shared plumbing (request extraction, response building, request filter) lives in
-`src/server/http_common/` — read `src/server/http_common/CLAUDE.md`.
+`src/server/http_common/` — read `src/server/http_common/AGENTS.md`.
 
 ## One server — `h2_server.rs`
 
@@ -164,7 +164,7 @@ counted too, so a filtered connection still refreshes `last_activity`.
 
 This matters more here than for HTTP/1.1: `cleanup_old_connections`
 (`src/state/server.rs`) evicts any connection idle for 10s, and an HTTP/2
-connection routinely lives far longer. See `src/server/http/CLAUDE.md` for the
+connection routinely lives far longer. See `src/server/http/AGENTS.md` for the
 full rationale and for who reads the counters.
 
 **Still a gap**: `ProtocolConnectionInfo` is initialized to
@@ -195,7 +195,7 @@ the same stream limit on the h2c upgrade path. All four files are declared in
 `default_response`, of TLS, or of the h2c upgrade from HTTP/1.1.
 
 **On maturity**: HTTP/2 stays **Experimental**, and a push test would not change that.
-Root `CLAUDE.md` lists `http2` under "evidence is only a generic HTTP client", and the
+Root `AGENTS.md` lists `http2` under "evidence is only a generic HTTP client", and the
 obvious way to test push — the `h2` crate's client `push_promises()` — is the circular
 case that file also names: the server frames with `h2` too, so it would assert only
 that one crate round-trips through itself. Promotion needs a peer that is not `h2`

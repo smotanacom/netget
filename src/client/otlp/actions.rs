@@ -4,7 +4,7 @@ use crate::{
         protocol_trait::Protocol,
         ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
     },
-    protocol::{ConnectContext, EventType},
+    protocol::{log_template::LogTemplate, ConnectContext, EventType},
     state::AppState,
 };
 use anyhow::{bail, Context, Result};
@@ -28,11 +28,21 @@ pub static CONNECTED: LazyLock<EventType> = LazyLock::new(|| {
         "otlp_connected",
         "OTLP transport connected",
         vec![
-            field("remote_addr", "string", "Receiver", true),
-            field("transport", "string", "grpc or http", true),
+            field(
+                "remote_addr",
+                "string",
+                "Remote socket address of the OpenTelemetry receiver",
+                true,
+            ),
+            field(
+                "transport",
+                "string",
+                "Transport used for this export: grpc or http",
+                true,
+            ),
             field(
                 "tls_verified",
-                "bool",
+                "boolean",
                 "TLS certificate and server name verified",
                 true,
             ),
@@ -46,14 +56,14 @@ pub static RESULT: LazyLock<EventType> = LazyLock::new(|| {
         "Export acknowledgement or gRPC failure; partial success is never retryable",
         vec![
             field("signal", "string", "traces, metrics or logs", true),
-            field("transport", "string", "grpc or http", true),
+            field("transport", "string", "Transport used for this export: grpc or http", true),
             field("service_name", "string", "Exported service", true),
             field("items", "number", "Exported item count", true),
             field("result", "string", "accepted, partial_success or rejected", true),
             field("rejected", "number", "Rejected item count on partial success", true),
             field("message", "string", "Bounded status diagnostic", true),
             field(
-                "retryable", "bool",
+                "retryable", "boolean",
                 "Whether an explicit later retry is appropriate; NetGet never retries automatically",
                 true,
             ),
@@ -120,13 +130,17 @@ impl Protocol for OtlpClientProtocol {
                 field("scope_name", "string", "Instrumentation scope, at most 256 bytes; default netget", false),
             ]
         };
-        let action = |name: &str, description: &str, parameters: Vec<Parameter>, example: Value| {
+        let action = |name: &str,
+                      description: &str,
+                      parameters: Vec<Parameter>,
+                      example: Value,
+                      log_message: &str| {
             ActionDefinition {
                 name: name.into(),
                 description: description.into(),
                 parameters,
                 example,
-                log_template: None,
+                log_template: Some(LogTemplate::new().with_info(log_message)),
             }
         };
         let mut traces = common();
@@ -136,8 +150,8 @@ impl Protocol for OtlpClientProtocol {
         let mut gauge = common();
         gauge.extend([
             field("name", "string", "Metric name, 1..256 bytes", true),
-            field("description", "string", "At most 256 bytes", false),
-            field("unit", "string", "At most 64 bytes", false),
+            field("description", "string", "Optional gauge metric description, at most 256 bytes", false),
+            field("unit", "string", "Optional gauge metric unit, at most 64 bytes", false),
             field(
                 "data_points", "array",
                 "1..128 gauge points: positive time_unix_nano u64, value (i64 or finite float), optional flat attributes",
@@ -150,30 +164,35 @@ impl Protocol for OtlpClientProtocol {
                 "Export typed spans; no binary payload, span events or links",
                 traces,
                 json!({"type":"export_otlp_traces","service_name":"checkout","spans":[{"name":"charge card","trace_id":"0102030405060708090a0b0c0d0e0f10","span_id":"0102030405060708","start_time_unix_nano":1720000000000000000u64,"end_time_unix_nano":1720000000001000000u64,"kind":"client","status":"ok"}]}),
+                "Export OTLP traces for {service_name}",
             ),
             action(
                 "export_otlp_logs",
                 "Export UTF-8 text log records",
                 logs,
                 json!({"type":"export_otlp_logs","service_name":"checkout","logs":[{"body":"payment accepted","time_unix_nano":1720000000000000000u64,"severity_number":9}]}),
+                "Export OTLP logs for {service_name}",
             ),
             action(
                 "export_otlp_gauge",
                 "Export one gauge metric with typed numeric data points",
                 gauge,
                 json!({"type":"export_otlp_gauge","service_name":"checkout","name":"queue.depth","unit":"1","data_points":[{"value":3,"time_unix_nano":1720000000000000000u64}]}),
+                "Export OTLP gauge {name} for {service_name}",
             ),
             action(
                 "disconnect",
                 "Cancel exports and handlers, close the owned transport",
                 vec![],
                 json!({"type":"disconnect"}),
+                "Disconnect OTLP exporter",
             ),
             action(
                 "wait_for_more",
                 "Wait for another event or injected export",
                 vec![],
                 json!({"type":"wait_for_more"}),
+                "Wait for the next OTLP exporter event",
             ),
         ]
     }
@@ -202,14 +221,14 @@ impl Protocol for OtlpClientProtocol {
             ),
             p(
                 "tls",
-                "bool",
+                "boolean",
                 "Use authenticated TLS (default true); false explicitly selects cleartext",
                 json!(true),
                 Some(json!(super::DEFAULT_TLS)),
             ),
             p(
                 "gzip",
-                "bool",
+                "boolean",
                 "Compress export requests (default false); responses support none/gzip",
                 json!(true),
                 Some(json!(super::DEFAULT_GZIP)),

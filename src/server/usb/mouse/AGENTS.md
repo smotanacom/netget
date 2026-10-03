@@ -32,7 +32,7 @@ suite of seven passing E2E tests.
   *"not yet implemented - usbip crate lacks mouse support"*, and returned `NoAction`.
 - The premise was stale anyway. `usbip` 0.9 still ships no mouse handler, but netget has had its
   own complete one in `handler.rs` — report descriptor, 4-byte reports, automatic release — for
-  some time. Nothing was wired to it. `CLAUDE.md` meanwhile claimed
+  some time. Nothing was wired to it. `AGENTS.md` meanwhile claimed
   "✅ UsbHidMouseHandler from usbip crate", which does not exist in any version.
 - The seven E2E tests opened a bare `TcpStream` and asserted only that a mock rule fired, which
   is why none of the above showed up.
@@ -182,7 +182,7 @@ Needs `libusb-1.0` (the `usbip` crate links it): `brew install libusb pkg-config
     --test server -- --test-threads=100 usb_mouse
 ```
 
-See `tests/server/usb_mouse/CLAUDE.md`.
+See `tests/server/usb_mouse/AGENTS.md`.
 
 ## References
 
@@ -211,5 +211,5 @@ sits below the crate and cannot synthesise a `USBIP_RET_SUBMIT` for a sequence t
 saw — and logs at ERROR with a `decision=fail_closed_*` tag.
 
 `MAX_TRANSFER_BUFFER_BYTES` is declared in `metadata()` via `.max_inbound_bytes(...)`.
-`src/server/usb/CLAUDE.md` has the full reasoning, the constants and what is still unguarded;
+`src/server/usb/AGENTS.md` has the full reasoning, the constants and what is still unguarded;
 `tests/server/usb_msc/guard_test.rs` is the wire-level test.

@@ -39,7 +39,12 @@ pub fn score_probe(
         .cloned()
         .collect::<Vec<_>>()
         .join("\n");
-    match expect.check(&outcome.combined(), &executed_text) {
+    match expect.check(
+        &outcome.combined(),
+        &executed_text,
+        outcome.exit_code,
+        outcome.timed_out,
+    ) {
         Ok(()) => ProbeScore {
             verdict: "pass",
             failure_mode: None,

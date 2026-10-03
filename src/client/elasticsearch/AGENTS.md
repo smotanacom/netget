@@ -280,7 +280,7 @@ LLM receives this in the `elasticsearch_response_received` event and can react a
 
 ## Testing Notes
 
-See `tests/client/elasticsearch/CLAUDE.md` for E2E test strategy.
+See `tests/client/elasticsearch/AGENTS.md` for E2E test strategy.
 
 ## Future Enhancements
 

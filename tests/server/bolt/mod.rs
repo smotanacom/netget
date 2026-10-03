@@ -16,3 +16,5 @@ mod peer_inject_test;
 mod real_client_test;
 #[cfg(all(test, feature = "bolt"))]
 mod state_machine_test;
+
+pub mod schema_guard_test;

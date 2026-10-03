@@ -924,6 +924,8 @@ pub use mcp::actions::McpProtocol;
 #[cfg(feature = "mcp")]
 pub use mcp::McpServer;
 
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc-web")]
@@ -1259,3 +1261,6 @@ pub mod prometheus_remote_write;
 
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
+
+#[cfg(feature = "tacacs")]
+pub mod tacacs;

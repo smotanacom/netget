@@ -12,6 +12,13 @@ empty/common-only actions, failed actions and backend errors have distinct
 terminal `decision=` tags with `udp_silent=true`. Failed actions cannot roll
 back common side effects or previously committed parser state.
 
+`connectionless` stays false: the dispatcher creates one temporary dashboard
+connection row while a datagram's common handler runs, then explicitly removes
+it on success, silence or failure. The shared 10-second idle sweep must preserve
+an aged row while a manual/model request is parked. No per-remote dashboard rows
+await that sweep; template/session state has its separate owned expiry timer.
+The feature-gated connectionless audit exception records this ownership rule.
+
 This is a separate native wire format alongside IPFIX. The header is 20 bytes:
 version9, total record Count, sysUpTime milliseconds, UNIX export seconds,
 packet sequence and Source ID. Count includes normal/options template records

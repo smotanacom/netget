@@ -16,6 +16,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
@@ -235,15 +236,28 @@ impl OllamaServer {
                                     });
 
                                     // Serve HTTP/1 on this connection
-                                    let conn = http1::Builder::new().serve_connection(io, service);
+                                    // Retain the socket after hyper flushes its last response. A
+                                    // body-limit refusal can finish before the upload does;
+                                    // dropping a socket with unread bytes sends RST and loses
+                                    // the 413 at the client.
+                                    let conn = http1::Builder::new()
+                                        .serve_connection(io, service)
+                                        .without_shutdown();
                                     tokio::pin!(conn);
                                     tokio::select! {
                                         result = &mut conn => {
-                                            if let Err(err) = result {
-                                                error!(
+                                            match result {
+                                                Ok(parts) => {
+                                                    let mut stream = parts.io.into_inner();
+                                                    // Deliver the complete response and EOF
+                                                    // before discarding the upload tail.
+                                                    let _ = stream.shutdown().await;
+                                                    crate::server::accept_bounded::drain_after_response(&mut stream).await;
+                                                }
+                                                Err(err) => error!(
                                                     "Error serving Ollama API connection: {:?}",
                                                     err
-                                                );
+                                                ),
                                             }
                                         }
                                         // The idle bound, over `ConnectionActivity` rather than

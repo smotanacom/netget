@@ -309,7 +309,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 
 | Bound | Value | Why this number |
 |---|---|---|
-| `FIRST_RECORD_READ_TIMEOUT` | 30s | ONC RPC over TCP is client-speaks-first and a real client sends NULL or MOUNT immediately. `src/server/nfs/CLAUDE.md` said in as many words that no per-connection idle timeout existed; this is it. |
+| `FIRST_RECORD_READ_TIMEOUT` | 30s | ONC RPC over TCP is client-speaks-first and a real client sends NULL or MOUNT immediately. `src/server/nfs/AGENTS.md` said in as many words that no per-connection idle timeout existed; this is it. |
 | `IDLE_BETWEEN_RECORDS_TIMEOUT` | 900s | Long on purpose: a mounted filesystem with no I/O is genuinely silent for long stretches, and that is the normal state of a mount rather than a symptom. The Linux client reconnects its TCP transport transparently, so a reaped idle connection costs a mount nothing observable. |
 | `MAX_CONCURRENT_CONNECTIONS` | 256 | Unchanged in value — this is where `accept_bounded::DEFAULT_MAX_CONNECTIONS` came from, and the constant now *is* that one so the two cannot drift. The hand-rolled `Semaphore` is replaced by the shared helper. Refusal: **a plain close.** Every refusal this screen can express is an accepted RPC reply carrying the *call's own* xid; a peer turned away at accept has sent no call and therefore no xid. |
 
@@ -320,7 +320,7 @@ before the first model turn — `PROTOCOL_QUALITY.md`'s three-state test.
 **The deadline covers the read and nothing else.** One `lookup` here is one LLM round-trip and may be parked for a human, so the deadline must not count the wait: `awaiting_reply` is set when a record reaches the backend and cleared when the backend answers, and while it is set the deadline re-arms instead of closing. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

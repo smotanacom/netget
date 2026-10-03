@@ -13,7 +13,10 @@ official GoFlow2 2.2.7 service from the server bootstrap. The decoder checks a
 native IPv6 raw header against literal bytes, source IDs, switch data and a
 normative 28-byte VLAN counter with a 64-bit value above 2^53. The actual service
 checks compact/expanded flow and counter formats, interface encoding, IPv4
-summaries, datagram sequences and exact VLAN bytes. GoFlow2's opaque VLAN
+summaries, datagram sequences and exact VLAN bytes. Both exported datagram
+sequences must occur exactly once; GoFlow2's concurrent workers may report them
+in either order. Native socket sequence checks retain arrival-order coverage.
+GoFlow2's opaque VLAN
 representation and the peer's excluded defective VLAN encoder are explicit;
 neither native self-roundtrip nor a peer self-roundtrip supplies the oracle.
 

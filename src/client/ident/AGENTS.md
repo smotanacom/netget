@@ -68,7 +68,7 @@ RFC reserves. Anything else is `error_token`, not free text handed to the model.
 
 ## The model's answer is carried out — including a second query
 
-The defect the root `CLAUDE.md` calls the most common client bug in this repo is a client that
+The defect the root `AGENTS.md` calls the most common client bug in this repo is a client that
 asks the model what to do and then throws the answer away. Here the reply event's answer is
 executed, and a follow-up `send_ident_query` **opens a fresh TCP connection**, because RFC 1413
 is one exchange per connection and the server has already closed.
@@ -161,7 +161,7 @@ unverified assertion by a stranger's host and the event description says so.
 Beta means "works against real clients", and for a client protocol it means the mirror: driven
 against a real third-party **server**. There is none that can be used.
 
-`src/server/ident/CLAUDE.md` records the full search — crates.io, Homebrew, PyPI, macOS system
+`src/server/ident/AGENTS.md` records the full search — crates.io, Homebrew, PyPI, macOS system
 binaries — and the conclusion is structural rather than a matter of effort: **RFC 1413 has no
 notion of a configurable port**, so no ident implementation on either side can be aimed at an
 ephemeral loopback port, and 113 needs root and collides process-wide rather than being
@@ -176,7 +176,7 @@ Experimental and not Beta.
 listening on port 113 on the test host, driven by this client with `ident_port: 113`, in a test
 that **hard-fails when the binary is absent** rather than skipping. That needs root and a
 machine-wide port, which is why it is not here. Do not add an `#[ignore]`d test against it —
-`src/server/ident/CLAUDE.md` says the same thing, and the root `CLAUDE.md` lists
+`src/server/ident/AGENTS.md` says the same thing, and the root `AGENTS.md` lists
 "`#[ignore]`d, however good the reason" and "a real client behind a skip-when-missing gate"
 as two of the four near-misses that are not evidence.
 

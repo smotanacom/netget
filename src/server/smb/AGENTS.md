@@ -31,9 +31,8 @@ the per-connection state, the bounds and the model.
 
 ## Library Choices
 
-- **Manual SMB2 implementation** - No library used. The `smb` feature still pulls in the
-  `smb-msg` crate, which no code references (`grep -rn smb_msg src/` is empty); removing it
-  is a `Cargo.toml` and `Cargo.lock` change left for a pass that owns those files
+- **Manual SMB2 implementation** - No SMB library dependency; the `smb` feature enables
+  NetGet's own wire and authentication implementations.
     - SMB2 binary protocol parsing and response generation
     - Custom packet builders for Negotiate, Session Setup, Tree Connect, etc.
     - Direct control over all protocol aspects
@@ -384,7 +383,7 @@ smbclient was told the file was gone while the model still believed it existed.
 **Every operation is fail-closed.** An operation whose LLM response contains no
 corresponding action is refused with STATUS_ACCESS_DENIED. Silence from the model, an LLM
 outage and an explicit denial must not be indistinguishable from approval (see the fail-open
-note in the root `CLAUDE.md`).
+note in the root `AGENTS.md`).
 
 Write was fail-closed first; `create` and `read` were not, and both were the fail-open shape:
 
@@ -457,7 +456,7 @@ The pair is a bijection (`decode_smb_payload` / `encode_smb_payload` in `actions
 pinned by `smb_payload_encoding_round_trips`): pass a write event's `data` and `encoding`
 straight into `smb_read_file` and the same bytes come back.
 
-**The defect this replaced** is the reference case in the root `CLAUDE.md`.
+**The defect this replaced** is the reference case in the root `AGENTS.md`.
 `smb_read_file.content` was documented as "base64 encoded for binary" in two places while
 the executor did `.as_str()…as_bytes()`, so a model that followed the documentation
 delivered literal base64 ASCII as the file's contents. The inbound half was worse than
@@ -731,7 +730,7 @@ test.
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/server/smb/bounds_test.rs` drives every bound in this table from the wire — each
@@ -743,7 +742,7 @@ deadline or the cap disappears from the source.
 
 ## Maturity: the six conditions
 
-The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
+The root `AGENTS.md` defines `Stable` as six conditions. Re-derived against source on
 30 September 2026 rather than inherited from the Beta pass. All six hold; four of them only
 after this pass repaired something.
 
@@ -753,7 +752,7 @@ after this pass repaired something.
 | 2 | the pcap oracle is green over its wire traffic | **yes** — both real-client sessions (smbprotocol's was not recorded before) and a raw session of every command the server answers, through Wireshark's `nbss`/`smb2` |
 | 3 | a fuzz target exists and has run clean, with a corpus | **yes, as of this pass** — `smb2_request` and `ntlmssp_token`, below |
 | 4 | every declared bound has a test | **yes, as of this pass** — `bounds_test.rs` and `inbound_limit_test.rs`, every bound verified by removal |
-| 5 | both `CLAUDE.md` files verified against source in this pass | **yes** — this file and `tests/server/smb/CLAUDE.md`; the corrections are below |
+| 5 | both `AGENTS.md` files verified against source in this pass | **yes** — this file and `tests/server/smb/AGENTS.md`; the corrections are below |
 | 6 | no `#[ignore]`, no skip-when-missing gate | **yes** — `grep -rn '#\[ignore\]' tests/server/smb/` is empty and both client checks panic with the install command |
 
 **Condition 1, verb by verb.** The server answers NEGOTIATE, SESSION_SETUP, LOGOFF,
@@ -827,8 +826,9 @@ null sessions over SPNEGO/NTLMSSP that authenticate nothing, the thirteen answer
 above, compounds — which is a small subset of MS-SMB2: no SMB 3.x, signing, encryption,
 oplocks, leases, durable handles, SET_INFO, LOCK, CHANGE_NOTIFY, IOCTL/FSCTL or named pipes.
 Windows, macOS and Linux kernel clients have not been run against it, and the kernel clients
-negotiate SMB 3.x first. The blocking CI `test` job does not compile `smb`; `registry-audit`
-runs `smb::real_client_test` and is `continue-on-error`, so run the suite yourself:
+negotiate SMB 3.x first. The dedicated blocking CI `smb-evidence` job runs the SMB server
+suite, including both real clients, the packet oracle, and bound tests. The advisory
+`registry-audit` also runs `smb::real_client_test` with every feature enabled. Run it locally:
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features smb --test server -- smb:: --test-threads=100

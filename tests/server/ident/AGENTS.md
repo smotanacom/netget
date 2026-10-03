@@ -20,7 +20,7 @@ The blocker is structural: **every ident client hardcodes destination port 113, 
 loopback port, and 113 needs root and collides process-wide rather than being per-test
 isolated. Standing up `ngircd` would not help for the same reason.
 
-So the client in this file is written from the wire format, which the root `CLAUDE.md` is
+So the client in this file is written from the wire format, which the root `AGENTS.md` is
 explicit about: that is "an independent reading of the spec, not an independent
 implementation" — the `dhcp` and `usb/serial` case. **It supports `Experimental`, not `Beta`.**
 Do not read the green suite as evidence of the latter, and do not add an `#[ignore]`d test
@@ -89,7 +89,7 @@ lines. Measured at 0.93s with `--test-threads=100`.
 
 All tests bind and connect to `127.0.0.1` on an ephemeral port. No external network access,
 and nothing looks up a real local user — the server cannot, by construction (see
-`src/server/ident/CLAUDE.md`).
+`src/server/ident/AGENTS.md`).
 
 ## Test execution
 
@@ -112,7 +112,7 @@ both pass; the substantive checks in both files pass either way.
   collide process-wide.
 - `close_connection` as the model's sole answer (it produces no output and is filled in as
   `ERROR : UNKNOWN-ERROR`); the `model_silent` and `fail_closed_llm_error` decision paths are
-  reasoned about in `src/server/ident/CLAUDE.md` but not exercised here, because provoking a
+  reasoned about in `src/server/ident/AGENTS.md` but not exercised here, because provoking a
   backend failure from the black-box harness means breaking the mock rather than the server.
 - The 30-second `QUERY_READ_TIMEOUT` for a peer that connects and says nothing.
 - Dashboard peer injection (`[ message this peer ]`); the handle is registered but there is no

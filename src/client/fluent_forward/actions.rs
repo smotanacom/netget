@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -24,7 +25,7 @@ impl FluentForwardClientProtocol {
     }
 }
 pub fn send_action() -> ActionDefinition {
-    ActionDefinition {name:"send_forward_batch".into(),description:"Send a typed Fluent Forward batch. require_ack generates an internal chunk ID and raises forward_ack after correlated receipt. Send outcome confirms local write only. No automatic retry.".into(),parameters:vec![parameter("batch","object","tag; 1..256 entries each timestamp={seconds, optional nanoseconds<1e9}, record=JSON object; mode message(1 entry), forward(default), packed or compressed_packed; require_ack bool. 256KiB encoded/decompressed, depth32/value16384 limits.",true)],example:json!({"type":"send_forward_batch","batch":{"tag":"demo.logs","entries":[{"timestamp":{"seconds":1700000000,"nanoseconds":250000000},"record":{"message":"Started"}}],"mode":"forward","require_ack":true}}),log_template:None}
+    ActionDefinition {name:"send_forward_batch".into(),description:"Send a typed Fluent Forward batch. require_ack generates an internal chunk ID and raises forward_ack after correlated receipt. Send outcome confirms local write only. No automatic retry.".into(),parameters:vec![parameter("batch","object","tag; 1..256 entries each timestamp={seconds, optional nanoseconds<1e9}, record=JSON object; mode message(1 entry), forward(default), packed or compressed_packed; require_ack bool. 256KiB encoded/decompressed, depth32/value16384 limits.",true)],example:json!({"type":"send_forward_batch","batch":{"tag":"demo.logs","entries":[{"timestamp":{"seconds":1700000000,"nanoseconds":250000000},"record":{"message":"Started"}}],"mode":"forward","require_ack":true}}),log_template: Some(LogTemplate::new().with_info("-> Fluent Forward tag={batch.tag} entries={batch.entries_len} mode={batch.mode} require_ack={batch.require_ack}"))}
 }
 fn disconnect_action() -> ActionDefinition {
     ActionDefinition {
@@ -32,7 +33,7 @@ fn disconnect_action() -> ActionDefinition {
         description: "Close the Forward TCP connection and remove its command handle".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("-> Fluent Forward disconnect")),
     }
 }
 pub static FORWARD_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -48,7 +49,7 @@ pub static FORWARD_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_actions(vec![send_action(), disconnect_action()])
 });
 pub static FORWARD_ACK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("forward_ack","Collector sent a matching ACK for a pending batch. Correlation token stays inside the transport; receipt is not persistence.",send_action().example).with_parameters(vec![parameter("tag","string","Accepted tag",true),parameter("record_count","number","Accepted entries",true)]).with_actions(vec![send_action(),disconnect_action()])
+    EventType::new("forward_ack","Collector sent a matching ACK for a pending batch. Correlation token stays inside the transport; receipt is not persistence.",send_action().example).with_parameters(vec![parameter("tag","string","Forward tag of the acknowledged batch",true),parameter("record_count","number","Accepted entries",true)]).with_actions(vec![send_action(),disconnect_action()])
 });
 impl Protocol for FluentForwardClientProtocol {
     fn protocol_name(&self) -> &'static str {

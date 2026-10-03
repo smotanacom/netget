@@ -139,7 +139,7 @@ surviving task.
 ## References
 
 - [Kafka Protocol Guide](https://kafka.apache.org/protocol)
-- Implementation: `src/server/kafka/CLAUDE.md`
+- Implementation: `src/server/kafka/AGENTS.md`
 - Test helpers: `tests/helpers/`
 
 ## The real client: `kcat` on librdkafka

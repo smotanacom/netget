@@ -12,7 +12,7 @@ Five mocked tests over `reqwest`. Feature gate `saml-sp`; declared in `tests/ser
 | `connection_bounds_test.rs` | 2 | the first-byte and idle deadlines and the connection cap |
 
 `hardening_test.rs` is the one to read first: an assertion-consumer service that answers
-`200` without having decided anything is the fail-open shape the project `CLAUDE.md` calls
+`200` without having decided anything is the fail-open shape the project `AGENTS.md` calls
 the most dangerous pattern here.
 
 ```bash
@@ -30,7 +30,7 @@ none is.
 `test_saml_sp_accepts_a_forged_assertion` states that absence as a test: it posts twenty-four
 bytes of non-XML as the `SAMLResponse` and asserts a session is issued anyway. If real
 validation is ever added, that test fails, which is the intent — it forces
-`src/server/saml_sp/CLAUDE.md` and this suite to be updated together rather than leaving a
+`src/server/saml_sp/AGENTS.md` and this suite to be updated together rather than leaving a
 stale claim behind.
 
 ## Tests

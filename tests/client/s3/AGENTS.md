@@ -354,5 +354,5 @@ jobs:
 
 - `src/client/s3/mod.rs` - S3 client implementation
 - `src/client/s3/actions.rs` - Action definitions
-- `src/client/s3/CLAUDE.md` - Implementation documentation
+- `src/client/s3/AGENTS.md` - Implementation documentation
 - `tests/client/s3/e2e_test.rs` - E2E test suite (this file's tests)

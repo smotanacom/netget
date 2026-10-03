@@ -23,11 +23,11 @@ use super::server_registry::ALL_KNOWN_PROTOCOLS;
 /// The USB-* and BLUETOOTH_BLE_* profile servers are deliberately absent: the
 /// generic "USB" / "Bluetooth (BLE)" clients speak the base transport, not a
 /// specific profile, so pairing a profile server with them would promise an
-/// exchange the client cannot hold up.
+/// exchange the client cannot hold up. Bitcoin P2P is likewise absent: the Bitcoin
+/// client speaks Bitcoin Core JSON-RPC over HTTP, not the peer-to-peer wire protocol.
 const SERVER_TO_CLIENT_ALIASES: &[(&str, &str)] = &[
     ("DoH", "DNS-over-HTTPS"),
     ("Proxy", "HTTP Proxy"),
-    ("Bitcoin P2P", "Bitcoin"),
     ("Tor Relay", "Tor"),
     ("OpenID", "OpenIDConnect"),
     ("SamlIdp", "SAML"),
@@ -69,10 +69,28 @@ pub fn client_protocol_for_server(server_name: &str) -> Option<&'static str> {
 /// client registry), so the UI can offer "open a client against this server"
 /// truthfully.
 pub fn compiled_client_protocol_for_server(server_name: &str) -> Option<String> {
-    let client_name = client_protocol_for_server(server_name)?;
+    // A known canonical name keeps its identity even when its server is not compiled.
+    // The keyword resolver deliberately falls back from an unavailable FTP to TCP;
+    // that CLI convenience must not change which client a protocol is paired with.
+    let wanted = normalize(server_name);
+    let known_canonical = ALL_KNOWN_PROTOCOLS
+        .iter()
+        .map(|(name, _)| *name)
+        .find(|name| normalize(name) == wanted);
+    // Instances preserve the operator's spelling (e.g. `bitcoin`), which may be a
+    // registry keyword rather than the canonical server name (`Bitcoin P2P`). Resolve
+    // those aliases before joining: the Bitcoin keyword would match the RPC client.
+    let canonical = known_canonical.or_else(|| {
+        super::server_registry::registry()
+            .resolve(server_name)
+            .ok()
+            .map(|server| server.protocol_name())
+    });
+    let client_name = client_protocol_for_server(canonical.unwrap_or(server_name))?;
+    // The join already returned the client's canonical name. Keyword matching here
+    // could substitute another compiled client for an unavailable implementation.
     CLIENT_REGISTRY
-        .resolve(client_name)
-        .ok()
+        .get(client_name)
         .map(|_| client_name.to_string())
 }
 

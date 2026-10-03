@@ -135,7 +135,7 @@ the connection the instant the answer is sent.
 
 ## What is not covered
 
-- Media tracks (out of scope for the protocol; see `src/server/webrtc/CLAUDE.md`).
+- Media tracks (out of scope for the protocol; see `src/server/webrtc/AGENTS.md`).
 - Trickle ICE, renegotiation, ICE restart (unsupported).
 - Multiple simultaneous peers. The server supports them (one WebSocket each, independent
   state machines) but no test asserts it; adding one costs 3 more LLM calls.

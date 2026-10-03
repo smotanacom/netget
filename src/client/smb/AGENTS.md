@@ -291,7 +291,7 @@ Triggered when SMB operation fails.
 
 ## Testing Strategy
 
-See `tests/client/smb/CLAUDE.md` for E2E testing approach.
+See `tests/client/smb/AGENTS.md` for E2E testing approach.
 
 **Test Server:** Docker Samba container
 

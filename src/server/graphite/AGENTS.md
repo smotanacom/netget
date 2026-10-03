@@ -26,8 +26,12 @@ No response exists in the Carbon plaintext grammar, so errors/cap refusals close
 on the wire and log the reason. Handler errors fail closed. All listener/peer tasks are
 registered; server stop cancels parked handlers and closes established sockets.
 
+The metadata declares `request_only`: this collector cannot send a message to an idle peer,
+because Carbon plaintext has no server-to-sender message grammar. The dashboard and MCP
+peer-message actions show that reason instead of offering arbitrary output injection.
+
 References: [Graphite feeding Carbon](https://graphite.readthedocs.io/en/stable/feeding-carbon.html),
 [official Carbon parser](https://github.com/graphite-project/carbon/blob/1.1.10/lib/carbon/protocols.py).
-Independent interoperability and bootstrap: `tests/server/graphite/CLAUDE.md`.
+Independent interoperability and bootstrap: `tests/server/graphite/AGENTS.md`.
 
 Peer controls: Carbon plaintext collectors never send application replies or unsolicited peer messages. Pending requests remain answerable through the ordinary event handler; no uncorrelated wire reply is offered.

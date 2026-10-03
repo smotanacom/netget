@@ -55,6 +55,65 @@ pub fn actions_have_credentials(actions: &[crate::llm::actions::ActionDefinition
         .any(|action| action.parameters.iter().any(|p| is_sensitive_key(&p.name)))
 }
 
+/// Detect credential-bearing structured input without cloning or recursive traversal.
+/// A budget-exceeding input is private because its remaining keys cannot be proven safe.
+/// Null credential fields do not contain a value. Bounds apply to node count, depth and
+/// retained string/key content; no request-wide or global privacy state is retained.
+pub fn contains_credentials(value: &Value) -> bool {
+    const MAX_NODES: usize = 4096;
+    const MAX_DEPTH: usize = 64;
+    const MAX_BYTES: usize = 256 * 1024;
+    let mut pending = vec![(value, 0usize)];
+    let mut nodes = 0usize;
+    let mut bytes = 0usize;
+    while let Some((value, depth)) = pending.pop() {
+        nodes += 1;
+        bytes = bytes.saturating_add(std::mem::size_of::<Value>());
+        if nodes > MAX_NODES || depth > MAX_DEPTH || bytes > MAX_BYTES {
+            return true;
+        }
+        match value {
+            Value::String(s) => bytes = bytes.saturating_add(s.len()),
+            Value::Array(values) => {
+                if values.len() > MAX_NODES.saturating_sub(nodes + pending.len()) {
+                    return true;
+                }
+                pending.extend(values.iter().map(|value| (value, depth + 1)));
+            }
+            Value::Object(values) => {
+                if values.len() > MAX_NODES.saturating_sub(nodes + pending.len()) {
+                    return true;
+                }
+                for (key, value) in values {
+                    bytes = bytes.saturating_add(key.len());
+                    if bytes > MAX_BYTES {
+                        return true;
+                    }
+                    if !value.is_null() && is_sensitive_key(key) {
+                        return true;
+                    }
+                    pending.push((value, depth + 1));
+                }
+            }
+            _ => {}
+        }
+        if bytes > MAX_BYTES {
+            return true;
+        }
+    }
+    false
+}
+
+/// Remove untyped context from a private request's error while preserving the
+/// numeric overload category that protocols use to choose a retryable wire reply.
+pub fn hide_error_details(error: anyhow::Error) -> anyhow::Error {
+    if let Some(category) = error.downcast_ref::<crate::llm::rate_limiter::RateLimitError>() {
+        anyhow::Error::new(*category)
+    } else {
+        anyhow::anyhow!("credential-bearing request failed; diagnostics hidden")
+    }
+}
+
 /// Deepest nesting walked. `serde_json` refuses to parse past 128 levels, so a parsed value
 /// never reaches this; a value built in code might, and past it the subtree is shown as
 /// [`REDACTED`] whole rather than walked on a shrinking stack.

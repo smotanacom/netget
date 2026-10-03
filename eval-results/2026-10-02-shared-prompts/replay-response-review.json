@@ -1,0 +1,303 @@
+{
+  "reviewed_at": "2026-10-03T03:08:36.820681+00:00",
+  "replay_file_sha256": "e27994931c4174854fecb84866fefe76551c509011d96624605e301c9ef784d4",
+  "review_scope": "All 36 raw API responses reviewed; 14 unique response texts. Counter results are appearances in the first answer-shaped JSON value, not native validation or wire scores.",
+  "baseline_tools_counted": 10,
+  "patched_tools_counted": 0,
+  "findings": [
+    {
+      "event": "imap_command",
+      "finding": "All three baseline LIST replies add generate_random(uuid), although the fixed mailbox names need no random value. All three patched replies send the same mailbox list without a tool."
+    },
+    {
+      "event": "http_request",
+      "finding": "The first baseline reply adds generate_random(uuid); subsequent baseline replies omit it. Both variants omit the requested quotes and final period in the action body."
+    },
+    {
+      "event": "telnet_connection_opened",
+      "finding": "Every baseline reply adds generate_random(uuid) for claimed tracking; patched replies omit it. Both variants omit the final period requested in the greeting."
+    },
+    {
+      "event": "telnet_message_received",
+      "finding": "All three baseline answers have an invalid JSON string-concatenation expression in actions. The counter finds a nested generate_random tool object and no action, so its tool count is not evidence of a valid full envelope. Patched replies use a valid action-shaped object but omit requested quotes and final period."
+    },
+    {
+      "event": "imap_auth",
+      "finding": "Baseline replies contain separate conditional OK/NO JSON objects and later append_memory prose; the counter counts the first OK object only. Patched replies include an OK completion, set_memory and an additional preformatted untagged response. NetGet explicitly supports the response-only IMAP action format; this replay did not validate a wire session."
+    },
+    {
+      "event": "imap_connection",
+      "finding": "Patched replies include a greeting plus an additional untagged CAPABILITY response; baseline replies include one greeting. Extra actions count as actions in the table, without claiming that fewer actions are always better."
+    },
+    {
+      "event": "repeated_fixed_requests",
+      "finding": "Baseline IMAP connection and HTTP response texts differ between the first and later repetitions despite identical request payloads and seed. No cause is inferred; all texts, timing and API metadata are retained."
+    }
+  ],
+  "records": [
+    {
+      "event": "imap_connection",
+      "label": "baseline",
+      "content_sha256_per_repeat": [
+        "d515b38f6d49188b6b66faa0da4e8133310d2cb0a3b112bf7b50c9e715ffeb49",
+        "4ed5664304b0cd724547fdd2709735f586174b1f6789a130b5f236cde8d068ea",
+        "4ed5664304b0cd724547fdd2709735f586174b1f6789a130b5f236cde8d068ea"
+      ],
+      "unique_contents": 2,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 6.7683333333333335,
+      "median_seconds": 5.037
+    },
+    {
+      "event": "imap_connection",
+      "label": "patched",
+      "content_sha256_per_repeat": [
+        "7e128d7263474eaf6831361b62d67c2b8feb4ec2177bdf03ff875f0458917921",
+        "7e128d7263474eaf6831361b62d67c2b8feb4ec2177bdf03ff875f0458917921",
+        "7e128d7263474eaf6831361b62d67c2b8feb4ec2177bdf03ff875f0458917921"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        2,
+        2,
+        2
+      ],
+      "mean_seconds": 3.505333333333333,
+      "median_seconds": 2.376
+    },
+    {
+      "event": "imap_auth",
+      "label": "patched",
+      "content_sha256_per_repeat": [
+        "1d2b9ce33ce33abcad72972e6e0df96f31f2471ecefe54eb51007fbcdf6220d4",
+        "1d2b9ce33ce33abcad72972e6e0df96f31f2471ecefe54eb51007fbcdf6220d4",
+        "1d2b9ce33ce33abcad72972e6e0df96f31f2471ecefe54eb51007fbcdf6220d4"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        3,
+        3,
+        3
+      ],
+      "mean_seconds": 3.5370000000000004,
+      "median_seconds": 2.959
+    },
+    {
+      "event": "imap_auth",
+      "label": "baseline",
+      "content_sha256_per_repeat": [
+        "4c10ec9b0a68681a414bc2b96cc6d858158e17d1d6cbb574a05a34be0f8710a5",
+        "4c10ec9b0a68681a414bc2b96cc6d858158e17d1d6cbb574a05a34be0f8710a5",
+        "4c10ec9b0a68681a414bc2b96cc6d858158e17d1d6cbb574a05a34be0f8710a5"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 10.394,
+      "median_seconds": 9.376
+    },
+    {
+      "event": "imap_command",
+      "label": "baseline",
+      "content_sha256_per_repeat": [
+        "ef415dd72da59f8d433cf6383aeda4b8f783037ac47808ccaa3b2bdd869af815",
+        "ef415dd72da59f8d433cf6383aeda4b8f783037ac47808ccaa3b2bdd869af815",
+        "ef415dd72da59f8d433cf6383aeda4b8f783037ac47808ccaa3b2bdd869af815"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        1,
+        1,
+        1
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 5.277333333333334,
+      "median_seconds": 3.654
+    },
+    {
+      "event": "imap_command",
+      "label": "patched",
+      "content_sha256_per_repeat": [
+        "365fb2d6459bb3c997a41302b53930e11ecf51d5e9d4121a287953ebd44fd25c",
+        "365fb2d6459bb3c997a41302b53930e11ecf51d5e9d4121a287953ebd44fd25c",
+        "365fb2d6459bb3c997a41302b53930e11ecf51d5e9d4121a287953ebd44fd25c"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 3.7916666666666665,
+      "median_seconds": 2.956
+    },
+    {
+      "event": "http_request",
+      "label": "patched",
+      "content_sha256_per_repeat": [
+        "d62417116ab490115778552d5127229d5e754c0c653e42c132a2b68ee3b438ca",
+        "d62417116ab490115778552d5127229d5e754c0c653e42c132a2b68ee3b438ca",
+        "d62417116ab490115778552d5127229d5e754c0c653e42c132a2b68ee3b438ca"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 2.6166666666666667,
+      "median_seconds": 1.204
+    },
+    {
+      "event": "http_request",
+      "label": "baseline",
+      "content_sha256_per_repeat": [
+        "d988e04c6e2eed4fc0548e605b66eb44801ca6a73874676ecdaf2c7bed014c3d",
+        "cb46312fe86e07219fd94ad6571cd9d603d233e75ad50a2d2e95b837329ec385",
+        "cb46312fe86e07219fd94ad6571cd9d603d233e75ad50a2d2e95b837329ec385"
+      ],
+      "unique_contents": 2,
+      "tools_counted": [
+        1,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 4.4639999999999995,
+      "median_seconds": 1.325
+    },
+    {
+      "event": "telnet_connection_opened",
+      "label": "baseline",
+      "content_sha256_per_repeat": [
+        "7225175078e8798830761c4157ab9c7cdef987d7b634993ed29b9a718b5f7d8e",
+        "7225175078e8798830761c4157ab9c7cdef987d7b634993ed29b9a718b5f7d8e",
+        "7225175078e8798830761c4157ab9c7cdef987d7b634993ed29b9a718b5f7d8e"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        1,
+        1,
+        1
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 5.609333333333333,
+      "median_seconds": 3.502
+    },
+    {
+      "event": "telnet_connection_opened",
+      "label": "patched",
+      "content_sha256_per_repeat": [
+        "290e2c41a430a348b75f93796a6a6d4f5e88b1a588d0ebcd2af1015b86b8c3cd",
+        "290e2c41a430a348b75f93796a6a6d4f5e88b1a588d0ebcd2af1015b86b8c3cd",
+        "290e2c41a430a348b75f93796a6a6d4f5e88b1a588d0ebcd2af1015b86b8c3cd"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 3.401,
+      "median_seconds": 2.391
+    },
+    {
+      "event": "telnet_message_received",
+      "label": "patched",
+      "content_sha256_per_repeat": [
+        "28e12b2ab05eff4ae391f38e520ecaebba88561a8744b7b434ae836d6d83a271",
+        "28e12b2ab05eff4ae391f38e520ecaebba88561a8744b7b434ae836d6d83a271",
+        "28e12b2ab05eff4ae391f38e520ecaebba88561a8744b7b434ae836d6d83a271"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        0,
+        0,
+        0
+      ],
+      "actions_counted": [
+        1,
+        1,
+        1
+      ],
+      "mean_seconds": 2.1853333333333333,
+      "median_seconds": 1.638
+    },
+    {
+      "event": "telnet_message_received",
+      "label": "baseline",
+      "content_sha256_per_repeat": [
+        "2c14d9650f33e233183add65c7cba26a79eecbe993c804712472d17c70f2da84",
+        "2c14d9650f33e233183add65c7cba26a79eecbe993c804712472d17c70f2da84",
+        "2c14d9650f33e233183add65c7cba26a79eecbe993c804712472d17c70f2da84"
+      ],
+      "unique_contents": 1,
+      "tools_counted": [
+        1,
+        1,
+        1
+      ],
+      "actions_counted": [
+        0,
+        0,
+        0
+      ],
+      "mean_seconds": 4.761333333333333,
+      "median_seconds": 3.643
+    }
+  ]
+}

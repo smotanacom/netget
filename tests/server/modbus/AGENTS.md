@@ -3,7 +3,7 @@
 ## Strategy
 
 Four layers, deliberately, because each one catches something the others cannot. The rating
-these support is **Stable**; `src/server/modbus/CLAUDE.md`'s "Maturity: the six conditions"
+these support is **Stable**; `src/server/modbus/AGENTS.md`'s "Maturity: the six conditions"
 says which file carries which condition.
 
 1. **A real, independent client.** `tokio-modbus` 0.17 (MIT OR Apache-2.0) is a dev-dependency
@@ -127,7 +127,7 @@ data.
 - Two ADUs in one TCP segment → two correctly framed responses; one ADU split across two
   segments → reassembled
 - `unit_id` → exception 0x0B for another unit, pass-through for its own
-- Every fail-closed clause in `src/server/modbus/CLAUDE.md`, on the wire and in the log
+- Every fail-closed clause in `src/server/modbus/AGENTS.md`, on the wire and in the log
   (`llm_failure_test.rs`)
 - Every declared bound from the wire, each verified by removal (`bounds_test.rs`,
   `connection_bounds_test.rs`): see the table at the top of `bounds_test.rs`
@@ -140,7 +140,7 @@ data.
 - The `answer_with` sentence each event carries (`answer_with_test.rs`): for a read, the map it
   asks for, the addresses asked for, and exception 2 for one left out; for a write, the
   check-first wording with the literal exception. Its wording
-  is measured by the real-model eval (`src/server/modbus/CLAUDE.md`), not by these tests; they
+  is measured by the real-model eval (`src/server/modbus/AGENTS.md`), not by these tests; they
   pin it so a rewording is a decision
 - Codec: spec example frames, incomplete frames reported as incomplete (not as an error),
   non-zero protocol id reported as not-Modbus, bit packing, register packing, both write-echo

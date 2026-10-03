@@ -37,7 +37,7 @@ proxy should handle.
 `install_rustls_provider()` installs `ring` through `quinn`'s rustls re-export. This is now
 belt-and-braces rather than a workaround: `connect_with_llm_actions` installs the provider
 itself, and `install_default` returning `Err` because one is already set is the wanted outcome.
-See `src/client/kubernetes/CLAUDE.md` for why two providers can be linked at once.
+See `src/client/kubernetes/AGENTS.md` for why two providers can be linked at once.
 
 ## Running
 

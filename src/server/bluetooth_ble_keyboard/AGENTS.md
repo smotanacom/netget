@@ -81,7 +81,7 @@ The base parses every service and characteristic UUID with `uuid::Uuid::parse_st
 accepts the 36-character hyphenated form (and the 32-character simple form) and **rejects the
 16-bit Bluetooth SIG shorthand**. `"180D"` does not parse, and `add_service` fails with
 "Invalid service UUID". There is no expansion helper anywhere in the tree, despite
-`src/server/bluetooth_ble/CLAUDE.md` claiming `"180D"` is "expanded to"
+`src/server/bluetooth_ble/AGENTS.md` claiming `"180D"` is "expanded to"
 `0000180d-0000-1000-8000-00805f9b34fb`.
 
 Every UUID in this protocol's startup examples is therefore written out in full. Alias `XXXX`
@@ -174,7 +174,7 @@ bonding that HID-over-GATT requires is not something `ble-peripheral-rust` 0.2 c
 `metadata()` declares this with `.answers_on_failure()` (`FailureMode::Answers`), which
 `tests/failure_mode_declaration_test.rs` checks: the answer is ATT Unlikely Error (0x0E).
 
-**This profile is not deliberately silent, and the root `CLAUDE.md` lists it as such by family
+**This profile is not deliberately silent, and the root `AGENTS.md` lists it as such by family
 membership rather than by decision.** GATT has an error frame and the base stack uses it: a read
 it cannot satisfy is answered with ATT Unlikely Error (0x0E), which the central surfaces as a
 failed read. Nothing is fabricated, which is what makes that correct — the silence rule is about

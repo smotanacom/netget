@@ -311,7 +311,7 @@ the case the capture opened and later stopped.
 `arp_client_started` event and every captured packet — go through one `execute_client_actions`.
 The started-event arm used to be `for _action in actions { debug!(..) }`: a client told to send
 a gratuitous ARP announcement on start put nothing on the wire and reported success. That is
-the defect the root `CLAUDE.md` describes under "clients that ask the model what to do and then
+the defect the root `AGENTS.md` describes under "clients that ask the model what to do and then
 throw the answer away", and `tests/client_event_wiring_test.rs` now guards against its return.
 
 **Shutdown**: the capture loop polls a `crate::utils::StopSignal` every iteration, and the

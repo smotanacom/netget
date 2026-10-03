@@ -16,6 +16,8 @@ pub mod bootp;
 pub mod cassandra;
 #[cfg(feature = "coap")]
 pub mod coap;
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "couchdb")]
 pub mod couchdb;
 #[cfg(feature = "datalink")]
@@ -272,3 +274,9 @@ pub mod nostr;
 
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
+
+#[cfg(feature = "tacacs")]
+pub mod tacacs;
+
+#[cfg(feature = "bolt")]
+pub mod bolt;

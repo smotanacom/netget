@@ -44,5 +44,5 @@ a lenient test would skip: Find Me is a behaviour on disconnect, and nothing abo
 proves it happens.
 
 That test does not exist. An adapter-claiming test would have to be `#[ignore]`d so a 100-thread
-run does not deadlock on the machine's single radio, and per the root `CLAUDE.md` an `#[ignore]`d
+run does not deadlock on the machine's single radio, and per the root `AGENTS.md` an `#[ignore]`d
 test is not evidence however good its reason.

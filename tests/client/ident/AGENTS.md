@@ -13,13 +13,13 @@ Read this before treating any of it as maturity evidence.
 
 | Peer | Tests | What it proves |
 |---|---|---|
-| **NetGet's own ident server** (`ServerForm`, in-process) | USERID reply, all four ERROR tokens, the follow-up chain | The two halves agree. **Same-project evidence** — the circular-evidence class the root `CLAUDE.md` names — not that either matches RFC 1413 |
+| **NetGet's own ident server** (`ServerForm`, in-process) | USERID reply, all four ERROR tokens, the follow-up chain | The two halves agree. **Same-project evidence** — the circular-evidence class the root `AGENTS.md` names — not that either matches RFC 1413 |
 | **Hand-written loopback peer** (`spawn_raw_ident_peer`) | port-pair mismatch, whitespace on the wire | An independent reading of the wire format, not an independent implementation. Same class as `dhcp`'s in-test RFC 2131 decoder |
 | **`parse_ident_reply` directly** | whitespace, seven malformed shapes, oversized, `resolve_target` | Exact and cheap; where a parse regression surfaces first |
 
 There is no third-party ident server to point this client at, and the reason is structural, not
 a matter of effort: RFC 1413 has no notion of a configurable port, so nothing can be aimed at an
-ephemeral loopback port and 113 needs root. `src/server/ident/CLAUDE.md` records the full search
+ephemeral loopback port and 113 needs root. `src/server/ident/AGENTS.md` records the full search
 (crates.io, Homebrew, PyPI, macOS binaries). **Do not repeat it, and do not read this suite as
 Beta evidence.**
 

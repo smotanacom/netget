@@ -59,7 +59,7 @@ No exit stream is opened and nothing outside 127.0.0.1 is contacted.
 No real `tor` or Arti binary is involved and cannot be: the link handshake stops after VERSIONS
 (no CERTS / AUTH_CHALLENGE / NETINFO). Relay cell digests are never computed or verified, there
 is no EXTEND, and no exit policy is enforced. That is why the protocol stays `Experimental`;
-the list lives in `src/server/tor_relay/CLAUDE.md`.
+the list lives in `src/server/tor_relay/AGENTS.md`.
 
 ## LLM call budget
 

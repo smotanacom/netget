@@ -35,7 +35,7 @@ implemented and the third is recorded rather than pretended.
 because an errno alone (`Protocol not supported`) tells an operator nothing about what to do
 next.
 
-This is the `bluetooth_ble_beacon` precedent from the root `CLAUDE.md`: **hiding a protocol is
+This is the `bluetooth_ble_beacon` precedent from the root `AGENTS.md`: **hiding a protocol is
 not the same as refusing to start it.** Hidden, nobody learns why; refused, the reason is on
 the screen.
 
@@ -208,13 +208,13 @@ optional Diagnostic Information parameter is left empty — it is the one field 
 internal string could leak, and `codec::error` never populates it. The category comes from
 `crate::utils::WireFailure`; M3UA's error code registry has no resource-exhaustion code, so both
 categories map onto `0x0d Refused - Management Blocking` on the wire and are separated in the
-log instead. That is the rule the root `CLAUDE.md` states for exactly this case.
+log instead. That is the rule the root `AGENTS.md` states for exactly this case.
 
 ## What is deliberately not implemented
 
 - **Routing key management (RKM).** REG REQ / DEREG REQ are decoded and named, and answered with
   ERR `0x04 Unsupported Message Type` plus a log line saying why. Dynamic registration means
-  keeping a routing key table, and a routing key table is **storage**, which the root `CLAUDE.md`
+  keeping a routing key table, and a routing key table is **storage**, which the root `AGENTS.md`
   forbids a protocol from implementing. Accepting and forgetting would be worse than refusing:
   an ASP that believes it registered a key will send traffic for it. Configure `routing_context`
   instead, or use the generic SQLite facility from a handler.
@@ -259,7 +259,7 @@ as a blob. The SS7 user part is the one legitimately opaque field, and it carrie
 `encoding` (`"utf8"` / `"hex"`) in both directions, which `send_m3ua_data`'s executor really
 decodes. It is **declared, never sniffed**: `"48656c6c6f"` is simultaneously valid text and
 valid hex and only the sender knows which it meant. This is the `send_tcp_data` lesson from the
-root `CLAUDE.md` — documenting hex and then calling `as_bytes()` puts literal ASCII on the wire.
+root `AGENTS.md` — documenting hex and then calling `as_bytes()` puts literal ASCII on the wire.
 
 Error codes, traffic modes and NTFY status values are accepted by **name**
 (`refused_management_blocking`, `loadshare`, `as_active`) as well as by number, and an
@@ -327,7 +327,7 @@ exemption in `PROTOCOL_QUALITY.md`'s three-state test.
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. `read_message` bounds the header, the announced body and the alignment padding. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

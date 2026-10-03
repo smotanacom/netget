@@ -73,7 +73,7 @@ the specification defines (1-6, 8, 10, 11).
 
 There is deliberately **no storage** in this implementation: no register array, no coil bitmap,
 no persistence. Every read raises an event and the model supplies the values. This is the
-project rule from `CLAUDE.md`, and it is also the whole point of the protocol here — an
+project rule from `AGENTS.md`, and it is also the whole point of the protocol here — an
 LLM-invented tank level that drifts over successive reads is more interesting than a static
 array, and it is something only a model can produce.
 
@@ -416,7 +416,7 @@ illegal_function - this device is read-only.
 
 ## Maturity: the six conditions
 
-The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
+The root `AGENTS.md` defines `Stable` as six conditions. Re-derived against source on
 26 September 2026 rather than inherited. All six hold; three of them only after this pass
 repaired something:
 
@@ -426,7 +426,7 @@ repaired something:
 | 2 | the pcap oracle is green over its wire traffic | **yes, as of this pass** — `pcap_oracle_test.rs` runs `mbtcp` over a session of all eight function codes and an exception, both directions |
 | 3 | a fuzz target exists and has run clean, with a corpus | **yes** — `modbus_adu`, 226,125 runs in 61s, clean; see below |
 | 4 | every declared bound has a test | **yes, as of this pass** — `bounds_test.rs` and `connection_bounds_test.rs`, each verified by removal |
-| 5 | both `CLAUDE.md` files verified against source in this pass | **yes** — this file and `tests/server/modbus/CLAUDE.md`; the corrections are below |
+| 5 | both `AGENTS.md` files verified against source in this pass | **yes** — this file and `tests/server/modbus/AGENTS.md`; the corrections are below |
 | 6 | no `#[ignore]`, no skip-when-missing gate | **yes** — `grep -rn '#\[ignore\]' tests/server/modbus/` is empty |
 
 **Condition 1 was true of a sample, not the surface.** Both clients existed, but `tokio-modbus`

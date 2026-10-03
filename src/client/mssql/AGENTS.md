@@ -74,7 +74,7 @@ raises another event, which the model may answer with another query. Nothing in
 that loop terminates on its own. It had no bound, so a model that answered every
 `mssql_query_result` with another `mssql_query` recursed for as long as the
 process lived — one boxed future and one `register_client_task` handle per step.
-A depth bound, not silence, is the fix the root `CLAUDE.md` prescribes for this
+A depth bound, not silence, is the fix the root `AGENTS.md` prescribes for this
 shape; `src/client/etcd/` uses the same 4 for the identical cycle. Actions
 dropped at the limit are logged at WARN naming the count, so a plan that needed a
 fifth step is visibly cut off rather than silently ignored.

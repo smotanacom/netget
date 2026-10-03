@@ -64,8 +64,15 @@ pub async fn start_server_by_id(
     status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<(), ActionExecutionError> {
     // Get server info
-    let server = match state.get_server(server_id).await {
-        Some(s) => s,
+    let server = match state
+        .with_server_mut(server_id, |current| {
+            crate::protocol::StartupParams::preflight_owned(&mut current.startup_params)?;
+            Ok::<_, crate::protocol::StartupParamError>(current.clone())
+        })
+        .await
+    {
+        Some(Ok(current)) => current,
+        Some(Err(error)) => return Err(ActionExecutionError::Fatal(error.into())),
         None => {
             let _ = status_tx.send(format!("[ERROR] Server #{} not found", server_id.as_u32()));
             return Ok(());
@@ -345,13 +352,14 @@ pub async fn start_server_from_action(
     send_first: bool,
     initial_memory: Option<String>,
     instruction: String,
-    startup_params: Option<serde_json::Value>,
+    mut startup_params: Option<serde_json::Value>,
     event_handlers: Option<Vec<serde_json::Value>>,
     scheduled_tasks: Option<Vec<crate::llm::actions::common::ServerTaskDefinition>>,
     feedback_instructions: Option<String>,
     status_tx: mpsc::UnboundedSender<String>,
 ) -> Result<ServerId> {
     use crate::state::server::ServerStatus;
+    crate::protocol::StartupParams::preflight_owned(&mut startup_params)?;
     let prepared_tasks = crate::state::task::prepare_tasks(
         scheduled_tasks.as_deref(),
         crate::state::task::TaskScope::Global,
@@ -423,7 +431,7 @@ pub async fn start_server_from_action(
         .iter()
         .any(|p| p.name == "send_first");
 
-    let startup_params = if send_first && declares_send_first {
+    let mut startup_params = if send_first && declares_send_first {
         let mut params = startup_params.unwrap_or_else(|| serde_json::json!({}));
         match params.as_object_mut() {
             Some(map) => {
@@ -434,7 +442,7 @@ pub async fn start_server_from_action(
             None => {
                 return Err(anyhow::anyhow!(
                     "startup_params must be a JSON object, got: {}",
-                    params
+                    crate::utils::redact::redact_sensitive(&params)
                 ));
             }
         }
@@ -451,6 +459,8 @@ pub async fn start_server_from_action(
         }
         startup_params
     };
+
+    crate::protocol::StartupParams::preflight_owned(&mut startup_params)?;
 
     // === Validate startup params BEFORE registering the server ===
     //

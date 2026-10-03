@@ -5,6 +5,8 @@ pub mod client;
 pub mod common;
 pub mod event_trigger;
 pub mod example_test_framework;
+#[cfg(feature = "grpc")]
+pub mod grpc_peer;
 pub mod http_bounds;
 pub mod inbound_limit;
 pub mod llm_live;
@@ -48,11 +50,13 @@ pub mod quic_peer;
 #[cfg(feature = "prometheus-remote-write")]
 pub mod prometheus_remote_write;
 
-#[cfg(feature = "grpc")]
-pub mod grpc_peer;
-
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc_peer;
 #[cfg(feature = "grpc-web")]
 pub mod grpcweb_peer;
 
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
+
+#[cfg(feature = "tacacs")]
+pub mod tacacs;

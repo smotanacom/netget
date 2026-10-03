@@ -10,7 +10,7 @@
 Neither is `#[ignore]`d and neither skips: the curl test **fails**, naming the install command,
 when curl is absent.
 
-**curl is a generic HTTP client, and the root `CLAUDE.md` rules those out as evidence — for a
+**curl is a generic HTTP client, and the root `AGENTS.md` rules those out as evidence — for a
 protocol layered *on* HTTP.** The qualification is that `PROPFIND`, `MKCOL` and `COPY` are not
 HTTP verbs, `207 Multi-Status` is not an HTTP status, `Depth` and `Destination` are not HTTP
 headers, and `DAV:multistatus` is not an HTTP document. Every one of those is RFC 4918's, which
@@ -252,7 +252,7 @@ bound is removed, and `tests/accept_bounded_test.rs` covers the shared helper.
 
 `tests/server/webdav/test.rs` — three mocked E2E tests driven by `reqwest_dav`, 9 LLM calls
 total. `tests/server/webdav/real_client_test.rs` — one session driven by the real `curl`
-binary, 6 LLM calls. See `tests/server/webdav/CLAUDE.md`.
+binary, 6 LLM calls. See `tests/server/webdav/AGENTS.md`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features webdav \

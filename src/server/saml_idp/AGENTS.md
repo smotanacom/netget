@@ -138,6 +138,14 @@ vulnerability. `tests/server/saml_idp/hardening_test.rs` covers the first two.
   with an empty body standing — the exact fail-open that flag exists to prevent. Every action
   this protocol defines sets a status and a body, so only those two count now.
 
+After hyper flushes a body-limit refusal, the connection half-closes its write side and
+uses `src/server/accept_bounded.rs`'s `drain_after_response` to discard at most 2 MiB of the
+remaining upload for at most two seconds in an 8 KiB buffer. This keeps an upload already
+in flight from resetting the socket and replacing the 413 with `ECONNRESET`. The drain
+starts only after the HTTP connection completes; a model call or a parked manual handler
+remains outside these deadlines. The existing hardening test checks the 413 without a
+model call, and the shared `response_drain_tests` cover both discard bounds.
+
 **No XML is parsed here.** The `AuthnRequest` is passed to the model as text and NetGet never
 builds a tree, so the entity-expansion and unbounded-nesting classes do not arise on this path.
 (A non-UTF-8 body is reported to the model as `<N bytes of non-UTF-8 data…>`; it used to be
@@ -183,7 +191,7 @@ Deterministic equivalent — no LLM call per request:
 `reqwest` as a plain HTTP client — there is no SAML library anywhere in the suite, so the
 tests assert on the *binding* (base64 `SAMLResponse` posted to the caller's `acs_url`,
 `RelayState` echoed and escaped, metadata media type, model-chosen error status) and never on
-authenticity. See `tests/server/saml_idp/CLAUDE.md`.
+authenticity. See `tests/server/saml_idp/AGENTS.md`.
 
 Pairs naturally with `saml_sp` on another port: point `acs_url` at the SP's `/acs`.
 
@@ -216,7 +224,7 @@ watchdog over `ConnectionActivity` instead, which reports a connection with work
 idle at all. The model round-trip, and an event a `manual` rule parked for a human
 (`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
 construction: an answer that takes minutes can never close the connection it is an answer for.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless

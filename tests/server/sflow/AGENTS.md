@@ -8,6 +8,8 @@ sequence wrap/gaps/late/lower uptime and idle expiry. `e2e_test.rs` uses actual
 UDP sockets for default no-model collection, silent terminal decisions,
 malformed recovery, parsing while a handler is parked, capacity, owned socket
 and intercept release, live idle expiry, shared memory and failed actions.
+An aged row for a real parked manual datagram survives the common idle sweep,
+then disappears when its handler completes; diagnostic cache expiry stays separate.
 
 `peer_test.rs` requires the unmodified public Cistern encoder. Its 320-byte wire
 output must exactly match `cistern_compact.hex`; native typed values and the

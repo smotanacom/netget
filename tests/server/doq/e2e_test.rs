@@ -147,7 +147,8 @@ async fn connection_cap_releases_slots_idle_timeout_and_alpn() {
         Some(json!({"type":"static","actions":[]})),
     )
     .await;
-    let (_endpoint, c) = fixture.peer().await;
+    let (endpoint, c) = fixture.peer().await;
+    let original_peer_addr = endpoint.local_addr().unwrap();
     let other = fixture.endpoint(b"doq");
     assert!(other
         .connect(fixture.addr, "localhost")
@@ -157,6 +158,23 @@ async fn connection_cap_releases_slots_idle_timeout_and_alpn() {
     tokio::time::timeout(Duration::from_secs(3), c.closed())
         .await
         .unwrap();
+    // The peer observes its idle close before the server finishes retiring its
+    // session. Wait for this peer's server row, rather than retrying a refused
+    // replacement connection and hiding a capacity-release failure.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let server = fixture.state.get_server(fixture.server).await.unwrap();
+            if server.connections.values().any(|connection| {
+                connection.remote_addr == original_peer_addr
+                    && connection.status == netget::state::server::ConnectionStatus::Closed
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("original DoQ server session did not close after its idle deadline");
     let (_endpoint, c2) = fixture.peer().await;
     c2.close(0u32.into(), b"done");
     let wrong = fixture.endpoint(b"h3");

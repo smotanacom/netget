@@ -176,7 +176,7 @@ no separate central client action dispatcher, and none is needed.
 
 ## Testing Strategy
 
-See `tests/client/smtp/CLAUDE.md` for:
+See `tests/client/smtp/AGENTS.md` for:
 
 - E2E test approach
 - Local SMTP server setup (mailhog, fakesmtp)

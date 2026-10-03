@@ -117,7 +117,7 @@ instead. stderr is captured and logged: at `warn` if the script succeeded, at
 `error` if it did not.
 
 Actions must be **structured data, never bytes or base64** — see the root
-`CLAUDE.md`. Non-zero exit, unparseable stdout, or a timeout all produce an
+`AGENTS.md`. Non-zero exit, unparseable stdout, or a timeout all produce an
 error, and the caller falls back to the LLM handler.
 
 ### Timeout and process lifetime
@@ -233,7 +233,7 @@ script handler purely to copy one integer.
   Unix). A RAII owner removes the directory and source on completion, failure or
   cancellation. Concurrent invocations share no writable staging path.
 - **Default (per-event) scripts share nothing.** There is no cross-invocation
-  state on that path, by design: per the root `CLAUDE.md`, protocols must not
+  state on that path, by design: per the root `AGENTS.md`, protocols must not
   implement storage. Durable state belongs in server `memory`, which is passed
   in on every invocation via `ScriptInput.server.memory`. Note this is *process*
   isolation, not the storage rule itself — a **resident** script (below) keeps

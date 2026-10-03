@@ -199,12 +199,25 @@ const KNOWN_FINDINGS: &[(&str, &str)] = &[
 ///    here is the residue that neither shape reaches.
 ///
 /// Every entry is a claim that can go stale. Deleting one is the work.
-const NOT_PROBED: &[(&str, &str)] = &[(
-    "grpc",
-    "will not start without a `proto_schema` startup parameter — the model supplies the \
-     protobuf definition, and there is no default one to invent here. Its MAX_REQUEST_BYTES is \
-     therefore unprobed by this file; `tests/server/grpc/` is where it has to be checked.",
-)];
+const NOT_PROBED: &[(&str, &str)] = &[
+    (
+        "grpc",
+        "will not start without a `proto_schema` startup parameter — the model supplies the \
+         protobuf definition, and there is no default one to invent here. Its MAX_REQUEST_BYTES is \
+         therefore unprobed by this file; `tests/server/grpc/` is where it has to be checked.",
+    ),
+    #[cfg(feature = "grpc-web")]
+    (
+        "grpc-web",
+        "requires proto_schema and a binary gRPC-Web request to a declared RPC; this probe's \
+         POST /netget-bound-probe with application/octet-stream would test media admission, not the framed bound. \
+         tests/server/grpc_web/e2e_test.rs::incoming_request_limits_plain_and_gzip_independent_peer \
+         accepts the exact 4 MiB protobuf limit (plus its 5-byte frame) and refuses +1 with \
+         RESOURCE_EXHAUSTED through the independent Connect-ES peer, for plain and gzip input. \
+         over_cap_upload_closes_without_waiting_for_declared_eof separately proves an unfinished \
+         over-cap upload closes without an unlimited drain.",
+    ),
+];
 // The first version also listed the USB family and `nfc` here. Every one of those entries was
 // dead, because `stack_name()` already settles them ("USB>HID>Keyboard" is not a TCP stream) and
 // the transport check runs first — a reason nothing reaches is exactly the stale-baseline

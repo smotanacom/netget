@@ -10,7 +10,11 @@ async fn real_beanstalkd_job_lifecycle_and_tubes() -> crate::helpers::E2EResult<
             apt: "beanstalkd",
         },
     )
-    .args(["-l", "127.0.0.1", "-p", "{port}"])
+    // Let the daemon reserve its own port, then read its successful bind from its
+    // verbose log. A released probe port could belong to another test by the time
+    // the daemon starts, making a TCP-only readiness check accept the wrong peer.
+    .args(["-V", "-l", "127.0.0.1", "-p", "0"])
+    .port_from_log(r"(?m)^bind [0-9]+ 127\.0\.0\.1:([0-9]+)$")
     .start()
     .await?;
     let state = state();

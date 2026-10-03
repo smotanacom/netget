@@ -4,7 +4,7 @@ pub mod wire;
 use crate::server::grpc::{
     self,
     streaming::{ConnectionTasks, OwnedExecutor, Registry},
-    WebCore,
+    HttpCore,
 };
 use crate::{
     protocol::SpawnContext,
@@ -92,7 +92,7 @@ fn allowed_origin(
 }
 async fn request(
     mut request: Request<Incoming>,
-    core: WebCore,
+    core: HttpCore,
     connection: crate::server::connection::ConnectionId,
     activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
     registry: Registry,
@@ -300,7 +300,7 @@ impl GrpcWebServer {
             pool.services().next().is_some(),
             "schema must define services"
         );
-        let core = WebCore::new(
+        let core = HttpCore::new(
             &ctx,
             pool,
             Arc::new(actions::GrpcWebProtocol),

@@ -14,7 +14,7 @@ path is a name filter, not a target name.
 
 | Peer | Used by | What it proves | What it does **not** prove |
 |---|---|---|---|
-| **NetGet's own Finger server** | round-trip test | the two halves agree end to end: a real server answer reaches the model as text, with `eof`, `query` and a labelled `best_effort` block | anything about RFC 1288. This is **same-project evidence** — the circular-evidence class the root `CLAUDE.md` names |
+| **NetGet's own Finger server** | round-trip test | the two halves agree end to end: a real server answer reaches the model as text, with `eof`, `query` and a labelled `best_effort` block | anything about RFC 1288. This is **same-project evidence** — the circular-evidence class the root `AGENTS.md` names |
 | **A raw `TcpListener`** (`spawn_fake_fingerd`) | the other three | the literal bytes this client emits, and — the load-bearing case — that it emitted **none** | that any real daemon accepts them |
 
 `spawn_fake_fingerd` is a fifteen-line probe, not an implementation, and is not offered as
@@ -71,7 +71,7 @@ There is **no test against a real finger daemon**, and no `#[ignore]`d one eithe
 test proves nothing and a skip-when-missing gate is a silent pass. No daemon exists here to run:
 macOS ships `finger(1)` but no `fingerd`, Homebrew has no `bsd-finger`/`fingerd`/`netkit`
 formula, and there is no `socat`/`xinetd`/`inetd` to serve an inetd-style one on a high port.
-See `src/client/finger/CLAUDE.md` for the full check and for why this is nonetheless the
+See `src/client/finger/AGENTS.md` for the full check and for why this is nonetheless the
 *achievable* path to Beta — a daemon can be told which port to bind, even though `finger(1)`
 cannot be told which port to dial.
 

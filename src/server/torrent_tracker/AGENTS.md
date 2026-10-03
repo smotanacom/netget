@@ -349,7 +349,7 @@ the handle removal. `tests/server/torrent_tracker/peer_inject_test.rs` asserts b
 
 ## Testing
 
-See `tests/server/torrent_tracker/CLAUDE.md` for comprehensive testing documentation.
+See `tests/server/torrent_tracker/AGENTS.md` for comprehensive testing documentation.
 
 ## References
 

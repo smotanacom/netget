@@ -154,7 +154,7 @@ status_tx.send(format!("[CLIENT] Syslog {} sent: [{}:{}] {}",
 
 ## Testing Strategy
 
-See `tests/client/syslog/CLAUDE.md` for E2E testing approach.
+See `tests/client/syslog/AGENTS.md` for E2E testing approach.
 
 ## Example Usage
 

@@ -11,7 +11,7 @@ The suite is therefore split the way `tests/server/bluetooth_ble_beacon/` is:
 |---|---|---|
 | `codec_test.rs` | yes | The frame format, against literal IEEE 802.1AB bytes |
 | `e2e_test.rs` | yes | The whole event → handler/LLM → action → frame path, over the UDP test transport |
-| — | — | **Nothing here proves anything about pcap.** See `src/server/lldp/CLAUDE.md`. |
+| — | — | **Nothing here proves anything about pcap.** See `src/server/lldp/AGENTS.md`. |
 
 **LLM budget: 1 call.** One test uses a mock Ollama; every other test either uses a static
 handler (no call by construction) or points the client at `127.0.0.1:1` so that the outcome
@@ -28,7 +28,7 @@ handler (no call by construction) or points the client at `127.0.0.1:1` so that 
 
 Every expected byte string is written out literally and derived from the published layout, **not
 from the implementation**. Round-tripping the encoder through the decoder would prove only that
-one function inverts the other, which the root `CLAUDE.md` names as circular evidence. Where a
+one function inverts the other, which the root `AGENTS.md` names as circular evidence. Where a
 round trip does appear it is labelled as a consistency check and never as the argument:
 `encode_and_decode_agree_but_this_proves_nothing_on_its_own`, and
 `a_newline_in_system_description_is_allowed_because_a_real_banner_has_one`, where the round trip
@@ -119,7 +119,7 @@ Everything past the codec on the real transport:
   is exercised only in principle — on the UDP transport it cannot happen.
 
 A green run here means "the bytes are right and the failure discipline is honest". It does not
-mean LLDP works. `src/server/lldp/CLAUDE.md` records the `feth`-pair + `lldpd` experiment that
+mean LLDP works. `src/server/lldp/AGENTS.md` records the `feth`-pair + `lldpd` experiment that
 would change that, and it has not been run.
 
 ## Control characters: a text TLV is an entry in somebody's neighbour table

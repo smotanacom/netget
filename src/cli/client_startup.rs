@@ -64,8 +64,15 @@ pub async fn start_client_by_id(
     status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<(), ActionExecutionError> {
     // Get client info
-    let client = match state.get_client(client_id).await {
-        Some(c) => c,
+    let client = match state
+        .with_client_mut(client_id, |current| {
+            crate::protocol::StartupParams::preflight_owned(&mut current.startup_params)?;
+            Ok::<_, crate::protocol::StartupParamError>(current.clone())
+        })
+        .await
+    {
+        Some(Ok(current)) => current,
+        Some(Err(error)) => return Err(ActionExecutionError::Fatal(error.into())),
         None => {
             let _ = status_tx.send(format!("[ERROR] Client #{} not found", client_id.as_u32()));
             return Ok(());
@@ -214,7 +221,7 @@ pub async fn start_client_from_action(
     protocol: &str,
     remote_addr: &str,
     instruction: String,
-    startup_params: Option<serde_json::Value>,
+    mut startup_params: Option<serde_json::Value>,
     initial_memory: Option<String>,
     event_handlers: Option<Vec<serde_json::Value>>,
     scheduled_tasks: Option<Vec<crate::llm::actions::common::ServerTaskDefinition>>,
@@ -223,6 +230,7 @@ pub async fn start_client_from_action(
     status_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<ClientId> {
     use crate::state::client::ClientStatus;
+    crate::protocol::StartupParams::preflight_owned(&mut startup_params)?;
     let prepared_tasks = crate::state::task::prepare_tasks(
         scheduled_tasks.as_deref(),
         crate::state::task::TaskScope::Global,

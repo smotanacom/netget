@@ -136,6 +136,7 @@ impl Protocol for OpenApiClientProtocol {
                 ),
                 default: None,
             },
+            #[cfg(not(target_arch = "wasm32"))]
             ParameterDefinition {
                 name: "spec_file".to_string(),
                 description: "Path to OpenAPI specification file (YAML or JSON)".to_string(),
@@ -444,6 +445,7 @@ impl Client for OpenApiClientProtocol {
                 if let Some(spec) = sp.get_optional_string("spec")? {
                     params.insert("spec".to_string(), serde_json::json!(spec));
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(spec_file) = sp.get_optional_string("spec_file")? {
                     params.insert("spec_file".to_string(), serde_json::json!(spec_file));
                 }

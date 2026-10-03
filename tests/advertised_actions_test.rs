@@ -1,7 +1,7 @@
 //! The action list a network-event prompt advertises must be the list the response is
 //! validated against (IMPROVEMENTS.md item 32).
 //!
-//! `PromptBuilder` adds the network-event tools to the assembled list and drops the script
+//! `PromptBuilder` removes network-event tools from the assembled list and drops the script
 //! actions the current scripting mode disallows. Callers used to validate against the list
 //! they assembled *before* those adjustments, so `update_script` was accepted with scripting
 //! Off and the tools the prompt offered were missing from the native tool schemas.
@@ -81,26 +81,26 @@ async fn scripting_off_drops_update_script_from_the_advertised_list() {
     );
 }
 
-/// The tools the prompt offers must be in the advertised list, or the model is told about
-/// tools whose native schemas it never receives and whose names the validator rejects.
+/// Network events must answer immediately, even when operator web search is enabled.
 #[tokio::test]
-async fn network_event_tools_are_part_of_the_advertised_list() {
+async fn network_events_do_not_advertise_tools_even_if_the_caller_supplies_them() {
     let state = AppState::new();
     state.set_web_search_mode(WebSearchMode::On).await;
 
-    let advertised =
-        PromptBuilder::advertised_network_event_actions(&state, vec![open_server_action()]).await;
+    let mut actions = netget::llm::actions::get_network_event_tool_actions(WebSearchMode::On);
+    actions.push(open_server_action());
+    let advertised = PromptBuilder::advertised_network_event_actions(&state, actions).await;
     let advertised_names = names(&advertised);
 
     for tool in ["read_file", "generate_random", "list_tasks", "web_search"] {
         assert!(
-            advertised_names.contains(&tool.to_string()),
-            "tool '{}' is offered by the network-event prompt but is not in the advertised \
-             list: {:?}",
+            !advertised_names.contains(&tool.to_string()),
+            "network event offered tool '{}': {:?}",
             tool,
             advertised_names
         );
     }
+    assert!(advertised_names.contains(&"open_server".to_string()));
 }
 
 /// `web_search` is only offered when web search is enabled; the advertised list must track

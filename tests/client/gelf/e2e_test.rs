@@ -140,7 +140,22 @@ async fn udp_send_injection_during_manual_connect_and_disconnect_releases_local_
     ));
     state.remove_client(id).await;
     assert!(state.list_intercepts().await.is_empty());
-    tokio::net::UdpSocket::bind(local).await.unwrap();
+    // Disconnect acknowledges the command before its owner drops the writer, and
+    // removing the client requests task cancellation without awaiting that drop.
+    // Observe actual socket release; a retained socket must still fail this bound.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match tokio::net::UdpSocket::bind(local).await {
+                Ok(socket) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("cannot rebind GELF UDP address {local}: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("GELF UDP socket remained bound after disconnect and removal");
 }
 #[tokio::test]
 async fn tcp_manual_connect_stays_injectable_stop_and_remote_eof_close_handle() {
