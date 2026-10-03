@@ -22,13 +22,14 @@ fn action(
     description: &str,
     parameters: Vec<Parameter>,
     example: Value,
+    log_template: &str,
 ) -> ActionDefinition {
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(log_template.into()),
     }
 }
 fn event(id: &str, description: &str, fields: Vec<Parameter>) -> EventType {
@@ -45,7 +46,7 @@ pub static SSH_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             field("username", "string", "Authenticated username", true),
             field(
                 "host_key_verified",
-                "bool",
+                "boolean",
                 "Whether the configured SHA256 host-key pin matched",
                 true,
             ),
@@ -58,7 +59,12 @@ pub static SSH_CLIENT_OUTPUT_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new
         "SSH command completed",
         vec![
             field("command", "string", "Executed command", true),
-            field("output", "string", "Command stdout", true),
+            field(
+                "output",
+                "string",
+                "Captured standard output from the completed command",
+                true,
+            ),
             field("stderr", "string", "Command stderr when present", false),
             field(
                 "exit_code",
@@ -80,7 +86,12 @@ pub static SSH_SFTP_RESULT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
                 "stat, list_directory or read_file",
                 true,
             ),
-            field("path", "string", "Remote path", true),
+            field(
+                "path",
+                "string",
+                "Remote file or directory path selected for SFTP",
+                true,
+            ),
             field(
                 "attributes",
                 "object",
@@ -97,7 +108,7 @@ pub static SSH_SFTP_RESULT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             field("bytes_read", "number", "Bytes in the UTF-8 window", false),
             field(
                 "eof",
-                "bool",
+                "boolean",
                 "Whether the server reported EOF before the window filled",
                 false,
             ),
@@ -110,7 +121,12 @@ pub static SSH_OPERATION_FAILED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "ssh_operation_failed",
         "SSH command or SFTP operation failed",
         vec![
-            field("action_type", "string", "Failed action", true),
+            field(
+                "action_type",
+                "string",
+                "Name of the rejected SSH or SFTP action",
+                true,
+            ),
             field("path", "string", "Remote path for SFTP", false),
             field("command", "string", "Command for exec", false),
             field(
@@ -158,21 +174,24 @@ impl Protocol for SshClientProtocol {
                 "Execute a shell command; bounded stdout/stderr and exit status become ssh_output_received",
                 vec![field("command", "string", "Shell command, 1..4096 bytes", true)],
                 json!({"type":"execute_command","command":"pwd"}),
+                "Execute SSH command: {command}",
             ),
             action(
                 "sftp_stat",
                 "Inspect remote file or directory attributes using pinned SFTP v3",
                 vec![
                     field("path", "string", "Remote path, 1..4096 bytes without NUL", true),
-                    field("follow_symlinks", "bool", "Use STAT instead of LSTAT; default false", false),
+                    field("follow_symlinks", "boolean", "Use STAT instead of LSTAT; default false", false),
                 ],
                 json!({"type":"sftp_stat","path":"/reports"}),
+                "Inspect SFTP path {path}",
             ),
             action(
                 "sftp_list_directory",
                 "List a remote directory, at most 1024 entries, with typed attributes",
                 vec![field("path", "string", "Remote directory, 1..4096 bytes without NUL", true)],
                 json!({"type":"sftp_list_directory","path":"/reports"}),
+                "List SFTP directory {path}",
             ),
             action(
                 "sftp_read_file",
@@ -183,18 +202,21 @@ impl Protocol for SshClientProtocol {
                     field("length", "number", "Maximum bytes, 1..1048576, default 65536", false),
                 ],
                 json!({"type":"sftp_read_file","path":"/reports/today.txt","offset":0,"length":65536}),
+                "Read SFTP file window from {path}",
             ),
             action(
                 "disconnect",
                 "Disconnect SSH and cancel every command, SFTP operation and response handler",
                 vec![],
                 json!({"type":"disconnect"}),
+                "Disconnect SSH and cancel active operations",
             ),
             action(
                 "wait_for_more",
                 "Take no action and wait for another result",
                 vec![],
                 json!({"type":"wait_for_more"}),
+                "Wait for SSH command or SFTP result",
             ),
         ]
     }
@@ -221,7 +243,7 @@ impl Protocol for SshClientProtocol {
             default,
         };
         vec![
-            p("username","string","SSH username",true,json!("user"),None),
+            p("username","string","SSH account used to authenticate this connection",true,json!("user"),None),
             p("password","string","Password for password authentication",false,json!("password"),None),
             p("private_key_path","string","Operator's OpenSSH private-key file; read only at connect",false,json!("/home/user/.ssh/id_ed25519"),None),
             p("private_key_passphrase","string","Passphrase for the private key",false,json!("passphrase"),None),

@@ -911,9 +911,6 @@ log_template/client:SSH Agent/remove_identity
 log_template/client:SSH Agent/request_identities
 log_template/client:SSH Agent/sign_request
 log_template/client:SSH Agent/wait_for_more
-log_template/client:SSH/disconnect
-log_template/client:SSH/execute_command
-log_template/client:SSH/wait_for_more
 log_template/client:STOMP/disconnect
 log_template/client:STOMP/send_stomp_ack
 log_template/client:STOMP/send_stomp_nack
