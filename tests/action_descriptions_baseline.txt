@@ -65,7 +65,6 @@ desc/param/client:etcd/etcd_delete/key
 desc/param/client:etcd/etcd_put/key
 desc/param/client:etcd/etcd_put/value
 desc/param/client:Git/git_create_tag/name
-desc/param/client:gRPC/call_grpc_method/method
 desc/param/client:HTTP Proxy/establish_tunnel/target_port
 desc/param/client:HTTP Proxy/send_http_request/body
 desc/param/client:HTTP Proxy/send_http_request/headers
@@ -230,8 +229,6 @@ desc/param/server:FINGER/finger_query/action/send_finger_user/login
 desc/param/server:FINGER/finger_query/action/send_finger_user/name
 desc/param/server:FINGER/send_finger_user/login
 desc/param/server:FINGER/send_finger_user/name
-desc/param/server:gRPC/grpc_error/message
-desc/param/server:gRPC/grpc_unary_request/action/grpc_error/message
 desc/param/server:HTTP2/http2_request/event_data/uri
 desc/param/server:IMAP/imap_auth/event_data/tag
 desc/param/server:IMAP/imap_command/action/send_imap_status/mailbox
@@ -577,9 +574,6 @@ log_template/client:Git/git_log
 log_template/client:Git/git_pull
 log_template/client:Git/git_push
 log_template/client:Git/git_status
-log_template/client:gRPC/call_grpc_method
-log_template/client:gRPC/disconnect
-log_template/client:gRPC/wait_for_more
 log_template/client:HTTP Proxy/disconnect
 log_template/client:HTTP Proxy/establish_tunnel
 log_template/client:HTTP Proxy/send_data

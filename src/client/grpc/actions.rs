@@ -1,5 +1,7 @@
 //! gRPC client protocol actions implementation
 
+use crate::protocol::log_template::LogTemplate;
+
 use crate::llm::actions::{
     client_trait::{Client, ClientActionResult},
     protocol_trait::Protocol,
@@ -55,13 +57,13 @@ pub static GRPC_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::
         Parameter {
             name: "service".to_string(),
             type_hint: "string".to_string(),
-            description: "Service name".to_string(),
+            description: "Fully qualified protobuf service name".to_string(),
             required: true,
         },
         Parameter {
             name: "method".to_string(),
             type_hint: "string".to_string(),
-            description: "Method name".to_string(),
+            description: "Protobuf RPC method within the declared service".to_string(),
             required: true,
         },
         Parameter {
@@ -86,13 +88,13 @@ pub static GRPC_CLIENT_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "service".to_string(),
             type_hint: "string".to_string(),
-            description: "Service name".to_string(),
+            description: "Fully qualified protobuf service name".to_string(),
             required: true,
         },
         Parameter {
             name: "method".to_string(),
             type_hint: "string".to_string(),
-            description: "Method name".to_string(),
+            description: "Protobuf RPC method within the declared service".to_string(),
             required: true,
         },
         Parameter {
@@ -104,7 +106,7 @@ pub static GRPC_CLIENT_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "message".to_string(),
             type_hint: "string".to_string(),
-            description: "Error message".to_string(),
+            description: "Terminal gRPC status explanation from the peer".to_string(),
             required: true,
         },
     ])
@@ -195,7 +197,9 @@ impl Protocol for GrpcClientProtocol {
                     "request": {"a": 5, "b": 3},
                     "metadata": {"auth-token": "secret"}
                 }),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new().with_info("gRPC {service}/{method} call queued"),
+                ),
             },
             ActionDefinition {
                 name: "disconnect".to_string(),
@@ -204,7 +208,7 @@ impl Protocol for GrpcClientProtocol {
                 example: json!({
                     "type": "disconnect"
                 }),
-                log_template: None,
+                log_template: Some(LogTemplate::new().with_info("gRPC client disconnected")),
             },
         ];
         actions.extend(stream_actions());
@@ -225,7 +229,7 @@ impl Protocol for GrpcClientProtocol {
                     Parameter {
                         name: "method".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Method name".to_string(),
+                        description: "Protobuf RPC method within the declared service".to_string(),
                         required: true,
                     },
                     Parameter {
@@ -247,7 +251,9 @@ impl Protocol for GrpcClientProtocol {
                     "method": "Multiply",
                     "request": {"a": 2, "b": 3}
                 }),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new().with_info("gRPC {service}/{method} follow-up call queued"),
+                ),
             },
             ActionDefinition {
                 name: "wait_for_more".to_string(),
@@ -256,7 +262,9 @@ impl Protocol for GrpcClientProtocol {
                 example: json!({
                     "type": "wait_for_more"
                 }),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new().with_info("Waiting for another gRPC response"),
+                ),
             },
         ];
         actions.extend(stream_actions());
@@ -466,7 +474,7 @@ fn stream_actions() -> Vec<ActionDefinition> {
                 ("gzip","boolean",false,"Compress outgoing stream messages with gzip"),
             ] {parameters.push(Parameter {name:name.into(),type_hint:hint.into(),required,description:description.into()});}
         } else if name == "grpc_stream_send" {parameters.push(Parameter {name:"message".into(),type_hint:"object".into(),required:true,description:"Field-name JSON matching the request schema, excluding bytes fields".into()});}
-        actions.push(ActionDefinition {name:name.into(),description:description.into(),parameters,example,log_template:None});
+        actions.push(ActionDefinition {name:name.into(),description:description.into(),parameters,example,log_template:Some(LogTemplate::new().with_info(format!("gRPC {name} queued for stream {{stream_id}}")))});
     }
     actions
 }
@@ -481,11 +489,25 @@ fn stream_event(
         required: true,
         description: "RPC correlation id".into(),
     }];
-    parameters.extend(fields.iter().map(|(name, hint)| Parameter {
-        name: (*name).into(),
-        type_hint: (*hint).into(),
-        required: true,
-        description: (*name).replace('_', " "),
+    parameters.extend(fields.iter().map(|(name, hint)| {
+        Parameter {
+            name: (*name).into(),
+            type_hint: (*hint).into(),
+            required: true,
+            description: match *name {
+                "service" => "Fully qualified protobuf service name",
+                "method" => "Streaming RPC method within the declared service",
+                "sequence" => "Zero-based sequence of this decoded response",
+                "response" => "Decoded response fields matching the protobuf output schema",
+                "code" => "Terminal numeric gRPC status code for this RPC",
+                "message" => "Terminal gRPC status explanation from the peer",
+                "response_count" => "Total decoded responses received before this RPC ended",
+                "input_sequence" => "Sequence of the input consumed by the request encoder",
+                "queue_capacity" => "Available input queue slot, without a wire delivery receipt",
+                _ => "Typed field supplied by the streaming RPC event",
+            }
+            .into(),
+        }
     }));
     EventType::new(name, description, json!({"type":"wait_for_more"}))
         .with_parameters(parameters)
