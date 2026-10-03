@@ -207,7 +207,7 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("grpc", Reason::HyperOwnsSocket),
     ("hls", Reason::Unreviewed),
     ("http", Reason::HyperOwnsSocket),
-    // One HTTP write request owns each connection; decisions become hyper-framed replies.
+    // Hyper owns each HTTP connection and frames each write request response.
     ("influxdb", Reason::HyperOwnsSocket),
     ("ipp", Reason::HyperOwnsSocket),
     ("jsonrpc", Reason::HyperOwnsSocket),
