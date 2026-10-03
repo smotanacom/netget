@@ -61,6 +61,11 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // removes it after dispatch on success or error. Chunk reassembly is bounded and
     // expired by its own 1-second timer; no per-remote UDP entries await the idle sweep.
     "GELF",
+    // IPFIX creates one temporary row for each decoded message while its common handler
+    // runs, then removes that row after success, error or default collection. Reaping a
+    // parked manual/model handler would hide a live request. No per-remote rows await
+    // the idle sweep; template/session state has a separate owned 1-second expiry timer.
+    "IPFIX",
 ];
 
 /// Registry names whose source directory does not follow any of the mechanical
