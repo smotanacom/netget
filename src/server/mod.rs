@@ -1243,5 +1243,8 @@ pub mod fluent_forward;
 #[cfg(feature = "influxdb")]
 pub mod influxdb;
 
+#[cfg(feature = "ipfix")]
+pub mod ipfix;
+
 #[cfg(feature = "loki")]
 pub mod loki;
