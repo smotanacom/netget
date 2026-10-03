@@ -249,3 +249,5 @@ pub mod influxdb;
 
 #[cfg(feature = "loki")]
 pub mod loki;
+#[cfg(feature = "otlp")]
+pub mod otlp;

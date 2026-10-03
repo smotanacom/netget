@@ -14241,13 +14241,16 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost",
+ "rustls-pemfile 2.2.0",
  "socket2 0.5.10",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-stream",
  "tower 0.4.13",
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

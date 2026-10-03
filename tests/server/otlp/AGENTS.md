@@ -1,24 +1,39 @@
-# OTLP tests
+# OTLP receiver evidence
 
-Run everything:
+The 24 existing HTTP checks remain part of the suite: independent otel-cli/telemetrygen,
+mocked verdicts, JSON/protobuf summaries, unknown field/encoding/routing behavior, raw and
+inflated 4 MiB boundaries, recursion bombs, empty exports, no-verdict/backend failures,
+partial-count clamping, retry statuses and connection/idle/first-byte bounds. Their source
+files and expected behavior remain unchanged except exposing the independent tool runner
+to the added gRPC peer test. The expanded protocol remains Experimental.
+Final local evidence: all thirty receiver checks passed at 100 test threads with no failed
+or ignored checks, together with all nine exporter checks.
 
-```bash
-./cargo-isolated.sh test --no-default-features --features otlp --test server -- otlp:: --test-threads=100
-```
+`grpc_test.rs` adds generated-client checks for all 3 signal service methods, gzip, partial
+success, mapped refusal status and no-verdict fail-closed. Exactly 4 MiB requests succeed;
+4MiB+1 plain/gzip requests fail RESOURCE_EXHAUSTED without reaching an event handler,
+and a later valid export on the same channel succeeds. Prefix u32::MAX, an extra framed
+message and an empty body are refused before decoding/model dispatch.
 
-## Strategy
+Ownership tests park a manual handler, exercise a smaller client RPC deadline, remove the
+receiver, observe the client's failed call, and require intercept removal. The admission
+test occupies 64 RPC slots on 4 connections, rejects the 65th, cancels one request, then proves
+its slot is reusable and removal cancels all calls. Test-spawned work is owned by JoinSet.
 
-The evidence is `real_client_test.rs`: two independent OpenTelemetry exporters, `otel-cli` and
-the Collector project's `telemetrygen`, send real exports and read NetGet's responses. A generic
-HTTP client is not evidence for a protocol layered on HTTP, so everything else here is NetGet's
-own reading of its own bytes (the `opentelemetry-proto` types the server decodes with are also
-what the tests encode with).
+Independent gRPC peers are mandatory: otel-cli sends/read-acknowledges a span and reports
+PERMISSION_DENIED when refused; telemetrygen sends metrics and logs, and semantic access
+logs prove the peer's names, counts and log body reached the handler. Local pins are
+Homebrew otel-cli 0.4.5 and telemetrygen 0.161.0 (Go 1.27.1). Missing binaries fail, never skip.
+The existing real-client HTTP suite continues exercising those same independent exporters.
 
-Most suites start the receiver **in process** through `ServerForm` with a static or Python script
-handler and a dead model endpoint. `e2e_test.rs`, the bounds helper and two cases in
-`real_client_test.rs` use the spawned binary with the mock model.
+Run `--no-default-features --features otlp --test server -- otlp:: --test-threads=100`
+through the programme serialized Cargo wrapper. `tests/vendored_tonic_patch_test.rs` is a
+separate three-check wire/provenance suite for exact 4 MiB/+1 plain/gzip requests and responses,
+run with feature grpc. No local unit test is placed in src/.
 
-## Files
+## Preserved HTTP evidence and local setup
+
+### Files
 
 | File | What it proves | Model calls |
 |---|---|---|
@@ -30,7 +45,7 @@ handler and a dead model endpoint. `e2e_test.rs`, the bounds helper and two case
 | `llm_failure_test.rs` | dead backend → 500 (or 503 + `Retry-After: 5`) with a fixed `Status` message in the request's own encoding, no leaked error text, `decision=fail_closed_llm_error`; no verdict → 500 + `model_silent`; a partial success clamped to the spans sent; a model 403 sent without `Retry-After` + `model_reject` | 0 |
 | `answer_with_test.rs` | the hint names the three verdicts, the count and unit per signal, and the retry statuses; examples are placeholders | 0 |
 
-## How each guard was shown to matter
+### How each guard was shown to matter
 
 Removed together in one mutated build, then restored:
 
@@ -49,7 +64,7 @@ Removed together in one mutated build, then restored:
 The nesting limits are prost's and serde_json's, not NetGet's, so they cannot be removed from
 here; `a_depth_bomb_in_either_encoding_is_refused` shows both come back as decode errors.
 
-## Notes
+### Notes
 
 - `otel-cli` is at `/opt/homebrew/bin` (`brew install otel-cli`); `telemetrygen` at `~/go/bin`
   (`go install …/cmd/telemetrygen@v0.161.0`), which `require_tool` searches. CI's

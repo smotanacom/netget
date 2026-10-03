@@ -233,6 +233,11 @@ impl ClientRegistry {
         #[cfg(feature = "ospf")]
         self.register(Arc::new(crate::client::ospf::OspfClientProtocol::new()));
 
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(
+            crate::client::otlp::actions::OtlpClientProtocol::new(),
+        ));
+
         #[cfg(feature = "postgresql")]
         self.register(Arc::new(
             crate::client::postgresql::PostgresqlClientProtocol::new(),
