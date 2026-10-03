@@ -41,3 +41,5 @@ handlers, denial and acceptance, bounds and shutdown. Independent peers are offi
 the client is tested against upsd 2.8.4 plus dummy-ups 0.22. See tests/server/nut/CLAUDE.md.
 No packet-capture oracle or fuzz target was added, and untested commands are not implied
 by successful read/instant-command tests.
+
+Peer controls: NUT replies require a pending command and its UPS or variable identity; no unsolicited peer messages. Pending requests remain answerable through the ordinary event handler; no uncorrelated wire reply is offered.

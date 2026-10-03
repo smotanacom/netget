@@ -119,6 +119,8 @@ pub use git::actions::GitClientProtocol;
 // grpc client
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcClientProtocol;
 
@@ -681,8 +683,14 @@ pub mod sflow;
 #[cfg(feature = "loki")]
 pub mod loki;
 
+#[cfg(feature = "vault")]
+pub mod vault;
+
 #[cfg(feature = "prometheus-remote-write")]
 pub mod prometheus_remote_write;
+
+#[cfg(feature = "nostr")]
+pub mod nostr;
 
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;

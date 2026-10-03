@@ -83,6 +83,10 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "igmp",
     // RFC 7011 UDP collection has no acknowledgement or negative response.
     "ipfix",
+    // sFlow v5 UDP collection has no application reply or negative acknowledgement.
+    "sflow",
+    // RFC 3954 UDP flow collection has no acknowledgement or refusal message.
+    "netflow_v9",
     "ipsec",
     "isis",
     "lldp",

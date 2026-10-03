@@ -397,3 +397,57 @@ fn the_ethernet_only_filters_say_they_will_not_work_on_loopback() {
         );
     }
 }
+
+#[test]
+fn flow_export_collectors_select_their_udp_dissectors() {
+    for (name, port, dissector) in [("IPFIX", 4739, "cflow"), ("sFlow", 6343, "sflow")] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", port), Platform::Linux);
+        assert_eq!(plan.capture_filter, format!("udp port {port}"));
+        assert_eq!(
+            plan.display_filter,
+            format!("udp.port == {port} && {dissector}")
+        );
+        assert_eq!(
+            plan.decode_as,
+            Some(format!("udp.port=={port},{dissector}"))
+        );
+    }
+}
+
+#[test]
+fn remote_write_names_select_the_http_carrier() {
+    for name in [
+        "PrometheusRemoteWrite",
+        "prometheus-remote-write",
+        "remote-write",
+        "prometheus-write",
+    ] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", 9090), Platform::Linux);
+        assert_eq!(plan.capture_filter, "tcp port 9090");
+        assert_eq!(plan.display_filter, "tcp.port == 9090 && http");
+        assert_eq!(plan.decode_as, Some("tcp.port==9090,http".into()));
+    }
+}
+
+#[test]
+fn new_web_rpc_and_v9_names_select_their_native_carriers() {
+    for (name, port, transport, dissector) in [
+        ("gRPC-Web", 8080, "tcp", "http"),
+        ("grpcweb", 8080, "tcp", "http"),
+        ("grpc web", 8080, "tcp", "http"),
+        ("NetFlowV9", 2055, "udp", "cflow"),
+        ("netflow-v9", 2055, "udp", "cflow"),
+        ("netflow_v9", 2055, "udp", "cflow"),
+    ] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", port), Platform::Linux);
+        assert_eq!(plan.capture_filter, format!("{transport} port {port}"));
+        assert_eq!(
+            plan.display_filter,
+            format!("{transport}.port == {port} && {dissector}")
+        );
+        assert_eq!(
+            plan.decode_as,
+            Some(format!("{transport}.port=={port},{dissector}"))
+        );
+    }
+}

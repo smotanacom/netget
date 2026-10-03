@@ -117,6 +117,10 @@ impl ClientRegistry {
 
         #[cfg(feature = "grpc")]
         self.register(Arc::new(crate::client::grpc::GrpcClientProtocol::new()));
+        #[cfg(feature = "grpc-web")]
+        self.register(Arc::new(
+            crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
+        ));
 
         #[cfg(feature = "http")]
         {
@@ -421,6 +425,12 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
         ));
+
+        #[cfg(feature = "vault")]
+        self.register(Arc::new(crate::client::vault::VaultClientProtocol::new()));
+
+        #[cfg(feature = "nostr")]
+        self.register(Arc::new(crate::client::nostr::NostrClientProtocol::new()));
 
         #[cfg(feature = "prometheus")]
         self.register(Arc::new(
@@ -779,6 +789,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
+    ("gRPC-Web", "grpc-web"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
@@ -846,6 +857,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Gearman", "gearman"),
     ("Prometheus", "prometheus"),
     ("Docker", "docker"),
+    ("Vault", "vault"),
+    ("Nostr", "nostr"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),
