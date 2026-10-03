@@ -95,6 +95,14 @@ only thing a browser reads as a completed sign-in.
   arrived as the status that admits the user. Both `mod.rs` and the executor now refuse the
   wrap; the executor additionally pins `send_error_response` to 400–599.
 
+After hyper flushes a body-limit refusal, the connection half-closes its write side and
+uses `src/server/accept_bounded.rs`'s `drain_after_response` to discard at most 2 MiB of the
+remaining upload for at most two seconds in an 8 KiB buffer. This keeps an upload already
+in flight from resetting the socket and replacing the 413 with `ECONNRESET`. The drain
+starts only after the HTTP connection completes; a model call or a parked manual handler
+remains outside these deadlines. The existing hardening test checks the 413 without a
+model call, and the shared `response_drain_tests` cover both discard bounds.
+
 **No XML is parsed here.** The `SAMLResponse` is passed to the model as text and NetGet never
 builds a tree, so the entity-expansion (billion-laughs) and unbounded-nesting classes do not
 arise on this path — the absence of a parser is, on this one axis, the safe choice. It is also

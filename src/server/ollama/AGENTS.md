@@ -182,8 +182,9 @@ while the client was still uploading could reset the connection and replace the 
 `ECONNRESET`. The drain keeps an ordinary upload tail from destroying the reply, while both
 limits bound an endless upload or a peer that never closes its write side. Refused bytes never
 reach JSON parsing or the model. `connection_bounds_test` holds the upload tail until after
-413 and EOF for both Content-Length and chunked requests; `close_tests` verifies both drain
-bounds, and the real-client test sends a full 9 MiB request through reqwest.
+413 and EOF for both Content-Length and chunked requests; `response_drain_tests` in
+`src/server/accept_bounded.rs` verifies both shared drain bounds, and the real-client test
+sends a full 9 MiB request through reqwest.
 
 ### 6. Request-only
 

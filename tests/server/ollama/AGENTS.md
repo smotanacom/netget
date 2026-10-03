@@ -18,7 +18,7 @@ model is required. Child processes use isolated temporary directories and random
 - `refusal_status_test.rs`: model-selected HTTP refusal statuses cannot wrap into success,
   accept out-of-range values or turn an error into a 2xx response.
 - `embeddings_test.rs`: explicit vectors, dimensions, validation and the deterministic ramp.
-- `src/server/ollama/mod.rs::close_tests`: the post-response drain ends at its byte budget or
+- `src/server/accept_bounded.rs::response_drain_tests`: the post-response drain ends at its byte budget or
   deadline, including a peer that leaves its write half open indefinitely.
 
 The connection-bound tests construct the server in-process through `ServerForm`, with a dead
@@ -31,7 +31,7 @@ are local to each test; there is no fixed suite-wide model-call count.
 ./cargo-isolated.sh test --no-default-features --features ollama --test server -- \
   server::ollama:: --test-threads=32
 ./cargo-isolated.sh test --no-default-features --features ollama --lib -- \
-  server::ollama::close_tests --test-threads=32
+  server::accept_bounded::response_drain_tests --test-threads=32
 ```
 
 For upload-race stress, repeat the server suite at `--test-threads=100`. Keep one Rust build

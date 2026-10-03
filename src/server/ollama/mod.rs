@@ -16,7 +16,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
@@ -252,7 +252,7 @@ impl OllamaServer {
                                                     // Deliver the complete response and EOF
                                                     // before discarding the upload tail.
                                                     let _ = stream.shutdown().await;
-                                                    drain_after_response(&mut stream).await;
+                                                    crate::server::accept_bounded::drain_after_response(&mut stream).await;
                                                 }
                                                 Err(err) => error!(
                                                     "Error serving Ollama API connection: {:?}",
@@ -1308,25 +1308,6 @@ async fn handle_admin(
 /// module is configured out of an `--features ollama` build.
 pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
-/// Allow an ordinary upload already in flight to finish after a refusal, without keeping
-/// an endless upload or a silent peer alive. This is discarded, never buffered or modelled.
-/// Two MiB covers the one-MiB overrun exercised by real HTTP clients, including framing.
-const RESPONSE_DRAIN_BYTES: usize = 2 * 1024 * 1024;
-const RESPONSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-async fn drain_after_response(reader: &mut (impl AsyncRead + Unpin)) {
-    let deadline = tokio::time::Instant::now() + RESPONSE_DRAIN_TIMEOUT;
-    let mut remaining = RESPONSE_DRAIN_BYTES;
-    let mut scratch = [0u8; 8192];
-    while remaining > 0 {
-        let read_size = remaining.min(scratch.len());
-        match tokio::time::timeout_at(deadline, reader.read(&mut scratch[..read_size])).await {
-            Ok(Ok(n)) if n > 0 => remaining -= n,
-            _ => break,
-        }
-    }
-}
-
 /// Read a request body, refusing anything over [`MAX_REQUEST_BODY_BYTES`] with 413.
 ///
 /// `Incoming` has no default limit, so `req.collect()` buffers whatever the peer chooses to
@@ -1377,34 +1358,4 @@ fn server_error(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             response
         })
-}
-
-#[cfg(test)]
-mod close_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn response_drain_stops_at_the_byte_budget() {
-        let bytes = vec![0; RESPONSE_DRAIN_BYTES + 1];
-        let mut reader = bytes.as_slice();
-        drain_after_response(&mut reader).await;
-        assert_eq!(
-            reader.len(),
-            1,
-            "an endless uploader cannot keep the task alive"
-        );
-    }
-
-    #[tokio::test]
-    async fn response_drain_stops_even_when_the_peer_keeps_its_write_half_open() {
-        let (mut reader, _silent_peer) = tokio::io::duplex(1);
-        let started = tokio::time::Instant::now();
-        tokio::time::timeout(
-            RESPONSE_DRAIN_TIMEOUT + std::time::Duration::from_secs(5),
-            drain_after_response(&mut reader),
-        )
-        .await
-        .expect("a silent peer cannot keep the task alive");
-        assert!(started.elapsed() >= RESPONSE_DRAIN_TIMEOUT);
-    }
 }
