@@ -74,6 +74,7 @@ portable-base = [
     "gelf",
     "fluent-forward",
     "influxdb",
+    "loki",
     "ssh",
     "ssh-agent",
     "svn",
@@ -248,6 +249,7 @@ graphite = [] # Carbon plaintext TCP collector and emitter; native codec
 gelf = ["dep:flate2"] # GELF 1.1 UDP/TCP structured logging
 fluent-forward = ["dep:flate2"] # MessagePack Forward logs and ACKs
 influxdb = ["dep:flate2"] # Typed InfluxDB v2 HTTP write collector/emitter
+loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
@@ -495,6 +497,7 @@ dist-windows = [
     "gelf",
     "fluent-forward",
     "influxdb",
+    "loki",
     "ssh",
     "svn",
     "irc",
@@ -644,6 +647,7 @@ all-protocols = [
     "gelf",
     "fluent-forward",
     "influxdb",
+    "loki",
     "ssh",
     "ssh-agent",
     "svn",

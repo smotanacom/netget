@@ -246,3 +246,6 @@ pub mod prometheus;
 
 #[cfg(feature = "influxdb")]
 pub mod influxdb;
+
+#[cfg(feature = "loki")]
+pub mod loki;
