@@ -5,6 +5,8 @@ pub mod client;
 pub mod common;
 pub mod event_trigger;
 pub mod example_test_framework;
+#[cfg(feature = "grpc")]
+pub mod grpc_peer;
 pub mod http_bounds;
 pub mod inbound_limit;
 pub mod llm_live;

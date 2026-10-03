@@ -1,7 +1,6 @@
+use crate::helpers::grpc_peer as peer;
 use serde_json::json;
 use std::time::Duration;
-#[path = "../../helpers/grpc_peer.rs"]
-mod peer;
 
 #[tokio::test]
 async fn independent_grpcio_all_stream_shapes_and_gzip() {
