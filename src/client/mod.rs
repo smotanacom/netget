@@ -646,3 +646,6 @@ pub mod gearman;
 pub mod docker;
 #[cfg(feature = "prometheus")]
 pub mod prometheus;
+
+#[cfg(feature = "vault")]
+pub mod vault;
