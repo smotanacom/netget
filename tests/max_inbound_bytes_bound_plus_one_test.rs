@@ -409,6 +409,15 @@ async fn probe_protocol(name: &str, bound: usize, stack: &'static str, streaming
         // Non-empty and with no `event_handlers`: the model is the only thing that could
         // answer, so a zero count is the bound's doing and nothing else's.
         instruction: Some("Answer whatever arrives.".to_string()),
+        // Diameter requires a local identity. Enable its explicit model opt-in
+        // so zero calls here measure parser refusal rather than default denial.
+        startup_params: name.eq_ignore_ascii_case("diameter").then(|| {
+            serde_json::json!({
+                "origin_host": "bounds.example",
+                "origin_realm": "example",
+                "llm_fallback": true
+            })
+        }),
         ..Default::default()
     };
     let server_id = match form.create(&state, tx).await {
