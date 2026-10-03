@@ -119,6 +119,8 @@ pub use git::actions::GitClientProtocol;
 // grpc client
 #[cfg(feature = "connect_rpc")]
 pub mod connect_rpc;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc-web")]
@@ -705,3 +707,6 @@ pub mod diameter;
 
 #[cfg(feature = "bolt")]
 pub mod bolt;
+
+#[cfg(feature = "oci-registry")]
+pub mod oci_registry;

@@ -117,6 +117,10 @@ impl ClientRegistry {
 
         #[cfg(feature = "grpc")]
         self.register(Arc::new(crate::client::grpc::GrpcClientProtocol::new()));
+        #[cfg(feature = "gnmi")]
+        self.register(Arc::new(
+            crate::client::gnmi::actions::GnmiClientProtocol::new(),
+        ));
         #[cfg(feature = "grpc-web")]
         self.register(Arc::new(
             crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
@@ -445,6 +449,11 @@ impl ClientRegistry {
 
         #[cfg(feature = "bolt")]
         self.register(Arc::new(crate::client::bolt::BoltClientProtocol::new()));
+
+        #[cfg(feature = "oci-registry")]
+        self.register(Arc::new(
+            crate::client::oci_registry::OciRegistryClientProtocol::new(),
+        ));
 
         #[cfg(feature = "nostr")]
         self.register(Arc::new(crate::client::nostr::NostrClientProtocol::new()));
@@ -807,6 +816,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("gNMI", "gnmi"),
     ("ConnectRPC", "connect_rpc"),
     ("TACACS", "tacacs"),
     ("HTTP", "http"),
@@ -879,6 +889,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Vault", "vault"),
     ("Nostr", "nostr"),
     ("Bolt", "bolt"),
+    ("OCI-Registry", "oci-registry"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

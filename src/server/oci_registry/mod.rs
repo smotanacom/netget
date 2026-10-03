@@ -148,18 +148,36 @@ pub fn is_valid_repository_name(name: &str) -> bool {
         return false;
     }
     name.split('/').all(|component| {
-        !component.is_empty()
-            && component
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-            && component
-                .chars()
-                .last()
-                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-            && component.chars().all(|c| {
-                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
-            })
+        let bytes = component.as_bytes();
+        let alphanumeric = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        let mut i = 0;
+        loop {
+            let start = i;
+            while i < bytes.len() && alphanumeric(bytes[i]) {
+                i += 1;
+            }
+            if i == start {
+                return false;
+            }
+            if i == bytes.len() {
+                return true;
+            }
+            match bytes[i] {
+                b'.' => i += 1,
+                b'_' => {
+                    i += 1;
+                    if bytes.get(i) == Some(&b'_') {
+                        i += 1;
+                    }
+                }
+                b'-' => {
+                    while bytes.get(i) == Some(&b'-') {
+                        i += 1;
+                    }
+                }
+                _ => return false,
+            }
+        }
     })
 }
 
