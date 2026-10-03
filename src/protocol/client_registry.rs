@@ -416,6 +416,9 @@ impl ClientRegistry {
             crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
         ));
 
+        #[cfg(feature = "vault")]
+        self.register(Arc::new(crate::client::vault::VaultClientProtocol::new()));
+
         #[cfg(feature = "prometheus")]
         self.register(Arc::new(
             crate::client::prometheus::PrometheusClientProtocol::new(),
@@ -835,6 +838,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Gearman", "gearman"),
     ("Prometheus", "prometheus"),
     ("Docker", "docker"),
+    ("Vault", "vault"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

@@ -680,3 +680,6 @@ pub mod sflow;
 
 #[cfg(feature = "loki")]
 pub mod loki;
+
+#[cfg(feature = "vault")]
+pub mod vault;

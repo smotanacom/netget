@@ -258,3 +258,6 @@ pub mod otlp;
 
 #[cfg(feature = "sflow")]
 pub mod sflow;
+
+#[cfg(feature = "vault")]
+pub mod vault;
