@@ -22,6 +22,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
@@ -303,17 +304,28 @@ impl SamlSpServer {
                                         FIRST_BYTE_READ_TIMEOUT.as_secs()
                                     ));
                                 } else {
-                                    let conn = http1::Builder::new().serve_connection(io, service);
+                                    // Keep the socket after hyper flushes the response. An oversized
+                                    // upload can still be sending when the 413 is ready.
+                                    let conn = http1::Builder::new()
+                                        .serve_connection(io, service)
+                                        .without_shutdown();
                                     tokio::pin!(conn);
                                     tokio::select! {
                                         result = &mut conn => {
-                                            if let Err(err) = result {
-                                                error!(
+                                            match result {
+                                                Ok(parts) => {
+                                                    let mut stream = parts.io.into_inner();
+                                                    // Send EOF after the response, then discard
+                                                    // the upload tail within shared bounds.
+                                                    let _ = stream.shutdown().await;
+                                                    crate::server::accept_bounded::drain_after_response(&mut stream).await;
+                                                }
+                                                Err(err) => error!(
                                                     "Error serving SAML SP connection \
                                                      {}: {}",
                                                     connection_id,
                                                     err
-                                                );
+                                                ),
                                             }
                                         }
                                         _ = crate::server::accept_bounded::watch_idle(

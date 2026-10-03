@@ -218,6 +218,36 @@ async fn refuse<S: tokio::io::AsyncWrite + Unpin>(mut socket: S, refusal: &[u8])
     .await;
 }
 
+/// Bound the upload tail discarded after an HTTP response has been flushed and the write
+/// side half-closed. Two MiB covers the one-MiB overrun exercised by real HTTP clients,
+/// including framing; two seconds also bounds a silent peer. Nothing is buffered or modelled.
+#[cfg(any(feature = "ollama", feature = "saml-idp", feature = "saml-sp"))]
+const RESPONSE_DRAIN_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(any(feature = "ollama", feature = "saml-idp", feature = "saml-sp"))]
+const RESPONSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Discard an in-flight upload tail after flushing the response and half-closing writes.
+///
+/// Dropping a TCP socket while unread upload bytes remain can send RST and erase a 413
+/// before the client reads it. The absolute time and byte budgets let an ordinary upload
+/// finish without allowing an endless or silent peer to keep the connection task alive.
+/// This runs only after the HTTP connection completes, outside live handler work.
+#[cfg(any(feature = "ollama", feature = "saml-idp", feature = "saml-sp"))]
+pub(crate) async fn drain_after_response(reader: &mut (impl AsyncRead + Unpin)) {
+    use tokio::io::AsyncReadExt;
+
+    let deadline = tokio::time::Instant::now() + RESPONSE_DRAIN_TIMEOUT;
+    let mut remaining = RESPONSE_DRAIN_BYTES;
+    let mut scratch = [0u8; 8192];
+    while remaining > 0 {
+        let read_size = remaining.min(scratch.len());
+        match tokio::time::timeout_at(deadline, reader.read(&mut scratch[..read_size])).await {
+            Ok(Ok(n)) if n > 0 => remaining -= n,
+            _ => break,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Read deadlines where the protocol's loop is not ours
 // ---------------------------------------------------------------------------------------
@@ -471,3 +501,34 @@ fn now_millis() -> u64 {
 
 static PROCESS_START: std::sync::LazyLock<crate::utils::clock::Instant> =
     std::sync::LazyLock::new(crate::utils::clock::Instant::now);
+
+#[cfg(any(feature = "ollama", feature = "saml-idp", feature = "saml-sp"))]
+#[cfg(test)]
+mod response_drain_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn response_drain_stops_at_the_byte_budget() {
+        let bytes = vec![0; RESPONSE_DRAIN_BYTES + 1];
+        let mut reader = bytes.as_slice();
+        drain_after_response(&mut reader).await;
+        assert_eq!(
+            reader.len(),
+            1,
+            "an endless uploader cannot keep the task alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn response_drain_stops_even_when_the_peer_keeps_its_write_half_open() {
+        let (mut reader, _silent_peer) = tokio::io::duplex(1);
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            RESPONSE_DRAIN_TIMEOUT + std::time::Duration::from_secs(5),
+            drain_after_response(&mut reader),
+        )
+        .await
+        .expect("a silent peer cannot keep the task alive");
+        assert!(started.elapsed() >= RESPONSE_DRAIN_TIMEOUT);
+    }
+}
