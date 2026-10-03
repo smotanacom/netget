@@ -397,3 +397,19 @@ fn the_ethernet_only_filters_say_they_will_not_work_on_loopback() {
         );
     }
 }
+
+#[test]
+fn flow_export_collectors_select_their_udp_dissectors() {
+    for (name, port, dissector) in [("IPFIX", 4739, "cflow"), ("sFlow", 6343, "sflow")] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", port), Platform::Linux);
+        assert_eq!(plan.capture_filter, format!("udp port {port}"));
+        assert_eq!(
+            plan.display_filter,
+            format!("udp.port == {port} && {dissector}")
+        );
+        assert_eq!(
+            plan.decode_as,
+            Some(format!("udp.port=={port},{dissector}"))
+        );
+    }
+}
