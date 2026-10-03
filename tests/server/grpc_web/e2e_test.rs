@@ -380,6 +380,7 @@ async fn response_backpressure_deadline_cancels_http1_owner() {
         .await
         .unwrap()
         .unwrap();
+    // Deliberately keep the response unread past the 1s RPC deadline to test output backpressure.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let mut output = Vec::new();
     assert!(
