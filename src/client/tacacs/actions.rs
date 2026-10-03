@@ -81,14 +81,6 @@ pub static ACCOUNT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("tacacs_error","Session transport/framing/correlation/unsupported-flow error. No implicit request retry or fallback.",disconnect().example.clone()).with_parameters(vec![parameter("error","string","Bounded transport or validation description, without request credentials",true)]).with_actions(all())
 });
-pub fn response_event(name: &str) -> &'static EventType {
-    match name {
-        "tacacs_authentication_result" => &AUTH_EVENT,
-        "tacacs_authorization_result" => &AUTHOR_EVENT,
-        "tacacs_accounting_result" => &ACCOUNT_EVENT,
-        _ => &ERROR_EVENT,
-    }
-}
 impl Protocol for TacacsClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "TACACS"
