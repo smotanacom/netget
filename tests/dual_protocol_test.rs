@@ -71,6 +71,7 @@ fn golden_duals_map() {
         "NetFlowV9",
         "gRPC-Web",
         "ConnectRPC",
+        "TACACS",
         "Nostr",
         "Vault",
         "Beanstalkd",
@@ -185,4 +186,35 @@ fn compiled_mapping_is_subset_of_codebase_mapping() {
         compiled_client_protocol_for_server("TCP").as_deref(),
         Some("TCP")
     );
+}
+
+/// Build guidance must name an actual Cargo feature; a plausible runtime slug
+/// can otherwise tell the user to rebuild with a flag the manifest rejects.
+#[test]
+fn compiled_out_dual_protocol_guidance_names_real_cargo_features() {
+    use netget::protocol::{
+        client_registry::{ClientProtocolLookupError, CLIENT_REGISTRY},
+        server_registry::{registry as server_registry, ProtocolLookupError},
+    };
+    let manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string("Cargo.toml").unwrap()).unwrap();
+    let features = manifest["features"].as_table().unwrap();
+    for (server, client) in all_dual_protocols() {
+        match server_registry().resolve(server) {
+            Ok(_) => {}
+            Err(ProtocolLookupError::NotCompiled { feature, .. }) => assert!(
+                features.contains_key(feature),
+                "server {server:?} advises nonexistent Cargo feature {feature:?}"
+            ),
+            Err(error) => panic!("known dual server {server:?} is unresolved: {error}"),
+        }
+        match CLIENT_REGISTRY.resolve(client) {
+            Ok(_) => {}
+            Err(ClientProtocolLookupError::NotCompiled { feature, .. }) => assert!(
+                features.contains_key(feature),
+                "client {client:?} advises nonexistent Cargo feature {feature:?}"
+            ),
+            Err(error) => panic!("known dual client {client:?} is unresolved: {error}"),
+        }
+    }
 }

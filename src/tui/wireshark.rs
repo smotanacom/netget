@@ -239,6 +239,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // protocols` lists none and `-d tcp.port==2628,dict` is rejected as an unknown
         // protocol. Plain TCP is the honest answer; "Follow TCP Stream" reads it fine.
         "dict" => PLAIN_TCP,
+        "tacacs" | "tacacs+" | "tacacs_plus" | "tacacsplus" => with_note(
+            tcp("tacplus"),
+            "This feature speaks legacy RFC 8907 TACACS+. Its obfuscated body requires the configured shared secret in Wireshark to decode; it does not speak the TLS profile.",
+        ),
         // Neo4j's Bolt (TCP 7687) has no dissector in this Wireshark build (4.6.8): `tshark -G
         // protocols` lists nothing matching bolt, neo4j or packstream. Plain TCP; the chunked
         // PackStream is binary, so "Follow TCP Stream" in hex is what a capture offers.
