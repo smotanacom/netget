@@ -51,7 +51,7 @@ async fn independent_gearmand_and_cli_worker_submitter_priorities_background_sta
         "-c",
         "4",
         "-n",
-        // Stop Gearman's option parser before the child Python command's -c.
+        // GNU getopt otherwise consumes Python's -c as Gearman's job count.
         "--",
         "python3",
         "-c",

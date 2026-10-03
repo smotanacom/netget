@@ -63,8 +63,8 @@ Circular for client evidence — kept because both sides' mocks are asserted.
 ## Not covered
 
 HTTPS against a real server, redirects and compressed responses. Chunked responses and the
-8 MiB body bound are covered by `transport_test.rs`, against NetGet's own TCP server and a
-raw loopback peer written in the test rather than a third-party one.
+8 MiB body bound are covered by `transport_test.rs`, against NetGet's own TCP server rather
+than a third-party one.
 
 ## `command_channel_test.rs`
 
@@ -90,16 +90,17 @@ access log is checked for the path.
 
 `src/client/http_fetch/transport.rs` (re-exported as `client::http::transport`) is what the
 client uses in the browser build; it compiles
-natively so it can be tested without one. NetGet servers answer through `*` static handlers,
-so there are no LLM calls. NetGet's HTTP server gives a 200 (body, `status_text`, two headers,
+natively so it can be tested without one. NetGet servers answer through a `*` static handler,
+so there are no LLM calls. The oversized native response uses a test-owned TCP peer with
+bounded request headers, 64 KiB writes, a 40-second deadline and a cancelling `JoinSet`:
+its 8 MiB-plus-one body must not be embedded in the shared 8 MiB static-action budget.
+NetGet's HTTP server gives a 200 (body, `status_text`, two headers,
 and a POST) and a 404 read as a status; NetGet's **TCP** server writes hand-made HTTP bytes,
 because NetGet's HTTP server never chunks: a chunked body reassembled, the same body refused
 at a 10-byte bound and accepted at exactly 19, and a server that never answers giving up at the
 500 ms deadline. `https://` is refused with `HTTPS_UNSUPPORTED`. The last test is the native
-client's own reqwest path through `send_to_client`: a 5-byte body is read, a raw loopback peer
-streams a body one byte over `MAX_RESPONSE_BODY_BYTES` and the request fails. The oversized
-peer avoids the independent 8 MiB static-handler interpolation budget and is joined after
-the refusal. Each bound was verified by removal — the body
+client's own reqwest path through `send_to_client`: a 5-byte body is read, a body one byte over
+`MAX_RESPONSE_BODY_BYTES` fails the request. Each bound was verified by removal — the body
 bound, the deadline and the reqwest chunk check each turn their test red.
 
 ## `fetch_client_test.rs` — the shared request API, both backends

@@ -233,6 +233,11 @@ impl ClientRegistry {
         #[cfg(feature = "ospf")]
         self.register(Arc::new(crate::client::ospf::OspfClientProtocol::new()));
 
+        #[cfg(feature = "otlp")]
+        self.register(Arc::new(
+            crate::client::otlp::actions::OtlpClientProtocol::new(),
+        ));
+
         #[cfg(feature = "postgresql")]
         self.register(Arc::new(
             crate::client::postgresql::PostgresqlClientProtocol::new(),
@@ -310,6 +315,10 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "loki")]
+        self.register(Arc::new(
+            crate::client::loki::actions::LokiClientProtocol::new(),
+        ));
         #[cfg(feature = "influxdb")]
         self.register(Arc::new(
             crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
@@ -403,6 +412,8 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::prometheus::PrometheusClientProtocol::new(),
         ));
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::client::docker::DockerClientProtocol::new()));
 
         #[cfg(feature = "gearman")]
         self.register(Arc::new(
@@ -769,6 +780,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("nfc", "nfc-client"),
     ("NTP", "ntp"),
     ("OpenAI", "openai"),
+    ("OTLP", "otlp"),
     ("PostgreSQL", "postgresql"),
     ("PyPI", "pypi"),
     ("MSSQL", "mssql"),
@@ -787,6 +799,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("Loki", "loki"),
+    ("LokiPush", "loki"),
     ("InfluxDB", "influxdb"),
     ("InfluxDB2", "influxdb"),
     ("GELF", "gelf"),
@@ -808,6 +822,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Beanstalkd", "beanstalkd"),
     ("Gearman", "gearman"),
     ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

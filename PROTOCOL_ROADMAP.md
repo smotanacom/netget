@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **16 / 72**; **56 remain**. The complete scopes comprise nine new families and seven existing-protocol completions. All checklist entries remain authorized, including the 45 new families, six existing completions and five extensions still open.
-- Integration branch: `protocol-expansion-20261001`. Implementations through InfluxDB and Prometheus are published on master as `ccf5f760`; the concurrent, content-preserving `AGENTS.md` instruction migration is retained by signed merge `c763517b`.
-- Agent `queue_continue`: Gearman and Prometheus are implemented and validated. Docker's read-only client has passed its initial 16 independent/pair checks against the existing Docker Engine 29.7.2 daemon; existing server/shared verification and coordinator review remain before item 58 is checked. Vault, Nostr, Neo4j Bolt and OCI clients follow, then the assigned service APIs.
-- Agent `http3_continue`: HTTP/3, raw QUIC and SFTP are complete. OTLP HTTP plus gRPC is in progress with required official peers; a separate shared tonic receive-limit patch is ready for neighbor verification. IPP subscriptions, gRPC-Web and the assigned RPC/streaming families follow.
-- Agent `metrics_continue`: StatsD, Graphite, Forward, GELF and InfluxDB are complete. Loki is in progress against maintained Alloy and official Loki peers. IPFIX and sFlow follow, then the assigned industrial and framed-service families.
-- Three workers maximum, one guarded build at a time. The coordinator reviews and merges signed scopes, records independent evidence, and pushes local master directly to origin/master. The current Gearman Linux CI dependency correction adds tshark; all ten pair cache keys now use comma-free job identifiers.
+- Completed: **19 / 72**; **53 remain**. The complete scopes comprise eight new families and eleven existing-protocol completions. All checklist entries remain authorized, including the 44 new families, four existing completions and five extensions still open.
+- Integration branch: `protocol-expansion-20261001`. Implementations through InfluxDB and Prometheus were published on master; Docker, Loki and OTLP now pass coordinator validation. The concurrent, content-preserving `AGENTS.md` instruction migration remains integrated.
+- Agent `queue_continue`: Docker is complete; Vault client item 59 is in progress with a separately validated shared credential-logging correction. Nostr, Neo4j Bolt and OCI clients follow, then the assigned service APIs.
+- Agent `http3_continue`: OTLP HTTP/gRPC completion and the shared tonic receive-limit correction are validated. Generic gRPC streaming/reflection item 68 is in progress; gRPC-Web, Connect RPC and the assigned RPC/streaming families follow.
+- Agent `metrics_continue`: Loki is complete. IPFIX item 29 is in progress against independent Python ipfix and GoFlow2 peers; sFlow follows, then the assigned industrial and framed-service families.
+- Three workers maximum, one guarded build at a time. The coordinator reviews and merges signed scopes, records independent evidence, and pushes local master directly to origin/master. Thirteen blocking pair jobs now cover the completed scopes. Prior Linux failures have concrete integrated fixture corrections; the next remote run is pending, so full CI is not claimed green.
 
 ## New protocol checklist
 
@@ -1081,12 +1081,14 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: 17 server and 5 client tests passed with pygelf 0.4.3 and official Graylog Go reader sources pinned at `25db8704bc`; TCP/UDP, compressed/chunked framing, direct pairing, bounds and mixed handler failure are covered. Code `daa80399`, handler-failure fix `d58a4c0c`, published master `313ad42e`. Experimental; shared logs/memory, no collector persistence or acknowledgement invented.
 
-- [ ] **27. Loki push API** — B/M; proposed feature `loki`. [Specification/reference](https://grafana.com/docs/loki/latest/reference/loki-http-api/).
+- [x] **27. Loki push API** — B/M; proposed feature `loki`. [Specification/reference](https://grafana.com/docs/loki/latest/reference/loki-http-api/).
   - Scope: Labeled log ingestion/emission, authentication/tenancy, batch validation, compression and failure responses.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: 30 checks (9 client, 21 server) passed at 100 test threads with official Loki 3.7.8 service readback, maintained Alloy 1.20.1 protobuf/Snappy emission and Python logging-loki 0.3.1 JSON emission. All three carriers preserve timestamps, labels, text and structured metadata; tenancy/authentication, error responses, decompression bounds and cancellation are exercised. Code `b576578c`, HTTP-token correction `bbce4898`, shared integration `9008eb88`. Experimental cleartext push API; no query, durable store, retention/order engine or automatic retries.
 
 - [x] **28. InfluxDB write API** — B/S-M; proposed feature `influxdb`. [Specification/reference](https://docs.influxdata.com/influxdb/v2/api/write/).
   - Scope: Pinned write API, line protocol, types/escaping/timestamp precision, authentication and partial errors.
@@ -1291,11 +1293,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - Validation: read-only SFTP v3 stat, directory listing and UTF-8 file windows are integrated as `4a4884b0` (accurate startup modes `2e905b45`). In the merged `tcp,gearman,ssh` build, all 16 SSH client and 14 existing SSH server tests passed at 100 threads with independent OpenSSH 10.3p1 and direct NetGet pairing. All 129 shared checks across 31 targets, correctness/suspicious/unused-must-use lint and whole formatting pass. SFTP requires an explicit SHA256 host pin; bounded framing/channel queues and owned socket shutdown are tested. Experimental; no writes, binary file action, known_hosts, forwarding, second independent SFTP implementation, fuzz or new pcap claim. Logs: `.protocol-expansion-20261001/logs/batch5-ssh-initial.log` and `batch5-{shared,clippy,format}-initial.log`.
 
 
-- [ ] **56. OTLP client and gRPC receiver**.
+- [x] **56. OTLP client and gRPC receiver**.
   - Scope: Export traces/metrics/logs, both HTTP and gRPC as advertised; gRPC server alongside existing HTTP receiver.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 40 checks (9 client, 31 receiver) passed at 100 test threads. Official core Collector 0.162.0 independently receives typed traces, gauge metrics and text logs over HTTP protobuf and gRPC; otel-cli 0.4.5 and telemetrygen 0.161.0 exercise the receiver. Verified TLS exports/custom CA, none/gzip, partial success, retry/status details, message/body limits, deadline cancellation and same-connection recovery are covered. Existing HTTP checks remain. Code `00a32c6c`, compression/deadline-header correction `481fb76b`; shared tonic patch `c2a589a5` separately passes three 4 MiB boundary regressions and 28 gRPC/etcd neighbor checks. Experimental: documented signal subset, same-port cleartext receiver, no receiver TLS or automatic retries.
 
 - [x] **57. Prometheus client**.
   - Scope: Scrape, negotiate and parse metrics into structured events; remote write tracked separately.
@@ -1305,11 +1309,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: code `26854817`; all 20 client and 18 existing server checks pass at 100 threads with Prometheus/promtool 3.15.0 and prometheus-client 0.22.1, plus NetGet pairing. Text 0.0.4/OpenMetrics 1.0, negotiation, native metric families, limits, model/manual/script handlers and cancellation are covered. No remote write, PromQL, protobuf/native histograms or OpenMetrics 2.0 claim. Experimental. The Linux independent-pair job also passed.
 
-- [ ] **58. Docker client**.
+- [x] **58. Docker client**.
   - Scope: Structured API actions paired with existing programmable Docker server.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: 34 checks (16 client, 18 preserved server) passed at 100 test threads using real Docker Engine 29.7.2 and CLI 29.8.0. Native Unix socket and owned TCP relay cover eight read operations, API negotiation, filters, nullable/list/inspect shapes, bounded payloads, command injection and cancellation. Tests only read the existing daemon; they do not pull images or create resources. Code `ae95298a`, shared integration `9008eb88`. Experimental selected read-only Engine API with a 1.47 ceiling; existing mutation refusal remains, and TLS/named pipes are outside this scope.
 
 - [ ] **59. Vault client**.
   - Scope: Structured authentication/secret operations paired with existing programmable Vault server.
@@ -1426,6 +1432,11 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 - Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the first remote NUT/DoQ/StatsD interoperability job passed on Linux. The eight-scope batch is published on master as `cf3f6a74`. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
 
 - Documentation migration compatibility: both path and test-count checks discover `AGENTS.md` and legacy `CLAUDE.md`. Existing legacy citations resolve only when the migrated file actually exists; missing paths and stale foreign-path exemptions still fail. All four focused tests pass, including two new migration regressions. Workflow YAML and all 90 shell steps parse successfully.
+
+- **Batch 6 — 27 Loki, 56 OTLP completion, 58 Docker client:** the merged `tcp,docker,loki,otlp,grpc,quic,gearman,http` build passes 104 new-scope checks (30 Loki, 40 OTLP, 34 Docker), plus 47 Gearman, 17 QUIC, five HTTP transport and three tonic boundary checks: **176 total**, zero failed/ignored in the final protocol runs. Command: `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --locked --offline --no-default-features --features tcp,docker,loki,otlp,grpc,quic,gearman,http --test server --test client -- PROTOCOL:: --test-threads=100`; the HTTP fixture uses `http::transport`, and the tonic boundary target is `vendored_tonic_patch_test`. Local peer environment is documented in each test directory and the owned batch scripts.
+- All **132 shared checks across 31 targets** are green after 13 focused rerun checks corrected three initial audit failures: missing OTLP canonical catalogue membership, Loki's literal tenant default and two intentional control-rejection validators. The initial failure log is retained. `clippy --lib --bin netget` with correctness/suspicious/unused-must-use denied and whole-package formatting pass. Coordinator fixes `9008eb88`, CI gates `980e24c3`.
+- Concrete CI fixture corrections: `29f76b09` streams the 8 MiB-plus-one HTTP response from an owned, bounded test peer instead of exceeding the shared static-action budget; `4735e4c0` owns concurrent QUIC streams and deliberately tests six-second model replies within the existing server deadline; `276d24e8` adds Gearman's GNU argument delimiter. Runtime limits remain intact. Previous Linux run `37084245867` passed eight pair jobs but failed the old Gearman/QUIC fixtures; general run `37084245909` passed its other blocking jobs but failed the old HTTP fixture. The corrected remote run is pending, and full CI is not claimed green.
+- Three new blocking jobs require independent Docker, Loki/Alloy and OTLP Collector/exporter peers. Workflow YAML and **101 shell steps** parse; the Linux Collector installer syntax and official release SHA256 match are verified (actual Linux bootstrap awaits CI). The OTLP Wireshark display filter parses; this is syntax evidence, not packet-capture maturity evidence. Logs: `.protocol-expansion-20261001/logs/batch6-*` and `tonic-*`. Free space after final validation is approximately 31 GiB; owned package cleanup previously reclaimed 10.6 GiB while retaining dependency caches, sources, peers and unrelated work.
 
 ## Implementation and independent peer plan
 
