@@ -15,8 +15,8 @@ use tokio::time::timeout;
 /// The protocol used to be called `http3` while serving raw QUIC streams. After the
 /// rename the lookup path is the thing most likely to silently break, so assert it
 /// directly instead of only through `base_stack` in the mocks below. `http3` must
-/// *not* resolve here: NetGet has no HTTP/3 server, and resolving it to a raw QUIC
-/// socket is the same silent mis-resolution `ftp` -> TCP used to cause.
+/// *not* resolve here: HTTP/3 has its own server, and resolving it to a raw QUIC
+/// socket would misclassify the application protocol.
 #[test]
 fn quic_keyword_resolves_to_this_protocol() {
     use netget::protocol::server_registry::registry;
@@ -339,6 +339,9 @@ async fn test_quic_multiple_streams() -> E2EResult<()> {
                         "message": "Stream opened"
                     }
                 ]))
+                // A valid model notification may exceed the old five-second peer deadline.
+                .after_delay(Duration::from_secs(6))
+                .expect_calls(3)
                 .and()
                 // Mock 3: LLM receives data and echoes it back (matches any stream)
                 .on_event("quic_data_received")
@@ -413,10 +416,13 @@ async fn test_quic_multiple_streams() -> E2EResult<()> {
     println!("✓ Connected to QUIC server");
 
     // Open 3 streams concurrently
-    let mut handles = vec![];
+    // The receiver owns a 30-second whole stream exchange. Give it that bound plus
+    // a small scheduling margin, and own every client task even on assertion failure.
+    let exchange_deadline = netget::utils::quic::EXCHANGE_TIMEOUT + Duration::from_secs(5);
+    let mut streams = tokio::task::JoinSet::new();
     for i in 0..3 {
         let conn = connection.clone();
-        let handle = tokio::spawn(async move {
+        streams.spawn(async move {
             let (mut send, mut recv) = conn.open_bi().await.expect("Failed to open stream");
 
             let test_data = format!("Stream {}", i);
@@ -426,25 +432,24 @@ async fn test_quic_multiple_streams() -> E2EResult<()> {
             send.finish().expect("Failed to finish");
 
             // Read response from LLM
-            let response = timeout(Duration::from_secs(5), recv.read_to_end(1024))
+            let response = timeout(exchange_deadline, recv.read_to_end(1024))
                 .await
                 .expect("Read timeout")
                 .expect("Failed to read");
             (test_data, String::from_utf8_lossy(&response).to_string())
         });
-        handles.push(handle);
     }
 
-    // Wait for all streams to complete and verify echoes
-    for handle in handles {
-        let (sent, received) = timeout(Duration::from_secs(15), handle)
-            .await
-            .expect("Stream timeout")
-            .expect("Stream task failed");
-
-        println!("✓ Stream test - sent: {}, received: {}", sent, received);
-        assert_eq!(sent, received, "Expected echo on stream");
-    }
+    // All three exchanges run concurrently; one deadline bounds the whole group.
+    timeout(exchange_deadline, async {
+        while let Some(result) = streams.join_next().await {
+            let (sent, received) = result.expect("Stream task failed");
+            println!("✓ Stream test - sent: {}, received: {}", sent, received);
+            assert_eq!(sent, received, "Expected echo on stream");
+        }
+    })
+    .await
+    .expect("Stream group timeout");
 
     // Cleanup
     connection.close(0u32.into(), b"done");
