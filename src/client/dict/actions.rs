@@ -29,13 +29,14 @@ fn action(
     description: &str,
     parameters: Vec<Parameter>,
     example: Value,
+    log_template: &str,
 ) -> ActionDefinition {
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(log_template.into()),
     }
 }
 fn request_action() -> ActionDefinition {
@@ -70,6 +71,7 @@ fn request_action() -> ActionDefinition {
             ),
         ],
         json!({"type":"dict_request","operation":"databases"}),
+        "Request DICT operation {operation}",
     )
 }
 fn disconnect_action() -> ActionDefinition {
@@ -78,6 +80,7 @@ fn disconnect_action() -> ActionDefinition {
         "Close the DICT connection",
         vec![],
         json!({"type":"disconnect"}),
+        "Disconnect DICT server",
     )
 }
 fn actions() -> Vec<ActionDefinition> {
