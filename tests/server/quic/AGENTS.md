@@ -20,8 +20,17 @@ an explicit close_this_stream-on-open regression with client FIN withheld.
 One earlier four-worker run timed out in the existing mocked three-stream test
 at its unchanged five-second read deadline. It passed isolated, alongside all
 interfering mocked tests at four workers, and in the final complete four-worker
-run. The initial trace stopped after connection notification; its cause was not
-established, so these passes do not establish that the transient cannot recur.
+run. A later 32-worker native run exposed the cause: the accept branch awaited
+AppState to allocate a stream ID behind an older stream's queued write, while
+that branch stopped polling the older stream. The fair lock could never progress.
+ID allocation now runs inside the stream future, so the collection keeps polling
+all state waiters.
+
+`state_contention_test.rs` deterministically holds AppState when the first real
+stream queues its model feedback write, accepts another stream, then releases
+state. Both authenticated Quinn streams must receive their replies within the
+existing five-second deadline. The rendezvous uses a thread-local trace subscriber
+and bounded channels, so it does not depend on sleeps or interfere with other tests.
 
 ## Certificate parameter regression
 
