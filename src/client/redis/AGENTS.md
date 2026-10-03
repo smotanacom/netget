@@ -186,7 +186,7 @@ status_tx.send("[CLIENT] Redis client connected");      // → TUI
 
 ## Testing Strategy
 
-See `tests/client/redis/CLAUDE.md` for E2E testing approach.
+See `tests/client/redis/AGENTS.md` for E2E testing approach.
 
 ## Future Enhancements
 
@@ -196,8 +196,8 @@ See `tests/client/redis/CLAUDE.md` for E2E testing approach.
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/redis/real_server_test.rs` (see `tests/client/redis/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/redis/real_server_test.rs` (see `tests/client/redis/AGENTS.md`):
 
 1. **Real third-party server** — a real `redis-server` (Valkey locally, Redis on Ubuntu), read back with `redis-cli`; NetGet's side is no Redis client library at all (`resp.rs` is ours), so no code is shared.
 2. **Fails rather than skips** — a missing `redis-server` or `redis-cli` is a test failure naming the brew formula and the

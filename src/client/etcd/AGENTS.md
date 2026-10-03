@@ -444,8 +444,8 @@ command sender.
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/etcd/real_server_test.rs` (see `tests/client/etcd/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/etcd/real_server_test.rs` (see `tests/client/etcd/AGENTS.md`):
 
 1. **Real third-party server** — the official Go `etcd`, read back with the official `etcdctl`; NetGet's side is `etcd-client` on tonic, while etcd is grpc-go, so no code is shared.
 2. **Fails rather than skips** — a missing `etcd` or `etcdctl` is a test failure naming the brew formula and the

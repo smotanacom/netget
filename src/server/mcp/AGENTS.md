@@ -251,7 +251,7 @@ notification before registering its command channel or calling the model —
 **The deadline covers the read and nothing else.** `axum::serve` owns its accept loop and takes a concrete `TcpListener`, so there is no seam inside it — the same wall `src/server/nfs/guard.rs` hit with `NFSTcpListener`, and the same answer: NetGet keeps the public listener and runs axum behind it on a loopback-only ephemeral port. The relay's deadline re-arms instead of closing while `awaiting_response` is set, which for a strict request/response protocol is exactly "the peer is waiting on us". Two costs are worth stating: `handle_jsonrpc` sees the relay as its peer rather than the real client address, and the loopback backend is reachable by other local processes (again as with NFS). The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

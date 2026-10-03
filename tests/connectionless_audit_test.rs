@@ -56,6 +56,26 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // 802.1X is a session machine — EAP identity, challenge, then the admission decision.
     // The gap between request and response is exactly where the model sits.
     "EAPOL",
+    // GELF also serves live TCP sessions, which must survive a slow handler. Its UDP
+    // path creates only a temporary entry for one decoded message and explicitly
+    // removes it after dispatch on success or error. Chunk reassembly is bounded and
+    // expired by its own 1-second timer; no per-remote UDP entries await the idle sweep.
+    "GELF",
+    // IPFIX creates one temporary row for each decoded message while its common handler
+    // runs, then removes that row after success, error or default collection. Reaping a
+    // parked manual/model handler would hide a live request. No per-remote rows await
+    // the idle sweep; template/session state has a separate owned 1-second expiry timer.
+    "IPFIX",
+    // sFlow also removes each temporary datagram row when its common handler ends.
+    // Reaping it while manual/model work is parked would hide a live request;
+    // diagnostic sequence state expires independently on its owned 1-second timer.
+    #[cfg(feature = "sflow")]
+    "sFlow",
+    // NetFlow v9 owns the same temporary datagram row lifecycle: each common
+    // handler removes its row on completion. The idle sweep must leave a parked
+    // request visible; its template/session cache expires on a separate owned timer.
+    #[cfg(feature = "netflow-v9")]
+    "NetFlowV9",
 ];
 
 /// Registry names whose source directory does not follow any of the mechanical
@@ -67,6 +87,9 @@ fn dir_alias(protocol_name: &str) -> Option<&'static str> {
         "DynamoDB" => Some("dynamo"),
         "SamlIdp" => Some("saml_idp"),
         "SamlSp" => Some("saml_sp"),
+        "FluentForward" => Some("fluent_forward"),
+        "NetFlowV9" => Some("netflow_v9"),
+        "PrometheusRemoteWrite" => Some("prometheus_remote_write"),
         _ => None,
     }
 }

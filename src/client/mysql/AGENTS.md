@@ -370,7 +370,7 @@ Bulk data loading for LLM-generated datasets.
 
 ## Testing Strategy
 
-See `tests/client/mysql/CLAUDE.md` for E2E test details.
+See `tests/client/mysql/AGENTS.md` for E2E test details.
 
 The evidence is `tests/client/mysql/real_server_test.rs`: a real `mysqld` initialised per
 test, driven through CREATE / INSERT / SELECT / an INSERT built from the SELECT's rows, and
@@ -387,7 +387,7 @@ read back with the `mysql` CLI. No Docker.
 
 - `mod.rs` - Connection logic, query execution, LLM integration
 - `actions.rs` - `Client` trait implementation, action definitions
-- `CLAUDE.md` - This document
+- `AGENTS.md` - This document
 
 **Common Issues:**
 
@@ -449,8 +449,8 @@ a `*` static handler receives the injected query).
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/mysql/real_server_test.rs` (see `tests/client/mysql/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/mysql/real_server_test.rs` (see `tests/client/mysql/AGENTS.md`):
 
 1. **Real third-party server** — Oracle's `mysqld` (C++), initialised per test with
    `--initialize-insecure` and read back with the `mysql` CLI (libmysqlclient). NetGet's side

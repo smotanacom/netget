@@ -12,7 +12,7 @@ as `pub mod saml_idp;` (a test directory not declared there is silently never co
 | `connection_bounds_test.rs` | 2 | the first-byte and idle deadlines and the connection cap |
 
 `hardening_test.rs` is the one to read first. An identity provider that returns success
-without a decision is the fail-open shape the project `CLAUDE.md` calls the most dangerous
+without a decision is the fail-open shape the project `AGENTS.md` calls the most dangerous
 pattern in this codebase — the OAuth2 case, where no action meant a hardcoded token and a
 model's explicit denial was indistinguishable from silence.
 
@@ -29,7 +29,7 @@ XML is posted to the `acs_url` the handler supplied — and never on authenticit
 
 `test_saml_idp_sso_posts_assertion_to_acs_url` contains a positive assertion that the decoded
 assertion carries **no** `ds:Signature`. That is not a style check: it is there so that adding
-signing later fails this test and forces `src/server/saml_idp/CLAUDE.md` and this suite to be
+signing later fails this test and forces `src/server/saml_idp/AGENTS.md` and this suite to be
 updated together, instead of leaving a suite that silently reads as if signing were covered.
 
 ## Tests

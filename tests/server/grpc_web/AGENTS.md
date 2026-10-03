@@ -42,6 +42,16 @@ backpressure; actual 30-second first-byte and 120-second idle deadlines; early o
 upload close without its declared EOF; and exact/+1 header count/header buffer refusal.
 The real connection deadline test takes approximately 150 seconds.
 
+The generic `max_inbound_bytes_bound_plus_one_test` explicitly does not probe
+gRPC-Web: it starts with default parameters and sends `POST /netget-bound-probe` with
+`application/octet-stream`, whereas this binding requires `proto_schema`, a
+declared RPC path and binary gRPC-Web framing. Supplying only a schema would
+measure media refusal before the advertised bound. The independent
+`incoming_request_limits_plain_and_gzip_independent_peer` fixture supplies that
+context, accepts an exact 4 MiB protobuf message plus its 5-byte frame, and
+requires RESOURCE_EXHAUSTED for a one-byte larger message in both encodings.
+The early over-cap upload test separately checks closure without declared EOF.
+
 Retained initial failures drove fixes. A timeout response reaching EOS could disarm its
 HTTP/1 owner timer while Hyper still drained input: the Web-only expired-timer guard
 preserves owned cancellation. Early refusal of a +1 request raced an independent upload

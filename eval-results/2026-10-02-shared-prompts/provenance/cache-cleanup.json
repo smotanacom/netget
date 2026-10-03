@@ -1,0 +1,44 @@
+{
+  "at": "2026-10-03T00:05:30.560248+00:00",
+  "reason": "Free owned build caches without changing or interrupting exact already-built measurements",
+  "phases": {
+    "before": {
+      "harness_path": "/Users/matus/dev/netget/.netget-handoff/evals/before-target/debug/deps/eval-02a2a94d62b715a2",
+      "backup_path": "/Users/matus/dev/netget/.netget-handoff/evals/before/harness",
+      "sha256": "47cbd6b0d08a08175b67572fa57fa868a69fb07ce48ca2faa8e08f0c728997f5",
+      "target_before_kib": 2519000,
+      "target_after_kib": 127152,
+      "freed_kib": 2391848,
+      "otool_libraries": [
+        "\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 5027.0.69)",
+        "\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
+        "\t/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit (compatibility version 1.0.0, current version 275.0.0)",
+        "\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1446.0.0)",
+        "\t/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)",
+        "\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 62460.1.2)",
+        "\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1359.0.0)"
+      ],
+      "saved_application": "/Users/matus/dev/netget/.netget-handoff/evals/before/netget"
+    },
+    "after": {
+      "harness_path": "/Users/matus/dev/netget/.netget-handoff/evals/after-target/debug/deps/eval-02a2a94d62b715a2",
+      "backup_path": "/Users/matus/dev/netget/.netget-handoff/evals/after/harness",
+      "sha256": "467641b6cbe5dccb9929176be8b004180f24c5b16f39d3a3c36196d306651290",
+      "target_before_kib": 2519152,
+      "target_after_kib": 127156,
+      "freed_kib": 2391996,
+      "otool_libraries": [
+        "\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 5027.0.69)",
+        "\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
+        "\t/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit (compatibility version 1.0.0, current version 275.0.0)",
+        "\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1446.0.0)",
+        "\t/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)",
+        "\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 62460.1.2)",
+        "\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1359.0.0)"
+      ],
+      "saved_application": "/Users/matus/dev/netget/.netget-handoff/evals/after/netget"
+    }
+  }
+}

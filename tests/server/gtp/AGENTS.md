@@ -18,7 +18,7 @@ Two files:
 ### Why the assertions are not round trips
 
 Encoding with our encoder and decoding with our decoder proves only that one implementation
-agrees with itself — the circular-evidence trap the root `CLAUDE.md` names, and the reason
+agrees with itself — the circular-evidence trap the root `AGENTS.md` names, and the reason
 `rss` sat at Experimental for months. Every codec assertion here is against a byte vector
 written out by hand, so a change of interpretation fails the test rather than passing quietly
 because both sides moved together.
@@ -29,14 +29,14 @@ fixed-length table rather than calling into the server's codec.
 ### And why that still only buys Experimental
 
 A hand-written peer is an independent **reading** of the specification, not an independent
-**implementation**. That is exactly the `dhcp` and `usb/serial` situation the root `CLAUDE.md`
+**implementation**. That is exactly the `dhcp` and `usb/serial` situation the root `AGENTS.md`
 records, and it is why GTP is rated `Experimental` despite a fully exercised transport. See
-"Maturity" in `src/server/gtp/CLAUDE.md` for what would change that (`sgsnemu` from Osmocom's
+"Maturity" in `src/server/gtp/AGENTS.md` for what would change that (`sgsnemu` from Osmocom's
 libgtp, or an open5gs node) and what was looked for on this machine.
 
 ## The UDP rule
 
-The root `CLAUDE.md` requires UDP-style protocols to echo the client's transaction identifier
+The root `AGENTS.md` requires UDP-style protocols to echo the client's transaction identifier
 **dynamically**, via `respond_with_actions_from_event`, because a static mock with a hardcoded
 identifier causes client timeouts and the usual "fix" is to weaken the assertion until it
 passes.
@@ -140,8 +140,8 @@ therefore exercised rather than merely declared.
   here and nothing was installed for these tests.
 - **Wireshark is not wired into the suite** — deliberately. `tshark`'s `gtp`/`gtpv2`
   dissectors *were* run by hand against four of this server's packets and accepted all of them
-  with no expert warnings (the table is in `src/server/gtp/CLAUDE.md`), but automating it would
-  mean a test that skips when `tshark` is absent, and the root `CLAUDE.md` is explicit that a
+  with no expert warnings (the table is in `src/server/gtp/AGENTS.md`), but automating it would
+  mean a test that skips when `tshark` is absent, and the root `AGENTS.md` is explicit that a
   real tool behind a skip-when-missing gate is a silent pass rather than evidence.
 - **No fail-closed test.** Nothing here forces an LLM error or an unusable action, so the
   synthesised refusal and its `fail_closed_*` tokens are asserted only *negatively* (they must

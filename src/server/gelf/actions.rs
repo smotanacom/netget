@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -30,11 +31,11 @@ pub fn transport_parameter() -> ParameterDefinition {
     ParameterDefinition {name:"transport".into(),type_hint:"string".into(),description:"udp (default) or tcp. TCP uses uncompressed NUL-delimited JSON; UDP accepts JSON, gzip/zlib and chunks.".into(),required:false,example:json!("tcp"),default:Some(json!(DEFAULT_TRANSPORT))}
 }
 fn collect_action() -> ActionDefinition {
-    ActionDefinition {name:"collect_gelf_message".into(),description:"Observe one validated GELF message in the bounded access log. No persistence or reply traffic.".into(),parameters:vec![],example:json!({"type":"collect_gelf_message"}),log_template:None}
+    ActionDefinition {name:"collect_gelf_message".into(),description:"Observe one validated GELF message in the bounded access log. No persistence or reply traffic.".into(),parameters:vec![],example:json!({"type":"collect_gelf_message"}),log_template: Some(LogTemplate::new().with_info("GELF message observed"))}
 }
 pub static GELF_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("gelf_message","One validated GELF 1.1 message after TCP framing or UDP reassembly/decompression. Missing timestamp resolves to receiver time; missing level resolves to ALERT (1). Unmatched events collect without model calls by default.",collect_action().example)
-.with_parameters(vec![parameter("message","object","Structured host, short_message, optional full_message, timestamp, level, deprecated facility/file/line, and additional_fields with unprefixed names and string/number values.",true),parameter("source_addr","string","Sender address",true),parameter("transport","string","udp or tcp",true)])
+.with_parameters(vec![parameter("message","object","Structured host, short_message, optional full_message, timestamp, level, deprecated facility/file/line, and additional_fields with unprefixed names and string/number values.",true),parameter("source_addr","string","Remote IP and port of the GELF emitter",true),parameter("transport","string","Selected GELF transport: udp or tcp",true)])
 .with_actions(vec![collect_action()])
 });
 impl Protocol for GelfProtocol {
@@ -66,7 +67,7 @@ impl Protocol for GelfProtocol {
         vec![GELF_MESSAGE_EVENT.clone()]
     }
     fn metadata(&self) -> ProtocolMetadataV2 {
-        ProtocolMetadataV2::builder().request_only("GELF collectors never send application replies or unsolicited peer messages").deliberately_silent().state(DevelopmentState::Experimental).well_known_udp_port(12201).max_inbound_bytes(MAX_MESSAGE_BYTES)
+        ProtocolMetadataV2::builder().request_only("GELF is a one-way log stream; collecting a received message has no reply or unsolicited server-message operation.").deliberately_silent().state(DevelopmentState::Experimental).well_known_udp_port(12201).max_inbound_bytes(MAX_MESSAGE_BYTES)
  .implementation("Native bounded GELF 1.1 JSON, UDP chunks/gzip/zlib and NUL-delimited TCP; flate2 compression")
  .llm_control("Explicit static/script/manual/model handlers; llm_fallback=false collects unmatched messages without model calls")
  .e2e_testing("Codec bounds/negative cases, both transports, lifecycle and independent pygelf emitter / official Graylog go-gelf readers")
@@ -77,7 +78,7 @@ impl Protocol for GelfProtocol {
             transport_parameter(),
             ParameterDefinition {
                 name: "llm_fallback".into(),
-                type_hint: "bool".into(),
+                type_hint: "boolean".into(),
                 description:
                     "Opt unmatched messages into the model; configured handlers always run.".into(),
                 required: false,

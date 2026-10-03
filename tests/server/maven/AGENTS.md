@@ -255,4 +255,4 @@ file is routed and served, nothing more.
 - [Maven Repository Layout](https://maven.apache.org/repository/layout.html)
 - [Maven CLI Documentation](https://maven.apache.org/ref/current/maven-embedder/cli.html)
 - [NetGet Test Infrastructure](../../README.md)
-- [Implementation CLAUDE.md](../../../src/server/maven/CLAUDE.md)
+- [Implementation CLAUDE.md](../../../src/server/maven/AGENTS.md)

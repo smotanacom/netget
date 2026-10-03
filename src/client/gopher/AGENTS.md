@@ -59,7 +59,7 @@ Nothing is thrown away, and the mismatch is visible to the model:
 Browsing is iterative by construction: fetch a menu, pick an item, fetch that,
 repeat. A follow-up fetch that raised no event would give the model exactly one
 turn and then leave it deaf — the `elasticsearch`/`http2` defect the root
-`CLAUDE.md` catalogues, and for a *browser* it is fatal rather than merely
+`AGENTS.md` catalogues, and for a *browser* it is fatal rather than merely
 lossy, because a menu the model cannot act on is the whole product.
 
 So every fetch raises its event and asks the model again, and the chain is
@@ -207,7 +207,7 @@ startup.
 as a real independent **server**. The e2e suite's peer is NetGet's own Gopher
 server, so every wire assertion is **same-project evidence**: it shows the two
 halves of this repo agree, not that either agrees with RFC 1436. That is the
-circular-evidence class the root `CLAUDE.md` names by name, and it is the whole
+circular-evidence class the root `AGENTS.md` names by name, and it is the whole
 of why the rating is not higher.
 
 **What would earn Beta**: one test in which a third-party Gopher daemon serves a

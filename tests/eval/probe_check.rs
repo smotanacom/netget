@@ -113,7 +113,10 @@ where
     );
     // Then: did the probe wait for the slow answer, and does the case's own
     // expectation accept a correct one?
-    if let Err(why) = case.expect.check(&output, "") {
+    if let Err(why) = case
+        .expect
+        .check(&output, "", outcome.exit_code, outcome.timed_out)
+    {
         panic!(
             "{id}: a mocked model answered correctly after {MODEL_LATENCY:?} and the case still \
              fails — {why}. That is a harness defect, and the eval would score it against the \

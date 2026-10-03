@@ -191,6 +191,74 @@ async fn parked_handler_does_not_block_receive_expiry_or_bounded_queue_and_stop(
     released(&state, addr).await;
 }
 #[tokio::test]
+async fn aged_parked_datagram_row_survives_common_cleanup_until_the_handler_finishes() {
+    let (state, id, addr) = start(
+        Some(vec![
+            json!({"event_pattern":"netflow_v9_message","handler":{"type":"manual","timeout_secs":300}}),
+        ]),
+        None,
+    )
+    .await;
+    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let wire = netget::server::netflow_v9::codec::encode(&super::codec_test::sample(), 0, 0, 0)
+        .unwrap()
+        .0;
+    sender.send_to(&wire, addr).await.unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = state.list_intercepts().await.into_iter().next() {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let cid = netget::server::connection::ConnectionId::new(request.connection_id.unwrap());
+    state
+        .with_server_mut(id, |server| {
+            server.connections.get_mut(&cid).unwrap().last_activity =
+                std::time::Instant::now() - Duration::from_secs(60);
+        })
+        .await
+        .unwrap();
+    state.cleanup_old_connections(10).await;
+    assert!(
+        state
+            .get_server(id)
+            .await
+            .unwrap()
+            .connections
+            .contains_key(&cid),
+        "the idle sweep must preserve a live parked NetFlow v9 request"
+    );
+    assert_eq!(state.list_intercepts().await[0].id, request.id);
+    state
+        .resolve_intercept(
+            request.id,
+            vec![json!({"type":"collect_netflow_v9_records"})],
+        )
+        .await
+        .unwrap();
+    logs(&state, id, "netflow_v9_handler_decision", 1).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while state
+            .get_server(id)
+            .await
+            .unwrap()
+            .connections
+            .contains_key(&cid)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the dispatcher must remove its row when the handler finishes");
+    assert!(state.list_intercepts().await.is_empty());
+    state.remove_server(id).await;
+    released(&state, addr).await;
+}
+#[tokio::test]
 async fn actual_template_expiry_and_redefinition_follow_wire_order() {
     let (state, id, addr) = start(None, Some(json!({"template_ttl_seconds":1}))).await;
     let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();

@@ -113,6 +113,73 @@ fn every_prefix_of_a_command_asks_for_more_bytes() {
 }
 
 #[test]
+fn message_ids_reject_control_and_non_hex_bytes_before_accepting_a_command() {
+    // Reduced from the 274-byte input in Fuzz run 36918355914. Previously FIN
+    // accepted the 16-byte ID ending in CR because a space followed it. Re-encoding
+    // discarded the extra parameter, making that CR part of CRLF and the ID 15 bytes.
+    let regression = b"FIN 000000000000000\r \n";
+    assert_eq!(regression.len(), 22);
+    let error = wire::parse_command(regression).expect_err("a CR cannot be part of a message ID");
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        ("E_INVALID", "Invalid Message ID")
+    );
+    assert!(error.fatal);
+
+    // Keep this finite: every ASCII byte in every position, for each ID-bearing
+    // command. A trailing ignored parameter keeps CR out of the line terminator.
+    for verb in ["FIN", "TOUCH", "REQ"] {
+        for position in 0..wire::MSG_ID_LEN {
+            for byte in 0u8..=127 {
+                if byte.is_ascii_hexdigit() || matches!(byte, b' ' | b'\n') {
+                    continue; // Separators already end the parameter/command.
+                }
+                let mut id = [b'0'; wire::MSG_ID_LEN];
+                id[position] = byte;
+                let mut input = format!("{verb} ").into_bytes();
+                input.extend_from_slice(&id);
+                input.extend_from_slice(if verb == "REQ" { b" 0 \n" } else { b" \n" });
+                let error = wire::parse_command(&input).expect_err("IDs contain only ASCII hex");
+                assert_eq!(
+                    error.code, "E_INVALID",
+                    "{verb}, byte {byte}, position {position}"
+                );
+                assert!(error.fatal);
+            }
+        }
+    }
+}
+
+#[test]
+fn valid_message_ids_round_trip_with_lf_crlf_and_extra_parameters() {
+    let mut ids = vec![
+        "0123456789abcdef".to_string(),
+        "0123456789ABCDEF".to_string(),
+    ];
+    for n in [0, 1, 0xabc, u64::MAX] {
+        ids.push(String::from_utf8(wire::message_id_for(n).to_vec()).unwrap());
+    }
+    for id in ids {
+        for command in [
+            Command::Fin(id.clone()),
+            Command::Touch(id.clone()),
+            Command::Req {
+                id: id.clone(),
+                timeout_ms: 0,
+            },
+        ] {
+            let encoded = wire::encode_command(&command);
+            for ending in [b"\n".as_slice(), b"\r\n", b" ignored\n"] {
+                let mut input = encoded[..encoded.len() - 1].to_vec();
+                input.extend_from_slice(ending);
+                assert_eq!(parse_all(&input), command);
+            }
+            assert_eq!(parse_all(&encoded), command);
+        }
+    }
+}
+
+#[test]
 fn refusals_use_nsqds_codes_and_are_judged_from_the_declared_size() {
     let err = |bytes: &[u8]| wire::parse_command(bytes).expect_err("refused");
 

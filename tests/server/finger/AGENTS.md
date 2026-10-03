@@ -32,7 +32,7 @@ none is a port. So a real-client test needs a run privileged enough to bind port
 79, which nothing in this suite does.
 
 **There is deliberately no `#[ignore]`d root test standing in for it.** The root
-`CLAUDE.md` is explicit that an `#[ignore]`d test proves nothing "however good
+`AGENTS.md` is explicit that an `#[ignore]`d test proves nothing "however good
 the reason", and that a skip-when-missing gate is a silent pass — two protocols
 are stuck at Experimental for exactly that, and adding a third would be
 pretending. What would actually move this to Beta is one privileged run of
@@ -47,7 +47,7 @@ What a socket **can** prove is asserted rather than assumed:
   `idle`, `Project:`/`Plan:` under their own headings, CRLF throughout. A
   `contains` assertion would pass on a response with a bare LF in it, and a bare
   LF in a line protocol is exactly the kind of thing a real client would reject.
-  `src/server/finger/CLAUDE.md` quotes this block, so the doc cannot drift.
+  `src/server/finger/AGENTS.md` quotes this block, so the doc cannot drift.
 - **That the server closes.** The helper reads to **EOF**, not one `read()`.
   Every finger client reads until the connection closes, so this is the property
   a real client depends on most, and it is asserted on all four tests. If the

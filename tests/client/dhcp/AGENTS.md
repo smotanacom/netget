@@ -19,7 +19,7 @@ Tests are located in `tests/client/dhcp/e2e_test.rs` and are feature-gated with 
 
 - `e2e_test.rs` - Main E2E test suite
 - `mod.rs` - Module declaration
-- `CLAUDE.md` - This documentation
+- `AGENTS.md` - This documentation
 
 ## Test Cases
 
@@ -296,8 +296,8 @@ Implement in-process mock DHCP server to avoid privilege requirements
 
 ## References
 
-- [DHCP Client Implementation](../../../src/client/dhcp/CLAUDE.md)
-- [DHCP Server Implementation](../../../src/server/dhcp/CLAUDE.md)
+- [DHCP Client Implementation](../../../src/client/dhcp/AGENTS.md)
+- [DHCP Server Implementation](../../../src/server/dhcp/AGENTS.md)
 - [CLIENT_PROTOCOL_FEASIBILITY.md](../../../CLIENT_PROTOCOL_FEASIBILITY.md#dhcp-🟡)
 - [RFC 2131: Dynamic Host Configuration Protocol](https://datatracker.ietf.org/doc/html/rfc2131)
 - [Test Infrastructure Fixes](../../README.md)

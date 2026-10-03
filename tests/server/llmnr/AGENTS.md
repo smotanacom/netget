@@ -7,18 +7,18 @@
 ```
 
 Both pass. Declared in `tests/server/llmnr/mod.rs`, which is declared in `tests/server/mod.rs`
-— check with the `comm` one-liner in the root `CLAUDE.md` if you add a file here.
+— check with the `comm` one-liner in the root `AGENTS.md` if you add a file here.
 
 ## The evidence is circular, and that is the point of this section
 
 **These tests build their queries with `hickory-proto`, which is the same crate
 `src/server/llmnr/actions.rs` encodes its responses with.**
 
-That is the failure mode the root `CLAUDE.md` names for `webrtc_signaling` and `websocket`:
+That is the failure mode the root `AGENTS.md` names for `webrtc_signaling` and `websocket`:
 the "independent peer" turns out to be the library the server itself frames with, so the test
 asserts only that one crate round-trips through itself. `tests/server/websocket/e2e_test.rs`
 escapes it by hand-writing a raw RFC 6455 client. There is no equivalent escape here, and a
-hand-written client would not be one either — the root `CLAUDE.md` is explicit that an in-test
+hand-written client would not be one either — the root `AGENTS.md` is explicit that an in-test
 hand-rolled client is an independent *reading* of the spec, not an independent implementation
 (the `dhcp` and `usb/serial` cases).
 
@@ -94,7 +94,7 @@ DNS's version of this test asserts a **SERVFAIL packet**. LLMNR's asserts **no p
 and the inversion is the whole point: an LLMNR response is a name-to-address binding written
 into the querier's resolver cache, so a fabricated answer during an outage is cache poisoning,
 and the only error frame LLMNR has is an RCODE the RFC forbids in response to a multicast
-query. There is nothing legal to send. See `src/server/llmnr/CLAUDE.md`.
+query. There is nothing legal to send. See `src/server/llmnr/AGENTS.md`.
 
 ## Asserting an absence without asserting a race
 
@@ -112,7 +112,7 @@ By the time `expect_silence` runs, the server has finished deciding, so its 1.5s
 `model_silent`, `model_reject_suppressed_udp` and `fail_closed_llm_error` are byte-identical
 on the wire — all three are zero bytes — so the log token is the only thing that distinguishes
 a correct refusal from a backend outage. Conflating them is the OAuth2 defect the root
-`CLAUDE.md` records, and it would hide a total outage as protocol-correct behaviour forever.
+`AGENTS.md` records, and it would hide a total outage as protocol-correct behaviour forever.
 
 ## Mock budget
 

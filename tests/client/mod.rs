@@ -16,6 +16,8 @@ pub mod bootp;
 pub mod cassandra;
 #[cfg(feature = "coap")]
 pub mod coap;
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "couchdb")]
 pub mod couchdb;
 #[cfg(feature = "datalink")]
@@ -278,3 +280,6 @@ pub mod tacacs;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;
+
+#[cfg(feature = "bolt")]
+pub mod bolt;

@@ -36,20 +36,8 @@ const INSTALL: &str = "Install with `brew install cypher-shell` (macOS; pulls in
 /// Locate a binary, or fail saying why a skip would be worse. Named `require_tool("…")` so
 /// `scripts/beta_evidence_table.py` can see which third-party client this file drives.
 pub fn require_tool(name: &str) -> String {
-    for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        let candidate = std::path::Path::new(prefix).join(name);
-        if candidate.exists() {
-            return candidate.to_string_lossy().into_owned();
-        }
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        if let Some(found) = path
-            .split(':')
-            .map(|dir| std::path::Path::new(dir).join(name))
-            .find(|candidate| candidate.exists())
-        {
-            return found.to_string_lossy().into_owned();
-        }
+    if let Some(found) = crate::helpers::real_server::find_binary(name) {
+        return found.to_string_lossy().into_owned();
     }
     panic!(
         "`{name}` not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin and $PATH). \
@@ -78,39 +66,54 @@ impl Shell {
     }
 }
 
-/// Run `cypher-shell -a <uri> -u neo4j -p <password> <args>` with a scrubbed environment, so no
-/// NEO4J_* variable on the machine can point it elsewhere.
+/// Run the CLI with an owned HOME and explicit credential environment; no credential CLI args.
 pub async fn cypher_shell(uri: &str, password: &str, args: &[&str]) -> Shell {
+    shell(uri, password, args, false).await
+}
+async fn cypher_shell_diagnostics(uri: &str, password: &str, args: &[&str]) -> Shell {
+    shell(uri, password, args, true).await
+}
+// Both5.26 and2026 support native --log, which retains independent driver exception classes.
+async fn shell(uri: &str, password: &str, args: &[&str], diagnostics: bool) -> Shell {
     let bin = require_tool("cypher-shell");
     let home = tempfile::TempDir::new().expect("temp HOME");
     let mut command = tokio::process::Command::new(&bin);
     command
         .arg("-a")
         .arg(uri)
-        .arg("-u")
-        .arg("neo4j")
-        .arg("-p")
-        .arg(password)
         .arg("--non-interactive")
         .args(args)
         .env("HOME", home.path())
         .env_remove("NEO4J_ADDRESS")
         .env_remove("NEO4J_URI")
-        .env_remove("NEO4J_USERNAME")
-        .env_remove("NEO4J_PASSWORD")
+        .env("NEO4J_USERNAME", "neo4j")
+        .env("NEO4J_PASSWORD", password)
         .env_remove("NEO4J_DATABASE")
         .kill_on_drop(true);
+    let diagnostic_file = home.path().join("driver.log");
+    if diagnostics {
+        command.arg("--log").arg(&diagnostic_file);
+    }
     let output = tokio::time::timeout(Duration::from_secs(180), command.output())
         .await
         .unwrap_or_else(|_| panic!("cypher-shell {args:?} did not exit within 180s"))
         .expect("run cypher-shell");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     // The JVM's own ThreadPriorityPolicy notice is not cypher-shell talking.
-    let stderr: String = String::from_utf8_lossy(&output.stderr)
+    let mut stderr: String = String::from_utf8_lossy(&output.stderr)
         .lines()
         .filter(|l| !l.contains("ThreadPriorityPolicy"))
         .collect::<Vec<_>>()
         .join("\n");
+    if diagnostics {
+        let log = std::fs::read_to_string(diagnostic_file).expect("native cypher-shell driver log");
+        assert!(
+            log.len() <= 1024 * 1024,
+            "owned driver diagnostic log bound"
+        );
+        stderr.push_str(&log);
+    }
+    stderr = stderr.replace(password, "<redacted>");
     println!(
         "--- cypher-shell -a {uri} {} (exit {:?}) ---\n{stdout}{stderr}",
         args.join(" "),
@@ -234,7 +237,10 @@ async fn cypher_shell_prints_the_write_statistics() {
     assert_eq!(out.code, 0, "{}{}", out.stdout, out.stderr);
     assert!(
         out.stdout
-            .contains("Created 1 node, set 2 properties, added 1 label"),
+            .contains("Created 1 node, set 2 properties, added 1 label")
+            || out
+                .stdout
+                .contains("Added 1 nodes, Set 2 properties, Added 1 labels"),
         "{}",
         out.stdout
     );
@@ -252,7 +258,7 @@ async fn a_failure_code_is_raised_by_the_driver_as_that_error() {
         out.stderr
     );
     // The driver maps the Neo4j status code to an exception class; a stack trace names it.
-    let out = cypher_shell(&uri, "pw", &["--error-format", "stacktrace", "RETRUN 1"]).await;
+    let out = cypher_shell_diagnostics(&uri, "pw", &["RETRUN 1"]).await;
     assert!(
         out.stderr.contains(
             "org.neo4j.driver.exceptions.ClientException: This graph only knows Person nodes"
@@ -275,7 +281,7 @@ async fn a_wrong_password_is_cypher_shells_authentication_error() {
         "{}",
         out.stderr
     );
-    let out = cypher_shell(&uri, "wrong", &["--error-format", "stacktrace", "RETURN 1"]).await;
+    let out = cypher_shell_diagnostics(&uri, "wrong", &["RETURN 1"]).await;
     assert!(
         out.stderr
             .contains("org.neo4j.driver.exceptions.AuthenticationException"),

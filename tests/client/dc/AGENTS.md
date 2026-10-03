@@ -291,6 +291,6 @@ RUST_LOG=debug cargo test --features dc
 
 ## References
 
-- Implementation: `src/client/dc/CLAUDE.md`
-- Server tests: `tests/server/dc/CLAUDE.md`
+- Implementation: `src/client/dc/AGENTS.md`
+- Server tests: `tests/server/dc/AGENTS.md`
 - NMDC spec: https://nmdc.sourceforge.io/NMDC.html

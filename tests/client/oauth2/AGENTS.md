@@ -11,7 +11,7 @@ In `e2e_test.rs`, four of the five tests are dead **twice over**:
 - each carries `#[ignore] // Requires Ollama to be running`, so a normal run skips them; and
 - each opens with `#[cfg(not(feature = "mcp"))] { println!("Skipping test …"); return; }`,
   because the axum mock server they need arrives with the `mcp` feature. That is the
-  skip-when-missing shape the root `CLAUDE.md` calls out: on a build without `mcp` it is a
+  skip-when-missing shape the root `AGENTS.md` calls out: on a build without `mcp` it is a
   *silent pass*, not a skip, so even `--include-ignored` proves nothing there.
 
 The fifth, `test_oauth2_client_initialization`, constructs a `ClientInstance` and asserts it
@@ -314,5 +314,5 @@ Test-only dependencies (in `[dev-dependencies]`):
 
 The native suites here drive the reqwest backend. The browser path — the same client code over
 `src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
-bundle (see `src/client/oauth2/CLAUDE.md`, "Browser build").
+bundle (see `src/client/oauth2/AGENTS.md`, "Browser build").
 

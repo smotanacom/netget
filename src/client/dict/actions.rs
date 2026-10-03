@@ -4,6 +4,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::app_state::AppState;
 use anyhow::{bail, Result};
@@ -29,13 +30,14 @@ fn action(
     description: &str,
     parameters: Vec<Parameter>,
     example: Value,
+    log_template: &str,
 ) -> ActionDefinition {
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info(log_template)),
     }
 }
 fn request_action() -> ActionDefinition {
@@ -70,6 +72,7 @@ fn request_action() -> ActionDefinition {
             ),
         ],
         json!({"type":"dict_request","operation":"databases"}),
+        "Request DICT operation {operation}",
     )
 }
 fn disconnect_action() -> ActionDefinition {
@@ -78,6 +81,7 @@ fn disconnect_action() -> ActionDefinition {
         "Close the DICT connection",
         vec![],
         json!({"type":"disconnect"}),
+        "Disconnect DICT server",
     )
 }
 fn actions() -> Vec<ActionDefinition> {

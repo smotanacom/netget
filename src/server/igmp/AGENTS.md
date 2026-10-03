@@ -328,7 +328,7 @@ Two files, and only one of them runs:
   destinations, and every rejection path of `execute_action`. This is the whole of the evidence
   an ordinary test run produces for this protocol.
 - **`tests/server/igmp/e2e_test.rs` — all four cases `#[ignore]`d behind root.** They have never
-  run in CI or on a developer machine. See `tests/server/igmp/CLAUDE.md`, and treat any claim
+  run in CI or on a developer machine. See `tests/server/igmp/AGENTS.md`, and treat any claim
   they make about behaviour as untested.
 
 Key testing considerations:

@@ -39,7 +39,24 @@ pub fn action(
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(crate::protocol::log_template::LogTemplate::new().with_info(
+            match name {
+                "respond_tacacs_authentication" => "TACACS+ terminal authentication reply",
+                "respond_tacacs_authorization" => {
+                    "TACACS+ authorization reply, {reply.arguments_len} arguments"
+                }
+                "record_tacacs_accounting" => "TACACS+ volatile accounting reply",
+                "authenticate_tacacs" => "TACACS+ authentication requested in a fresh session",
+                "authorize_tacacs" => {
+                    "TACACS+ authorization requested, {request.arguments_len} arguments"
+                }
+                "account_tacacs" => {
+                    "TACACS+ accounting requested, {request.arguments_len} arguments"
+                }
+                "disconnect" => "TACACS+ disconnect and cancel pending work",
+                _ => "TACACS+ typed action",
+            },
+        )),
     }
 }
 fn authentication() -> ActionDefinition {
@@ -116,7 +133,7 @@ impl Protocol for TacacsProtocol {
         ]
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![secret_parameter(),ParameterDefinition{name:"client_secrets".into(),type_hint:"array".into(),description:"Optional exact-IP overrides:[{client_ip,shared_secret}],<=64unique addresses. Immutable transport configuration; no CIDR or secret rotation.".into(),required:false,example:json!([]),default:Some(json!([]))},duration_parameter("io_timeout_seconds",codec::DEFAULT_IO_SECONDS,"Whole packet read deadline1..300seconds; includes a peer that sends no first byte"),duration_parameter("handler_timeout_seconds",codec::DEFAULT_HANDLER_SECONDS,"Common handler deadline1..300seconds, including manual interception"),ParameterDefinition{name:"llm_fallback".into(),type_hint:"bool".into(),description:"Opt unmatched credential/AAA events into model calls; explicit handlers always run. Defaultfalse denies authentication/authorization and errors accounting.".into(),required:false,example:json!(true),default:Some(json!(codec::DEFAULT_LLM_FALLBACK))}]
+        vec![secret_parameter(),ParameterDefinition{name:"client_secrets".into(),type_hint:"array".into(),description:"Optional exact-IP overrides:[{client_ip,shared_secret}],<=64unique addresses. Immutable transport configuration; no CIDR or secret rotation.".into(),required:false,example:json!([]),default:Some(json!([]))},duration_parameter("io_timeout_seconds",codec::DEFAULT_IO_SECONDS,"Whole packet read deadline1..300seconds; includes a peer that sends no first byte"),duration_parameter("handler_timeout_seconds",codec::DEFAULT_HANDLER_SECONDS,"Common handler deadline1..300seconds, including manual interception"),ParameterDefinition{name:"llm_fallback".into(),type_hint:"boolean".into(),description:"Opt unmatched credential/AAA events into model calls; explicit handlers always run. Defaultfalse denies authentication/authorization and errors accounting.".into(),required:false,example:json!(true),default:Some(json!(codec::DEFAULT_LLM_FALLBACK))}]
     }
     fn metadata(&self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2::builder().state(DevelopmentState::Experimental).well_known_port(49).request_only("TACACS+ packets answer a pending AAA session; no unsolicited peer message API").max_inbound_bytes(codec::MAX_BODY_BYTES+12).implementation("Native bounded RFC8907 legacy TCP header, MD5 chained body obfuscation and typed selected AAA bodies; existing md-5 only")

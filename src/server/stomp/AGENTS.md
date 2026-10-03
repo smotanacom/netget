@@ -18,7 +18,7 @@ against this server in `tests/server/stomp/e2e_test.rs`, decoding every frame wi
 parser. A second test has it decode a refusal as an `ERROR` frame with the `message` header and
 body intact.
 
-It satisfies every clause of the bar the root `CLAUDE.md` sets:
+It satisfies every clause of the bar the root `AGENTS.md` sets:
 
 - **Not `#[ignore]`d.** It runs in the default suite.
 - **Cannot skip.** `async-stomp` is a compiled-in crate dependency, so there is no "is it
@@ -59,7 +59,7 @@ extends this:
 
 There is **no** command-line STOMP client on macOS and none in Homebrew, so the `npm`/`git`
 "real binary" route was never available; `stomp.py` would have been a skip-when-missing gate,
-which the root `CLAUDE.md` rejects. An in-process crate dependency avoids that problem entirely.
+which the root `AGENTS.md` rejects. An in-process crate dependency avoids that problem entirely.
 
 ## Where the work is divided
 

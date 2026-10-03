@@ -116,15 +116,10 @@ impl Request {
     }
 }
 
-fn empty_map() -> Value {
-    Value::Map(Vec::new())
-}
-
 fn map_field(fields: &[Value], i: usize) -> Result<Value, String> {
     match fields.get(i) {
-        None | Some(Value::Null) => Ok(empty_map()),
         Some(v @ Value::Map(_)) => Ok(v.clone()),
-        Some(_) => Err(format!("field {i} must be a map")),
+        _ => Err(format!("field {i} must be a map")),
     }
 }
 
@@ -134,6 +129,15 @@ pub fn parse_request(value: Value) -> Result<Request, String> {
     let Value::Struct { tag, fields } = value else {
         return Err("a Bolt message must be a structure".to_string());
     };
+    let arity = match tag {
+        HELLO | LOGON | BEGIN | PULL | DISCARD | TELEMETRY => 1,
+        GOODBYE | RESET | LOGOFF | COMMIT | ROLLBACK => 0,
+        RUN | ROUTE => 3,
+        _ => return Err(format!("unknown message tag 0x{tag:02X}")),
+    };
+    if fields.len() != arity {
+        return Err(format!("message 0x{tag:02X} requires {arity} fields"));
+    }
     Ok(match tag {
         HELLO => Request::Hello {
             extra: map_field(&fields, 0)?,
@@ -163,8 +167,17 @@ pub fn parse_request(value: Value) -> Result<Request, String> {
         ROLLBACK => Request::Rollback,
         PULL | DISCARD => {
             let extra = map_field(&fields, 0)?;
-            let n = extra.get("n").and_then(Value::as_int).unwrap_or(-1);
-            let qid = extra.get("qid").and_then(Value::as_int).unwrap_or(-1);
+            let n = extra
+                .get("n")
+                .and_then(Value::as_int)
+                .ok_or("'n' must be present and an integer")?;
+            let qid = match extra.get("qid") {
+                None => -1,
+                Some(value) => value
+                    .as_int()
+                    .filter(|n| *n >= -1)
+                    .ok_or("'qid' must be an integer greater than or equal to -1")?,
+            };
             if n == 0 || n < -1 {
                 return Err(format!("'n' must be positive or -1, got {n}"));
             }
@@ -174,15 +187,22 @@ pub fn parse_request(value: Value) -> Result<Request, String> {
                 Request::Discard { n, qid }
             }
         }
-        ROUTE => Request::Route {
-            routing: map_field(&fields, 0)?,
-            // 5.x: [routing, bookmarks, extra{db, imp_user}]; 4.3 sent the db as a string.
-            extra: match fields.get(2) {
-                Some(Value::String(db)) => Value::map([("db", Value::String(db.clone()))]),
-                _ => map_field(&fields, 2)?,
-            },
-        },
-        TELEMETRY => Request::Telemetry,
+        ROUTE => {
+            match &fields[1] {
+                Value::List(bookmarks) if bookmarks.iter().all(|v| v.as_str().is_some()) => {}
+                _ => return Err("ROUTE bookmarks must be a list of strings".into()),
+            }
+            Request::Route {
+                routing: map_field(&fields, 0)?,
+                extra: map_field(&fields, 2)?,
+            }
+        }
+        TELEMETRY => {
+            if !fields[0].as_int().is_some_and(|n| (0..=3).contains(&n)) {
+                return Err("TELEMETRY requires an API integer from 0 to 3".into());
+            }
+            Request::Telemetry
+        }
         other => return Err(format!("unknown message tag 0x{other:02X}")),
     })
 }

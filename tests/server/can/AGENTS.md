@@ -18,14 +18,14 @@ What *is* tested is everything else, and it is deliberately most of the protocol
 | Registry entry, metadata, action/event declarations | `e2e_test.rs` | Direct registry queries |
 | The platform refusal | `e2e_test.rs` | `spawn()` must return the exact `Err` |
 | Event → handler/script/LLM → action → frame, both directions | `e2e_test.rs` | In-process over the UDP test transport |
-| The `AF_CAN` transport | **nothing** | See `src/server/can/CLAUDE.md` for the Linux experiment that would |
+| The `AF_CAN` transport | **nothing** | See `src/server/can/AGENTS.md` for the Linux experiment that would |
 
 ## `frame_test.rs` — literals, and only literals
 
 Every expectation is a byte array or a number written out by hand. **None is computed by calling
 the code under test with different arguments**, because that proves only that a function agrees
 with itself. `rss` sat at Experimental for months on exactly that mistake — the `rss` crate
-parsing what the `rss` crate had built — and the correction is recorded in the root `CLAUDE.md`.
+parsing what the `rss` crate had built — and the correction is recorded in the root `AGENTS.md`.
 
 The expectations worth knowing about:
 
@@ -42,7 +42,7 @@ The expectations worth knowing about:
 - **`standard_and_extended_zero_x_123_are_different_frames`** — `extended` is a field, never
   inferred from magnitude, and the two encodings must differ.
 - **`text_and_hex_are_different_encodings_of_the_same_string`** — the `send_tcp_data` defect the
-  root `CLAUDE.md` records, asserted from both sides. `"48656c"` as hex and as text produce
+  root `AGENTS.md` records, asserted from both sides. `"48656c"` as hex and as text produce
   different bytes, and the executor reads the declared `encoding` rather than sniffing.
 - **`the_bus_state_ladder_decodes_from_the_controller_status_octet`** builds the kernel's error
   frames by hand (`CAN_ERR_CRTL` in the identifier, the status bits in `data[1]`) and asserts each
@@ -151,7 +151,7 @@ here — `every_server_event_type_has_an_emit_site`,
 ## What would make this suite mean more
 
 Nothing that can be done on macOS. The next step is the Linux `vcan` experiment in
-`src/server/can/CLAUDE.md`: `cansend` and `candump` from `can-utils` are real third-party peers
+`src/server/can/AGENTS.md`: `cansend` and `candump` from `can-utils` are real third-party peers
 that share no code with the `socketcan` crate, so they satisfy the independence rule that
 `websocket` and `webrtc_signaling` fail. Until someone runs it, the SocketCAN transport is
 unverified and the rating stays `Experimental`.

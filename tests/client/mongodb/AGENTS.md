@@ -17,7 +17,7 @@
 ### Test Files
 
 - `tests/client/mongodb/e2e_test.rs` - Main E2E tests with mocks
-- `tests/client/mongodb/CLAUDE.md` - This file (test strategy)
+- `tests/client/mongodb/AGENTS.md` - This file (test strategy)
 
 ### Test Coverage
 
@@ -466,5 +466,5 @@ docker stop mongodb-test && docker rm mongodb-test
 ## References
 
 - [MongoDB Rust Driver Testing](https://github.com/mongodb/mongo-rust-driver/tree/main/tests)
-- [NetGet Client Testing Patterns](../mysql/CLAUDE.md)
+- [NetGet Client Testing Patterns](../mysql/AGENTS.md)
 - [NetGet Test Infrastructure](../../README.md)

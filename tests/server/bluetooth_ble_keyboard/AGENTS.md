@@ -56,5 +56,5 @@ proves it is *parseable*, not that byte 2 = 0x04 arrives as `a`.
 That test does not exist and cannot be written to run unattended here. HID-over-GATT only becomes
 an input device after bonding, and `ble-peripheral-rust` 0.2 exposes no pairing or bonding
 control at all. Any adapter-claiming test would also have to be `#[ignore]`d so a 100-thread run
-does not deadlock on the machine's single radio — and per the root `CLAUDE.md`, an `#[ignore]`d
+does not deadlock on the machine's single radio — and per the root `AGENTS.md`, an `#[ignore]`d
 test is not evidence however good its reason.

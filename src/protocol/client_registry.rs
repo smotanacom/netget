@@ -121,6 +121,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
         ));
+        #[cfg(feature = "connect_rpc")]
+        self.register(Arc::new(
+            crate::client::connect_rpc::actions::ConnectRpcClientProtocol::new(),
+        ));
 
         #[cfg(feature = "http")]
         {
@@ -438,6 +442,9 @@ impl ClientRegistry {
 
         #[cfg(feature = "vault")]
         self.register(Arc::new(crate::client::vault::VaultClientProtocol::new()));
+
+        #[cfg(feature = "bolt")]
+        self.register(Arc::new(crate::client::bolt::BoltClientProtocol::new()));
 
         #[cfg(feature = "nostr")]
         self.register(Arc::new(crate::client::nostr::NostrClientProtocol::new()));
@@ -800,6 +807,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("ConnectRPC", "connect_rpc"),
+    ("TACACS", "tacacs"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
@@ -869,6 +878,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Docker", "docker"),
     ("Vault", "vault"),
     ("Nostr", "nostr"),
+    ("Bolt", "bolt"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

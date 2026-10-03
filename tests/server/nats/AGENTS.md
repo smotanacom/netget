@@ -127,4 +127,4 @@ happened here.
 
 Multiple concurrent connections, queue-group behaviour, `UNSUB` with a max,
 `send_ping`, `send_nats_info` mid-connection, and anything requiring a second client — none of which the server
-implements beyond what is described in `src/server/nats/CLAUDE.md`.
+implements beyond what is described in `src/server/nats/AGENTS.md`.

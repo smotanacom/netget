@@ -343,7 +343,7 @@ pair; neither line exists anywhere in the code.
 
 ## Testing Strategy
 
-See `tests/client/dynamodb/CLAUDE.md` for E2E testing approach.
+See `tests/client/dynamodb/AGENTS.md` for E2E testing approach.
 
 Recommended test setup:
 
@@ -399,7 +399,7 @@ manual routing rule cannot block client creation, and whatever the model answers
 exists and the LLM cannot drive this client at all.) What is still true is the shape of the
 chain: `run_operation_once` raises no event, so a follow-up the model issues in reply to
 `dynamodb_response_received` is the last step. That is the "non-notifying path" the root
-`CLAUDE.md` names, and the prescribed fix is a depth bound rather than silence.
+`AGENTS.md` names, and the prescribed fix is a depth bound rather than silence.
 
 **Where requests go.** `remote_addr` is the endpoint unless `endpoint_url` overrides it. It
 used to be ignored outright, so a client aimed at `localhost:8000` with no explicit

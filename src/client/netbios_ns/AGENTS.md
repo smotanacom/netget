@@ -136,7 +136,7 @@ exactly this input — the server read `"20"` as hex (0x20, the file server) and
 it as decimal (20 = 0x14) — under a doc comment in `wire.rs` asserting they used the same
 contract. Same JSON, two different NetBIOS names, in one session, on a protocol whose entire
 hazard is answering for or asking about the wrong name. It is the `send_tcp_data` text-or-hex
-ambiguity the root `CLAUDE.md` records, and it gets the same answer: the sender says which, and
+ambiguity the root `AGENTS.md` records, and it gets the same answer: the sender says which, and
 neither side sniffs. `tests/client/netbios_ns/e2e_test.rs::the_two_halves_read_a_suffix_the_same_way`
 pins the agreement across both spellings and both rejections.
 

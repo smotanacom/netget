@@ -16,7 +16,7 @@ to return a transport unless the reply is a well-formed `CONNECTED` carrying a `
 header**; every later frame is decoded by its own parser into typed values
 (`FromServer::Message`, `FromServer::Receipt`), hard-erroring on a missing required header.
 
-It clears each clause of the Beta bar in the root `CLAUDE.md`:
+It clears each clause of the Beta bar in the root `AGENTS.md`:
 
 - **Not `#[ignore]`d** — runs in the default suite.
 - **Cannot skip.** `async-stomp` is a compiled-in crate dependency; there is no "is it
@@ -123,6 +123,6 @@ Every rule is on a distinct event id, so the first-match-wins trap does not appl
 ## Not covered
 
 Heart-beating, transactions, subscription bookkeeping, STOMP 1.0/1.1 and TLS are not
-implemented; see `src/server/stomp/CLAUDE.md`. Also not covered: interop with the brokers' own
+implemented; see `src/server/stomp/AGENTS.md`. Also not covered: interop with the brokers' own
 client stacks (ActiveMQ/RabbitMQ STOMP), and concurrent sessions. Those are what a human should
 check before this goes past Beta.

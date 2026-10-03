@@ -323,7 +323,7 @@ into a dialog is the model's job, from the `call_id`, `from` and `to` the event 
 
 This section used to describe a `HashMap<String, ContactBinding>` and a five-step flow that
 stored and expired bindings. **None of it exists, and none of it should**: "protocols must not
-implement storage" (see the root `CLAUDE.md`) — the model supplies all state, and the sanctioned
+implement storage" (see the root `AGENTS.md`) — the model supplies all state, and the sanctioned
 exception is the generic SQLite facility the model opts into at runtime, not a table compiled
 into a protocol.
 
@@ -754,7 +754,7 @@ naming `brew install sipsak`) when the binary is absent.
 Note what the "Future Enhancements → Priority 1 (Promote to Beta)" list above asks for: digest
 authentication, TCP transport, a persistent registration database. **None of those were the
 blocker, and two of them should never be built here** — a registration database is storage,
-which protocols must not implement (see the root `CLAUDE.md`). The blocker was that the only
+which protocols must not implement (see the root `AGENTS.md`). The blocker was that the only
 clients driving this server were NetGet's own SIP client and hand-built requests, which is
 circular. An outside client was all that was missing.
 

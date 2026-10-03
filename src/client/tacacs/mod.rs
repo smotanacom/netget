@@ -22,6 +22,14 @@ struct Inflight {
     command: Option<ClientCommand>,
     depth: usize,
 }
+fn response_event(name: &str) -> &'static crate::protocol::EventType {
+    match name {
+        "tacacs_authentication_result" => &actions::AUTH_EVENT,
+        "tacacs_authorization_result" => &actions::AUTHOR_EVENT,
+        "tacacs_accounting_result" => &actions::ACCOUNT_EVENT,
+        _ => &actions::ERROR_EVENT,
+    }
+}
 fn handler(ctx: ConnectContext, event: Event, timeout: Duration) -> Handler {
     Box::pin(async move {
         let instruction = ctx
@@ -175,7 +183,7 @@ async fn run(
                         if let Some(command) = work.command {
                             finish(&ctx, command, Ok(ClientSendOutcome::Executed {detail:response.event.into()})).await;
                         }
-                        Event::new(actions::response_event(response.event), response.data)
+                        Event::new(response_event(response.event), response.data)
                     }
                     Err(_) => {
                         if let Some(command) = work.command {

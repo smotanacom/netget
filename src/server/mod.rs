@@ -924,6 +924,8 @@ pub use mcp::actions::McpProtocol;
 #[cfg(feature = "mcp")]
 pub use mcp::McpServer;
 
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc-web")]

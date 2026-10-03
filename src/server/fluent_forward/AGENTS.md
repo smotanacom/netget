@@ -22,6 +22,8 @@ is nonempty. Configured static/script/manual/model handlers always run; llm_fall
 opts unmatched batches into the model. No protocol-specific persistence, retry or deduplication;
 ACK means parsing/handling succeeded, not durable delivery.
 
+Metadata declares `request_only`: Forward acceptance or rejection requires the current inbound batch; ACKs must echo its transport-owned chunk token, so unsolicited replies are not supported. The dashboard and MCP peer-message actions show this reason instead of offering an unsolicited send.
+
 Bounds: 256KiB complete frame/decompressed packed stream, 256 records, nesting depth32,
 16384 decoded MessagePack values/record validation budget, tag1024 bytes, printable chunk token256 bytes,
 256 TCP connections, 30s absolute frame-completion deadline and 10s ACK-write deadline.

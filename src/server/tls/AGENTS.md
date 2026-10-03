@@ -107,7 +107,7 @@ behind it; `handle_connection_opened` then moves it to `Idle` and processes the 
 leaves before the answer abandons the call (`decision=peer_left_before_answer`). Without
 `send_first` the connection starts `Idle` and costs no model call until the client sends
 something. Raising it on every connection was measured on `tcp` and rejected (see
-`src/server/tcp/CLAUDE.md` section 4).
+`src/server/tcp/AGENTS.md` section 4).
 
 Event parameters: None (just notification)
 
@@ -526,7 +526,7 @@ copied.
 **The deadline covers the read and nothing else.** TLS is the one server here whose read loop runs *concurrently* with the answer: `handle_data_with_actions` is spawned and the loop goes straight back to reading, so a record parked for a human sits inside the read deadline while it happens. `ConnectionActivity` is marked busy before the task is spawned and released when it ends, and the read deadline re-arms rather than closing while it is set. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/server/tls/connection_bounds_test.rs` drives all three from the wire — a bare TCP peer
@@ -551,7 +551,7 @@ of it, and no model call: the first record a stranger sends opens the window.
 
 The cap is checked **in the read loop, before the bytes are handed to anything that keeps
 them**, against `queued + n` — the size the peer has already committed to, not what is left
-after subtracting part of it, which is the NATS `HPUB` mistake the project `CLAUDE.md` records.
+after subtracting part of it, which is the NATS `HPUB` mistake the project `AGENTS.md` records.
 `handle_data_with_actions` re-checks at the `extend_from_slice` itself, so the `Vec` cannot
 exceed the cap however the read loop and the handler task interleave.
 
@@ -563,7 +563,7 @@ socket underneath is not an alternative, because after the handshake every recor
 and a plaintext one is a protocol violation the peer must reject — it would arrive as garbage
 rather than as a reason. (The **connection-cap** refusal above genuinely is a raw plaintext
 alert, and legitimately so: it is written before any handshake has happened.) So the reason
-lives in the log, which is the rule the project `CLAUDE.md` states for every case where the
+lives in the log, which is the rule the project `AGENTS.md` states for every case where the
 wire cannot carry the distinction.
 
 **The refusal drains before it closes** (`LINGER_DRAIN_BYTES` / `LINGER_DRAIN_TIMEOUT`,

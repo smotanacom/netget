@@ -330,7 +330,7 @@ that drive `run_event_loop_without_radio` (`read_default_value_test.rs`,
 `Expected at least 1 calls, got 0` — the mock model is never reached at all,
 and the read still answers because the fail-closed path handles the error. The
 second run passes in a fraction of the time. This is the first-LLM-call stall
-the root `CLAUDE.md` documents (building a `reqwest::Client` loads the macOS
+the root `AGENTS.md` documents (building a `reqwest::Client` loads the macOS
 keychain synchronously), not a defect in these tests. Re-run before
 investigating; a genuine regression here fails on an *assertion*, naming the
 ATT response it got.

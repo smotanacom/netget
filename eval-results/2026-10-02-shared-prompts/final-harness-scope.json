@@ -1,0 +1,31 @@
+{
+  "recorded_at": "2026-10-03T03:18:39.302061+00:00",
+  "source_of_correction": "Root agent reported a go-nsq v1.1.0 producer shutdown race: router.wg.Done precedes logging exiting router; Stop waits on the waitgroup, so to_nsq can exit successfully before the line is emitted. Final native verification observed this fixture false failure.",
+  "case": "nsq/accept-publish",
+  "frozen_expectation": "contains [\"exiting router\"] and lacks [\"E_PUB_FAILED\"]",
+  "final_integration_correction": "Require successful client process exit (0) and absence of E_PUB_FAILED, preserving the actual to_nsq probe and original bounds. This correction is outside the frozen historical harness.",
+  "frozen_scores_preserved": {
+    "before_passes": 4,
+    "after_passes": 5,
+    "runs_per_phase": 5,
+    "aggregate_before_passed": 455,
+    "aggregate_after_passed": 457,
+    "trials_per_phase": 520
+  },
+  "known_baseline_false_failure": {
+    "run": 1,
+    "report": "baseline.json",
+    "original_report": "baseline-interrupted.json",
+    "client_exit": 0,
+    "client_timed_out": false,
+    "failure_mode": "wrong_content",
+    "detail": "valid actions executed, but client output does not contain \"exiting router\"",
+    "executed_actions": [
+      "Executing action 0: Object {\"type\": String(\"send_nsq_ok\")}"
+    ],
+    "client_output": "2026/10/02 13:20:39 INF    1 (127.0.0.1:54419) connecting to nsqd\n2026/10/02 13:20:48 INF    1 (127.0.0.1:54419) stopping\n"
+  },
+  "limitations": "This historical NSQ 4-to-5 gain includes a known old-harness false failure. The original scores and raw reports remain untouched; they are not rescored against the corrected final harness. The aggregate two-trial difference does not isolate model accuracy or prompt benefit.",
+  "baseline_json_sha256": "59ab7216c855e8fc20a7da2f809009556c3ed346331d9bd257bddb8842da08bc",
+  "after_json_sha256": "ca45176ff0ff704384a2bc68d633d972eb9c7901e800c8652826870aad4ebc01"
+}

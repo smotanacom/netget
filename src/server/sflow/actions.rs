@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -30,7 +31,7 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
 fn collect() -> ActionDefinition {
     ActionDefinition { name:"collect_sflow_samples".into(),
         description:"Observe typed sFlow samples through the bounded common access log. UDP is silent; no protocol flow store, persistence or aggregation.".into(),
-        parameters:vec![],example:json!({"type":"collect_sflow_samples"}),log_template:None }
+        parameters:vec![],example:json!({"type":"collect_sflow_samples"}),log_template:Some(LogTemplate::new().with_info("sFlow samples collected; UDP remains silent")) }
 }
 pub static SFLOW_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("sflow_message","A validated sFlow v5 UDP datagram. Selected flow/counter records are typed; header payload and unsupported record bytes are discarded. Datagram sequence gaps and uptime decreases are observations, not reliable delivery/reboot identification.",collect().example)
@@ -89,7 +90,7 @@ impl Protocol for SflowProtocol {
             },
             ParameterDefinition {
                 name: "llm_fallback".into(),
-                type_hint: "bool".into(),
+                type_hint: "boolean".into(),
                 description:
                     "Enable unmatched model calls; explicit matching handlers always dispatch"
                         .into(),

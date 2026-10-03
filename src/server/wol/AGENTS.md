@@ -88,7 +88,7 @@ user-triggered verb needing no network context, and a listener that never transm
 The one action that does transmit needs both the per-server gate and the magic packet's source
 address, neither of which exists outside the receive loop.
 
-The root `CLAUDE.md` warns that offering the model *no* vocabulary is the worst case, not the
+The root `AGENTS.md` warns that offering the model *no* vocabulary is the worst case, not the
 exempt one (`usb-fido2` shipped three events the model could not answer). That is why all three
 actions are attached to the event with `.with_actions(...)` and all three are executable:
 the model is never asked a question it has no words to answer, even when the honest answer is
@@ -239,4 +239,4 @@ Wake-on-LAN magic packet for 00:11:22:33:44:55 from 127.0.0.1:… (offset 0,  ud
 Wake-on-LAN magic packet for 00:11:22:33:44:55 from 127.0.0.1:… (offset 14, ethernet, password_length=0)
 ```
 
-See `tests/server/wol/CLAUDE.md` for what the e2e suite asserts and what it costs.
+See `tests/server/wol/AGENTS.md` for what the e2e suite asserts and what it costs.

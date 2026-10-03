@@ -192,5 +192,5 @@ If tests fail:
 ## References
 
 - RFC 3977: Network News Transfer Protocol (NNTP)
-- `src/client/nntp/CLAUDE.md`: Implementation documentation
+- `src/client/nntp/AGENTS.md`: Implementation documentation
 - `tests/helpers/`: Shared test infrastructure

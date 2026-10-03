@@ -53,7 +53,7 @@ error is byte-identical to it.
 is kept as thin as it can be — `transport.rs`'s Linux module is roughly 120 lines and contains no
 decisions, only conversions. Everything that decides *what the bytes are* lives in `frame.rs`,
 which is pure and is asserted against literal values in `tests/server/can/frame_test.rs`. This is
-the `bluetooth_ble_beacon` precedent the root `CLAUDE.md` describes: *"payload construction is
+the `bluetooth_ble_beacon` precedent the root `AGENTS.md` describes: *"payload construction is
 pure and exhaustively unit-tested against literal spec bytes; its BlueZ transport has never been
 compiled or run"*. `metadata().notes` says which half is which, which is what `Experimental` is
 for.
@@ -131,7 +131,7 @@ up and creating a `vcan` device, and both happen before NetGet runs — so `spaw
 
 Declaring `Root` here would be the mistake `ospf` made in the other direction: it would refuse to
 start for every user who can in fact open the socket. There is no `PrivilegeRequirement` variant
-for "a device must exist", and inventing one is out of scope (root `CLAUDE.md`, IMPROVEMENTS
+for "a device must exist", and inventing one is out of scope (root `AGENTS.md`, IMPROVEMENTS
 item 60).
 
 ## What the model sees and controls
@@ -180,7 +180,7 @@ is also accepted, because a script handler naturally produces one.
 
 **The executor really decodes what `encoding` says, and never sniffs.** `"48656c6c6f"` is
 simultaneously valid text and valid hex and only the sender knows which it meant. The root
-`CLAUDE.md` records `send_tcp_data` documenting hex in three places while its executor called
+`AGENTS.md` records `send_tcp_data` documenting hex in three places while its executor called
 `as_bytes()`, so a model following the documentation put literal ASCII on the wire; that is
 exactly the shape this avoids, and
 `frame_test.rs::text_and_hex_are_different_encodings_of_the_same_string` pins the difference.
@@ -214,7 +214,7 @@ All sixteen codes are pinned against literals in both directions.
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-CAN is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and it is the
+CAN is in the **deliberately-silent** class the root `AGENTS.md` catalogues, and it is the
 clearest case in the tree because the alternative is actively destructive.
 
 **CAN has no error reply.** The thing called an error frame is not a message: it is six dominant
@@ -238,7 +238,7 @@ So:
   returning `Err`. Latent: `from_action` cannot set `error: true` and `from_wire_bytes` clamps
   the length to 8 or 64 first, so no input reaches it — but it was a panic in a `pub fn` on a
   struct with `pub` fields, and a panic inside a connection task is swallowed by
-  `tokio::spawn`, which is the failure mode the root `CLAUDE.md` records three times.
+  `tokio::spawn`, which is the failure mode the root `AGENTS.md` records three times.
 - An LLM failure transmits **nothing**, and no `WireFailure` text ever reaches the bus.
 
 Silence is also completely ordinary on CAN — almost every node ignores almost every frame — so
@@ -291,7 +291,7 @@ own. Frames NetGet transmits are indistinguishable from the real ECU's.
   is macOS and has no Linux target installed — let alone run. No frame this code produced has
   reached a real CAN bus or a real CAN peer.
 
-The bar for Beta, per the root `CLAUDE.md`, is *a real independent peer completing a real
+The bar for Beta, per the root `AGENTS.md`, is *a real independent peer completing a real
 exchange*. **Here the experiment is genuinely cheap and needs no hardware**, which is why this is
 worth writing down rather than deferring:
 
@@ -321,7 +321,7 @@ For CAN FD, add `sudo ip link set vcan0 mtu 72` and use `cansend vcan0 123##1<da
 
 **None of this has been run.** It needs Linux, which no agent here has. Do not promote on the
 codec tests alone — that is the mistake `wireguard` made, and the correction is recorded in the
-root `CLAUDE.md`.
+root `AGENTS.md`.
 
 ## Not implemented
 

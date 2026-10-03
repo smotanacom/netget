@@ -124,7 +124,7 @@ LLM processes response
   That refusal is the point. `async-openai`'s config defaults to `https://api.openai.com/v1`,
   and this client used to leave the config alone unless `remote_addr` was non-empty *and* not
   literally that string — so an unrecorded address meant presenting the key to real OpenAI.
-  It is the DynamoDB shape from the root `CLAUDE.md`: a client that loses its target and
+  It is the DynamoDB shape from the root `AGENTS.md`: a client that loses its target and
   reaches the real service instead of failing. Pointing this client at real OpenAI is a
   legitimate request; arriving there because nobody said otherwise is not.
 
@@ -248,7 +248,7 @@ All API errors are:
 
 ## Testing Strategy
 
-See `tests/client/openai/CLAUDE.md` for testing details.
+See `tests/client/openai/AGENTS.md` for testing details.
 
 **E2E Test Requirements:**
 

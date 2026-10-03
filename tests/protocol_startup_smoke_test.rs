@@ -72,7 +72,7 @@
 //! full table to a file. Set `NETGET_SMOKE_ONLY=<name>[,<name>...]` to sweep a subset
 //! while debugging one protocol.
 
-use netget::protocol::metadata::{DevelopmentState, PrivilegeRequirement};
+use netget::protocol::metadata::{DevelopmentState, PortTransport, PrivilegeRequirement};
 use netget::state::app_state::AppState;
 use netget::state::server::ServerStatus;
 use netget::state::ServerId;
@@ -219,19 +219,18 @@ fn is_probeable(addr: &SocketAddr) -> bool {
 
 /// What, if anything, is holding `addr`.
 ///
-/// Both transports are checked because the startup path derives every ephemeral port
-/// from a TCP probe bind, so a UDP protocol ends up on a port whose TCP half is free.
-/// Requiring *both* halves to be free before calling a server a liar means a datagram
-/// listener still counts as bound.
-#[derive(PartialEq, Eq, Clone, Copy)]
+/// Check only the protocol's declared transport. A TCP socket or TIME_WAIT at the
+/// same numeric port does not belong to a UDP server, and must not mask its listener
+/// or read as its leak after stop. The transports have independent port namespaces.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Held {
-    /// Neither transport is occupied — nothing is there.
+    /// The declared transport is free.
     Nothing,
     /// The TCP half is taken.
     Tcp,
-    /// Only the UDP half is taken.
+    /// The UDP half is taken.
     Udp,
-    /// Neither the TCP nor the UDP half is taken, but an **SCTP** socket holds the port.
+    /// An **SCTP** socket holds the port.
     ///
     /// SCTP is IP protocol 132 and has its own port namespace, so a listening SCTP socket
     /// leaves both `TcpListener::bind` and `UdpSocket::bind` free. Without this arm the
@@ -262,18 +261,12 @@ fn sctp_holds(addr: SocketAddr) -> Option<bool> {
     Some(socket.bind(&addr.into()).is_err())
 }
 
-fn probe_port(addr: SocketAddr) -> Held {
-    let tcp_free = std::net::TcpListener::bind(addr).is_ok();
-    let udp_free = std::net::UdpSocket::bind(addr).is_ok();
-    match (tcp_free, udp_free) {
-        (false, _) => Held::Tcp,
-        (true, false) => Held::Udp,
-        // Ask about SCTP only once TCP and UDP are both free, so the cheap checks stay
-        // first and a host without an SCTP stack answers exactly as it did before.
-        (true, true) => match sctp_holds(addr) {
-            Some(true) => Held::Sctp,
-            _ => Held::Nothing,
-        },
+fn probe_port(addr: SocketAddr, transport: PortTransport) -> Held {
+    match transport {
+        PortTransport::Tcp if std::net::TcpListener::bind(addr).is_err() => Held::Tcp,
+        PortTransport::Udp if std::net::UdpSocket::bind(addr).is_err() => Held::Udp,
+        PortTransport::Sctp if sctp_holds(addr) == Some(true) => Held::Sctp,
+        _ => Held::Nothing,
     }
 }
 
@@ -300,15 +293,40 @@ fn tcp_accepts(addr: SocketAddr) -> bool {
     std::net::TcpStream::connect_timeout(&target, Duration::from_secs(2)).is_ok()
 }
 
-async fn wait_until_released(addr: SocketAddr) -> bool {
+async fn wait_until_released(addr: SocketAddr, transport: PortTransport) -> bool {
     let deadline = Instant::now() + RELEASE_TIMEOUT;
     while Instant::now() < deadline {
-        if probe_port(addr) == Held::Nothing {
+        if probe_port(addr, transport) == Held::Nothing {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    probe_port(addr) == Held::Nothing
+    probe_port(addr, transport) == Held::Nothing
+}
+
+#[tokio::test]
+async fn udp_listener_and_release_ignore_a_tcp_socket_at_the_same_port() {
+    // This bound, non-listening TCP socket reproduces the old LIED verdict:
+    // its bind fails and its handshake is refused, while UDP is listening correctly.
+    let tcp = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    tcp.bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let addr = tcp.local_addr().unwrap().as_socket().unwrap();
+    let udp = std::net::UdpSocket::bind(addr).unwrap();
+    assert_eq!(probe_port(addr, PortTransport::Udp), Held::Udp);
+    assert!(!tcp_accepts(addr));
+    drop(udp);
+    assert!(wait_until_released(addr, PortTransport::Udp).await);
+    assert_eq!(probe_port(addr, PortTransport::Tcp), Held::Tcp);
+    drop(tcp);
+}
+
+#[test]
+fn tcp_probe_does_not_count_an_unrelated_udp_socket_as_listening() {
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = udp.local_addr().unwrap();
+    assert_eq!(probe_port(addr, PortTransport::Udp), Held::Udp);
+    assert_eq!(probe_port(addr, PortTransport::Tcp), Held::Nothing);
 }
 
 /// Drive one protocol through start → verify → stop.
@@ -452,21 +470,23 @@ async fn probe_protocol(
             (Some(ServerStatus::Running), Some(a)) if !is_probeable(&a) => {
                 Verdict::RunningUnverifiable
             }
-            (Some(ServerStatus::Running), Some(a)) => match probe_port(a) {
-                Held::Nothing => Verdict::LiedAboutListening,
-                Held::Udp => Verdict::ListeningDatagram,
-                Held::Sctp => Verdict::ListeningSctp,
-                Held::Tcp => {
-                    if tcp_accepts(a) {
-                        Verdict::Listening
-                    } else {
-                        // The port is taken but refuses a connection: bound without
-                        // `listen()`, or held by a socket in some other state. Either
-                        // way `Running` promised an endpoint that does not answer.
-                        Verdict::LiedAboutListening
+            (Some(ServerStatus::Running), Some(a)) => {
+                match probe_port(a, metadata.well_known_transport) {
+                    Held::Nothing => Verdict::LiedAboutListening,
+                    Held::Udp => Verdict::ListeningDatagram,
+                    Held::Sctp => Verdict::ListeningSctp,
+                    Held::Tcp => {
+                        if tcp_accepts(a) {
+                            Verdict::Listening
+                        } else {
+                            // The port is taken but refuses a connection: bound without
+                            // `listen()`, or held by a socket in some other state. Either
+                            // way `Running` promised an endpoint that does not answer.
+                            Verdict::LiedAboutListening
+                        }
                     }
                 }
-            },
+            }
             (Some(ServerStatus::Running), None) => Verdict::RunningNoSocket,
             (Some(ServerStatus::Error(e)), _) => Verdict::RefusedCleanly(e),
             // `start_server_from_action` returned `Ok(server_id)`, so the caller was
@@ -482,7 +502,7 @@ async fn probe_protocol(
         // address this test actually owns — see `is_probeable`.
         state.remove_server(id).await;
         if let Some(a) = addr {
-            if is_probeable(&a) && !wait_until_released(a).await {
+            if is_probeable(&a) && !wait_until_released(a, metadata.well_known_transport).await {
                 row.port_leaked = true;
             }
         }

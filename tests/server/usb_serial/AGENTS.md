@@ -44,7 +44,7 @@ so a test cannot pass by the device happening to emit something.
 
 Every test waits for `"USB serial LLM call completed for connection"` before asserting:
 the attach event follows the peer's `OP_REQ_IMPORT`, not the TCP accept — a bare
-connect costs no model call at all (see `src/server/usb/CLAUDE.md` and
+connect costs no model call at all (see `src/server/usb/AGENTS.md` and
 `tests/server/usb_keyboard/attach_on_import_test.rs`), so the log line is the only
 signal that the import has been answered.
 

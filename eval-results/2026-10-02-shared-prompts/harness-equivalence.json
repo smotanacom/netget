@@ -1,0 +1,94 @@
+{
+  "sources": [
+    "d34d91c09ee1731ec13eb3977c17344aeda95497",
+    "3e2d24bd935fe822296bad2962c82675dfcd820b"
+  ],
+  "files": [
+    {
+      "file": "run-eval.sh",
+      "sha256": "9c5d24799bafe67cc679a3a1a9f6e21b7fc995021ae651243ea2e513e74bbff2",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval.rs",
+      "sha256": "e318821e8fc79bb22aac4967c0a757b815f0663cc125df52c8e1f014a95a39da",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/case.rs",
+      "sha256": "e7b28d9900dae426c4501d888aa85482ace9727bb29e957197afc24308f504f1",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/classify.rs",
+      "sha256": "5d4d18d3e15202a032964174e4e9c7d92d4766a20b6091f2bafffbaa8587dabe",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/mod.rs",
+      "sha256": "5bd2d3a43eaa677f5e42cf381bfa10cd2cd752955e023aed862141e3497748fa",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/probe.rs",
+      "sha256": "7365c9411f21cb6bc08d39a66c6b83ed8f1c01ff78d79d4cd361e3008a8eb9c0",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/probe_check.rs",
+      "sha256": "caee8982007c244f4d6554590d06231f5a10bbba490c4f65e5caa11a07b83e9c",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/report.rs",
+      "sha256": "0ab222495ff9bb71427001a9d7d486dfaa8ba60d7ac2ef95176c057f58487c73",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/runner.rs",
+      "sha256": "be4314d9f82de5029caaef9835df9f54dd0e11a691092db1045be395f94dd388",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/eval/suites.rs",
+      "sha256": "7e5f6d3b2c7377cce795c1b64b8587c70e7beeb306c359beccad6ef6d89714b4",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/mod.rs",
+      "sha256": "1c734c61e6633bc9f90ebcd6412c3851198ea29424c46cda257847ebdba6e130",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/common.rs",
+      "sha256": "237388654e0ff109c92803048eae376879379080738338ee5f8b4f7a3ef0c153",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/netget.rs",
+      "sha256": "009e43bdb08fe6846a881f4e641f52a2e8081eacada958f3b959fa3328337c6b",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/child_guard.rs",
+      "sha256": "f1899c8c99bde27cf01883791a028a5129c522694c31777af1c46ed66dcf9296",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/llm_live.rs",
+      "sha256": "78b2ba77803ba31bc762846afb404a66f9f96ffd6e37780f8e61e7a86d74119d",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/mock_builder.rs",
+      "sha256": "d4f5fc6e771d5beaed2fb77ac009f1f5896c7573d4b8f06f51b0d48983126d60",
+      "byte_identical": true
+    },
+    {
+      "file": "tests/helpers/server.rs",
+      "sha256": "2d681bb189860e4151409d997d2e6a1bfb9d5f913e18a42e2f3e49a07e374072",
+      "byte_identical": true
+    }
+  ],
+  "note": "All eval scoring, case, probe and probe-check source plus directly used lifecycle/backend helpers are byte-identical. Production prompt/conversation changes are the evaluated behavior; source revisions also include documented neighboring fixes."
+}

@@ -1,3 +1,4 @@
+use crate::protocol::log_template::LogTemplate;
 use crate::{
     llm::actions::{
         client_trait::{Client, ClientActionResult},
@@ -28,7 +29,7 @@ pub static CONNECTED: LazyLock<EventType> = LazyLock::new(|| {
         "grpc_web_connected",
         "Binary gRPC-Web HTTP/1.1 connection ready",
         vec![
-            field("remote_addr", "string", "Connected peer", true),
+            field("remote_addr", "string", "Connected HTTP peer address", true),
             field("services", "array", "Internal schema's service names", true),
             field(
                 "tls_verified",
@@ -120,7 +121,7 @@ impl Protocol for GrpcWebClientProtocol {
                 description: description.into(),
                 parameters,
                 example,
-                log_template: None,
+                log_template: Some(LogTemplate::new().with_info(format!("gRPC-Web {name} queued"))),
             }
         };
         vec![
@@ -135,7 +136,7 @@ impl Protocol for GrpcWebClientProtocol {
                         true,
                     ),
                     field("service", "string", "Fully qualified service name", true),
-                    field("method", "string", "Method name", true),
+                    field("method", "string", "Declared protobuf method name", true),
                     field(
                         "request",
                         "object",

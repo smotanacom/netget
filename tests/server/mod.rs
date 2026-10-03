@@ -56,6 +56,8 @@ pub mod cassandra;
 pub mod cdp;
 #[cfg(feature = "coap")]
 pub mod coap;
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "couchdb")]
 pub mod couchdb;
 #[cfg(feature = "datalink")]

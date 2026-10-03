@@ -35,7 +35,7 @@ suite does not build — there is no "is it installed?" gate and no `SKIP: … n
 branch to hide a silent pass behind.
 
 **Since September 2026 there are two independent clients, not one**, which matters because the
-Stable bar in the root `CLAUDE.md` asks for exactly that: one client can agree with one bug, and
+Stable bar in the root `AGENTS.md` asks for exactly that: one client can agree with one bug, and
 `mysql`'s Beta resting on `mysql_async` while the real `mysql` CLI cannot connect is the worked
 example. `real_client_test.rs` drives `mosquitto_pub` and `mosquitto_sub` — C on libmosquitto,
 a different project in a different language — and it **fails** rather than skipping when they
@@ -98,7 +98,7 @@ last-will delivery and session resume across reconnect — the broker does not i
 subscription table or a retained-message store, so there is nothing to test. Keep-alive
 reaping *is* implemented and tested (`connection_bounds_test.rs`); removing the deadline around
 the read failed the connect, keep-alive and Keep Alive 0 tests, and replacing 1.5x Keep Alive
-with the fallback failed the keep-alive test. See `src/server/mqtt/CLAUDE.md` for why storage is absent.
+with the fallback failed the keep-alive test. See `src/server/mqtt/AGENTS.md` for why storage is absent.
 
 ## Running
 

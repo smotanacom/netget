@@ -100,7 +100,7 @@ declares both halves; the constants and the reasoning live beside them in
 | `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | The wait *between* commands, not a bound on a transfer. An `hg clone` issues `capabilities`, `heads`, `branchmap`, `listkeys` and `getbundle` on one keep-alive connection, and each answer is a `Full<Bytes>` built before the response is returned, so a slow reader is draining bytes rather than idling. hg sets no keep-alive interval of its own. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`** — the wire protocol here *is* HTTP, so hg reports the status rather than an unexplained reset. |
 
-**There is no NetGet Mercurial client** — `src/client/mercurial/` holds a `CLAUDE.md` and no
+**There is no NetGet Mercurial client** — `src/client/mercurial/` holds a `AGENTS.md` and no
 Rust, and nothing registers it — so this bound has no peer of ours to strand, the fourth
 exemption in `PROTOCOL_QUALITY.md`'s three-state test.
 
@@ -170,7 +170,7 @@ fixed tree-wide.
 ## Maturity: what a real `hg` can and cannot do here
 
 **`Experimental`, and it stays there despite a passing real-client test.** This is the `openvpn`
-precedent the root `CLAUDE.md` records: the test is genuine, is not `#[ignore]`d and hard-fails
+precedent the root `AGENTS.md` records: the test is genuine, is not `#[ignore]`d and hard-fails
 when the binary is missing, and it still does not justify `Beta`, because the server implements
 only the **front** of the protocol.
 

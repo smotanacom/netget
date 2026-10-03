@@ -7,6 +7,13 @@ common manual/script/model handler waits. The queue holds 32 events plus one
 active dispatch. `collect_sflow_samples` adds no protocol storage; the common
 bounded access log and shared memory remain the application state.
 
+The UDP listener has no transport session, but each dispatched datagram owns a
+temporary connection row until its common handler completes, including while a
+manual/model answer is parked. The dispatcher then removes the row explicitly.
+Metadata leaves `connectionless` false so the generic idle sweep cannot hide a
+live request. The separate bounded `SequenceCache` expires on its own one-second
+timer; this diagnostic state does not depend on the row or the generic reaper.
+
 Default `llm_fallback` is false. Matching handlers always dispatch; unmatched
 valid messages are observed without a backend call. All UDP outcomes are
 deliberately silent, including collection, empty answers and failures. Actual

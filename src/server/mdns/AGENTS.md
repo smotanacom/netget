@@ -273,7 +273,7 @@ Other devices discover services by:
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-**mDNS is deliberately silent, and stays that way.** It is on the root `CLAUDE.md`
+**mDNS is deliberately silent, and stays that way.** It is on the root `AGENTS.md`
 deliberately-silent list and belongs there twice over. There is no peer waiting: the only LLM
 call this server makes is the `mdns_server_startup` event asking *which services to advertise*,
 not a reply to a querier. And the only thing mDNS lets a server say is an announcement — a
@@ -305,7 +305,7 @@ handler that had nothing to say produce the identical answer. Both log `model_si
 
 `.connectionless()` is declared and correct — an mDNS responder answers a query and forgets
 the querier — and must not be removed; see the 10-second idle sweep note in the root
-`CLAUDE.md`.
+`AGENTS.md`.
 
 Covered by `tests/server/mdns/llm_failure_test.rs`, which asserts the tag *and* that nothing
 was registered (with nothing registered there is nothing to announce, which is the available
