@@ -15,6 +15,13 @@ success, mapped refusal status and no-verdict fail-closed. Exactly 4 MiB request
 and a later valid export on the same channel succeeds. Prefix u32::MAX, an extra framed
 message and an empty body are refused before decoding/model dispatch.
 
+The compression follow-up adds a seventh gRPC check on one HTTP/2 connection: an
+uncompressed flag-0 message with a gzip header emits `compressed: false`; a flag-1 gzip
+message emits true. Duplicate or comma-joined grpc-timeout values fail INVALID_ARGUMENT
+without an event, and a subsequent valid request still succeeds. Before the fix, this
+regression failed with `[true]` where `[false]` was expected. The focused seven gRPC checks
+passed at 100 test threads; the earlier thirty-check full receiver result remains above.
+
 Ownership tests park a manual handler, exercise a smaller client RPC deadline, remove the
 receiver, observe the client's failed call, and require intercept removal. The admission
 test occupies 64 RPC slots on 4 connections, rejects the 65th, cancels one request, then proves

@@ -292,6 +292,78 @@ async fn grpc_single_message_guard_rejects_prefix_bombs_and_extra_frames() {
     state.remove_server(id).await.unwrap();
 }
 #[tokio::test]
+async fn grpc_message_compression_flag_and_unique_timeout_are_validated() {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    let state = common::new_state().await;
+    let (id, port, _) = common::start(
+        &state,
+        vec![common::static_handler(json!([{"type":"accept_otlp"}]))],
+    )
+    .await;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let (mut sender, driver) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let task = tokio::spawn(driver);
+    let compressed = common::gzip(&[]);
+    let mut gzip_frame = vec![1];
+    gzip_frame.extend_from_slice(&u32::try_from(compressed.len()).unwrap().to_be_bytes());
+    gzip_frame.extend_from_slice(&compressed);
+    let mut expected = Vec::new();
+    for (body, timeouts, code, flag) in [
+        (vec![0, 0, 0, 0, 0], vec![], 0, Some(false)),
+        (gzip_frame, vec![], 0, Some(true)),
+        (vec![0, 0, 0, 0, 0], vec!["30S", "1S"], 3, None),
+        (vec![0, 0, 0, 0, 0], vec!["30S,1S"], 3, None),
+        (vec![0, 0, 0, 0, 0], vec!["30S"], 0, Some(false)),
+    ] {
+        let mut request = hyper::Request::builder()
+            .method("POST")
+            .uri(format!("http://127.0.0.1:{port}/opentelemetry.proto.collector.trace.v1.TraceService/Export"))
+            .header("content-type", "application/grpc")
+            .header("grpc-encoding", "gzip");
+        for timeout in timeouts {
+            request = request.header("grpc-timeout", timeout);
+        }
+        let response = sender
+            .send_request(request.body(Full::new(Bytes::from(body))).unwrap())
+            .await
+            .unwrap();
+        let status = response.headers().get("grpc-status").cloned();
+        let collected = response.into_body().collect().await.unwrap();
+        let status = status.or_else(|| collected.trailers()?.get("grpc-status").cloned());
+        assert_eq!(
+            status.unwrap().to_str().unwrap().parse::<i32>().unwrap(),
+            code
+        );
+        if let Some(flag) = flag {
+            expected.push(flag);
+        }
+        let mut observed: Vec<_> = state
+            .list_access_logs_for(
+                Some(netget::state::AccessLogOwner::Server(id.as_u32())),
+                None,
+            )
+            .await
+            .into_iter()
+            .filter(|log| log.event_type == "otlp_export")
+            .map(|log| log.request["compressed"].as_bool().unwrap())
+            .collect();
+        observed.sort();
+        expected.sort();
+        assert_eq!(observed, expected);
+    }
+    task.abort();
+    let _ = task.await;
+    state.remove_server(id).await.unwrap();
+}
+
+#[tokio::test]
 async fn independent_otel_cli_and_telemetrygen_grpc_all_signals_and_refusal() {
     let state = common::new_state().await;
     let code="import json,sys\ne=json.load(sys.stdin)['event']\nassert e['transport']=='grpc'\na=[{'type':'accept_otlp'}]\nif e.get('service_name')=='refused': a=[{'type':'reject_otlp','code':403,'message':'independent refusal'}]\nprint(json.dumps({'actions':a}))";

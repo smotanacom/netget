@@ -58,9 +58,13 @@ where
 }
 
 fn deadline(req: &Request<Incoming>) -> Result<Duration, Status> {
-    let Some(value) = req.headers().get("grpc-timeout") else {
+    let mut values = req.headers().get_all("grpc-timeout").iter();
+    let Some(value) = values.next() else {
         return Ok(EXPORT_TIMEOUT);
     };
+    if values.next().is_some() {
+        return Err(Status::invalid_argument("duplicate grpc-timeout"));
+    }
     let value = value
         .to_str()
         .map_err(|_| Status::invalid_argument("invalid grpc-timeout"))?;
@@ -99,16 +103,12 @@ pub(super) async fn dispatch(req: Request<Incoming>, ctx: RequestContext) -> Res
         Err(_) => return Status::unavailable("netget: receiver at capacity").into_http(),
     };
     let path = req.uri().path().to_owned();
-    let compressed = req
-        .headers()
-        .get("grpc-encoding")
-        .is_some_and(|v| v == "gzip");
-    let receiver = Receiver { ctx, compressed };
     let call = async move {
-        let req = match bounded_unary(req).await {
+        let (req, compressed) = match bounded_unary(req).await {
             Ok(req) => req,
             Err(status) => return Ok(status.into_http()),
         };
+        let receiver = Receiver { ctx, compressed };
         match path.as_str() {
             "/opentelemetry.proto.collector.trace.v1.TraceService/Export" => {
                 traces::trace_service_server::TraceServiceServer::new(receiver)
@@ -150,7 +150,7 @@ pub(super) async fn dispatch(req: Request<Incoming>, ctx: RequestContext) -> Res
 // Generated tonic unary services drain additional messages while reading
 // trailers. OTLP permits one Export message. Bound its total wire body and
 // reject a second frame before passing the single frame to tonic's decoder.
-async fn bounded_unary(req: Request<Incoming>) -> Result<Request<Full<Bytes>>, Status> {
+async fn bounded_unary(req: Request<Incoming>) -> Result<(Request<Full<Bytes>>, bool), Status> {
     let (parts, mut body) = req.into_parts();
     let mut buffer = Vec::new();
     let mut length = None;
@@ -187,7 +187,14 @@ async fn bounded_unary(req: Request<Incoming>) -> Result<Request<Full<Bytes>>, S
             "netget: incomplete export message",
         ));
     }
-    Ok(Request::from_parts(parts, Full::new(Bytes::from(buffer))))
+    // Encoding negotiation does not imply every message is compressed. The one
+    // complete frame supplies this event fact; tonic still validates its flag,
+    // negotiated encoding and protobuf before any event can be raised.
+    let compressed = buffer[0] == 1;
+    Ok((
+        Request::from_parts(parts, Full::new(Bytes::from(buffer))),
+        compressed,
+    ))
 }
 
 struct Receiver {
