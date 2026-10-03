@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **23 / 72**; **49 remain**. Completed scopes comprise ten new families, twelve existing-protocol completions and one extension. All entries remain authorized, including the 42 new families, three existing completions and four extensions still open.
-- Integration branch: `protocol-expansion-20261001`. IPFIX and credential diagnostics are published on master. Generic gRPC, Vault and sFlow now pass coordinator validation with their shared logging and peer-control corrections; the next direct master publication is ready. The content-preserving `AGENTS.md` migration remains integrated.
-- Agent `queue_continue`: Vault client 59 is validated; Nostr client 60 is active, followed by Neo4j Bolt/OCI and the assigned service APIs.
-- Agent `http3_continue`: Generic gRPC streaming/reflection 68 is validated; gRPC-Web 69 is active, followed by Connect RPC and the assigned RPC/streaming families.
-- Agent `metrics_continue`: sFlow 30 is validated. Prometheus remote write 70 is signed and awaits coordinator integration; NetFlow v9 71 research has started. Assigned industrial and framed-service families follow.
-- Three workers maximum, one guarded build at a time. The coordinator reviews signed scopes, records independent evidence and pushes local master directly to origin/master without PRs. All fourteen protocol-pair jobs passed at `6b6fa081` (run `37092598314`). General run `37092598246` passed twelve jobs but failed Test on the peer-handle audit. Correction `5c1fb583` passes its seven checks and the integrated source suite; three new pair jobs are ready. Full CI remains pending the next remote run.
+- Completed: **27 / 72**; **45 remain**. Completed scopes comprise ten new families, thirteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 42 new families, Bolt/OCI clients and GraphQL subscriptions.
+- Integration branch: `protocol-expansion-20261001`. All completed scopes pass coordinator gates. Signed implementations and reviewed corrections merge into local master and push directly to origin/master; no GitHub PRs. The content-preserving `AGENTS.md` migration remains integrated.
+- Agent `queue_continue`: Nostr60 passes final validation; Bolt61 implementation now includes the identified malformed PULL/DISCARD parser and outbound depth/pre-clone fixes. OCI and assigned service APIs follow.
+- Agent `http3_continue`: gRPC-Web69 passes final validation, including through-EOF admission; Connect RPC13 is active, followed by assigned RPC and streaming families.
+- Agent `metrics_continue`: remote write70 and native NetFlow v971 pass final validation; TACACS+07 is active with calibrated independent legacy AAA peers. Assigned industrial and framed-service families follow.
+- Three workers maximum, one guarded build at a time. Last published batch `013835ee` passed **16 of 17 protocol-pair jobs**; Vault CLI discovery caused the sole failure and is corrected by `cb48aec5` with four root regression checks passing. Its general run passed **11 of 13 job instances**; TLS provider declaration (`7d0d067e`, two checks pass) and gRPC helper/module reachability (`cb48aec5`, audit passes) are corrected. Full remote CI is not claimed green. The new workflow requires **21 protocol-pair jobs**, including all four batch9 scopes.
 
 ## New protocol checklist
 
@@ -1327,11 +1327,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: **34 checks** (24 client, ten existing server) passed at 100 threads with isolated native Vault 2.0.0 daemon/CLI and a NetGet pair. Public system reads, userpass authentication/local credential clear, KV v2 read/write CAS/list/metadata and typed credential-safe events are covered. Source `a419d0ff`, action/redaction preflight and iterative disposal `e5be0070`, shared private access-log followup `101e50d0`. The real server deadline test ran for 123.01 seconds. Experimental; existing programmable server auth refusal is preserved and unsupported API/TLS/browser surfaces are documented.
 
-- [ ] **60. Nostr client**.
+- [x] **60. Nostr client**.
   - Scope: Publish signed events, subscribe, handle relay notices/results and close subscriptions.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - Selected native scope: NIP-01 signed publishing, bounded REQ/CLOSE subscriptions and optional NIP-11 information. Rust validates event IDs and BIP340 signatures; handler results are typed. WS and verified native WSS are supported; unknown publish outcome stays unknown, subscriptions remain volatile, and AUTH/COUNT/browser execution/positive WSS interoperability are excluded from this evidence.
+  - Evidence: coordinator **20 client + 33 preserved relay checks** pass at 100 test threads using independent nak 0.20.7 and rust-nostr SDK 0.45.1, the NetGet pair and real OpenSSL certificate rejection. Existing relay packet-capture checks also pass. Depth/node/retained-byte preflight precedes copying, queues/tasks are bounded, and stop cancels parked handlers. Source `dd9b01a2`; feature `nostr`; reproduction and exclusions in `tests/client/nostr/AGENTS.md`.
 
 - [ ] **61. Bolt client**.
   - Scope: Negotiated Neo4j-compatible sessions, queries/results/errors against existing server and independent server.
@@ -1391,20 +1393,26 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: **38 checks** (24 server, 14 client) passed at 100 threads with mandatory generated grpcio 1.75.1 peers, grpcurl 1.9.4 and NetGet pairing; seven shared converter and three tonic framing checks also pass. All stream forms, half-close, reflection v1/v1alpha and discovery, gzip/message/schema bounds, verified client TLS, owned tasks, cancellation and stalled flow control are covered. Source `92504dc9`, integration `d4e7c192`. Experimental; new streams exclude reachable bytes/binary metadata, and receiver TLS, retries, full descriptor catalogs, fuzz and pcap are not claimed.
 
-- [ ] **69. gRPC-Web binding**.
+- [x] **69. gRPC-Web binding**.
   - Scope: Implement a separately advertised client/server binding with framing, trailers and chosen streaming support.
-  - [ ] Implementation and all required server/client integration complete.
-  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+  - [x] Implementation and all required server/client integration complete.
+  - [x] Independent validation, feature build, documentation and integrated commit recorded.
+  - Selected native scope: binary protobuf cleartext HTTP/1.1 unary and server streaming with bounded frames, gzip, final status envelopes, metadata and exact-origin CORS. Shared gRPC descriptors/codecs retain typed semantics. Text/JSON message modes, client/bidi streaming, reflection, TLS/browser execution and pcap/fuzz claims are excluded; state is Experimental.
+  - Evidence: coordinator **11 server + nine client checks**, **38 native gRPC neighbors** and **18 wire/converter/tonic checks** pass with independent Connect-ES 2.2.0 / protobuf-es 2.16.0 Node/Fetch transports. Admission, activity and timer guards survive the last status frame through explicit body EOF, error or drop; no TCP-flush ownership is claimed. Sources `4f9bf6c7`, `f5b859a8`, metadata correction `cb46779c`; feature `grpc-web`; reproduction in `tests/server/grpc_web/AGENTS.md` and `tests/client/grpc_web/AGENTS.md`.
 
-- [ ] **70. Prometheus remote write**.
+- [x] **70. Prometheus remote write**.
   - Scope: Sender/receiver for a pinned version, protobuf/compression, validation and retry/error semantics.
-  - [ ] Implementation and all required server/client integration complete.
-  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+  - [x] Implementation and all required server/client integration complete.
+  - [x] Independent validation, feature build, documentation and integrated commit recorded.
+  - Selected scope: published remote-write 1.0 float samples over HTTP/1.1 protobuf and Snappy block compression, signed millisecond timestamps and finite/special/stale values. Sender retries transport/5xx failures with bounded backoff while connected; 429 retry is opt-in. Receiver decisions are typed and use shared state only. No remote-write 2.0, metadata, histograms, exemplars, TLS, durable sender queue or full conformance claim; state is Experimental.
+  - Evidence: coordinator **15 receiver + nine sender checks** pass at 100 threads with official Prometheus 3.15.0 sender and TSDB receiver/readback plus the pinned official Python prometheus-client 0.22.1 scrape fixture (the daemon owns remote-write encoding). Independent peers, NetGet pair, bounds, retries, rejection and parked-handler cancellation pass. The 10-second response-write bound begins after the handler completes. Source `7f6d77fd`, CI/capture `df5205c4`; feature `prometheus-remote-write`; reproduction in corresponding server/client test documents.
 
-- [ ] **71. NetFlow v9**.
+- [x] **71. NetFlow v9**.
   - Scope: Collector/exporter extension alongside IPFIX, distinct headers/templates and lifecycle.
-  - [ ] Implementation and all required server/client integration complete.
-  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+  - [x] Implementation and all required server/client integration complete.
+  - [x] Independent validation, feature build, documentation and integrated commit recorded.
+  - Selected scope: native RFC3954 UDP v9 templates, options and typed data for 35 fixed-width fields and five scope kinds. Count tracks all records and sequence tracks export packets; source IP + SourceID owns the bounded transactional template cache. TTL/idle expiry and template refresh run in owned tasks. No IPFIX conflation, UDP acknowledgement, persistent flow store, enterprise/variable fields or full standard/pcap/fuzz claim; state is Experimental.
+  - Evidence: coordinator **23 collector + seven exporter checks** pass at 100 threads with unmodified softflowd 1.1.1 in its upstream legacy build profile and official GoFlow2 2.2.7, including literal wire fixtures and the NetGet pair. Cache/count/sequence/padding/malformed input, typed scope handling, expiry/refresh and cancellation pass. Local send never claims remote collection. Source `6c83cd96`; feature `netflow-v9`; pinned bootstrap and reproduction in `tests/server/netflow_v9/AGENTS.md` and `tests/client/netflow_v9/AGENTS.md`.
 
 - [ ] **72. GraphQL subscriptions**.
   - Scope: Explicit subscription transport such as graphql-transport-ws; client/server lifecycle, typed execution and cancellation.
@@ -1453,6 +1461,11 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 - Shared followup `101e50d0` records only validated offered action names for credential-bearing client action diagnostics. Peer-control correction `5c1fb583` gives GELF/Graphite/Forward/NUT honest exchange-only reasons, reads sibling action metadata, recognizes both Hyper imports and shrinks the stale gRPC exemption after real stream controls adopted a handle. Capture/golden/silence integration `e384bf5a` includes sFlow and Vault. CI `cd924b23` adds three mandatory Linux peer jobs; both workflows and **116 shell steps** parse. The pinned Vault Linux release digest and 175150654-byte archive size were verified from official release metadata. The new Linux executions await publication.
 - Reproduce through the shared guard with the stated feature set, `--test server --test client -- <grpc|vault|sflow>:: --test-threads=100`. Peer installation/environment and exact selected scopes live in the corresponding server/client test documents. Logs are retained under `.protocol-expansion-20261001/logs/batch8-*`, `item68-grpc-*` and `agent-*`. Initial source failure, the agent fixture-construction stack abort and one manager validation compile started before a module conflict was resolved are retained; that premature attempt ran no tests. Subsequent clean merged runs pass.
 - Package-only maintenance under the shared lock removed a Cargo-reported **4.5 GiB** of programme-owned compiled outputs, leaving approximately **34 GiB free at that point**. Dependencies/download caches, source, peer fixtures, logs, unrelated targets and processes were retained. The final guarded format check started with **30.8 GiB free**; the same 30/25 GiB start/stop policy remains in force. Other observed volume changes were not attributed to this cleanup.
+
+- **Batch 9 — 60 Nostr client, 69 gRPC-Web, 70 remote write and 71 native NetFlow v9:** coordinator evidence totals **183 protocol/neighbor checks**: remote write24, Nostr53, gRPC-Web20, native gRPC38 and wire/value/tonic18. All final results have zero failures or ignores. The initial shared run passed142 of145 checks across34 targets and exposed three gRPC-Web integration omissions; `cb46779c` corrects the named default timeout, truthful HTTP-carrier/no-port declaration and the documented intentional unread-response wait. The complete corrected run passes **145 shared checks across34 targets**. The HTTP-only example target is inactive in this feature bundle; no executed example test is claimed for that target.
+- Final **all-target** clippy correctness/suspicious/unused-must-use gates and whole-package formatting pass with `tcp,prometheus-remote-write,vault,grpc,grpc-web,nostr,netflow-v9`; advisory warnings remain. Module reachability finds **2565 reachable source/test files, zero allowlisted**, all formatted. Both workflow files, **133 shell steps** and two native peer bootstrap ASTs parse. Required independent peer downloads are versioned, bounded and hash-verified; Linux executions await the next publication run. Capture carrier mappings and aliases are checked for HTTP/cflow; this mapping is not new protocol packet-capture maturity evidence.
+- Reproduce using the shared guard and this feature bundle with `--test server --test client -- <grpc_web|grpc|nostr|netflow_v9>:: --test-threads=100`, the three gRPC wire/value/tonic targets and the34 shared targets recorded in owned logs. Remote write24 was validated first with `tcp,prometheus-remote-write,vault,grpc`; unchanged source retains that evidence. Peer environments are recorded in each protocol test document. Logs: `.protocol-expansion-20261001/logs/batch9-*`, `item69-*` and `agent-*`; initial source failures and invalid post-EOS stress attempts remain recorded separately from successful runs. The corrected report index was rebuilt from retained logs after a follow-up script overwrote its index; underlying logs were retained.
+- Owned package-only maintenance under the shared lock reclaimed a Cargo-reported **2.0 GiB**, then **1.9 GiB** in separate measured cleanups. Download/dependency caches, peers, sources, logs, unrelated artifacts and processes were retained. Free space after final gates is approximately **40 GiB**. All builds retain the same30 GiB start floor and25 GiB stop reserve; observed unrelated volume changes are not attributed to cleanup.
 
 ## Implementation and independent peer plan
 

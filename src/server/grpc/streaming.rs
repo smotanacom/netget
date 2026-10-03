@@ -2,7 +2,7 @@
 use super::{actions, stream_codec, DynamicGrpcService, GrpcStatus};
 use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, Stream};
-use hyper::{body::Incoming, Request, Response};
+use hyper::{Request, Response};
 use prost::Message;
 use prost_reflect::{DynamicMessage, MessageDescriptor, MethodDescriptor};
 use serde_json::{json, Value};
@@ -29,16 +29,16 @@ pub(super) const MAX_ACTIVE: usize = 64;
 pub(super) const MAX_MESSAGES: usize = 256;
 const MAX_PENDING: usize = 16;
 const MAX_PENDING_BYTES: usize = stream_codec::MAX_MESSAGE_BYTES;
-pub(super) type Registry = Arc<Mutex<HashMap<u32, Entry>>>;
+pub(crate) type Registry = Arc<Mutex<HashMap<u32, Entry>>>;
 
 #[derive(Clone, Default)]
-pub(super) struct OwnedExecutor(Arc<Children>);
+pub(crate) struct OwnedExecutor(Arc<Children>);
 #[derive(Default)]
 struct Children {
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     closed: AtomicBool,
 }
-pub(super) struct ConnectionTasks(pub OwnedExecutor);
+pub(crate) struct ConnectionTasks(pub OwnedExecutor);
 impl Drop for ConnectionTasks {
     fn drop(&mut self) {
         let mut tasks = self.0 .0.tasks.lock().unwrap_or_else(|e| e.into_inner());
@@ -60,7 +60,7 @@ impl OwnedExecutor {
         tasks.push(task);
         Some(abort)
     }
-    pub fn deadline(&self, deadline: tokio::time::Instant) -> Result<DeadlineGuard, Status> {
+    pub(super) fn deadline(&self, deadline: tokio::time::Instant) -> Result<DeadlineGuard, Status> {
         let id = tokio::task::try_id().ok_or_else(|| Status::internal("missing stream owner"))?;
         let owner = self
             .0
@@ -78,7 +78,11 @@ impl OwnedExecutor {
                 owner.abort();
             })
             .ok_or_else(|| Status::cancelled("connection closed"))?;
-        Ok(DeadlineGuard(timer))
+        Ok(DeadlineGuard {
+            timer,
+            deadline,
+            retain_expired: false,
+        })
     }
 }
 impl<F> hyper::rt::Executor<F> for OwnedExecutor
@@ -92,10 +96,25 @@ where
         });
     }
 }
-pub(super) struct DeadlineGuard(AbortHandle);
+pub(super) struct DeadlineGuard {
+    timer: AbortHandle,
+    deadline: tokio::time::Instant,
+    retain_expired: bool,
+}
+impl DeadlineGuard {
+    /// HTTP/1 can continue draining an unfinished request after a timeout response
+    /// reaches body EOS. Its expired hard timer must still cancel that connection owner.
+    #[cfg(feature = "grpc-web")]
+    pub(super) fn retain_expired(mut self) -> Self {
+        self.retain_expired = true;
+        self
+    }
+}
 impl Drop for DeadlineGuard {
     fn drop(&mut self) {
-        self.0.abort();
+        if !self.retain_expired || tokio::time::Instant::now() < self.deadline {
+            self.timer.abort();
+        }
     }
 }
 
@@ -162,12 +181,12 @@ pub(super) enum Command {
     Finish,
     Cancel,
 }
-pub(super) struct Entry {
-    pub sender: mpsc::Sender<Command>,
-    pub output: MessageDescriptor,
-    pub input_closed: Arc<AtomicBool>,
-    pub client_streaming: bool,
-    pub server_streaming: bool,
+pub(crate) struct Entry {
+    sender: mpsc::Sender<Command>,
+    output: MessageDescriptor,
+    input_closed: Arc<AtomicBool>,
+    client_streaming: bool,
+    server_streaming: bool,
 }
 struct Registration {
     registry: Registry,
@@ -188,7 +207,6 @@ pub(super) async fn command_loop(
     service: Arc<DynamicGrpcService>,
     connection: crate::server::connection::ConnectionId,
 ) {
-    use crate::llm::actions::protocol_trait::{Protocol, Server};
     use crate::state::client_handles::ClientSendOutcome;
     while let Some(command) = commands.recv().await {
         let action = command.action.clone();
@@ -582,7 +600,7 @@ impl Controller {
 }
 
 pub(super) async fn dispatch(
-    request: Request<Incoming>,
+    request: Request<tonic::body::BoxBody>,
     service: Arc<DynamicGrpcService>,
     connection: crate::server::connection::ConnectionId,
     method: MethodDescriptor,

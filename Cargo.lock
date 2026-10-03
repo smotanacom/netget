@@ -8222,6 +8222,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tonic-reflection",
+ "tonic-web",
  "tor-cell",
  "tor-cert",
  "tor-dirmgr",
@@ -14184,6 +14185,26 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "tonic-web"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5299dd20801ad736dccb4a5ea0da7376e59cd98f213bf1c3d478cf53f4834b58"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "http 1.3.1",
+ "http-body 1.0.1",
+ "http-body-util",
+ "pin-project",
+ "tokio-stream",
+ "tonic",
+ "tower-http 0.5.2",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -216,6 +216,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         // RFC 7011 version 10 over UDP. Decode-as and display syntax checked with tshark.
         "ipfix" => udp("cflow"),
         "sflow" => udp("sflow"),
+        "netflow_v9" | "netflowv9" => udp("cflow"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
         // The discovery family. All three are UDP and all three were falling through to the
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
@@ -281,7 +282,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
         | "dynamo" | "elasticsearch" | "couchdb" | "kubernetes" | "oci_registry" | "npm"
         | "pypi" | "maven" | "rss" | "hls" | "yarn" | "spark" | "snowflake" | "mercurial"
-        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "vault" | "influxdb" | "loki" => tcp("http"),
+        | "webrtc_signaling" | "torrent_tracker" | "prometheus" | "prometheus_remote_write" | "prometheusremotewrite"
+        | "remote_write" | "prometheus_write" | "vault" | "influxdb" | "loki" => tcp("http"),
         "docker" => with_note(
             tcp("http"),
             "This captures Docker HTTP TCP connections. A native Unix socket has no IP packets to capture.",
@@ -297,6 +299,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
+        "grpc_web" | "grpcweb" | "grpc web" => with_note(
+            tcp("http"),
+            "This binding uses binary gRPC-Web over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf body interpretation requires the matching schema.",
+        ),
         // ---- mail / text -------------------------------------------------
         "smtp" => tcp("smtp"),
         "pop3" => tcp("pop"),
