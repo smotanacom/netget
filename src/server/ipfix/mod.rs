@@ -100,15 +100,51 @@ impl IpfixServer {
                         .await
                         {
                             Ok(result) if result.failures.is_empty() => {
+                                let decision = if result
+                                    .protocol_result_actions
+                                    .iter()
+                                    .any(|action| action == "collect_ipfix_records")
+                                {
+                                    "handler_collect"
+                                } else {
+                                    "handler_silent"
+                                };
                                 for m in result.messages {
                                     console_info!(dispatcher.status_tx, "{}", m);
                                 }
+                                console_info!(
+                                    dispatcher.status_tx,
+                                    "IPFIX source={} decision={} udp_silent=true",
+                                    peer,
+                                    decision
+                                );
+                                dispatcher
+                                    .state
+                                    .record_access_log(
+                                        AccessLogOwner::Server(id.as_u32()),
+                                        "IPFIX",
+                                        Some(cid.as_u32()),
+                                        "ipfix_handler_decision",
+                                        event.data,
+                                        vec![json!({"decision":decision,"udp_silent":true})],
+                                    )
+                                    .await;
                             }
                             result => {
-                                let reason = match result {
-                                    Ok(r) => format!("{} failed actions", r.failures.len()),
-                                    Err(e) => e.to_string(),
+                                let (decision, reason) = match result {
+                                    Ok(r) => (
+                                        "fail_closed_action_error",
+                                        format!("{} failed actions", r.failures.len()),
+                                    ),
+                                    Err(e) => ("fail_closed_dispatch_error", e.to_string()),
                                 };
+                                console_error!(
+                                    dispatcher.status_tx,
+                                    "IPFIX source={} decision={} udp_silent=true error={}",
+                                    peer,
+                                    decision,
+                                    reason
+                                );
                                 dispatcher
                                     .state
                                     .record_access_log(
@@ -117,12 +153,17 @@ impl IpfixServer {
                                         Some(cid.as_u32()),
                                         "ipfix_handler_failed",
                                         event.data,
-                                        vec![json!({"decision":"fail_closed_handler_error", "error":reason})],
+                                        vec![json!({"decision":"fail_closed_handler_error", "error":reason,"terminal_decision":decision,"udp_silent":true})],
                                     )
                                     .await;
                             }
                         }
                     } else {
+                        console_info!(
+                            dispatcher.status_tx,
+                            "IPFIX source={} decision=default_collect udp_silent=true",
+                            peer
+                        );
                         dispatcher
                             .state
                             .record_access_log(
@@ -131,7 +172,7 @@ impl IpfixServer {
                                 Some(cid.as_u32()),
                                 "ipfix_message",
                                 event.data,
-                                vec![json!({"type":"collect_ipfix_records"})],
+                                vec![json!({"type":"collect_ipfix_records","decision":"default_collect","udp_silent":true})],
                             )
                             .await;
                     }
@@ -158,7 +199,7 @@ impl IpfixServer {
                         r = socket.recv_from(&mut buffer) => match r {
                             Ok(v) => v,
                             Err(e) => {
-                                console_error!(ctx.status_tx, "IPFIX receive failed: {}", e);
+                                console_error!(ctx.status_tx, "IPFIX decision=fail_closed_receive_error udp_silent=true error={}", e);
                                 break;
                             }
                         }
@@ -170,6 +211,18 @@ impl IpfixServer {
                                     error,
                                     tokio::sync::mpsc::error::TrySendError::Closed(_)
                                 );
+                                let decision = if closed {
+                                    "fail_closed_dispatch_closed"
+                                } else {
+                                    "fail_closed_event_capacity"
+                                };
+                                console_error!(
+                                    ctx.status_tx,
+                                    "IPFIX source={} decision={} udp_silent=true event_cap={}",
+                                    peer,
+                                    decision,
+                                    MAX_QUEUED_EVENTS
+                                );
                                 ctx.state
                                     .record_access_log(
                                         AccessLogOwner::Server(id.as_u32()),
@@ -177,7 +230,7 @@ impl IpfixServer {
                                         None,
                                         "ipfix_event_capacity",
                                         json!({"source_addr":peer.to_string()}),
-                                        vec![json!({"decision":"fail_closed_event_capacity", "event_cap":MAX_QUEUED_EVENTS})],
+                                        vec![json!({"decision":"fail_closed_event_capacity", "event_cap":MAX_QUEUED_EVENTS,"terminal_decision":decision,"udp_silent":true})],
                                     )
                                     .await;
                                 if closed {
@@ -186,6 +239,13 @@ impl IpfixServer {
                             }
                         }
                         Err(error) => {
+                            console_error!(
+                                ctx.status_tx,
+                                "IPFIX source={} decision=fail_closed_invalid_datagram udp_silent=true received_bytes={} error={}",
+                                peer,
+                                n,
+                                error
+                            );
                             ctx.state
                                 .record_access_log(
                                     AccessLogOwner::Server(id.as_u32()),

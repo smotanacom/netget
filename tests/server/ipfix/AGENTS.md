@@ -11,6 +11,10 @@ TTL/session expiry and exact message/set/record/field/session/template limits.
 malformed datagram rejection and recovery, parsing independent of a parked
 manual handler, 32-message queue capacity, owned socket/intercept cleanup,
 actual TTL expiry, typed model opt-in and script/common-memory action failure.
+It asserts actual status-channel terminal decision logs for default collection,
+explicit collection, empty/common-only batches, failed actions, a real closed
+backend endpoint, malformed input and queue overflow. Backend and action errors
+retain the existing failure access-log fields and remain silent on UDP.
 `real_client_test.rs` requires the unmodified public Python exporter to send
 IPv4/IPv6, ports/protocol, reduced/full counters, seconds/milliseconds, UTF-8/NUL
 strings and an options template; assertions compare native typed values to

@@ -8,12 +8,20 @@ queue and parked intercepts. `collect_ipfix_records` adds no protocol storage.
 
 Default `llm_fallback` is false. A matching static/script/manual/model handler
 or explicit fallback enables common dispatch. Every message is deliberately
-silent: there is no UDP response or acknowledgment. Failed actions are logged
-as `fail_closed_handler_error`; common actions already applied are not rolled
-back. Without a handler, valid events enter the standard access log. Parsing
+silent: there is no UDP response or acknowledgment. Terminal status logs include
+`decision=default_collect`, `handler_collect` for successful explicit collection,
+or `handler_silent` for empty/common-only action batches. Failed actions produce
+`fail_closed_action_error`; backend/handler dispatch errors produce
+`fail_closed_dispatch_error`. The existing `ipfix_handler_failed` access-log
+decision remains `fail_closed_handler_error`, with `terminal_decision` carrying
+the precise cause. Common actions already applied are not rolled back. Without
+a handler, valid events enter the standard access log. Parsing
 and cache expiry continue while a handler is parked. The dispatch queue holds
 32 messages plus one active handler; excess messages are logged and discarded
-after their wire-level template/sequence state has been processed.
+after their wire-level template/sequence state has been processed. Invalid
+datagrams, queue overflow, a closed dispatcher and receive errors also emit
+terminal `fail_closed_` decision logs. Each terminal status log explicitly
+records `udp_silent=true`; none acknowledges delivery, storage or durability.
 
 `codec.rs` validates a whole datagram before committing candidate session state.
 The collector socket is implicit in each cache instance; exporter IP, UDP port

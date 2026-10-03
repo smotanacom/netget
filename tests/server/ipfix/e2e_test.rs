@@ -7,11 +7,23 @@ pub(super) async fn start(
     handlers: Option<Vec<Value>>,
     params: Option<Value>,
 ) -> (AppState, ServerId, SocketAddr) {
+    let (state, id, addr, _) = start_with_status(handlers, params).await;
+    (state, id, addr)
+}
+async fn start_with_status(
+    handlers: Option<Vec<Value>>,
+    params: Option<Value>,
+) -> (
+    AppState,
+    ServerId,
+    SocketAddr,
+    mpsc::UnboundedReceiver<String>,
+) {
     let state = AppState::new_with_options(false, "http://127.0.0.1:1".into());
     state
         .set_llm_client(netget::llm::OllamaClient::new("http://127.0.0.1:1"))
         .await;
-    let (tx, _) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::unbounded_channel();
     let id = ServerForm {
         protocol: "ipfix".into(),
         host: Some("127.0.0.1".into()),
@@ -34,7 +46,20 @@ pub(super) async fn start(
     })
     .await
     .unwrap();
-    (state, id, addr)
+    (state, id, addr, rx)
+}
+async fn decision(rx: &mut mpsc::UnboundedReceiver<String>, tag: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(line) = rx.recv().await {
+            if line.contains(&format!("decision={tag} ")) {
+                assert!(line.contains("udp_silent=true"), "{line}");
+                return;
+            }
+        }
+        panic!("status channel closed before terminal decision={tag}");
+    })
+    .await
+    .expect("terminal decision must be emitted to the status log");
 }
 pub(super) async fn logs(
     state: &AppState,
@@ -74,11 +99,12 @@ async fn released(state: &AppState, addr: SocketAddr) {
 }
 #[tokio::test]
 async fn collector_keeps_wire_state_without_default_model_and_never_replies() {
-    let (state, id, addr) = start(None, None).await;
+    let (state, id, addr, mut status) = start_with_status(None, None).await;
     let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let tpl = super::codec_test::packet(42, 0, &[(2, super::codec_test::template(300, &[(8, 4)]))]);
     sender.send_to(&tpl, addr).await.unwrap();
     logs(&state, id, "ipfix_message", 1).await;
+    decision(&mut status, "default_collect").await;
     let d = super::codec_test::packet(42, 0, &[(300, vec![192, 0, 2, 1])]);
     sender.send_to(&d, addr).await.unwrap();
     let e = logs(&state, id, "ipfix_message", 2).await;
@@ -100,7 +126,7 @@ async fn collector_keeps_wire_state_without_default_model_and_never_replies() {
 }
 #[tokio::test]
 async fn malformed_and_oversized_datagrams_log_failure_without_dispatch_and_recover() {
-    let (state, id, addr) = start(None, None).await;
+    let (state, id, addr, mut status) = start_with_status(None, None).await;
     let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     for b in [
         vec![0; 15],
@@ -110,6 +136,7 @@ async fn malformed_and_oversized_datagrams_log_failure_without_dispatch_and_reco
         sender.send_to(&b, addr).await.unwrap();
     }
     let e = logs(&state, id, "ipfix_invalid_datagram", 3).await;
+    decision(&mut status, "fail_closed_invalid_datagram").await;
     assert!(e
         .iter()
         .all(|e| e.response[0]["decision"] == "fail_closed_invalid_datagram"));
@@ -130,7 +157,7 @@ async fn malformed_and_oversized_datagrams_log_failure_without_dispatch_and_reco
 }
 #[tokio::test]
 async fn parked_handler_does_not_block_receive_expiry_or_bounded_queue_and_stop() {
-    let (state, id, addr) = start(
+    let (state, id, addr, mut status) = start_with_status(
         Some(vec![
             json!({"event_pattern":"ipfix_message","handler":{"type":"manual","timeout_secs":300}}),
         ]),
@@ -152,7 +179,12 @@ async fn parked_handler_does_not_block_receive_expiry_or_bounded_queue_and_stop(
     for _ in 0..33 {
         sender.send_to(&w, addr).await.unwrap();
     }
-    logs(&state, id, "ipfix_event_capacity", 1).await;
+    let e = logs(&state, id, "ipfix_event_capacity", 1).await;
+    assert_eq!(
+        e[0].response[0]["terminal_decision"],
+        "fail_closed_event_capacity"
+    );
+    decision(&mut status, "fail_closed_event_capacity").await;
     sender.send_to(&[0; 15], addr).await.unwrap();
     logs(&state, id, "ipfix_invalid_datagram", 1).await;
     state.remove_server(id).await;
@@ -194,7 +226,7 @@ async fn actual_template_expiry_and_redefinition_follow_wire_order() {
 #[tokio::test]
 async fn common_script_memory_and_failed_action_remain_silent() {
     let code="import json,sys\nr=json.load(sys.stdin)\nassert r['event']['message']['record_count']==1\nprint(json.dumps({'actions':[{'type':'set_memory','value':'IPFIX observed'},{'type':'collect_ipfix_records'},{'type':'unknown_ipfix_action'}]}))";
-    let(state,id,addr)=start(Some(vec![json!({"event_pattern":"ipfix_message","handler":{"type":"script","language":"python","code":code}})]),None).await;
+    let(state,id,addr,mut status)=start_with_status(Some(vec![json!({"event_pattern":"ipfix_message","handler":{"type":"script","language":"python","code":code}})]),None).await;
     let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let w = netget::server::ipfix::codec::encode(&super::codec_test::sample(), 0, 0)
         .unwrap()
@@ -202,6 +234,11 @@ async fn common_script_memory_and_failed_action_remain_silent() {
     sender.send_to(&w, addr).await.unwrap();
     let e = logs(&state, id, "ipfix_handler_failed", 1).await;
     assert_eq!(e[0].response[0]["decision"], "fail_closed_handler_error");
+    assert_eq!(
+        e[0].response[0]["terminal_decision"],
+        "fail_closed_action_error"
+    );
+    decision(&mut status, "fail_closed_action_error").await;
     assert_eq!(state.get_memory(id).await.unwrap(), "IPFIX observed");
     assert!(
         tokio::time::timeout(Duration::from_millis(100), sender.recv(&mut [0; 1]))
@@ -209,6 +246,70 @@ async fn common_script_memory_and_failed_action_remain_silent() {
             .is_err()
     );
     state.remove_server(id).await;
+}
+
+#[tokio::test]
+async fn explicit_collection_empty_and_common_only_actions_have_distinct_terminal_logs() {
+    for (actions, tag) in [
+        (json!([{"type":"collect_ipfix_records"}]), "handler_collect"),
+        (json!([]), "handler_silent"),
+        (
+            json!([{"type":"set_memory","value":"observed"}]),
+            "handler_silent",
+        ),
+    ] {
+        let (state, id, addr, mut status) = start_with_status(
+            Some(vec![json!({"event_pattern":"ipfix_message","handler":{"type":"static","actions":actions}})]),
+            None,
+        ).await;
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let w = netget::server::ipfix::codec::encode(&super::codec_test::sample(), 0, 0)
+            .unwrap()
+            .0;
+        sender.send_to(&w, addr).await.unwrap();
+        let e = logs(&state, id, "ipfix_handler_decision", 1).await;
+        assert_eq!(e[0].response[0]["decision"], tag);
+        decision(&mut status, tag).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), sender.recv(&mut [0; 1]))
+                .await
+                .is_err()
+        );
+        state.remove_server(id).await;
+        released(&state, addr).await;
+    }
+}
+
+#[tokio::test]
+async fn backend_failure_is_logged_separately_from_action_failure_and_stays_silent() {
+    let (state, id, addr, mut status) =
+        start_with_status(None, Some(json!({"llm_fallback":true}))).await;
+    // The helper's local closed endpoint provides a real backend transport error.
+    state
+        .set_ollama_model(Some("ipfix-test-model".into()))
+        .await;
+    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let w = netget::server::ipfix::codec::encode(&super::codec_test::sample(), 0, 0)
+        .unwrap()
+        .0;
+    sender.send_to(&w, addr).await.unwrap();
+    let e = logs(&state, id, "ipfix_handler_failed", 1).await;
+    assert_eq!(e[0].response[0]["decision"], "fail_closed_handler_error");
+    assert_eq!(
+        e[0].response[0]["terminal_decision"],
+        "fail_closed_dispatch_error"
+    );
+    assert!(e[0].response[0]["error"]
+        .as_str()
+        .is_some_and(|e| !e.is_empty()));
+    decision(&mut status, "fail_closed_dispatch_error").await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), sender.recv(&mut [0; 1]))
+            .await
+            .is_err()
+    );
+    state.remove_server(id).await;
+    released(&state, addr).await;
 }
 
 #[tokio::test]
