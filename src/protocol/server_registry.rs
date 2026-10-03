@@ -213,6 +213,11 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "tacacs")]
+        self.register(Arc::new(
+            crate::server::tacacs::actions::TacacsProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -551,6 +556,10 @@ impl ServerRegistry {
         #[cfg(feature = "grpc-web")]
         self.register(Arc::new(
             crate::server::grpc_web::actions::GrpcWebProtocol::new(),
+        ));
+        #[cfg(feature = "connect_rpc")]
+        self.register(Arc::new(
+            crate::server::connect_rpc::actions::ConnectRpcProtocol::new(),
         ));
 
         #[cfg(feature = "etcd")]
@@ -1371,6 +1380,8 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("XML-RPC", "xmlrpc"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("ConnectRPC", "connect_rpc"),
+    ("TACACS", "tacacs"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

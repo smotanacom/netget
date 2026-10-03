@@ -1,0 +1,145 @@
+{
+  "source": "d34d91c09ee1731ec13eb3977c17344aeda95497",
+  "phase": "before",
+  "started_at": "2026-10-02T22:56:32.516972+00:00",
+  "command": [
+    "/Users/matus/dev/netget/.netget-handoff/evals/before-target/debug/deps/eval-02a2a94d62b715a2",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "command_equivalence": "Prebuilt executable and environment from run-eval.sh; cargo compilation and preflight printing omitted.",
+  "protocols": [
+    "gemini",
+    "beanstalkd",
+    "otlp",
+    "finger",
+    "redis",
+    "postgresql",
+    "mysql",
+    "ldap",
+    "ipp",
+    "syslog",
+    "ntp",
+    "telnet",
+    "tcp",
+    "ftp",
+    "udp",
+    "prometheus",
+    "docker",
+    "vault",
+    "bolt",
+    "smtp",
+    "pop3",
+    "imap",
+    "nntp",
+    "memcached",
+    "mqtt",
+    "coap",
+    "modbus",
+    "snmp",
+    "sip",
+    "websocket",
+    "nostr"
+  ],
+  "environment": {
+    "PATH": "/Users/matus/dev/netget/.netget-handoff/evals/tools:/opt/homebrew/Caskroom/codex/0.160.0/codex-path:/Users/matus/.opencode/bin:/Users/matus/.local/bin:/Users/matus/.claude/local:/Users/matus/.asdf/shims:/opt/homebrew/opt/python@3.10/libexec/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/matus/.nvm/versions/node/v22.17.0/bin:/Users/matus/bin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/opt/X11/bin:/Library/Apple/usr/bin:/Applications/Wireshark.app/Contents/MacOS:/Users/matus/.codex/tmp/arg0/codex-arg0yXWV3R:/opt/homebrew/Caskroom/codex/0.160.0/codex-path:/Users/matus/.opencode/bin:/Users/matus/.local/bin:/Users/matus/.claude/local:/Users/matus/.asdf/shims:/opt/homebrew/opt/python@3.10/libexec/bin:/Users/matus/Library/pnpm:/Users/matus/.sdkman/candidates/scala/current/bin:/Users/matus/.sdkman/candidates/sbt/current/bin:/Users/matus/.sdkman/candidates/maven/current/bin:/Users/matus/.sdkman/candidates/java/current/bin:/Users/matus/.sdkman/candidates/grails/current/bin:/Users/matus/.sdkman/candidates/gradle/current/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/matus/.nvm/versions/node/v22.17.0/bin:/Users/matus/bin:/Users/matus/.cargo/bin:/Users/matus/.docker/bin:/Users/matus/.lmstudio/bin:/Users/matus/Library/Application Support/JetBrains/Toolbox/scripts:/Users/matus/go/bin:/Users/matus/.docker/bin:/Users/matus/.docker/bin:/Users/matus/.lmstudio/bin:/Users/matus/Library/Application Support/JetBrains/Toolbox/scripts:/Users/matus/go/bin:/Users/matus/.lmstudio/bin",
+    "CARGO_BIN_EXE_netget": "/Users/matus/dev/netget/.netget-handoff/evals/before/netget",
+    "NETGET_USE_OLLAMA": "1",
+    "NETGET_LLM_TEST_MODEL": "llama3.1:8b",
+    "NETGET_EVAL_RUNS": "5",
+    "NETGET_EVAL_SEED": "42",
+    "NETGET_EVAL_TEMPERATURE": "",
+    "NETGET_EVAL_PROTOCOLS": "gemini,beanstalkd,otlp,finger,redis,postgresql,mysql,ldap,ipp,syslog,ntp,telnet,tcp,ftp,udp,prometheus,docker,vault,bolt,smtp,pop3,imap,nntp,memcached,mqtt,coap,modbus,snmp,sip,websocket,nostr",
+    "NETGET_EVAL_OUT_DIR": "/Users/matus/dev/netget/.netget-handoff/evals/before-continuation",
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434"
+  },
+  "binary_sha256": "f98be92708130b2e1eac3399e14224ac5d6c41aebbaa53182c81f3cf44e90b94",
+  "harness_sha256": "47cbd6b0d08a08175b67572fa57fa868a69fb07ce48ca2faa8e08f0c728997f5",
+  "build_provenance": {
+    "phase": "before",
+    "source": "d34d91c09ee1731ec13eb3977c17344aeda95497",
+    "source_directory": "/Users/matus/dev/netget/.netget-handoff/evals/before-source",
+    "command": [
+      "./cargo-isolated.sh",
+      "test",
+      "--no-default-features",
+      "--features",
+      "http,dns,whois,gopher,finger,dict,gemini,beanstalkd,zabbix,gearman,nsq,redis,postgresql,mysql,ldap,ipp,syslog,ntp,telnet,tcp,ftp,udp,prometheus,otlp,docker,vault,bolt,smtp,pop3,imap,nntp,memcached,mqtt,coap,modbus,snmp,sip,websocket,nostr",
+      "--test=eval",
+      "--no-run"
+    ],
+    "started_at": "2026-10-02T14:03:57.318691+00:00",
+    "model": {
+      "name": "llama3.1:8b",
+      "model": "llama3.1:8b",
+      "modified_at": "2026-06-25T22:35:16.282595214-04:00",
+      "size": 4920753328,
+      "digest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "llama",
+        "families": [
+          "llama"
+        ],
+        "parameter_size": "8.0B",
+        "quantization_level": "Q4_K_M",
+        "context_length": 131072,
+        "embedding_length": 4096
+      },
+      "capabilities": [
+        "completion",
+        "tools"
+      ]
+    },
+    "python": "Python 3.10.21",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew)",
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05) (Homebrew)",
+    "build_environment": {
+      "CARGO_TARGET_DIR": "/Users/matus/dev/netget/.netget-handoff/evals/before-target",
+      "CARGO_BUILD_JOBS": "3",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "OLLAMA_BASE_URL": "http://127.0.0.1:11434"
+    },
+    "build_only": true,
+    "finished_at": "2026-10-02T14:07:14.953502+00:00",
+    "elapsed_seconds": 197.58085924999978,
+    "exit_code": 0,
+    "source_tracked_changes_after": "",
+    "binary_sha256": "f98be92708130b2e1eac3399e14224ac5d6c41aebbaa53182c81f3cf44e90b94",
+    "binary_bytes": 141882832
+  },
+  "model": {
+    "name": "llama3.1:8b",
+    "model": "llama3.1:8b",
+    "modified_at": "2026-06-25T22:35:16.282595214-04:00",
+    "size": 4920753328,
+    "digest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+    "details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "llama",
+      "families": [
+        "llama"
+      ],
+      "parameter_size": "8.0B",
+      "quantization_level": "Q4_K_M",
+      "context_length": 131072,
+      "embedding_length": 4096
+    },
+    "capabilities": [
+      "completion",
+      "tools"
+    ]
+  },
+  "ollama_version": {
+    "version": "0.35.0"
+  },
+  "completion_observed_via": "Final test result: ok. in harness log; paused original coordinator replaced to insert sleep recovery.",
+  "exit_code": null,
+  "completion_observed_before": "2026-10-03T01:20:58.223075+00:00",
+  "elapsed_wall_upper_bound_seconds": 8665.706103,
+  "report_sha256": "e721dd9f1c2e2a35db8ccd98bafcbd256ed659038b322998d90f82da3a82970b"
+}

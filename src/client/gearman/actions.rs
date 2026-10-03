@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{ConnectContext, EventType};
 use crate::state::AppState;
 use anyhow::{bail, Result};
@@ -32,8 +33,8 @@ fn submitter() -> ActionDefinition {
         p("priority","string","normal/high/low; default normal",false),
         p("background","boolean","Submit without receiving worker updates; default false",false),
         p("job_handle","string","Handle from job_created for status",false),
-        p("data","string","Text for echo",false),
-    ],example:json!({"type":"gearman_request","operation":"submit","function_name":"reverse","workload":"hello"}),log_template:None}
+        p("data","string","UTF-8 text returned by the daemon for an echo request",false),
+    ],example:json!({"type":"gearman_request","operation":"submit","function_name":"reverse","workload":"hello"}),log_template: Some(LogTemplate::new().with_info("Gearman submitter operation {operation}"))}
 }
 fn worker() -> ActionDefinition {
     ActionDefinition{name:"gearman_worker".into(),description:"Selected worker role: advertise abilities, grab jobs, sleep until noop, and answer only handles assigned to this connection. No automatic completion.".into(),parameters:vec![
@@ -46,7 +47,7 @@ fn worker() -> ActionDefinition {
         p("data","string","UTF-8 intermediate data or warning",false),
         p("result","string","UTF-8 completion result",false),
         p("text","string","UTF-8 exception text; terminal outcome",false),
-    ],example:json!({"type":"gearman_worker","operation":"register","function_name":"reverse"}),log_template:None}
+    ],example:json!({"type":"gearman_worker","operation":"register","function_name":"reverse"}),log_template: Some(LogTemplate::new().with_info("Gearman worker operation {operation}"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -55,7 +56,9 @@ fn disconnect() -> ActionDefinition {
             .into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(
+            LogTemplate::new().with_info("Disconnect Gearman daemon and cancel pending work"),
+        ),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
@@ -71,7 +74,12 @@ pub static CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "gearman_connected",
         "Connected; submit a job or register worker abilities according to role.",
         vec![
-            p("remote_addr", "string", "Server address", true),
+            p(
+                "remote_addr",
+                "string",
+                "Gearman daemon TCP socket address",
+                true,
+            ),
             p("role", "string", "submitter or worker", true),
         ],
     )
@@ -90,7 +98,7 @@ pub static WAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 pub static ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    event("gearman_error","Server ERROR refusal. The connection closes because no request IDs safely correlate asynchronous worker errors.",vec![p("code","string","Protocol error code",true),p("description","string","Error text",true),p("request","object","Pending request if present; otherwise null",false)])
+    event("gearman_error","Server ERROR refusal. The connection closes because no request IDs safely correlate asynchronous worker errors.",vec![p("code","string","Protocol error code",true),p("description","string","Daemon explanation of the rejected request",true),p("request","object","Pending request if present; otherwise null",false)])
 });
 impl Protocol for GearmanClientProtocol {
     fn protocol_name(&self) -> &'static str {

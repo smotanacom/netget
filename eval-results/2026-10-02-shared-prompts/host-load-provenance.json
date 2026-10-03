@@ -1,0 +1,43 @@
+{
+  "limitation": "Full model phases share the host with serialized Rust build work; aggregate trial latency is descriptive, not a controlled performance benchmark.",
+  "known_overlap": [
+    {
+      "task": "Native combined-feature verification build",
+      "source": "b3c34e32",
+      "started_at": "2026-10-02T23:02:00+00:00",
+      "source_of_time": "Root agent reported 23:02 UTC; precision one minute."
+    }
+  ],
+  "queued_overlap": [
+    "Fresh WASM build",
+    "All-protocol release build"
+  ],
+  "replay_policy": "Acquire and hold .protocol-expansion-20261001/build.lock for all 36 replay requests, after both full model phases. No heavy task Rust build overlaps replay.",
+  "model_call_policy": "One full eval or one replay request at a time; root confirmed it makes no model calls.",
+  "additional_work": [
+    {
+      "source": "77a5bb8d",
+      "protocols": [
+        "GELF",
+        "Fluent Forward",
+        "NSQ client",
+        "HTTP3"
+      ],
+      "work": "Newer master integration plus serialized native and release verification",
+      "reported_at": "2026-10-03T00:00:49.471444+00:00",
+      "source_of_time": "Root agent message; work overlaps remaining full model phases. Exact build times are in the root verification logs."
+    },
+    {
+      "source": "4d879e52",
+      "work": "Native verification of upstream compiled features plus metadata-only fix",
+      "reported_at": "2026-10-03T00:14:58.565935+00:00",
+      "source_of_time": "Root agent reported native build active; exact start/end times are retained in its verification artifacts."
+    },
+    {
+      "source": "20a",
+      "work": "Native verification encountered raw QUIC multi-stream timeout; root is verifying a minimal fair-write-lock scheduling correction. Raw QUIC is outside the frozen historical eval matrix. Further serialized native and release builds may overlap the full after phase.",
+      "recorded_at": "2026-10-03T02:10:52.103758+00:00",
+      "source_of_time": "Root agent status message; exact compilation start and finish times are retained in root verification logs."
+    }
+  ]
+}

@@ -89,7 +89,7 @@ disabled its 20 000-level `depth_bomb` seed kills it with `SIGSEGV`.
   depth cap above is what bounds it, so it can only be reached 64 frames deep.
 
 Note the **client** side is a different story and is *not* safe: `src/client/xmlrpc/` uses the
-`xmlrpc` crate, whose parser recurses without a bound. See `src/client/xmlrpc/CLAUDE.md`.
+`xmlrpc` crate, whose parser recurses without a bound. See `src/client/xmlrpc/AGENTS.md`.
 
 ## Actions
 
@@ -198,7 +198,7 @@ integer conversion, returning `-32603`.
 
 - [XML-RPC Specification](http://xmlrpc.com/spec.md)
 - [quick-xml](https://docs.rs/quick-xml/)
-- Testing notes: `tests/server/xmlrpc/CLAUDE.md`
+- Testing notes: `tests/server/xmlrpc/AGENTS.md`
 
 ## Connection bounds
 
@@ -225,7 +225,7 @@ watchdog over `ConnectionActivity` instead, which reports a connection with work
 idle at all. The model round-trip, and an event a `manual` rule parked for a human
 (`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
 construction: an answer that takes minutes can never close the connection it is an answer for.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless

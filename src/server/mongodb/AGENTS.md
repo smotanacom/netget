@@ -251,7 +251,7 @@ short bound would close a pooled driver connection between operations.
 the top of the loop, *after* the previous message's LLM round-trip — or a `manual`
 rule parked for a human, 300 s by default — has finished, so no clock runs during
 that work and a long park cannot evict a live session. That is the TFTP eviction
-defect the project `CLAUDE.md` records, stated in reverse: what is bounded is a
+defect the project `AGENTS.md` records, stated in reverse: what is bounded is a
 peer holding a connection while saying nothing, never a server taking its time to
 answer. The `reason` reported on the disconnect event is `idle_timeout`.
 

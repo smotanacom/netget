@@ -42,4 +42,4 @@ automatic EDNS padding or session resumption policy.
 Experimental maturity: the independent server test drives official AdGuard
 dnsproxy (Go/quic-go/miekg-dns), with an isolated hosts file and no external
 resolver; other tests exercise netget's own server and explicit malformed QUIC
-peers. See `tests/client/doq/CLAUDE.md` for commands and evidence.
+peers. See `tests/client/doq/AGENTS.md` for commands and evidence.

@@ -388,7 +388,7 @@ has no arm for. This line used to read "Works with NetGet's WebRTC signaling ser
 
 ## Testing Strategy
 
-See `tests/client/webrtc/CLAUDE.md` for testing details.
+See `tests/client/webrtc/AGENTS.md` for testing details.
 
 Key challenges:
 - Requires two peers (NetGet + browser or two NetGet instances)
@@ -483,7 +483,7 @@ Test scenarios:
 
 The WebRTC client integrates with NetGet's WebRTC Signaling Server:
 
-**Server Protocol**: `webrtc_signaling` (see `src/server/webrtc_signaling/CLAUDE.md`)
+**Server Protocol**: `webrtc_signaling` (see `src/server/webrtc_signaling/AGENTS.md`)
 
 **Message Format**: JSON messages over WebSocket
 - Register: `{"type": "register", "peer_id": "alice"}`

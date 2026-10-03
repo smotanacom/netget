@@ -333,7 +333,7 @@ owns every read once `serve_connection` starts and keeps polling the connection 
 LLM round-trip. It watches `ConnectionActivity` instead, which reports a connection with work in
 flight as not idle at all — so the model round-trip, and a `manual` rule parking an event for a
 human (`src/state/intercepts.rs`, 300s by default), sit outside every deadline by construction.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse: TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse: TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **One residual, stated rather than hidden.** The first-byte bound is discharged the moment any

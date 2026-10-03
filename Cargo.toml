@@ -77,6 +77,7 @@ portable-base = [
     "loki",
     "ipfix",
     "netflow-v9",
+    "tacacs",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -143,6 +144,7 @@ portable-base = [
     "mcp",
     "grpc",
     "grpc-web",
+    "connect_rpc",
     "xmlrpc",
     "tor",
     "vnc",
@@ -257,6 +259,7 @@ influxdb = ["dep:flate2"] # Typed InfluxDB v2 HTTP write collector/emitter
 loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ipfix = [] # Native typed UDP IPFIX templates/options/records
 netflow-v9 = [] # Native RFC3954 v9 UDP templates/options/records
+tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -291,7 +294,7 @@ http_proxy = ["http-mitm-proxy", "dep:rcgen", "tokio-native-tls", "native-tls", 
 webdav = ["dep:reqwest_dav"]  # dav-server dropped: the server answers DAV verbs directly
 nfs = ["nfsserve", "dep:nfs3_client", "dep:nfs3_types"]
 cassandra = ["dep:cassandra-protocol", "tcp", "dep:scylla"]
-smb = ["smb-msg"]
+smb = []
 stun = ["dep:webrtc-stun", "dep:stunclient"]
 smb-client = ["smb", "pavao"]  # SMB client requires native libsmbclient library
 turn = ["dep:webrtc-turn"]
@@ -347,6 +350,7 @@ nostr = ["dep:tokio-tungstenite", "dep:secp256k1", "dep:sha2", "dep:rustls", "de
 mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 over HTTP/SSE)
 grpc = ["dep:tonic", "tonic/tls-webpki-roots", "dep:h2", "dep:rustls", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # Dynamic unary/streaming gRPC and bounded reflection
 grpc-web = ["grpc", "dep:tonic-web", "dep:flate2"] # Binary HTTP/1.1 unary and server-streaming binding
+connect_rpc = ["grpc", "dep:flate2"] # Binary HTTP/1.1 Connect unary and server-streaming binding
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
@@ -510,6 +514,7 @@ dist-windows = [
     "loki",
     "ipfix",
     "netflow-v9",
+    "tacacs",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -570,6 +575,7 @@ dist-windows = [
     "mcp",
     "grpc",
     "grpc-web",
+    "connect_rpc",
     "xmlrpc",
     "vnc",
     "reverse-shell",
@@ -665,6 +671,7 @@ all-protocols = [
     "loki",
     "ipfix",
     "netflow-v9",
+    "tacacs",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -735,6 +742,7 @@ all-protocols = [
     "mcp",
     "grpc",
     "grpc-web",
+    "connect_rpc",
     "xmlrpc",
     "tor",
     "vnc",
@@ -953,8 +961,7 @@ nfsserve = { version = "0.10", optional = true }
 # Cassandra/CQL server
 cassandra-protocol = { version = "3.3", optional = true }
 
-# SMB server (message parsing)
-smb-msg = { version = "0.10", optional = true }
+# SMB client (native libsmbclient wrapper; the server uses its own codec)
 pavao = { version = "0.2", optional = true }
 
 # STUN server (Session Traversal Utilities for NAT)

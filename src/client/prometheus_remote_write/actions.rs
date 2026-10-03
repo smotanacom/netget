@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -23,10 +24,10 @@ impl PrometheusRemoteWriteClientProtocol {
     }
 }
 pub fn write_action() -> ActionDefinition {
-    ActionDefinition { name:"write_remote_samples".into(), description:"Submit one typed published1.0 float-sample batch. Retry5xx/transport failures with backoff while connected;429 opt-in. Caller must preserve per-series order across batches and supply stale markers when appropriate.".into(), parameters:vec![parameter("batch","object","series[{labels:{name:nonempty UTF-8 value},samples:[{timestamp_ms:i64,value:finite number|nan|+inf|-inf|stale}]}]; empty series array is a v1 probe",true)], example:json!({"type":"write_remote_samples","batch":{"series":[{"labels":{"__name__":"example_temperature","site":"one"},"samples":[{"timestamp_ms":1700000000000i64,"value":21.5}]}]}}), log_template:None }
+    ActionDefinition { name:"write_remote_samples".into(), description:"Submit one typed published1.0 float-sample batch. Retry5xx/transport failures with backoff while connected;429 opt-in. Caller must preserve per-series order across batches and supply stale markers when appropriate.".into(), parameters:vec![parameter("batch","object","series[{labels:{name:nonempty UTF-8 value},samples:[{timestamp_ms:i64,value:finite number|nan|+inf|-inf|stale}]}]; empty series array is a v1 probe",true)], example:json!({"type":"write_remote_samples","batch":{"series":[{"labels":{"__name__":"example_temperature","site":"one"},"samples":[{"timestamp_ms":1700000000000i64,"value":21.5}]}]}}), log_template:Some(LogTemplate::new().with_info("Remote write action {type} queued")) }
 }
 fn disconnect() -> ActionDefinition {
-    ActionDefinition { name:"disconnect".into(),description:"Cancel logical session, pending exchange/backoff and parked handler; unsent volatile samples are lost".into(),parameters:vec![],example:json!({"type":"disconnect"}),log_template:None }
+    ActionDefinition { name:"disconnect".into(),description:"Cancel logical session, pending exchange/backoff and parked handler; unsent volatile samples are lost".into(),parameters:vec![],example:json!({"type":"disconnect"}),log_template:Some(LogTemplate::new().with_info("Remote write action {type} queued")) }
 }
 pub static REMOTE_WRITE_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -37,13 +38,13 @@ pub static REMOTE_WRITE_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| 
     .with_parameters(vec![parameter(
         "remote_addr",
         "string",
-        "HTTP origin",
+        "Collector HTTP origin address",
         true,
     )])
     .with_actions(vec![write_action(), disconnect()])
 });
 pub static REMOTE_WRITE_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("remote_write_response","Final HTTP outcome: any2xx accepted;4xx other than opted-in429 terminal.5xx retry until acceptance/cancellation. Response body ignored. No durability/exactly-once promise.",write_action().example).with_parameters(vec![parameter("series_count","number","Submitted series",true),parameter("sample_count","number","Submitted float samples",true),parameter("status","number","Terminal HTTP status",true),parameter("accepted","bool","Any2xx",true),parameter("attempts","number","HTTP attempts including retries",true),parameter("durable_storage_confirmed","bool","Always false; HTTP acceptance alone is insufficient",true)]).with_actions(vec![write_action(),disconnect()])
+    EventType::new("remote_write_response","Final HTTP outcome: any2xx accepted;4xx other than opted-in429 terminal.5xx retry until acceptance/cancellation. Response body ignored. No durability/exactly-once promise.",write_action().example).with_parameters(vec![parameter("series_count","number","Submitted series",true),parameter("sample_count","number","Submitted float samples",true),parameter("status","number","Terminal HTTP status",true),parameter("accepted","boolean","True for any terminal 2xx response; durability is unconfirmed",true),parameter("attempts","number","HTTP attempts including retries",true),parameter("durable_storage_confirmed","boolean","Always false; HTTP acceptance alone is insufficient",true)]).with_actions(vec![write_action(),disconnect()])
 });
 impl Protocol for PrometheusRemoteWriteClientProtocol {
     fn protocol_name(&self) -> &'static str {
@@ -101,7 +102,7 @@ impl Protocol for PrometheusRemoteWriteClientProtocol {
             },
             ParameterDefinition {
                 name: "retry_429".into(),
-                type_hint: "bool".into(),
+                type_hint: "boolean".into(),
                 description: "Retry429 like5xx while connected; otherwise429 is terminal".into(),
                 required: false,
                 example: json!(true),

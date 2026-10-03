@@ -23,7 +23,7 @@ whose `getlastmodified` is missing or not an HTTP date all fail here. A test tha
 
 ### `curl` (`real_client_test.rs`) — the second client
 
-**curl is a generic HTTP client and the root `CLAUDE.md` rules those out — for a protocol
+**curl is a generic HTTP client and the root `AGENTS.md` rules those out — for a protocol
 layered *on* HTTP.** `PROPFIND`, `MKCOL` and `COPY` are not HTTP verbs; `207 Multi-Status` is
 not an HTTP status; `Depth` and `Destination` are not HTTP headers; `DAV:multistatus` is not an
 HTTP document. All of those are RFC 4918's, which is the layer this server implements, so curl
@@ -146,7 +146,7 @@ why they are written and maintained as a pair. `wait_for_any` gates both asserti
 sleeps.
 
 Not covered here: the `LOCK` path, which always grants an unenforced lock and logs
-`decision=protocol_synthetic_lock` — see `src/server/webdav/CLAUDE.md` for why that stands.
+`decision=protocol_synthetic_lock` — see `src/server/webdav/AGENTS.md` for why that stands.
 
 ## Expected runtime
 

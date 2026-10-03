@@ -277,7 +277,7 @@ this code.
 - [webrtc-rs](https://docs.rs/webrtc/latest/webrtc/)
 - [WebRTC Data Channels (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Using_data_channels)
 - [Signalling and video calling (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Signaling_and_video_calling)
-- Tests and their rationale: `tests/server/webrtc/CLAUDE.md`
+- Tests and their rationale: `tests/server/webrtc/AGENTS.md`
 
 ## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
 

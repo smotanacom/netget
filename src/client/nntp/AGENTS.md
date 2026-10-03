@@ -223,7 +223,7 @@ LLM flow:
 
 ## Testing
 
-See `tests/client/nntp/CLAUDE.md` for testing strategy.
+See `tests/client/nntp/AGENTS.md` for testing strategy.
 
 ## References
 

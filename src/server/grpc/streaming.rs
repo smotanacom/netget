@@ -104,7 +104,7 @@ pub(super) struct DeadlineGuard {
 impl DeadlineGuard {
     /// HTTP/1 can continue draining an unfinished request after a timeout response
     /// reaches body EOS. Its expired hard timer must still cancel that connection owner.
-    #[cfg(feature = "grpc-web")]
+    #[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
     pub(super) fn retain_expired(mut self) -> Self {
         self.retain_expired = true;
         self
@@ -142,7 +142,7 @@ impl hyper::body::Body for BodyGuard {
     }
 }
 
-pub(super) fn timeout(headers: &hyper::HeaderMap, maximum: Duration) -> Result<Duration, Status> {
+pub(crate) fn timeout(headers: &hyper::HeaderMap, maximum: Duration) -> Result<Duration, Status> {
     let mut values = headers.get_all("grpc-timeout").iter();
     let Some(value) = values.next() else {
         return Ok(maximum);
@@ -307,7 +307,14 @@ impl tonic::server::StreamingService<DynamicMessage> for Handler {
                     },
                 );
             }
+            #[cfg(feature = "connect_rpc")]
+            let http_metadata = request
+                .extensions()
+                .get::<crate::server::connect_rpc::wire::RpcMetadata>()
+                .cloned();
             let state = Controller {
+                #[cfg(feature = "connect_rpc")]
+                http_metadata,
                 service,
                 connection,
                 method,
@@ -337,6 +344,8 @@ impl tonic::server::StreamingService<DynamicMessage> for Handler {
 }
 
 struct Controller {
+    #[cfg(feature = "connect_rpc")]
+    http_metadata: Option<crate::server::connect_rpc::wire::RpcMetadata>,
     service: Arc<DynamicGrpcService>,
     connection: crate::server::connection::ConnectionId,
     method: MethodDescriptor,
@@ -366,7 +375,13 @@ impl Controller {
             return Err(Status::resource_exhausted("stream exceeds event limit"));
         }
         self.event_count += 1;
-        let event = crate::protocol::Event::new(
+        #[cfg(feature = "connect_rpc")]
+        let kind = if self.http_metadata.is_some() {
+            crate::server::connect_rpc::actions::event_type(&kind.id).unwrap_or(kind)
+        } else {
+            kind
+        };
+        let mut event = crate::protocol::Event::new(
             kind,
             json!({
                 "stream_id": self.id, "service": self.method.parent_service().full_name(), "method": self.method.name(),
@@ -375,6 +390,10 @@ impl Controller {
                 "expected_response_schema": DynamicGrpcService::build_message_schema(&self.method.output()),
             }),
         );
+        #[cfg(feature = "connect_rpc")]
+        if let Some(metadata) = &self.http_metadata {
+            event.data["metadata"] = metadata.request.clone();
+        }
         let service = self.service.clone();
         let connection = self.connection;
         self.handler = Some(
@@ -446,6 +465,18 @@ impl Controller {
         for action in actions {
             match action {
                 crate::llm::ActionResult::Custom { name, data } => match name.as_str() {
+                    #[cfg(feature = "connect_rpc")]
+                    "connect_rpc_metadata" => {
+                        usable = true;
+                        self.http_metadata
+                            .as_ref()
+                            .ok_or_else(|| {
+                                Status::invalid_argument(
+                                    "Connect metadata requires Connect transport",
+                                )
+                            })?
+                            .apply(&data)?;
+                    }
                     "grpc_stream_send" => {
                         usable = true;
                         let message =

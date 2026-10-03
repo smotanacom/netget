@@ -6,14 +6,14 @@ Tools gather information and return results to you. After a tool completes, you'
 **CRITICAL: Only use tools listed below. Do NOT invent or hallucinate tool names.**
 
 {{#each tool_actions}}
-## {{@index}}. {{this.name}}
+## {{@index}}. {{{this.name}}}
 
 {{{this.description}}}
 
 {{#if this.parameters}}
 Parameters:
 {{#each this.parameters}}
-- `{{@key}}` ({{this.type}}{{#if this.required}}, required{{/if}}): {{{this.description}}}
+- `{{{@key}}}` ({{{this.type}}}{{#if this.required}}, required{{/if}}): {{{this.description}}}
 {{/each}}
 {{/if}}
 
@@ -31,23 +31,29 @@ Example:
 # Available Actions
 
 Include actions in your JSON response to execute operations.
-You will see past actions you have executed on previous invocation, actions are not idempotent.
-Unless tools are also included, you will not be invoked again if you only return actions
-so you may include multiple actions in a single response.
+Include every action you want executed, in order, in one final response.
+{{#if tool_actions}}
+A response containing tools is an intermediate round: its actions are drafts and
+are not executed. Read the tool results, then return your final actions without tools.
+{{else}}
+Your response completes this event; you will not be invoked again to add more actions.
+{{/if}}
 
 **CRITICAL: Only use actions listed below. Do NOT invent or hallucinate action names.**
-If an action you need is not listed, use `read_documentation` tool to learn about protocol-specific actions.
+{{#if tool_actions}}
+Only use the tools listed above to gather any additional information you need.
+{{/if}}
 Unknown actions will be rejected and you will be asked to retry.
 
 {{#each regular_actions}}
-## {{@index}}. {{this.name}}
+## {{@index}}. {{{this.name}}}
 
 {{{this.description}}}
 
 {{#if this.parameters}}
 Parameters:
 {{#each this.parameters}}
-- `{{@key}}` ({{this.type}}{{#if this.required}}, required{{/if}}): {{{this.description}}}
+- `{{{@key}}}` ({{{this.type}}}{{#if this.required}}, required{{/if}}): {{{this.description}}}
 {{/each}}
 {{/if}}
 

@@ -309,7 +309,7 @@ must be `Disconnected` and leave the client with no command handle.
 
 The peer is a ~40-line in-test HTTP/1.1 stub, not NetGet's own DoH server: that server is
 TLS-only with a self-signed certificate and this client builds a default `reqwest::Client`,
-which correctly refuses it (see `src/client/doh/CLAUDE.md`). The stub echoes the POSTed body
+which correctly refuses it (see `src/client/doh/AGENTS.md`). The stub echoes the POSTed body
 back — a DNS query message is itself a well-formed DNS message — so the client parses a real
 response (zero answers, `NoError`) and the request counter proves exactly one query left the
 process.

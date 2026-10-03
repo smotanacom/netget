@@ -209,7 +209,7 @@ Implement SMTP+STARTTLS, IMAP+STARTTLS, or custom protocols:
 
 ## Testing Strategy
 
-See `tests/client/tls/CLAUDE.md` for E2E testing approach.
+See `tests/client/tls/AGENTS.md` for E2E testing approach.
 
 ## Example Prompts
 

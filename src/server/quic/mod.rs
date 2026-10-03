@@ -201,10 +201,14 @@ impl QuicServer {
             tokio::select! {
                 result=connection.0.accept_bi(),if work.len()<MAX_STREAMS=>{
                     let Ok((send,recv))=result else{break;};
-                    let stream_id=ConnectionId::new(app_state.get_next_unified_id().await);
+                    tracing::trace!(stream = %recv.id(), "QUIC stream accepted");
                     let stream_map=streams.clone();let llm=llm_client.clone();let state=app_state.clone();let status=status_tx.clone();let proto=protocol.clone();
                     let stopped=send.stopped();
                     work.push(async move {
+                        // A sibling stream may already be queued for the fair AppState
+                        // lock. Awaiting it in the accept branch would stop polling that
+                        // sibling forever; keep all stream state waits in the collection.
+                        let stream_id=ConnectionId::new(state.get_next_unified_id().await);
                         tokio::select! {
                             _=stopped=>{},
                             _=tokio::time::timeout(EXCHANGE_TIMEOUT,Self::handle_stream_with_actions(stream_id,connection_id,server_id,send,recv,llm,state,status,stream_map.clone(),proto))=>{}

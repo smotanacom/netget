@@ -55,7 +55,7 @@ if let Ok(ip) = host.parse::<std::net::IpAddr>() {
 
 **It was built per request**, plus one more at connect that was bound to `_http_client` and
 dropped immediately — both on the async runtime. Three things that cost, all recorded in
-root `CLAUDE.md` as measured rather than theoretical:
+root `AGENTS.md` as measured rather than theoretical:
 
 - `Client::builder().build()` sets up the rustls stack and loads the platform root store;
   on macOS that reads the keychain through Security.framework, synchronously and serialised
@@ -194,9 +194,9 @@ HTTP/2 uses binary framing:
 
 ## Testing Strategy
 
-See `tests/client/http2/CLAUDE.md` for full testing documentation.
+See `tests/client/http2/AGENTS.md` for full testing documentation.
 
-**Test servers:** none external. Root `CLAUDE.md` forbids tests contacting outside
+**Test servers:** none external. Root `AGENTS.md` forbids tests contacting outside
 endpoints; the suite points this client at NetGet's own HTTP/2 server on loopback. The
 public servers this section used to list (`http2.golang.org`, `nghttp2.org`) are also all
 TLS, which `http2_prior_knowledge()` cannot reach — see Limitations.

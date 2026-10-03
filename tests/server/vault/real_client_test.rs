@@ -30,20 +30,11 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 pub const FIXTURE_TOKEN: &str = "hvs.netget-fixture-token";
 
 pub fn require_tool(name: &str) -> String {
-    let configured_path = std::env::var_os("PATH").unwrap_or_default();
-    let prefixes = std::env::split_paths(&configured_path).chain(
-        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
-            .into_iter()
-            .map(std::path::PathBuf::from),
-    );
-    for prefix in prefixes {
-        let candidate = prefix.join(name);
-        if candidate.is_file() {
-            return candidate.to_string_lossy().into_owned();
-        }
+    if let Some(candidate) = crate::helpers::real_server::find_binary(name) {
+        return candidate.to_string_lossy().into_owned();
     }
     panic!(
-        "`{name}` was not found (searched PATH, /opt/homebrew/bin, /usr/local/bin, /usr/bin). These \
+        "`{name}` was not found on PATH or in the usual install directories. These \
          tests drive HashiCorp's own vault CLI against NetGet's Vault server, and that is the \
          only independent check that its KV v2 preflight, paths and envelopes are what a real \
          client expects. Skipping would leave the Vault server's maturity rating resting on \

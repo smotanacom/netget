@@ -29,7 +29,7 @@ unknown-action error and the transfer stalled at block 1.
 The fix is that `get_async_actions()` returns **every** action, sync ones included. The RIP
 client already did this; it reads like duplication and is load-bearing. This is the
 client-side twin of the "declared but unreachable" server defect described in the root
-`CLAUDE.md`, and unlike the server case there is no test guarding it across all clients —
+`AGENTS.md`, and unlike the server case there is no test guarding it across all clients —
 `tests/event_action_declarations_test.rs` walks the *server* registry only.
 
 ## Flow

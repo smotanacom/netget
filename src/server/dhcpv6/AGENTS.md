@@ -204,7 +204,7 @@ Beta means "works against real clients". No real DHCPv6 client can be pointed at
 So the E2E peer is an **RFC 8415 encoder/decoder written in the test file** — an independent
 reading of the spec, not an independent implementation. It deliberately does not use `dhcproto`,
 because that is the codec this server encodes with, and a test that decodes with the same library
-it encoded with asserts only that the library round-trips with itself. The root `CLAUDE.md` names
+it encoded with asserts only that the library round-trips with itself. The root `AGENTS.md` names
 that failure mode (see the `rss` entry, which was Experimental for exactly this reason until an
 independent parser replaced the circular one).
 

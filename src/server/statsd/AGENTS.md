@@ -52,4 +52,4 @@ underscores and periods. Restrictive validation is not a claim to accept every S
 References: [Datadog wire format](https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/),
 [StatsD reference implementation](https://github.com/statsd/statsd),
 [Datadog Python emitter](https://github.com/DataDog/datadogpy).
-Evidence and commands: `tests/server/statsd/CLAUDE.md`.
+Evidence and commands: `tests/server/statsd/AGENTS.md`.

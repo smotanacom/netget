@@ -83,7 +83,7 @@ connection, `run_query` opens a fresh one, and the answer raises `finger_respons
 
 The WHOIS client next door made the opposite trade: its follow-up raises no event, which keeps
 the future non-recursive but makes the chain exactly one step deep. Depth-bounded recursion is
-the better answer and is what the root `CLAUDE.md` prescribes.
+the better answer and is what the root `AGENTS.md` prescribes.
 
 ## The model's answer is executed, never counted
 
@@ -134,7 +134,7 @@ field.
 
 Rated `Experimental` on the evidence, not on the code quality. The round-trip test's peer is
 **NetGet's own Finger server**, which is *same-project evidence*: it shows the two halves agree,
-not that either matches RFC 1288. That is the circular-evidence class the root `CLAUDE.md` names
+not that either matches RFC 1288. That is the circular-evidence class the root `AGENTS.md` names
 (`webrtc_signaling`, and `websocket` before it hand-wrote a raw RFC 6455 client).
 
 **Beta needs one run against a real finger daemon on loopback.** Unlike the server's

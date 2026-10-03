@@ -199,7 +199,7 @@ loop has already left the header-reading phase. The handle is removed on every l
 
 ## Testing Strategy
 
-See `tests/client/http_proxy/CLAUDE.md` for testing details.
+See `tests/client/http_proxy/AGENTS.md` for testing details.
 
 ## Example Prompts
 

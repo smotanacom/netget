@@ -66,8 +66,10 @@ probe_dir.mkdir(exist_ok=True)
 def available(name, code):
     # Match the prerequisite type include used by upstream configure's header probes.
     # Linux libpcap BPF headers refer to u_int/u_short supplied by sys/types.h.
+    # BPF probes already enable feature macros before their prerequisite types.
+    prefix = '' if code.startswith('#define _DEFAULT_SOURCE\n') else '#include <sys/types.h>\n'
     result = subprocess.run([cc, '-x', 'c', '-o', str(probe_dir / name), '-'],
-                            input='#include <sys/types.h>\n' + code + '\nint main(void){return 0;}\n',
+                            input=prefix + code + '\nint main(void){return 0;}\n',
                             text=True, capture_output=True)
     (probe_dir / (name + '.log')).write_text(result.stdout + result.stderr)
     return result.returncode == 0
@@ -76,9 +78,12 @@ defines = ['FLOW_RB', 'EXPIRY_RB', 'ENABLE_LEGACY', 'HAVE_INTTYPES_H',
            'HAVE_INT8_T', 'HAVE_INT16_T', 'HAVE_INT32_T', 'HAVE_INT64_T',
            'HAVE_U_INT8_T', 'HAVE_U_INT16_T', 'HAVE_U_INT32_T', 'HAVE_U_INT64_T',
            'HAVE_STRSEP', 'HAVE_SETREUID', 'HAVE_SETREGID', 'HAVE_SYSCONF']
+# Match pinned upstream common.h: Linux BPF declarations need the BSD integer
+# typedefs from sys/types.h before their header, with _DEFAULT_SOURCE enabled.
+bpf_prerequisites = '#define _DEFAULT_SOURCE\n#include <sys/types.h>\n'
 for flag, code in [
-    ('HAVE_NET_BPF_H', '#include <net/bpf.h>'),
-    ('HAVE_PCAP_BPF_H', '#include <pcap-bpf.h>'),
+    ('HAVE_NET_BPF_H', bpf_prerequisites + '#include <net/bpf.h>'),
+    ('HAVE_PCAP_BPF_H', bpf_prerequisites + '#include <pcap-bpf.h>'),
     ('SOCK_HAS_LEN', '#include <sys/socket.h>\n_Static_assert(sizeof(((struct sockaddr*)0)->sa_len)>0,"sa_len");'),
     ('HAVE_STRUCT_IP6_EXT', '#include <netinet/ip6.h>\n_Static_assert(sizeof(struct ip6_ext)>0,"ip6_ext");'),
     ('HAVE_DAEMON', '#include <unistd.h>\nvoid *f=(void*)&daemon;'),

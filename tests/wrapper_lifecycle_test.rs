@@ -11,7 +11,7 @@ use netget_wrapper::NetGetWrapper;
 use std::time::Duration;
 
 async fn start_fixture(path: std::path::PathBuf) -> (NetGetWrapper, u32) {
-    let mut wrapper = NetGetWrapper::with_binary(path);
+    let mut wrapper = NetGetWrapper::with_script(path);
     wrapper
         .start("unused-fixture-argument", vec![])
         .await
@@ -69,5 +69,17 @@ async fn cancelling_stop_keeps_child_owned_until_wrapper_drop() {
         "cancelled stop must retain the child in its wrapper"
     );
     drop(wrapper);
+    fixture::assert_reaped(pid).await;
+}
+
+#[tokio::test]
+async fn writable_fixture_is_interpreted_and_its_exact_child_is_reaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fixture::inert_script(dir.path(), true);
+    // An open writer makes direct execution fail with ETXTBSY on Linux. The
+    // shell reads the script as data; it remains the wrapper's exact owned child.
+    let _writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let (mut wrapper, pid) = start_fixture(path).await;
+    wrapper.stop().await.unwrap();
     fixture::assert_reaped(pid).await;
 }

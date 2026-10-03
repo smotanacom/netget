@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -23,7 +24,7 @@ impl InfluxDbClientProtocol {
     }
 }
 pub fn write_action() -> ActionDefinition {
-    ActionDefinition {name:"write_influx_points".into(),description:"Submit one typed InfluxDB v2 batch. Completion reports HTTP status; 204 is handler acceptance, not durable storage. No automatic retries.".into(),parameters:vec![parameter("batch","object","org,bucket,precision ns/us/ms/s(default ns),points(1..256) with measurement,tags,fields typed {type:float/integer/unsigned/boolean/string,value},optional timestamp;gzip(default false)",true)],example:json!({"type":"write_influx_points","batch":{"org":"example","bucket":"metrics","points":[{"measurement":"cpu","tags":{"host":"localhost"},"fields":{"load":{"type":"float","value":0.42}},"timestamp":1700000000000000000i64}]}}),log_template:None}
+    ActionDefinition {name:"write_influx_points".into(),description:"Submit one typed InfluxDB v2 batch. Completion reports HTTP status; 204 is handler acceptance, not durable storage. No automatic retries.".into(),parameters:vec![parameter("batch","object","org,bucket,precision ns/us/ms/s(default ns),points(1..256) with measurement,tags,fields typed {type:float/integer/unsigned/boolean/string,value},optional timestamp;gzip(default false)",true)],example:json!({"type":"write_influx_points","batch":{"org":"example","bucket":"metrics","points":[{"measurement":"cpu","tags":{"host":"localhost"},"fields":{"load":{"type":"float","value":0.42}},"timestamp":1700000000000000000i64}]}}),log_template: Some(LogTemplate::new().with_info("Submit typed InfluxDB write batch"))}
 }
 fn disconnect_action() -> ActionDefinition {
     ActionDefinition {
@@ -32,7 +33,9 @@ fn disconnect_action() -> ActionDefinition {
             .into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(
+            LogTemplate::new().with_info("Cancel InfluxDB write session and active exchange"),
+        ),
     }
 }
 pub static INFLUX_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -44,13 +47,13 @@ pub static INFLUX_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_parameters(vec![parameter(
         "remote_addr",
         "string",
-        "HTTP origin",
+        "Configured HTTP origin for InfluxDB writes",
         true,
     )])
     .with_actions(vec![write_action(), disconnect_action()])
 });
 pub static INFLUX_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("influx_write_response","Typed HTTP v2 write outcome. 204 is acceptance; error contains code/message and optional partial counts/source line. Tokens/raw bodies are excluded; retry advice does not trigger retries.",write_action().example).with_parameters(vec![parameter("org","string","Submitted organization",true),parameter("bucket","string","Submitted bucket",true),parameter("point_count","number","Submitted points",true),parameter("status","number","HTTP status",true),parameter("error","object|null","Typed code,message,optional line/accepted_points/rejected_points",true),parameter("retry_after_seconds","number|null","Numeric retry advice",true)]).with_actions(vec![write_action(),disconnect_action()])
+    EventType::new("influx_write_response","Typed HTTP v2 write outcome. 204 is acceptance; error contains code/message and optional partial counts/source line. Tokens/raw bodies are excluded; retry advice does not trigger retries.",write_action().example).with_parameters(vec![parameter("org","string","Submitted organization",true),parameter("bucket","string","Submitted bucket",true),parameter("point_count","number","Submitted points",true),parameter("status","number","HTTP status returned for the submitted write batch",true),parameter("error","object|null","Typed code,message,optional line/accepted_points/rejected_points",true),parameter("retry_after_seconds","number|null","Numeric retry advice",true)]).with_actions(vec![write_action(),disconnect_action()])
 });
 impl Protocol for InfluxDbClientProtocol {
     fn protocol_name(&self) -> &'static str {

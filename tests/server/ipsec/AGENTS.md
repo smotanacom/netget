@@ -409,4 +409,4 @@ async fn test_ipsec_nat_t() {
 - [RFC 2409 - IKEv1](https://datatracker.ietf.org/doc/html/rfc2409)
 - [RFC 4301 - IPSec Architecture](https://datatracker.ietf.org/doc/html/rfc4301)
 - [RFC 4303 - ESP](https://datatracker.ietf.org/doc/html/rfc4303)
-- [NetGet IPSec Implementation](../../../src/server/ipsec/CLAUDE.md)
+- [NetGet IPSec Implementation](../../../src/server/ipsec/AGENTS.md)

@@ -138,7 +138,7 @@ LLMs can construct structured requests and interpret JSON/text responses.
 ### The reqwest client is built once per host, on `spawn_blocking`
 
 `HttpClient::http_client(url)` returns a cached `reqwest::Client`, keyed by host. Three
-things depend on that, and all three are recorded in root `CLAUDE.md` as measured:
+things depend on that, and all three are recorded in root `AGENTS.md` as measured:
 
 - `Client::builder().build()` sets up the rustls stack and loads the platform root store.
   On macOS that reads the keychain through Security.framework — synchronous and serialised
@@ -166,7 +166,7 @@ bypass. The override itself is four lines here rather than a call to
 response and asks for another request gets the *result* of that request reported back to it,
 up to four exchanges deep. It used to stop after one hop — the follow-up ran through a
 deliberately non-notifying path — which is the "run through a deliberately non-notifying
-path" defect root `CLAUDE.md` lists under known systemic issues. The fix is the one that
+path" defect root `AGENTS.md` lists under known systemic issues. The fix is the one that
 file prescribes: box the recursive future with an explicit `+ Send` (it is awaited inside a
 `tokio::spawn`) and cap the depth.
 
@@ -271,7 +271,7 @@ status_tx.send("[CLIENT] HTTP request sent");                          // → TU
 
 ## Testing Strategy
 
-See `tests/client/http/CLAUDE.md` for E2E testing approach.
+See `tests/client/http/AGENTS.md` for E2E testing approach.
 
 ## Future Enhancements
 
@@ -307,8 +307,8 @@ that in fact succeeded. `make_request` is unchanged for callers; it is now
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/http/real_server_test.rs` (see `tests/client/http/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/http/real_server_test.rs` (see `tests/client/http/AGENTS.md`):
 
 1. **Real third-party server** — nginx (C, its own HTTP parser); NetGet's side is reqwest/hyper, so no code is shared.
 2. **Fails rather than skips** — a missing `nginx` is a test failure naming the brew formula and the

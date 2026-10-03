@@ -119,5 +119,5 @@ RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features ospf --
 ## References
 
 - RFC 2328 - OSPFv2
-- `src/server/ospf/CLAUDE.md` - Implementation details
+- `src/server/ospf/AGENTS.md` - Implementation details
 - `tests/README.md` - Test framework documentation

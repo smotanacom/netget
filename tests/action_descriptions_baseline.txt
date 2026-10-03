@@ -65,7 +65,6 @@ desc/param/client:etcd/etcd_delete/key
 desc/param/client:etcd/etcd_put/key
 desc/param/client:etcd/etcd_put/value
 desc/param/client:Git/git_create_tag/name
-desc/param/client:gRPC/call_grpc_method/method
 desc/param/client:HTTP Proxy/establish_tunnel/target_port
 desc/param/client:HTTP Proxy/send_http_request/body
 desc/param/client:HTTP Proxy/send_http_request/headers
@@ -77,9 +76,6 @@ desc/param/client:HTTP/send_http_request/path
 desc/param/client:HTTP2/send_http2_request/body
 desc/param/client:HTTP2/send_http2_request/method
 desc/param/client:HTTP2/send_http2_request/path
-desc/param/client:HTTP3/send_http3_request/body
-desc/param/client:HTTP3/send_http3_request/method
-desc/param/client:HTTP3/send_http3_request/path
 desc/param/client:ICMP/icmp_connected/event_data/local_addr
 desc/param/client:JSON-RPC/send_jsonrpc_request/id
 desc/param/client:Kafka/commit_offset/topic
@@ -233,8 +229,6 @@ desc/param/server:FINGER/finger_query/action/send_finger_user/login
 desc/param/server:FINGER/finger_query/action/send_finger_user/name
 desc/param/server:FINGER/send_finger_user/login
 desc/param/server:FINGER/send_finger_user/name
-desc/param/server:gRPC/grpc_error/message
-desc/param/server:gRPC/grpc_unary_request/action/grpc_error/message
 desc/param/server:HTTP2/http2_request/event_data/uri
 desc/param/server:IMAP/imap_auth/event_data/tag
 desc/param/server:IMAP/imap_command/action/send_imap_status/mailbox
@@ -580,9 +574,6 @@ log_template/client:Git/git_log
 log_template/client:Git/git_pull
 log_template/client:Git/git_push
 log_template/client:Git/git_status
-log_template/client:gRPC/call_grpc_method
-log_template/client:gRPC/disconnect
-log_template/client:gRPC/wait_for_more
 log_template/client:HTTP Proxy/disconnect
 log_template/client:HTTP Proxy/establish_tunnel
 log_template/client:HTTP Proxy/send_data
@@ -594,9 +585,6 @@ log_template/client:HTTP/wait_for_more
 log_template/client:HTTP2/disconnect
 log_template/client:HTTP2/send_http2_request
 log_template/client:HTTP2/wait_for_more
-log_template/client:HTTP3/disconnect
-log_template/client:HTTP3/send_http3_request
-log_template/client:HTTP3/wait_for_more
 log_template/client:ICMP/disconnect
 log_template/client:ICMP/icmp_echo_reply/action/disconnect
 log_template/client:ICMP/icmp_echo_reply/action/send_echo_request
@@ -917,9 +905,6 @@ log_template/client:SSH Agent/remove_identity
 log_template/client:SSH Agent/request_identities
 log_template/client:SSH Agent/sign_request
 log_template/client:SSH Agent/wait_for_more
-log_template/client:SSH/disconnect
-log_template/client:SSH/execute_command
-log_template/client:SSH/wait_for_more
 log_template/client:STOMP/disconnect
 log_template/client:STOMP/send_stomp_ack
 log_template/client:STOMP/send_stomp_nack

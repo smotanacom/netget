@@ -426,5 +426,5 @@ netget --mcp-http 8080          # serves MCP at http://127.0.0.1:8080/mcp
 MCP control rejects action names outside the offered vocabulary. Protocol action
 executors own parameter semantics and types; `check_action_types` is deliberately
 not a universal JSON-Schema validator. Script handlers are trusted local code,
-with the resource/cleanup rules described in `src/scripting/CLAUDE.md`; remote
+with the resource/cleanup rules described in `src/scripting/AGENTS.md`; remote
 untrusted script execution is outside this control interface's trust model.

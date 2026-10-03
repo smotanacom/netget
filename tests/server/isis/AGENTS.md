@@ -273,5 +273,5 @@ cargo test --features isis --test server::isis::e2e_test -- --ignored
 
 - IS-IS Protocol: ISO/IEC 10589, RFC 1195
 - Test implementation: `tests/server/isis/e2e_test.rs`
-- Server implementation: `src/server/isis/CLAUDE.md`
+- Server implementation: `src/server/isis/AGENTS.md`
 - pcap documentation: https://www.tcpdump.org/

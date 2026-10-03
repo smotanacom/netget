@@ -50,7 +50,7 @@ decode the reports.
 
 Every test waits for `"USB mouse LLM call completed for connection"` before reading reports:
 the attach event follows the peer's `OP_REQ_IMPORT`, not the TCP accept — a bare
-connect costs no model call at all (see `src/server/usb/CLAUDE.md` and
+connect costs no model call at all (see `src/server/usb/AGENTS.md` and
 `tests/server/usb_keyboard/attach_on_import_test.rs`), so the log line is the only
 signal that the import has been answered.
 `read_reports` then polls the IN endpoint the way a host does, with a 10s ceiling so a device

@@ -117,6 +117,8 @@ pub mod git;
 pub use git::actions::GitClientProtocol;
 
 // grpc client
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc-web")]
@@ -694,6 +696,9 @@ pub mod nostr;
 
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
+
+#[cfg(feature = "tacacs")]
+pub mod tacacs;
 
 #[cfg(feature = "bolt")]
 pub mod bolt;

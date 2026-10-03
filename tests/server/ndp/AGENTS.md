@@ -12,7 +12,7 @@ are:
 |---|---|---|
 | `codec_test.rs` | yes | The packet format, against literal RFC 4861 / 4443 / 8200 / 8106 / 4291 bytes |
 | `e2e_test.rs` | yes | The whole event → handler/LLM → action → message path, over the UDP test transport |
-| — | — | **Nothing here proves anything about the raw ICMPv6 socket.** See `src/server/ndp/CLAUDE.md`. |
+| — | — | **Nothing here proves anything about the raw ICMPv6 socket.** See `src/server/ndp/AGENTS.md`. |
 
 **LLM budget: 1 call.** One test uses a mock Ollama; every other test either uses a static handler
 (no call by construction) or points the client at `127.0.0.1:1` so that the outcome *proves* no
@@ -29,7 +29,7 @@ call succeeded.
 
 Every expected byte string is written out literally and derived from the published layout, **not
 from the implementation**. Round-tripping the encoder through the decoder would prove only that
-one function inverts the other, which the root `CLAUDE.md` names as circular evidence; it appears
+one function inverts the other, which the root `AGENTS.md` names as circular evidence; it appears
 here exactly once, as the last test in the file, explicitly labelled as a consistency check and
 not as the argument.
 
@@ -41,7 +41,7 @@ Sources are named in the file header: RFC 4861 §4.1–4.6 and §11.2, RFC 4443 
 Each expected checksum was produced by an **independent** one's-complement implementation written
 directly from RFC 8200 §8.1 — the pseudo-header laid out by hand, next header 58, upper-layer
 length as a 32-bit field — and embedded as a literal. That is the same class of evidence
-`CLAUDE.md` accepts for BGP (netgauze) and Kafka (kafka-protocol): an independent reading of the
+`AGENTS.md` accepts for BGP (netgauze) and Kafka (kafka-protocol): an independent reading of the
 spec rather than an independent implementation, since no third-party crate here speaks NDP.
 
 Because "independent implementation, same author" is a weaker claim than it sounds,
@@ -144,5 +144,5 @@ Everything past the codec on the real transport:
   a peer would actually see there is unverified.
 
 A green run here means "the bytes are right and the failure discipline is honest". It does not
-mean NDP works. `src/server/ndp/CLAUDE.md` records the `feth`-pair experiment — with `rdisc6`,
+mean NDP works. `src/server/ndp/AGENTS.md` records the `feth`-pair experiment — with `rdisc6`,
 `ndp -a` and a real stack's SLAAC as the peer — that would change that, and it has not been run.

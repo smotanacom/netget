@@ -93,7 +93,7 @@ echo), and it is a deliberate improvement:
 - It removes the failure mode where a static handler is useless because it cannot echo a random
   identifier. Static and script handlers work fine for CoAP.
 
-The consequence for tests is spelled out in `tests/server/coap/CLAUDE.md`: the mocks still use
+The consequence for tests is spelled out in `tests/server/coap/AGENTS.md`: the mocks still use
 `respond_with_actions_from_event()`, but what they derive dynamically is the **path**, and the
 message-id/token echo is asserted directly against `coap-lite`-decoded replies instead.
 
@@ -330,7 +330,7 @@ says a valid PIN was presented in the last 30 seconds; otherwise 4.01.
 
 ## Maturity: the six conditions
 
-The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against source on
+The root `AGENTS.md` defines `Stable` as six conditions. Re-derived against source on
 16 September 2026 rather than inherited. All six hold, one of them only after a repair:
 
 | # | condition | holds? |
@@ -339,7 +339,7 @@ The root `CLAUDE.md` defines `Stable` as six conditions. Re-derived against sour
 | 2 | the pcap oracle is green over its wire traffic | **yes** — `e2e_test.rs::exchange` runs `PcapOracle::udp("coap")` over every datagram in both directions |
 | 3 | a fuzz target exists and has run clean, with a corpus | **yes, as of this pass** — 292,391 runs in 91s, clean; see below |
 | 4 | every declared bound has a test | **yes, as of this pass** — `bounds_test.rs`, each verified by removal |
-| 5 | both `CLAUDE.md` files verified against source in this pass | **yes** — this file and `tests/server/coap/CLAUDE.md` |
+| 5 | both `AGENTS.md` files verified against source in this pass | **yes** — this file and `tests/server/coap/AGENTS.md` |
 | 6 | no `#[ignore]`, no skip-when-missing gate | **yes** — `grep -rn '#\[ignore\]' tests/server/coap/` is empty |
 
 **Condition 3 was false until this pass, and how it broke is the useful part.**
@@ -388,7 +388,7 @@ Confirmable retransmission, separate responses and deduplication — with the ex
 kept on the client side, so nothing in this file's surface changed. Pointed at this server the
 client simply never sees a Block2 or Observe option, and a `coap_observe` is answered as a
 plain GET (`observing: false`). Its evidence is libcoap's `coap-server`, not this server; see
-`tests/client/coap/CLAUDE.md`.
+`tests/client/coap/AGENTS.md`.
 
 ## References
 

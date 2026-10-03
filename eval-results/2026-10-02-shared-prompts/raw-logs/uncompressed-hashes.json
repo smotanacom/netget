@@ -1,0 +1,18 @@
+{
+  "raw-logs/before.log.gz": {
+    "uncompressed_sha256": "3c2bbfa9b61b7db04681b3cf147f75e4d249c6849e394a21e4ce0297a972ff7c",
+    "uncompressed_bytes": 4321705
+  },
+  "raw-logs/before-continuation.log.gz": {
+    "uncompressed_sha256": "ea37ccd3c243ad23c0b31581af012f5b2a8a6c55a412f8ad40bc9c9c0ead328f",
+    "uncompressed_bytes": 9884554
+  },
+  "raw-logs/before-sleep-recovery.log.gz": {
+    "uncompressed_sha256": "2c8968d5bf0b6bad85b6ce39191d62dd0ee738c99485024f15473b9400d28d15",
+    "uncompressed_bytes": 661827
+  },
+  "raw-logs/after-live.log.gz": {
+    "uncompressed_sha256": "208a147d076eaa63613c25c4a6d339a97e2938312ed9aed1d7bdd6b226731ef0",
+    "uncompressed_bytes": 10972997
+  }
+}

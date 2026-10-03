@@ -229,7 +229,7 @@ What it asserts, in order:
 
 The native suites here drive the reqwest backend. The browser path — the same client code over
 `src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
-bundle (see `src/client/maven/CLAUDE.md`, "Browser build"), and the transport backend's requests
+bundle (see `src/client/maven/AGENTS.md`, "Browser build"), and the transport backend's requests
 are pinned to reqwest's by `tests/client/http/fetch_client_test.rs`.
 
 `command_channel_test.rs::a_bare_repository_address_is_given_a_scheme` pins the connect-time

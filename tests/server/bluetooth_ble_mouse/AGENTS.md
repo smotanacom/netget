@@ -51,4 +51,4 @@ proves it parses, not that the sign survives.
 That test does not exist and cannot be written to run unattended here: HID-over-GATT needs
 bonding, `ble-peripheral-rust` 0.2 exposes no bonding control, and an adapter-claiming test would
 have to be `#[ignore]`d so a 100-thread run does not deadlock on the machine's single radio —
-which per the root `CLAUDE.md` is not evidence however good the reason.
+which per the root `AGENTS.md` is not evidence however good the reason.

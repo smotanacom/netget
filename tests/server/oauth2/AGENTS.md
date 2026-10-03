@@ -50,7 +50,7 @@ model-supplied `status_code` of `65736` does not wrap into a `200`. Both were li
 with a `503` and gives the slot back, and the two read deadlines are driven from three sockets
 — a silent peer closed after `FIRST_BYTE_READ_TIMEOUT`, a peer that stalls mid-request closed
 after `IDLE_BETWEEN_REQUESTS_TIMEOUT`, and a peer whose request is parked for a human not
-closed at all. Neither costs a model call. See `src/server/oauth2/CLAUDE.md` for the numbers
+closed at all. Neither costs a model call. See `src/server/oauth2/AGENTS.md` for the numbers
 and `tests/helpers/http_bounds.rs` for the shared driver.
 
 ### LLM Call Budget

@@ -59,6 +59,53 @@ pub async fn try_execute_event_handler(
     event_data: Option<serde_json::Value>,
     protocol: Option<&dyn Server>,
 ) -> Result<EventHandlerResult> {
+    if event_data.as_ref().is_some_and(|value| {
+        !crate::utils::json_budget::within_budget(
+            value,
+            crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+        )
+    }) {
+        if let Some(value) = event_data {
+            crate::utils::json_budget::drop_iteratively(value);
+        }
+        anyhow::bail!("event exceeds the shared JSON budget");
+    }
+    let private = event_data
+        .as_ref()
+        .is_some_and(crate::utils::redact::contains_credentials);
+    let run = try_execute_event_handler_inner(
+        state,
+        server_id,
+        connection_id,
+        event_type_id,
+        event_description,
+        event_data,
+        protocol,
+        private,
+    );
+    if private {
+        use tracing::instrument::WithSubscriber;
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(|_| anyhow::anyhow!("credential-bearing handler failed; diagnostics hidden"))
+    } else {
+        run.await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_execute_event_handler_inner(
+    state: &AppState,
+    server_id: ServerId,
+    connection_id: Option<crate::server::connection::ConnectionId>,
+    event_type_id: &str,
+    event_description: &str,
+    event_data: Option<serde_json::Value>,
+    protocol: Option<&dyn Server>,
+    private_payloads: bool,
+) -> Result<EventHandlerResult> {
     // Get event handler configuration
     let event_handler_config = state.get_event_handler_config(server_id).await;
 
@@ -106,6 +153,7 @@ pub async fn try_execute_event_handler(
                 *resident,
                 scope.as_deref(),
                 protocol,
+                private_payloads,
             )
             .await
         }
@@ -266,6 +314,49 @@ pub async fn try_execute_client_event_handler(
 
 /// The shared client dispatcher with a request-local credential logging policy.
 pub async fn try_execute_client_event_handler_with_privacy(
+    state: &AppState,
+    client_id: crate::state::ClientId,
+    event_type_id: &str,
+    event_description: &str,
+    event_data: Option<serde_json::Value>,
+    private_payloads: bool,
+) -> Result<ClientEventHandlerResult> {
+    if event_data.as_ref().is_some_and(|value| {
+        !crate::utils::json_budget::within_budget(
+            value,
+            crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH,
+        )
+    }) {
+        if let Some(value) = event_data {
+            crate::utils::json_budget::drop_iteratively(value);
+        }
+        anyhow::bail!("event exceeds the shared JSON budget");
+    }
+    let private_payloads = private_payloads
+        || event_data
+            .as_ref()
+            .is_some_and(crate::utils::redact::contains_credentials);
+    let run = try_execute_client_event_handler_inner(
+        state,
+        client_id,
+        event_type_id,
+        event_description,
+        event_data,
+        private_payloads,
+    );
+    if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(crate::utils::redact::hide_error_details)
+    } else {
+        run.await
+    }
+}
+
+async fn try_execute_client_event_handler_inner(
     state: &AppState,
     client_id: crate::state::ClientId,
     event_type_id: &str,
@@ -494,6 +585,7 @@ async fn execute_script_handler(
     resident: bool,
     scope: Option<&str>,
     protocol: Option<&dyn Server>,
+    private_payloads: bool,
 ) -> Result<EventHandlerResult> {
     // Get server info to build script input
     let server_info = state.get_server(server_id).await;
@@ -589,7 +681,25 @@ async fn execute_script_handler(
         );
     }
 
-    let script_result = if use_resident {
+    let script_result = if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        let run = async {
+            if use_resident {
+                crate::scripting::ResidentScriptManager::dispatch_private(
+                    &script_config,
+                    &script_input,
+                    crate::scripting::ResidentScope::parse(scope),
+                )
+                .await
+            } else {
+                crate::scripting::executor::execute_script_async(&script_config, &script_input)
+                    .await
+            }
+        };
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(|_| anyhow::anyhow!("credential-bearing script failed; diagnostics hidden"))
+    } else if use_resident {
         let resident_scope = crate::scripting::ResidentScope::parse(scope);
         crate::scripting::ResidentScriptManager::dispatch(
             &script_config,
@@ -611,10 +721,14 @@ async fn execute_script_handler(
             );
 
             // Register SCRIPT conversation for tracking
-            let truncated_desc = format!(
-                "SCRIPT \"{}\"",
-                crate::utils::truncate_for_log(event_description, 27)
-            );
+            let truncated_desc = if private_payloads {
+                "SCRIPT credential-bearing event".to_string()
+            } else {
+                format!(
+                    "SCRIPT \"{}\"",
+                    crate::utils::truncate_for_log(event_description, 27)
+                )
+            };
             let conv_id = format!(
                 "script-{}-{:x}",
                 crate::utils::clock::SystemTime::now()

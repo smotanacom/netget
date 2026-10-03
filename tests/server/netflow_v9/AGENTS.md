@@ -36,3 +36,8 @@ handling, bounded queue parsing while a handler parks, expiry/redefinition and
 removal releasing owned socket/intercepts. Explicit model opt-in uses the
 shared mock harness and expects one creation plus one event call. Deterministic
 handlers make no model calls. No fuzz or production capture claim is made.
+
+The parked-row regression ages an actual datagram connection by 60 seconds,
+runs the common 10-second cleanup, and proves the row and manual request remain
+visible until the dispatcher finishes and removes the row. It also verifies
+removal releases the owned socket and intercept; template expiry is independent.

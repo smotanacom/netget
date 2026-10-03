@@ -262,7 +262,7 @@ authentication before returning — `PROTOCOL_QUALITY.md`'s three-state test.
 **The deadline covers the read and nothing else.** `process_socket` takes a concrete `TcpStream` and owns every read, so the idle bound is a watchdog over `ConnectionActivity` instead. `resolve` holds a busy guard for the whole answer, so a statement waiting on the model or parked for a human is never counted as idle. The connection is dropped rather than sent a FATAL 57P05, because pgwire exposes no way to write into the socket from outside. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

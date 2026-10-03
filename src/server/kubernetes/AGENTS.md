@@ -13,7 +13,7 @@ evidence is `tests/server/kubernetes/e2e_test.rs` driving the **real kubectl bin
 `version`, `get pods`, `get nodes`, `get pod -o json`, a 404 `NotFound`, `delete pod` — with
 `require_kubectl()` **failing** rather than skipping when the binary is absent. That gate is the
 whole difference: a `println!("SKIP")` + `return Ok(())` is a silent pass, which is what held
-this at Experimental, and it is exactly what the root `CLAUDE.md` warns about. If anyone ever
+this at Experimental, and it is exactly what the root `AGENTS.md` warns about. If anyone ever
 softens that gate back to a skip, demote this at the same time. Not Stable: TLS has never been
 driven by kubectl, and watch, OpenAPI, admission, RBAC and authentication are all absent.
 
@@ -299,7 +299,7 @@ either bound is removed, and `tests/accept_bounded_test.rs` covers the shared he
 - **Protobuf** content negotiation, **server-side apply**, **admission**, **RBAC**,
   **authentication**. Every request is served: nothing checks `Authorization`, **and the event
   does not carry it either**, so the model cannot make that call on the server's behalf. That
-  second half is the part worth saying out loud — it is the same gap the root `CLAUDE.md` names
+  second half is the part worth saying out loud — it is the same gap the root `AGENTS.md` names
   in the cloud family. Adding an `authorization` field to the event would let a model refuse
   with `k8s_status` 401/403, and is the obvious next step for anyone who wants RBAC-shaped
   behaviour here; it has not been done, so do not read "the model owns the cluster" as "the
@@ -315,7 +315,7 @@ either bound is removed, and `tests/accept_bounded_test.rs` covers the shared he
 `reqwest`. `tests/server/kubernetes/guard_test.rs` adds three: the request-body cap refusing a
 `413` without a model call while an ordinary write still succeeds, `model_status_code` refusing
 the values a `u16` cast would narrow into 2xx, and `RESTARTS` saturating. See
-`tests/server/kubernetes/CLAUDE.md`.
+`tests/server/kubernetes/AGENTS.md`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features kubernetes-server \

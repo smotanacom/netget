@@ -420,24 +420,55 @@ impl FormModel {
         self.fields.get(self.selected)
     }
 
-    /// The first required field with no value, if any. When this is `None` the
-    /// instance can be started without asking the user anything.
-    pub fn missing_required(&self) -> Option<String> {
-        self.fields
-            .iter()
-            .find(|f| f.required && f.value.trim().is_empty())
-            .map(|f| f.label.clone())
-    }
-
-    /// Put the cursor on the first required field with no value, so a form
-    /// opened because something is missing starts where the user must type.
-    pub fn focus_first_missing_required(&mut self) {
-        if let Some(i) = self
+    /// The first required value, including protocols with alternative inputs.
+    fn missing_required_index(&self) -> Option<usize> {
+        if let Some(index) = self
             .fields
             .iter()
             .position(|f| f.required && f.value.trim().is_empty())
         {
-            self.selected = i;
+            return Some(index);
+        }
+        // OpenAPI's two spec inputs are individually optional, but a new client needs
+        // one of them. The server accepts inline spec only. Existing instances already
+        // have their spec, so partial edits must not demand it again.
+        if matches!(self.mode, FormMode::Create(_))
+            && self.protocol.eq_ignore_ascii_case("openapi")
+            && !self.fields.iter().any(|field| {
+                matches!(&field.target, FieldTarget::StartupParam(name)
+                    if name == "spec" || name == "spec_file")
+                    && !field.value.trim().is_empty()
+            })
+        {
+            return self
+                .fields
+                .iter()
+                .position(|field| field.target == FieldTarget::StartupParam("spec".into()));
+        }
+        None
+    }
+
+    /// When this is `None`, the instance can start without asking for more input.
+    pub fn missing_required(&self) -> Option<String> {
+        let index = self.missing_required_index()?;
+        let field = &self.fields[index];
+        if field.label == "spec"
+            && self.protocol.eq_ignore_ascii_case("openapi")
+            && self
+                .fields
+                .iter()
+                .any(|field| field.target == FieldTarget::StartupParam("spec_file".into()))
+        {
+            Some("spec or spec_file".to_string())
+        } else {
+            Some(field.label.clone())
+        }
+    }
+
+    /// Put the cursor on the missing value (the inline spec for alternative spec inputs).
+    pub fn focus_first_missing_required(&mut self) {
+        if let Some(index) = self.missing_required_index() {
+            self.selected = index;
             self.focused_button = None;
         }
     }
@@ -500,6 +531,12 @@ impl FormModel {
     /// value — in charge, so the new instance's `startup_params` records only what the
     /// operator chose.
     fn startup_params(&self) -> Option<serde_json::Value> {
+        let section = match &self.mode {
+            FormMode::Create(section) => *section,
+            FormMode::Edit(UiKey::Server(_)) => Section::Servers,
+            FormMode::Edit(UiKey::Client(_)) => Section::Clients,
+        };
+        let params = declared_params(section, &self.protocol);
         let mut map = serde_json::Map::new();
         for field in &self.fields {
             if let FieldTarget::StartupParam(name) = &field.target {
@@ -510,10 +547,17 @@ impl FormModel {
                 if raw.is_empty() {
                     continue;
                 }
-                // Preserve JSON types where the text parses as JSON (numbers,
-                // booleans, objects); otherwise treat it as a string.
-                let value = serde_json::from_str::<serde_json::Value>(raw)
-                    .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
+                // Declared strings stay strings: a JSON OpenAPI spec is still inline
+                // text, and a numeric-looking OAuth client ID is still an identifier.
+                let value = if params
+                    .iter()
+                    .any(|p| p.name == *name && p.type_hint == "string")
+                {
+                    serde_json::Value::String(raw.to_string())
+                } else {
+                    serde_json::from_str::<serde_json::Value>(raw)
+                        .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+                };
                 map.insert(name.clone(), value);
             }
         }
@@ -579,6 +623,9 @@ impl FormModel {
         llm_client: crate::llm::OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<String> {
+        if let Some(missing) = self.missing_required() {
+            anyhow::bail!("{} requires {missing}", self.protocol);
+        }
         match &self.mode {
             FormMode::Create(Section::Servers) => {
                 let form = self.to_server_form()?;
@@ -639,7 +686,7 @@ impl FormModel {
 /// from the client protocol's own `get_event_types()` instead of a
 /// `*_connected` glob that nothing would ever match. A client whose connect
 /// event does not follow the `_connected` naming keeps the plain manual
-/// default.
+/// default, except OIDC discovery, which also completes inline during connect.
 pub fn default_event_handlers(section: Section, protocol: &str) -> serde_json::Value {
     let manual_fallback = serde_json::json!({
         "event_pattern": "*",
@@ -663,7 +710,9 @@ pub fn default_event_handlers(section: Section, protocol: &str) -> serde_json::V
         // management paths use for a protocol the user named.
         if let Ok(client) = crate::protocol::CLIENT_REGISTRY.resolve(protocol) {
             for event_type in client.get_event_types() {
-                if event_type.id.ends_with("_connected") {
+                // OIDC completes discovery inline during connect; parking that lifecycle
+                // event would leave the create form busy before the user can send a verb.
+                if event_type.id.ends_with("_connected") || event_type.id == "oidc_discovered" {
                     rules.push(serde_json::json!({
                         "event_pattern": event_type.id,
                         // Zero actions: acknowledge the connect, say nothing —
@@ -736,7 +785,7 @@ fn push_param_fields(
             default,
             help,
             required: param.required,
-            multiline: false,
+            multiline: param.name == "spec",
         });
     }
 }

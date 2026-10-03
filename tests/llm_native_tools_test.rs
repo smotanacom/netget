@@ -41,17 +41,12 @@
 //! spread evenly over unrelated protocols — which is what one shared defect looks
 //! like, and not what a dozen independent prompting weaknesses look like.
 //!
-//! # What was NOT removed
+//! # Current contract
 //!
-//! Tool *capability*. The tools remain described in the prompt text, the model
-//! requests one with `{"tools": [...]}`, and `generate_with_tools_and_retry`
-//! executes it and feeds the result back for the next turn. That is how Snowflake
-//! obtains a session token and SAML an assertion id — both verified working after
-//! this change. Only the native schema channel is gone.
-//!
-//! The user-input path (`RequestSource::User`, including the feedback loop) is
-//! untouched: it is a different prompt with a different contract, and no evidence
-//! was gathered about it.
+//! Network events now advertise response actions only. The JSON tool loop is retained
+//! for operator conversations and scheduled tasks, whose tool results inform a final
+//! actions-only response. The independent native-schema regression below still applies:
+//! protocol response actions travel in the JSON envelope, not a second schema channel.
 
 use std::path::Path;
 
@@ -86,9 +81,7 @@ fn no_native_tool_schemas_on_network_events() {
          Attaching native function-call schemas to a network-event or client call \
          gives the model a second way to answer alongside the JSON action envelope \
          the prompt teaches, and it takes it — 6 of 6 failing protocol cases pass \
-         once the schemas are removed (see this file's module docs). Tools still \
-         work through the JSON envelope and the tool loop; do not re-add the schema \
-         channel to reach them.",
+         once the schemas are removed (see this file's module docs). Do not re-add a competing schema channel.",
         calls
     );
 

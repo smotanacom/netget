@@ -5,7 +5,24 @@ use serde_json::Value;
 /// Conservative retained-content estimate: strings/keys plus per-node overhead.
 /// The traversal itself is bounded by the node budget before queuing children.
 pub fn within_budget(value: &Value, max_bytes: usize, max_nodes: usize, max_depth: usize) -> bool {
-    let mut pending = vec![(value, 0usize)];
+    within_values_budget(std::iter::once(value), max_bytes, max_nodes, max_depth)
+}
+
+/// Apply one aggregate budget to a borrowed batch before any values are cloned.
+/// Stop collecting roots at the node budget, then walk children iteratively.
+pub fn within_values_budget<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+    max_bytes: usize,
+    max_nodes: usize,
+    max_depth: usize,
+) -> bool {
+    let mut pending = Vec::new();
+    for value in values {
+        if pending.len() >= max_nodes {
+            return false;
+        }
+        pending.push((value, 0usize));
+    }
     let mut nodes = 0usize;
     let mut bytes = 0usize;
     while let Some((value, depth)) = pending.pop() {

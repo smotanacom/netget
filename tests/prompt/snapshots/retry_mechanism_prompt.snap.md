@@ -150,12 +150,12 @@ Example:
 # Available Actions
 
 Include actions in your JSON response to execute operations.
-You will see past actions you have executed on previous invocation, actions are not idempotent.
-Unless tools are also included, you will not be invoked again if you only return actions
-so you may include multiple actions in a single response.
+Include every action you want executed, in order, in one final response.
+A response containing tools is an intermediate round: its actions are drafts and
+are not executed. Read the tool results, then return your final actions without tools.
 
 **CRITICAL: Only use actions listed below. Do NOT invent or hallucinate action names.**
-If an action you need is not listed, use `read_documentation` tool to learn about protocol-specific actions.
+Only use the tools listed above to gather any additional information you need.
 Unknown actions will be rejected and you will be asked to retry.
 
 ## 0. open_server
@@ -896,19 +896,18 @@ Use `*` as event_pattern to route all events to the LLM.
 
 ```json
 {
-  "tools": [{"type": "read_file", "path": "config.json"}],
   "actions": [{"type": "cancel_task", "task_id": "cleanup_logs"}]
 }
 ```
 
 - Must start with `{` and end with `}`
 - **`tools`** (optional): Array of tool calls (read_file, web_search, generate_random, etc.)
-  - Tools are executed FIRST and their results feed back to you before actions execute
+  - Tools return their results for another response; any actions in that intermediate response are drafts
   - Use tools to gather information before deciding on actions
 - **`actions`** (optional): Array of protocol-specific actions (open_server, close_server, etc.)
-  - Actions execute AFTER tools complete
+  - Only actions from your final response with no tool calls execute
   - Actions execute in order
-- You can use `tools` only, `actions` only, or BOTH in the same response
+- Gather information with tools first, then return all actions in one final response without tools
 - Both arrays are optional - you can omit either if empty
 
 ## Optional Reasoning
@@ -951,20 +950,6 @@ Brief explanation of your understanding and decision (1-3 sentences)
 {
   "actions": [
     {"type": "show_message", "message": "Hello"}
-  ]
-}
-```
-
-✓ **Valid (both tools and actions):**
-```json
-{
-  "tools": [
-    {"type": "read_file", "path": "config.json"},
-    {"type": "generate_random", "data_type": "uuid"}
-  ],
-  "actions": [
-    {"type": "set_memory", "value": "session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"},
-    {"type": "show_message", "message": "Server started"}
   ]
 }
 ```
@@ -1014,8 +999,8 @@ Here's what I'll do:
 
 1. **Valid JSON required** - Must be valid JSON after reasoning tag removed
 2. **Use appropriate keys** - `tools` for tool calls, `actions` for protocol actions
-3. **Tools execute first** - Tools gather information, then actions execute based on results
-4. **Both keys optional** - Omit empty arrays: `{"tools": [...]}` or `{"actions": [...]}` or both
+3. **Finish gathering information first** - After tools return results, send one final actions-only response
+4. **Both keys optional** - Omit empty arrays: `{"tools": [...]}` or `{"actions": [...]}`
 5. **One action per object** - Each tool/action in a separate object in the array
 6. **Exact parameter names** - Use the parameter names exactly as documented
 7. **Appropriate types** - Numbers should be numbers, not strings

@@ -5,6 +5,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
 use crate::state::app_state::AppState;
 use anyhow::{Context, Result};
@@ -69,7 +70,7 @@ pub static HTTP3_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock:
         Parameter {
             name: "body".to_string(),
             type_hint: "string".to_string(),
-            description: "Response body".to_string(),
+            description: "Complete UTF-8 response body, at most 8 MiB".to_string(),
             required: true,
         },
         Parameter {
@@ -144,13 +145,13 @@ impl Protocol for Http3ClientProtocol {
                     Parameter {
                         name: "method".to_string(),
                         type_hint: "string".to_string(),
-                        description: "HTTP method".to_string(),
+                        description: "HTTP request method, such as GET or POST".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "path".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Request path".to_string(),
+                        description: "Origin-form path and optional query string".to_string(),
                         required: true,
                     },
                     Parameter {
@@ -168,7 +169,7 @@ impl Protocol for Http3ClientProtocol {
                     Parameter {
                         name: "body".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Request body".to_string(),
+                        description: "UTF-8 request body, at most 8 MiB".to_string(),
                         required: false,
                     },
                     Parameter {
@@ -190,14 +191,16 @@ impl Protocol for Http3ClientProtocol {
                     "body": "{\"key\": \"value\"}",
                     "priority": 3
                 }),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new().with_info("-> HTTP3 {method} {path} body_bytes={body_len}"),
+                ),
             },
             ActionDefinition {
                 name: "disconnect".into(),
                 description: "Close the QUIC session and cancel active requests".into(),
                 parameters: vec![],
                 example: json!({"type":"disconnect"}),
-                log_template: None,
+                log_template: Some(LogTemplate::new().with_info("-> HTTP3 disconnect")),
             },
             ActionDefinition {
                 name: "wait_for_more".to_string(),
@@ -206,7 +209,9 @@ impl Protocol for Http3ClientProtocol {
                     .to_string(),
                 parameters: vec![],
                 example: json!({ "type": "wait_for_more" }),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new().with_info("HTTP3 waiting for another response"),
+                ),
             },
         ]
     }

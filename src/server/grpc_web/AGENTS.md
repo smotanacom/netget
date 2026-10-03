@@ -15,7 +15,7 @@ message gzip and status semantics. The existing local tonic patch caps decompres
 messages before allocation; preserve its version, license and provenance.
 
 The shared native gRPC service supplies immutable descriptors, `DynamicCodec`, typed
-value conversion and stream controls. `WebCore` admits a known unary/server-streaming
+value conversion and stream controls. `HttpCore` admits a known unary/server-streaming
 method before reading its request and retains the same RPC permit and whole deadline
 through response EOS. Every admitted failure retains the same guard after status-body
 conversion. The held-body seam waits for the explicit final EOF poll, rather than an

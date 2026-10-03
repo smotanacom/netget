@@ -333,7 +333,7 @@ second injected command queues behind it.
 ### Two things found while wiring the command channel
 
 - **The browse task's `recv_timeout` was a synchronous blocking call inside
-  `tokio::spawn`.** That is the tokio-blocking-in-async pattern the root `CLAUDE.md` lists
+  `tokio::spawn`.** That is the tokio-blocking-in-async pattern the root `AGENTS.md` lists
   under known systemic issues, and it bit exactly as described: it parks a runtime worker for
   up to 10 seconds per iteration, so on a current-thread runtime everything else the client is
   doing — the command channel included — stalls behind it. It now runs on the blocking pool

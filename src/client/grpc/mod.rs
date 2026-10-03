@@ -1,5 +1,7 @@
 //! gRPC client implementation
 pub mod actions;
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+pub(crate) mod http1;
 mod reflection;
 mod streaming;
 

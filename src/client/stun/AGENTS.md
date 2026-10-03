@@ -234,7 +234,7 @@ Google STUN servers (free, reliable):
 
 ## Testing Strategy
 
-See `tests/client/stun/CLAUDE.md` for E2E testing approach.
+See `tests/client/stun/AGENTS.md` for E2E testing approach.
 
 Key points:
 

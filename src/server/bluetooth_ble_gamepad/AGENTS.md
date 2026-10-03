@@ -81,7 +81,7 @@ The base parses every service and characteristic UUID with `uuid::Uuid::parse_st
 accepts the 36-character hyphenated form (and the 32-character simple form) and **rejects the
 16-bit Bluetooth SIG shorthand**. `"180D"` does not parse, and `add_service` fails with
 "Invalid service UUID". There is no expansion helper anywhere in the tree, despite
-`src/server/bluetooth_ble/CLAUDE.md` claiming `"180D"` is "expanded to"
+`src/server/bluetooth_ble/AGENTS.md` claiming `"180D"` is "expanded to"
 `0000180d-0000-1000-8000-00805f9b34fb`.
 
 Every UUID in this protocol's startup examples is therefore written out in full. Alias `XXXX`

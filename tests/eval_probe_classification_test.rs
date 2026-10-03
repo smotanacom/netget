@@ -94,3 +94,42 @@ fn action_names_in_rejected_output_cannot_satisfy_execution_expectations() {
         "pass"
     );
 }
+
+#[test]
+fn a_successful_nsq_publish_does_not_depend_on_the_routers_final_log_line() {
+    let expect = case::Expect::default()
+        .exits_with(0)
+        .not_containing(&["E_PUB_FAILED"]);
+    // go-nsq's router signals its WaitGroup before logging its exit. The native
+    // full-suite failure captured these lines and a successful exit, with no router log.
+    let captured =
+        "INF connecting to nsqd\nINF stopping\nINF beginning close\nINF readLoop exiting\n";
+    assert_eq!(
+        scoring::score_probe(
+            &expect,
+            "nsq",
+            "Accept every publish",
+            &[],
+            &outcome(captured, false)
+        )
+        .verdict,
+        "pass"
+    );
+    assert!(expect.describe().contains("exits with 0"));
+
+    for (code, timed_out, output) in [
+        (Some(1), false, captured),
+        (None, false, captured),
+        (Some(0), true, captured),
+        (Some(0), false, "E_PUB_FAILED"),
+    ] {
+        let mut failed = outcome(output, false);
+        failed.exit_code = code;
+        failed.timed_out = timed_out;
+        assert_eq!(
+            scoring::score_probe(&expect, "nsq", "Accept every publish", &[], &failed).verdict,
+            "fail",
+            "exit {code:?}, timeout {timed_out}, output {output:?}"
+        );
+    }
+}

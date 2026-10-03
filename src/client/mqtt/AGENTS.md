@@ -181,7 +181,7 @@ Wildcards cannot be used in publish topics.
 
 ## Testing Strategy
 
-See `tests/client/mqtt/CLAUDE.md` for detailed testing documentation.
+See `tests/client/mqtt/AGENTS.md` for detailed testing documentation.
 
 ## References
 
@@ -220,8 +220,8 @@ poll **error**, and without the flag a deliberate hang-up was reported as
 
 ## Maturity: Beta
 
-Rated against the four-condition client bar in the root `CLAUDE.md`, on the evidence in
-`tests/client/mqtt/real_server_test.rs` (see `tests/client/mqtt/CLAUDE.md`):
+Rated against the four-condition client bar in the root `AGENTS.md`, on the evidence in
+`tests/client/mqtt/real_server_test.rs` (see `tests/client/mqtt/AGENTS.md`):
 
 1. **Real third-party server** — Eclipse Mosquitto (`mosquitto`, C), with `mosquitto_sub`/`mosquitto_pub` on the far side; NetGet's side is rumqttc, so no code is shared.
 2. **Fails rather than skips** — a missing `mosquitto`, `mosquitto_sub` or `mosquitto_pub` is a test failure naming the brew formula and the

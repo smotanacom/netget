@@ -65,7 +65,7 @@ guess at what is interesting — it is the smallest thing that visibly works.
 
 ### Gate 2 — `event_handlers` are the answer path
 
-The root `CLAUDE.md` says scripts and static handlers are "the right default for deterministic
+The root `AGENTS.md` says scripts and static handlers are "the right default for deterministic
 behavior… Reserve the LLM for responses that genuinely require reasoning." Here that is not a
 preference, it is the only way the protocol works at volume. `get_startup_examples()`'s script
 and static modes both answer pings entirely in-process, and the static one shows the shape that
@@ -153,7 +153,7 @@ tokens, greppable and stable:
 | `llm_disabled` | `llm_escalation: "never"` and no rule claimed the packet |
 
 `model_drop` and `model_silent` are separate tokens on purpose. Collapsing "it said no" into
-"it said nothing" is the OAuth2 defect the root `CLAUDE.md` calls the most dangerous pattern in
+"it said nothing" is the OAuth2 defect the root `AGENTS.md` calls the most dangerous pattern in
 this codebase. The `fail_closed_*` decisions log at ERROR; the rest at DEBUG, because an
 interface produces far too many for INFO to stay readable.
 
@@ -192,7 +192,7 @@ the event carries an `ethernet` object and `send_packet` requires both `source_m
 
 **macOS `utun` is TUN-only.** There is no TAP device without a third-party kext. `spawn()`
 returns a clear `Err` naming the reason rather than quietly handing back a TUN interface —
-the `bluetooth_ble_beacon` precedent from the root `CLAUDE.md`: refusing to start is not the
+the `bluetooth_ble_beacon` precedent from the root `AGENTS.md`: refusing to start is not the
 same as pretending, and it is not the same as hiding the protocol either.
 
 `build_packet` is deliberately mode-agnostic (it emits an Ethernet frame when the answer named
@@ -217,7 +217,7 @@ of an executor sniffing what it was given. The preview is cut with
 
 In the other direction `send_packet`'s `payload_encoding` is genuinely decoded by the executor,
 and hex is decoded strictly. `"48656c6c6f"` is simultaneously valid text and valid hex and only
-the sender knows which it meant — the exact `send_tcp_data` bug the root `CLAUDE.md` records.
+the sender knows which it meant — the exact `send_tcp_data` bug the root `AGENTS.md` records.
 Invalid hex is a refusal, never a fallback to text.
 
 ---
@@ -237,7 +237,7 @@ descriptor replaced.
 
 `spawn()` awaits readiness through a `oneshot` and returns `Err` when the device cannot be
 created, so `server_startup` sets `ServerStatus::Error`. A server sitting in `Running` with no
-interface is exactly the ARP/DataLink defect the root `CLAUDE.md` records, and this protocol
+interface is exactly the ARP/DataLink defect the root `AGENTS.md` records, and this protocol
 would hit it on every unprivileged start.
 
 ---
@@ -258,6 +258,6 @@ code.
 **Path to Beta.** `sudo` on this machine, a real `utun`, and `ping 10.7.0.2` plus `nc` as the
 peer: confirm the host accepts the packets NetGet builds (checksums included — the host's stack
 is the only honest checker) and that the read loop and stop signal behave. That has not been
-done. Per the root `CLAUDE.md`'s `wireguard` lesson, a maturity rating that rests on a test
+done. Per the root `AGENTS.md`'s `wireguard` lesson, a maturity rating that rests on a test
 which never ran the thing it claims is exactly the bug to avoid — so this stays `Experimental`
 until a real peer completes a real exchange.

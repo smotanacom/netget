@@ -1,3 +1,4 @@
+use crate::protocol::log_template::LogTemplate;
 use crate::{
     llm::actions::{
         client_trait::{Client, ClientActionResult},
@@ -36,7 +37,7 @@ fn action(
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info(format!("Nostr {name} queued"))),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
@@ -107,7 +108,12 @@ pub static SUBSCRIPTION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "nostr_subscription",
         "EOSE, native CLOSED, or local CLOSE receipt",
         vec![
-            p("subscription_id", "string", "Affected id", true),
+            p(
+                "subscription_id",
+                "string",
+                "Affected subscription identifier",
+                true,
+            ),
             p(
                 "status",
                 "string",
