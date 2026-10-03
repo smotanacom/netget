@@ -879,11 +879,11 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **12 / 72**; **60 remain**. The implementations and CI fixes are published as master merge `313ad42e`, with checked documentation published as `77a5bb8d`; all six Linux interoperability jobs passed for the implementation batch. Checkboxes below are authoritative.
+- Completed: **13 / 72**; **59 remain**. The implementations and CI fixes are published as master merge `313ad42e`, with checked documentation published as `77a5bb8d`; all six Linux interoperability jobs passed for the implementation batch. Checkboxes below are authoritative.
 - Integration branch: `protocol-expansion-20261001`; published master audit `314c819a` is preserved by merge `ad1802ca`.
-- Agent `queue_continue`: NSQ is merged, including the selected delivery after CLOSE_WAIT (`5002305d`) and observed heartbeat acknowledgements (`7a981923`). Gearman client (`2a095a08`, peer diagnostics `f41cad44`) is integrated and passed all 47 merged protocol tests at 100 threads; a pinned official 2.1.0 Linux peer avoids the independently reproduced 1.1.20 exception-response defect. Shared checks remain before completion. Prometheus exporter scrape client is in final validation; Docker follows using an existing real daemon.
-- Agent `http3_continue`: HTTP/3 server/client (`168b8e82`, merge `8d108906`) and TE validation (`c4ddd3df`, merge `4dd79504`) are merged. A shared independent-peer port race is fixed (`73292cbc`); all 16 HTTP/3 and 17 raw-QUIC checks pass in the final combined build at 100 test threads. SFTP extension of SSH (`4a4884b0`) and accurate handler examples (`2e905b45`) are integrated. All 16 client and 14 existing server checks pass in the merged build at 100 threads; shared checks remain. OTLP is in progress.
-- Agent `metrics_continue`: GELF (`daa80399`, handler-failure correction `d58a4c0c`) and Fluent Forward (`8342e85a`, merge `1d1b7a15`) are merged. InfluxDB write API passed 18 server and 10 client tests with official Python/decoder peers and real InfluxDB 2.9.1 service readback; final lint and signed integration remain. Loki follows with maintained Alloy and official Loki peers.
+- Agent `queue_continue`: NSQ is merged, including the selected delivery after CLOSE_WAIT (`5002305d`) and observed heartbeat acknowledgements (`7a981923`). Gearman client (`2a095a08`, peer diagnostics `f41cad44`) is integrated and passed all 47 merged protocol tests at 100 threads; a pinned official 2.1.0 Linux peer avoids the independently reproduced 1.1.20 exception-response defect. All 129 shared checks and lint/formatting pass. Its Linux peer configure failed for a missing gperf prerequisite; the concrete installer correction `7b39c75e` is integrated and queued for publication. Prometheus scrape client (`26854817`) is integrated for manager validation; Docker is in progress using an existing real daemon.
+- Agent `http3_continue`: HTTP/3 server/client (`168b8e82`, merge `8d108906`) and TE validation (`c4ddd3df`, merge `4dd79504`) are merged. A shared independent-peer port race is fixed (`73292cbc`); all 16 HTTP/3 and 17 raw-QUIC checks pass in the final combined build at 100 test threads. SFTP extension of SSH (`4a4884b0`) and accurate handler examples (`2e905b45`) are integrated. All 16 client and 14 existing server checks, 129 shared checks, lint and whole formatting pass; scope 55 is complete. OTLP is in progress, including a bounded gzip correction in the shared tonic adapter.
+- Agent `metrics_continue`: GELF (`daa80399`, handler-failure correction `d58a4c0c`) and Fluent Forward (`8342e85a`, merge `1d1b7a15`) are merged. InfluxDB write API (`cf9237ba`) is integrated after 18 server and 10 client tests with official Python/decoder peers and real InfluxDB 2.9.1 service readback; combined manager verification is running. Loki follows with maintained Alloy and official Loki peers.
 - All remaining items are assigned across three continuing queues: RPC/QUIC and streaming; service APIs and existing clients; collectors, industrial protocols and framed services. Three workers maximum, one build at a time. The coordinator rebalances future work, integrates independently validated signed scopes and publishes directly to master.
 
 ## New protocol checklist
@@ -1280,11 +1280,14 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
   - Validation: 6 client and 10 server tests passed with aioquic 1.3.0 in both independent roles and direct NetGet binary pairing. Code `5a872651`, allocation/pairing follow-up `7afc32e0`, final merge `b7a2e7c6`. Raw ALPN is now `netget-quic`; `h3` is reserved for HTTP/3. Verified TLS/custom trust, 1 MiB decoded/4 MiB encoded bounds, owned concurrent streams, cancellation and socket release. Experimental; no 0-RTT/datagrams/unidirectional application streams.
 
-- [ ] **55. SFTP client**.
+- [x] **55. SFTP client**.
   - Scope: Extend SSH with file/directory operations matching existing server SFTP, plus real external-server evidence.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: read-only SFTP v3 stat, directory listing and UTF-8 file windows are integrated as `4a4884b0` (accurate startup modes `2e905b45`). In the merged `tcp,gearman,ssh` build, all 16 SSH client and 14 existing SSH server tests passed at 100 threads with independent OpenSSH 10.3p1 and direct NetGet pairing. All 129 shared checks across 31 targets, correctness/suspicious/unused-must-use lint and whole formatting pass. SFTP requires an explicit SHA256 host pin; bounded framing/channel queues and owned socket shutdown are tested. Experimental; no writes, binary file action, known_hosts, forwarding, second independent SFTP implementation, fuzz or new pcap claim. Logs: `.protocol-expansion-20261001/logs/batch5-ssh-initial.log` and `batch5-{shared,clippy,format}-initial.log`.
+
 
 - [ ] **56. OTLP client and gRPC receiver**.
   - Scope: Export traces/metrics/logs, both HTTP and gRPC as advertised; gRPC server alongside existing HTTP receiver.
