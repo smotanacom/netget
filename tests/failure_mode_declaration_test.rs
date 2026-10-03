@@ -72,7 +72,11 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "cdp",
     "datalink",
     "dhcp",
-    // Carbon plaintext accepts a metric stream; its grammar has no application reply.
+    // Forward has no negative ACK; failed handling closes without acknowledgement.
+    "fluent_forward",
+    // GELF TCP and UDP collectors define no application acknowledgement or negative reply.
+    "gelf",
+    // One-way Carbon metrics have no application acknowledgement or negative reply.
     "graphite",
     "hsrp",
     "icmp",

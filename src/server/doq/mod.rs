@@ -256,24 +256,30 @@ impl DoqServer {
                 .await
                 {
                     Ok(result) => {
+                        if !result.failures.is_empty() {
+                            Log::new(Some(&ctx.status_tx)).error(format!(
+                                "DoQ stream {} decision=fail_closed_action_error: {} action(s) failed; answering SERVFAIL",
+                                recv.id(), result.failures.len()
+                            ));
+                            return Ok(Some(encode(&error_response(
+                                &query,
+                                ResponseCode::ServFail,
+                            ))?));
+                        }
                         for message in result.messages {
                             Log::new(Some(&ctx.status_tx)).info(message);
                         }
                         let mut messages = Vec::new();
-                        let mut chose_silence = false;
                         for result in result.protocol_results {
-                            chose_silence |= matches!(result, ActionResult::NoAction);
                             if let ActionResult::Output(bytes) = result {
                                 messages.push(Message::from_vec(&bytes)?);
                             }
                         }
                         if messages.is_empty() {
-                            let log = Log::new(Some(&ctx.status_tx));
-                            if chose_silence && result.failures.is_empty() {
-                                log.debug("DoQ query decision=model_silent");
-                            } else {
-                                log.warn("DoQ query decision=fail_closed_no_action");
-                            }
+                            Log::new(Some(&ctx.status_tx)).info(format!(
+                                "DoQ stream {} decision=model_silent; cancelling query with DOQ_NO_ERROR",
+                                recv.id()
+                            ));
                             // A dropped query is an explicit transaction cancellation, not an
                             // empty DNS stream or an indefinitely dangling request.
                             return Ok(None);
@@ -288,20 +294,29 @@ impl DoqServer {
                             .set_op_code(query.op_code())
                             .set_recursion_desired(query.recursion_desired());
                         *response.queries_mut() = query.queries().to_vec();
-                        Log::new(Some(&ctx.status_tx)).debug(format!(
-                            "DoQ query decision=model_answer response_code={}",
+                        let decision = if matches!(
+                            response.response_code(),
+                            ResponseCode::NXDomain | ResponseCode::Refused
+                        ) {
+                            "model_reject"
+                        } else {
+                            "model_answer"
+                        };
+                        Log::new(Some(&ctx.status_tx)).info(format!(
+                            "DoQ stream {} decision={decision} rcode={}",
+                            recv.id(),
                             response.response_code()
                         ));
                         response
                     }
                     Err(e) => {
-                        let decision = if crate::llm::is_overload_error(&e) {
-                            "fail_closed_llm_overload"
+                        let category = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                            "overloaded"
                         } else {
-                            "fail_closed_llm_error"
+                            "unavailable"
                         };
-                        Log::new(Some(&ctx.status_tx)).warn(format!(
-                            "DoQ handler failed, answering SERVFAIL decision={decision}: {e}"
+                        Log::new(Some(&ctx.status_tx)).error(format!(
+                            "DoQ stream {} decision=fail_closed_llm_error category={category}; answering SERVFAIL: {e}", recv.id()
                         ));
                         error_response(&query, ResponseCode::ServFail)
                     }
@@ -312,7 +327,10 @@ impl DoqServer {
         // While a handler runs, STOP_SENDING promptly drops the work rather than
         // retaining its LLM request until the exchange deadline.
         let result = tokio::select! {
-            _ = send.stopped() => { let _ = recv.stop(REQUEST_CANCELLED); return; }
+            _ = send.stopped() => {
+                Log::new(Some(&ctx.status_tx)).info(format!("DoQ decision=peer_cancelled stream {}", send.id()));
+                let _ = recv.stop(REQUEST_CANCELLED); return;
+            }
             result = tokio::time::timeout_at(end, exchange) => result,
         };
         match result {
@@ -335,6 +353,10 @@ impl DoqServer {
                         )
                         .await;
                 } else {
+                    Log::new(Some(&ctx.status_tx)).error(format!(
+                        "DoQ stream {} decision=fail_closed_send_error; resetting stream",
+                        send.id()
+                    ));
                     let _ = send.reset(INTERNAL_ERROR);
                 }
             }
@@ -342,14 +364,17 @@ impl DoqServer {
                 let _ = send.reset(NO_ERROR);
             }
             Ok(Err(e)) => {
-                Log::new(Some(&ctx.status_tx)).warn(format!(
-                    "DoQ transaction failed decision=fail_closed_invalid_response: {e}"
+                Log::new(Some(&ctx.status_tx)).error(format!(
+                    "DoQ stream {} decision=fail_closed_response_error: {e}",
+                    send.id()
                 ));
                 let _ = send.reset(INTERNAL_ERROR);
             }
             Err(_) => {
-                Log::new(Some(&ctx.status_tx))
-                    .warn("DoQ transaction decision=fail_closed_deadline");
+                Log::new(Some(&ctx.status_tx)).error(format!(
+                    "DoQ stream {} decision=fail_closed_timeout; resetting stream",
+                    send.id()
+                ));
                 let _ = recv.stop(UNSPECIFIED_ERROR);
                 let _ = send.reset(UNSPECIFIED_ERROR);
             }

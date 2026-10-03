@@ -213,6 +213,14 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::server::fluent_forward::actions::FluentForwardProtocol::new(),
+        ));
+
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(crate::server::gelf::actions::GelfProtocol::new()));
+
         #[cfg(feature = "graphite")]
         self.register(Arc::new(
             crate::server::graphite::actions::GraphiteProtocol::new(),
@@ -554,6 +562,9 @@ impl ServerRegistry {
 
         #[cfg(feature = "kafka")]
         self.register(Arc::new(crate::server::KafkaProtocol::new()));
+
+        #[cfg(feature = "http3")]
+        self.register(Arc::new(crate::server::Http3Protocol::new()));
 
         #[cfg(feature = "quic")]
         self.register(Arc::new(crate::server::QuicProtocol::new()));
@@ -1248,6 +1259,9 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("SNMP", "snmp"),
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
     ("Graphite", "graphite"),
     ("StatsD", "statsd"),
     ("DogStatsD", "statsd"),
@@ -1329,8 +1343,8 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("OpenAPI", "openapi"),
     ("OpenID", "openid"),
     ("KAFKA", "kafka"),
-    // Raw QUIC streams. There is deliberately no HTTP3 server entry: the `http3`
-    // feature builds the HTTP/3 *client* only (src/client/http3/).
+    // Separate raw QUIC and RFC 9114 HTTP/3 transports.
+    ("HTTP3", "http3"),
     ("QUIC", "quic"),
     ("Torrent-Tracker", "torrent-tracker"),
     ("Torrent-DHT", "torrent-dht"),

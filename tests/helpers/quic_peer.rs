@@ -44,14 +44,9 @@ pub struct Peer {
 impl Peer {
     pub async fn start(protocol: &str) -> Self {
         let cert = Certificate::new();
-        let port = std::net::UdpSocket::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
         let mut child = tokio::process::Command::new(python())
             .arg(script())
-            .args(["server", protocol, "--port", &port.to_string()])
+            .args(["server", protocol, "--port", "0"])
             .arg("--cert")
             .arg(cert.cert())
             .arg("--key")
@@ -67,7 +62,14 @@ impl Peer {
             .await
             .unwrap()
             .unwrap();
-        assert!(line.contains("ready"), "aioquic did not start: {line}");
+        let readiness: Value = serde_json::from_str(&line)
+            .unwrap_or_else(|error| panic!("invalid aioquic readiness: {error}: {line}"));
+        assert_eq!(readiness["ready"], true, "aioquic did not start: {line}");
+        let port = readiness["port"]
+            .as_u64()
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port != 0)
+            .unwrap_or_else(|| panic!("invalid bound aioquic port: {line}"));
         Self { cert, port, child }
     }
     pub async fn close(&mut self) {

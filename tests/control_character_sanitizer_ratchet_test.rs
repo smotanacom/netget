@@ -39,8 +39,8 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     (
         "src/client/http_fetch/transport.rs",
         1,
-        "validator: parse_http_url rejects unescaped control characters and whitespace before \
-         URL parsing can normalize them; rewriting would request a different URL",
+        "validator: reject unescaped whitespace and controls before URL parsers can silently \
+         remove them and change the requested target; no URL bytes are filtered or rewritten",
     ),
     (
         "src/client/nats/actions.rs",

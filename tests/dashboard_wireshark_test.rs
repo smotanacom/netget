@@ -85,6 +85,27 @@ fn dns_is_served_on_both_transports() {
 }
 
 #[test]
+fn gelf_captures_both_transports_without_invalid_tcp_decode_as() {
+    for name in ["GELF", "Graylog"] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", 12201), Platform::Linux);
+        assert_eq!(plan.capture_filter, "port 12201");
+        assert_eq!(
+            plan.display_filter,
+            "(tcp.port == 12201 || udp.port == 12201)"
+        );
+        assert_eq!(plan.decode_as, None);
+        assert!(plan
+            .notes
+            .iter()
+            .any(|note| note.contains("udp.port==PORT,gelf")));
+        assert!(plan
+            .notes
+            .iter()
+            .any(|note| note.contains("NUL-delimited JSON")));
+    }
+}
+
+#[test]
 fn raw_protocols_have_no_port_and_use_the_declared_interface() {
     let mut target = server("ICMP", "", 0);
     target.interface = Some("en0".into());

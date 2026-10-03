@@ -5,6 +5,9 @@ truncated EOF, line/entry/body bounds and whole-line deadline.
 `e2e_test.rs`: static-handler sessions, auth deny/accept, pipelining, lifecycle shutdown,
 idle timeout and the 256-peer connection cap. One mocked-model test consumes exactly
 three calls (startup plus two requests), waits for expectations and verifies them.
+`llm_failure_test.rs`: wire results and distinct status-log decisions for successful replies,
+explicit protocol refusals, silence, invalid/duplicate reply actions, dead backend,
+and authentication acceptance/denial. No credentials are included in terminal logs.
 `real_client_test.rs`: official NUT upsc discovers/describes UPS devices, reads one
 variable and reads a complete list; upscmd authenticates and runs an instant command.
 Absence of either external binary fails. No ignore/skip gates.

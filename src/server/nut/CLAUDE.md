@@ -20,6 +20,10 @@ for write-policy decisions. `nut_reply` supplies entries, value, types, explicit
 or a recognized error. `nut_auth` carries credentials and only accepts
 `nut_auth_decision {allowed: bool}`. There are no built-in accounts or UPS data. Failed,
 missing, duplicate or invalid handler replies fail closed (DATA-STALE and close).
+Terminal handler outcomes log `decision=model_answer`, `model_reject`, `model_silent`,
+`fail_closed_llm_error` or `fail_closed_invalid_reply`; failed writes log
+`fail_closed_send_error`. Logs identify the connection and operation without credentials
+or backend details. Invalid actions fail closed even beside a usable reply.
 Authentication failure denies protected operations; credential fields cannot be reset
 within a connection. A successful SET or INSTCMD acknowledges the handler's decision,
 not a hardware operation: handlers own simulated data/effects.
