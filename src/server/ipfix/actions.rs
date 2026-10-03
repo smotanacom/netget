@@ -29,7 +29,7 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
     }
 }
 fn collect() -> ActionDefinition {
-    ActionDefinition{name:"collect_ipfix_records".into(),description:"Observe validated typed IPFIX records in the bounded common access log. UDP has no acknowledgment; no persistence or aggregation.".into(),parameters:vec![],example:json!({"type":"collect_ipfix_records"}),log_template:None}
+    ActionDefinition{name:"collect_ipfix_records".into(),description:"Observe validated typed IPFIX records in the bounded common access log. UDP has no acknowledgment; no persistence or aggregation.".into(),parameters:vec![],example:json!({"type":"collect_ipfix_records"}),log_template:Some("Collect validated IPFIX records".into())}
 }
 pub static IPFIX_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("ipfix_message","One validated UDP IPFIX message. Ordered field values align with each set's template; unsupported IEs retain descriptors and null values without raw bytes. Sequence gaps are observations, not recovery.",collect().example).with_parameters(vec![parameter("message","object","Export time, domain, sequence/tracking, template changes, ignored UDP withdrawals, typed data sets, unknown-set descriptors and record count. Scope fields are the first scope_count ordered fields; duplicate IE occurrences preserve order.",true),parameter("source_addr","string","Exporter IP and UDP source port, scoped to this collector socket",true)]).with_actions(vec![collect()])
@@ -89,7 +89,7 @@ impl Protocol for IpfixProtocol {
             ),
             ParameterDefinition {
                 name: "llm_fallback".into(),
-                type_hint: "bool".into(),
+                type_hint: "boolean".into(),
                 description:
                     "Opt unmatched messages into model calls; explicit handlers always run".into(),
                 required: false,
