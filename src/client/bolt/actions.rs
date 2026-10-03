@@ -31,12 +31,28 @@ fn a(
     parameters: Vec<Parameter>,
     example: Value,
 ) -> ActionDefinition {
+    let intent = match name {
+        "bolt_login" => "request native authentication; await acknowledgement",
+        "bolt_logoff" => "request native logoff; await acknowledgement",
+        "bolt_run" => "submit one query; await result field metadata",
+        "bolt_pull" => "request a bounded result page; await completion",
+        "bolt_discard" => "discard remaining results; await completion",
+        "bolt_begin" => "request an explicit transaction; await acknowledgement",
+        "bolt_commit" => "request transaction commit; await acknowledgement",
+        "bolt_rollback" => "request transaction rollback; await acknowledgement",
+        "bolt_reset" => "request session recovery; await acknowledgement",
+        "disconnect" => "close the connection and cancel pending I/O",
+        _ => unreachable!("only declared Bolt actions receive a log template"),
+    };
     ActionDefinition {
         name: name.into(),
         description: description.into(),
         parameters,
         example,
-        log_template: None,
+        log_template: Some(
+            crate::protocol::log_template::LogTemplate::new()
+                .with_debug(format!("Bolt {name}: {intent}")),
+        ),
     }
 }
 fn tx_parameters() -> Vec<Parameter> {
@@ -165,7 +181,12 @@ pub static ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "bolt_request_error",
         "Local selected action refusal; terminal transport/schema/deadline failures update client status",
         vec![
-            p("category", "string", "action", true),
+            p(
+                "category",
+                "string",
+                "The action category identifies a local refusal before any wire message",
+                true,
+            ),
             p(
                 "error",
                 "string",

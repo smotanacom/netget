@@ -58,10 +58,10 @@ pub static CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("tacacs_connected","Legacy connector ready after bounded name resolution. Every AAA operation opens its own TCP session; readiness does not confirm server availability.",authorize().example.clone()).with_parameters(vec![parameter("remote_addr","string","Configured endpoint",true)]).with_actions(all())
 });
 pub static AUTH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("tacacs_authentication_result","Correlated terminal authentication result; RESTART/FOLLOW treated as FAIL without retry or redirect. Credentials absent.",disconnect().example.clone()).with_parameters(vec![parameter("request","object","Credential-free username/method/context",true),parameter("reply","object","Typed terminal status/message/data",true),parameter("authenticated","bool","True only for PASS",true)]).with_actions(all())
+    EventType::new("tacacs_authentication_result","Correlated terminal authentication result; RESTART/FOLLOW treated as FAIL without retry or redirect. Credentials absent.",disconnect().example.clone()).with_parameters(vec![parameter("request","object","Credential-free username/method/context",true),parameter("reply","object","Typed terminal status/message/data",true),parameter("authenticated","boolean","True only for PASS",true)]).with_actions(all())
 });
 pub static AUTHOR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("tacacs_authorization_result","Correlated reply, effective arguments and safe mandatory-argument decision. No device policy applied.",disconnect().example.clone()).with_parameters(vec![parameter("request","object","Typed authorization context",true),parameter("reply","object","Typed reply and ordered wire arguments",true),parameter("authorized","bool","PASS_ADD/PASS_REPLACE plus supported mandatory args and valid priv-lvl",true)]).with_actions(all())
+    EventType::new("tacacs_authorization_result","Correlated reply, effective arguments and safe mandatory-argument decision. No device policy applied.",disconnect().example.clone()).with_parameters(vec![parameter("request","object","Typed authorization context",true),parameter("reply","object","Typed reply and ordered wire arguments",true),parameter("authorized","boolean","PASS_ADD/PASS_REPLACE plus supported mandatory args and valid priv-lvl",true)]).with_actions(all())
 });
 pub static ACCOUNT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -72,9 +72,19 @@ pub static ACCOUNT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_parameters(vec![
         parameter("request", "object", "Typed accounting context", true),
         parameter("record_type", "string", "start/stop/watchdog/update", true),
-        parameter("reply", "object", "Typed reply", true),
-        parameter("recorded_by_peer", "bool", "True only for SUCCESS", true),
-        parameter("durable_storage_confirmed", "bool", "Always false", true),
+        parameter(
+            "reply",
+            "object",
+            "Typed accounting status, message and data from the peer",
+            true,
+        ),
+        parameter("recorded_by_peer", "boolean", "True only for SUCCESS", true),
+        parameter(
+            "durable_storage_confirmed",
+            "boolean",
+            "Always false: a peer reply cannot confirm durable storage",
+            true,
+        ),
     ])
     .with_actions(all())
 });
