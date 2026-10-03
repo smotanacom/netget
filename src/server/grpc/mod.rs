@@ -4,6 +4,8 @@
 //! and controls RPC request/response handling through JSON.
 
 pub mod actions;
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+pub mod http1;
 mod reflection;
 pub(crate) mod schema;
 pub mod stream_codec;
@@ -604,20 +606,20 @@ struct DynamicGrpcService {
     next_stream_id: Arc<std::sync::atomic::AtomicU32>,
 }
 
-/// The Web binding shares typed method handling, admission and cancellation with native
-/// gRPC. Transport framing remains at the Web boundary; legacy unary behavior is untouched.
-#[cfg(feature = "grpc-web")]
+/// HTTP/1 RPC bindings share typed method handling, admission and cancellation with native
+/// gRPC. Each binding owns its framing; legacy unary behavior is untouched.
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
 #[derive(Clone)]
-pub(crate) struct WebCore(Arc<DynamicGrpcService>);
-#[cfg(feature = "grpc-web")]
+pub(crate) struct HttpCore(Arc<DynamicGrpcService>);
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
 pub(crate) struct WebAdmission {
     pub(crate) deadline: tokio::time::Instant,
     permit: tokio::sync::OwnedSemaphorePermit,
     timer: streaming::DeadlineGuard,
-    method: prost_reflect::MethodDescriptor,
+    pub(crate) method: prost_reflect::MethodDescriptor,
     id: u32,
 }
-#[cfg(feature = "grpc-web")]
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
 impl WebAdmission {
     /// Wrap the final status-converted body, so admission survives every reply path.
     pub(crate) fn guard(
@@ -625,13 +627,11 @@ impl WebAdmission {
         response: Response<tonic::body::BoxBody>,
         busy: crate::server::accept_bounded::BusyGuard,
     ) -> Response<tonic::body::BoxBody> {
-        response.map(|body| {
-            crate::server::grpc_web::wire::hold_body(body, (self.permit, busy, self.timer))
-        })
+        response.map(|body| http1::hold_body(body, (self.permit, busy, self.timer)))
     }
 }
-#[cfg(feature = "grpc-web")]
-impl WebCore {
+#[cfg(any(feature = "grpc-web", feature = "connect_rpc"))]
+impl HttpCore {
     pub(crate) fn new(
         ctx: &crate::protocol::SpawnContext,
         pool: DescriptorPool,
@@ -676,11 +676,10 @@ impl WebCore {
                             .find(|candidate| candidate.name() == method)
                     })
             });
-        let method =
-            method.ok_or_else(|| tonic::Status::unimplemented("unknown gRPC-Web method"))?;
+        let method = method.ok_or_else(|| tonic::Status::unimplemented("unknown RPC method"))?;
         if method.is_client_streaming() {
             return Err(tonic::Status::unimplemented(
-                "gRPC-Web supports unary and server-streaming methods only",
+                "HTTP/1 RPC binding supports unary and server-streaming methods only",
             ));
         }
         let timeout = streaming::timeout(request.headers(), self.0.stream_timeout)?;

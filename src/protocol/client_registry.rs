@@ -121,6 +121,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
         ));
+        #[cfg(feature = "connect_rpc")]
+        self.register(Arc::new(
+            crate::client::connect_rpc::actions::ConnectRpcClientProtocol::new(),
+        ));
 
         #[cfg(feature = "http")]
         {
@@ -790,6 +794,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("ConnectRPC", "connect-rpc"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

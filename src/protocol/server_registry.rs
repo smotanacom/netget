@@ -552,6 +552,10 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::grpc_web::actions::GrpcWebProtocol::new(),
         ));
+        #[cfg(feature = "connect_rpc")]
+        self.register(Arc::new(
+            crate::server::connect_rpc::actions::ConnectRpcProtocol::new(),
+        ));
 
         #[cfg(feature = "etcd")]
         self.register(Arc::new(crate::server::EtcdProtocol::new()));
@@ -1371,6 +1375,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("XML-RPC", "xmlrpc"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("ConnectRPC", "connect-rpc"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

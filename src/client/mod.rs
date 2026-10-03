@@ -117,6 +117,8 @@ pub mod git;
 pub use git::actions::GitClientProtocol;
 
 // grpc client
+#[cfg(feature = "connect_rpc")]
+pub mod connect_rpc;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc-web")]
