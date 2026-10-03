@@ -75,6 +75,7 @@ fn golden_duals_map() {
         "Nostr",
         "Vault",
         "Bolt",
+        "OCI-Registry",
         "Beanstalkd",
         "DICT",
         "Gemini",
