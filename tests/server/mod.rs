@@ -379,3 +379,6 @@ pub mod sflow;
 
 #[cfg(feature = "loki")]
 pub mod loki;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;

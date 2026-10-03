@@ -258,3 +258,6 @@ pub mod ipfix;
 
 #[cfg(feature = "sflow")]
 pub mod sflow;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;

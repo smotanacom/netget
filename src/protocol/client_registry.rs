@@ -327,6 +327,8 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
         ));
+        #[cfg(feature = "prometheus-remote-write")]
+        self.register(Arc::new(crate::client::prometheus_remote_write::actions::PrometheusRemoteWriteClientProtocol::new()));
         #[cfg(feature = "sflow")]
         self.register(Arc::new(
             crate::client::sflow::actions::SflowClientProtocol::new(),
@@ -809,6 +811,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("FluentForward", "fluent-forward"),
     ("IPFIX", "ipfix"),
     ("IPFIX-UDP", "ipfix"),
+    ("PrometheusRemoteWrite", "prometheus-remote-write"),
+    ("RemoteWrite", "prometheus-remote-write"),
     ("sFlow", "sflow"),
     ("sFlow-v5", "sflow"),
     ("Loki", "loki"),
