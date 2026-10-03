@@ -1246,5 +1246,8 @@ pub mod influxdb;
 #[cfg(feature = "ipfix")]
 pub mod ipfix;
 
+#[cfg(feature = "sflow")]
+pub mod sflow;
+
 #[cfg(feature = "loki")]
 pub mod loki;

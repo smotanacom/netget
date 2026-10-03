@@ -327,6 +327,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
         ));
+        #[cfg(feature = "sflow")]
+        self.register(Arc::new(
+            crate::client::sflow::actions::SflowClientProtocol::new(),
+        ));
 
         #[cfg(feature = "fluent-forward")]
         self.register(Arc::new(
@@ -805,6 +809,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("FluentForward", "fluent-forward"),
     ("IPFIX", "ipfix"),
     ("IPFIX-UDP", "ipfix"),
+    ("sFlow", "sflow"),
+    ("sFlow-v5", "sflow"),
     ("Loki", "loki"),
     ("LokiPush", "loki"),
     ("InfluxDB", "influxdb"),
