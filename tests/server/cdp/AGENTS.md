@@ -11,7 +11,7 @@ allowed to claim.
 **27 passing, 0 failing, 0 ignored** at
 `--no-default-features --features cdp --test-threads=100`.
 
-Nothing here is `#[ignore]`d and nothing skips. Root `CLAUDE.md` lists four
+Nothing here is `#[ignore]`d and nothing skips. Root `AGENTS.md` lists four
 protocols held at Experimental by a test that prints `SKIP: … not installed` and
 returns `Ok(())`; that shape is not used here.
 
@@ -32,7 +32,7 @@ than by erroring, which is easy to misread as a build problem.
 The real CDP transport is raw 802.3 through libpcap and needs packet-capture
 privilege. If the wire format lived inside the transport, none of it would be
 testable here and the protocol's only evidence would be "it compiles" — the
-`wireguard` situation root `CLAUDE.md` records.
+`wireguard` situation root `AGENTS.md` records.
 
 So `src/server/cdp/codec.rs` does no I/O at all, and `codec_test.rs` can hammer
 it. The evidence is deliberately of two kinds.
@@ -62,7 +62,7 @@ LLC + SNAP + payload (a *length*, not an EtherType), and the eight-byte
 Four vectors, taken verbatim from **scapy's** CDP regression suite
 (`test/contrib/cdp.uts`). Scapy is an independent implementation, so the field
 values and checksum verdicts asserted here are not this codec marking its own
-homework — the circularity root `CLAUDE.md` names as a failure mode, and the
+homework — the circularity root `AGENTS.md` names as a failure mode, and the
 reason `rss` was demoted (its test parsed the `rss` crate's output with the `rss`
 crate).
 
@@ -109,7 +109,7 @@ running this codec, which would have made the assertion circular.
 
 The `0x80` case is the one value where Wireshark and scapy disagree
 (`byte & 0x80` vs `byte <= 0x80`). It is pinned so the choice is recorded as a
-decision. See `src/server/cdp/CLAUDE.md` for why Wireshark wins.
+decision. See `src/server/cdp/AGENTS.md` for why Wireshark wins.
 
 ### Robustness
 
@@ -159,7 +159,7 @@ broken or hallucinating backend looks like; the retry/repair loop exhausts and
 
 It waits for the decision line before starting the silence timer, so the silence
 being measured is the silence of a *failed* answer rather than of an answer still
-in flight — the fixed-sleep mistake root `CLAUDE.md` records.
+in flight — the fixed-sleep mistake root `AGENTS.md` records.
 
 ### `test_cdp_no_advertisement_is_silent_and_logged_as_a_refusal`
 
@@ -172,7 +172,7 @@ indistinguishable, which is exactly what the fail-closed discipline in
 
 Six mocked calls total across the three tests — one startup call each, plus one
 event call each (the failure test's event call retries, hence `expect_at_least`).
-Well under the ~10 the root `CLAUDE.md` asks for.
+Well under the ~10 the root `AGENTS.md` asks for.
 
 Every test finishes with `verify_mocks()` — without it a test asserts nothing
 about LLM interaction at all. Two of the three wait with `wait_for_mocks(30)`
@@ -206,7 +206,7 @@ The codec tests have no such requirement and run anywhere.
   our output.
 - **Periodic advertisement.** There is no 60-second timer to test.
 
-The path to closing the first two is in `src/server/cdp/CLAUDE.md`: this machine
+The path to closing the first two is in `src/server/cdp/AGENTS.md`: this machine
 has the `feth` driver, so `sudo ifconfig feth0 create && sudo ifconfig feth1 peer
 feth0` gives a real Ethernet pair with no hardware, and Wireshark's own CDP
 dissector is the independent check. **Not done, and not claimed.**

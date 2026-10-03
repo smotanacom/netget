@@ -504,7 +504,7 @@ limiting, and WSS.
 
 ## Testing Strategy
 
-See `tests/server/webrtc_signaling/CLAUDE.md` for testing details.
+See `tests/server/webrtc_signaling/AGENTS.md` for testing details.
 
 Key test scenarios:
 - Two peers register and exchange offers/answers

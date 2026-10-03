@@ -245,8 +245,8 @@ timeout 30 ./cargo-isolated.sh test --features snmp --test client::snmp::e2e_tes
 
 ## References
 
-- [NetGet SNMP Client Implementation](../../../src/client/snmp/CLAUDE.md)
-- [NetGet SNMP Server Implementation](../../../src/server/snmp/CLAUDE.md)
+- [NetGet SNMP Client Implementation](../../../src/client/snmp/AGENTS.md)
+- [NetGet SNMP Server Implementation](../../../src/server/snmp/AGENTS.md)
 - [E2E Test Infrastructure](../../helpers/mod.rs)
 
 ## `command_channel_test.rs`

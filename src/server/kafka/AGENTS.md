@@ -227,7 +227,7 @@ from this module's encoders — reached through the `pub use kafka_protocol;` re
 `mod.rs`. That validates NetGet's framing, version negotiation, dispatch, event emission
 and action handling against schemas generated from Apache Kafka's own message definitions.
 It does **not** validate those schemas, and it is not a substitute for driving a real
-client. See `tests/server/kafka/CLAUDE.md`.
+client. See `tests/server/kafka/AGENTS.md`.
 
 ## Dashboard injection (peer handle)
 
@@ -282,7 +282,7 @@ the connection.
 - [Apache Kafka Protocol Guide](https://kafka.apache.org/protocol)
 - [kafka-protocol Rust Crate](https://docs.rs/kafka-protocol/) — `Cargo.toml` pins 0.14
 - [Kafka Error Codes](https://kafka.apache.org/protocol.html#protocol_error_codes)
-- Testing notes: `tests/server/kafka/CLAUDE.md`
+- Testing notes: `tests/server/kafka/AGENTS.md`
 
 ## Connection bounds
 
@@ -305,7 +305,7 @@ frame unconditionally before any model turn — `PROTOCOL_QUALITY.md`'s three-st
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. Both the size-prefix read and the announced-body read are bounded, so a peer that declares a request size and then stalls is closed too. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

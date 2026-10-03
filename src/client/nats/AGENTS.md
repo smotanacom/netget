@@ -58,7 +58,7 @@ channel" for its duration.
 A `MSG` arrives, the model answers with `send_nats_publish`, the bytes go on the wire, and
 whatever comes back reaches the reader as another frame and raises another event. The cycle
 passes through the socket and the reader task, so **nothing recurses** and there is no
-self-referential future to box — this is the `datalink` case the root `CLAUDE.md` describes,
+self-referential future to box — this is the `datalink` case the root `AGENTS.md` describes,
 where the chain continues by itself. What bounds it is `client/llm_budget.rs`'s per-client call
 budget. Do not add a `MAX_FOLLOWUP_DEPTH` here; there is no recursion to bound.
 

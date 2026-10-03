@@ -19,4 +19,4 @@ unexpected response bytes also close the emitter and remove its command handle. 
 
 Successful send reports bytes accepted by the local transport, not remote persistence.
 Carbon plaintext has no acknowledgments. TCP only; no UDP, Pickle, TLS/authentication,
-storage/query API or aggregation. See `tests/client/graphite/CLAUDE.md` for peer evidence.
+storage/query API or aggregation. See `tests/client/graphite/AGENTS.md` for peer evidence.

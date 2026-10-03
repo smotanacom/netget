@@ -146,7 +146,7 @@ Hello, World!
 **Why `send_s3_write_result` exists.** Those four verbs return no body, and until this action
 was added the model had no way to say *yes* to them: the server answered them by falling
 through to an empty `200 OK` whenever the model's answer contained no S3 action. That is the
-fail-open pattern the root `CLAUDE.md` calls the most dangerous in this codebase — an empty 200
+fail-open pattern the root `AGENTS.md` calls the most dangerous in this codebase — an empty 200
 is exactly what S3 returns on a successful PUT or DELETE, so a model that declined the operation
 was reported to the caller as having performed it.
 
@@ -156,7 +156,7 @@ to change it in isolation was reverted for precisely that reason.) The vocabular
 first. With it in place the fall-through is gone: no S3 action now means **500 InternalError**,
 logged `decision=model_no_action`.
 
-Two traps this hit, both already described in the root `CLAUDE.md`, worth re-reading if you add
+Two traps this hit, both already described in the root `AGENTS.md`, worth re-reading if you add
 an action here:
 
 - Registering it in `get_sync_actions()` is **not enough**. `call_llm` builds the model's tool
@@ -500,7 +500,7 @@ owns every read once `serve_connection` starts and keeps polling the connection 
 LLM round-trip. It watches `ConnectionActivity` instead, which reports a connection with work in
 flight as not idle at all — so the model round-trip, and a `manual` rule parking an event for a
 human (`src/state/intercepts.rs`, 300s by default), sit outside every deadline by construction.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse: TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse: TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **One residual, stated rather than hidden.** The first-byte bound is discharged the moment any

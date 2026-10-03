@@ -61,9 +61,10 @@ impl Protocol for UdpProtocol {
         vec!["udp"]
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
-        use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
+        use crate::protocol::metadata::{DevelopmentState, PortTransport, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
+            .port_transport(PortTransport::Udp)
             .connectionless()
             // Deliberately silent: raw UDP has no error vocabulary of its own. Whatever the payload
             // protocol is, NetGet does not know it on this path, so any bytes sent on failure would

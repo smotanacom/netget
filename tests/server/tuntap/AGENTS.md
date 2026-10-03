@@ -29,7 +29,7 @@ Two consequences, both deliberate:
 
 **Never proven here:** `tun::create()`, the blocking read/write threads, the stop signal, and
 whether a real host accepts the packets NetGet builds. Those need `sudo`. See the maturity
-section of `src/server/tuntap/CLAUDE.md`.
+section of `src/server/tuntap/AGENTS.md`.
 
 ## The one test that matters most
 
@@ -66,7 +66,7 @@ Six model calls across the whole suite, and every one is deliberate:
 | `a_layer_two_answer_on_a_layer_three_interface_is_refused` | 1 |
 | everything else | **0**, and that zero is the assertion |
 
-Well under the ~10 the root `CLAUDE.md` asks for, and mostly because this protocol's whole
+Well under the ~10 the root `AGENTS.md` asks for, and mostly because this protocol's whole
 design is about *not* calling the model.
 
 ## Mock expectations
@@ -81,7 +81,7 @@ Two things worth knowing before editing them:
 * **`respond_with_actions_from_event` is mandatory for the echo replies.** An ICMP echo reply
   that does not carry the request's own `icmp_id` and `icmp_sequence` is discarded by the
   sender, so a hardcoded mock would produce a reply that decodes fine and means nothing. This
-  is the same rule `tests/server/dns/CLAUDE.md` states for query IDs, and it is *asserted*
+  is the same rule `tests/server/dns/AGENTS.md` states for query IDs, and it is *asserted*
   here: `assert_echo_reply` checks the id and sequence survived the whole pipeline.
 * **The lifecycle events are answered by static rules in most tests** (`lifecycle_handled()`),
   so the LLM call counts are about *packets*. That is not a workaround — it is gate 2 working,
@@ -93,7 +93,7 @@ Two things worth knowing before editing them:
 `Harness::wait_for_received` polls the `received` counter rather than sleeping a fixed
 interval. The pipeline finishes a frame when it has decided about it, so the counter *is* the
 condition being waited on. The fixed-sleep-then-assert shape is exactly the load flakiness the
-root `CLAUDE.md` records — enough alone, not enough at `--test-threads=100`.
+root `AGENTS.md` records — enough alone, not enough at `--test-threads=100`.
 
 There is still a 120 ms settle after the last frame is counted, because the counter is bumped
 before the decision is made. **That settle did prove marginal, exactly as this file predicted,
@@ -103,7 +103,7 @@ It surfaced only in a full `--all-features` sweep at `--test-threads=100` — 12
 run — where 120 ms was no longer enough for a mock model round trip to complete. Two tests
 failed, and both were ones asserting a *decision*: `the_model_is_consulted_when_nothing_else_answers`
 and `a_layer_two_answer_on_a_layer_three_interface_is_refused`. Both pass alone, in 0.5 s, at
-any feature set — which is precisely why the root `CLAUDE.md` says passing in isolation tells
+any feature set — which is precisely why the root `AGENTS.md` says passing in isolation tells
 you the deadline was wrong, not that the code is fine.
 
 `Harness::wait_for_stat` is the fix: it polls **the counter the test actually asserts on**,

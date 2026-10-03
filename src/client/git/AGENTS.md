@@ -295,7 +295,7 @@ Errors are propagated to the LLM via `git_operation_error` events:
 
 ## Testing Strategy
 
-See `tests/client/git/CLAUDE.md` for test implementation details.
+See `tests/client/git/AGENTS.md` for test implementation details.
 
 `tests/client/git/operation_events_test.rs` pins the loop above: a temp repository
 with one commit, an in-process mock model, `git_connected` → `git_log` →

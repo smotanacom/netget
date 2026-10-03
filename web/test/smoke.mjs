@@ -55,7 +55,9 @@
 // the answer — is checked at each point of a `<think>` stream, and a model that does not think
 // is checked to have nothing split out of its text.
 
+import { checkRemainingHttpServers } from './remaining_http_servers.mjs';
 import { readFileSync } from 'node:fs';
+import './adventure.mjs';
 import { Duplex } from 'node:stream';
 import http from 'node:http';
 import http2 from 'node:http2';
@@ -560,7 +562,7 @@ try {
 
     // openapi: a spec-routed GET.
     const OPENAPI_PORT = 8081;
-    await startServer({ protocol: 'openapi', port: OPENAPI_PORT, instruction: 'Serve the todo API.', startup_params: { spec: TODO_SPEC } });
+    const openapiServer = await startServer({ protocol: 'openapi', port: OPENAPI_PORT, instruction: 'Serve the todo API.', startup_params: { spec: TODO_SPEC } });
     const todos = await httpRequest(OPENAPI_PORT, { path: '/todos', headers: { accept: 'application/json' } });
     if (todos.status !== 200 || !String(todos.headers['content-type']).startsWith('application/json')) fail('openapi GET /todos: ' + JSON.stringify(todos));
     const todoList = JSON.parse(todos.body);
@@ -667,10 +669,13 @@ try {
     if (!JSON.stringify(esParked.event_data).includes('"title":"Dune"')) fail('the Elasticsearch hits did not reach the client: ' + JSON.stringify(esParked));
     webClients.elasticsearch = `[ + client ] #${esClient.id}, [ send ] search -> ${esDetail}; parked hit "Dune"`;
 
-    // openapi: the client needs the spec, which `[ + client ]` cannot know (the dashboard's form
-    // asks for it), so it is started through ClientForm with the server's spec and routed to the
-    // model: connected -> the model runs listTodos -> the openapi server's model answers -> the
-    // response is reported back to the model. Then [ send ] the same operation.
+    // OpenAPI pairing inherits the running server's spec and targets its local base URL.
+    const oaPair = await connectViaButton(openapiServer.id, 'openapi');
+    await send(oaPair.id, { type: 'execute_operation', operation_id: 'listTodos', path_params: {}, query_params: {} });
+    const oaPairReply = await parkedOn(oaPair.id, 'openapi_operation_response');
+    if (oaPairReply.event_data.status_code !== 200 || !String(oaPairReply.event_data.body).includes('Buy milk')) fail('the inherited OpenAPI spec did not complete a request: ' + JSON.stringify(oaPairReply));
+
+    // A separately model-driven client still chooses operations on connect and response.
     let oaClient = null;
     netget.start_client(JSON.stringify({ protocol: 'openapi', remote_addr: `127.0.0.1:${OPENAPI_PORT}`, instruction: 'List the todos.', startup_params: { spec: TODO_SPEC } }), (json) => { oaClient = JSON.parse(json); });
     await waitFor(() => oaClient !== null, 'start_client (openapi) to answer');
@@ -701,7 +706,7 @@ try {
     webClients.bitcoin = `ClientForm #${btcClient.id} -> http :${HTTP_PORT}: [ send ] ${btcDetail}; blocks ${btc.result.blocks}; Basic auth arrived`;
 
     // npm, pypi, maven: each registry client through [ + client ] on NetGet's own server of its
-    // protocol (a bare address is http:// in the browser), [ send ] a lookup, and the answer the
+    // protocol (the pairing form explicitly chooses http://), [ send ] a lookup, and the answer the
     // server's model wrote found parked on the client.
     const registries = [
         { protocol: 'npm', port: 8086, action: { type: 'get_package_info', package_name: 'smoke-pkg' }, event: 'npm_package_info_received', marker: 'served to the smoke test' },
@@ -711,6 +716,7 @@ try {
     for (const r of registries) {
         const server = await startServer({ protocol: r.protocol, port: r.port, instruction: `Serve a tiny ${r.protocol} registry.` });
         const client = await connectViaButton(server.id, r.protocol);
+        if (client.remote_addr !== `http://127.0.0.1:${r.port}`) fail(`the ${r.protocol} pair must explicitly use HTTP: ` + JSON.stringify(client));
         const detail = await send(client.id, r.action);
         if (!serverRequests.some((q) => q.protocol === r.protocol)) fail(`the ${r.protocol} request never reached the server's model; [ send ] said ` + detail);
         const parked = await parkedOn(client.id, r.event);
@@ -761,12 +767,11 @@ try {
     webClients.ollama = `[ + client ] #${ollamaClient.id}, [ send ] generate -> ${ollamaDetail}; parked "Smoke City, said smoke-model"`;
 
     // oauth2 and openidconnect: the crates' own HTTP hook (`request_async`, `discover_async`)
-    // is handed the transport in the browser. Both need startup parameters `[ + client ]`
-    // cannot know (a client_id, a token URL), so they go through ClientForm, routed to the
-    // model: it asks for a client-credentials token, NetGet's server's model issues one, and
+    // is handed the transport in the browser. First exercise model-driven ClientForm clients:
+    // the model asks for a client-credentials token, NetGet's server's model issues one, and
     // the token event (with the expiry the server chose) comes back to the model.
     const OAUTH2_PORT = 8090;
-    await startServer({ protocol: 'oauth2', port: OAUTH2_PORT, instruction: 'Issue tokens to smoke-app.' });
+    const oauthServer = await startServer({ protocol: 'oauth2', port: OAUTH2_PORT, instruction: 'Issue tokens to smoke-app.' });
     let oauthRefused = null;
     netget.start_client(JSON.stringify({ protocol: 'oauth2', remote_addr: `127.0.0.1:${OAUTH2_PORT}`, instruction: 'Get a token.', startup_params: { client_id: 'smoke-app', token_url: 'https://127.0.0.1:1/token' } }), (json) => { oauthRefused = JSON.parse(json); });
     await waitFor(() => oauthRefused !== null, 'start_client (oauth2, https) to answer');
@@ -785,7 +790,7 @@ try {
     await waitFor(() => clientResponses.oauth2.length > 1, 'the injected token request reported to the model', 20000);
     webClients.oauth2 = `ClientForm #${oauthClient.id}: model asked for client_credentials -> token, expires_in ${oauthToken.expires_in}; [ send ] -> ${oauthDetail}; https token URL refused`;
 
-    await startServer({ protocol: 'openid', port: OIDC_PORT, instruction: 'Be an OpenID provider for smoke-app.' });
+    const oidcServer = await startServer({ protocol: 'openid', port: OIDC_PORT, instruction: 'Be an OpenID provider for smoke-app.' });
     let oidcClient = null;
     netget.start_client(JSON.stringify({ protocol: 'openidconnect', remote_addr: `http://127.0.0.1:${OIDC_PORT}`, instruction: 'Discover the provider and get a token.',
         startup_params: { client_id: 'smoke-app', client_secret: 'smoke-secret' } }), (json) => { oidcClient = JSON.parse(json); });
@@ -799,6 +804,50 @@ try {
     const oidcAsked = serverRequests.filter((r) => r.protocol === 'openid').map((r) => r.context.endpoint_type);
     for (const endpoint of ['discovery', 'jwks', 'token']) if (!oidcAsked.includes(endpoint)) fail(`the OpenID provider's model never saw a ${endpoint} request: ` + JSON.stringify(oidcAsked));
     webClients.openidconnect = `ClientForm #${oidcClient.id}: discovered ${discovered.issuer} (${oidcAsked.join(', ')}), token expires_in ${oidcToken.expires_in}`;
+
+    // The page's pair button opens the real dashboard form for unknown credentials.
+    // Type into its focused client_id field, fill the optional secret, then use the
+    // form's keyboard Apply button. This exercises the UI, not a test-only parameter API.
+    async function credentialPair(serverId, protocol) {
+        const before = new Set();
+        let listed = false;
+        netget.clients((json) => { JSON.parse(json).forEach((c) => before.add(c.id)); listed = true; });
+        await waitFor(() => listed, 'clients before credential form');
+        const screenStart = screen.length;
+        let opened = null;
+        netget.connect_client_to_server(serverId, (json) => { opened = JSON.parse(json); });
+        await waitFor(() => opened !== null, 'the credential form to open');
+        if (opened.error || opened.configuration_required !== 'client_id' || opened.form_opened !== true) fail('pairing did not request client_id in a dashboard form: ' + JSON.stringify(opened));
+        await waitFor(() => screen.slice(screenStart).includes(`New ${opened.protocol} client`), 'the credential form to paint');
+        netget.text('smoke-app\n');
+        netget.key(JSON.stringify({ key: 'Tab' }));
+        netget.text('smoke-secret\n');
+        // From client_secret: back through client_id, remote_addr, Cancel, Wireshark, Apply.
+        for (let i = 0; i < 5; i++) netget.key(JSON.stringify({ key: 'Tab', shift: true }));
+        netget.key(JSON.stringify({ key: 'Enter' }));
+        let created = null;
+        await waitFor(() => {
+            netget.clients((json) => { created = JSON.parse(json).find((c) => !before.has(c.id) && c.protocol.toLowerCase() === protocol && c.status === 'Connected') || created; });
+            return created !== null;
+        }, `the configured ${protocol} client to connect`, 20000);
+        // Creation must finish and dismiss its modal, including OIDC's initial discovery.
+        await waitFor(() => screen.slice(screenStart).includes(`Connected client #${created.id}`), 'the credential form apply to finish', 20000);
+        return created;
+    }
+    const oauthPair = await credentialPair(oauthServer.id, 'oauth2');
+    await send(oauthPair.id, { type: 'exchange_client_credentials', scopes: 'read' });
+    const oauthPairToken = await parkedOn(oauthPair.id, 'oauth2_token_obtained');
+    if (oauthPairToken.event_data.expires_in !== 1234) fail('the configured OAuth2 pair failed to receive its token: ' + JSON.stringify(oauthPairToken));
+    webClients.oauth2 += '; paired through credential form, local token endpoint received token';
+
+    const oidcPair = await credentialPair(oidcServer.id, 'openidconnect');
+    if (oidcPair.remote_addr !== `http://127.0.0.1:${OIDC_PORT}`) fail('the OIDC pair must use an absolute local URL: ' + JSON.stringify(oidcPair));
+    await send(oidcPair.id, { type: 'exchange_client_credentials', scopes: 'openid' });
+    const oidcPairToken = await parkedOn(oidcPair.id, 'oidc_token_received');
+    if (oidcPairToken.event_data.expires_in !== 4321) fail('the configured OIDC pair failed to receive its token: ' + JSON.stringify(oidcPairToken));
+    webClients.openidconnect += '; paired through credential form, discovery completed and token received';
+
+    Object.assign(hyper, await checkRemainingHttpServers({ startServer, httpRequest, checkDate, fail }));
 
     if (panics.length) fail('the wasm instance panicked:\n' + panics.join('\n'));
 

@@ -93,7 +93,7 @@ decision. The broker must refuse the connection. It asserts on the text `"no dec
 while `test_amqp_connection_refused_by_handler` asserts on the handler's own
 `"denied by policy"` — so the two refusal paths stay distinguishable, which is the point of
 having them be distinguishable in the first place (see the fail-open warning in the root
-`CLAUDE.md`).
+`AGENTS.md`).
 
 ## Running
 

@@ -166,6 +166,9 @@ pub struct ConversationHandler {
     /// client with every request so a bridge host can show them as structured data.
     offered_actions: Vec<ActionDefinition>,
 
+    /// Structured metadata for a single network event, retained across all retries.
+    bridge_event: Option<crate::llm::bridge::BridgeEventContext>,
+
     /// Conversation-local policy retained once credential parameters are offered.
     private_payloads: bool,
 
@@ -223,11 +226,36 @@ impl ConversationHandler {
             tool_schemas: Vec::new(),
             use_native_tools: false,
             offered_actions: Vec::new(),
+            bridge_event: None,
             private_payloads: false,
             max_history_messages: DEFAULT_MAX_HISTORY_MESSAGES,
             max_history_chars: DEFAULT_MAX_HISTORY_CHARS,
             trim_generation: 0,
         }
+    }
+
+    /// Attach the event for a bridge host without making it recover context from prompt text.
+    pub fn with_bridge_event(
+        mut self,
+        server_id: crate::state::ServerId,
+        connection_id: Option<crate::server::connection::ConnectionId>,
+        protocol: &str,
+        event: &crate::protocol::Event,
+    ) -> Self {
+        // Native transports already render event data into the prompt and never consume
+        // this metadata. Avoid another potentially large clone for every native request.
+        if self.client.backend_type() != "bridge" {
+            return self;
+        }
+        self.bridge_event = Some(crate::llm::bridge::BridgeEventContext {
+            token: self.conversation_id.clone(),
+            server_id: server_id.as_u32(),
+            connection_id: connection_id.map(|id| id.as_u32()),
+            protocol: protocol.to_string(),
+            event_type: event.id().to_string(),
+            data: event.data.clone(),
+        });
+        self
     }
 
     /// Override the conversation-history caps (see [`DEFAULT_MAX_HISTORY_MESSAGES`] and
@@ -673,6 +701,22 @@ impl ConversationHandler {
         web_search_mode: WebSearchMode,
         available_actions: Vec<ActionDefinition>,
     ) -> Result<Vec<serde_json::Value>> {
+        let result = self
+            .generate_until_final_response(approval_tx, web_search_mode, available_actions)
+            .await;
+        if result.is_err() {
+            // Rejected/exhausted responses must not leave a live conversation in the UI.
+            self.end_tracking().await;
+        }
+        result
+    }
+
+    async fn generate_until_final_response(
+        &mut self,
+        approval_tx: Option<tokio::sync::mpsc::UnboundedSender<WebApprovalRequest>>,
+        web_search_mode: WebSearchMode,
+        available_actions: Vec<ActionDefinition>,
+    ) -> Result<Vec<serde_json::Value>> {
         // Register conversation if tracking is enabled and not already registered
         if !self.registered {
             if let (Some(state), Some(source), Some(details)) =
@@ -689,7 +733,7 @@ impl ConversationHandler {
             }
         }
 
-        let mut all_actions = Vec::new();
+        let mut final_actions = None;
         let mut tool_results = Vec::new();
         // Index of the oldest rejected assistant response not yet superseded by a valid one.
         // Everything from there up to the current response is dropped once the model gets it
@@ -788,12 +832,11 @@ impl ConversationHandler {
             let unknown_actions: Vec<String> = action_response
                 .actions
                 .iter()
+                .chain(action_response.tools.iter())
                 .filter_map(|action| {
-                    let action_type = action.get("type").and_then(|v| v.as_str())?;
-                    // Skip tool actions - they're validated separately
-                    if ToolAction::is_tool_action(action) {
-                        return None;
-                    }
+                    let Some(action_type) = action.get("type").and_then(|v| v.as_str()) else {
+                        return Some("(missing or non-string action type)".to_string());
+                    };
                     // Check if action exists in valid actions
                     if !valid_action_names.contains(action_type) {
                         Some(action_type.to_string())
@@ -1111,34 +1154,22 @@ impl ConversationHandler {
                 )));
             }
 
-            // Collect validated regular actions
-            all_actions.extend(ready.clone());
-            let regular = ready;
-
-            // Add acknowledgment message for regular actions so LLM knows they were collected
-            if !regular.is_empty() {
-                let action_summary = regular
-                    .iter()
-                    .filter_map(|a| a.get("type").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                debug!(
-                    "Acknowledging {} regular actions in conversation: {}",
-                    regular.len(),
-                    action_summary
-                );
-
-                self.messages.push(Message::user(format!(
-                    "Actions acknowledged and will be executed: [{}]",
-                    action_summary
-                )));
-            }
-
-            // If no tool calls, we're done
+            // Only a final response commits actions. An intermediate tool round can
+            // contain a draft answer, which the next response may repeat or replace.
+            // Keeping it would execute both drafts (for example, two IMAP greetings).
             if tools.is_empty() {
+                final_actions = Some(ready);
                 debug!("No tool calls in response, finishing conversation");
                 break;
+            }
+
+            if !ready.is_empty() {
+                self.messages.push(Message::user(
+                    "Actions in a response with tool calls are drafts and have not been executed. \
+                     After reading the tool results, return all actions to execute in one \
+                     final response with no tool calls."
+                        .to_string(),
+                ));
             }
 
             // If this is the last iteration, warn about unused tool calls
@@ -1154,7 +1185,7 @@ impl ConversationHandler {
                         tools.len()
                     ));
                 }
-                break;
+                anyhow::bail!("Tool iteration limit reached before a final action response");
             }
 
             // Execute tool calls
@@ -1456,6 +1487,10 @@ impl ConversationHandler {
             }
         }
 
+        let all_actions = final_actions.context(
+            "Conversation ended without a final action response; no draft actions executed",
+        )?;
+
         // Log details for each action (validation already happened above)
         for action in &all_actions {
             let action_type = action
@@ -1703,11 +1738,12 @@ impl ConversationHandler {
                 // as some models (e.g., gpt-oss) don't support Ollama's JSON format mode
                 let generate_response = self
                     .client
-                    .generate_offering(
+                    .generate_offering_with_event(
                         &self.model,
                         &full_prompt,
                         None,
                         &self.offered_actions,
+                        self.bridge_event.as_ref(),
                         self.private_payloads,
                     )
                     .await

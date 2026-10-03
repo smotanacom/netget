@@ -125,7 +125,7 @@ same event with no way to tell them apart is the standing mistake in this repo:
 the first answers every occurrence and the second reports zero calls.
 
 Unlike the UDP-family protocols, there is no transaction ID to echo, so the
-`respond_with_actions_from_event` requirement in the root `CLAUDE.md` does not
+`respond_with_actions_from_event` requirement in the root `AGENTS.md` does not
 bite here for its usual reason. SSDP's equivalent — the `ST` echo — is done by
 the *server* (`resolve_st`), not by the model, so a mock cannot get it wrong;
 that is asserted in Layer 1b instead.
@@ -166,13 +166,13 @@ and no parameter for it; `rupnp` 3.0 re-exports that same function; `ssdp` 0.7
 has a `unicast()` API but filters loopback out of its socket list; `upnp-rs`
 0.2 has a `search_once_to_device(SocketAddr)` that unconditionally
 `join_multicast_v4`s the destination and so fails on `127.0.0.1`. The full
-survey with sources is in `src/server/ssdp/CLAUDE.md`.
+survey with sources is in `src/server/ssdp/AGENTS.md`.
 
 A server on 127.0.0.1:ephemeral cannot receive a datagram sent to the group
 anyway, so this is structural.
 
 The two remaining options are both explicitly *not* third-party evidence under
-the root `CLAUDE.md`, and neither was taken:
+the root `AGENTS.md`, and neither was taken:
 
 * a hand-written M-SEARCH sender inside the test — the `dhcp` /
   `tests/helpers/usbip_client.rs` class, an independent reading of the spec
@@ -189,7 +189,7 @@ the root `CLAUDE.md`, and neither was taken:
 
 The device description document, SOAP control, SCPD, GENA eventing,
 `BOOTID`/`CONFIGID` bookkeeping, spontaneous `ssdp:alive` on startup, and
-duplicate-search suppression. `src/server/ssdp/CLAUDE.md` says so for all of
+duplicate-search suppression. `src/server/ssdp/AGENTS.md` says so for all of
 them; `metadata()` names only the first three, so it is the per-protocol doc and
 not the metadata that is complete here.
 

@@ -7,7 +7,7 @@ nothing else: no `mod.rs`, no `actions.rs`, no `pub mod mercurial` in
 `src/client/mod.rs`, and no entry in `src/protocol/client_registry.rs`. Everything
 below is a design sketch written in the present tense, including the code samples
 and the "Implementation Details" sections — none of it exists. Read it as a plan,
-not as documentation of behaviour. (`src/client/svn/CLAUDE.md` is the same kind of
+not as documentation of behaviour. (`src/client/svn/AGENTS.md` is the same kind of
 document and says so at the top; this one did not, which is why the banner is here.)
 
 The Mercurial **server** (`src/server/mercurial/`) is real and is what the

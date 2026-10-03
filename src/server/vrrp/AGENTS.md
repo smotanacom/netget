@@ -32,7 +32,7 @@ Two priorities are special and the model is told so:
 | `0` | **Resigning.** RFC 3768 §6.4.3: the master is standing down, and every backup takes over *immediately* instead of waiting out its master-down interval. It is the one advertisement that provokes an instant election, which is why it gets its own event. |
 | anything else | Higher wins; ties break on the source IP address. |
 
-Point this at a lab segment. `tests/server/vrrp/CLAUDE.md` describes the `feth` pair to use.
+Point this at a lab segment. `tests/server/vrrp/AGENTS.md` describes the `feth` pair to use.
 
 ## Why silence is the failure mode
 
@@ -40,7 +40,7 @@ Point this at a lab segment. `tests/server/vrrp/CLAUDE.md` describes the `feth` 
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-VRRP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues.
+VRRP is in the **deliberately-silent** class the root `AGENTS.md` catalogues.
 
 VRRP has exactly one message type — the advertisement — and it is a *positive claim to own
 the gateway address*. There is no error message, no NAK, no "I do not know". So when the LLM
@@ -80,7 +80,7 @@ the wire; the model supplies the decisions, one advertisement at a time.
 This is not an omission to be filled in later. An implementation that elected itself master and
 then kept advertising on a timer would go on asserting gateway ownership after the model
 stopped answering — an automatic master NetGet cannot back, which is exactly the fail-open
-shape the root `CLAUDE.md` forbids. The silence guarantee above only means anything because
+shape the root `AGENTS.md` forbids. The silence guarantee above only means anything because
 there is no background transmitter to undermine it.
 
 It is also what keeps the no-storage rule: the server holds no neighbour table, no election
@@ -178,7 +178,7 @@ when this was hand-rolled.
 
 With **no** `carp_passphrase` configured, an inbound HMAC is reported to the model as
 `hmac_valid: null`, never `true`. Reporting an unchecked signature as valid is the fail-open
-shape the OAuth2 post-mortem in the root `CLAUDE.md` describes.
+shape the OAuth2 post-mortem in the root `AGENTS.md` describes.
 
 ### The two transports
 
@@ -187,7 +187,7 @@ shape the OAuth2 post-mortem in the root `CLAUDE.md` describes.
 is stripped on receive and its source/destination become the VRRPv3 pseudo-header, which is
 the only place a checksum can be checked properly. Creating the socket is synchronous and is
 the privileged step, so its failure reaches the caller directly and **nothing is spawned
-before it succeeds** — the ARP/DataLink/ICMP fire-and-forget defect the root `CLAUDE.md`
+before it succeeds** — the ARP/DataLink/ICMP fire-and-forget defect the root `AGENTS.md`
 records is designed out rather than left to be found later.
 
 **UDP (`transport: "udp"`).** One **complete VRRP or CARP message per datagram** — the same
@@ -325,7 +325,7 @@ was dropped once both this protocol and `stp` reported it unused.
 * The codec, against literal specification bytes in **both** directions — VRRPv2, VRRPv3 and
   CARP, including the seconds-versus-centiseconds interval at its exact offsets, both checksum
   scopes with the sums worked through by hand, and CARP's 36-octet layout. See
-  `tests/server/vrrp/CLAUDE.md` for the provenance of the literals and why they are not
+  `tests/server/vrrp/AGENTS.md` for the provenance of the literals and why they are not
   circular evidence.
 * That this code **drives** SHA-1 and HMAC-SHA1 correctly — the hash itself is the `sha1`
   crate's — against FIPS 180 / RFC 3174 and RFC 2202 vectors, plus a 0..=130 length sweep
@@ -349,7 +349,7 @@ was dropped once both this protocol and `stp` reported it unused.
 
 `Experimental` is therefore the honest rating and it is not close. Beta means "works against
 real clients", and nothing here has met one. Do not promote it on the codec tests alone — that
-is the mistake the root `CLAUDE.md` records for `wireguard`, which held `Stable` on a test that
+is the mistake the root `AGENTS.md` records for `wireguard`, which held `Stable` on a test that
 mocked events the implementation did not have.
 
 ## The concrete path to Beta

@@ -55,34 +55,11 @@ Ollama API responses use simple JSON format:
 
 ## LLM Integration
 
-### Current Implementation (V1 - Direct Response)
-
-The current implementation generates responses using the NetGet LLM (Ollama) directly:
-
-```rust
-let response_text = llm_client.generate(&model, &prompt).await?;
-```
-
-This means the Ollama server **uses Ollama to respond to Ollama API requests** - a bit meta but functional.
-
-### Future Enhancement (V2 - LLM Control)
-
-A more sophisticated version would:
-
-1. Receive Ollama API request (e.g., `/api/generate`)
-2. Call NetGet LLM with event: "ollama_generate_request_received"
-3. LLM decides how to respond (via actions):
-    - `ollama_generate_response` - Return text
-    - `ollama_error_response` - Return error
-    - `ollama_models_response` - Return model list
-4. Execute action and send HTTP response
-
-This would allow the LLM to:
-
-- Return custom/fake responses for testing
-- Simulate errors or edge cases
-- Act as a honeypot with controllable behavior
-- Test client implementations
+Every endpoint dispatches a protocol event through `call_llm`, which also supports static,
+script and manual routing. NetGet owns HTTP and Ollama's JSON envelopes; the handler or model
+chooses structured actions such as `ollama_generate_response`, `ollama_chat_response`,
+`ollama_models_response` and `ollama_error_response`. An unanswered event fails closed. This is
+a mock API server, not a transparent proxy to the requested model.
 
 ### Dual Logging
 
@@ -100,7 +77,7 @@ let _ = status_tx.send(format!("[DEBUG] Chat: model={}, {} messages", model, mes
 
 ## Connection Tracking
 
-Each HTTP request is treated as a separate connection:
+Each accepted TCP socket is tracked as a connection; hyper can serve multiple requests on it:
 
 1. Accept TCP connection
 2. Create `ConnectionId` and add to `ServerInstance`
@@ -116,27 +93,12 @@ Connection state includes:
 
 ## Limitations
 
-### 1. No Streaming Support
+### 1. Streaming envelopes are assembled in memory
 
-Ollama API supports streaming responses (newline-delimited JSON):
-
-```
-{"response":"The","done":false}
-{"response":" capital","done":false}
-{"response":" of","done":false}
-{"response":" France","done":false}
-{"response":" is","done":false}
-{"response":" Paris","done":false}
-{"response":".","done":true}
-```
-
-Current implementation uses `"stream": false` and returns full response at once.
-
-**Future**: Could implement streaming by:
-
-- Using `hyper::body::Body` with `SyncSender<Result<Bytes, Infallible>>`
-- LLM generates chunks via actions
-- Stream chunks back to client
+`stream: true` on generate/chat returns `application/x-ndjson` with word-sized records and a
+final `done: true` record. The whole response is assembled after the handler has answered and
+sent in one body; tokens do not arrive incrementally from the backend. Non-streaming requests
+receive one JSON response.
 
 ### 2. Model Management is a decision, not a rubber stamp
 
@@ -147,7 +109,7 @@ They used to answer `{"status": "success"}` unconditionally, with no event and n
 anywhere in the path, and `/api/pull` invented a digest of `sha256:0000000000000000`. So a
 server instructed "this instance only serves llama2, refuse anything else" reported every pull
 as downloaded and every delete as removed: the instruction could not be wrong, it simply had no
-effect. That is the fail-open shape from the root `CLAUDE.md` in its purest form — the decision
+effect. That is the fail-open shape from the root `AGENTS.md` in its purest form — the decision
 was never asked for.
 
 All four now raise **`ollama_admin_request`** (`operation`, `model`, `destination`) and require
@@ -170,7 +132,7 @@ including ones it had just refused to pull.
 defended it was wrong in one load-bearing detail. The argument: an embedding is a few hundred
 to a few thousand floats, asking a language model to emit them would produce plausible-looking
 noise, and that is the numeric equivalent of the raw-bytes-in-actions rule the root
-`CLAUDE.md` forbids. All true. The conclusion it drew — "if an operator ever needs real
+`AGENTS.md` forbids. All true. The conclusion it drew — "if an operator ever needs real
 control here the answer is a script handler, not an action" — was not: **the endpoint raised
 no event, so a script handler could not reach it either.** Neither could a static rule, nor
 the instruction, nor anything else an operator can write. It was not a stub with an escape
@@ -214,6 +176,16 @@ looks like a complete one, and the model would answer a request it never saw. Th
 declared locally rather than imported from `http_common`, because the `ollama` feature does
 not pull in `http` and that module is configured out of an `--features ollama` build.
 
+After hyper flushes the refusal, NetGet half-closes its write side and drains at most 2 MiB
+for at most two seconds, discarding bytes in an 8 KiB buffer. Dropping the socket immediately
+while the client was still uploading could reset the connection and replace the 413 with
+`ECONNRESET`. The drain keeps an ordinary upload tail from destroying the reply, while both
+limits bound an endless upload or a peer that never closes its write side. Refused bytes never
+reach JSON parsing or the model. `connection_bounds_test` holds the upload tail until after
+413 and EOF for both Content-Length and chunked requests; `response_drain_tests` in
+`src/server/accept_bounded.rs` verifies both shared drain bounds, and the real-client test
+sends a full 9 MiB request through reqwest.
+
 ### 6. Request-only
 
 `metadata()` declares `.request_only(…)`: "The Ollama API is HTTP request/response; a server
@@ -237,7 +209,7 @@ rather than failing the request: the refusal itself is the part that must surviv
 
 ## Testing Strategy
 
-See `tests/server/ollama/CLAUDE.md` for E2E testing approach.
+See `tests/server/ollama/AGENTS.md` for E2E testing approach.
 
 Key test scenarios:
 
@@ -263,8 +235,8 @@ Key test scenarios:
 
 ## Future Enhancements
 
-1. **Streaming**: Implement streaming responses
-2. **LLM Control**: Let LLM decide all responses (not just delegate to Ollama)
+1. **Streaming**: Send responses incrementally instead of assembling all NDJSON records first
+2. **Interoperability**: Exercise the model-management endpoints with independent clients
 3. **Model State**: Track "pulled" models in memory
 4. **Custom Endpoints**: Support Ollama API extensions
 5. **Metrics**: Track request counts, response times, etc.

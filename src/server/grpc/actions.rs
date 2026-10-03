@@ -330,7 +330,7 @@ fn grpc_error_action() -> ActionDefinition {
             Parameter {
                 name: "message".to_string(),
                 type_hint: "string".to_string(),
-                description: "Error message".to_string(),
+                description: "Terminal gRPC status explanation sent to the peer".to_string(),
                 required: true,
             },
         ],
@@ -432,7 +432,7 @@ fn stream_actions() -> Vec<ActionDefinition> {
     ] {
         let mut parameters = vec![Parameter { name:"stream_id".into(), type_hint:"integer".into(), required:false, description:"Active RPC id; required for peer injection, implicit within an event handler".into() }];
         if let Some((name, hint, description)) = extra { parameters.push(Parameter { name:name.into(), type_hint:hint.into(), required:true, description:description.into() }); }
-        actions.push(ActionDefinition { name:name.into(), description:description.into(), parameters, example, log_template:None });
+        actions.push(ActionDefinition { name:name.into(), description:description.into(), parameters, example, log_template:Some(LogTemplate::new().with_info(format!("gRPC {name} queued for the active RPC"))) });
     }
     actions.push(grpc_error_action());
     actions
@@ -460,11 +460,11 @@ fn stream_event(name: &'static str, description: &'static str) -> EventType {
             name: "method".into(),
             type_hint: "string".into(),
             required: true,
-            description: "Method name".into(),
+            description: "Protobuf RPC method within the declared service".into(),
         },
         Parameter {
             name: "message".into(),
-            type_hint: "object or null".into(),
+            type_hint: "object|null".into(),
             required: false,
             description: "Decoded typed request message, or null for lifecycle/tick events".into(),
         },

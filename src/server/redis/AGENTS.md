@@ -290,7 +290,7 @@ more. It now declares both halves; the constants and the reasoning live beside t
 **The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 Both bounds are declared startup parameters, because the right value is a property of who is

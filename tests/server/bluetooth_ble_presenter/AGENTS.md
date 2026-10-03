@@ -48,4 +48,4 @@ A real Bluetooth LE adapter, an independent central (nRF Connect or `btleplug`),
 actually accepts the peripheral as an input device. HID-over-GATT additionally requires bonding,
 and `ble-peripheral-rust` 0.2 exposes no pairing or bonding control at all — so this is blocked
 on the dependency, not just on hardware. Nothing here should be `#[ignore]`d to pretend
-otherwise: a skipped test is a silent pass, which `CLAUDE.md` rejects as evidence.
+otherwise: a skipped test is a silent pass, which `AGENTS.md` rejects as evidence.

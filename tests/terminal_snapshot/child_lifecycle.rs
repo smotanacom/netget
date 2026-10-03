@@ -16,7 +16,7 @@ fn spawn_fixture(
     // Ignore terminal hangup before announcing readiness. Otherwise closing the
     // dead parent's PTY could make this pass even without a death tie.
     let command = if let Some(program) = leased_program {
-        pty_process::blocking::Command::new(program)
+        pty_process::blocking::Command::new("/bin/sh").arg(program)
     } else {
         pty_process::blocking::Command::new("/bin/sh")
             .args(["-c", "trap '' HUP; printf 'READY\\n'; exec /bin/sleep 600"])

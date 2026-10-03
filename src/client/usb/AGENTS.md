@@ -116,7 +116,7 @@ Three defects, all on the path from the model's answer to `nusb`:
   the model's repair loop reads.
 - **Six `.unwrap()`s inside `tokio::spawn`.** `apply_usb_result` re-read the same fields with
   `.unwrap()`. A panic there is swallowed: the client task would die, the client would go on
-  reporting `Connected`, and nothing would explain it — the failure mode the root `CLAUDE.md`
+  reporting `Connected`, and nothing would explain it — the failure mode the root `AGENTS.md`
   describes for `block_on` in a URB callback, in a different place. They are fallible reads that
   report an error to the model now.
 

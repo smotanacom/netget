@@ -160,9 +160,8 @@ Tools gather information and return results to you. After a tool completes, you'
                 r#"# Available Actions
 
 Include actions in your JSON response to execute operations.
-You will see past actions you have executed on previous invocation, actions are not idempotent.
-Unless tools are also included, you will not be invoked again if you only return actions
-so you may include multiple actions in a single response.
+Include every action to execute, in order, in one final response without tool calls.
+If tools are available, use them first; actions in an intermediate tool round are drafts.
 
 "#,
             );
@@ -280,7 +279,7 @@ You used action name(s) that are not in the Available Actions list. This is NOT 
 
 ---
 
-**Please retry:** Use ONLY actions from the Available Actions list. If you're unsure what actions exist for a protocol, use the documentation tools first."#,
+**Please retry:** Use ONLY names from the Available Actions list. Return the complete corrected response; no action from the rejected response has been executed."#,
             unknown_list, available_summary
         )
     }
@@ -946,7 +945,7 @@ Understand what the user wants and respond with the appropriate actions to make 
     /// Two adjustments separate what a caller assembles from what the model is actually
     /// offered:
     ///
-    /// * the network-event tools (`read_file`, `generate_random`, `list_tasks`, …) are added;
+    /// * tools are removed: a network event asks for its immediate response actions;
     /// * [`Self::filter_actions_by_scripting_mode`] removes `update_script` and the
     ///   script parameters of `open_server` when scripting is Off.
     ///
@@ -957,8 +956,7 @@ Understand what the user wants and respond with the appropriate actions to make 
         state: &AppState,
         mut all_actions: Vec<ActionDefinition>,
     ) -> Vec<ActionDefinition> {
-        let web_search_mode = state.get_web_search_mode().await;
-        all_actions.extend(get_network_event_tool_actions(web_search_mode));
+        all_actions.retain(|action| !action.is_tool());
 
         let selected_mode = state.get_selected_scripting_mode().await;
         let has_scripting = selected_mode != crate::state::app_state::ScriptingMode::Off;
@@ -996,27 +994,15 @@ Understand what the user wants and respond with the appropriate actions to make 
         server_id: ServerId,
         all_actions: Vec<ActionDefinition>,
     ) -> (String, Vec<ActionDefinition>) {
-        // Add tool actions to network events (excluding documentation tools) and drop the
-        // script actions the current scripting mode does not allow. This is the list the
-        // model sees, so it is also the list returned to the caller to validate against.
-        let web_search_mode = state.get_web_search_mode().await;
+        // Remove tools and script actions the current scripting mode does not allow.
+        // The caller validates against this same list.
         let advertised = Self::advertised_network_event_actions(state, all_actions).await;
 
         // Note: all_actions already contains common + protocol + custom actions
         // They are pre-assembled by the action_helper, so we don't add common actions here
         let instruction = state.get_instruction(server_id).await.unwrap_or_default();
-        let web_search_available = web_search_mode != crate::state::app_state::WebSearchMode::Off;
-        let tool_examples = if web_search_available {
-            "read_file and web_search"
-        } else {
-            "read_file"
-        };
-
         let instructions_str = if instruction.is_empty() {
-            format!(
-                "Respond to the request with a set of actions. You may use these tools: {}",
-                tool_examples
-            )
+            "Respond to the request with the available actions.".to_string()
         } else {
             instruction
         };
@@ -1151,7 +1137,7 @@ Return: [{{"type": "show_message", "message": "Task '{}' cancelled - server no l
                 let mut actions = get_network_event_common_actions();
                 actions.extend(protocol_actions);
 
-                // Add tool actions (excluding documentation tools for network events)
+                // Scoped scheduled tasks retain tools for gathering information.
                 let web_search_mode = state.get_web_search_mode().await;
                 actions.extend(get_network_event_tool_actions(web_search_mode));
 
@@ -1211,7 +1197,7 @@ Return: [{{"type": "show_message", "message": "Task '{}' cancelled - connection 
                 let mut actions = get_network_event_common_actions();
                 actions.extend(protocol_actions);
 
-                // Add tool actions (excluding documentation tools for network events)
+                // Scoped scheduled tasks retain tools for gathering information.
                 let web_search_mode = state.get_web_search_mode().await;
                 actions.extend(get_network_event_tool_actions(web_search_mode));
 
@@ -1273,7 +1259,7 @@ Return: [{{"type": "show_message", "message": "Task '{}' cancelled - client no l
                 let mut actions = get_network_event_common_actions();
                 actions.extend(protocol_actions);
 
-                // Add tool actions (excluding documentation tools for network events)
+                // Scoped scheduled tasks retain tools for gathering information.
                 let web_search_mode = state.get_web_search_mode().await;
                 actions.extend(get_network_event_tool_actions(web_search_mode));
 

@@ -388,7 +388,7 @@ All DNS resolution happens through Tor:
 
 ## Testing Strategy
 
-See `tests/client/tor/CLAUDE.md` for testing details.
+See `tests/client/tor/AGENTS.md` for testing details.
 
 ### Local Testing
 

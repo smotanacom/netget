@@ -8,7 +8,7 @@ failure test provokes on purpose).
 The client half is written from RFC 8415 **in this file** and deliberately does not use
 `dhcproto`, which is the codec the server encodes with. Encoding and decoding with the same
 library on both sides asserts only that the library round-trips with itself; a real DHCPv6 client
-is an independent decoder like this one. The root `CLAUDE.md` names this failure mode — `rss` sat
+is an independent decoder like this one. The root `AGENTS.md` names this failure mode — `rss` sat
 at Experimental for months because its test parsed the server's output with the same crate that
 produced it.
 
@@ -112,4 +112,4 @@ Note `--test server dhcpv6::`, not `--test server::dhcpv6::e2e_test`: `--test` n
 - [RFC 8415](https://datatracker.ietf.org/doc/html/rfc8415),
   [RFC 3646](https://datatracker.ietf.org/doc/html/rfc3646),
   [RFC 6355](https://datatracker.ietf.org/doc/html/rfc6355)
-- `src/server/dhcpv6/CLAUDE.md` — the server side, and why silence is the correct failure mode
+- `src/server/dhcpv6/AGENTS.md` — the server side, and why silence is the correct failure mode

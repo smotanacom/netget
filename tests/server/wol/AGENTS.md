@@ -40,7 +40,7 @@ target MAC sixteen times, optionally with a SecureON trailer. Cases:
 specification for itself, an independent reading rather than an independent implementation. For
 third-party packets see `real_client_test.rs` below, which drives the real `wakeonlan`. The
 protocol is still `Experimental`, but no longer for want of a sender: see
-`src/server/wol/CLAUDE.md` for why a one-way protocol cannot reach `Beta` this way.
+`src/server/wol/AGENTS.md` for why a one-way protocol cannot reach `Beta` this way.
 
 ## `real_client_test.rs` — one test, **2 LLM calls**, real `wakeonlan` 0.50
 

@@ -33,7 +33,7 @@ against the file.
 ❌ **Scripting disabled** - mock-driven action responses.
 
 Dynamic mocks (`respond_with_actions_from_event`) are required rather than optional here, for
-the reason `tests/server/dns/CLAUDE.md` sets out at length: the transaction id is chosen at
+the reason `tests/server/dns/AGENTS.md` sets out at length: the transaction id is chosen at
 random by the client and must be echoed, and a static handler has no access to the event.
 
 ## Client Library
@@ -321,7 +321,7 @@ Add test to measure:
 Neither is `#[ignore]`d; the kdig test **fails** naming `brew install knot` rather than skipping.
 
 **The second one alone was half circular.** reqwest proves an HTTP server answers, not that the
-DNS on top is right — the root `CLAUDE.md` says exactly that about generic HTTP clients — and
+DNS on top is right — the root `AGENTS.md` says exactly that about generic HTTP clients — and
 the DNS message is decoded with **hickory-proto, the codec this server encodes with**. ALPN was
 unproven for a related reason: that client uses `http2_prior_knowledge()`, which skips ALPN
 entirely, so the `h2` advertisement could have been anything.

@@ -11,7 +11,7 @@ Search through programming documentation
 
 **Method**: GET
 **URI**: /search
-**Query String**: q&#x3D;rust+programming&amp;limit&#x3D;10
+**Query String**: q=rust+programming&limit=10
 
 **Headers**:
   Host: localhost:8080

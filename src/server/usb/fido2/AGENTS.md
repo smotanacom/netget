@@ -98,7 +98,7 @@ Three properties fall out of this and are worth stating explicitly:
 | anything else, or nothing, or an LLM outage | denied after `approval_timeout_secs` |
 
 An explicit denial is structurally distinct from silence — a different action, logged as a
-decision — which is the property the OAuth2 post-mortem in the root `CLAUDE.md` says to preserve.
+decision — which is the property the OAuth2 post-mortem in the root `AGENTS.md` says to preserve.
 
 `auto_approve` exists, defaults to **false**, and has to be named in `startup_params`. It
 short-circuits `wait()` and never asks.
@@ -280,7 +280,7 @@ Needs `libusb-1.0` (the `usbip` crate links it): `brew install libusb pkg-config
     --test server -- --test-threads=100 usb_fido2
 ```
 
-See `tests/server/usb_fido2/CLAUDE.md`.
+See `tests/server/usb_fido2/AGENTS.md`.
 
 ## Manual testing against a real host (untried)
 
@@ -327,5 +327,5 @@ sits below the crate and cannot synthesise a `USBIP_RET_SUBMIT` for a sequence t
 saw — and logs at ERROR with a `decision=fail_closed_*` tag.
 
 `MAX_TRANSFER_BUFFER_BYTES` is declared in `metadata()` via `.max_inbound_bytes(...)`.
-`src/server/usb/CLAUDE.md` has the full reasoning, the constants and what is still unguarded;
+`src/server/usb/AGENTS.md` has the full reasoning, the constants and what is still unguarded;
 `tests/server/usb_msc/guard_test.rs` is the wire-level test.

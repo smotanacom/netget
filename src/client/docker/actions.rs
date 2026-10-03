@@ -3,7 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, Parameter, ParameterDefinition,
 };
-use crate::protocol::{ConnectContext, EventType};
+use crate::protocol::{log_template::LogTemplate, ConnectContext, EventType};
 use crate::state::AppState;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -32,7 +32,7 @@ fn request() -> ActionDefinition {
     p("size","boolean","containers/container: request filesystem sizes",false),
     p("digests","boolean","images: include repository digests",false),
     p("filters","object","containers/images/networks/volumes: Docker filter name to string arrays, JSON encoded by client",false)
-],example:json!({"type":"docker_request","operation":"containers","all":true,"filters":{"label":["netget.fixture=1"]}}),log_template:None}
+],example:json!({"type":"docker_request","operation":"containers","all":true,"filters":{"label":["netget.fixture=1"]}}),log_template:Some(LogTemplate::new().with_info("Read Docker {operation}"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -40,7 +40,7 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel pending I/O and close this logical client".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("Disconnect Docker client")),
     }
 }
 fn actions() -> Vec<ActionDefinition> {
@@ -55,7 +55,7 @@ pub static CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     event("docker_connected","Daemon HEAD /_ping completed; request a read operation",vec![p("endpoint","string","HTTP origin or native Unix socket URI",true),p("api_version","string","Selected min(daemon maximum, preferred client ceiling)",true),p("daemon","object","Ping API maximum, optional os_type and experimental headers; ping does not advertise minimum API",true)])
 });
 pub static RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    event("docker_response","Complete typed response; unknown extension fields are omitted",vec![p("request","object","Originating typed action",true),p("operation","string","Read operation",true),p("api_version","string","Negotiated request version",true),p("status","integer","HTTP 200",true),p("data","object|array","Snake case selected native response fields. Lists for containers/images/networks; container inspect has state/config/host_config/network_settings objects; volumes object has nullable volumes/warnings. Container/image created timestamps are Unix seconds; inspect/network/volume dates remain RFC3339 strings. Native nulls remain null; image shared_size/containers and volume usage may use -1 for unknown. Ports use protocol and optional public_port/ip. No protocol database.",true)])
+    event("docker_response","Complete typed response; unknown extension fields are omitted",vec![p("request","object","Originating typed action",true),p("operation","string","Selected Docker Engine read operation",true),p("api_version","string","Negotiated request version",true),p("status","integer","Successful Docker Engine HTTP response status (200)",true),p("data","object|array","Snake case selected native response fields. Lists for containers/images/networks; container inspect has state/config/host_config/network_settings objects; volumes object has nullable volumes/warnings. Container/image created timestamps are Unix seconds; inspect/network/volume dates remain RFC3339 strings. Native nulls remain null; image shared_size/containers and volume usage may use -1 for unknown. Ports use protocol and optional public_port/ip. No protocol database.",true)])
 });
 pub static ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     event(

@@ -61,5 +61,5 @@ Either assertion alone would pass against a server that tagged both outcomes ide
 pair is the actual contract.
 
 Not covered: `decision=default_logout_ack`, the one arm that answers `success:true` when the
-model said nothing — see `src/server/snowflake/CLAUDE.md` for why it is tagged that way rather
+model said nothing — see `src/server/snowflake/AGENTS.md` for why it is tagged that way rather
 than as a fail-closed, and why it is (currently) harmless.

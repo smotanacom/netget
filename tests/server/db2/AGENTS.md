@@ -65,4 +65,4 @@ executor reports unknown names as executed, which is outside this protocol.
 
 SELECT result-set retrieval (OPNQRY/QRYDTA — not implemented), the error SQLCARD
 path end-to-end through the server, prepared statements, and TLS. See
-`src/server/db2/CLAUDE.md`.
+`src/server/db2/AGENTS.md`.

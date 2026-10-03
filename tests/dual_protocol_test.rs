@@ -90,7 +90,6 @@ fn aliased_duals_map() {
     assert_eq!(client_protocol_for_server("DoH"), Some("DNS-over-HTTPS"));
     assert_eq!(client_protocol_for_server("Proxy"), Some("HTTP Proxy"));
     assert_eq!(client_protocol_for_server("Tor Relay"), Some("Tor"));
-    assert_eq!(client_protocol_for_server("Bitcoin P2P"), Some("Bitcoin"));
     assert_eq!(client_protocol_for_server("SamlIdp"), Some("SAML"));
     assert_eq!(client_protocol_for_server("SamlSp"), Some("SAML"));
     assert_eq!(client_protocol_for_server("OpenID"), Some("OpenIDConnect"));
@@ -138,6 +137,7 @@ fn normalized_duals_map() {
 #[test]
 fn server_only_protocols_have_no_dual() {
     for server in [
+        "Bitcoin P2P", // The Bitcoin client is Core RPC over HTTP.
         "RDP",
         "TFTP",
         "SVN",
@@ -184,4 +184,22 @@ fn compiled_mapping_is_subset_of_codebase_mapping() {
         compiled_client_protocol_for_server("TCP").as_deref(),
         Some("TCP")
     );
+}
+
+/// A small build must not pair an unavailable FTP implementation with its TCP fallback.
+#[cfg(all(feature = "tcp", not(feature = "ftp")))]
+#[test]
+fn an_uncompiled_ftp_protocol_never_offers_the_tcp_client() {
+    for name in ["FTP", "ftp", "Ftp"] {
+        assert_eq!(compiled_client_protocol_for_server(name), None, "{name}");
+    }
+}
+
+/// A running instance keeps the operator's registry keyword, not necessarily its canonical
+/// name. Bitcoin's keyword is also the RPC client's name, so resolve the server first.
+#[cfg(feature = "bitcoin")]
+#[test]
+fn bitcoin_server_keyword_never_offers_the_rpc_client() {
+    assert_eq!(compiled_client_protocol_for_server("bitcoin"), None);
+    assert_eq!(compiled_client_protocol_for_server("Bitcoin P2P"), None);
 }

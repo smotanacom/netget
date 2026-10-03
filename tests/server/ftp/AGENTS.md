@@ -24,7 +24,7 @@ Black-box testing using raw TCP connections to verify FTP protocol responses.
 `decision_tag_test` is the fail-open guard. FTP's worst possible defect would be a failure
 path that answers `230 User logged in`, which would make an LLM outage an authentication
 bypass; the first test asserts from the wire that no 2xx can come back when the backend is
-down. See `src/server/ftp/CLAUDE.md`, "Failure behaviour", for the full outcome table.
+down. See `src/server/ftp/AGENTS.md`, "Failure behaviour", for the full outcome table.
 
 `test_ftp_user_pass` and `test_ftp_pwd_quit` had no mock rules for the `ftp_command` events,
 so the server 421-closed the greeting and the tests bailed out before `verify_mocks` — they

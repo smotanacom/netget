@@ -41,6 +41,19 @@ pub enum BridgeRequestKind {
     Chat,
 }
 
+/// The network event behind a model request. The token identifies one event conversation,
+/// so a host can attach deterministic state once even when the model answer is retried.
+/// This is bridge metadata only; native model backends keep their existing wire format.
+#[derive(Debug, Clone, Serialize)]
+pub struct BridgeEventContext {
+    pub token: String,
+    pub server_id: u32,
+    pub connection_id: Option<u32>,
+    pub protocol: String,
+    pub event_type: String,
+    pub data: serde_json::Value,
+}
+
 /// One LLM request, as the host sees it.
 #[derive(Debug, Serialize)]
 pub struct BridgeRequest {
@@ -57,6 +70,9 @@ pub struct BridgeRequest {
     /// network event) or as native tools. Empty for a request that offers no actions.
     /// Nothing on the native Ollama/OpenAI wire carries it.
     pub actions: Vec<serde_json::Value>,
+    /// Present for server event conversations; unchanged across retries of that event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<BridgeEventContext>,
     /// Where the answer goes. Dropping it without answering fails the request.
     #[serde(skip)]
     pub reply: oneshot::Sender<Result<BridgeReply, String>>,
@@ -128,6 +144,19 @@ impl LlmBridge {
         tools: Vec<serde_json::Value>,
         offered: &[ActionDefinition],
     ) -> (u64, oneshot::Receiver<Result<BridgeReply, String>>) {
+        self.submit_with_event(kind, model, messages, tools, offered, None)
+    }
+
+    /// Submit an event request without requiring the host to parse event data out of prose.
+    pub(crate) fn submit_with_event(
+        &self,
+        kind: BridgeRequestKind,
+        model: String,
+        messages: Vec<Message>,
+        tools: Vec<serde_json::Value>,
+        offered: &[ActionDefinition],
+        event: Option<BridgeEventContext>,
+    ) -> (u64, oneshot::Receiver<Result<BridgeReply, String>>) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (reply, rx) = oneshot::channel();
         let request = BridgeRequest {
@@ -137,6 +166,7 @@ impl LlmBridge {
             messages,
             tools,
             actions: offered.iter().map(offered_action).collect(),
+            event,
             reply,
         };
         // A closed receiver means no host; the request's reply sender is dropped with it,

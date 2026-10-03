@@ -79,6 +79,9 @@ enum Reason {
     /// and raw bytes pushed alongside hyper's framing would desynchronise the HTTP/1.1 or
     /// HTTP/2 stream rather than reach the peer as a message.
     HyperOwnsSocket,
+    /// hyper-util owns HTTP/1 or HTTP/2 framing through its auto connection builder;
+    /// tonic services answer only their correlated gRPC requests on that connection.
+    HyperAutoOwnsSocket,
     /// `axum::serve` owns its own accept loop, and this server additionally relays the public
     /// socket to a loopback backend — so the handler's peer is the relay, not the client.
     AxumOwnsSocket,
@@ -114,6 +117,14 @@ enum Reason {
     Tunnel,
     /// The SSH transport is russh's; NetGet never holds the socket after the handshake.
     RusshOwnsSocket,
+    /// A Carbon plaintext collector receives metrics but has no server-message grammar.
+    OneWayMetricCollector,
+    /// A GELF collector observes incoming logs; GELF defines no server replies.
+    OneWayLogCollector,
+    /// Forward ACKs echo the current inbound batch's transport-owned chunk token.
+    CorrelatedForwardReplies,
+    /// NUT renders a reply against the current parsed request and authentication state.
+    CorrelatedRequestReplies,
     /// Reviewed by hand in the September 2026 peer-handle pass; see the table below.
     Reviewed,
     /// Not reviewed in that pass. Not a claim that a handle is impossible — a claim that
@@ -126,11 +137,16 @@ impl Reason {
     fn marker(self) -> Option<&'static str> {
         match self {
             Reason::HyperOwnsSocket => Some("hyper::server::conn"),
+            Reason::HyperAutoOwnsSocket => Some("hyper_util::server::conn::auto"),
             Reason::AxumOwnsSocket => Some("axum::serve"),
             Reason::UsbIp => Some("usbip"),
             Reason::WebSocketFrames => Some("tokio_tungstenite"),
             Reason::Tunnel => Some("copy_bidirectional"),
             Reason::RusshOwnsSocket => Some("russh"),
+            Reason::OneWayMetricCollector => Some("GRAPHITE_BATCH_EVENT"),
+            Reason::OneWayLogCollector => Some("actions::GELF_MESSAGE_EVENT"),
+            Reason::CorrelatedForwardReplies => Some("codec::encode_ack(&chunk)"),
+            Reason::CorrelatedRequestReplies => Some("wire::render(&request"),
             Reason::Reviewed | Reason::Unreviewed => None,
         }
     }
@@ -191,15 +207,26 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("dot", Reason::Reviewed),
     ("dynamo", Reason::HyperOwnsSocket),
     ("elasticsearch", Reason::HyperOwnsSocket),
+    // Acceptance/rejection applies to one inbound batch; only its hidden chunk token can
+    // produce the correlated ACK. Injected bytes have no unsolicited Forward reply meaning.
+    ("fluent_forward", Reason::CorrelatedForwardReplies),
+    // collect_gelf_message only observes; neither UDP nor TCP defines collector reply bytes.
+    ("gelf", Reason::OneWayLogCollector),
     ("etcd", Reason::HyperOwnsSocket),
     ("git", Reason::HyperOwnsSocket),
+    // Carbon plaintext defines no replies; collect_graphite_batch observes received metrics.
+    ("graphite", Reason::OneWayMetricCollector),
     ("hls", Reason::Unreviewed),
     ("http", Reason::HyperOwnsSocket),
+    // Hyper owns each HTTP connection and frames each write request response.
+    ("influxdb", Reason::HyperOwnsSocket),
     ("ipp", Reason::HyperOwnsSocket),
     ("jsonrpc", Reason::HyperOwnsSocket),
     ("kubernetes", Reason::HyperOwnsSocket),
     ("ldap", Reason::Unreviewed),
     ("llmnr", Reason::Reviewed),
+    // Hyper owns each HTTP connection; accept/reject decisions answer one Loki push request.
+    ("loki", Reason::HyperOwnsSocket),
     ("maven", Reason::HyperOwnsSocket),
     ("mcp", Reason::AxumOwnsSocket),
     ("mercurial", Reason::HyperOwnsSocket),
@@ -207,13 +234,16 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("nfc", Reason::Unreviewed),
     ("nfs", Reason::Reviewed),
     ("npm", Reason::HyperOwnsSocket),
+    // Replies get request identities from wire::render and writes require session auth.
+    ("nut", Reason::CorrelatedRequestReplies),
     ("oauth2", Reason::HyperOwnsSocket),
     ("oci_registry", Reason::HyperOwnsSocket),
     ("ollama", Reason::HyperOwnsSocket),
     ("openai", Reason::HyperOwnsSocket),
     ("openapi", Reason::HyperOwnsSocket),
     ("openid", Reason::HyperOwnsSocket),
-    ("otlp", Reason::HyperOwnsSocket),
+    // Hyper owns HTTP/1 and HTTP/2 sockets; tonic frames each correlated gRPC export reply.
+    ("otlp", Reason::HyperAutoOwnsSocket),
     ("postgresql", Reason::Reviewed),
     ("prometheus", Reason::HyperOwnsSocket),
     ("proxy", Reason::Tunnel),
@@ -308,6 +338,48 @@ impl ServerSource {
         self.body.contains(needle)
     }
 
+    fn has_hyper_connection_marker(&self) -> bool {
+        if self.has("hyper::server::conn") {
+            return true;
+        }
+        // A grouped import has the same path, but `server::conn` must be an item
+        // directly under `hyper`, rather than an unrelated import elsewhere.
+        for (at, _) in self.body.match_indices("use") {
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            if self.body[..at].chars().next_back().is_some_and(is_word)
+                || self.body[at + 3..].chars().next().is_some_and(is_word)
+            {
+                continue;
+            }
+            let import: String = self.body[at + 3..]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let Some(group) = import.strip_prefix("hyper::{") else {
+                continue;
+            };
+            let mut depth = 0;
+            let mut start = 0;
+            for (end, character) in group.char_indices() {
+                if (character == ',' || character == '}') && depth == 0 {
+                    let item = &group[start..end];
+                    if item == "server::conn" || item.starts_with("server::conn::") {
+                        return true;
+                    }
+                    if character == '}' {
+                        break;
+                    }
+                    start = end + 1;
+                } else if character == '{' {
+                    depth += 1;
+                } else if character == '}' {
+                    depth -= 1;
+                }
+            }
+        }
+        false
+    }
+
     /// Does this server run a TCP accept loop of its own?
     ///
     /// Three spellings, because the tree has three. `listener.accept().await` is the one that
@@ -344,9 +416,7 @@ impl ServerSource {
     }
 
     fn hyper_owns_socket(&self) -> bool {
-        self.has("hyper::server::conn")
-            || self.has("hyper_util::server::conn")
-            || (self.has("use hyper::{") && self.has("server::conn::"))
+        self.has_hyper_connection_marker() || self.has("hyper_util::server::conn")
     }
 
     fn declares_exchange_only(&self) -> bool {
@@ -503,6 +573,29 @@ fn every_declared_reason_is_still_true_of_the_source() {
          adopt the peer handle or give it the reason that is now correct.\n\n  {}",
         wrong.join("\n  "),
     );
+}
+
+#[test]
+fn grouped_hyper_connection_marker_requires_the_hyper_import_path() {
+    let matches = |body: &str| {
+        ServerSource {
+            name: "fixture".into(),
+            body: strip_comments(body),
+            contract: String::new(),
+        }
+        .has_hyper_connection_marker()
+    };
+    assert!(matches("use hyper::server::conn::http1;"));
+    assert!(matches(
+        "use hyper::{body::Incoming, header::{HeaderValue, ALLOW},\n server::conn::http1, Method};"
+    ));
+    assert!(matches("use hyper::{body::Incoming, server::conn};"));
+    assert!(!matches("use unrelated::{server::conn::http1};"));
+    assert!(!matches(
+        "use hyper::{body::Incoming}; use unrelated::server::conn::http1;"
+    ));
+    assert!(!matches("use hyper::{header::{server::conn::http1}};"));
+    assert!(!matches("// use hyper::{server::conn::http1};"));
 }
 
 /// The count this pass left behind, so a regression is visible as a number and not only as a

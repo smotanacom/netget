@@ -332,5 +332,5 @@ RUN cargo test --features ollama --test client::ollama::e2e_test
 
 The native suites here drive the reqwest backend. The browser path — the same client code over
 `src/client/http_fetch`'s hyper transport — is proven by `web/test/smoke.mjs` against the real
-bundle (see `src/client/ollama/CLAUDE.md`, "Browser build").
+bundle (see `src/client/ollama/AGENTS.md`, "Browser build").
 

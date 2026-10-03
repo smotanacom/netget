@@ -88,7 +88,16 @@ async fn official_service_receives_native_all_four_sample_carriers_and_literal_v
         ));
     }
     let messages = service.messages(2).await;
-    for (seq, row) in [0, 1].into_iter().zip(messages.iter()) {
+    assert_eq!(messages.len(), 2);
+    // GoFlow2 decodes on concurrent workers; match each exact datagram sequence
+    // once without assuming its output preserves the UDP arrival order.
+    for seq in [0, 1] {
+        let rows = messages
+            .iter()
+            .filter(|row| row["message"]["sequence-number"] == seq)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "missing or duplicate native sequence {seq}");
+        let row = rows[0];
         assert_eq!(row["type"], "sflow");
         let m = &row["message"];
         assert_eq!(m["version"], 5);

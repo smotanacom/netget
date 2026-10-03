@@ -76,6 +76,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -142,6 +145,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -201,6 +207,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -251,6 +260,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -305,6 +317,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -364,6 +379,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -393,7 +411,10 @@ jobs:
       - name: Install bounded source-peer build prerequisites
         run: |
           sudo apt-get update
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler build-essential curl ca-certificates pkg-config libtool gperf libevent-dev libboost-program-options-dev uuid-dev tshark
+          tshark --version | head -1
 
       - name: Prepare pinned official Gearman daemon and tools
         run: |
@@ -418,6 +439,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -475,6 +499,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -540,6 +567,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -599,6 +629,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -652,6 +685,9 @@ jobs:
       - name: Shared Docker registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -712,6 +748,9 @@ jobs:
       - name: Shared Loki registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -779,6 +818,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test vendored_tonic_patch_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -838,6 +880,9 @@ jobs:
       - name: Shared IPFIX registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -900,6 +945,9 @@ jobs:
       - name: Shared gRPC schema, ownership and framing checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -961,6 +1009,9 @@ jobs:
       - name: Shared sFlow registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -1019,6 +1070,9 @@ jobs:
       - name: Shared Vault registration, credential diagnostics and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -1078,6 +1132,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1139,6 +1196,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1201,6 +1261,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1257,6 +1320,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \

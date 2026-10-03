@@ -74,7 +74,7 @@ line with a datagram beside it would mean the tag was lying.
 | `test_udp_empty_answer_is_silent_and_logged_as_model_silence` | `[]` | nothing on the socket; `decision=model_silent`; **no** `decision=fail_closed` |
 | `test_udp_stays_silent_but_logs_when_llm_fails` (`llm_failure_test.rs`) | nothing — the mock 500s | nothing on the socket; the "bare UDP has no error form" sentence; `decision=fail_closed_llm_*` |
 
-Do **not** "fix" the silence — see `src/server/udp/CLAUDE.md`. Any bytes invented here could be
+Do **not** "fix" the silence — see `src/server/udp/AGENTS.md`. Any bytes invented here could be
 parsed as a real reply by whatever protocol the peer is actually speaking.
 
 ### 1. UDP Echo (`test_udp_echo_server`)

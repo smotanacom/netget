@@ -338,7 +338,7 @@ rollover, multimedia keys).
 
 ## Testing Strategy
 
-See `tests/server/usb_keyboard/CLAUDE.md` for E2E testing approach.
+See `tests/server/usb_keyboard/AGENTS.md` for E2E testing approach.
 
 **Key Principles**:
 
@@ -396,5 +396,5 @@ sits below the crate and cannot synthesise a `USBIP_RET_SUBMIT` for a sequence t
 saw — and logs at ERROR with a `decision=fail_closed_*` tag.
 
 `MAX_TRANSFER_BUFFER_BYTES` is declared in `metadata()` via `.max_inbound_bytes(...)`.
-`src/server/usb/CLAUDE.md` has the full reasoning, the constants and what is still unguarded;
+`src/server/usb/AGENTS.md` has the full reasoning, the constants and what is still unguarded;
 `tests/server/usb_msc/guard_test.rs` is the wire-level test.

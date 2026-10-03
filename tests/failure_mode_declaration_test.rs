@@ -99,7 +99,7 @@ const DOCUMENTED_SILENT: &[&str] = &[
     "rip",
     "rtp",
     "ssdp",
-    // UDP metrics/events/service checks define no collector response.
+    // StatsD and DogStatsD are one-way UDP; neither defines an acknowledgment or error reply.
     "statsd",
     "stp",
     "syslog",

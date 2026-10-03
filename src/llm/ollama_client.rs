@@ -890,7 +890,7 @@ pub fn host_of(url_or_host: &str) -> &str {
 /// `hyper-util`'s `GaiResolver` does not special-case one. That becomes a real
 /// `getaddrinfo()` call, which on macOS goes through libinfo to mDNSResponder: a single
 /// system-wide daemon, and a serialisation point under concurrency. It was measured blocking
-/// for **8.25 seconds** with ~100 processes asking at once (see `src/server/doh/CLAUDE.md`),
+/// for **8.25 seconds** with ~100 processes asking at once (see `src/server/doh/AGENTS.md`),
 /// which is long enough to expire a request timeout against a server that is up and idle.
 ///
 /// A hostname is left alone: resolving `localhost` or a real name is the resolver's job, and
@@ -1649,13 +1649,27 @@ impl OllamaClient {
         offered: &[crate::llm::actions::ActionDefinition],
         private_payloads: bool,
     ) -> Result<GenerateResponse> {
+        self.generate_offering_with_event(model, prompt, format, offered, None, private_payloads)
+            .await
+    }
+
+    /// The event metadata is for bridge hosts only; native model requests are unchanged.
+    pub(crate) async fn generate_offering_with_event(
+        &self,
+        model: &str,
+        prompt: &str,
+        format: Option<serde_json::Value>,
+        offered: &[crate::llm::actions::ActionDefinition],
+        event: Option<&crate::llm::bridge::BridgeEventContext>,
+        private_payloads: bool,
+    ) -> Result<GenerateResponse> {
         // Fail immediately if the backend is already known to be down, rather than paying
         // another full request timeout to rediscover it. See `crate::llm::circuit_breaker`.
         let private_payloads =
             private_payloads || crate::utils::redact::actions_have_credentials(offered);
         let permit = self.breaker_guard()?;
         let result = self
-            .generate_with_format_inner(model, prompt, format, offered, private_payloads)
+            .generate_with_format_inner(model, prompt, format, offered, event, private_payloads)
             .await;
         self.record_backend_outcome(permit, result, private_payloads)
     }
@@ -1666,6 +1680,7 @@ impl OllamaClient {
         prompt: &str,
         format: Option<serde_json::Value>,
         offered: &[crate::llm::actions::ActionDefinition],
+        event: Option<&crate::llm::bridge::BridgeEventContext>,
         private_payloads: bool,
     ) -> Result<GenerateResponse> {
         // Transport owns wire facts: DEBUG summary + TRACE payload, both file-only.
@@ -1844,12 +1859,13 @@ impl OllamaClient {
             LlmBackend::Bridge { bridge, timeout } => {
                 // No model here: the host answers. The prompt goes over as one user message,
                 // the way the OpenAI arm sends it.
-                let (id, rx) = bridge.submit(
+                let (id, rx) = bridge.submit_with_event(
                     crate::llm::bridge::BridgeRequestKind::Generate,
                     model.to_string(),
                     vec![Message::user(prompt)],
                     Vec::new(),
                     offered,
+                    event.cloned(),
                 );
                 let reply = await_bridge_reply(id, rx, *timeout).await?;
                 self.forward_host_reasoning(reply.reasoning.as_deref(), private_payloads);

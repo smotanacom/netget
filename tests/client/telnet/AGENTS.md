@@ -165,6 +165,6 @@ handling.
 
 ## References
 
-- Implementation: `src/client/telnet/CLAUDE.md`
+- Implementation: `src/client/telnet/AGENTS.md`
 - Protocol spec: RFC 854 (Telnet Protocol)
 - Option specs: RFC 855-1143 (various Telnet options)

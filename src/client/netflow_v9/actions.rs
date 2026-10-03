@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -26,7 +27,7 @@ pub fn example_batch() -> Value {
     json!({"source_id":42,"templates":[{"id":256,"fields":[{"element":"source_ipv4"},{"element":"destination_ipv4"},{"element":"in_packets"}]}],"data_sets":[{"template_id":256,"records":[[{"kind":"ipv4","value":"192.0.2.1"},{"kind":"ipv4","value":"198.51.100.2"},{"kind":"unsigned","value":5}]]}]})
 }
 fn send() -> ActionDefinition {
-    ActionDefinition{name:"export_netflow_v9_records".into(),description:"Validate one complete typed v9 UDP packet before emitting; repeats every referenced template, counts all records in Count and advances Source-ID sequence by one packet. Local transport only, no ACK or data retry.".into(),parameters:vec![parameter("batch","object","source_id:u32;optional export_time:u32,sys_uptime_ms:u32;1..32 templates(id>=256,scope_count default0,ordered fields declaring exactly one supported element or scope and optional fixed length);data_sets(template_id,records of aligned {kind,value}). Kinds unsigned/ipv4/ipv6/uptime_milliseconds. Options scopes first(system/interface/line_card/cache/template), followed by options.8192bytes,64flowsets,256data records,32fields,record size>=4; no variable fields or raw bytes.",true)],example:json!({"type":"export_netflow_v9_records","batch":example_batch()}),log_template:None}
+    ActionDefinition{name:"export_netflow_v9_records".into(),description:"Validate one complete typed v9 UDP packet before emitting; repeats every referenced template, counts all records in Count and advances Source-ID sequence by one packet. Local transport only, no ACK or data retry.".into(),parameters:vec![parameter("batch","object","source_id:u32;optional export_time:u32,sys_uptime_ms:u32;1..32 templates(id>=256,scope_count default0,ordered fields declaring exactly one supported element or scope and optional fixed length);data_sets(template_id,records of aligned {kind,value}). Kinds unsigned/ipv4/ipv6/uptime_milliseconds. Options scopes first(system/interface/line_card/cache/template), followed by options.8192bytes,64flowsets,256data records,32fields,record size>=4; no variable fields or raw bytes.",true)],example:json!({"type":"export_netflow_v9_records","batch":example_batch()}),log_template:Some(LogTemplate::new().with_info("NetFlow v9 export queued for Source ID {batch.source_id}"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -34,7 +35,7 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel UDP sends, template refresh, handlers and command handle".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("NetFlow v9 exporter disconnected")),
     }
 }
 pub static NETFLOW_V9_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -44,13 +45,13 @@ pub static NETFLOW_V9_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send().example,
     )
     .with_parameters(vec![
-        parameter("remote_addr", "string", "Collector", true),
+        parameter("remote_addr", "string", "Collector UDP address", true),
         parameter("local_addr", "string", "Exporter UDP socket", true),
     ])
     .with_actions(vec![send(), disconnect()])
 });
 pub static NETFLOW_V9_EXPORTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("netflow_v9_exported","One datagram accepted by the local UDP transport, not an end-to-end receipt or persistence acknowledgment.",send().example).with_parameters(vec![parameter("source_id","number","Observation Source ID",true),parameter("sequence_number","number","Header sequence before increment",true),parameter("record_count","number","Data/options records",true),parameter("header_count","number","All template and data/options records",true),parameter("sys_uptime_ms","number","Export uptime milliseconds",true),parameter("template_count","number","Templates",true),parameter("byte_count","number","Datagram length",true),parameter("local_transport_only","bool","Always true",true)]).with_actions(vec![send(),disconnect()])
+    EventType::new("netflow_v9_exported","One datagram accepted by the local UDP transport, not an end-to-end receipt or persistence acknowledgment.",send().example).with_parameters(vec![parameter("source_id","number","Observation Source ID",true),parameter("sequence_number","number","Header sequence before increment",true),parameter("record_count","number","Data/options records",true),parameter("header_count","number","All template and data/options records",true),parameter("sys_uptime_ms","number","Export uptime milliseconds",true),parameter("template_count","number","Templates supplied in this packet",true),parameter("byte_count","number","Datagram length",true),parameter("local_transport_only","boolean","Always true; local UDP send does not confirm reception",true)]).with_actions(vec![send(),disconnect()])
 });
 impl Protocol for NetflowV9ClientProtocol {
     fn protocol_name(&self) -> &'static str {

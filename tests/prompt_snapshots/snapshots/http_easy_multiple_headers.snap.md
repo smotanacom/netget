@@ -18,7 +18,7 @@ Provide API endpoint data in JSON format
   User-Agent: MyApp/1.0
   Accept: application/json
   Accept-Encoding: gzip, deflate
-  Accept-Language: en-US,en;q&#x3D;0.9
+  Accept-Language: en-US,en;q=0.9
   Cache-Control: no-cache
   Connection: keep-alive
 

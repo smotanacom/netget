@@ -10,6 +10,11 @@ HELP. LF framing is emitted; CRLF input is tolerated. Double quotes and backslas
 are escaped and decoded. Identities and list delimiters come from the parsed request,
 so a handler cannot reply to a different UPS or forge extra lines.
 
+The metadata declares `request_only`: `nut_reply` is rendered against the current parsed
+request, and SET/INSTCMD additionally depend on this connection's authentication state.
+There is no unsolicited reply operation. The dashboard and MCP peer-message actions show
+that reason instead of offering output without the request needed to correlate it.
+
 `nut_request` carries operation, optional ups/name/value, and the authenticated username
 for write-policy decisions. `nut_reply` supplies entries, value, types, explicit ok=true,
 or a recognized error. `nut_auth` carries credentials and only accepts
@@ -38,7 +43,7 @@ stop_server closes existing sockets and releases the listener. No shared I/O loc
 Maturity stays Experimental. Tests cover wire behavior, deterministic and mocked-model
 handlers, denial and acceptance, bounds and shutdown. Independent peers are official NUT
 2.8.4 upsc and upscmd, built from upstream source with SSL/hardware drivers disabled;
-the client is tested against upsd 2.8.4 plus dummy-ups 0.22. See tests/server/nut/CLAUDE.md.
+the client is tested against upsd 2.8.4 plus dummy-ups 0.22. See tests/server/nut/AGENTS.md.
 No packet-capture oracle or fuzz target was added, and untested commands are not implied
 by successful read/instant-command tests.
 

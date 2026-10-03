@@ -65,7 +65,7 @@ the model-call count off the mock to say so.
 
 ## The UDP rule, and how it applies here
 
-`CLAUDE.md` requires UDP-style protocols to use `.respond_with_actions_from_event()` so the
+`AGENTS.md` requires UDP-style protocols to use `.respond_with_actions_from_event()` so the
 client's random transaction id is echoed dynamically — a static mock with a hardcoded id causes
 client timeouts, and the usual "fix" is to weaken the assertion until it passes.
 
@@ -73,7 +73,7 @@ client timeouts, and the usual "fix" is to weaken the assertion until it passes.
 the thing being derived is the **request path and query**, not the message id — because this
 server does not make the model handle the message id at all. `codec::response_to` takes the
 type, message id and token from the request the server itself parsed; no action parameter
-carries any of them. See decision 2 in `src/server/coap/CLAUDE.md` for why.
+carries any of them. See decision 2 in `src/server/coap/AGENTS.md` for why.
 
 (This line said "every rule in these tests", which stopped being true with `llm_failure_test.rs`
 and the 4.04 rule in `e2e_test.rs`: a rule whose answer carries nothing derived from the request
@@ -128,7 +128,7 @@ variants so a broken server fails the test in ten seconds instead of hanging it.
   per-request hint reached the model
 - The `answer_with` sentence itself (`answer_with_test.rs`): the lookup first, the 4.04 as a
   literal action, each method's success code. The wording is measured by the real-model eval
-  (`src/server/coap/CLAUDE.md`, "Why `answer_with` exists"), not by these tests — they pin it
+  (`src/server/coap/AGENTS.md`, "Why `answer_with` exists"), not by these tests — they pin it
   so a rewording has to be a decision
 - CON → piggybacked ACK carrying the request's message id and full 8-byte token
 - NON → NON reply with a *different* message id and the same token
@@ -183,7 +183,7 @@ catches what the decode-side guard stopped catching, and the server writes nothi
   tests, and an entry claiming something is untested is the kind nobody re-checks.
 - ~~No test of the 5.03 fail-closed path (LLM error / no usable action).~~ **Closed** by
   `llm_failure_test.rs`, which drives both paths and asserts the `decision=` tags apart. It was
-  a real gap while it stood: `src/server/coap/CLAUDE.md` carried a seven-row decision table
+  a real gap while it stood: `src/server/coap/AGENTS.md` carried a seven-row decision table
   that nothing checked.
 - **No test for the model choosing 5.03 itself**, which is the third occupant of that code and
   the reason the log tags exist at all. A test would be cheap and would make the table's whole

@@ -53,7 +53,7 @@ that touched the queue **cleared it without ever handing it to the model**, so h
 reachable it would have silently discarded every message that arrived during a call.
 
 Concurrency is prevented by the loop's own shape, and backpressure comes from TCP. This is the
-same choice `src/server/irc/CLAUDE.md` documents for the server side.
+same choice `src/server/irc/AGENTS.md` documents for the server side.
 
 ## LLM Integration
 
@@ -218,7 +218,7 @@ The `parse_irc_message` function extracts:
 
 ## Testing Strategy
 
-See `tests/client/irc/CLAUDE.md` for testing details.
+See `tests/client/irc/AGENTS.md` for testing details.
 
 ## Example Prompts
 

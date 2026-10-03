@@ -144,4 +144,4 @@ this protocol already had once, in a different layer.
 ## References
 
 - [OpenVPN protocol overview](https://openvpn.net/community-resources/openvpn-protocol/)
-- [NetGet OpenVPN implementation](../../../src/server/openvpn/CLAUDE.md)
+- [NetGet OpenVPN implementation](../../../src/server/openvpn/AGENTS.md)
