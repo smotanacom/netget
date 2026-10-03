@@ -207,6 +207,8 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("grpc", Reason::HyperOwnsSocket),
     ("hls", Reason::Unreviewed),
     ("http", Reason::HyperOwnsSocket),
+    // Hyper owns each HTTP connection and frames each write request response.
+    ("influxdb", Reason::HyperOwnsSocket),
     ("ipp", Reason::HyperOwnsSocket),
     ("jsonrpc", Reason::HyperOwnsSocket),
     ("kubernetes", Reason::HyperOwnsSocket),
@@ -317,6 +319,48 @@ struct ServerSource {
 impl ServerSource {
     fn has(&self, needle: &str) -> bool {
         self.body.contains(needle)
+    }
+
+    fn has_hyper_connection_marker(&self) -> bool {
+        if self.has("hyper::server::conn") {
+            return true;
+        }
+        // A grouped import has the same path, but `server::conn` must be an item
+        // directly under `hyper`, rather than an unrelated import elsewhere.
+        for (at, _) in self.body.match_indices("use") {
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            if self.body[..at].chars().next_back().is_some_and(is_word)
+                || self.body[at + 3..].chars().next().is_some_and(is_word)
+            {
+                continue;
+            }
+            let import: String = self.body[at + 3..]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let Some(group) = import.strip_prefix("hyper::{") else {
+                continue;
+            };
+            let mut depth = 0;
+            let mut start = 0;
+            for (end, character) in group.char_indices() {
+                if (character == ',' || character == '}') && depth == 0 {
+                    let item = &group[start..end];
+                    if item == "server::conn" || item.starts_with("server::conn::") {
+                        return true;
+                    }
+                    if character == '}' {
+                        break;
+                    }
+                    start = end + 1;
+                } else if character == '{' {
+                    depth += 1;
+                } else if character == '}' {
+                    depth -= 1;
+                }
+            }
+        }
+        false
     }
 
     /// Does this server run a TCP accept loop of its own?
@@ -471,7 +515,11 @@ fn every_declared_reason_is_still_true_of_the_source() {
         let Some(server) = servers.iter().find(|s| s.name == *name) else {
             continue; // reported by the shrink test
         };
-        if !server.has(marker) {
+        let has_marker = match reason {
+            Reason::HyperOwnsSocket => server.has_hyper_connection_marker(),
+            _ => server.has(marker),
+        };
+        if !has_marker {
             wrong.push(format!(
                 "{name}: declared {reason:?}, but `{marker}` is gone"
             ));
@@ -485,6 +533,28 @@ fn every_declared_reason_is_still_true_of_the_source() {
          adopt the peer handle or give it the reason that is now correct.\n\n  {}",
         wrong.join("\n  "),
     );
+}
+
+#[test]
+fn grouped_hyper_connection_marker_requires_the_hyper_import_path() {
+    let matches = |body: &str| {
+        ServerSource {
+            name: "fixture".into(),
+            body: strip_comments(body),
+        }
+        .has_hyper_connection_marker()
+    };
+    assert!(matches("use hyper::server::conn::http1;"));
+    assert!(matches(
+        "use hyper::{body::Incoming, header::{HeaderValue, ALLOW},\n server::conn::http1, Method};"
+    ));
+    assert!(matches("use hyper::{body::Incoming, server::conn};"));
+    assert!(!matches("use unrelated::{server::conn::http1};"));
+    assert!(!matches(
+        "use hyper::{body::Incoming}; use unrelated::server::conn::http1;"
+    ));
+    assert!(!matches("use hyper::{header::{server::conn::http1}};"));
+    assert!(!matches("// use hyper::{server::conn::http1};"));
 }
 
 /// The count this pass left behind, so a regression is visible as a number and not only as a
