@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -38,7 +39,7 @@ fn send() -> ActionDefinition {
         description:"Validate a complete typed sFlow v5 batch and send one UDP datagram. Sequence counts locally sent datagrams; transport acceptance does not acknowledge collector reception. Sample sequence/pool/drop counters are supplied by the caller.".into(),
         parameters:vec![parameter("batch","object","agent_address,sub_agent_id,optional uptime_ms,1..32 samples. kind flow/counters; expanded optional(defaultfalse);sequence_number,source(class0..2,index). Flow requires sampling_rate,sample_pool,drops,input/output(format0..2,value),records. Flow records: sampled_ipv4/ipv6 with addresses,packet_length,protocol,ports,tcp_flags,traffic_class; synthesized_header with packet plus frame_length/stripped; ethernet with MACs/ether_type;extended_switch. Counter records: interface(all19fields),ethernet(all13fields),vlan(all6fields).8192bytes,64records/sample,256total; no opaque packet bytes.",true)],
         example:json!({"type":"export_sflow_samples","batch":example_batch()}),
-        log_template:None,
+        log_template:Some(LogTemplate::new().with_info("sFlow samples queued for local UDP export")),
     }
 }
 fn disconnect() -> ActionDefinition {
@@ -47,7 +48,7 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel the exporter, handlers and command channel".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("sFlow exporter disconnected")),
     }
 }
 pub static SFLOW_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -57,17 +58,22 @@ pub static SFLOW_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send().example,
     )
     .with_parameters(vec![
-        parameter("remote_addr", "string", "Collector", true),
+        parameter(
+            "remote_addr",
+            "string",
+            "Target collector UDP address and port",
+            true,
+        ),
         parameter("local_addr", "string", "UDP exporter socket", true),
     ])
     .with_actions(vec![send(), disconnect()])
 });
 pub static SFLOW_EXPORTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("sflow_exported","One datagram accepted by local UDP transport, without a receipt or persistence acknowledgment.",send().example)
-        .with_parameters(vec![parameter("agent_address","string","Declared agent",true),parameter("sub_agent_id","number","Sub-agent",true),
+        .with_parameters(vec![parameter("agent_address","string","Declared monitored agent IPv4 or IPv6 address",true),parameter("sub_agent_id","number","Unsigned identifier of this agent exporter instance",true),
             parameter("sequence_number","number","Datagram sequence before increment",true),parameter("uptime_ms","number","Unsigned32 reported uptime",true),
-            parameter("sample_count","number","Sample count",true),parameter("record_count","number","Record count",true),
-            parameter("byte_count","number","Datagram bytes",true),parameter("local_transport_only","bool","Always true",true)])
+            parameter("sample_count","number","Number of flow and counter samples in the datagram",true),parameter("record_count","number","Total telemetry records across all samples",true),
+            parameter("byte_count","number","Number of encoded bytes accepted by local UDP transport",true),parameter("local_transport_only","boolean","True reports local UDP send acceptance, without collector acknowledgment",true)])
         .with_actions(vec![send(),disconnect()])
 });
 impl Protocol for SflowClientProtocol {
