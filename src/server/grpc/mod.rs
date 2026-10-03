@@ -7,7 +7,7 @@ pub mod actions;
 mod reflection;
 pub(crate) mod schema;
 pub mod stream_codec;
-mod streaming;
+pub(crate) mod streaming;
 pub mod value_codec;
 pub use value_codec::{dynamic_message_to_json, json_to_dynamic_message, proto_value_to_json};
 
@@ -597,11 +597,143 @@ struct DynamicGrpcService {
     status_tx: mpsc::UnboundedSender<String>,
     server_id: crate::state::ServerId,
     descriptor_pool: Arc<DescriptorPool>,
-    protocol: Arc<GrpcProtocol>,
+    protocol: Arc<dyn crate::llm::actions::protocol_trait::Server>,
     reflection: Option<Arc<reflection::Reflection>>,
     stream_timeout: std::time::Duration,
     streams: Arc<tokio::sync::Semaphore>,
     next_stream_id: Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// The Web binding shares typed method handling, admission and cancellation with native
+/// gRPC. Transport framing remains at the Web boundary; legacy unary behavior is untouched.
+#[cfg(feature = "grpc-web")]
+#[derive(Clone)]
+pub(crate) struct WebCore(Arc<DynamicGrpcService>);
+#[cfg(feature = "grpc-web")]
+pub(crate) struct WebAdmission {
+    pub(crate) deadline: tokio::time::Instant,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    timer: streaming::DeadlineGuard,
+    method: prost_reflect::MethodDescriptor,
+    id: u32,
+}
+#[cfg(feature = "grpc-web")]
+impl WebCore {
+    pub(crate) fn new(
+        ctx: &crate::protocol::SpawnContext,
+        pool: DescriptorPool,
+        protocol: Arc<dyn crate::llm::actions::protocol_trait::Server>,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self(Arc::new(DynamicGrpcService {
+            llm_client: ctx.llm_client.clone(),
+            app_state: ctx.state.clone(),
+            status_tx: ctx.status_tx.clone(),
+            server_id: ctx.server_id,
+            descriptor_pool: Arc::new(pool),
+            protocol,
+            reflection: None,
+            stream_timeout: timeout,
+            streams: Arc::new(tokio::sync::Semaphore::new(streaming::MAX_ACTIVE)),
+            next_stream_id: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+        }))
+    }
+    pub(crate) async fn commands(
+        self,
+        commands: mpsc::Receiver<crate::state::client_handles::ClientCommand>,
+        registry: streaming::Registry,
+        connection: crate::server::connection::ConnectionId,
+    ) {
+        streaming::command_loop(commands, registry, self.0, connection).await;
+    }
+    pub(crate) fn prepare(
+        &self,
+        request: &Request<tonic::body::BoxBody>,
+        executor: streaming::OwnedExecutor,
+    ) -> Result<WebAdmission, tonic::Status> {
+        let method = DynamicGrpcService::parse_grpc_path(request.uri().path())
+            .ok()
+            .and_then(|(service, method)| {
+                self.0
+                    .descriptor_pool
+                    .get_service_by_name(&service)
+                    .and_then(|service| {
+                        service
+                            .methods()
+                            .find(|candidate| candidate.name() == method)
+                    })
+            });
+        let method =
+            method.ok_or_else(|| tonic::Status::unimplemented("unknown gRPC-Web method"))?;
+        if method.is_client_streaming() {
+            return Err(tonic::Status::unimplemented(
+                "gRPC-Web supports unary and server-streaming methods only",
+            ));
+        }
+        let timeout = streaming::timeout(request.headers(), self.0.stream_timeout)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let permit = self
+            .0
+            .streams
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| tonic::Status::unavailable("server at RPC capacity"))?;
+        let timer = executor.deadline(deadline)?.retain_expired();
+        let id = match self.0.next_stream_id.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |id| id.checked_add(1),
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err(tonic::Status::resource_exhausted(
+                    "RPC identifiers exhausted",
+                ))
+            }
+        };
+        Ok(WebAdmission {
+            deadline,
+            permit,
+            timer,
+            method,
+            id,
+        })
+    }
+    pub(crate) async fn request(
+        &self,
+        request: Request<tonic::body::BoxBody>,
+        connection: crate::server::connection::ConnectionId,
+        busy: crate::server::accept_bounded::BusyGuard,
+        registry: streaming::Registry,
+        admission: WebAdmission,
+    ) -> Response<tonic::body::BoxBody> {
+        let WebAdmission {
+            deadline,
+            permit,
+            timer,
+            method,
+            id,
+        } = admission;
+        streaming::dispatch(
+            request,
+            self.0.clone(),
+            connection,
+            method,
+            registry,
+            deadline,
+            id,
+        )
+        .await
+        .map(|body| {
+            streaming::BodyGuard {
+                body,
+                _permit: permit,
+                _busy: busy,
+                _timer: timer,
+            }
+            .boxed_unsync()
+        })
+    }
 }
 
 /// A gRPC response body: the length-prefixed message, then a **trailing HEADERS frame**
@@ -743,7 +875,10 @@ impl DynamicGrpcService {
                     }
                 };
                 streaming::dispatch(
-                    req,
+                    req.map(|body| {
+                        body.map_err(|_| tonic::Status::internal("request transport failed"))
+                            .boxed_unsync()
+                    }),
                     self.clone(),
                     connection_id,
                     streaming_method.unwrap(),

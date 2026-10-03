@@ -119,6 +119,8 @@ pub use git::actions::GitClientProtocol;
 // grpc client
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(feature = "grpc-web")]
+pub mod grpc_web;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcClientProtocol;
 
