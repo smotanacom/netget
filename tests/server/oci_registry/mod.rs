@@ -5,6 +5,9 @@
 #[cfg(all(test, feature = "oci-registry"))]
 mod digest_test;
 
+#[cfg(all(test, feature = "oci-registry"))]
+mod schema_guard_test;
+
 /// Mocked end-to-end tests over real HTTP, plus a `crane`-driven test that runs
 /// only where the binary is installed.
 #[cfg(all(test, feature = "oci-registry"))]

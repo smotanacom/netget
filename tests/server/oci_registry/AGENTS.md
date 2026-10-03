@@ -173,3 +173,10 @@ digest in the suite.
   in `index_children_get_real_digests_too`, but no e2e test serves one).
 - Token-auth *completion* — the 401 challenge is asserted; there is no token endpoint.
 - Concurrency: no test makes overlapping requests to one server.
+
+`schema_guard_test.rs` verifies exact action depth/node/retained boundaries,
+constructed10,000-level owned action and borrowed descriptor refusal, and the
+parsed string-manifest depth boundary. Separator cases include valid double
+underscore/repeated hyphen and invalid repeated dot/triple underscore/mixed
+separators. The full21-test server suite passes with independent crane0.22.1;
+existing connection bounds remain exercised.

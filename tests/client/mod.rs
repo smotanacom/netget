@@ -280,3 +280,6 @@ pub mod tacacs;
 
 #[cfg(feature = "bolt")]
 pub mod bolt;
+
+#[cfg(feature = "oci-registry")]
+pub mod oci_registry;
