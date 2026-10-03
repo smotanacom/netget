@@ -604,8 +604,12 @@ fn nsq() -> Vec<EvalCase> {
             "nsq",
             "You are an NSQ broker. Accept every message published to any topic.",
             to_nsq_probe("events", "user signed up\n"),
-            // to_nsq logs "exiting router" only on a clean stop; a refusal is fatal to it.
-            Expect::contains(&["exiting router"]).not_containing(&["E_PUB_FAILED"]),
+            // to_nsq exits zero after each synchronous Publish read its OK. go-nsq 1.1.0
+            // releases the router WaitGroup before logging "exiting router", so main can
+            // return before that goroutine writes its last line. A refusal is fatal.
+            Expect::default()
+                .exits_with(0)
+                .not_containing(&["E_PUB_FAILED"]),
         ),
         EvalCase::new(
             "nsq/refuse-closed-topic",
