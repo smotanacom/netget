@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -26,7 +27,7 @@ pub fn example_batch() -> Value {
     json!({"observation_domain_id":42,"templates":[{"id":256,"fields":[{"element":"source_ipv4_address"},{"element":"destination_ipv4_address"},{"element":"packet_delta_count"}]}],"data_sets":[{"template_id":256,"records":[[{"kind":"ipv4","value":"192.0.2.1"},{"kind":"ipv4","value":"198.51.100.2"},{"kind":"unsigned","value":5}]]}]})
 }
 fn send() -> ActionDefinition {
-    ActionDefinition{name:"export_ipfix_records".into(),description:"Validate one complete typed UDP message before emitting. Each batch repeats all referenced templates; domain sequence advances by locally sent data/options records. No acknowledgment or automatic data retry.".into(),parameters:vec![parameter("batch","object","observation_domain_id;optional unsigned32 export_time;1..32 templates(id>=256,optional scope_count,ordered fields with supported element and optional length);ordered data_sets(template_id,records of aligned typed field values). Kinds unsigned/ipv4/ipv6/string/timestamp_seconds/timestamp_milliseconds. Bounds8192bytes,64sets,256records,32fields,1024byte strings; reduced unsigned sizes1..native width; strings fixed1..1024 or variable65535.",true)],example:json!({"type":"export_ipfix_records","batch":example_batch()}),log_template:Some("Export a validated IPFIX batch".into())}
+    ActionDefinition{name:"export_ipfix_records".into(),description:"Validate one complete typed UDP message before emitting. Each batch repeats all referenced templates; domain sequence advances by locally sent data/options records. No acknowledgment or automatic data retry.".into(),parameters:vec![parameter("batch","object","observation_domain_id;optional unsigned32 export_time;1..32 templates(id>=256,optional scope_count,ordered fields with supported element and optional length);ordered data_sets(template_id,records of aligned typed field values). Kinds unsigned/ipv4/ipv6/string/timestamp_seconds/timestamp_milliseconds. Bounds8192bytes,64sets,256records,32fields,1024byte strings; reduced unsigned sizes1..native width; strings fixed1..1024 or variable65535.",true)],example:json!({"type":"export_ipfix_records","batch":example_batch()}),log_template:Some(LogTemplate::new().with_info("Export a validated IPFIX batch"))}
 }
 fn disconnect() -> ActionDefinition {
     ActionDefinition {
@@ -34,7 +35,7 @@ fn disconnect() -> ActionDefinition {
         description: "Cancel UDP sends, template refresh, handlers and command handle".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: Some("Disconnect IPFIX exporter".into()),
+        log_template: Some(LogTemplate::new().with_info("Disconnect IPFIX exporter")),
     }
 }
 pub static IPFIX_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
