@@ -99,7 +99,7 @@ executed — a malformed value is an error, never something logged as if it had 
 access-control device, and the only status word a default could reasonably be is `9000` —
 success. That would make the most degenerate thing a model can emit, a bare
 `{"type": "respond_to_apdu"}`, an approval of a VERIFY: an omission granting access, which is
-the OAuth2 fail-open shape the root `CLAUDE.md` calls the most dangerous pattern here. Success
+the OAuth2 fail-open shape the root `AGENTS.md` calls the most dangerous pattern here. Success
 has to be *named*, the way `eapol` gives `EAP-Success` its own eight literal octets rather
 than a boolean anything could flip. Both layers enforce it — `execute_action` refuses the
 action, and `decode_status_byte` refuses the normalised payload — so nothing between the

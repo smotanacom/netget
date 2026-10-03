@@ -10,7 +10,7 @@ fires only when the requested port is actually below 1024.
 **RFC**: 7230-7235.
 
 Shared request/response plumbing lives in `src/server/http_common/` — read
-`src/server/http_common/CLAUDE.md` too; the filter and response-building
+`src/server/http_common/AGENTS.md` too; the filter and response-building
 contracts are documented there, not repeated here.
 
 ## What the model sees and controls
@@ -69,7 +69,7 @@ notes below it are the parts that are easy to get wrong.
 
 - **The peer gets a category, never the error text** (`crate::utils::WireFailure`). Overload
   becomes `503` + `Retry-After` rather than `500` so a client backs off instead of recording a
-  permanent fault. This is the behaviour root `CLAUDE.md` tells other protocols to copy;
+  permanent fault. This is the behaviour root `AGENTS.md` tells other protocols to copy;
   `tests/server/http/failure_semantics_test.rs` pins it.
 - **`decision=model_silent fallback=blank_200` is a fail-open, and it is stated rather than
   fixed.** When the model produces no `send_http_response` and the server has no
@@ -83,7 +83,7 @@ notes below it are the parts that are easy to get wrong.
   `fail_closed_bad_action` promises the peer was refused, and here the peer is given an
   affirmative response anyway. A rejected action (e.g. a status outside 100-599) is dropped with
   a warning by `execute_actions()` and the request falls through to the fallback; this is why
-  the executor is lenient about status/body shapes, see `http_common/CLAUDE.md`.
+  the executor is lenient about status/body shapes, see `http_common/AGENTS.md`.
 - The `send_http_response` action and `http_request` event descriptions tell the model to
   always answer and to honor the client's `Accept` header (a matching `Content-Type`; 404 for
   an image/binary it cannot produce), and the `request_filter` param is recommended so
@@ -190,7 +190,7 @@ favicon bypass.
 
 Full schema, matching semantics and the **fail-open** caveat (a malformed rule is
 dropped, not fatal, so a typo sends *more* traffic to the LLM) are in
-`src/server/http_common/CLAUDE.md`. The filter is built once at spawn time; parse
+`src/server/http_common/AGENTS.md`. The filter is built once at spawn time; parse
 problems are logged at `error!` and pushed to the status stream as
 `[ERROR] HTTP request_filter: …`, so they show up in the `start_server` result. Pure unit tests: `tests/http_request_filter_test.rs`.
 
@@ -306,7 +306,7 @@ watchdog over `ConnectionActivity` instead, which reports a connection with work
 idle at all. The model round-trip, and an event a `manual` rule parked for a human
 (`src/state/intercepts.rs`, 300s by default), are therefore outside every deadline by
 construction: an answer that takes minutes can never close the connection it is an answer for.
-That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse — TFTP evicted
+That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse — TFTP evicted
 live transfers because "idle" was measured wrongly.
 
 **hyper's own `header_read_timeout` is not this bound.** Its 30-second default is inert unless

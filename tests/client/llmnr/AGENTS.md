@@ -104,10 +104,10 @@ NetGet. What they test is this client's own decision about multiplicity.
 
 Three tests use NetGet's own LLMNR responder, so both ends are this project's code; and all four
 frame with `hickory-proto`, so the codec is asserted against itself. Circular on two axes — the
-failure the root `CLAUDE.md` names for `webrtc_signaling`/`websocket`, and the reason the protocol
+failure the root `AGENTS.md` names for `webrtc_signaling`/`websocket`, and the reason the protocol
 is rated `Experimental`.
 
-`src/client/llmnr/CLAUDE.md` has the full finding on `llmnr-poison`, which **is** a library
+`src/client/llmnr/AGENTS.md` has the full finding on `llmnr-poison`, which **is** a library
 (contradicting the server half's note), depends only on `anyhow` + `tokio` so it shares no codec
 with NetGet, and exposes `llmnr_response(query: &[u8], spoof: Ipv4Addr) -> Option<(String,
 Vec<u8>)>` as a pure function — the test would keep its own ephemeral unicast socket and let that

@@ -51,7 +51,7 @@ username and password it was going to authenticate with**.
 did — through TLS and through the key exchange, driven by the protocol's own `openvpn` binary in a test that is not
 `#[ignore]`d — but it still cannot *use* this as a VPN. The exchange it completes ends in a timeout.
 
-This is deliberately the lesson from `wireguard`'s demotion recorded in the root `CLAUDE.md`: rate the protocol by what
+This is deliberately the lesson from `wireguard`'s demotion recorded in the root `AGENTS.md`: rate the protocol by what
 a real peer can actually do with it, not by how much of it is implemented. When `PUSH_REPLY` and a data channel exist
 and a client reports `Initialization Sequence Completed`, revisit the rating — and not before.
 
@@ -225,7 +225,7 @@ unacknowledged through all 8 retransmissions is dropped by the retransmission lo
 opposite of connectionless: it holds a reliability window, a TLS session and a key-exchange state machine, and every
 packet has to be read in the light of its last one. Ten seconds is less than one `accept_peer` decision, so the flag
 deleted live handshakes out from under themselves. Expiring idle peers is this server's own job, at 120s, and it closes
-the `AppState` connection when it does. This is the TFTP trap in the root `CLAUDE.md`: "UDP" is not the test,
+the `AppState` connection when it does. This is the TFTP trap in the root `AGENTS.md`: "UDP" is not the test,
 "has no connection concept" is.
 
 Control payloads also call `update_connection_stats`, so the rail's `↓` counter and `last_activity` reflect the

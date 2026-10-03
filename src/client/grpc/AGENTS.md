@@ -159,7 +159,7 @@ caller then got a meaningless "Response too short" from the empty body beside it
 **Both halves of that story were NetGet talking to itself.** The server had the mirror-image
 defect — it put the status in the headers on a call that carried a body — so pointing this
 client at that server showed nothing wrong in either direction. The server was fixed in
-September 2026 and now emits real trailers (`src/server/grpc/CLAUDE.md`), which is what a real
+September 2026 and now emits real trailers (`src/server/grpc/AGENTS.md`), which is what a real
 gRPC client refuses to proceed without. Reading both places is still correct here: an error
 reply is legitimately Trailers-Only, and its status really is in the headers.
 

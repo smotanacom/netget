@@ -466,7 +466,7 @@ refuses a request deliberately.
 naming `brew install stuntman`) when the binary is absent.
 
 `metadata().e2e_testing` claimed `"stuntman-client / WebRTC"` for a long time while **nothing in
-this tree had ever run either**. That is the exact failure mode the root `CLAUDE.md` catalogues
+this tree had ever run either**. That is the exact failure mode the root `AGENTS.md` catalogues
 — a maturity claim outliving the thing that justified it — and it was fixed by making the claim
 true rather than by deleting it.
 

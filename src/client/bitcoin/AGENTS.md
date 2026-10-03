@@ -308,7 +308,7 @@ status_tx.send("[CLIENT] Bitcoin RPC client connected");         // → TUI
 
 ## Testing Strategy
 
-See `tests/client/bitcoin/CLAUDE.md` for E2E testing approach.
+See `tests/client/bitcoin/AGENTS.md` for E2E testing approach.
 
 ## Future Enhancements
 

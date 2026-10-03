@@ -138,7 +138,7 @@ The LLM can implement various strategies:
 
 ## Testing Strategy
 
-See `tests/client/torrent_peer/CLAUDE.md` for E2E testing details.
+See `tests/client/torrent_peer/AGENTS.md` for E2E testing details.
 
 ## Example LLM Prompts
 

@@ -109,7 +109,7 @@ They used to answer `{"status": "success"}` unconditionally, with no event and n
 anywhere in the path, and `/api/pull` invented a digest of `sha256:0000000000000000`. So a
 server instructed "this instance only serves llama2, refuse anything else" reported every pull
 as downloaded and every delete as removed: the instruction could not be wrong, it simply had no
-effect. That is the fail-open shape from the root `CLAUDE.md` in its purest form — the decision
+effect. That is the fail-open shape from the root `AGENTS.md` in its purest form — the decision
 was never asked for.
 
 All four now raise **`ollama_admin_request`** (`operation`, `model`, `destination`) and require
@@ -132,7 +132,7 @@ including ones it had just refused to pull.
 defended it was wrong in one load-bearing detail. The argument: an embedding is a few hundred
 to a few thousand floats, asking a language model to emit them would produce plausible-looking
 noise, and that is the numeric equivalent of the raw-bytes-in-actions rule the root
-`CLAUDE.md` forbids. All true. The conclusion it drew — "if an operator ever needs real
+`AGENTS.md` forbids. All true. The conclusion it drew — "if an operator ever needs real
 control here the answer is a script handler, not an action" — was not: **the endpoint raised
 no event, so a script handler could not reach it either.** Neither could a static rule, nor
 the instruction, nor anything else an operator can write. It was not a stub with an escape
@@ -208,7 +208,7 @@ rather than failing the request: the refusal itself is the part that must surviv
 
 ## Testing Strategy
 
-See `tests/server/ollama/CLAUDE.md` for E2E testing approach.
+See `tests/server/ollama/AGENTS.md` for E2E testing approach.
 
 Key test scenarios:
 

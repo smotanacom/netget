@@ -33,7 +33,7 @@ identifier and not as something it can look anything up by.
 
 2123 and 2152 are both above 1023, so no privilege is required and none is declared. Declaring
 `PrivilegedPort(2123)` would be dead code — the `svn`/`PrivilegedPort(3690)` mistake recorded
-in the root `CLAUDE.md`.
+in the root `AGENTS.md`.
 
 The practical consequence is that **the transport really executes in the test suite**. Unlike
 every raw-socket protocol in the same wave, `tests/server/gtp/e2e_test.rs` binds real UDP
@@ -101,7 +101,7 @@ the declared exceptions and stay silent — an Echo Response asserts this node i
 only user-plane reply (Error Indication) asserts a tunnel does not exist, which tears the peer's
 session down.
 
-A subscriber session is network access, so the OAuth2 post-mortem in the root `CLAUDE.md`
+A subscriber session is network access, so the OAuth2 post-mortem in the root `AGENTS.md`
 applies at full force. `GtpServer::decide` is where it lives.
 
 | Situation | Wire result | Logged decision |
@@ -138,7 +138,7 @@ Four things make this structural:
 
 ## No storage — and what that costs
 
-Per the root `CLAUDE.md`, protocols must not implement storage. There is **no PDP context
+Per the root `AGENTS.md`, protocols must not implement storage. There is **no PDP context
 table**: no map of TEIDs to sessions, no subscriber records, no bearer state. The model answers
 every request, and continuity across requests comes from server memory (`set_memory`) or the
 generic SQLite facility if the operator wants it.
@@ -253,7 +253,7 @@ implementation has ever accepted a packet this server produced.**
 The peer in `tests/server/gtp/e2e_test.rs` is hand-written from TS 29.060 and TS 29.274 and
 shares no code with `codec.rs`. That makes it an independent *reading* of the specification,
 which is worth something and is the same evidence `dhcp` and the USB/IP family rest on — but
-the root `CLAUDE.md` is explicit that it is not an independent *implementation*.
+the root `AGENTS.md` is explicit that it is not an independent *implementation*.
 
 **What was looked for, and not found, on this machine** (nothing was installed):
 
@@ -281,7 +281,7 @@ rule, from an implementation that has never seen this code.
 
 Reproduce it with `text2pcap -u 2123,2123 <hexdump> out.pcap && tshark -r out.pcap -V` plus
 `tshark -r out.pcap -q -z expert`. It is deliberately **not** wired into the suite: a test that
-needs `tshark` installed would have to skip when it is missing, and the root `CLAUDE.md` is
+needs `tshark` installed would have to skip when it is missing, and the root `AGENTS.md` is
 explicit that a real tool behind a skip-when-missing gate is not evidence at all.
 
 **This still does not earn Beta.** It validates the *encoding*; Beta wants a peer that

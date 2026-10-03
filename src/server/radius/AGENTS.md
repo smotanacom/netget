@@ -13,7 +13,7 @@ Files: `packet.rs` (pure codec, no I/O), `actions.rs` (LLM vocabulary + executor
 undecided Access-Request gets a correctly signed Access-Reject. RADIUS is **not** a
 deliberately-silent protocol, whatever older lists said — it has a denial on the wire, and uses it.
 
-This protocol grants network access, so the OAuth2 post-mortem in the root `CLAUDE.md`
+This protocol grants network access, so the OAuth2 post-mortem in the root `AGENTS.md`
 applies with full force. There, "the LLM returned nothing" fell through to a hardcoded
 access token, and a model's explicit denial was indistinguishable from its silence.
 
@@ -137,13 +137,13 @@ driving **FreeRADIUS `radclient`** — a peer NetGet did not write and does not 
 verifies our Response Authenticator itself and refuses the reply outright if the MD5 is
 wrong. Both its tests run (neither is `#[ignore]`d) and both **fail rather than skip** when
 `radclient` is absent. That last point is the promotion: the evidence was always there, but
-behind a gate that printed `SKIPPED` and returned `Ok(())`, and the root `CLAUDE.md` is
+behind a gate that printed `SKIPPED` and returned `Ok(())`, and the root `AGENTS.md` is
 explicit that a skip-when-missing gate is a silent pass rather than evidence.
 
 FreeRADIUS is therefore required wherever the `radius` feature's suite runs
 (`brew install freeradius-server`, or `apt-get install -y freeradius-utils`). It is not in
 CI's `CI_FEATURES`, so the CI gate neither compiles nor runs those tests — see
-`tests/server/radius/CLAUDE.md` for the per-job derivation.
+`tests/server/radius/AGENTS.md` for the per-job derivation.
 
 What Beta does **not** claim: Message-Authenticator, CHAP, MS-CHAP and EAP are unimplemented
 (above), and the tests cover neither, deliberately.

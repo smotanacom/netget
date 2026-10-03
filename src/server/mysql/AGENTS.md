@@ -302,7 +302,7 @@ with HandshakeResponse41 before any model turn — `PROTOCOL_QUALITY.md`'s three
 **The deadline covers the read and nothing else.** `AsyncMysqlIntermediary::run_on` owns the protocol loop, so there is no `read()` of ours to wrap — but it takes a *generic* reader, which is the seam. `IdleTimeoutReader` arms its clock only while a read is actually outstanding, so while `MysqlHandler` is working the reader is not being polled and no clock runs. The LLM round-trip, and a `manual`
 rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
 every deadline here, so an answer that takes minutes can never close the connection it is an
-answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+answer for. That is the `.connectionless()` lesson in the project `AGENTS.md` read in reverse:
 TFTP evicted live transfers because "idle" was measured wrongly.
 
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;

@@ -40,7 +40,7 @@ config-mutation path (`build_peer_config`) and the executor wiring are unit-test
 needs root + a WireGuard backend, and so stays `Beta`: a real client actually completing a handshake against a
 pre-added key, `wireguard_peer_connected` firing for it, and a transport-packet exchange. `boringtun` is the
 recommended in-process driver for that once a privileged environment exists. Documented in
-`src/server/wireguard/CLAUDE.md` and the protocol's `metadata()` notes.
+`src/server/wireguard/AGENTS.md` and the protocol's `metadata()` notes.
 
 ## Test inventory
 
@@ -94,7 +94,7 @@ what the model is actually offered:
 ### No inbound-bound test, deliberately
 
 `max_inbound_bytes` has nothing to bound here: NetGet reads no WireGuard bytes (the kernel or
-`wireguard-go` owns the UDP socket; see `src/server/wireguard/CLAUDE.md`). The declaration
+`wireguard-go` owns the UDP socket; see `src/server/wireguard/AGENTS.md`). The declaration
 ratchet records that reason rather than a test that would have nothing to send to.
 
 ### Root-gated real-backend harness

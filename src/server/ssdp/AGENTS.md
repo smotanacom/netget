@@ -24,7 +24,7 @@ URL.** There are exactly two of them — a `HTTP/1.1 200 OK` answering an
 M-SEARCH, and a `NOTIFY` — and there is no third one meaning "I don't know", no
 equivalent of DNS SERVFAIL, HTTP 503 or RESP `LOADING`.
 
-That places SSDP in the deliberately-silent class the root `CLAUDE.md`
+That places SSDP in the deliberately-silent class the root `AGENTS.md`
 catalogues (declared in `metadata()` with `.deliberately_silent()`), and for the strongest reason on that list. A control point that
 receives an advertisement caches it for `CACHE-CONTROL: max-age` seconds —
 1800 by convention — and then fetches the `LOCATION` URL. So a fabricated
@@ -103,7 +103,7 @@ silence above.
 `usn`, `location`, `server`, `cache_control_max_age`, `host`, `source_address`
 and `headers`.
 
-`headers` is a **map**, never a rendered blob, per the root `CLAUDE.md` rule.
+`headers` is a **map**, never a rendered blob, per the root `AGENTS.md` rule.
 `cache_control_max_age` is parsed out of the `CACHE-CONTROL` directive into a
 number, because a model asked "is this still fresh?" should not have to parse a
 header directive first. `mx` is likewise a number, clamped (below).
@@ -342,7 +342,7 @@ port:
 A server bound to `127.0.0.1` on an ephemeral port cannot receive a datagram
 sent to the group anyway, so this is a dead end and not a missing dependency.
 The two remaining options are both explicitly *not* third-party evidence under
-the root `CLAUDE.md`: a hand-written M-SEARCH sender inside the test (the
+the root `AGENTS.md`: a hand-written M-SEARCH sender inside the test (the
 `dhcp` / `usbip_client` class — an independent reading of the spec, not an
 independent implementation), or vendoring `ssdp-client`'s search function with
 the destination parameterised, which stops being a third-party client the
@@ -385,4 +385,4 @@ intended.
 - UDA 1.1 §1.2 (advertisement / NOTIFY), §1.3 (search / M-SEARCH)
 - The expired IETF draft `draft-cai-ssdp-v1-03`, which is where the HTTPU idea
   and the `MX`/`MAN` headers originate
-- `tests/server/ssdp/CLAUDE.md` — test strategy and LLM call budget
+- `tests/server/ssdp/AGENTS.md` — test strategy and LLM call budget

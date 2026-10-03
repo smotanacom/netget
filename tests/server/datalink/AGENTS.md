@@ -98,7 +98,7 @@ sudo -E ./cargo-isolated.sh test --no-default-features --features datalink \
   with `--ignored` on 2026-09-08 (macOS 27, user in the `access_bpf` group) and both passed: a
   loopback UDP datagram was captured, its bytes appeared in the hex the model would be shown, and
   it reached the event path. The protocol stays `Experimental` because the test is `#[ignore]`d
-  and an ignored test is not evidence for a rating — see `src/server/datalink/CLAUDE.md` for why
+  and an ignored test is not evidence for a rating — see `src/server/datalink/AGENTS.md` for why
   no unprivileged capture test can exist.
 - Loopback framing differs by platform (DLT_NULL on macOS/BSD, Ethernet on Linux), so the capture
   test asserts on payload bytes, not on framing. Ethernet-header parsing is untested.

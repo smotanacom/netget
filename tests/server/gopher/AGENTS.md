@@ -14,7 +14,7 @@ all acceptable to an independent implementation.
 
 **Both hard-fail when curl is missing or lacks gopher support. Neither skips.**
 `require_curl_with_gopher` returns `Err` — it does not print `SKIP` and return
-`Ok`. The root `CLAUDE.md` lists four protocols (`kubernetes`, `oci_registry`,
+`Ok`. The root `AGENTS.md` lists four protocols (`kubernetes`, `oci_registry`,
 `maven`, `websocket`) held back from Beta for exactly that: a skip-when-missing
 gate is a silent pass on any runner without the binary, and a maturity rating
 resting on a silent pass rests on nothing. It also checks the `Protocols:` line

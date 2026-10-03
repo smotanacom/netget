@@ -202,7 +202,7 @@ E2E testing requires:
 3. Validation of token exchange flows
 4. Refresh token testing
 
-See `tests/client/oauth2/CLAUDE.md` for test strategy.
+See `tests/client/oauth2/AGENTS.md` for test strategy.
 
 
 ## Command channel (the dashboard's `[ send ]`)

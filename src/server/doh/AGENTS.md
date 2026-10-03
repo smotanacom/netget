@@ -170,7 +170,7 @@ DoH reuses all DNS actions, and only those:
 - `ignore_query` - Answered as HTTP 404 rather than by dropping the request,
   since HTTP requires a response
 
-See `src/server/dns/CLAUDE.md` for detailed action documentation.
+See `src/server/dns/AGENTS.md` for detailed action documentation.
 
 `dns_response` was previously listed here; no such action exists - the real name
 is `send_dns_response`.
@@ -269,7 +269,7 @@ All limitations from standard DNS protocol apply:
 - Limited record type support
 - No DNSSEC
 - No recursive resolution
-- See `src/server/dns/CLAUDE.md` for full list
+- See `src/server/dns/AGENTS.md` for full list
 
 ### 5. No Rate Limiting
 
@@ -548,7 +548,7 @@ quietly stale.
 Neither is `#[ignore]`d; the kdig test **fails** naming `brew install knot` rather than skipping.
 
 **The second one alone was half circular.** reqwest proves an HTTP server answers, not that the
-DNS on top is right — the root `CLAUDE.md` says exactly that about generic HTTP clients — and
+DNS on top is right — the root `AGENTS.md` says exactly that about generic HTTP clients — and
 the DNS message is decoded with **hickory-proto, the codec this server encodes with**. ALPN was
 unproven for a related reason: that client uses `http2_prior_knowledge()`, which skips ALPN
 entirely, so the `h2` advertisement could have been anything.

@@ -44,7 +44,7 @@ links you own or have permission to test.
 The raw transport needs root or `CAP_NET_RAW`, which nothing in this repository has, so it can
 never be executed here. The packet format can be, and is — against literal specification bytes in
 `tests/server/ndp/codec_test.rs`. This is the `bluetooth_ble_beacon` precedent the root
-`CLAUDE.md` describes: *"payload construction is pure and exhaustively unit-tested against literal
+`AGENTS.md` describes: *"payload construction is pure and exhaustively unit-tested against literal
 spec bytes; its BlueZ transport has never been compiled or run"*. `metadata().notes` says which
 half is which, which is what `Experimental` is for.
 
@@ -254,7 +254,7 @@ address to receive a unicast reply on — is answered on `ff02::1`.
 which `tests/failure_mode_declaration_test.rs` checks; the reason is repeated in a comment beside
 the call.
 
-NDP is in the **deliberately-silent** class the root `CLAUDE.md` catalogues, and its case is among
+NDP is in the **deliberately-silent** class the root `AGENTS.md` catalogues, and its case is among
 the strongest there. Every message the protocol defines is a *positive assertion* about addressing
 on this link, and the peer writes it straight into its stack. There is no error message, no NAK
 and no refusal.
@@ -297,7 +297,7 @@ and there is no address we can honestly claim with no configured policy.
 - **Not proven**: the raw ICMPv6 transport. No message this code produced has reached a real IPv6
   stack. No third-party NDP peer is runnable in the environment that tests it.
 
-The bar for Beta, per the root `CLAUDE.md`, is *a real independent peer completing a real
+The bar for Beta, per the root `AGENTS.md`, is *a real independent peer completing a real
 exchange*. Here is the experiment that would do it, and it needs no hardware — **this machine has
 the `feth` driver** (`sysctl net.link.fake.txstart` is `1`):
 
@@ -327,13 +327,13 @@ lifetimes and RDNSS.
 
 Both directions must hold before the rating moves. **This has not been run.** It needs root, which
 no agent here has. Do not claim it, and do not promote on the codec tests alone — that is the
-mistake `wireguard` made, and the correction is recorded in the root `CLAUDE.md`.
+mistake `wireguard` made, and the correction is recorded in the root `AGENTS.md`.
 
 ## Not implemented
 
 - **Duplicate Address Detection as a participant.** A solicitation from `::` is decoded and the
   default destination handles it correctly, but nothing defends an address of our own.
-- **A neighbour cache.** By design: the root `CLAUDE.md` forbids a protocol implementing storage.
+- **A neighbour cache.** By design: the root `AGENTS.md` forbids a protocol implementing storage.
   Each message is an independent event; the model decides every answer. The 10-second
   connectionless sweep reaps bookkeeping entries, which is not the same thing.
 - **Retransmission and the RFC 4861 state machines** — `RetransTimer`, `ReachableTimer`,

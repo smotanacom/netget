@@ -161,7 +161,7 @@ open are parked on a `manual` rule.
 - **The h2c upgrade path advertises the same limit** (compiled only with `http` too): curl
   `--http2` against the HTTP/1.1 server reads `MAX_CONCURRENT_STREAMS: 100` after the `101`.
   curl's request does not complete there — a pre-existing defect in the upgrade path, recorded
-  in `src/server/http/CLAUDE.md` — so only the SETTINGS are asserted.
+  in `src/server/http/AGENTS.md` — so only the SETTINGS are asserted.
 
 Verified by removal: handshaking with `h2::server::handshake` instead of `bounded_h2_builder()`
 fails the SETTINGS, curl and 101st-stream tests (curl then reads `MAX_CONCURRENT_STREAMS:
@@ -226,7 +226,7 @@ The failure tests cannot share a server with the others: they need a model that 
 - **Resolution**: TLS *is* supported by the server (`tls_cert_manager`); what is missing
   is **ALPN advertisement**, so a browser will not select `h2` on its own however the
   test is written. Testing browser-shaped negotiation needs the server to advertise ALPN
-  first — see `src/server/http2/CLAUDE.md`.
+  first — see `src/server/http2/AGENTS.md`.
 
 ### 3. No Server Push Testing
 
@@ -236,7 +236,7 @@ The failure tests cannot share a server with the others: they need a model that 
 - **Impact**: the whole push path is unexercised.
 - **Resolution**: the `h2` crate's client exposes `push_promises()` and would work — but
   the server frames with `h2` too, so such a test asserts only that one crate
-  round-trips through itself, which root `CLAUDE.md` names as the circular-evidence
+  round-trips through itself, which root `AGENTS.md` names as the circular-evidence
   case. It would be coverage, not maturity evidence. A non-`h2` peer (curl, nghttp2) is
   what the protocol actually needs.
 

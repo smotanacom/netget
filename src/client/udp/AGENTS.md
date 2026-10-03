@@ -239,7 +239,7 @@ Wait for responses from both servers
 
 ## Testing Strategy
 
-See `tests/client/udp/CLAUDE.md` for E2E test details.
+See `tests/client/udp/AGENTS.md` for E2E test details.
 
 **Test Server:** `nc -u -l localhost 8080` (netcat in UDP mode)
 

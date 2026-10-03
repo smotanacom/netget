@@ -170,5 +170,5 @@ is the point. Each test asserts the packet *and* the log line, because either ha
 proves nothing: a tag with no packet behind it describes something that did not happen, and a
 packet with no tag is the defect the pass exists to remove.
 
-See `src/server/tftp/CLAUDE.md`, "Failure behaviour", for every outcome and its token,
+See `src/server/tftp/AGENTS.md`, "Failure behaviour", for every outcome and its token,
 including the two that still write nothing at all (`model_silent`, `fail_closed_bad_action`).

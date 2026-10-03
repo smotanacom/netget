@@ -362,7 +362,7 @@ queried. Prevents announce spam.
 
 ## Testing
 
-See `tests/server/torrent_dht/CLAUDE.md` for comprehensive testing documentation.
+See `tests/server/torrent_dht/AGENTS.md` for comprehensive testing documentation.
 
 ## References
 

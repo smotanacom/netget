@@ -76,7 +76,7 @@ also sets `encoding: "base64"`.
 It used to guess — "all ASCII alphanumeric (plus `+`, `/`, `=`) and a length divisible by four"
 meant base64 — and those two sets overlap on completely ordinary documents. Printing the word
 `Test` produced three bytes of binary on the wire, and nothing said so. This is the
-`send_tcp_data` defect the root `CLAUDE.md` names as the reference case, in base64 rather than
+`send_tcp_data` defect the root `AGENTS.md` names as the reference case, in base64 rather than
 hex: a string is not evidence of its own encoding, and only the sender knows.
 
 A `base64` value that does not decode is now an error rather than being printed as its own

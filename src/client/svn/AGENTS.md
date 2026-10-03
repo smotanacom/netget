@@ -724,7 +724,7 @@ all-protocols = [..., "svn"]
 
 **Goal**: Comprehensive documentation for maintainers
 
-**This File** (`src/client/svn/CLAUDE.md`):
+**This File** (`src/client/svn/AGENTS.md`):
 - Implementation details (completed phases)
 - Protocol references
 - Known issues and limitations
@@ -936,7 +936,7 @@ Executes: `svn log /tmp/myrepo -l 10`
 
 ### NetGet Server Implementation
 
-- **Server CLAUDE.md**: `src/server/svn/CLAUDE.md`
+- **Server CLAUDE.md**: `src/server/svn/AGENTS.md`
   - Explains S-expression parsing strategy
   - Shows response formatting
   - Documents supported commands

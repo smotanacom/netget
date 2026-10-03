@@ -108,7 +108,7 @@ Overall **Experimental** for the expanded surface. Prior command evidence remain
 responses, stdout/stderr/exit status, rejected public key and bounded follow-up chaining.
 `tests/client/ssh/sftp_test.rs` adds OpenSSH internal-sftp stat/list/chunked reads and response
 follow-ups, host-key negatives, errors, bounds, active removal and direct NetGet pairing.
-Tests fail when external peers are missing. See `tests/client/ssh/CLAUDE.md` for exact probes.
+Tests fail when external peers are missing. See `tests/client/ssh/AGENTS.md` for exact probes.
 
 Not claimed: a second independent SFTP server, pcap oracle, fuzz target, password auth against
 a real external server, PTY, stdin streaming, SCP, forwarding, interactive shell or tunnels.

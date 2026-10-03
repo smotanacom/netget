@@ -351,7 +351,7 @@ for answer in response.answers() {
 
 ## Testing Strategy
 
-See `tests/client/dns/CLAUDE.md` for detailed testing approach.
+See `tests/client/dns/AGENTS.md` for detailed testing approach.
 
 **Test Servers:**
 

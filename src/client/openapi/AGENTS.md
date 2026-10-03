@@ -238,7 +238,7 @@ declared server won over `remote_addr`, so an operator who said "connect to 127.
 and handed over a spec whose `servers:` block names `https://api.production.example.com` got
 the production host — silently, with no log line saying the named address had been discarded.
 A spec is data supplied with the request, frequently by the model, so it must not be able to
-retarget the client. This is the DynamoDB shape from the root `CLAUDE.md` reached by a
+retarget the client. This is the DynamoDB shape from the root `AGENTS.md` reached by a
 different route: a client that loses its target and arrives at a real service.
 
 The tell was sitting in the test suite the whole time. `tests/client/openapi/e2e_test.rs`
@@ -331,7 +331,7 @@ Client uses first server: `https://api.example.com/v1`
 
 ## Testing Strategy
 
-See `tests/client/openapi/CLAUDE.md` for E2E testing approach with mocks.
+See `tests/client/openapi/AGENTS.md` for E2E testing approach with mocks.
 
 ## Benefits vs HTTP Client
 

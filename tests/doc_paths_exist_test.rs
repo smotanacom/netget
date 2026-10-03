@@ -92,77 +92,77 @@ const SKIP_DIRS: &[&str] = &["target", ".git", ".claude", "node_modules", "tmp"]
 /// *serves* rather than contains.
 const FOREIGN_PATHS: &[(&str, &str, &str)] = &[
     (
-        "src/server/bluetooth_ble_beacon/CLAUDE.md",
+        "src/server/bluetooth_ble_beacon/AGENTS.md",
         "src/adv.rs",
         "bluer 0.17.4's own sources, cited for how it builds an advertisement",
     ),
     (
-        "src/server/bluetooth_ble_beacon/CLAUDE.md",
+        "src/server/bluetooth_ble_beacon/AGENTS.md",
         "src/adapter.rs",
         "bluer 0.17.4's own sources",
     ),
     (
-        "src/server/bluetooth_ble_beacon/CLAUDE.md",
+        "src/server/bluetooth_ble_beacon/AGENTS.md",
         "src/session.rs",
         "bluer 0.17.4's own sources",
     ),
     (
-        "src/server/can/CLAUDE.md",
+        "src/server/can/AGENTS.md",
         "src/socket.rs",
         "socketcan 3.6's own sources, which this server was written against",
     ),
     (
-        "src/server/can/CLAUDE.md",
+        "src/server/can/AGENTS.md",
         "src/frame.rs",
         "socketcan 3.6's own sources",
     ),
     (
-        "src/server/ssdp/CLAUDE.md",
+        "src/server/ssdp/AGENTS.md",
         "src/search.rs",
         "ssdp-client 2.1.0's own sources, where the multicast destination is a literal",
     ),
     (
-        "tests/server/ntp/CLAUDE.md",
+        "tests/server/ntp/AGENTS.md",
         "src/core_logic.rs",
         "rsntp's own sources, whose checks the test relies on",
     ),
     (
-        "src/server/git/CLAUDE.md",
+        "src/server/git/AGENTS.md",
         "src/main.rs",
         "a file inside the git repository this server serves, not in this tree",
     ),
     (
-        "tests/server/git/CLAUDE.md",
+        "tests/server/git/AGENTS.md",
         "src/main.rs",
         "a file inside the git repository the test serves and clones",
     ),
     (
-        "tests/server/git/CLAUDE.md",
+        "tests/server/git/AGENTS.md",
         "bin/run.sh",
         "a file inside the git repository the test serves, checked for its executable bit",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "src/client/svn/protocol.rs",
         "a planning document for an unimplemented client; the header says so in its first line",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "src/client/svn/mod.rs",
         "a planning document for an unimplemented client",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "src/client/svn/actions.rs",
         "a planning document for an unimplemented client",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "tests/client/svn/e2e_test.rs",
         "a planning document for an unimplemented client",
     ),
     (
-        "src/client/svn/CLAUDE.md",
+        "src/client/svn/AGENTS.md",
         "tests/client/svn/CLAUDE.md",
         "a planning document for an unimplemented client",
     ),
@@ -172,7 +172,7 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Every `CLAUDE.md` under `src/` and `tests/`.
+/// Every `AGENTS.md` and legacy `CLAUDE.md` under `src/` and `tests/`.
 fn protocol_docs(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -187,7 +187,10 @@ fn protocol_docs(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 walk(&p, out);
-            } else if p.file_name().is_some_and(|n| n == "CLAUDE.md") {
+            } else if p
+                .file_name()
+                .is_some_and(|n| n == "AGENTS.md" || n == "CLAUDE.md")
+            {
                 out.push(p);
             }
         }
@@ -418,7 +421,7 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
 
     assert!(
         unresolved.is_empty(),
-        "{} backticked path(s) in a protocol CLAUDE.md name a file that does not exist.\n\n{}\n\n\
+        "{} backticked path(s) in a protocol instruction file name a file that does not exist.\n\n{}\n\n\
          Fix the doc against the source. If a path really does name a file in ANOTHER \
          repository — a dependency's own sources, or content this repo serves rather than \
          contains — add it to FOREIGN_PATHS in {} with the reason.",
@@ -435,7 +438,7 @@ fn every_backticked_path_in_a_protocol_doc_exists() {
 
     assert!(
         dead_links.is_empty(),
-        "{} markdown link(s) in a protocol CLAUDE.md point at a file that does not exist.\n\n{}\n\n\
+        "{} markdown link(s) in a protocol instruction file point at a file that does not exist.\n\n{}\n\n\
          Point the link at what the reader should actually open, or delete the bullet.",
         dead_links.len(),
         dead_links.join("\n"),
