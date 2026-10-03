@@ -78,6 +78,18 @@ def verify(base):
         for case in report['cases']:
             assert case['attempts'] == (5 if case['status'] == 'attempted' else 0)
             assert [run['run'] for run in case['runs']] == list(range(1, case['attempts'] + 1))
+    scope = read('final-harness-scope.json')
+    assert scope['baseline_json_sha256'] == sha((base / 'baseline.json').read_bytes())
+    assert scope['after_json_sha256'] == sha((base / 'after.json').read_bytes())
+    nsq_before = next(case for case in before['cases'] if case['id'] == scope['case'])
+    nsq_after = next(case for case in after['cases'] if case['id'] == scope['case'])
+    assert (nsq_before['passes'], nsq_after['passes']) == (4, 5)
+    old_failure = scope['known_baseline_false_failure']
+    run = nsq_before['runs'][old_failure['run'] - 1]
+    assert run['verdict'] == 'fail' and run['client_exit'] == 0 and not run['client_timed_out']
+    for key in ('client_exit', 'client_timed_out', 'failure_mode', 'detail', 'executed_actions', 'client_output'):
+        assert old_failure[key] == run[key], key
+    assert 'E_PUB_FAILED' not in run['client_output'] and 'exiting router' not in run['client_output']
     inputs = before['measurement_provenance']['inputs']
     mapping = [('original', 'before', 'baseline-interrupted.json', 'retained_cases', 20),
                ('continuation', 'before-continuation', 'baseline-continuation.json', 'included_cases', 79),
