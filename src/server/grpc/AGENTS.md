@@ -1,7 +1,7 @@
 # gRPC Server Implementation
 
 A gRPC server whose service implementation *is* the handler. The protobuf schema is supplied at
-startup; every unary RPC is decoded to JSON keyed by field name, handed to the handler, and the
+startup; every unary RPC and streaming message is decoded to JSON keyed by field name, handed to the handler, and the
 handler's JSON is encoded back to protobuf.
 
 **State**: `Experimental` · **Stack**: `ETH>IP>TCP>HTTP2>GRPC`
@@ -10,9 +10,8 @@ handler's JSON is encoded back to protobuf.
 
 - **prost-reflect** 0.14 — `DescriptorPool` / `DynamicMessage`, so no code generation.
 - **prost** 0.13, **prost-types** — `FileDescriptorSet` decode, message encode.
-- **hyper** 1.x — `server::conn::http2` with a hand-written router. **tonic is not used** by
-  this server despite being a dependency of the `grpc` feature; the routing, framing and
-  status handling here are all local.
+- **hyper** 1.x routes HTTP/2. **tonic** 0.12.3 owns streaming and reflection framing, gzip, decoding and trailers. Legacy unary framing remains local.
+- The local tonic patch preserves upstream version/license and caps gzip expansion before allocation (`vendor/tonic/README.netget.md`).
 - **protoc** — required on `PATH` unless a pre-built `FileDescriptorSet` is supplied.
 
 ## Schema input
@@ -31,27 +30,49 @@ parameter description and the E2E test both say the opposite. Inline proto3 text
 use. Reaching a schema by file path is also driven by model output and reads an arbitrary local
 file, which is worth knowing before exposing `open_server` to an untrusted instruction.
 
-`enable_reflection` used to be a startup parameter. It only ever changed a log line — see below.
+## Streaming and reflection
 
-## Reflection is not served
+All four protobuf method shapes are routed from their descriptors. Unary methods retain
+`grpc_unary_request`/`grpc_unary_response`. Streaming methods raise `grpc_stream_opened`,
+`grpc_stream_message`, `grpc_stream_input_closed`, and requested `grpc_stream_tick` events.
+Each carries a wire stream ID, method/shape facts, input/output counts, field-name JSON and
+an expected response schema. The handler chooses `grpc_stream_send`, `grpc_stream_finish`,
+`grpc_stream_cancel`, `grpc_stream_wait` (1..1000 ms), or `grpc_error`. Stream IDs are implicit
+in an event handler and required for injected peer actions. Queued controls report `Executed`;
+they do not claim a protobuf message was delivered.
 
-`grpcurl` with no `-proto`/`-protoset` begins with
-`grpc.reflection.v1.ServerReflection/ServerReflectionInfo`. **There is no route for it**, so
-that request is answered `12 UNIMPLEMENTED` and `grpcurl` cannot introspect this server.
+A server-streaming method requires exactly one input and EOF before the open event. A
+client-streaming method accepts inputs until EOF, then requires exactly one response before
+finish. Bidirectional methods can respond between inputs; finish closes the response side.
+The protocol retains only immutable descriptors and bounded ephemeral wire-lifecycle state;
+it does not store application data or implement subscriptions on the handler's behalf.
 
-This used to be worse than absent: a `tonic_reflection` service was built into a variable named
-`_reflection_service`, dropped at the end of scope, and the server logged "gRPC reflection
-enabled" while `metadata()` and this file both advertised it as a design principle. The dead
-construction is gone and the server now logs a WARN saying reflection is unavailable.
-Implementing it properly needs server streaming, which this unary-only server does not have.
+New streams reject any reachable `bytes` field, including nested and map values, before
+conversion. Legacy unary bytes/base64 compatibility remains. Streaming framing and gzip
+are handled by tonic, with 4 MiB encoded and decoded message limits. Both peers use the
+existing depth 32/node 100000/retained 8 MiB value converter.
 
-Give clients the schema out of band: `grpcurl -proto service.proto ...`.
+`enable_reflection` defaults to true. Real generated v1 and v1alpha services answer service,
+file, symbol, extension and transitive dependency queries. Unknown queries return reflection
+error code5 and the same RPC remains usable. Reflection descriptors remain internal wire
+metadata and never enter model events. No library worker is spawned: each response stream
+polls its requests inside the owned HTTP/2 task. Built-in reflection file names are reserved;
+a supplied descriptor with the same name must match the generated descriptor exactly.
+
+The shared `schema.rs` accepts at most 4 MiB decoded descriptors/inline text and 128 files/
+services. File reads check regular-file metadata and take at most limit+1. The protoc child
+is killed on drop, with a 10-second whole compile deadline and 16 KiB stderr budget; its
+output file is bounded before allocation. Qualified names are checked before prost-reflect
+builds its pool: depth 32, identifiers 256 bytes, packages 256, qualified names 1024,
+100000 symbols and 8 MiB aggregate expanded symbol names. Reflection's 128-file/service and
+4 MiB descriptor totals include both built-in files. Queries are bounded to 128 per RPC,
+64 KiB decoded request, 5 MiB response, and a 30-second whole RPC deadline.
 
 ## No storage
 
 The only server state is the `Arc<DescriptorPool>` compiled from `proto_schema` at startup. It
 is immutable, never written from network bytes or handler output, and no per-client data is
-retained. `GrpcProtocol` is a unit struct. This protocol has never been near the storage rule.
+retained as a domain store. A bounded per-connection stream registry tracks only wire controls. `GrpcProtocol` is a unit struct. This protocol has never been near the storage rule.
 
 ## Request handling
 
@@ -82,7 +103,7 @@ bytes and never as hex. `{"a": 5, "b": 3}`, not a blob. Round-trip rules:
 `bytes` is the one place base64 crosses the action boundary, against the project's general
 rule. It is symmetric — `Kind::Bytes` decodes what `proto_value_to_json` encoded — and the
 schema hint says `"bytes (base64)"`, so there is no encode/decode asymmetry of the kind the
-root CLAUDE.md warns about for `send_tcp_data`. It remains a poor fit for small models; a
+root AGENTS.md warns about for `send_tcp_data`. It remains a poor fit for small models; a
 schema that avoids `bytes` will work better.
 
 Repeated and map fields **could not be produced at all** until recently: `json_to_proto_value`
@@ -156,12 +177,19 @@ headers) is not parsed and does not reach the handler at all.
   `frame[5..4]` panics with start > end.
 - **protoc output path is per-invocation.** It was the fixed
   `$TMPDIR/netget_grpc_descriptor.pb`, so two gRPC servers starting concurrently could load
-  each other's schema. The file is now UUID-named and removed after reading.
+  each other's schema. Each compilation now owns a temporary directory.
 - Bind uses `create_reusable_tcp_listener(...)?`; the accept-loop `JoinHandle` is registered via
   `register_server_task()`. The accept loop breaks on error rather than spinning. Per-connection
-  tasks are untracked (project-wide gap).
+  tasks use `AppState::spawn_server_task`. A connection-owned executor records and aborts all
+  HTTP/2 children and deadline timers on exit; body guards retain admission/activity until EOS/drop.
 
 ## Connection bounds
+
+New streaming/reflection admission is 64 active RPCs globally and 16 HTTP/2 streams per
+connection; body EOS/drop releases the permit. A streaming RPC has at most 256 input/output
+messages, 258 handler events and 16 queued outputs totalling at most 4 MiB. An injected
+control channel holds one command. `stream_timeout_secs` defaults to 300 and accepts1..3600,
+shortened by a valid grpc-timeout. No application worker outlives its owning connection.
 
 Before September 2026 this server accepted without limit and bounded no read in time, so a peer
 that connected and said nothing held a socket, a connection task and an `AppState` entry
@@ -171,7 +199,7 @@ the constants and the reasoning live beside them in `src/server/grpc/mod.rs`.
 | Bound | Value | Why this number |
 |---|---|---|
 | `FIRST_BYTE_READ_TIMEOUT` | 30s | Enforced with `TcpStream::peek` before the socket reaches hyper, so the HTTP/2 preface is still there afterwards. HTTP/2 is client-speaks-first and every gRPC client sends the preface inside its dial path. |
-| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | gRPC keepalive is **off by default** on both sides (grpc-go leaves `keepalive.ClientParameters.Time` unset and its server policy refuses pings more often than five minutes), so there is no interval to copy. Fifteen minutes is safe because of a property of *this* server: it is unary-only — no server-streaming route exists, reflection included — so no legitimate request is held open waiting for something to happen. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 900s | gRPC keepalive is **off by default** on both sides (grpc-go leaves `keepalive.ClientParameters.Time` unset and its server policy refuses pings more often than five minutes), so there is no interval to copy. Only a connection with no live RPC is idle. A streaming body holds its busy guard through EOS/drop. |
 | `MAX_CONNECTIONS` | 256 | Refusal: **HTTP/1.1 `503 Service Unavailable` with `Retry-After`**, deliberately in the older protocol — the same choice `src/server/etcd/mod.rs` makes. A refused peer has not sent the HTTP/2 preface, so nothing has been negotiated and a GOAWAY would have to follow a SETTINGS exchange this server is declining. |
 
 **NetGet's own gRPC client *speaks inside `connect()`*, so it is never the silent peer this
@@ -183,9 +211,9 @@ bound closes:** `src/client/grpc/mod.rs` uses tonic's eager `Endpoint::connect()
 starts, and it keeps polling the connection for new frames *while a request is being answered* —
 so a deadline on reads would be wrong here, not merely awkward. The idle bound is a watchdog over
 `ConnectionActivity` instead, which reports a connection with work in flight as not idle at all.
-The LLM round-trip, and a `manual` rule parking an event for a human
-(`src/state/intercepts.rs`, 300s by default), are outside every deadline here, so an answer that
-takes minutes can never close the connection it is an answer for.
+The legacy unary model round-trip is outside the idle watchdog. Streaming and reflection
+have independent whole-operation deadlines, including parked handlers and a peer that
+stops reading. The hard timer aborts the owning HTTP/2 task even if flow control stops body polling.
 
 `tests/server/grpc/connection_bounds_test.rs` drives both halves from the wire in raw HTTP/2: a
 peer that says nothing is closed at the bound, and a peer that sent the preface still gets a
@@ -196,8 +224,7 @@ first test hang for its whole 70-second window and fail.
 
 ## Known limitations
 
-- **Unary only.** No client, server or bidirectional streaming. Extra length-prefixed frames in
-  a request body are ignored without error.
+- **Legacy unary framing is unchanged.** Extra length-prefixed frames in a unary body remain ignored.
 - **Trailers are emitted now, and the history is worth keeping** because it is the cleanest
   example in this tree of a test suite that cannot see the bug it is sitting on. This entry
   used to say `grpc-status` is sent in the initial HEADERS alongside the DATA body and that
@@ -231,13 +258,14 @@ first test hang for its whole 70-second window and fail.
   `tests/server/grpc/real_client_test.rs::test_grpc_unary_call_against_real_grpcurl` was
   written `#[ignore]`d against the broken server, deliberately asserting correct behaviour
   rather than the behaviour of the day. It is now un-ignored and is the regression test.
-- **No reflection** (above).
-- **Request compression rejected**, not decompressed.
-- **No deadline enforcement** — `grpc-timeout` is ignored.
+- Legacy unary request compression remains rejected and unary `grpc-timeout` remains ignored.
+  New streaming/reflection routes accept gzip and validate a unique grpc-timeout that can only
+  shorten the configured deadline.
 - **No auth** — no mTLS, no token checking, no metadata inspection.
 - **Schema is fixed at startup.** `descriptor_pool` is an immutable `Arc` with no reload path.
-- **No HTTP method check** — a `GET` with the right content-type is accepted and fails later at
-  frame decode.
+- Legacy unary accepts methods other than POST; new streaming/reflection routes require POST
+  and application/grpc over HTTP/2.
+- Receiver TLS, mTLS, token checking, streaming retries, fuzzing and pcap evidence are unproved.
 - The three async actions `reload_schema`, `list_services` and `describe_method` have been
   **removed**. All three built an `ActionResult::Custom` that no consumer matched, so they did
   nothing on any path, and `reload_schema` was unimplementable against an immutable pool.
@@ -289,8 +317,8 @@ and value fixtures, including programmatically constructed deep protobuf trees, 
 base64 expansion, shared aggregate budgets, invalid values, and valid nested wire round trips.
 This CPU-only target requires the `grpc` feature and no protoc, model, or external service.
 
-**State: Beta**, September 2026, on **grpcurl** — grpc-go, the reference implementation, and
-deliberately not tonic, which this crate depends on and this server does not use.
+**State: Experimental** for the expanded streaming/reflection scope. Legacy unary evidence
+uses **grpcurl** (grpc-go), independently of tonic.
 `tests/server/grpc/real_client_test.rs` has two tests, neither `#[ignore]`d and neither
 skipping when the binary is missing: one completes a unary RPC and asserts grpcurl decoded our
 protobuf response field by field, the other asserts it read back our `NOT_FOUND` code and

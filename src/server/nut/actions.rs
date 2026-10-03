@@ -117,7 +117,7 @@ impl Protocol for NutProtocol {
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::*;
-        ProtocolMetadataV2::builder().state(DevelopmentState::Experimental).privilege_requirement(PrivilegeRequirement::None).well_known_port(3493)
+        ProtocolMetadataV2::builder().request_only("NUT replies require a pending command and its UPS or variable identity; no unsolicited peer messages").state(DevelopmentState::Experimental).privilege_requirement(PrivilegeRequirement::None).well_known_port(3493)
             .implementation("RFC 9271 ASCII line protocol over Tokio TCP, bounded strict parser and correlated structured replies")
             .llm_control("UPS discovery, variable values/types/descriptions, instant-command lists, authentication and write authorization/results")
             .e2e_testing("tests/server/nut: raw-wire sessions, framing and bounds; independent client evidence is documented in CLAUDE.md")

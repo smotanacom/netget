@@ -66,6 +66,8 @@ fn golden_duals_map() {
         "Loki",
         "OTLP",
         "IPFIX",
+        "sFlow",
+        "Vault",
         "Beanstalkd",
         "DICT",
         "Gemini",

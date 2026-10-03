@@ -8,3 +8,8 @@ pub mod e2e_test;
 pub mod llm_failure_test;
 #[cfg(all(test, feature = "grpc"))]
 mod real_client_test;
+#[cfg(all(test, feature = "grpc"))]
+mod streaming_test;
+
+#[cfg(all(test, feature = "grpc"))]
+pub mod schema_bounds_test;

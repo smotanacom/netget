@@ -71,18 +71,28 @@ impl Protocol for GrpcProtocol {
                     example: json!("syntax = \"proto3\"; package test; service UserService { rpc GetUser(UserId) returns (User); } message UserId { int32 id = 1; } message User { int32 id = 1; string name = 2; string email = 3; }"),
                     default: None,
                 },
+                ParameterDefinition {
+                    name: "enable_reflection".into(), type_hint: "boolean".into(), required: false,
+                    description: "Serve bounded gRPC v1/v1alpha reflection of the startup schema".into(),
+                    example: json!(true), default: Some(json!(super::streaming::DEFAULT_REFLECTION)),
+                },
+                ParameterDefinition {
+                    name: "stream_timeout_secs".into(), type_hint: "integer".into(), required: false,
+                    description: "Whole streaming RPC deadline, 1..3600 seconds, shortened by grpc-timeout".into(),
+                    example: json!(300), default: Some(json!(super::streaming::DEFAULT_TIMEOUT_SECS)),
+                },
             ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        // None. `reload_schema`, `list_services` and `describe_method` used to be declared
-        // here. All three built an `ActionResult::Custom` that no consumer in mod.rs matched
-        // (its loop handles `grpc_unary_response` and `grpc_error` and ignores the rest), so
-        // they did nothing on any path. `reload_schema` could not have worked in any case:
-        // `descriptor_pool` is an immutable `Arc<DescriptorPool>` with no reload channel.
-        vec![]
+        stream_actions()
+            .into_iter()
+            .filter(|action| action.name != "grpc_stream_wait" && action.name != "grpc_error")
+            .collect()
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![grpc_unary_response_action(), grpc_error_action()]
+        let mut actions = vec![grpc_unary_response_action()];
+        actions.extend(stream_actions());
+        actions
     }
     fn protocol_name(&self) -> &'static str {
         "gRPC"
@@ -139,55 +149,12 @@ impl Protocol for GrpcProtocol {
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
-
         ProtocolMetadataV2::builder()
-            // Beta, September 2026. grpcurl — grpc-go, the reference implementation, and
-            // deliberately NOT tonic, which this server links but does not use — completes a
-            // real unary RPC and reads back a real error status. Neither test is #[ignore]d,
-            // neither skips when the binary is absent, and the peer is not the crate the
-            // server frames with.
-            .state(DevelopmentState::Beta)
-            .implementation(
-                "prost-reflect over a hand-routed hyper HTTP/2 server. The schema is compiled \
-                 once at startup by protoc, which must be on PATH unless a pre-built \
-                 FileDescriptorSet is supplied.",
-            )
-            .llm_control(
-                "The body of every unary RPC, as JSON keyed by protobuf field name, plus the \
-                 gRPC status code on failure. The schema is fixed at startup and cannot be \
-                 changed at runtime.",
-            )
-            .e2e_testing(
-                "REAL THIRD-PARTY CLIENT, both paths: grpcurl 1.9.4 (grpc-go) in \
-                 tests/server/grpc/real_client_test.rs. Neither test is #[ignore]d and neither \
-                 is skip-gated — they FAIL, naming `brew install grpcurl`, when grpcurl is \
-                 absent. One completes a unary RPC and asserts grpcurl decoded our protobuf \
-                 response field by field; the other asserts it read back our NOT_FOUND code and \
-                 grpc-message. grpc-go is deliberately not tonic, which this crate depends on \
-                 but this server does not use, so the evidence is not circular. \
-                 The success test was WRITTEN #[ignore]d, because when it was written it \
-                 failed: grpcurl rejected EVERY successful unary RPC with `Internal: server \
-                 closed the stream without sending trailers`. mod.rs wrote grpc-status into the \
-                 INITIAL HEADERS and emitted no trailers at all; a success has a non-empty body \
-                 so hyper sent HEADERS then DATA and ended the stream with nothing, which \
-                 grpc-go refuses. An ERROR has an empty body and became a valid Trailers-Only \
-                 response by accident, which is exactly why the error path worked and the \
-                 success path did not — NetGet could report a FAILURE to a real gRPC client and \
-                 could not report a SUCCESS. Fixed: the success reply is now a message frame \
-                 followed by real trailers, the error reply stays Trailers-Only, and both \
-                 placements are asserted so neither can drift. \
-                 UNPROVEN: streaming of any kind (unary only), server reflection (not served), \
-                 and compression (rejected). The rest of tests/server/grpc is reqwest with \
-                 http2_prior_knowledge, which does not implement gRPC and never looks at \
-                 trailers — which is why it could not see the bug and is not the evidence.",
-            )
-            .notes(
-                "Unary RPCs only - no client, server or bidirectional streaming. Server \
-                 reflection is NOT served (tonic-reflection is a dependency and is referenced \
-                 nowhere in src/), so a reflection call gets 12 UNIMPLEMENTED and grpcurl needs \
-                 -proto or -protoset. Request compression is rejected. bytes fields cross the \
-                 action boundary as base64.",
-            )
+            .state(DevelopmentState::Experimental)
+            .implementation("Dynamic protobuf services over hyper HTTP/2; tonic owns streaming and reflection framing, compression and trailers. Immutable bounded startup schema.")
+            .llm_control("Typed field-name JSON for unary requests and stream open/message/input-close/tick events; send, finish, cancel and wait controls. No protocol domain store.")
+            .e2e_testing("Mandatory independent grpcurl1.9.4 and generated grpcio1.75.1 peers exercise unary success/error, all three stream shapes, gzip and v1/v1alpha reflection; paired NetGet client/server and cancellation/bounds regressions in tests/server/grpc and tests/client/grpc. Peers fail when absent.")
+            .notes("Experimental expanded scope. New streams exclude schemas containing bytes fields; legacy unary bytes/base64 behavior remains. Reflection is enabled by default and can be disabled. Receiver TLS, mTLS, streaming retries, load balancing, reflection authentication and pcap/fuzz evidence are outside the validated scope. Legacy unary request compression remains rejected.")
             .max_inbound_bytes(crate::server::grpc::MAX_REQUEST_BYTES)
             .build()
     }
@@ -209,7 +176,7 @@ impl Protocol for GrpcProtocol {
                 "type": "open_server",
                 "port": 50051,
                 "base_stack": "grpc",
-                "instruction": "gRPC server with UserService. Respond to GetUser with user details, CreateUser with success confirmation",
+                "instruction": "gRPC server with UserService. Respond to GetUser with user details",
                 "startup_params": {
                     "proto_schema": "syntax = \"proto3\"; package test; service UserService { rpc GetUser(UserId) returns (User); } message UserId { int32 id = 1; } message User { int32 id = 1; string name = 2; string email = 3; }"
                 }
@@ -227,7 +194,7 @@ impl Protocol for GrpcProtocol {
                     "handler": {
                         "type": "script",
                         "language": "python",
-                        "code": "req = event.get('request', {})\nresult = req.get('a', 0) + req.get('b', 0)\naction('grpc_unary_response', message={'result': result})"
+                        "code": "import json,sys\nd=json.load(sys.stdin)\nreq=d['event']['request']\nprint(json.dumps({'actions':[{'type':'grpc_unary_response','message':{'result':req['a']+req['b']}}]}))"
                     }
                 }]
             }),
@@ -284,6 +251,34 @@ impl Server for GrpcProtocol {
         match action_type {
             "grpc_unary_response" => self.execute_grpc_unary_response(action),
             "grpc_error" => self.execute_grpc_error(action),
+            "grpc_stream_send" | "grpc_stream_finish" | "grpc_stream_cancel"
+            | "grpc_stream_wait" => {
+                if action_type == "grpc_stream_send" {
+                    anyhow::ensure!(
+                        action["message"].is_object(),
+                        "message must be a field-name JSON object"
+                    );
+                }
+                if action_type == "grpc_stream_wait" {
+                    anyhow::ensure!(
+                        action["milliseconds"]
+                            .as_u64()
+                            .is_some_and(|n| (1..=1000).contains(&n)),
+                        "milliseconds must be 1..1000"
+                    );
+                }
+                if let Some(id) = action.get("stream_id") {
+                    anyhow::ensure!(
+                        id.as_u64()
+                            .is_some_and(|id| (1..=u64::from(u32::MAX)).contains(&id)),
+                        "stream_id must be 1..4294967295"
+                    );
+                }
+                Ok(ActionResult::Custom {
+                    name: action_type.to_owned(),
+                    data: action,
+                })
+            }
             _ => Err(anyhow::anyhow!("Unknown gRPC action: {}", action_type)),
         }
     }
@@ -418,14 +413,104 @@ pub static GRPC_UNARY_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 
 /// Get gRPC event types
 pub fn get_grpc_event_types() -> Vec<EventType> {
-    vec![GRPC_UNARY_REQUEST_EVENT.clone()]
+    vec![
+        GRPC_UNARY_REQUEST_EVENT.clone(),
+        GRPC_STREAM_OPENED_EVENT.clone(),
+        GRPC_STREAM_MESSAGE_EVENT.clone(),
+        GRPC_STREAM_INPUT_CLOSED_EVENT.clone(),
+        GRPC_STREAM_TICK_EVENT.clone(),
+    ]
 }
+
+fn stream_actions() -> Vec<ActionDefinition> {
+    let mut actions = Vec::new();
+    for (name, description, extra, example) in [
+        ("grpc_stream_send", "Queue one typed response on the current stream; injected actions require stream_id", Some(("message", "object", "Field-name response JSON matching expected_response_schema")), json!({"type":"grpc_stream_send","stream_id":1,"message":{"name":"update","value":1}})),
+        ("grpc_stream_finish", "Finish this RPC with OK after pending responses; client-streaming requires half-close and one response", None, json!({"type":"grpc_stream_finish","stream_id":1})),
+        ("grpc_stream_cancel", "Cancel an active RPC; injected actions require stream_id", None, json!({"type":"grpc_stream_cancel","stream_id":1})),
+        ("grpc_stream_wait", "Continue reading input and request a subscription tick after 1..1000 milliseconds", Some(("milliseconds", "integer", "Delay before the next handler tick, 1..1000")), json!({"type":"grpc_stream_wait","milliseconds":100})),
+    ] {
+        let mut parameters = vec![Parameter { name:"stream_id".into(), type_hint:"integer".into(), required:false, description:"Active RPC id; required for peer injection, implicit within an event handler".into() }];
+        if let Some((name, hint, description)) = extra { parameters.push(Parameter { name:name.into(), type_hint:hint.into(), required:true, description:description.into() }); }
+        actions.push(ActionDefinition { name:name.into(), description:description.into(), parameters, example, log_template:None });
+    }
+    actions.push(grpc_error_action());
+    actions
+}
+fn stream_event(name: &'static str, description: &'static str) -> EventType {
+    EventType::new(
+        name,
+        description,
+        json!({"type":"grpc_stream_wait","milliseconds":100}),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "stream_id".into(),
+            type_hint: "integer".into(),
+            required: true,
+            description: "Active RPC correlation id".into(),
+        },
+        Parameter {
+            name: "service".into(),
+            type_hint: "string".into(),
+            required: true,
+            description: "Fully qualified service name".into(),
+        },
+        Parameter {
+            name: "method".into(),
+            type_hint: "string".into(),
+            required: true,
+            description: "Method name".into(),
+        },
+        Parameter {
+            name: "message".into(),
+            type_hint: "object or null".into(),
+            required: false,
+            description: "Decoded typed request message, or null for lifecycle/tick events".into(),
+        },
+        Parameter {
+            name: "expected_response_schema".into(),
+            type_hint: "object".into(),
+            required: true,
+            description: "Response fields and cardinalities; streaming excludes bytes fields"
+                .into(),
+        },
+    ])
+    .with_actions(stream_actions())
+}
+pub static GRPC_STREAM_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_opened",
+        "Streaming RPC opened; server-streaming carries its one decoded request",
+    )
+});
+pub static GRPC_STREAM_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_message",
+        "A decoded client-streaming or bidirectional message arrived",
+    )
+});
+pub static GRPC_STREAM_INPUT_CLOSED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_input_closed",
+        "Client half-closed its request stream; client-streaming now permits one response",
+    )
+});
+pub static GRPC_STREAM_TICK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_tick",
+        "Requested subscription interval elapsed; send updates, wait or finish",
+    )
+});
 
 /// Whether `schema` is a base64-encoded `FileDescriptorSet` — the form `mod.rs` decodes
 /// directly, without `protoc`.
 fn is_base64_descriptor_set(schema: &str) -> bool {
     use base64::Engine as _;
     use prost::Message as _;
+    if schema.len() > (4usize * 1024 * 1024).div_ceil(3) * 4 {
+        return false;
+    }
     base64::engine::general_purpose::STANDARD
         .decode(schema)
         .map(|bytes| prost_types::FileDescriptorSet::decode(bytes.as_slice()).is_ok())
