@@ -302,6 +302,12 @@ pub mod openidconnect;
 #[cfg(feature = "openidconnect")]
 pub use openidconnect::actions::OpenIdConnectClientProtocol;
 
+// otlp client
+#[cfg(feature = "otlp")]
+pub mod otlp;
+#[cfg(feature = "otlp")]
+pub use otlp::actions::OtlpClientProtocol;
+
 // ospf client
 #[cfg(feature = "ospf")]
 pub mod ospf;

@@ -212,3 +212,6 @@ pub mod doq;
 
 #[cfg(feature = "quic")]
 pub mod quic;
+
+#[cfg(feature = "otlp")]
+pub mod otlp;

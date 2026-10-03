@@ -351,7 +351,7 @@ kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client 
 # HTTP stack and rustls for the optional TLS listener. Pure Rust, no system library.
 kubernetes-server = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
 prometheus = []  # Prometheus exporter (/metrics) - hyper only, exposition rendered by NetGet
-otlp = ["dep:opentelemetry-proto", "dep:prost", "dep:flate2"]  # OTLP/HTTP receiver - opentelemetry-proto message types (prost), gzip via flate2
+otlp = ["dep:opentelemetry-proto", "opentelemetry-proto/gen-tonic", "dep:prost", "dep:prost-types", "dep:flate2", "dep:tonic", "dep:tower", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots", "tonic/gzip", "tonic/tls-webpki-roots", "hyper-util/server-auto"] # OTLP HTTP/gRPC receiver and semantic exporter
 docker = ["urlencoding"]  # Docker Engine API (read-only) - hyper only, documents rendered by NetGet
 vault = []  # HashiCorp Vault KV v2 - hyper only, envelope rendered by NetGet; the model holds the secrets
 bolt = []  # Neo4j's Bolt protocol (graph database) - hand-written PackStream + chunking, no extra deps
