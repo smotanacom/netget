@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -23,7 +24,7 @@ impl GelfClientProtocol {
     }
 }
 pub fn send_action() -> ActionDefinition {
-    ActionDefinition {name:"send_gelf_message".into(),description:"Emit one structured GELF 1.1 log. Entire message/compression/chunk plan is validated before writing. Local acceptance does not confirm collector persistence; no automatic retries.".into(),parameters:vec![parameter("message","object","host and short_message required; optional full_message, finite nonnegative timestamp, level 0..7, facility/file/line, additional_fields object with unprefixed names and string/number values. id prohibited. Encoded JSON <=256KiB; UDP requires <=128 chunks.",true)],example:json!({"type":"send_gelf_message","message":{"host":"demo","short_message":"Started","timestamp":1700000000.25,"level":6,"additional_fields":{"service":"api"}}}),log_template:None}
+    ActionDefinition {name:"send_gelf_message".into(),description:"Emit one structured GELF 1.1 log. Entire message/compression/chunk plan is validated before writing. Local acceptance does not confirm collector persistence; no automatic retries.".into(),parameters:vec![parameter("message","object","host and short_message required; optional full_message, finite nonnegative timestamp, level 0..7, facility/file/line, additional_fields object with unprefixed names and string/number values. id prohibited. Encoded JSON <=256KiB; UDP requires <=128 chunks.",true)],example:json!({"type":"send_gelf_message","message":{"host":"demo","short_message":"Started","timestamp":1700000000.25,"level":6,"additional_fields":{"service":"api"}}}),log_template: Some(LogTemplate::new().with_info("-> GELF host={message.host} level={message.level} short_message_bytes={message.short_message_len}"))}
 }
 fn disconnect_action() -> ActionDefinition {
     ActionDefinition {
@@ -31,7 +32,7 @@ fn disconnect_action() -> ActionDefinition {
         description: "Close the GELF transport and command handle".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("-> GELF disconnect")),
     }
 }
 pub static GELF_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -41,9 +42,24 @@ pub static GELF_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send_action().example,
     )
     .with_parameters(vec![
-        parameter("remote_addr", "string", "Collector", true),
-        parameter("local_addr", "string", "Emitter", true),
-        parameter("transport", "string", "udp or tcp", true),
+        parameter(
+            "remote_addr",
+            "string",
+            "Remote IP and port of the GELF collector",
+            true,
+        ),
+        parameter(
+            "local_addr",
+            "string",
+            "Local IP and port of this GELF emitter",
+            true,
+        ),
+        parameter(
+            "transport",
+            "string",
+            "Selected GELF transport: udp or tcp",
+            true,
+        ),
     ])
     .with_actions(vec![send_action(), disconnect_action()])
 });

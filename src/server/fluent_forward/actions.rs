@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -28,7 +29,7 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
     }
 }
 fn collect_action() -> ActionDefinition {
-    ActionDefinition { name: "accept_forward_batch".into(), description: "Accept a validated Forward batch; send a native correlated ACK when requested. No persistent event store.".into(), parameters: vec![], example: json!({"type":"accept_forward_batch"}), log_template: None }
+    ActionDefinition { name: "accept_forward_batch".into(), description: "Accept a validated Forward batch; send a native correlated ACK when requested. No persistent event store.".into(), parameters: vec![], example: json!({"type":"accept_forward_batch"}), log_template: Some(LogTemplate::new().with_info("Fluent Forward batch accepted")) }
 }
 fn reject_action() -> ActionDefinition {
     ActionDefinition {
@@ -36,12 +37,14 @@ fn reject_action() -> ActionDefinition {
         description: "Reject this batch by closing the peer without ACK".into(),
         parameters: vec![],
         example: json!({"type":"reject_forward_batch"}),
-        log_template: None,
+        log_template: Some(
+            LogTemplate::new().with_info("Fluent Forward batch rejected; close without ACK"),
+        ),
     }
 }
 pub static FORWARD_BATCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("forward_batch","A complete Message/Forward/PackedForward/gzip PackedForward batch. Each entry has typed timestamp seconds/optional nanoseconds and a JSON record. Opaque chunk IDs stay inside the transport.",collect_action().example)
- .with_parameters(vec![parameter("tag","string","Fluent event tag",true),parameter("entries","array","Timestamp/record entries",true),parameter("record_count","number","Entry count",true),parameter("mode","string","message, forward, packed, compressed_packed",true),parameter("ack_requested","bool","Peer requested correlated acceptance",true),parameter("source_addr","string","TCP sender",true)])
+ .with_parameters(vec![parameter("tag","string","Fluent event tag",true),parameter("entries","array","Timestamp/record entries",true),parameter("record_count","number","Number of records in this Forward batch",true),parameter("mode","string","message, forward, packed, compressed_packed",true),parameter("ack_requested","boolean","Peer requested correlated acceptance",true),parameter("source_addr","string","Remote IP and TCP port of the Forward emitter",true)])
  .with_actions(vec![collect_action(),reject_action()])
 });
 impl Protocol for FluentForwardProtocol {
@@ -87,7 +90,7 @@ impl Protocol for FluentForwardProtocol {
             .notes("256KiB frame/decompressed entries; 256 records, nesting depth 32, 16384 MessagePack values, tag 1024 bytes, 256 TCP peers, 30s absolute frame deadline. Typed JSON record values only. No secure-forward handshake, TLS, JSON convenience framing, UDP heartbeat, persistence, automatic retry or deduplication.").build()
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![ParameterDefinition { name: "llm_fallback".into(), type_hint: "bool".into(), description: "Opt unmatched event batches into model reasoning. False collects without model calls. Configured static/script/manual/LLM handlers always run.".into(), required: false, example: json!(true), default: Some(json!(DEFAULT_LLM_FALLBACK)) }]
+        vec![ParameterDefinition { name: "llm_fallback".into(), type_hint: "boolean".into(), description: "Opt unmatched event batches into model reasoning. False collects without model calls. Configured static/script/manual/LLM handlers always run.".into(), required: false, example: json!(true), default: Some(json!(DEFAULT_LLM_FALLBACK)) }]
     }
     fn get_startup_examples(&self) -> StartupExamples {
         StartupExamples::new(

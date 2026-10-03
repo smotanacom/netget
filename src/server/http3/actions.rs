@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{EventType, SpawnContext};
 use crate::state::AppState;
 use crate::utils::quic::*;
@@ -24,15 +25,30 @@ pub static HTTP3_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({"type":"send_http3_response","status":200,"body":"hello"}),
     )
     .with_parameters(vec![
-        field("method", "string", "HTTP method", true),
-        field("path", "string", "Path and query", true),
+        field(
+            "method",
+            "string",
+            "HTTP request method, such as GET or POST",
+            true,
+        ),
+        field(
+            "path",
+            "string",
+            "Request path and optional query string",
+            true,
+        ),
         field(
             "headers",
             "object",
             "Headers; repeated values are arrays",
             true,
         ),
-        field("body", "string", "UTF-8 body", true),
+        field(
+            "body",
+            "string",
+            "Complete UTF-8 request body, at most 8 MiB",
+            true,
+        ),
         field("trailers", "object", "Request trailers", true),
         field("stream_id", "number", "QUIC stream index", true),
         field("peer_addr", "string", "Remote IP and UDP port", true),
@@ -85,14 +101,19 @@ impl Protocol for Http3Protocol {
                     field("trailers", "object", "Trailing headers", false),
                 ],
                 example: json!({"type":"send_http3_response","status":200,"headers":{"content-type":"text/plain"},"body":"hello"}),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new().with_info("-> HTTP3 status={status} body_bytes={body_len}"),
+                ),
             },
             ActionDefinition {
                 name: "cancel_http3_request".into(),
                 description: "Reset this request with H3_REQUEST_CANCELLED".into(),
                 parameters: vec![],
                 example: json!({"type":"cancel_http3_request"}),
-                log_template: None,
+                log_template: Some(
+                    LogTemplate::new()
+                        .with_info("HTTP3 request cancelled with H3_REQUEST_CANCELLED"),
+                ),
             },
         ]
     }
