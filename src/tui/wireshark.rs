@@ -216,6 +216,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         // RFC 7011 version 10 over UDP. Decode-as and display syntax checked with tshark.
         "ipfix" => udp("cflow"),
         "sflow" => udp("sflow"),
+        "netflow_v9" | "netflowv9" => udp("cflow"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
         // The discovery family. All three are UDP and all three were falling through to the
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
@@ -298,6 +299,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
+        "grpc_web" | "grpcweb" | "grpc web" => with_note(
+            tcp("http"),
+            "This binding uses binary gRPC-Web over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf body interpretation requires the matching schema.",
+        ),
         // ---- mail / text -------------------------------------------------
         "smtp" => tcp("smtp"),
         "pop3" => tcp("pop"),

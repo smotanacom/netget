@@ -1,0 +1,3 @@
+# Required independent rust-nostr SDK peer: Linux amd64, CPython3.9+ ABI3.
+# Official PyPI0.45.1 wheel, no package dependencies.
+nostr-sdk==0.45.1 --hash=sha256:5e051a662fac81aa2e15e8221915a0ee4c38791fe6284bc286c5f4cc769cc22e
