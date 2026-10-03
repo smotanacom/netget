@@ -78,6 +78,9 @@ enum Reason {
     /// and raw bytes pushed alongside hyper's framing would desynchronise the HTTP/1.1 or
     /// HTTP/2 stream rather than reach the peer as a message.
     HyperOwnsSocket,
+    /// hyper-util owns HTTP/1 or HTTP/2 framing through its auto connection builder;
+    /// tonic services answer only their correlated gRPC requests on that connection.
+    HyperAutoOwnsSocket,
     /// `axum::serve` owns its own accept loop, and this server additionally relays the public
     /// socket to a loopback backend — so the handler's peer is the relay, not the client.
     AxumOwnsSocket,
@@ -133,6 +136,7 @@ impl Reason {
     fn marker(self) -> Option<&'static str> {
         match self {
             Reason::HyperOwnsSocket => Some("hyper::server::conn"),
+            Reason::HyperAutoOwnsSocket => Some("hyper_util::server::conn::auto"),
             Reason::AxumOwnsSocket => Some("axum::serve"),
             Reason::UsbIp => Some("usbip"),
             Reason::WebSocketFrames => Some("tokio_tungstenite"),
@@ -214,6 +218,8 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("kubernetes", Reason::HyperOwnsSocket),
     ("ldap", Reason::Unreviewed),
     ("llmnr", Reason::Reviewed),
+    // Hyper owns each HTTP connection; accept/reject decisions answer one Loki push request.
+    ("loki", Reason::HyperOwnsSocket),
     ("maven", Reason::HyperOwnsSocket),
     ("mcp", Reason::AxumOwnsSocket),
     ("mercurial", Reason::HyperOwnsSocket),
@@ -229,7 +235,8 @@ const NO_PEER_HANDLE_BASELINE: &[(&str, Reason)] = &[
     ("openai", Reason::HyperOwnsSocket),
     ("openapi", Reason::HyperOwnsSocket),
     ("openid", Reason::HyperOwnsSocket),
-    ("otlp", Reason::HyperOwnsSocket),
+    // Hyper owns HTTP/1 and HTTP/2 sockets; tonic frames each correlated gRPC export reply.
+    ("otlp", Reason::HyperAutoOwnsSocket),
     ("postgresql", Reason::Reviewed),
     ("prometheus", Reason::HyperOwnsSocket),
     ("proxy", Reason::Tunnel),

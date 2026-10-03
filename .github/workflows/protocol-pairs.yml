@@ -685,6 +685,9 @@ jobs:
       - name: Shared Docker registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -745,6 +748,9 @@ jobs:
       - name: Shared Loki registration and ownership checks
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
@@ -812,6 +818,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test vendored_tonic_patch_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test event_action_declarations_test \
             --test advertised_actions_test \
             --test startup_param_defaults_test \

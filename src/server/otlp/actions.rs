@@ -402,7 +402,7 @@ pub static OTLP_EXPORT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_parameters(vec![
         param("signal", "string", "traces, metrics or logs")
             .with_choices(["traces", "metrics", "logs"]),
-        param("transport", "string", "http or grpc").with_choices(["http", "grpc"]),
+        param("transport", "string", "OTLP transport used for this export: http or grpc").with_choices(["http", "grpc"]),
         param("encoding", "string", "How the client encoded the export")
             .with_choices(["protobuf", "json"]),
         param(
