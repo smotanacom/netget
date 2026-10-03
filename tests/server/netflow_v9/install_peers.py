@@ -64,8 +64,14 @@ probe_dir = root / 'probes'
 probe_dir.mkdir(exist_ok=True)
 
 def available(name, code):
+    # Match the prerequisite type include used by upstream configure's header probes.
+    # Linux libpcap BPF headers refer to u_int/u_short supplied by sys/types.h.
+    # BPF probes already enable feature macros before their prerequisite types.
+    prefix = '' if code.startswith('#define _DEFAULT_SOURCE\n') else '#include <sys/types.h>\n'
     result = subprocess.run([cc, '-x', 'c', '-o', str(probe_dir / name), '-'],
-                            input=code + '\nint main(void){return 0;}\n', text=True, capture_output=True)
+                            input=prefix + code + '\nint main(void){return 0;}\n',
+                            text=True, capture_output=True)
+    (probe_dir / (name + '.log')).write_text(result.stdout + result.stderr)
     return result.returncode == 0
 
 defines = ['FLOW_RB', 'EXPIRY_RB', 'ENABLE_LEGACY', 'HAVE_INTTYPES_H',
