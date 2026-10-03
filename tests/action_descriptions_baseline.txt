@@ -77,9 +77,6 @@ desc/param/client:HTTP/send_http_request/path
 desc/param/client:HTTP2/send_http2_request/body
 desc/param/client:HTTP2/send_http2_request/method
 desc/param/client:HTTP2/send_http2_request/path
-desc/param/client:HTTP3/send_http3_request/body
-desc/param/client:HTTP3/send_http3_request/method
-desc/param/client:HTTP3/send_http3_request/path
 desc/param/client:ICMP/icmp_connected/event_data/local_addr
 desc/param/client:JSON-RPC/send_jsonrpc_request/id
 desc/param/client:Kafka/commit_offset/topic
@@ -594,9 +591,6 @@ log_template/client:HTTP/wait_for_more
 log_template/client:HTTP2/disconnect
 log_template/client:HTTP2/send_http2_request
 log_template/client:HTTP2/wait_for_more
-log_template/client:HTTP3/disconnect
-log_template/client:HTTP3/send_http3_request
-log_template/client:HTTP3/wait_for_more
 log_template/client:ICMP/disconnect
 log_template/client:ICMP/icmp_echo_reply/action/disconnect
 log_template/client:ICMP/icmp_echo_reply/action/send_echo_request

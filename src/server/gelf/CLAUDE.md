@@ -25,6 +25,8 @@ reply or delivery acknowledgment. TCP handler failure closes the peer, UDP logs 
 failed action records a decision-tagged gelf_handler_failed event and fails closed even if
 a collect action succeeded; shared common-action side effects are not rolled back.
 
+Metadata declares `request_only`: GELF is a one-way log stream; collecting a received message has no reply or unsolicited server-message operation. The dashboard and MCP peer-message actions show this reason instead of offering an unsolicited send.
+
 Bounds: 256KiB encoded/decompressed/compressed JSON; 8192-byte UDP datagram; 128 chunks
 within five seconds; 128 in-progress messages and 4MiB stored chunk payload, plus bounded
 metadata/recent IDs. A periodic sweep removes incomplete UDP state even without new packets.

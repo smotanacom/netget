@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -28,7 +29,7 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
     }
 }
 fn collect_action() -> ActionDefinition {
-    ActionDefinition { name: "collect_graphite_batch".into(), description: "Observe validated Carbon metrics in the bounded access log. No time-series database, aggregation or acknowledgment.".into(), parameters: vec![], example: json!({"type":"collect_graphite_batch"}), log_template: None }
+    ActionDefinition { name: "collect_graphite_batch".into(), description: "Observe validated Carbon metrics in the bounded access log. No time-series database, aggregation or acknowledgment.".into(), parameters: vec![], example: json!({"type":"collect_graphite_batch"}), log_template: Some(LogTemplate::new().with_info("Graphite Carbon batch observed")) }
 }
 pub static GRAPHITE_BATCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new("graphite_batch", "A bounded batch of complete Carbon plaintext lines. TCP read boundaries determine batching; sender action boundaries are not preserved. Unmatched events collect without model calls by default.", collect_action().example)
@@ -73,7 +74,7 @@ impl Protocol for GraphiteProtocol {
             .notes("TCP only; 4096 bytes per line, 256 metrics per dispatch, 256 connections, 30s frame read deadline excluding handler time. No Pickle, UDP, Whisper storage, query API, TLS or authentication. Tags in metric paths pass through without interpretation.").build()
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![ParameterDefinition { name: "llm_fallback".into(), type_hint: "bool".into(), description: "Opt unmatched metric batches into model reasoning. False collects without model calls. Configured static/script/manual/LLM handlers always run.".into(), required: false, example: json!(true), default: Some(json!(DEFAULT_LLM_FALLBACK)) }]
+        vec![ParameterDefinition { name: "llm_fallback".into(), type_hint: "boolean".into(), description: "Opt unmatched metric batches into model reasoning. False collects without model calls. Configured static/script/manual/LLM handlers always run.".into(), required: false, example: json!(true), default: Some(json!(DEFAULT_LLM_FALLBACK)) }]
     }
     fn get_startup_examples(&self) -> StartupExamples {
         StartupExamples::new(

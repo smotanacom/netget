@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::Protocol,
     ActionDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     ConnectContext, EventType,
@@ -24,7 +25,7 @@ impl GraphiteClientProtocol {
     }
 }
 pub fn send_action() -> ActionDefinition {
-    ActionDefinition { name: "send_graphite_batch".into(), description: "Send timestamped Carbon plaintext metrics over TCP. Validates the whole action before writing. A successful write confirms local transport acceptance, not collector persistence. No automatic retries.".into(), parameters: vec![parameter("metrics", "array", "1..256 objects with path (nonempty UTF-8 without whitespace/control), value (finite number), timestamp (nonnegative UNIX seconds, possibly fractional; -1 requests receiver time). Each encoded line <=4096 bytes; action <=64KiB. Semicolon tags are opaque parts of path.", true)], example: json!({"type":"send_graphite_batch","metrics":[{"path":"servers.demo.load","value":0.5,"timestamp":1700000000}]}), log_template: None }
+    ActionDefinition { name: "send_graphite_batch".into(), description: "Send timestamped Carbon plaintext metrics over TCP. Validates the whole action before writing. A successful write confirms local transport acceptance, not collector persistence. No automatic retries.".into(), parameters: vec![parameter("metrics", "array", "1..256 objects with path (nonempty UTF-8 without whitespace/control), value (finite number), timestamp (nonnegative UNIX seconds, possibly fractional; -1 requests receiver time). Each encoded line <=4096 bytes; action <=64KiB. Semicolon tags are opaque parts of path.", true)], example: json!({"type":"send_graphite_batch","metrics":[{"path":"servers.demo.load","value":0.5,"timestamp":1700000000}]}), log_template: Some(LogTemplate::new().with_info("-> Graphite Carbon metrics={metrics_len}")) }
 }
 fn disconnect_action() -> ActionDefinition {
     ActionDefinition {
@@ -32,7 +33,7 @@ fn disconnect_action() -> ActionDefinition {
         description: "Close the Carbon TCP connection and remove its command handle".into(),
         parameters: vec![],
         example: json!({"type":"disconnect"}),
-        log_template: None,
+        log_template: Some(LogTemplate::new().with_info("-> Graphite Carbon disconnect")),
     }
 }
 pub static GRAPHITE_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {

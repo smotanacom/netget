@@ -30,7 +30,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install build prerequisites and QUIC-capable Knot tools
         run: |
@@ -76,6 +76,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -99,7 +102,7 @@ jobs:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Install independent queue and dictionary daemons
         run: |
@@ -142,6 +145,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -172,7 +178,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned pygelf and official Graylog reader peers
         run: |
@@ -201,6 +207,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test well_known_port_declaration_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -226,7 +235,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned official daemon and client peers
         run: |
@@ -251,6 +260,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -277,7 +289,7 @@ jobs:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned independent QUIC and HTTP3 peer
         run: |
@@ -305,6 +317,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
@@ -333,7 +348,7 @@ jobs:
           ruby-version: '4.0.6'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: protocol-pairs-${{ env.PAIR_FEATURES }}
+          key: protocol-pairs-${{ github.job }}
 
       - name: Prepare pinned independent Forward peers in temporary storage
         run: |
@@ -364,6 +379,9 @@ jobs:
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
             --test advertised_actions_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
             --test protocol_startup_examples_test \
