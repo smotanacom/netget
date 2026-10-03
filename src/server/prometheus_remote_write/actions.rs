@@ -3,6 +3,7 @@ use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
     ActionDefinition, Parameter, ParameterDefinition, StartupExamples,
 };
+use crate::protocol::log_template::LogTemplate;
 use crate::protocol::{
     metadata::{DevelopmentState, ProtocolMetadataV2},
     EventType, SpawnContext,
@@ -32,13 +33,13 @@ pub fn parameter(name: &str, type_hint: &str, description: &str, required: bool)
     }
 }
 fn accept() -> ActionDefinition {
-    ActionDefinition { name:"accept_remote_write_samples".into(), description:"Accept all validated v1 float samples with204; handler observation only, no durable TSDB or protocol storage.".into(), parameters:vec![], example:json!({"type":"accept_remote_write_samples"}), log_template:None }
+    ActionDefinition { name:"accept_remote_write_samples".into(), description:"Accept all validated v1 float samples with204; handler observation only, no durable TSDB or protocol storage.".into(), parameters:vec![], example:json!({"type":"accept_remote_write_samples"}), log_template:Some(LogTemplate::new().with_info("Remote write action {type} queued")) }
 }
 fn reject() -> ActionDefinition {
-    ActionDefinition { name:"reject_remote_write_samples".into(), description:"Reject the whole batch:400 invalid/non-retryable;429 optional backoff;500/503 retryable. Common-action failure overrides acceptance.".into(), parameters:vec![parameter("status","number","400,429,500 or503",true),parameter("message","string","Nonempty UTF-8 text<=4096 bytes",true),parameter("retry_after_seconds","number","Optional1..3600 on429/503",false)], example:json!({"type":"reject_remote_write_samples","status":503,"message":"Temporarily unavailable","retry_after_seconds":1}), log_template:None }
+    ActionDefinition { name:"reject_remote_write_samples".into(), description:"Reject the whole batch:400 invalid/non-retryable;429 optional backoff;500/503 retryable. Common-action failure overrides acceptance.".into(), parameters:vec![parameter("status","number","400,429,500 or503",true),parameter("message","string","Nonempty UTF-8 text<=4096 bytes",true),parameter("retry_after_seconds","number","Optional1..3600 on429/503",false)], example:json!({"type":"reject_remote_write_samples","status":503,"message":"Temporarily unavailable","retry_after_seconds":1}), log_template:Some(LogTemplate::new().with_info("Remote write action {type} queued")) }
 }
 pub static REMOTE_WRITE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("remote_write_request","Validated published remote write1.0 float series; labels, signed millisecond timestamps, finite values or nan/+inf/-inf/stale. Unknown optional fields counted and discarded; no credentials/raw body.", accept().example).with_parameters(vec![parameter("series","array","[{labels:{name:value},samples:[{timestamp_ms:i64,value:number|nan|+inf|-inf|stale}]}]",true),parameter("series_count","number","Series in this request",true),parameter("sample_count","number","Float samples in this request",true),parameter("ignored_fields","number","Unknown/reserved fields discarded, not ingested",true),parameter("version","string","Published1.0",true),parameter("source_addr","string","HTTP sender",true),parameter("authenticated","bool","Token verified or anonymous",true),parameter("auth_required","bool","Bearer token configured",true),parameter("durable_storage","bool","Always false; common handler observation only",true)]).with_actions(vec![accept(),reject()])
+    EventType::new("remote_write_request","Validated published remote write1.0 float series; labels, signed millisecond timestamps, finite values or nan/+inf/-inf/stale. Unknown optional fields counted and discarded; no credentials/raw body.", accept().example).with_parameters(vec![parameter("series","array","[{labels:{name:value},samples:[{timestamp_ms:i64,value:number|nan|+inf|-inf|stale}]}]",true),parameter("series_count","number","Series in this request",true),parameter("sample_count","number","Float samples in this request",true),parameter("ignored_fields","number","Unknown/reserved fields discarded, not ingested",true),parameter("version","string","Published remote-write wire version 1.0",true),parameter("source_addr","string","HTTP sender socket address",true),parameter("authenticated","boolean","Token verified or anonymous",true),parameter("auth_required","boolean","Bearer token configured",true),parameter("durable_storage","boolean","Always false; common handler observation only",true)]).with_actions(vec![accept(),reject()])
 });
 #[derive(Default)]
 pub struct PrometheusRemoteWriteProtocol;
@@ -107,7 +108,7 @@ impl Protocol for PrometheusRemoteWriteProtocol {
             },
             ParameterDefinition {
                 name: "llm_fallback".into(),
-                type_hint: "bool".into(),
+                type_hint: "boolean".into(),
                 description: "Opt unmatched writes into model calls; explicit handlers always run"
                     .into(),
                 required: false,
