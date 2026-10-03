@@ -34,6 +34,9 @@ whole-RPC timer ended at 1.011364958 seconds with code 4, zero validated
 messages and RST_STREAM CANCEL; the next call on the same connection succeeded.
 The public SDK parked-call case ended at 1.010980042 seconds with code 1 and
 the idle owner then disconnected. These are separate measured timer paths.
+The refreshed whole client target also passed 32/32 checks, including all 11
+gNMI checks; its timeout-ignoring body control ended at 1.005730833 seconds,
+again with code 4, reset and a recovered next call.
 
 No tests are ignored or skipped for absent peers. Maturity remains
 Experimental: these checks do not prove universal target/YANG behavior,

@@ -107,7 +107,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<std::net::SocketAddr> {
         .and_then(|v| v.strip_suffix(']'))
         .unwrap_or(host)
         .to_owned();
-    let port = uri.port_u16().unwrap_or(57400);
+    let port = uri.port_u16().unwrap_or(crate::server::gnmi::DEFAULT_PORT);
     let name = name.unwrap_or_else(|| host.clone());
     ensure!(
         !name.is_empty() && name.len() <= 253,

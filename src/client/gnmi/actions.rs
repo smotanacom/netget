@@ -234,7 +234,7 @@ impl Protocol for GnmiClientProtocol {
     fn get_startup_examples(&self) -> StartupExamples {
         let answer = json!({"type":"gnmi_capabilities","call_id":1});
         let base = |handler: Option<Value>, instruction: &str| {
-            let mut v = json!({"type":"open_client","base_stack":"gnmi","remote_addr":"127.0.0.1:57400","instruction":instruction});
+            let mut v = json!({"type":"open_client","base_stack":"gnmi","remote_addr":"127.0.0.1:9339","instruction":instruction});
             if let Some(handler) = handler {
                 v["event_handlers"] =
                     json!([{"event_pattern":"gnmi_client_connected","handler":handler}]);

@@ -58,8 +58,27 @@ in the existing nested mock-server harness. Both failed lint logs are retained.
 The action declaration audit on the original stable base reported no gNMI
 violations, but failed inherited generic-gRPC descriptions/templates (and has
 an existing all-feature-only ignored baseline diagnostic). The refreshed
-master gate must pass before final integration; the initial audit failure is
-retained separately from all positive protocol evidence.
+master gate passed after a signed no-ff refresh from published
+`246d26ca69b1bc3585f1c5e8ed79b265c5baebcd`; the initial audit failure is retained
+separately from all positive protocol evidence.
+
+The refreshed `item04-gnmi-refreshed-peers-neighbors.log` passed complete
+client/server targets (32 + 42): 13 gNMI, 38 native gRPC and 23 TCP checks.
+`item04-gnmi-refreshed-bounds-shared-corrected.log` passed 96 checks across
+17 targets: 24 gNMI, 5 helper and 67 shared checks. Thus the refreshed tree
+passed 37 gNMI checks, 61 protocol neighbors and 72 helper/shared checks.
+The one ignored check is the existing all-feature-only action baseline
+diagnostic, never a gNMI peer skip. Actual first-byte/idle closes were
+30.002103750 and 120.051689375 seconds; the local whole-RPC body deadline
+was 1.005730833 seconds with reset and recovered-call proof. Refreshed
+all-target lint and whole formatting passed. The first shared command named
+a nonexistent target and ran zero checks; its argument-error log is retained.
+
+The subsequent TCP 9339 and metadata follow-up passed all 13 gNMI peer checks,
+13 declaration/example/port checks and all-target lint. Port-zero fixtures
+remain explicit and passed. `well_known_port_declaration_test` contributes
+five checks; the other eight shared checks repeat the refreshed example and
+action gates. Logs are `item04-gnmi-port-{peers,shared,clippy}-final.log`.
 
 This selected-scope evidence supports Experimental only. There are no ignored
 tests, peer absence skips, fuzz execution or pcap conformance claims.

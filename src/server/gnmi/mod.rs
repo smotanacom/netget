@@ -8,6 +8,7 @@ pub mod tls;
 pub mod value;
 pub use runtime::spawn;
 pub const DEFAULT_TLS: bool = false;
+pub const DEFAULT_PORT: u16 = 9339;
 pub const DEFAULT_RPC_TIMEOUT_SECS: u64 = 300;
 pub mod proto {
     pub mod gnmi_ext {

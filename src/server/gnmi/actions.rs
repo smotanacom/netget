@@ -34,7 +34,13 @@ pub fn definition(
         type_hint: hint.into(),
         description: description.into(),
         required: false,
-        example: default.clone().unwrap_or(json!("/path/to/file.pem")),
+        example: default.clone().unwrap_or_else(|| {
+            if name == "server_name" {
+                json!("localhost")
+            } else {
+                json!("/path/to/file.pem")
+            }
+        }),
         default,
     }
 }
@@ -54,7 +60,7 @@ fn event(name: &str, description: &str) -> EventType {
         field(
             "rpc_id",
             "integer",
-            "Connection-scoped RPC identifier",
+            "Receiver-local RPC identifier assigned at admission",
             true,
         ),
     ])
@@ -95,7 +101,10 @@ pub static TICK: LazyLock<EventType> = LazyLock::new(|| {
 });
 impl Protocol for GnmiProtocol {
     fn default_binding(&self) -> Option<crate::protocol::BindingDefaults> {
-        Some(crate::protocol::BindingDefaults::port_based("127.0.0.1", 0))
+        Some(crate::protocol::BindingDefaults::port_based(
+            "127.0.0.1",
+            super::DEFAULT_PORT,
+        ))
     }
     fn protocol_name(&self) -> &'static str {
         "gNMI"
@@ -165,6 +174,7 @@ impl Protocol for GnmiProtocol {
             .llm_control("Advertised models/encodings, typed snapshot notifications, transaction-wide Set acknowledgement, stream updates/sync/wait/finish and explicit gRPC errors; no device datastore")
             .e2e_testing("Mandatory pinned gNMIc 0.49.0 and public generated SDK peers, both roles and native pairing; see tests/server/gnmi/AGENTS.md for measured coverage")
             .notes("Experimental selected subset: structured Path.elem, scalar/leaf-list/JSON/JSON_IETF/ASCII values, TARGET_DEFINED/ON_CHANGE stream control. Opaque bytes/Any, deprecated paths/values/errors, extensions, union_replace, SAMPLE/heartbeat/suppression/nonzero QoS/aggregation, authentication, reflection, YANG execution, storage, fuzz and pcap conformance are excluded. TLS requires explicit bounded PEM inputs; cleartext is explicit default for local fixtures.")
+            .well_known_port(9339)
             .max_inbound_bytes(super::codec::MAX_MESSAGE_BYTES).answers_on_failure()
             .request_only("gNMI updates belong to an established Subscribe RPC; no unprompted connection-level messages")
             .build()

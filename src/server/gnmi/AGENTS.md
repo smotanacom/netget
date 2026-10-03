@@ -1,8 +1,12 @@
 # gNMI receiver — native selected subset
 
 The `gnmi` feature registers `gNMI` over native HTTP/2 and gRPC. Receiver binding
-uses a literal IPv4/IPv6 host, default 127.0.0.1, and port zero by default.
-The OS chooses the actual port at bind time. `build.rs`
+uses a literal IPv4/IPv6 host, default 127.0.0.1, and the IANA `gnmi-gnoi`
+assigned TCP port 9339 for normal startup. An explicit port zero requests an
+OS-assigned port atomically; all peer fixtures use it. The client also defaults
+to 9339 when the endpoint omits its port. Primary registry:
+https://www.iana.org/assignments/service-names-port-numbers?search=gnmi-gnoi.
+`build.rs`
 generates tonic 0.12/prost 0.13 types from the unmodified OpenConfig v0.14.1
 schema under `proto/gnmi`; that directory records its license and digests.
 Capabilities advertises specification version `0.10.0`. The receiver has no
