@@ -657,3 +657,6 @@ pub mod nsq;
 
 #[cfg(feature = "gearman")]
 pub mod gearman;
+
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
