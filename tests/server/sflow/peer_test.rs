@@ -91,7 +91,16 @@ async fn unmodified_exporter_compensation_is_verified_by_literal_wire_and_goflow
         peer_golden()
     );
     let messages = service.messages(2).await;
-    for (seq, row) in [u32::MAX, 0].into_iter().zip(messages.iter()) {
+    assert_eq!(messages.len(), 2);
+    // GoFlow2 decodes datagrams on concurrent workers; stdout order need not
+    // preserve UDP arrival order. Require each actual sequence exactly once.
+    for seq in [u32::MAX, 0] {
+        let rows = messages
+            .iter()
+            .filter(|row| row["message"]["sequence-number"] == seq)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "missing or duplicate peer sequence {seq}");
+        let row = rows[0];
         let m = &row["message"];
         assert_eq!(row["type"], "sflow");
         assert_eq!(m["sequence-number"], seq);
