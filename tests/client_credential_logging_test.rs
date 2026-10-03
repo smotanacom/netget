@@ -205,6 +205,12 @@ async fn mock(mode: &str, openai: bool) -> (u16, tokio::task::JoinHandle<()>) {
                     {"type":"show_message","message":PASSWORD}]})
                 .to_string()
             }
+            "diagnostics" => {
+                // The tool round contains draft actions. Explicitly offer the display
+                // action again in the final response whose actions are committed.
+                json!({"actions":[returned, {"type":"show_message","message":PASSWORD}]})
+                    .to_string()
+            }
             _ => json!({"actions":[returned]}).to_string(),
         };
         if openai {
