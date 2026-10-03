@@ -299,6 +299,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
+        "connect_rpc" | "connectrpc" | "connect rpc" => with_note(
+            tcp("http"),
+            "This binding uses binary protobuf ConnectRPC over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf bodies require the matching schema and streamed replies end with a Connect EndStream envelope.",
+        ),
         "grpc_web" | "grpcweb" | "grpc web" => with_note(
             tcp("http"),
             "This binding uses binary gRPC-Web over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf body interpretation requires the matching schema.",

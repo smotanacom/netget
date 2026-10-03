@@ -150,6 +150,8 @@ const SLEEP_BASELINE: &[(&str, usize)] = &[
     ("tests/client/xmpp/e2e_test.rs", 3),
     ("tests/server/arp/e2e_test.rs", 1),
     ("tests/server/bluetooth_ble/e2e_test.rs", 2),
+    // Leave a 4 MiB Connect response unread past its 1s RPC deadline to exercise backpressure cancellation.
+    ("tests/server/connect_rpc/e2e_test.rs", 1),
     ("tests/server/dc/test.rs", 2),
     // Leave a 4 MiB Web response unread past its 1s RPC deadline: backpressure cancellation is under test.
     ("tests/server/grpc_web/e2e_test.rs", 1),

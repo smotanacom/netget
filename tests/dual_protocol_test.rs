@@ -70,6 +70,7 @@ fn golden_duals_map() {
         "sFlow",
         "NetFlowV9",
         "gRPC-Web",
+        "ConnectRPC",
         "Nostr",
         "Vault",
         "Beanstalkd",
