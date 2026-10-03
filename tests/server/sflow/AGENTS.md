@@ -13,7 +13,10 @@ and intercept release, live idle expiry, shared memory and failed actions.
 output must exactly match `cistern_compact.hex`; native typed values and the
 actual GoFlow2 service are checked separately. This verifies the explicitly
 compensated public source-ID arguments against normative bytes and another
-implementation. The peer's VLAN encoder is never used. Test-only peer commands
+implementation. GoFlow2
+uses concurrent decoding workers, so both exact datagram sequences must occur
+once without assuming stdout preserves arrival order. Native arrival-order and
+sequence-tracking checks remain separate. The peer's VLAN encoder is never used. Test-only peer commands
 are in `peer.go`; unmodified implementation source remains outside the repository.
 
 Bootstrap into owned temporary storage, using an existing Go toolchain (1.21+):
