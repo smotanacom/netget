@@ -215,6 +215,10 @@ impl ServerRegistry {
 
         #[cfg(feature = "ipfix")]
         self.register(Arc::new(crate::server::ipfix::actions::IpfixProtocol::new()));
+        #[cfg(feature = "prometheus-remote-write")]
+        self.register(Arc::new(
+            crate::server::prometheus_remote_write::actions::PrometheusRemoteWriteProtocol::new(),
+        ));
         #[cfg(feature = "sflow")]
         self.register(Arc::new(crate::server::sflow::actions::SflowProtocol::new()));
         #[cfg(feature = "loki")]
@@ -1273,6 +1277,8 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("FluentForward", "fluent-forward"),
     ("IPFIX", "ipfix"),
     ("IPFIX-UDP", "ipfix"),
+    ("PrometheusRemoteWrite", "prometheus-remote-write"),
+    ("RemoteWrite", "prometheus-remote-write"),
     ("sFlow", "sflow"),
     ("sFlow-v5", "sflow"),
     ("Loki", "loki"),

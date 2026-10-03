@@ -683,3 +683,6 @@ pub mod loki;
 
 #[cfg(feature = "vault")]
 pub mod vault;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
