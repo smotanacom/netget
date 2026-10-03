@@ -326,8 +326,9 @@ pub async fn call_llm_with_custom_actions(
 /// (e.g. `send_http_response`) the LLM or handler produced. Surfaced via the
 /// `list_access_logs` / `get_access_log` MCP tools.
 ///
-/// An action that failed to execute is recorded as `FAILED: <action>` carrying the
-/// executor's error rather than as though it had run — see
+/// Ordinary failures are recorded as `FAILED: <action>` carrying the executor's
+/// error. Credential-bearing input instead keeps only response action/failure counts
+/// to avoid untyped reflection; the original input and executed results stay intact. See
 /// [`ExecutionResult::access_log_actions`].
 async fn record_event_access_log(
     state: &AppState,
@@ -355,7 +356,10 @@ async fn record_event_access_log(
             connection_id.map(|c| c.as_u32()),
             event.id(),
             event.data.clone(),
-            result.access_log_actions(),
+            if crate::utils::redact::contains_credentials(&event.data) {
+                // The original actions/results remain available to the protocol executor.
+                vec![serde_json::json!({"type":"private_handler_result", "action_count":result.raw_actions.len(), "failed_actions":result.failures.len()})]
+            } else { result.access_log_actions() },
         )
         .await;
 }
@@ -383,7 +387,7 @@ async fn record_failed_event_access_log(
             event.data.clone(),
             vec![serde_json::json!({
                 "type": format!("FAILED: {}", event.id()),
-                "error": error.to_string(),
+                "error": if crate::utils::redact::contains_credentials(&event.data) { "credential-bearing event failed; diagnostics hidden".to_string() } else { error.to_string() },
             })],
         )
         .await;
@@ -397,8 +401,36 @@ pub async fn call_llm(
     event: &Event,
     protocol: &dyn Server,
 ) -> Result<ExecutionResult> {
-    let outcome =
-        call_llm_inner(llm_client, state, server_id, connection_id, event, protocol).await;
+    anyhow::ensure!(
+        crate::utils::json_budget::within_budget(
+            &event.data,
+            crate::scripting::event_handler::MAX_INTERPOLATION_BYTES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_NODES,
+            crate::scripting::event_handler::MAX_INTERPOLATION_DEPTH
+        ),
+        "event exceeds the shared JSON budget"
+    );
+    let private = crate::utils::redact::contains_credentials(&event.data);
+    let run = call_llm_inner(
+        llm_client,
+        state,
+        server_id,
+        connection_id,
+        event,
+        protocol,
+        private,
+    );
+    let outcome = if private {
+        use tracing::instrument::WithSubscriber;
+        // Protocol/static execution can reflect an input value in an untyped diagnostic.
+        // Suppress that request's tracing, preserving execution and typed access-log input.
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(|_| anyhow::anyhow!("credential-bearing event failed; diagnostics hidden"))
+    } else {
+        run.await
+    };
+
     if let Err(e) = &outcome {
         record_failed_event_access_log(state, server_id, connection_id, protocol, event, e).await;
     }
@@ -413,6 +445,7 @@ async fn call_llm_inner(
     connection_id: Option<crate::server::connection::ConnectionId>,
     event: &Event,
     protocol: &dyn Server,
+    private_payloads: bool,
 ) -> Result<ExecutionResult> {
     // Create event log context for lifecycle logging
     // Get client address from connection state if available
@@ -443,7 +476,9 @@ async fn call_llm_inner(
     let event_status_tx = llm_client.status_tx();
 
     // Log event start (DEBUG level)
-    log_ctx.log_start(event_status_tx);
+    if !private_payloads {
+        log_ctx.log_start(event_status_tx);
+    }
 
     // PIPE TAP: forward this event into any wired sink instances, deterministically
     // and before any handler runs, so a pipe fires regardless of how this server
@@ -479,7 +514,9 @@ async fn call_llm_inner(
                 .await?;
 
                 // Log event completion
-                log_ctx.log_complete(event_status_tx, &result.protocol_results);
+                if !private_payloads {
+                    log_ctx.log_complete(event_status_tx, &result.protocol_results);
+                }
                 record_event_access_log(state, server_id, connection_id, protocol, event, &result)
                     .await;
                 return Ok(result);
@@ -502,7 +539,9 @@ async fn call_llm_inner(
     {
         crate::llm::event_handler_executor::EventHandlerResult::Handled(result) => {
             // Handler executed successfully (script or static)
-            log_ctx.log_complete(event_status_tx, &result.protocol_results);
+            if !private_payloads {
+                log_ctx.log_complete(event_status_tx, &result.protocol_results);
+            }
             record_event_access_log(state, server_id, connection_id, protocol, event, &result)
                 .await;
             return Ok(result);
@@ -599,10 +638,14 @@ async fn call_llm_inner(
 
     // Create conversation handler for network event with tracking
     // Note: Network events don't use tools (immediate response), but get retry logic
-    let truncated_desc = format!(
-        "LLM \"{}\"",
-        crate::utils::truncate_for_log(&event_description, 27)
-    );
+    let truncated_desc = if private_payloads {
+        "LLM credential-bearing event".to_string()
+    } else {
+        format!(
+            "LLM \"{}\"",
+            crate::utils::truncate_for_log(&event_description, 27)
+        )
+    };
 
     // Get rate limiter for network events (discards if rate limited)
     let rate_limiter = state.get_rate_limiter().await;
@@ -620,6 +663,7 @@ async fn call_llm_inner(
     // alongside the JSON action envelope this prompt teaches, and it took it —
     // 6 of 6 failing protocol cases pass once they are removed. Tools still work
     // through the JSON envelope and the tool loop; only the schema channel is gone.
+    .with_private_payloads(private_payloads)
     .with_tracking(
         state.clone(),
         crate::state::app_state::ConversationSource::Network {
@@ -666,7 +710,9 @@ async fn call_llm_inner(
     );
 
     // Log event completion with timing and results
-    log_ctx.log_complete(event_status_tx, &result.protocol_results);
+    if !private_payloads {
+        log_ctx.log_complete(event_status_tx, &result.protocol_results);
+    }
     record_event_access_log(state, server_id, connection_id, protocol, event, &result).await;
 
     Ok(result)

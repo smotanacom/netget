@@ -347,6 +347,13 @@ impl ConversationHandler {
         format!("conv-{}-{:x}", timestamp, random)
     }
 
+    /// Hide incidental payload/error diagnostics when structured request input
+    /// contains credentials. Sticky only within this conversation's history.
+    pub fn with_private_payloads(mut self, private: bool) -> Self {
+        self.private_payloads |= private;
+        self
+    }
+
     /// Set the status channel for user-visible logs
     pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
         self.status_tx = Some(tx);

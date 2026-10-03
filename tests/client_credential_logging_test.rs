@@ -1,5 +1,5 @@
-//! Credential actions retain their wire values while shared client/model logs
-//! hide them, including replies that cannot be parsed as actions.
+//! Credential actions and structured server input retain their intended values
+//! while incidental model/script diagnostics hide credentials, including malformed output.
 use netget::{
     client::llm_budget::call_llm_for_client,
     llm::{
@@ -48,6 +48,14 @@ fn subscriber(capture: Capture) -> impl tracing::Subscriber + Send + Sync {
         .with_ansi(false)
         .with_writer(move || capture.clone())
         .finish()
+}
+fn background_capture() -> Capture {
+    static BACKGROUND: std::sync::LazyLock<Capture> = std::sync::LazyLock::new(|| {
+        let capture = Capture::default();
+        tracing::subscriber::set_global_default(subscriber(capture.clone())).unwrap();
+        capture
+    });
+    BACKGROUND.clone()
 }
 #[derive(Clone)]
 struct TestProtocol {
@@ -261,12 +269,7 @@ fn assert_hidden(logs: &str, status: &str) {
 }
 #[tokio::test]
 async fn static_and_script_actions_execute_original_password_but_store_redacted_copies() {
-    static BACKGROUND: std::sync::LazyLock<Capture> = std::sync::LazyLock::new(|| {
-        let capture = Capture::default();
-        tracing::subscriber::set_global_default(subscriber(capture.clone())).unwrap();
-        capture
-    });
-    let background = BACKGROUND.clone();
+    let background = background_capture();
 
     let capture = Capture::default();
     let observed = capture.clone();
@@ -625,4 +628,306 @@ async fn tool_and_action_diagnostics_hide_credentials_without_changing_display_a
         .with_subscriber(subscriber(capture))
         .await;
     }
+}
+
+impl netget::llm::actions::protocol_trait::Server for TestProtocol {
+    fn spawn(
+        &self,
+        _: netget::protocol::SpawnContext,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<std::net::SocketAddr>> + Send>,
+    > {
+        Box::pin(async { anyhow::bail!("test does not bind") })
+    }
+    fn execute_action(
+        &self,
+        value: Value,
+    ) -> anyhow::Result<netget::llm::actions::protocol_trait::ActionResult> {
+        Ok(netget::llm::actions::protocol_trait::ActionResult::Output(
+            value["value"].as_str().unwrap().as_bytes().to_vec(),
+        ))
+    }
+}
+async fn server_instance(
+    state: &AppState,
+    handler: Option<EventHandlerType>,
+) -> netget::state::ServerId {
+    let mut server = netget::state::ServerInstance::new(
+        netget::state::ServerId::new(0),
+        0,
+        "Test".into(),
+        "test".into(),
+    );
+    if let Some(handler) = handler {
+        let mut config = EventHandlerConfig::new();
+        config.add_handler(EventHandler::new(EventPattern::wildcard(), handler));
+        server.event_handler_config = Some(config);
+    }
+    state.add_server(server).await
+}
+fn server_event(private: bool) -> Event {
+    static EVENT: std::sync::LazyLock<EventType> = std::sync::LazyLock::new(|| {
+        EventType::new("typed_login", "Typed chosen handler input", json!({}))
+            .with_actions(vec![action(false)])
+    });
+    Event::new(
+        &EVENT,
+        if private {
+            json!({"request":{"username":"alice","password":PASSWORD}})
+        } else {
+            json!({"request":{"value":ORDINARY}})
+        },
+    )
+}
+async fn server_mock(
+    mode: &str,
+    requests: Arc<Mutex<Vec<Value>>>,
+) -> (u16, tokio::task::JoinHandle<()>) {
+    use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+    async fn reply(
+        State((mode, requests)): State<(String, Arc<Mutex<Vec<Value>>>)>,
+        Json(request): Json<Value>,
+    ) -> axum::response::Response {
+        let private = request.to_string().contains(PASSWORD);
+        requests.lock().unwrap().push(request);
+        let value = if private { PASSWORD } else { ORDINARY };
+        if mode == "error" {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({"error":value})),
+            )
+                .into_response();
+        }
+        let content = match mode.as_str() {
+            "malformed" => format!("{{\"actions\":[{{\"value\":\"{value}\""),
+            "plain" => format!("unstructured reflected {value}"),
+            _ => json!({"actions":[{"type":"ordinary_action","value":value}]}).to_string(),
+        };
+        Json(json!({"model":"test-model","response":content,"done":true})).into_response()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = Router::new()
+        .route("/api/generate", post(reply))
+        .with_state((mode.to_owned(), requests));
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (port, task)
+}
+#[test]
+fn structured_request_credential_scan_is_iterative_bounded_and_local() {
+    use netget::utils::{json_budget::drop_iteratively, redact::contains_credentials};
+    for key in ["password", "SHARED-SECRET", "nested_access_token", "Cookie"] {
+        assert!(contains_credentials(&json!({"request":[{key:"value"}]})));
+    }
+    assert!(!contains_credentials(
+        &json!({"password":null,"value":"ordinary"})
+    ));
+    assert!(!contains_credentials(
+        &json!({"request":{"value":"ordinary"}})
+    ));
+    let mut deep = Value::Null;
+    for _ in 0..10000 {
+        deep = Value::Array(vec![deep]);
+    }
+    assert!(contains_credentials(&deep));
+    drop_iteratively(deep);
+    assert!(contains_credentials(&json!(vec![0; 4097])));
+    assert!(contains_credentials(&json!({"value":"x".repeat(256*1024)})));
+}
+#[tokio::test]
+async fn server_request_privacy_hides_malformed_model_output_and_backend_errors() {
+    for mode in ["malformed", "plain", "error"] {
+        let capture = Capture::default();
+        let observed = capture.clone();
+        async move {
+            let requests = Arc::new(Mutex::new(vec![]));
+            let (port, peer) = server_mock(mode, requests.clone()).await;
+            let url = format!("http://127.0.0.1:{port}");
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let client = OllamaClient::new(&url).with_status_tx(tx);
+            let state = AppState::new_with_options(false, url);
+            state.set_ollama_model(Some("test-model".into())).await;
+            let id = server_instance(&state, None).await;
+            let e = netget::llm::action_helper::call_llm(
+                &client,
+                &state,
+                id,
+                None,
+                &server_event(true),
+                &TestProtocol { credential: false },
+            )
+            .await
+            .err()
+            .expect("invalid response must fail closed");
+            assert!(!format!("{e:#}").contains(PASSWORD));
+            assert_hidden(&observed.text(), &drain(&mut rx));
+            assert!(
+                requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.to_string().contains(PASSWORD)),
+                "chosen model must receive intended typed credential input"
+            );
+            let logs = state
+                .list_access_logs_for(Some(AccessLogOwner::Server(id.as_u32())), None)
+                .await;
+            assert_eq!(logs[0].request["request"]["password"], PASSWORD);
+            assert!(!serde_json::to_string(&logs[0].response)
+                .unwrap()
+                .contains(PASSWORD));
+            state.remove_server(id).await;
+            peer.abort();
+            let _ = peer.await;
+        }
+        .with_subscriber(subscriber(capture))
+        .await;
+    }
+}
+#[tokio::test]
+async fn server_private_and_ordinary_model_requests_preserve_actions_and_local_logging() {
+    let capture = Capture::default();
+    let observed = capture.clone();
+    async move {
+        let requests = Arc::new(Mutex::new(vec![]));
+        let (port, peer) = server_mock("valid", requests).await;
+        let url = format!("http://127.0.0.1:{port}");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let client = OllamaClient::new(&url).with_status_tx(tx);
+        let state = AppState::new_with_options(false, url);
+        state.set_ollama_model(Some("test-model".into())).await;
+        let private = server_instance(&state, None).await;
+        let ordinary = server_instance(&state, None).await;
+        let p = server_event(true);
+        let o = server_event(false);
+        let protocol = TestProtocol { credential: false };
+        let (a, b) = tokio::join!(
+            netget::llm::action_helper::call_llm(&client, &state, private, None, &p, &protocol),
+            netget::llm::action_helper::call_llm(&client, &state, ordinary, None, &o, &protocol)
+        );
+        assert_eq!(
+            a.unwrap().protocol_results[0].get_all_output(),
+            vec![PASSWORD.as_bytes().to_vec()]
+        );
+        assert_eq!(
+            b.unwrap().protocol_results[0].get_all_output(),
+            vec![ORDINARY.as_bytes().to_vec()]
+        );
+        assert_hidden(&observed.text(), &drain(&mut rx));
+        assert!(
+            observed.text().contains(ORDINARY),
+            "ordinary model payload remains visible"
+        );
+        state.remove_server(private).await;
+        state.remove_server(ordinary).await;
+        peer.abort();
+        let _ = peer.await;
+    }
+    .with_subscriber(subscriber(capture))
+    .await;
+}
+#[tokio::test]
+async fn server_scripts_receive_intended_credentials_while_stderr_and_errors_stay_private() {
+    let background = background_capture();
+    let capture = Capture::default();
+    let observed = capture.clone();
+    async move {
+        let state = AppState::new_with_options(false, "http://127.0.0.1:1".into());
+        for resident in [false, true] {
+            for fail in [false, true] {
+                let handler = if resident {
+                    let verdict = if fail { "raise Exception(value)" }
+                        else { "return {'actions':[{'type':'ordinary_action','value':value}]}" };
+                    EventHandlerType::script_resident("python", format!(
+                        "import sys\ndef handle(event_type,event,message):\n value=event['request']['password']\n sys.stderr.write(value+'\\n')\n {verdict}"), None)
+                } else {
+                    let verdict = if fail { "raise Exception(v)" }
+                        else { "print(json.dumps({'actions':[{'type':'ordinary_action','value':v}]}))" };
+                    EventHandlerType::script("python", format!(
+                        "import json,sys\ne=json.load(sys.stdin)['event']\nv=e['request']['password']\nsys.stderr.write(v)\n{verdict}"))
+                };
+                let id = server_instance(&state, Some(handler)).await;
+                let event = server_event(true);
+                let result = netget::llm::event_handler_executor::try_execute_event_handler(
+                    &state, id, None, event.id(), &event.to_prompt_description(),
+                    Some(event.data.clone()), Some(&TestProtocol { credential:false }),
+                ).await.unwrap();
+                match result {
+                    netget::llm::event_handler_executor::EventHandlerResult::Handled(r) if !fail => {
+                        assert_eq!(r.protocol_results[0].get_all_output(), vec![PASSWORD.as_bytes().to_vec()]);
+                    }
+                    netget::llm::event_handler_executor::EventHandlerResult::FallbackToLlm {..} if fail => {},
+                    _ => panic!("unexpected handler result resident={resident} fail={fail}"),
+                }
+                state.remove_server(id).await;
+            }
+        }
+        assert!(!observed.text().contains(PASSWORD));
+        assert!(!background.text().contains(PASSWORD));
+        let code = format!("import json,sys\njson.load(sys.stdin)\nsys.stderr.write({ORDINARY:?})\nprint('{{\"actions\":[]}}')");
+        let id = server_instance(&state, Some(EventHandlerType::script("python",code))).await;
+        let event = server_event(false);
+        netget::llm::event_handler_executor::try_execute_event_handler(
+            &state,id,None,event.id(),&event.to_prompt_description(),Some(event.data.clone()),
+            Some(&TestProtocol {credential:false}),
+        ).await.unwrap();
+        assert!(observed.text().contains(ORDINARY), "ordinary stderr control remains visible");
+        state.remove_server(id).await;
+    }.with_subscriber(subscriber(capture)).await;
+}
+
+#[tokio::test]
+async fn constructed_server_actions_and_handler_events_preflight_before_copy_or_drop() {
+    fn deep() -> Value {
+        let mut value = Value::Null;
+        for _ in 0..10000 {
+            value = Value::Array(vec![value]);
+        }
+        value
+    }
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".into());
+    assert!(netget::llm::actions::executor::execute_actions(
+        vec![deep()],
+        &state,
+        None,
+        None,
+        None
+    )
+    .await
+    .is_err());
+    let id = server_instance(&state, None).await;
+    assert!(
+        netget::llm::event_handler_executor::try_execute_event_handler(
+            &state,
+            id,
+            None,
+            "test",
+            "test",
+            Some(deep()),
+            None
+        )
+        .await
+        .is_err()
+    );
+    let value = deep();
+    let mut event = server_event(false);
+    event.data = value;
+    assert!(netget::llm::action_helper::call_llm(
+        &OllamaClient::new("http://127.0.0.1:1"),
+        &state,
+        id,
+        None,
+        &event,
+        &TestProtocol { credential: false }
+    )
+    .await
+    .is_err());
+    netget::utils::json_budget::drop_iteratively(event.data);
+    state.remove_server(id).await;
+    assert!(!netget::utils::json_budget::within_values_budget(
+        [&json!("a"), &json!("b")],
+        64,
+        1,
+        8
+    ));
 }
