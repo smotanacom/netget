@@ -618,6 +618,19 @@ pub(crate) struct WebAdmission {
     id: u32,
 }
 #[cfg(feature = "grpc-web")]
+impl WebAdmission {
+    /// Wrap the final status-converted body, so admission survives every reply path.
+    pub(crate) fn guard(
+        self,
+        response: Response<tonic::body::BoxBody>,
+        busy: crate::server::accept_bounded::BusyGuard,
+    ) -> Response<tonic::body::BoxBody> {
+        response.map(|body| {
+            crate::server::grpc_web::wire::hold_body(body, (self.permit, busy, self.timer))
+        })
+    }
+}
+#[cfg(feature = "grpc-web")]
 impl WebCore {
     pub(crate) fn new(
         ctx: &crate::protocol::SpawnContext,
@@ -703,36 +716,19 @@ impl WebCore {
         &self,
         request: Request<tonic::body::BoxBody>,
         connection: crate::server::connection::ConnectionId,
-        busy: crate::server::accept_bounded::BusyGuard,
         registry: streaming::Registry,
-        admission: WebAdmission,
+        admission: &WebAdmission,
     ) -> Response<tonic::body::BoxBody> {
-        let WebAdmission {
-            deadline,
-            permit,
-            timer,
-            method,
-            id,
-        } = admission;
         streaming::dispatch(
             request,
             self.0.clone(),
             connection,
-            method,
+            admission.method.clone(),
             registry,
-            deadline,
-            id,
+            admission.deadline,
+            admission.id,
         )
         .await
-        .map(|body| {
-            streaming::BodyGuard {
-                body,
-                _permit: permit,
-                _busy: busy,
-                _timer: timer,
-            }
-            .boxed_unsync()
-        })
     }
 }
 

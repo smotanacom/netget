@@ -66,3 +66,18 @@ The first tonic probe attempt failed to bind two sockets under the sandbox; the 
 permission rerun passed, and both attempts remain recorded. Final library/binary
 correctness/suspicious lint passed; whole-target lint separately found existing native
 gRPC duplicate helper declarations, assigned to the central helper registration fix.
+
+The through-EOF follow-up moves admission outside initial-status conversion and retains
+it on early admitted refusal paths. The wire target has an additional semaphore lifecycle
+test: admission remains held after the final status frame, releases on the explicit EOF
+poll, and also releases on drop. Existing independent/error/size/cancellation network
+cases and the large unread-response deadline are regression neighbors.
+An attempted small-error pipelining fixture expected socket EOF at the RPC deadline even
+after those small response bodies reached EOS. That asserted a deadline on subsequent
+HTTP/TCP buffering and keep-alive, which belongs to the connection idle bound, so the
+fixture was removed; its two 10-pass/1-fail attempts remain in programme logs. No failed
+runtime bound was hidden by changing a timeout or lowering test concurrency.
+Focused follow-up validation passed 10 network tests at 100 threads and all 8 wire
+tests; the unchanged 150-second first-byte/idle case was excluded from this focused
+rerun. Library/binary/wire correctness and suspicious lint and whole-tree format passed.
+The final successful logs are separate from the original failed stress attempts.

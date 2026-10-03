@@ -16,6 +16,19 @@ pub const MAX_TRAILER_BYTES: usize = 16 * 1024;
 pub const MAX_TRAILER_FIELDS: usize = 32;
 pub const MAX_MESSAGES: usize = 256;
 
+/// Keep affine admission through the final EOF poll, not an inner iterator's early
+/// end hint after yielding its last frame. Error and cancellation drop the guard too.
+pub fn hold_body<G: Send + 'static>(body: BoxBody, guard: G) -> BoxBody {
+    StreamBody::new(futures::stream::try_unfold(
+        (body, guard),
+        |(mut body, guard)| async move {
+            let frame = body.frame().await.transpose()?;
+            Ok::<_, Status>(frame.map(|frame| (frame, (body, guard))))
+        },
+    ))
+    .boxed_unsync()
+}
+
 pub fn bounded_headers(headers: &HeaderMap) -> bool {
     headers.len() <= 64
         && headers

@@ -17,7 +17,12 @@ messages before allocation; preserve its version, license and provenance.
 The shared native gRPC service supplies immutable descriptors, `DynamicCodec`, typed
 value conversion and stream controls. `WebCore` admits a known unary/server-streaming
 method before reading its request and retains the same RPC permit and whole deadline
-through response EOS. The request buffer reads at most 4 MiB + 6 bytes (one framed
+through response EOS. Every admitted failure retains the same guard after status-body
+conversion. The held-body seam waits for the explicit final EOF poll, rather than an
+inner one-frame iterator's early end hint; EOF, error or cancellation releases admission.
+After body EOS, queued HTTP/TCP bytes and keep-alive belong to the connection owner and
+its idle bound; this guard does not claim ownership through a TCP flush.
+The request buffer reads at most 4 MiB + 6 bytes (one framed
 message bound plus one probe byte), and waits for EOF only within that bound and
 deadline. Legal exact/+1 inputs receive deterministic status; arbitrary longer inputs
 close promptly without draining their declared remainder. HTTP trailers in requests
@@ -61,7 +66,7 @@ The shared value codec caps depth 32, 100000 nodes and retained content at 8 MiB
 | 64 HTTP headers / 32768-byte Hyper buffer | HTTP 431 before handler work |
 | 2048-byte path; no query | HTTP 400 |
 | 30-second first-byte / 120-second idle | Close silent peers; an admitted RPC holds activity through body EOS |
-| Whole RPC: 300 seconds by default, 1..3600 configurable | Includes upload, handlers, response backpressure; unique grpc-timeout may only shorten it |
+| Whole RPC: 300 seconds by default, 1..3600 configurable | Includes upload, handlers and backpressure until body EOF/drop; unique grpc-timeout may only shorten it |
 | 256 output messages, 16 pending controls, 4 MiB pending bytes | Shared stream controller; finish requires one output for unary |
 
 `allow_origin` is optional and names one exact HTTP(S) origin without a trailing slash.
