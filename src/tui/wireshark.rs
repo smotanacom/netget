@@ -213,6 +213,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         },
         "tls" | "dot" | "tor_relay" => tcp("tls"),
         "doq" => udp("quic"),
+        // RFC 7011 version 10 over UDP. Decode-as and display syntax checked with tshark.
+        "ipfix" => udp("cflow"),
         "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
         // The discovery family. All three are UDP and all three were falling through to the
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
