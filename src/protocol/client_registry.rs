@@ -780,6 +780,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("nfc", "nfc-client"),
     ("NTP", "ntp"),
     ("OpenAI", "openai"),
+    ("OTLP", "otlp"),
     ("PostgreSQL", "postgresql"),
     ("PyPI", "pypi"),
     ("MSSQL", "mssql"),
