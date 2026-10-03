@@ -1,11 +1,10 @@
+use crate::helpers::grpc_peer as peer;
 use netget::{
     cli::management::ClientForm,
     state::{client_handles::ClientSendOutcome, AccessLogOwner, AppState, ClientId},
 };
 use serde_json::{json, Value};
 use std::time::Duration;
-#[path = "../../helpers/grpc_peer.rs"]
-mod peer;
 
 fn silent() -> Value {
     json!({"event_pattern":"*","handler":{"type":"static","actions":[{"type":"wait_for_more"}]}})

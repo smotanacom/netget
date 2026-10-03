@@ -20,6 +20,8 @@ pub mod ollama_test_builder;
 pub mod pcap_oracle;
 pub mod real_server;
 pub mod server;
+#[cfg(feature = "sflow")]
+pub mod sflow;
 pub mod startup_ports;
 pub mod usbip_bounds;
 pub mod usbip_client;
@@ -43,5 +45,14 @@ pub use server::{start_netget_server, wait_for_server_startup};
 #[cfg(any(feature = "quic", feature = "http3"))]
 pub mod quic_peer;
 
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "grpc")]
+pub mod grpc_peer;
+
 #[cfg(feature = "grpc-web")]
 pub mod grpcweb_peer;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;

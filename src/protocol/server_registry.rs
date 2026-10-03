@@ -213,8 +213,18 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "netflow-v9")]
+        self.register(Arc::new(
+            crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
+        ));
         #[cfg(feature = "ipfix")]
         self.register(Arc::new(crate::server::ipfix::actions::IpfixProtocol::new()));
+        #[cfg(feature = "prometheus-remote-write")]
+        self.register(Arc::new(
+            crate::server::prometheus_remote_write::actions::PrometheusRemoteWriteProtocol::new(),
+        ));
+        #[cfg(feature = "sflow")]
+        self.register(Arc::new(crate::server::sflow::actions::SflowProtocol::new()));
         #[cfg(feature = "loki")]
         self.register(Arc::new(crate::server::loki::actions::LokiProtocol::new()));
         #[cfg(feature = "influxdb")]
@@ -1273,8 +1283,15 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("NETFLOWV9", "netflow-v9"),
+    ("NETFLOW-V9", "netflow-v9"),
+    ("NETFLOW_V9", "netflow-v9"),
     ("IPFIX", "ipfix"),
     ("IPFIX-UDP", "ipfix"),
+    ("PrometheusRemoteWrite", "prometheus-remote-write"),
+    ("RemoteWrite", "prometheus-remote-write"),
+    ("sFlow", "sflow"),
+    ("sFlow-v5", "sflow"),
     ("Loki", "loki"),
     ("LokiPush", "loki"),
     ("InfluxDB", "influxdb"),

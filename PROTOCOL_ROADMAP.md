@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **20 / 72**; **52 remain**. The complete scopes comprise nine new families and eleven existing-protocol completions. All checklist entries remain authorized, including the 43 new families, four existing completions and five extensions still open.
-- Integration branch: `protocol-expansion-20261001`. Implementations through Docker, Loki and OTLP are published on master; IPFIX and the shared credential-logging correction now pass coordinator validation. The concurrent, content-preserving `AGENTS.md` instruction migration remains integrated.
-- Agent `queue_continue`: Docker is complete; Vault client item 59 is in progress with a separately validated shared credential-logging correction. Nostr, Neo4j Bolt and OCI clients follow, then the assigned service APIs.
-- Agent `http3_continue`: OTLP HTTP/gRPC completion and the shared tonic receive-limit correction are validated. Generic gRPC streaming/reflection item 68 is in progress; gRPC-Web, Connect RPC and the assigned RPC/streaming families follow.
-- Agent `metrics_continue`: Loki and IPFIX are complete, with independent Python ipfix and GoFlow2 evidence. sFlow item 30 is in progress, followed by the assigned industrial and framed-service families.
-- Three workers maximum, one guarded build at a time. The coordinator reviews and merges signed scopes, records independent evidence, and pushes local master directly to origin/master. All thirteen prior blocking pair jobs passed at master `e38c0378`. A fourteenth IPFIX pair job is prepared. The general Test job exposed a missing DoQ inbound-size declaration; correction `39ab2100` and its three checks pass. Other general jobs passed; the next remote run is pending, so full CI is not claimed green.
+- Completed: **23 / 72**; **49 remain**. Completed scopes comprise ten new families, twelve existing-protocol completions and one extension. All entries remain authorized, including the 42 new families, three existing completions and four extensions still open.
+- Integration branch: `protocol-expansion-20261001`. IPFIX and credential diagnostics are published on master. Generic gRPC, Vault and sFlow now pass coordinator validation with their shared logging and peer-control corrections; the next direct master publication is ready. The content-preserving `AGENTS.md` migration remains integrated.
+- Agent `queue_continue`: Vault client 59 is validated; Nostr client 60 is active, followed by Neo4j Bolt/OCI and the assigned service APIs.
+- Agent `http3_continue`: Generic gRPC streaming/reflection 68 is validated; gRPC-Web 69 is active, followed by Connect RPC and the assigned RPC/streaming families.
+- Agent `metrics_continue`: sFlow 30 is validated. Prometheus remote write 70 is signed and awaits coordinator integration; NetFlow v9 71 research has started. Assigned industrial and framed-service families follow.
+- Three workers maximum, one guarded build at a time. The coordinator reviews signed scopes, records independent evidence and pushes local master directly to origin/master without PRs. All fourteen protocol-pair jobs passed at `6b6fa081` (run `37092598314`). General run `37092598246` passed twelve jobs but failed Test on the peer-handle audit. Correction `5c1fb583` passes its seven checks and the integrated source suite; three new pair jobs are ready. Full CI remains pending the next remote run.
 
 ## New protocol checklist
 
@@ -1106,12 +1106,14 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **30. sFlow v5** — B/M; proposed feature `sflow`. [Specification/reference](https://sflow.org/developers/specifications.php).
+- [x] **30. sFlow v5** — B/M; proposed feature `sflow`. [Specification/reference](https://sflow.org/developers/specifications.php).
   - Scope: Collector/agent, flow/counter samples, sampling metadata and extensible bounded records.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: **27 checks** (17 collector, ten exporter) passed at 100 threads with pinned BSD Cistern/sflow and actual GoFlow2 2.2.7. All four v5 sample carriers, literal wire fixtures, selected typed flow/interface/Ethernet/VLAN records, sequence/session/queue bounds and cancellation are covered. Source `9be47d52`, peer output-order correction `d3686cce`. Experimental; no SNMP polling, full record catalog, auth, durable flow store, fuzz or pcap claim.
 
 - [ ] **31. AMQP 1.0** — B/L; proposed feature `amqp1`. [Specification/reference](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html).
   - Scope: Separate from 0-9-1: connection/session/link lifecycle, credit, send/receive, settlement and outcomes.
@@ -1317,11 +1319,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: 34 checks (16 client, 18 preserved server) passed at 100 test threads using real Docker Engine 29.7.2 and CLI 29.8.0. Native Unix socket and owned TCP relay cover eight read operations, API negotiation, filters, nullable/list/inspect shapes, bounded payloads, command injection and cancellation. Tests only read the existing daemon; they do not pull images or create resources. Code `ae95298a`, shared integration `9008eb88`. Experimental selected read-only Engine API with a 1.47 ceiling; existing mutation refusal remains, and TLS/named pipes are outside this scope.
 
-- [ ] **59. Vault client**.
+- [x] **59. Vault client**.
   - Scope: Structured authentication/secret operations paired with existing programmable Vault server.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: **34 checks** (24 client, ten existing server) passed at 100 threads with isolated native Vault 2.0.0 daemon/CLI and a NetGet pair. Public system reads, userpass authentication/local credential clear, KV v2 read/write CAS/list/metadata and typed credential-safe events are covered. Source `a419d0ff`, action/redaction preflight and iterative disposal `e5be0070`, shared private access-log followup `101e50d0`. The real server deadline test ran for 123.01 seconds. Experimental; existing programmable server auth refusal is preserved and unsupported API/TLS/browser surfaces are documented.
 
 - [ ] **60. Nostr client**.
   - Scope: Publish signed events, subscribe, handle relay notices/results and close subscriptions.
@@ -1380,10 +1384,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Separated extension checklist
 
-- [ ] **68. Generic gRPC streaming and reflection**.
+- [x] **68. Generic gRPC streaming and reflection**.
   - Scope: Add real streaming lifecycle and reflection; support new subscription-oriented services without false capability claims.
-  - [ ] Implementation and all required server/client integration complete.
-  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+  - [x] Implementation and all required server/client integration complete.
+  - [x] Independent validation, feature build, documentation and integrated commit recorded.
+
+  - Validation: **38 checks** (24 server, 14 client) passed at 100 threads with mandatory generated grpcio 1.75.1 peers, grpcurl 1.9.4 and NetGet pairing; seven shared converter and three tonic framing checks also pass. All stream forms, half-close, reflection v1/v1alpha and discovery, gzip/message/schema bounds, verified client TLS, owned tasks, cancellation and stalled flow control are covered. Source `92504dc9`, integration `d4e7c192`. Experimental; new streams exclude reachable bytes/binary metadata, and receiver TLS, retries, full descriptor catalogs, fuzz and pcap are not claimed.
 
 - [ ] **69. gRPC-Web binding**.
   - Scope: Implement a separately advertised client/server binding with framing, trailers and chosen streaming support.
@@ -1442,6 +1448,11 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 - All **134 shared checks across 32 targets** pass after **14 focused rerun checks** corrected the initial IPFIX decision-log/declaration gaps and rechecked the updated documentation. Initial three failures in two targets remain recorded. Required lib/bin clippy gates pass with `tcp,ipfix,grpc,etcd,doq`, including compilation of the corrected DoQ frame-size metadata; whole-package formatting passes. Shared privacy `20c60670` was merged while preserving request-owned breaker permits, bounded owned resident stderr and hyphen-sensitive key redaction. Actual action/wire values and explicit display actions remain unchanged; incidental credential-bearing model/script diagnostics are suppressed per invocation.
 - Blocking CI `562bad0e` adds the IPFIX pair, its single-feature check, credential regressions and the inbound-size source ratchet. Both workflow files and **105 shell steps** parse. Official GoFlow2 release metadata confirms the pinned Linux/macOS asset hashes; local required peers pass, while the new Linux job awaits publication/run. IPFIX uses UDP/cflow capture guidance; tshark accepts decode-as/display syntax, which is not packet-capture maturity evidence. Reproduction uses the shared guard with the stated feature set and `--test server --test client -- ipfix:: --test-threads=100`, with peer bootstrap/environment documented under `tests/server/ipfix` and `tests/client/ipfix`. Logs: `.protocol-expansion-20261001/logs/batch7-*` and `agent-ipfix-decisions-*`.
 - Disk maintenance reclaimed Cargo-reported **4.4 GiB of owned package outputs and 6.4 GiB of remaining compiled target outputs**, under the shared lock after package-only cleanup did not restore the 30 GiB start floor. Cargo download caches/registries, source, peers, logs, unrelated targets and processes were retained. Larger observed volume changes were not attributed to this cleanup. The final guarded format run started with approximately **33 GiB free**; all subsequent builds keep the same 30/25 GiB floor/stop policy.
+
+- **Batch 8 — 30 sFlow, 59 Vault client and 68 generic gRPC streaming/reflection:** final independent protocol coverage is **99 checks**: sFlow 27, Vault 34 and gRPC 38; **105 privacy checks across 15 targets**, **12 etcd neighbor checks** and **ten converter/tonic checks** also pass. The initial shared run passed 140 of 141 checks across 33 targets; Vault correction `e5be0070` fixes the sole recursion-audit failure. All **141 final shared checks** pass, with **24 focused checks across five targets** rerun after that correction. Zero final failures or ignores. Required lib/bin clippy gates and whole-package formatting pass with `tcp,grpc,etcd,vault,sflow`; 93 advisory clippy warnings remain. Vault exact depth 32/+1, node 65536/+1, retained-content 8 MiB/+1 and 10000-level owned/injected values are verified before copying and during safe disposal.
+- Shared followup `101e50d0` records only validated offered action names for credential-bearing client action diagnostics. Peer-control correction `5c1fb583` gives GELF/Graphite/Forward/NUT honest exchange-only reasons, reads sibling action metadata, recognizes both Hyper imports and shrinks the stale gRPC exemption after real stream controls adopted a handle. Capture/golden/silence integration `e384bf5a` includes sFlow and Vault. CI `cd924b23` adds three mandatory Linux peer jobs; both workflows and **116 shell steps** parse. The pinned Vault Linux release digest and 175150654-byte archive size were verified from official release metadata. The new Linux executions await publication.
+- Reproduce through the shared guard with the stated feature set, `--test server --test client -- <grpc|vault|sflow>:: --test-threads=100`. Peer installation/environment and exact selected scopes live in the corresponding server/client test documents. Logs are retained under `.protocol-expansion-20261001/logs/batch8-*`, `item68-grpc-*` and `agent-*`. Initial source failure, the agent fixture-construction stack abort and one manager validation compile started before a module conflict was resolved are retained; that premature attempt ran no tests. Subsequent clean merged runs pass.
+- Package-only maintenance under the shared lock removed a Cargo-reported **4.5 GiB** of programme-owned compiled outputs, leaving approximately **34 GiB free at that point**. Dependencies/download caches, source, peer fixtures, logs, unrelated targets and processes were retained. The final guarded format check started with **30.8 GiB free**; the same 30/25 GiB start/stop policy remains in force. Other observed volume changes were not attributed to this cleanup.
 
 ## Implementation and independent peer plan
 

@@ -1248,5 +1248,14 @@ pub mod influxdb;
 #[cfg(feature = "ipfix")]
 pub mod ipfix;
 
+#[cfg(feature = "sflow")]
+pub mod sflow;
+
 #[cfg(feature = "loki")]
 pub mod loki;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;

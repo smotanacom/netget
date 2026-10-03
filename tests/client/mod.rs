@@ -249,11 +249,26 @@ pub mod prometheus;
 #[cfg(feature = "influxdb")]
 pub mod influxdb;
 
+#[cfg(feature = "ipfix")]
+pub mod ipfix;
+
 #[cfg(feature = "loki")]
 pub mod loki;
 
 #[cfg(feature = "otlp")]
 pub mod otlp;
 
-#[cfg(feature = "ipfix")]
-pub mod ipfix;
+#[cfg(feature = "sflow")]
+pub mod sflow;
+
+#[cfg(feature = "vault")]
+pub mod vault;
+
+#[cfg(feature = "prometheus-remote-write")]
+pub mod prometheus_remote_write;
+
+#[cfg(feature = "nostr")]
+pub mod nostr;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
