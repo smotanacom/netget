@@ -1132,6 +1132,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1193,6 +1196,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1255,6 +1261,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
@@ -1311,6 +1320,9 @@ jobs:
         run: |
           cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
             --test event_action_declarations_test \
+            --test action_descriptions_test \
+            --test startup_examples_validation_test \
+            --test examples \
             --test advertised_actions_test \
             --test startup_param_defaults_test \
             --test startup_param_drift_test \
