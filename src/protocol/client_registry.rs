@@ -315,6 +315,10 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "netflow-v9")]
+        self.register(Arc::new(
+            crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
+        ));
         #[cfg(feature = "ipfix")]
         self.register(Arc::new(
             crate::client::ipfix::actions::IpfixClientProtocol::new(),
@@ -809,6 +813,9 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("NETFLOWV9", "netflow-v9"),
+    ("NETFLOW-V9", "netflow-v9"),
+    ("NETFLOW_V9", "netflow-v9"),
     ("IPFIX", "ipfix"),
     ("IPFIX-UDP", "ipfix"),
     ("PrometheusRemoteWrite", "prometheus-remote-write"),

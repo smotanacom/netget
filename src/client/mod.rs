@@ -683,3 +683,6 @@ pub mod loki;
 
 #[cfg(feature = "prometheus-remote-write")]
 pub mod prometheus_remote_write;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
