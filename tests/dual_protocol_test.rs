@@ -74,6 +74,7 @@ fn golden_duals_map() {
         "TACACS",
         "Nostr",
         "Vault",
+        "Bolt",
         "Beanstalkd",
         "DICT",
         "Gemini",
