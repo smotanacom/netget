@@ -557,6 +557,8 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::grpc_web::actions::GrpcWebProtocol::new(),
         ));
+        #[cfg(feature = "gnmi")]
+        self.register(Arc::new(crate::server::gnmi::actions::GnmiProtocol::new()));
         #[cfg(feature = "connect_rpc")]
         self.register(Arc::new(
             crate::server::connect_rpc::actions::ConnectRpcProtocol::new(),
@@ -1380,6 +1382,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("XML-RPC", "xmlrpc"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("gNMI", "gnmi"),
     ("ConnectRPC", "connect_rpc"),
     ("TACACS", "tacacs"),
     ("etcd", "etcd"),

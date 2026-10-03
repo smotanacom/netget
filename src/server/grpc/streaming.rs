@@ -60,7 +60,7 @@ impl OwnedExecutor {
         tasks.push(task);
         Some(abort)
     }
-    pub(super) fn deadline(&self, deadline: tokio::time::Instant) -> Result<DeadlineGuard, Status> {
+    pub(crate) fn deadline(&self, deadline: tokio::time::Instant) -> Result<DeadlineGuard, Status> {
         let id = tokio::task::try_id().ok_or_else(|| Status::internal("missing stream owner"))?;
         let owner = self
             .0
@@ -96,7 +96,7 @@ where
         });
     }
 }
-pub(super) struct DeadlineGuard {
+pub(crate) struct DeadlineGuard {
     timer: AbortHandle,
     deadline: tokio::time::Instant,
     retain_expired: bool,
