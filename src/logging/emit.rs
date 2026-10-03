@@ -100,13 +100,24 @@ pub fn default_sink(level: Level) -> Sink {
 /// TUI with a bracket prefix that matches the level exactly.
 pub struct Log<'a> {
     status_tx: Option<&'a UnboundedSender<String>>,
+    payloads: bool,
 }
 
 impl<'a> Log<'a> {
     /// Bind the facade to an optional TUI status channel. `None` makes every
     /// emission file-only regardless of [`Sink`].
     pub fn new(status_tx: Option<&'a UnboundedSender<String>>) -> Self {
-        Self { status_tx }
+        Self {
+            status_tx,
+            payloads: true,
+        }
+    }
+
+    /// Suppress DEBUG/TRACE previews and bodies for one credential-bearing request.
+    /// This is local to the emitter; it does not change shared logging settings.
+    pub fn with_payloads(mut self, enabled: bool) -> Self {
+        self.payloads = enabled;
+        self
     }
 
     /// Core fan-out: log `msg` at `level`, delivered per `sink`.
@@ -115,6 +126,9 @@ impl<'a> Log<'a> {
     /// TUI receives `"[LEVEL] msg"` only when `sink` is [`Sink::Both`] and a
     /// channel is bound.
     pub fn emit(&self, level: Level, sink: Sink, msg: impl Display) {
+        if !self.payloads && matches!(level, Level::Debug | Level::Trace) {
+            return;
+        }
         let text = msg.to_string();
 
         // File log — always, at the level that matches the TUI prefix.

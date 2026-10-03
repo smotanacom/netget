@@ -253,6 +253,26 @@ pub async fn try_execute_client_event_handler(
     event_description: &str,
     event_data: Option<serde_json::Value>,
 ) -> Result<ClientEventHandlerResult> {
+    try_execute_client_event_handler_with_privacy(
+        state,
+        client_id,
+        event_type_id,
+        event_description,
+        event_data,
+        false,
+    )
+    .await
+}
+
+/// The shared client dispatcher with a request-local credential logging policy.
+pub async fn try_execute_client_event_handler_with_privacy(
+    state: &AppState,
+    client_id: crate::state::ClientId,
+    event_type_id: &str,
+    event_description: &str,
+    event_data: Option<serde_json::Value>,
+    private_payloads: bool,
+) -> Result<ClientEventHandlerResult> {
     let Some(config) = state.get_client_event_handler_config(client_id).await else {
         return Ok(ClientEventHandlerResult::FallbackToLlm { instruction: None });
     };
@@ -303,6 +323,7 @@ pub async fn try_execute_client_event_handler(
                 code,
                 *resident,
                 scope.as_deref(),
+                private_payloads,
             )
             .await
         }
@@ -346,6 +367,7 @@ async fn execute_client_script_handler(
     code: &str,
     resident: bool,
     scope: Option<&str>,
+    private_payloads: bool,
 ) -> Result<ClientEventHandlerResult> {
     let Some(client) = state.get_client(client_id).await else {
         warn!(
@@ -411,12 +433,29 @@ async fn execute_client_script_handler(
         );
     }
 
-    let script_result = if use_resident {
-        let resident_scope = crate::scripting::ResidentScope::parse(scope);
+    let script_result = if private_payloads {
+        use tracing::instrument::WithSubscriber;
+        let run = async {
+            if use_resident {
+                crate::scripting::ResidentScriptManager::dispatch_private(
+                    &script_config,
+                    &script_input,
+                    crate::scripting::ResidentScope::parse(scope),
+                )
+                .await
+            } else {
+                crate::scripting::executor::execute_script_async(&script_config, &script_input)
+                    .await
+            }
+        };
+        run.with_subscriber(tracing::subscriber::NoSubscriber::default())
+            .await
+            .map_err(|_| anyhow::anyhow!("credential-bearing script failed; diagnostics hidden"))
+    } else if use_resident {
         crate::scripting::ResidentScriptManager::dispatch(
             &script_config,
             &script_input,
-            resident_scope,
+            crate::scripting::ResidentScope::parse(scope),
         )
         .await
     } else {
