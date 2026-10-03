@@ -258,3 +258,6 @@ pub mod ipfix;
 
 #[cfg(feature = "vault")]
 pub mod vault;
+
+#[cfg(feature = "nostr")]
+pub mod nostr;

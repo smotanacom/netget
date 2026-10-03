@@ -27,6 +27,7 @@ async fn main() -> Result<()> {
         feature = "http_proxy",
         feature = "kubernetes",
         feature = "kubernetes-server",
+        feature = "nostr",
         feature = "openvpn",
         feature = "pop3",
         feature = "proxy",

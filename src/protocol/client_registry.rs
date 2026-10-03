@@ -415,6 +415,9 @@ impl ClientRegistry {
         #[cfg(feature = "vault")]
         self.register(Arc::new(crate::client::vault::VaultClientProtocol::new()));
 
+        #[cfg(feature = "nostr")]
+        self.register(Arc::new(crate::client::nostr::NostrClientProtocol::new()));
+
         #[cfg(feature = "prometheus")]
         self.register(Arc::new(
             crate::client::prometheus::PrometheusClientProtocol::new(),
@@ -833,6 +836,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Prometheus", "prometheus"),
     ("Docker", "docker"),
     ("Vault", "vault"),
+    ("Nostr", "nostr"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),
