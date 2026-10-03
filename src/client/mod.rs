@@ -697,3 +697,6 @@ pub mod netflow_v9;
 
 #[cfg(feature = "bolt")]
 pub mod bolt;
+
+#[cfg(feature = "oci-registry")]
+pub mod oci_registry;
