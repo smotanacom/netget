@@ -879,12 +879,12 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **13 / 72**; **59 remain**. The implementations and CI fixes are published as master merge `313ad42e`, with checked documentation published as `77a5bb8d`; all six Linux interoperability jobs passed for the implementation batch. Checkboxes below are authoritative.
-- Integration branch: `protocol-expansion-20261001`; published master audit `314c819a` is preserved by merge `ad1802ca`.
-- Agent `queue_continue`: NSQ is merged, including the selected delivery after CLOSE_WAIT (`5002305d`) and observed heartbeat acknowledgements (`7a981923`). Gearman client (`2a095a08`, peer diagnostics `f41cad44`) is integrated and passed all 47 merged protocol tests at 100 threads; a pinned official 2.1.0 Linux peer avoids the independently reproduced 1.1.20 exception-response defect. All 129 shared checks and lint/formatting pass. Its Linux peer configure failed for a missing gperf prerequisite; the concrete installer correction `7b39c75e` is integrated and queued for publication. Prometheus scrape client (`26854817`) is integrated for manager validation; Docker is in progress using an existing real daemon.
-- Agent `http3_continue`: HTTP/3 server/client (`168b8e82`, merge `8d108906`) and TE validation (`c4ddd3df`, merge `4dd79504`) are merged. A shared independent-peer port race is fixed (`73292cbc`); all 16 HTTP/3 and 17 raw-QUIC checks pass in the final combined build at 100 test threads. SFTP extension of SSH (`4a4884b0`) and accurate handler examples (`2e905b45`) are integrated. All 16 client and 14 existing server checks, 129 shared checks, lint and whole formatting pass; scope 55 is complete. OTLP is in progress, including a bounded gzip correction in the shared tonic adapter.
-- Agent `metrics_continue`: GELF (`daa80399`, handler-failure correction `d58a4c0c`) and Fluent Forward (`8342e85a`, merge `1d1b7a15`) are merged. InfluxDB write API (`cf9237ba`) is integrated after 18 server and 10 client tests with official Python/decoder peers and real InfluxDB 2.9.1 service readback; combined manager verification is running. Loki follows with maintained Alloy and official Loki peers.
-- All remaining items are assigned across three continuing queues: RPC/QUIC and streaming; service APIs and existing clients; collectors, industrial protocols and framed services. Three workers maximum, one build at a time. The coordinator rebalances future work, integrates independently validated signed scopes and publishes directly to master.
+- Completed: **16 / 72**; **56 remain**. The complete scopes comprise nine new families and seven existing-protocol completions. All checklist entries remain authorized, including the 45 new families, six existing completions and five extensions still open.
+- Integration branch: `protocol-expansion-20261001`. Implementations through InfluxDB and Prometheus are published on master as `ccf5f760`; the concurrent, content-preserving `AGENTS.md` instruction migration is retained by signed merge `c763517b`.
+- Agent `queue_continue`: Gearman and Prometheus are implemented and validated. Docker's read-only client has passed its initial 16 independent/pair checks against the existing Docker Engine 29.7.2 daemon; existing server/shared verification and coordinator review remain before item 58 is checked. Vault, Nostr, Neo4j Bolt and OCI clients follow, then the assigned service APIs.
+- Agent `http3_continue`: HTTP/3, raw QUIC and SFTP are complete. OTLP HTTP plus gRPC is in progress with required official peers; a separate shared tonic receive-limit patch is ready for neighbor verification. IPP subscriptions, gRPC-Web and the assigned RPC/streaming families follow.
+- Agent `metrics_continue`: StatsD, Graphite, Forward, GELF and InfluxDB are complete. Loki is in progress against maintained Alloy and official Loki peers. IPFIX and sFlow follow, then the assigned industrial and framed-service families.
+- Three workers maximum, one guarded build at a time. The coordinator reviews and merges signed scopes, records independent evidence, and pushes local master directly to origin/master. The current Gearman Linux CI dependency correction adds tshark; all ten pair cache keys now use comma-free job identifiers.
 
 ## New protocol checklist
 
@@ -1088,12 +1088,14 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **28. InfluxDB write API** — B/S-M; proposed feature `influxdb`. [Specification/reference](https://docs.influxdata.com/influxdb/v2/api/write/).
+- [x] **28. InfluxDB write API** — B/S-M; proposed feature `influxdb`. [Specification/reference](https://docs.influxdata.com/influxdb/v2/api/write/).
   - Scope: Pinned write API, line protocol, types/escaping/timestamp precision, authentication and partial errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+
+  - Validation: code `cf9237ba`, signed integration `3d8f39d8`; all 18 server and 10 client checks pass at 100 threads against official influxdb-client 1.50.0, the unmodified official line-protocol/v2 2.2.1 decoder, and InfluxDB 2.9.1 daemon readback. Five field types, four precisions and identity/gzip carriers are covered. HTTP v2 writes only; no database/query engine or HTTPS transport claim. Experimental. The Linux independent-pair job also passed.
 
 - [ ] **29. IPFIX** — B/M-L; proposed feature `ipfix`. [Specification/reference](https://www.rfc-editor.org/info/rfc7011/).
   - Scope: Collector/exporter, templates, typed data records, domain/sequence tracking and template lifecycle.
@@ -1295,11 +1297,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Both directions validated with external peers and the NetGet pair.
   - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
 
-- [ ] **57. Prometheus client**.
+- [x] **57. Prometheus client**.
   - Scope: Scrape, negotiate and parse metrics into structured events; remote write tracked separately.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: code `26854817`; all 20 client and 18 existing server checks pass at 100 threads with Prometheus/promtool 3.15.0 and prometheus-client 0.22.1, plus NetGet pairing. Text 0.0.4/OpenMetrics 1.0, negotiation, native metric families, limits, model/manual/script handlers and cancellation are covered. No remote write, PromQL, protobuf/native histograms or OpenMetrics 2.0 claim. Experimental. The Linux independent-pair job also passed.
 
 - [ ] **58. Docker client**.
   - Scope: Structured API actions paired with existing programmable Docker server.
@@ -1346,11 +1350,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: 20 client and 35 preserved server tests passed with nsqd, to_nsq and nsq_tail 1.3.0 and the NetGet pair. Code `9758dc00`, close-order fix `5002305d`, heartbeat test correction `7a981923`, published master `313ad42e`. PUB/MPUB/DPUB, subscription/RDY, heartbeat, FIN/REQ/TOUCH and graceful CLS correlation; no lookupd discovery, TLS/auth, compression, reconnect or binary outbound body claim. Experimental.
 
-- [ ] **65. Gearman client**.
+- [x] **65. Gearman client**.
   - Scope: Job submission and selected worker exchanges with correlation and errors.
-  - [ ] Missing functionality implemented and registered; existing side preserved.
-  - [ ] Both directions validated with external peers and the NetGet pair.
-  - [ ] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+  - [x] Missing functionality implemented and registered; existing side preserved.
+  - [x] Both directions validated with external peers and the NetGet pair.
+  - [x] Negative/lifecycle tests, feature build, documentation and integrated commit recorded.
+
+  - Validation: code `2a095a08`, compatible-peer corrections `f41cad44` and `7b39c75e`; all 19 client and 28 existing server checks pass at 100 threads with official gearmand/gearman/gearadmin 2.1.0. Submitter plus selected worker exchanges, correlation, exceptional outcomes, bounds, handlers and cancellation are covered. Existing server remains the documented model-as-worker role; no generic queue broker/storage claim. Experimental. Linux peer compilation is verified; the required existing packet-capture oracle exposed a missing tshark package, now added to CI and awaiting a rerun.
 
 - [x] **66. Gemini client**.
   - Scope: TLS requests, certificate policy, status/meta/body handling and bounds.
@@ -1397,6 +1403,8 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 - **Batch 4 — 25 Fluent Forward, 26 GELF, 53 HTTP/3 server/client, 64 NSQ client:** published master merge `313ad42e` preserves the separate codebase audit `314c819a`. Final evidence totals **213 protocol test executions**: GELF 22, NSQ 55, HTTP/3 16 including cancellation/early-hints, Forward 24, NUT 20, DoQ 18, raw QUIC 17 and Beanstalkd 41. Initial combined runs passed; after the TE and peer-port corrections, all 16 HTTP/3 and 17 raw-QUIC checks passed again at 100 test threads. No failed or ignored cases in those final runs.
 - Commands: `python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --locked --offline --no-default-features --features tcp,nut,doq,gelf,beanstalkd,nsq,http3,quic,fluent-forward --test server --test client -- PROTOCOL:: --test-threads=4` for each named protocol. HTTP/3 final run additionally selects `--test http3_cancellation_test` with filter `http3` and `--test-threads=100`; raw QUIC reruns use `quic::` at 100 threads. Peer environments are specified in each protocol's test documentation and persistent `validate_batch4.py`.
+- **Batch 5 — 55 SFTP, 65 Gearman, 28 InfluxDB writes, 57 Prometheus client:** all **143 protocol checks** pass at 100 test threads, zero failed/ignored. Gearman 47 and SSH/SFTP 30 were run with `tcp,gearman,ssh`; InfluxDB 28 and Prometheus 38 were run with `tcp,gearman,ssh,influxdb,prometheus`. Commands use the serialized guard: `test --locked --offline --no-default-features --features FEATURES --test server --test client -- PROTOCOL:: --test-threads=100`. Both shared feature combinations pass **129 checks across 31 targets**, correctness/suspicious/unused-must-use clippy and whole-package formatting. Persistent logs are `logs/batch5-*-initial.log` and `logs/batch5-*-collectors.log` under the owned programme source root. [Linux SFTP, InfluxDB and Prometheus jobs passed](https://github.com/smotanacom/netget/actions/runs/37082508077). Gearman compiled its pinned peer, then its existing packet oracle failed for missing tshark; the CI dependency fix is included. No green full-CI claim.
+
 - Batch 4 shared checks: **130 checks across 31 targets** pass after two targeted source-check corrections. The clean published baseline reproduced the unclassified HTTP URL validator; its deliberate rejection is recorded without rewriting requested URLs. The obsolete three-sleep HTTP/3 baseline was removed. Combined correctness/suspicious/unused-must-use lint, workflow YAML/shell syntax, test discovery and guarded whole-package formatting pass. All Cargo commands use the serialized disk guard. Logs: `/Users/matus/dev/netget/.protocol-expansion-20261001/logs/batch4-*.log`.
 - The final HTTP/3 rerun exposed a fixture port reservation race before peer startup. `73292cbc` makes aioquic bind port zero itself and report its actual live socket; both affected suites pass at high concurrency. h3-quinn's pending-read cancellation panic is independently reproduced and corrected in the vendored adapter. The blocking pair workflow now includes HTTP/3, Forward, GELF and NSQ. [All six independent-pair jobs passed on Linux](https://github.com/smotanacom/netget/actions/runs/37079410969). General CI on the checklist publication is still running; no full-CI green claim.
 
@@ -1416,6 +1424,8 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 - Protocol command, once for each `PROTOCOL` in `nut`, `statsd`, `doq`: `cargo test --locked --offline --no-default-features --features tcp,nut,doq,statsd --test server --test client -- PROTOCOL:: --test-threads=4`. The programme runs Cargo through its serialized guard and provides the documented local peer paths.
 - Shared checks: `event_action_declarations_test`, `advertised_actions_test`, `well_known_port_declaration_test`, `startup_param_defaults_test`, `startup_param_drift_test`, `protocol_startup_examples_test`, `dual_protocol_test`, `dashboard_wireshark_test`, `client_event_wiring_test`, `event_emit_sites_test` with the same feature set.
 - Reproduction: `.github/workflows/protocol-pairs.yml` installs independent peers and runs these suites; each protocol's test documentation describes local setup. CI YAML and peer bootstrap were validated locally; the first remote NUT/DoQ/StatsD interoperability job passed on Linux. The eight-scope batch is published on master as `cf3f6a74`. Local detailed logs are in `/private/tmp/netget-protocol-expansion-20261001/validation/`.
+
+- Documentation migration compatibility: both path and test-count checks discover `AGENTS.md` and legacy `CLAUDE.md`. Existing legacy citations resolve only when the migrated file actually exists; missing paths and stale foreign-path exemptions still fail. All four focused tests pass, including two new migration regressions. Workflow YAML and all 90 shell steps parse successfully.
 
 ## Implementation and independent peer plan
 
