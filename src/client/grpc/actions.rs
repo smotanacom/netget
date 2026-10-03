@@ -125,9 +125,9 @@ impl Protocol for GrpcClientProtocol {
         vec![
                 ParameterDefinition {
                     name: "proto_schema".to_string(),
-                    description: "Protobuf schema definition (base64 FileDescriptorSet, .proto file path, or inline .proto text)".to_string(),
+                    description: "Optional inline proto3 text or .proto/.pb path; omit to discover the bounded schema through server reflection. Models should use inline text, not base64 descriptors.".to_string(),
                     type_hint: "string".to_string(),
-                    required: true,
+                    required: false,
                     example: json!("CpUCCg9jYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIikKCkFkZFJlcXVlc3QSCwoDYQgBIAEoBVIBYRILCgNiCAIgASgFUgFiIiIKC0FkZFJlc3BvbnNlEhMKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkIKCkNhbGN1bGF0b3ISNAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0Gh0uY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM="),
                     default: None,
                 },
@@ -137,12 +137,27 @@ impl Protocol for GrpcClientProtocol {
                     type_hint: "boolean".to_string(),
                     required: false,
                     example: json!(false),
-                    default: None,
+                    default: Some(json!(super::DEFAULT_TLS)),
+                },
+                ParameterDefinition {
+                    name:"connect_timeout_secs".into(),type_hint:"integer".into(),required:false,description:"Whole schema/connection deadline, 1..60 seconds".into(),example:json!(10),default:Some(json!(super::CONNECT_TIMEOUT_SECS)),
+                },
+                ParameterDefinition {
+                    name:"stream_timeout_secs".into(),type_hint:"integer".into(),required:false,description:"Whole streaming RPC deadline, 1..3600 seconds".into(),example:json!(300),default:Some(json!(super::streaming::DEFAULT_STREAM_TIMEOUT)),
+                },
+                ParameterDefinition {
+                    name:"idle_timeout_secs".into(),type_hint:"integer".into(),required:false,description:"Idle with no active operations or handlers, 1..3600 seconds".into(),example:json!(120),default:Some(json!(super::streaming::DEFAULT_IDLE_TIMEOUT)),
+                },
+                ParameterDefinition {
+                    name:"server_name".into(),type_hint:"string".into(),required:false,description:"Verified TLS certificate hostname, default endpoint hostname; requires use_tls".into(),example:json!("localhost"),default:None,
+                },
+                ParameterDefinition {
+                    name:"ca_file".into(),type_hint:"string".into(),required:false,description:"Optional trusted PEM CA file, regular file at most 1 MiB; requires use_tls".into(),example:json!("/path/to/ca.pem"),default:None,
                 },
             ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
+        let mut actions = vec![
             ActionDefinition {
                 name: "call_grpc_method".to_string(),
                 description: "Call a gRPC method with the given request".to_string(),
@@ -191,10 +206,12 @@ impl Protocol for GrpcClientProtocol {
                 }),
                 log_template: None,
             },
-        ]
+        ];
+        actions.extend(stream_actions());
+        actions
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![
+        let mut actions = vec![
             ActionDefinition {
                 name: "call_grpc_method".to_string(),
                 description: "Call another gRPC method in response to received data".to_string(),
@@ -241,28 +258,22 @@ impl Protocol for GrpcClientProtocol {
                 }),
                 log_template: None,
             },
-        ]
+        ];
+        actions.extend(stream_actions());
+        actions
     }
     fn protocol_name(&self) -> &'static str {
         "gRPC"
     }
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "grpc_connected",
-                "Triggered when gRPC client connects to server",
-                json!({"type": "placeholder", "event_id": "grpc_connected"}),
-            ),
-            EventType::new(
-                "grpc_response_received",
-                "Triggered when gRPC client receives a response",
-                json!({"type": "placeholder", "event_id": "grpc_response_received"}),
-            ),
-            EventType::new(
-                "grpc_error",
-                "Triggered when gRPC client receives an error",
-                json!({"type": "placeholder", "event_id": "grpc_error"}),
-            ),
+            GRPC_CLIENT_CONNECTED_EVENT.clone(),
+            GRPC_CLIENT_RESPONSE_RECEIVED_EVENT.clone(),
+            GRPC_CLIENT_ERROR_EVENT.clone(),
+            GRPC_CLIENT_STREAM_OPENED_EVENT.clone(),
+            GRPC_CLIENT_STREAM_MESSAGE_EVENT.clone(),
+            GRPC_CLIENT_STREAM_INPUT_READY_EVENT.clone(),
+            GRPC_CLIENT_STREAM_ENDED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -288,8 +299,7 @@ impl Protocol for GrpcClientProtocol {
         deps
     }
 
-    /// A base64 `FileDescriptorSet` is decoded directly (`mod.rs::load_schema`) and needs no
-    /// `protoc`; every other schema form is compiled by it.
+    /// Reflection and precompiled descriptors need no protoc; proto text/path does.
     fn startup_dependencies(
         &self,
         startup_params: Option<&serde_json::Value>,
@@ -297,8 +307,8 @@ impl Protocol for GrpcClientProtocol {
         let precompiled = startup_params
             .and_then(|p| p.get("proto_schema"))
             .and_then(|s| s.as_str())
-            .map(is_base64_descriptor_set)
-            .unwrap_or(false);
+            .map(|schema| schema.trim().ends_with(".pb") || is_base64_descriptor_set(schema))
+            .unwrap_or(true);
         let mut deps = self.get_dependencies();
         if precompiled {
             deps.retain(|d| {
@@ -312,9 +322,10 @@ impl Protocol for GrpcClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("tonic gRPC client with dynamic protobuf schema support")
-            .llm_control("Full control over RPC calls (service, method, request data)")
-            .e2e_testing("Local gRPC server or public gRPC APIs")
+            .implementation("Bounded dynamic tonic gRPC client with unary and all three streaming forms, v1/v1alpha reflection discovery and verified TLS")
+            .llm_control("Typed request/response fields and owned start/send/input-half-close/cancel controls; bounded input-ready events report queue availability")
+            .e2e_testing("Mandatory generated grpcio1.75.1 peer and NetGet pair in tests/client/grpc/streaming_test.rs; reflection, stream shapes, gzip, TLS verification, cancellation, deadlines and bounded parked handlers. Legacy unary checks are retained.")
+            .notes("Experimental expanded scope. Streaming bytes fields and binary metadata are excluded; legacy unary bytes behavior is preserved. One endpoint, no automatic reconnect or streaming retry, no mTLS.")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -328,68 +339,18 @@ impl Protocol for GrpcClientProtocol {
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
-        use serde_json::json;
-
+        let schema = "syntax = \"proto3\"; package calculator; service Calculator { rpc Add(Input) returns (Output); } message Input { int32 a = 1; int32 b = 2; } message Output { int32 result = 1; }";
+        let call = json!({"type":"call_grpc_method","service":"calculator.Calculator","method":"Add","request":{"a":5,"b":3}});
         StartupExamples::new(
-            // LLM mode: LLM controls gRPC method calls
-            json!({
-                "type": "open_client",
-                "remote_addr": "localhost:50051",
-                "base_stack": "grpc",
-                "instruction": "Call the Calculator.Add method with a=5 and b=3",
-                "startup_params": {
-                    "proto_schema": "CpUCCg9jYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIikKCkFkZFJlcXVlc3QSCwoDYQgBIAEoBVIBYRILCgNiCAIgASgFUgFiIiIKC0FkZFJlc3BvbnNlEhMKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkIKCkNhbGN1bGF0b3ISNAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0Gh0uY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM="
-                }
-            }),
-            // Script mode: Code-based gRPC call handling
-            json!({
-                "type": "open_client",
-                "remote_addr": "localhost:50051",
-                "base_stack": "grpc",
-                "startup_params": {
-                    "proto_schema": "CpUCCg9jYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIikKCkFkZFJlcXVlc3QSCwoDYQgBIAEoBVIBYRILCgNiCAIgASgFUgFiIiIKC0FkZFJlc3BvbnNlEhMKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkIKCkNhbGN1bGF0b3ISNAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0Gh0uY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM="
-                },
-                "event_handlers": [{
-                    "event_pattern": "grpc_response_received",
-                    "handler": {
-                        "type": "script",
-                        "language": "python",
-                        "code": "<grpc_client_handler>"
-                    }
-                }]
-            }),
-            // Static mode: Fixed gRPC method call
-            json!({
-                "type": "open_client",
-                "remote_addr": "localhost:50051",
-                "base_stack": "grpc",
-                "startup_params": {
-                    "proto_schema": "CpUCCg9jYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIikKCkFkZFJlcXVlc3QSCwoDYQgBIAEoBVIBYRILCgNiCAIgASgFUgFiIiIKC0FkZFJlc3BvbnNlEhMKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkIKCkNhbGN1bGF0b3ISNAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0Gh0uY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM="
-                },
-                "event_handlers": [
-                    {
-                        "event_pattern": "grpc_connected",
-                        "handler": {
-                            "type": "static",
-                            "actions": [{
-                                "type": "call_grpc_method",
-                                "service": "calculator.Calculator",
-                                "method": "Add",
-                                "request": {"a": 5, "b": 3}
-                            }]
-                        }
-                    },
-                    {
-                        "event_pattern": "grpc_response_received",
-                        "handler": {
-                            "type": "static",
-                            "actions": [{
-                                "type": "disconnect"
-                            }]
-                        }
-                    }
-                ]
-            }),
+            json!({"type":"open_client","remote_addr":"localhost:50051","base_stack":"grpc",
+                "instruction":"Call calculator.Calculator/Add with a=5, b=3. Report the decoded result and disconnect.","startup_params":{"proto_schema":schema}}),
+            json!({"type":"open_client","remote_addr":"localhost:50051","base_stack":"grpc","startup_params":{"proto_schema":schema},
+                "event_handlers":[{"event_pattern":"*","handler":{"type":"script","language":"python",
+                    "code":"import json,sys\nd=json.load(sys.stdin)\na=[{'type':'wait_for_more'}]\nif d['event_type_id']=='grpc_connected': a=[{'type':'call_grpc_method','service':'calculator.Calculator','method':'Add','request':{'a':5,'b':3}}]\nelif d['event_type_id'] in ('grpc_response_received','grpc_error'): a=[{'type':'disconnect'}]\nprint(json.dumps({'actions':a}))"}}]}),
+            json!({"type":"open_client","remote_addr":"localhost:50051","base_stack":"grpc","startup_params":{"proto_schema":schema},
+                "event_handlers":[{"event_pattern":"grpc_connected","handler":{"type":"static","actions":[call]}},
+                    {"event_pattern":"grpc_response_received","handler":{"type":"static","actions":[{"type":"disconnect"}]}},
+                    {"event_pattern":"*","handler":{"type":"static","actions":[{"type":"wait_for_more"}]}}]}),
         )
     }
 }
@@ -455,6 +416,31 @@ impl Client for GrpcClientProtocol {
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
             "wait_for_more" => Ok(ClientActionResult::WaitForMore),
+            "grpc_stream_start" | "grpc_stream_send" | "grpc_stream_finish"
+            | "grpc_stream_cancel" => {
+                anyhow::ensure!(
+                    action["stream_id"]
+                        .as_u64()
+                        .is_some_and(|id| (1..=u64::from(u32::MAX)).contains(&id)),
+                    "stream_id must be 1..4294967295"
+                );
+                if action_type == "grpc_stream_start" {
+                    anyhow::ensure!(
+                        action["service"].is_string() && action["method"].is_string(),
+                        "service and method must be strings"
+                    );
+                }
+                if action_type == "grpc_stream_send" {
+                    anyhow::ensure!(
+                        action["message"].is_object(),
+                        "message must be field-name JSON"
+                    );
+                }
+                Ok(ClientActionResult::Custom {
+                    name: action_type.to_owned(),
+                    data: action,
+                })
+            }
             _ => Err(anyhow::anyhow!(
                 "Unknown gRPC client action: {}",
                 action_type
@@ -463,11 +449,85 @@ impl Client for GrpcClientProtocol {
     }
 }
 
+fn stream_actions() -> Vec<ActionDefinition> {
+    let mut actions = Vec::new();
+    for (name, description, example) in [
+        ("grpc_stream_start", "Start a real streaming method with a fresh stream_id; server-streaming requires request, client/bidi may provide an initial request", json!({"type":"grpc_stream_start","stream_id":1,"service":"streams.Session","method":"Watch","request":{"name":"watch"}})),
+        ("grpc_stream_send", "Queue one typed message on client/bidirectional input; rejects a full queue or closed input", json!({"type":"grpc_stream_send","stream_id":1,"message":{"name":"update","value":2}})),
+        ("grpc_stream_finish", "Half-close client/bidirectional input while continuing to receive replies", json!({"type":"grpc_stream_finish","stream_id":1})),
+        ("grpc_stream_cancel", "Cancel an active RPC and its pending reads/writes", json!({"type":"grpc_stream_cancel","stream_id":1})),
+    ] {
+        let mut parameters = vec![Parameter {name:"stream_id".into(),type_hint:"integer".into(),required:true,description:"Positive u32 id, unique for this client session".into()}];
+        if name == "grpc_stream_start" {
+            for (name,hint,required,description) in [
+                ("service","string",true,"Fully qualified service name"), ("method","string",true,"Streaming method name"),
+                ("request","object",false,"Typed initial request; required for server-streaming"),
+                ("metadata","object",false,"At most 16 lowercase ASCII metadata fields; reserved/binary headers excluded"),
+                ("gzip","boolean",false,"Compress outgoing stream messages with gzip"),
+            ] {parameters.push(Parameter {name:name.into(),type_hint:hint.into(),required,description:description.into()});}
+        } else if name == "grpc_stream_send" {parameters.push(Parameter {name:"message".into(),type_hint:"object".into(),required:true,description:"Field-name JSON matching the request schema, excluding bytes fields".into()});}
+        actions.push(ActionDefinition {name:name.into(),description:description.into(),parameters,example,log_template:None});
+    }
+    actions
+}
+fn stream_event(
+    name: &'static str,
+    description: &'static str,
+    fields: &[(&str, &str)],
+) -> EventType {
+    let mut parameters = vec![Parameter {
+        name: "stream_id".into(),
+        type_hint: "integer".into(),
+        required: true,
+        description: "RPC correlation id".into(),
+    }];
+    parameters.extend(fields.iter().map(|(name, hint)| Parameter {
+        name: (*name).into(),
+        type_hint: (*hint).into(),
+        required: true,
+        description: (*name).replace('_', " "),
+    }));
+    EventType::new(name, description, json!({"type":"wait_for_more"}))
+        .with_parameters(parameters)
+        .with_actions(stream_actions())
+}
+pub static GRPC_CLIENT_STREAM_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_opened",
+        "Server accepted response headers for this RPC",
+        &[("service", "string"), ("method", "string")],
+    )
+});
+pub static GRPC_CLIENT_STREAM_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_message_received",
+        "A bounded, decoded typed response arrived",
+        &[("sequence", "integer"), ("response", "object")],
+    )
+});
+pub static GRPC_CLIENT_STREAM_ENDED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event(
+        "grpc_stream_ended",
+        "RPC completed, failed, reached its deadline or was cancelled",
+        &[
+            ("code", "integer"),
+            ("message", "string"),
+            ("response_count", "integer"),
+        ],
+    )
+});
+pub static GRPC_CLIENT_STREAM_INPUT_READY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    stream_event("grpc_stream_input_ready","The request encoder consumed a queued input item; one queue slot is available, without claiming wire delivery",&[("input_sequence","integer"),("queue_capacity","integer")])
+});
+
 /// Whether `schema` is a base64-encoded `FileDescriptorSet`, the one form the client loads
 /// without `protoc`.
 fn is_base64_descriptor_set(schema: &str) -> bool {
     use base64::Engine as _;
     use prost::Message as _;
+    if schema.len() > (4usize * 1024 * 1024).div_ceil(3) * 4 {
+        return false;
+    }
     base64::engine::general_purpose::STANDARD
         .decode(schema)
         .map(|bytes| prost_types::FileDescriptorSet::decode(bytes.as_slice()).is_ok())

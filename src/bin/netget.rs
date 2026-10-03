@@ -19,8 +19,10 @@ async fn main() -> Result<()> {
     #[cfg(any(
         feature = "dc",
         feature = "doh",
+        feature = "doq",
         feature = "dot",
         feature = "gemini",
+        feature = "grpc",
         feature = "http",
         feature = "http2",
         feature = "http3",
@@ -29,6 +31,7 @@ async fn main() -> Result<()> {
         feature = "kubernetes-server",
         feature = "nostr",
         feature = "openvpn",
+        feature = "otlp",
         feature = "pop3",
         feature = "proxy",
         feature = "quic",

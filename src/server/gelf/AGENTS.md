@@ -37,3 +37,5 @@ omits connectionless because the role also owns TCP sessions and chunk state.
 Experimental. Both transports have independent emitter/receiver evidence, but no Stable
 rating, fuzz execution, pcap oracle or complete Graylog service claim. No HTTP input, TLS,
 authentication, persistence, query API, acknowledgments or retry.
+
+Peer controls: GELF collectors never send application replies or unsolicited peer messages. Pending requests remain answerable through the ordinary event handler; no uncorrelated wire reply is offered.

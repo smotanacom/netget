@@ -1,154 +1,30 @@
-# gRPC Client E2E Testing
+# Generic gRPC Client Verification
 
-## Test Strategy
+`streaming_test.rs` runs against mandatory independently generated grpcio 1.75.1 C++ peers
+and a NetGet server. Missing Python packages/protoc fail; no ignore/skip gate. Pins and
+setup are in `tests/helpers/grpcio-peer-requirements.txt`; set NETGET_GRPCIO_PYTHON to the
+owned venv. Peer readiness reports its actual port0 bind; Rust owns each child. TLS fixtures
+use openssl and ordinary certificate verification.
 
-Black-box E2E testing that spawns NetGet gRPC server and client instances, verifies RPC calls work correctly with
-dynamic schema support.
+Checks cover reflection schema discovery (independent v1alpha fallback and NetGet v1),
+all three stream shapes/gzip/repeated/maps, typed request input-ready backpressure,
+Collect/Chat half-close, cancellation/reused-ID rejection, malformed metadata/type/method
+refusals followed by recovery,16 parked-handler admission with responsive controls,
+whole RPC deadline, idle disconnect and removal intercept cleanup. Exact4 MiB/+1 probes
+exercise plain/gzip requests and responses. Verified custom-CA TLS succeeds; wrong hostname
+and untrusted certificates fail. NetGet pair covers both native roles.
 
-## Test Approach
+Final client suite: 14 passed, 0 failed/ignored at 100 threads, 4.80s (includes four retained
+unary checks). Exact 1 MiB CA acceptance and oversized/directory/FIFO rejection are included.
+The initial disk-guard refusal executed zero checks. Preparatory logs retain the real TLS
+provider ambiguity and the correctly rejected CA:TRUE end-entity fixture; both were fixed.
+Logs: programme logs/item68-grpc-client-*.log.
 
-### Server Setup
+Legacy `command_channel_test.rs` retains two in-process unary checks: honest Sent9 for
+Calculator/Add (5-byte prefix+4 protobuf bytes), repeated/map fields and wrong-type refusal
+followed by a usable connection. `e2e_test.rs` retains mocked subprocess unary success and
+connection error. These make no claim about independent peer interoperability.
 
-- Spawn NetGet gRPC server with base64-encoded FileDescriptorSet
-- Server implements calculator.Calculator service with Add RPC
-- LLM handles server-side logic (returns sum of a and b)
-
-### Client Testing
-
-- Spawn NetGet gRPC client with same schema
-- Client makes RPC calls based on LLM instructions
-- Verify client can connect, make calls, and handle responses
-
-### Schema Used
-
-Calculator service with simple Add operation:
-
-- Service: `calculator.Calculator`
-- Method: `Add(AddRequest) returns (AddResponse)`
-- Request: `{a: int32, b: int32}`
-- Response: `{result: int32}`
-
-Schema provided as base64 FileDescriptorSet (no protoc dependency).
-
-## LLM Call Budget
-
-**Target: < 10 LLM calls per test suite**
-
-### Current Budget
-
-- `test_grpc_client_add_request`: 2 LLM calls
-    1. Server startup (parse instruction, generate schema handler)
-    2. Client connection and RPC call
-- `test_grpc_client_connection_error`: 1 LLM call
-    1. Client connection attempt
-
-**Total: 3 LLM calls**
-
-### Budget Rationale
-
-- **Minimal**: 2 tests cover core functionality (success + error)
-- **Efficient**: Reuse same schema across tests
-- **Simple service**: Calculator is trivial, LLM handles easily
-- **Fast**: Tests complete in < 3 seconds
-
-## Expected Runtime
-
-- `test_grpc_client_add_request`: ~3 seconds
-    - 1s server startup
-    - 2s client connection + RPC call
-- `test_grpc_client_connection_error`: ~1 second
-    - 1s connection attempt timeout
-
-**Total suite runtime: ~4 seconds**
-
-## Test Coverage
-
-### Covered
-
-✅ gRPC client initialization with dynamic schema
-✅ RPC method call (unary)
-✅ Request/response JSON ↔ protobuf conversion
-✅ Connection error handling
-✅ End-to-end server ↔ client communication
-
-✅ Repeated and map request fields, and a wrong-typed scalar being refused
-  (`command_channel_test.rs`)
-
-### Not Covered (Future Tests)
-
-❌ Streaming RPCs (not implemented)
-❌ gRPC metadata (headers)
-❌ TLS connections
-❌ Multiple services in one schema
-❌ Nested messages and enums in requests
-❌ Error status codes from server — and in particular a server that puts `grpc-status` in
-  HTTP/2 **trailers**, which every real gRPC server does and NetGet's own gRPC server does
-  not. The trailer path in `call_grpc_unary` is therefore unexercised by any test here; it
-  needs a non-NetGet peer
-
-## Known Issues
-
-### Schema Encoding
-
-- Base64 FileDescriptorSet must be correct
-- If schema is malformed, client fails to initialize
-- Error messages may be cryptic ("Failed to create descriptor pool")
-
-### Timing
-
-- Tests use sleep() for synchronization (brittle)
-- If LLM is slow, tests may timeout
-- Server needs ~1s to fully initialize
-
-### LLM Variability
-
-- LLM may not always call the RPC method immediately
-- LLM may log extra messages (affects output verification)
-- Tests check for multiple possible output patterns
-
-## Running Tests
-
-```bash
-# Run gRPC client E2E tests only
-./cargo-isolated.sh test --no-default-features --features grpc --test client::grpc::e2e_test
-
-# Run with output
-./cargo-isolated.sh test --no-default-features --features grpc --test client::grpc::e2e_test -- --nocapture
-```
-
-## Dependencies
-
-- **tonic**: gRPC client library
-- **prost-reflect**: Dynamic protobuf schema
-- **NetGet gRPC server**: For E2E testing (same codebase)
-
-## Future Improvements
-
-1. **Real gRPC server**: Use external gRPC service (e.g., grpc.io examples)
-2. **More complex schemas**: Test nested messages, repeated fields, enums
-3. **Streaming**: Once implemented, test all 4 RPC types
-4. **Metadata testing**: Verify custom headers work
-5. **Error codes**: Test all gRPC status codes (INVALID_ARGUMENT, NOT_FOUND, etc.)
-
-## `command_channel_test.rs` — injected actions
-
-In-process, no NetGet subprocess and **zero LLM calls**: a NetGet gRPC *server* with the
-calculator schema answers through a `*` static handler, and the client's LLM points at
-`http://127.0.0.1:1`, so its `grpc_connected` call fails and the connect path has to tolerate
-that.
-
-Needs `protoc` on PATH — the gRPC server compiles its `proto_schema` by shelling out to it on
-every code path. The test **fails** with a message naming the install command when `protoc` is
-absent; it does not skip. A skip returns success on any runner without the binary, which is a
-silent pass. CI does not build the `grpc` feature, so this costs the blocking gate nothing; the
-`registry-audit` job installs `protobuf-compiler`.
-
-What it pins:
-
-- `has_client_handle` is true **before** anything answers the connected event.
-- `call_grpc_method calculator.Calculator/Add {a:5,b:3}` → `Sent { bytes_sent: 9 }`. That is
-  the one honest `Sent` in this family of clients: NetGet builds the gRPC frame itself, so
-  9 = 5-byte header + `0x08 0x05 0x10 0x03`. The server's access log shows `Add`.
-- an unknown action → `Rejected`; `disconnect` → `Disconnected`, handle gone.
-
-**LLM call budget: 0.**
+Use the shared run_cargo.py guard with test --locked --offline --no-default-features
+--features grpc --test client grpc:: -- --test-threads=100 --nocapture. No real model inference
+is required for the new cases: static, Python script or manual rules answer actual wire events.

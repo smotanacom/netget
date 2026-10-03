@@ -117,6 +117,10 @@ impl ClientRegistry {
 
         #[cfg(feature = "grpc")]
         self.register(Arc::new(crate::client::grpc::GrpcClientProtocol::new()));
+        #[cfg(feature = "grpc-web")]
+        self.register(Arc::new(
+            crate::client::grpc_web::actions::GrpcWebClientProtocol::new(),
+        ));
 
         #[cfg(feature = "http")]
         {
@@ -315,6 +319,10 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "netflow-v9")]
+        self.register(Arc::new(
+            crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
+        ));
         #[cfg(feature = "ipfix")]
         self.register(Arc::new(
             crate::client::ipfix::actions::IpfixClientProtocol::new(),
@@ -326,6 +334,12 @@ impl ClientRegistry {
         #[cfg(feature = "influxdb")]
         self.register(Arc::new(
             crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
+        ));
+        #[cfg(feature = "prometheus-remote-write")]
+        self.register(Arc::new(crate::client::prometheus_remote_write::actions::PrometheusRemoteWriteClientProtocol::new()));
+        #[cfg(feature = "sflow")]
+        self.register(Arc::new(
+            crate::client::sflow::actions::SflowClientProtocol::new(),
         ));
 
         #[cfg(feature = "fluent-forward")]
@@ -775,6 +789,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("gRPC", "grpc"),
+    ("gRPC-Web", "grpc-web"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
@@ -809,8 +824,15 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
     ("FluentForward", "fluent-forward"),
+    ("NETFLOWV9", "netflow-v9"),
+    ("NETFLOW-V9", "netflow-v9"),
+    ("NETFLOW_V9", "netflow-v9"),
     ("IPFIX", "ipfix"),
     ("IPFIX-UDP", "ipfix"),
+    ("PrometheusRemoteWrite", "prometheus-remote-write"),
+    ("RemoteWrite", "prometheus-remote-write"),
+    ("sFlow", "sflow"),
+    ("sFlow-v5", "sflow"),
     ("Loki", "loki"),
     ("LokiPush", "loki"),
     ("InfluxDB", "influxdb"),
