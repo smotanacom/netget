@@ -37,6 +37,18 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/client/loki/transport.rs",
+        1,
+        "validator: refuse malformed Loki error text containing terminal controls outside \
+         tab/CR/LF; neither filter nor silently change the error the peer supplied",
+    ),
+    (
+        "src/server/loki/actions.rs",
+        1,
+        "validator: refuse a model-selected Loki error message with terminal controls outside \
+         tab/CR/LF rather than changing the HTTP response decision",
+    ),
+    (
         "src/client/http_fetch/transport.rs",
         1,
         "validator: reject unescaped whitespace and controls before URL parsers can silently \
