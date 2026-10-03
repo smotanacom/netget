@@ -90,6 +90,95 @@ pub(super) const TARGET: &str = "/loki/api/v1/push";
 pub(super) const BODY: &[u8] =
     br#"{"streams":[{"stream":{"app":"test"},"values":[["123","hello",{"trace_id":"x"}]]}]}"#;
 #[tokio::test]
+async fn http_media_tokens_utf8_parameters_and_bearer_scheme_are_case_insensitive() {
+    let (state, id, addr) = start(None, Some(json!({"auth_token":"peer-secret"}))).await;
+    for (kind, media, coding, auth) in [
+        (
+            "json",
+            "application/json; charset=utf-8",
+            "identity",
+            "bearer",
+        ),
+        (
+            "json",
+            "Application/JSON; ChArSeT=\"UTF-8\"",
+            "IDENTITY",
+            "bEaReR",
+        ),
+        (
+            "json",
+            "APPLICATION/JSON; ;charset=Utf-8;",
+            "identity",
+            "Bearer  ",
+        ),
+        (
+            "gzip_json",
+            "Application/JSON; charset=\"utf-8\"",
+            "GZIP",
+            "BEARER",
+        ),
+        (
+            "snappy_protobuf",
+            "Application/X-Protobuf",
+            "SNAPPY",
+            "bearer",
+        ),
+    ] {
+        let batch = super::codec_test::batch(kind);
+        let body = netget::server::loki::codec::encode_batch(&batch).unwrap();
+        let headers = format!("Content-Type: {media}\r\nContent-Encoding: {coding}\r\nAuthorization: {auth} peer-secret\r\n");
+        assert_eq!(
+            request(addr, "POST", TARGET, &headers, &body).await.0,
+            204,
+            "{media}"
+        );
+    }
+    let accepted = logs(&state, id, 5).await;
+    assert_eq!(accepted.len(), 5);
+    assert!(
+        !serde_json::to_string(&accepted.iter().map(|e| &e.request).collect::<Vec<_>>())
+            .unwrap()
+            .contains("peer-secret")
+    );
+    for media in [
+        "application/json; charset=latin-1",
+        "application/json; charset=utf-8; charset=utf-8",
+        "application/json; charset",
+        "application/json; charset=\"utf-8",
+        "application/json; charset=utf-8\"",
+        "application/json; boundary=x",
+        "application/x-protobuf; charset=utf-8",
+        "application /json",
+    ] {
+        let headers = format!("Content-Type: {media}\r\nAuthorization: bearer peer-secret\r\n");
+        assert_eq!(
+            request(addr, "POST", TARGET, &headers, BODY).await.0,
+            415,
+            "{media}"
+        );
+    }
+    assert_eq!(
+        request(
+            addr,
+            "POST",
+            TARGET,
+            "Authorization: bearer peer-SECRET\r\n",
+            BODY
+        )
+        .await
+        .0,
+        401
+    );
+    assert_eq!(
+        state
+            .list_access_logs_for(Some(AccessLogOwner::Server(id.as_u32())), None)
+            .await
+            .len(),
+        5
+    );
+    state.remove_server(id).await;
+}
+#[tokio::test]
 async fn connection_cap_refuses_and_malformed_peer_releases_slot() {
     let (state, id, addr) = start(None, None).await;
     let mut peers = Vec::new();
