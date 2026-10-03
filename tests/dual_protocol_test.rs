@@ -60,6 +60,8 @@ fn golden_duals_map() {
         "FluentForward",
         "NSQ",
         "Gearman",
+        "Prometheus",
+        "InfluxDB",
         "Beanstalkd",
         "DICT",
         "Gemini",
