@@ -78,9 +78,9 @@ pub async fn call_llm_for_client(
         HANDLER_INSTRUCTION_HEADER,
     };
 
-    let private_payloads = crate::utils::redact::actions_have_credentials(
-        &crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event),
-    );
+    let offered_actions =
+        crate::llm::actions::client_trait::client_llm_action_set(protocol, state, event);
+    let private_payloads = crate::utils::redact::actions_have_credentials(&offered_actions);
 
     // Deterministic script/static routing, before any budget or model involvement.
     let mut handler_instruction: Option<String> = None;
@@ -128,7 +128,9 @@ pub async fn call_llm_for_client(
                         ev.data.clone(),
                         protocol_actions
                             .iter()
-                            .map(crate::utils::redact::redact_sensitive)
+                            .map(|action| {
+                                access_log_action(action, private_payloads, &offered_actions)
+                            })
                             .collect(),
                     )
                     .await;
@@ -217,11 +219,32 @@ pub async fn call_llm_for_client(
                 result
                     .actions
                     .iter()
-                    .map(crate::utils::redact::redact_sensitive)
+                    .map(|action| access_log_action(action, private_payloads, &offered_actions))
                     .collect(),
             )
             .await;
     }
 
     Ok(result)
+}
+
+fn access_log_action(
+    action: &serde_json::Value,
+    private_payloads: bool,
+    offered_actions: &[crate::llm::actions::ActionDefinition],
+) -> serde_json::Value {
+    if !private_payloads {
+        return crate::utils::redact::redact_sensitive(action);
+    }
+    // A handler can copy a credential into any parameter or an invalid type.
+    // Record only a name from the already-offered definitions, keeping the
+    // original action untouched for execution and explicit display actions.
+    match action["type"].as_str().filter(|name| {
+        offered_actions
+            .iter()
+            .any(|definition| definition.name == *name)
+    }) {
+        Some(name) => serde_json::json!({"type":name}),
+        None => serde_json::json!({}),
+    }
 }

@@ -179,6 +179,10 @@ async fn mock(mode: &str, openai: bool) -> (u16, tokio::task::JoinHandle<()>) {
         };
         let mut args = json!({});
         args[field] = json!(value);
+        if mode == "reflected_note" {
+            args["note"] = json!(PASSWORD);
+            args["nested"] = json!({"text":PASSWORD});
+        }
         let mut returned = args.clone();
         returned["type"] = json!(name);
         if mode == "error" {
@@ -270,7 +274,7 @@ async fn static_and_script_actions_execute_original_password_but_store_redacted_
         let state = AppState::new_with_options(false, "http://127.0.0.1:1".into());
         let client = OllamaClient::new("http://127.0.0.1:1");
         let (tx, _) = mpsc::unbounded_channel();
-        let a = json!({"type":"credential_login","password":PASSWORD,"username":"alice"});
+        let a = json!({"type":"credential_login","password":PASSWORD,"username":"alice","note":PASSWORD,"nested":{"text":PASSWORD}});
         for handler in [
             EventHandlerType::static_response(vec![a.clone()]),
             EventHandlerType::script(
@@ -300,8 +304,7 @@ async fn static_and_script_actions_execute_original_password_but_store_redacted_
                 .list_access_logs_for(Some(AccessLogOwner::Client(id.as_u32())), None)
                 .await;
             assert_eq!(logs.len(), 1);
-            assert_eq!(logs[0].response[0]["password"], "<redacted>");
-            assert_eq!(logs[0].response[0]["username"], "alice");
+            assert_eq!(logs[0].response[0], json!({"type":"credential_login"}));
             assert!(!serde_json::to_string(&logs).unwrap().contains(PASSWORD));
             netget::scripting::ResidentScriptManager::shutdown_client(id.as_u32()).await;
         }
@@ -342,7 +345,11 @@ async fn concurrent_credential_and_ordinary_requests_keep_privacy_local_to_the_r
         let logs = state
             .list_access_logs_for(Some(AccessLogOwner::Client(secret_id.as_u32())), None)
             .await;
-        assert_eq!(logs[0].response[0]["password"], "<redacted>");
+        assert_eq!(logs[0].response[0], json!({"type":"credential_login"}));
+        let ordinary_logs = state
+            .list_access_logs_for(Some(AccessLogOwner::Client(ordinary_id.as_u32())), None)
+            .await;
+        assert_eq!(ordinary_logs[0].response[0]["value"], ORDINARY);
         assert_hidden(&observed.text(), &drain(&mut rx));
         assert!(
             observed.text().contains(ORDINARY),
@@ -353,6 +360,53 @@ async fn concurrent_credential_and_ordinary_requests_keep_privacy_local_to_the_r
     }
     .with_subscriber(subscriber(capture))
     .await;
+}
+#[tokio::test]
+async fn private_access_logs_hide_note_copies_and_unknown_or_malformed_action_names() {
+    for openai in [false, true] {
+        let (port, peer) = mock("reflected_note", openai).await;
+        let url = format!("http://127.0.0.1:{port}");
+        let client = if openai {
+            OllamaClient::new_openai(url.clone(), "fixture-api-key")
+        } else {
+            OllamaClient::new(&url)
+        };
+        let state = AppState::new_with_options(false, url);
+        state.set_ollama_model(Some("test-model".into())).await;
+        let (tx, _) = mpsc::unbounded_channel();
+        let id = instance(&state, None).await;
+        let actions = routed(&state, &client, id, true, &tx).await.unwrap();
+        assert_eq!(actions[0]["password"], PASSWORD);
+        assert_eq!(actions[0]["note"], PASSWORD);
+        assert_eq!(actions[0]["nested"]["text"], PASSWORD);
+        let logs = state
+            .list_access_logs_for(Some(AccessLogOwner::Client(id.as_u32())), None)
+            .await;
+        assert_eq!(logs[0].response, vec![json!({"type":"credential_login"})]);
+        assert!(!serde_json::to_string(&logs).unwrap().contains(PASSWORD));
+        for action in [
+            json!({"type":PASSWORD,"note":PASSWORD}),
+            json!({"type":{"nested":PASSWORD},"note":PASSWORD}),
+            json!({"note":PASSWORD}),
+        ] {
+            let id = instance(
+                &state,
+                Some(EventHandlerType::static_response(vec![action.clone()])),
+            )
+            .await;
+            assert_eq!(
+                routed(&state, &client, id, true, &tx).await.unwrap(),
+                vec![action]
+            );
+            let logs = state
+                .list_access_logs_for(Some(AccessLogOwner::Client(id.as_u32())), None)
+                .await;
+            assert_eq!(logs[0].response, vec![json!({})]);
+            assert!(!serde_json::to_string(&logs).unwrap().contains(PASSWORD));
+        }
+        peer.abort();
+        let _ = peer.await;
+    }
 }
 #[tokio::test]
 async fn native_tool_arguments_and_reasoning_are_private_on_ollama_and_openai() {
