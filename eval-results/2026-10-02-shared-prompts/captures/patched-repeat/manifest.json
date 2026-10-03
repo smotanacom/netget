@@ -1,0 +1,163 @@
+{
+  "binary": "/Users/matus/dev/netget/.netget-handoff/evals/after/netget",
+  "binary_sha256": "e5b9c4c80e5d456309ed4d8d975ace596ac092ba3bdc08624891669e24c03aa2",
+  "label": "patched-repeat",
+  "model": "llama3.1:8b",
+  "seed": 42,
+  "instructions": {
+    "imap": "You are mail.example.com. Greet with IMAP4rev1 capability. Accept LOGIN. Exactly two mailboxes exist: INBOX and Archive. For LIST, return exactly these two mailboxes with delimiter \"/\" and no flags.",
+    "http": "Return HTTP 200, Content-Type text/plain, and the exact body: Hello \"NetGet\" & friends.",
+    "telnet": "On connection, send the line Welcome to NetGet. When the visitor sends hello, respond with the line Hello \"NetGet\" & friends."
+  },
+  "requests": [
+    {
+      "ordinal": 1,
+      "protocol": "imap",
+      "event": "imap_connection",
+      "endpoint": "/api/generate",
+      "request_file": "01-imap-imap_connection.request.json",
+      "sha256": "4d4df1dedd1b5bd4207f71699f08baaa3a231075961fe18ed684ee30dfac20af",
+      "prompt_chars": 9417
+    },
+    {
+      "ordinal": 2,
+      "protocol": "imap",
+      "event": "imap_auth",
+      "endpoint": "/api/generate",
+      "request_file": "02-imap-imap_auth.request.json",
+      "sha256": "84d8e8cd600510e14a13d4fbdf37b5ec554fb244ffd808a3c088c63f136c2297",
+      "prompt_chars": 8209
+    },
+    {
+      "ordinal": 3,
+      "protocol": "imap",
+      "event": "imap_command",
+      "endpoint": "/api/generate",
+      "request_file": "03-imap-imap_command.request.json",
+      "sha256": "82186102c3f0b0c8b5e76a3aaf07fdb3b9b853e518bbdf00e2c8fbac070867c4",
+      "prompt_chars": 9646
+    },
+    {
+      "ordinal": 4,
+      "protocol": "http",
+      "event": "http_request",
+      "endpoint": "/api/generate",
+      "request_file": "04-http-http_request.request.json",
+      "sha256": "ada7e3ac5b1598797ad4b8afbb1b85fb72bc667beca94a7b8ac6ee031eff60b3",
+      "prompt_chars": 10792
+    },
+    {
+      "ordinal": 5,
+      "protocol": "telnet",
+      "event": "telnet_connection_opened",
+      "endpoint": "/api/generate",
+      "request_file": "05-telnet-telnet_connection_opened.request.json",
+      "sha256": "f643dc87f7c75352546713e5c1aa69c4d9ba1e575a3f429b3174408d1392be60",
+      "prompt_chars": 8473
+    },
+    {
+      "ordinal": 6,
+      "protocol": "telnet",
+      "event": "telnet_message_received",
+      "endpoint": "/api/generate",
+      "request_file": "06-telnet-telnet_message_received.request.json",
+      "sha256": "29e727b9eab92e347692cd2d30e7b45f48b62a112dded7ea829f9413691ac1ac",
+      "prompt_chars": 9000
+    }
+  ],
+  "exchanges": {
+    "imap": {
+      "command": [
+        "/Users/matus/dev/netget/.netget-handoff/evals/after/netget",
+        "--server",
+        "imap",
+        "--port",
+        "19440",
+        "--listen-addr",
+        "127.0.0.1",
+        "--ollama-url",
+        "http://127.0.0.1:64877",
+        "--model",
+        "llama3.1:8b",
+        "--llm-seed",
+        "42",
+        "--env",
+        "off",
+        "--handler",
+        "llm",
+        "--run-for",
+        "45",
+        "--log-level",
+        "info",
+        "--",
+        "You are mail.example.com. Greet with IMAP4rev1 capability. Accept LOGIN. Exactly two mailboxes exist: INBOX and Archive. For LIST, return exactly these two mailboxes with delimiter \"/\" and no flags."
+      ],
+      "wire_replies": [
+        "* OK [CAPABILITY IMAP4rev1] mail.example.com IMAP4rev1 Service Ready\r\n",
+        "A001 OK LOGIN completed\r\n",
+        "* LIST () \"/\" \"INBOX\"\r\n* LIST () \"/\" \"Archive\"\r\nA002 OK LIST completed\r\n"
+      ]
+    },
+    "http": {
+      "command": [
+        "/Users/matus/dev/netget/.netget-handoff/evals/after/netget",
+        "--server",
+        "http",
+        "--port",
+        "19441",
+        "--listen-addr",
+        "127.0.0.1",
+        "--ollama-url",
+        "http://127.0.0.1:64877",
+        "--model",
+        "llama3.1:8b",
+        "--llm-seed",
+        "42",
+        "--env",
+        "off",
+        "--handler",
+        "llm",
+        "--run-for",
+        "45",
+        "--log-level",
+        "info",
+        "--",
+        "Return HTTP 200, Content-Type text/plain, and the exact body: Hello \"NetGet\" & friends."
+      ],
+      "wire_replies": [
+        "HTTP/1.0 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 25\r\ndate: Fri, 02 Oct 2026 17:12:34 GMT\r\n\r\nHello \"NetGet\" & friends."
+      ]
+    },
+    "telnet": {
+      "command": [
+        "/Users/matus/dev/netget/.netget-handoff/evals/after/netget",
+        "--server",
+        "telnet",
+        "--port",
+        "19442",
+        "--listen-addr",
+        "127.0.0.1",
+        "--ollama-url",
+        "http://127.0.0.1:64877",
+        "--model",
+        "llama3.1:8b",
+        "--llm-seed",
+        "42",
+        "--env",
+        "off",
+        "--handler",
+        "llm",
+        "--run-for",
+        "45",
+        "--log-level",
+        "info",
+        "--",
+        "On connection, send the line Welcome to NetGet. When the visitor sends hello, respond with the line Hello \"NetGet\" & friends."
+      ],
+      "wire_replies": [
+        "Welcome to NetGet.\r\n",
+        "Hello \"NetGet\" & friends.\r\n"
+      ]
+    }
+  }
+}
