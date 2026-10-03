@@ -370,6 +370,8 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::prometheus::PrometheusClientProtocol::new(),
         ));
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::client::docker::DockerClientProtocol::new()));
 
         #[cfg(feature = "gearman")]
         self.register(Arc::new(
@@ -765,6 +767,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Beanstalkd", "beanstalkd"),
     ("Gearman", "gearman"),
     ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
     ("NSQ", "nsq"),
     ("NUT", "nut"),
     ("WHOIS", "whois"),

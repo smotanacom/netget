@@ -642,5 +642,7 @@ pub mod nsq;
 #[cfg(feature = "gearman")]
 pub mod gearman;
 
+#[cfg(feature = "docker")]
+pub mod docker;
 #[cfg(feature = "prometheus")]
 pub mod prometheus;
