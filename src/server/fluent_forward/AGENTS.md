@@ -32,3 +32,5 @@ Malformed/truncated/deep/size-bomb input closes only its peer. Nil TCP heartbeat
 Experimental. Real independent fluent-logger emission and official Fluentd reception/ACKs
 provide both-role evidence. No Stable/fuzz/pcap claim. No UDP heartbeat listener, JSON convenience
 framing, secure-forward authentication, TLS, opaque binary records or storage/query API.
+
+Peer controls: Forward collectors only send ACKs correlated to a received chunk token; no unsolicited peer messages. Pending requests remain answerable through the ordinary event handler; no uncorrelated wire reply is offered.

@@ -79,7 +79,7 @@ impl Protocol for FluentForwardProtocol {
     }
     fn metadata(&self) -> ProtocolMetadataV2 {
         // Forward has no negative-ACK grammar; a failed handler closes without ACK.
-        ProtocolMetadataV2::builder().deliberately_silent().state(DevelopmentState::Experimental).well_known_port(24224)
+        ProtocolMetadataV2::builder().request_only("Forward collectors only send ACKs correlated to a received chunk token; no unsolicited peer messages").deliberately_silent().state(DevelopmentState::Experimental).well_known_port(24224)
             .max_inbound_bytes(MAX_FRAME_BYTES)
             .implementation("Native bounded MessagePack/EventTime and gzip PackedForward via flate2")
             .llm_control("Explicit handlers process bounded batches; llm_fallback=false collects unmatched batches without model calls")

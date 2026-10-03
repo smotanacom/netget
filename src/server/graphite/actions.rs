@@ -64,7 +64,7 @@ impl Protocol for GraphiteProtocol {
         vec![GRAPHITE_BATCH_EVENT.clone()]
     }
     fn metadata(&self) -> ProtocolMetadataV2 {
-        ProtocolMetadataV2::builder().deliberately_silent().state(DevelopmentState::Experimental).well_known_port(2003)
+        ProtocolMetadataV2::builder().request_only("Carbon plaintext collectors never send application replies or unsolicited peer messages").deliberately_silent().state(DevelopmentState::Experimental).well_known_port(2003)
             .max_inbound_bytes(MAX_LINE_BYTES)
             .implementation("Native bounded Carbon plaintext TCP codec, no added dependencies")
             .llm_control("Explicit handlers process bounded batches; llm_fallback=false collects unmatched batches without model calls")
