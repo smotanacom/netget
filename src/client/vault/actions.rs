@@ -162,7 +162,7 @@ impl Protocol for VaultClientProtocol {
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::*;
-        ProtocolMetadataV2::builder().state(DevelopmentState::Experimental).privilege_requirement(PrivilegeRequirement::None).well_known_port(8200).implementation("Bounded HTTP(S), typed public system probes, KV v2 version/CAS/metadata and selected userpass login").llm_control("Selected native authentication and secret operations, redacted auth metadata, event routing/injection and shared memory").e2e_testing("tests/client/vault: native isolated Vault daemon and CLI, programmable NetGet pair, handler paths, schema/bounds/deadlines/cancellation; existing server native CLI tests").notes("One ephemeral token and one latest bounded password for reflection redaction, no protocol secret database. Body1MiB, arrays10000, object fields256, strings16KiB, depth32/nodes65536; one request, queues8,4 followups. HTTP(S) native with certificate verification; browser HTTP only. No custom trust, client certificates, namespaces, redirects, proxies, cookie state, token helpers/files, automatic auth/renewal/retry, response wrapping, MFA, OAuth/OIDC/AppRole, dynamic-secret engines, deletion/patch/undelete/destroy or administration. Clear is local, never backend revocation. Public seal probe does not verify startup tokens. Existing programmable KV v2 server auth/login refusal remains.").max_inbound_bytes(super::api::MAX_BODY).build()
+        ProtocolMetadataV2::builder().state(DevelopmentState::Experimental).privilege_requirement(PrivilegeRequirement::None).well_known_port(8200).implementation("Bounded HTTP(S), typed public system probes, KV v2 version/CAS/metadata and selected userpass login").llm_control("Selected native authentication and secret operations, redacted auth metadata, event routing/injection and shared memory").e2e_testing("tests/client/vault: native isolated Vault daemon and CLI, programmable NetGet pair, handler paths, schema/bounds/deadlines/cancellation; existing server native CLI tests").notes("One ephemeral token and one latest bounded password for reflection redaction, no protocol secret database. Body1MiB, arrays10000, object fields256, strings16KiB, depth32/nodes65536; in-memory actions preflight retained content8MiB before copying; one request, queues8,4 followups. HTTP(S) native with certificate verification; browser HTTP only. No custom trust, client certificates, namespaces, redirects, proxies, cookie state, token helpers/files, automatic auth/renewal/retry, response wrapping, MFA, OAuth/OIDC/AppRole, dynamic-secret engines, deletion/patch/undelete/destroy or administration. Clear is local, never backend revocation. Public seal probe does not verify startup tokens. Existing programmable KV v2 server auth/login refusal remains.").max_inbound_bytes(super::api::MAX_BODY).build()
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         let llm = json!({"type":"open_client","base_stack":"vault","protocol":"vault","remote_addr":"127.0.0.1:8200","instruction":"Read Vault health, then explain initialized, sealed and standby status"});
@@ -182,6 +182,10 @@ impl Client for VaultClientProtocol {
         Box::pin(super::connect(ctx))
     }
     fn execute_action(&self, value: Value) -> Result<ClientActionResult> {
+        if !super::api::action_within_budget(&value) {
+            crate::utils::json_budget::drop_iteratively(value);
+            bail!("Vault action depth/node/retained-content limit");
+        }
         match value["type"].as_str() {
             Some("vault_request" | "vault_userpass_login" | "vault_clear_token") => {
                 super::api::request(&value, super::DEFAULT_KV_MOUNT, super::DEFAULT_AUTH_MOUNT)?;

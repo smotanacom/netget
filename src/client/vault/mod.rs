@@ -338,7 +338,21 @@ async fn session(
     let mut login_password: Option<String> = None;
     events.try_send((Event::new(&actions::CONNECTED_EVENT,json!({"origin":origin,"kv_mount":mount,"auth_mount":auth_mount,"token_present":credential.is_some(),"authentication_verified":false,"seal":seal})),0)).context("Vault event queue full")?;
     loop {
-        let (action, depth, command) = tokio::select! {command=external.recv()=>match command {Some(c)=>(c.action.clone(),0,Some(c)),None=>return Ok(())},action=internal.recv()=>match action {Some((a,d))=>(a,d,None),None=>return Ok(())}};
+        let (action, depth, command) = tokio::select! {command=external.recv()=>match command {Some(mut c)=>(std::mem::take(&mut c.action),0,Some(c)),None=>return Ok(())},action=internal.recv()=>match action {Some((a,d))=>(a,d,None),None=>return Ok(())}};
+        if !api::action_within_budget(&action) {
+            crate::utils::json_budget::drop_iteratively(action);
+            if let Some(c) = command {
+                command_support::reply(
+                    c,
+                    Ok(ClientSendOutcome::Rejected {
+                        error: "Vault action depth/node/retained-content limit".into(),
+                    }),
+                );
+            } else {
+                Log::new(Some(&ctx.status_tx)).warn("Vault action budget refusal");
+            }
+            continue;
+        }
         if action["type"] == "disconnect" {
             if let Some(c) = command {
                 command_support::reply(c, Ok(ClientSendOutcome::Disconnected));
@@ -410,7 +424,15 @@ async fn session(
             );
             tokio::pin!(exchange);
             loop {
-                tokio::select! {biased;command=external.recv()=>{let Some(c)=command else{return Ok(())};if c.action["type"]=="disconnect" {command_support::reply(c,Ok(ClientSendOutcome::Disconnected));return Ok(());}command_support::reply(c,Ok(ClientSendOutcome::Rejected{error:"Vault request pending; retry after its event".into()}));},result=&mut exchange=>break result.context("whole Vault request deadline").and_then(|r|r)}
+                tokio::select! {biased;command=external.recv()=>{
+                    let Some(mut c)=command else{return Ok(())};
+                    let action=std::mem::take(&mut c.action);
+                    let bounded=api::action_within_budget(&action);
+                    let disconnect=bounded && action["type"]=="disconnect";
+                    crate::utils::json_budget::drop_iteratively(action);
+                    if disconnect {command_support::reply(c,Ok(ClientSendOutcome::Disconnected));return Ok(());}
+                    command_support::reply(c,Ok(ClientSendOutcome::Rejected{error:if bounded{"Vault request pending; retry after its event"}else{"Vault action depth/node/retained-content limit"}.into()}));
+                },result=&mut exchange=>break result.context("whole Vault request deadline").and_then(|r|r)}
             }
         };
         let event = match result {

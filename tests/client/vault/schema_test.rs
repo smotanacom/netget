@@ -252,3 +252,168 @@ fn known_credentials_are_hidden_in_escaped_errors_and_free_form_keys() {
         "<redacted>"
     );
 }
+#[test]
+fn typed_redaction_and_wire_json_share_the_exact_depth_boundary() {
+    fn response(depth: usize, objects: bool, leaf: Value) -> (Value, String) {
+        let mut nested = leaf;
+        let segment = if objects { "/nest" } else { "/0" };
+        for _ in 3..depth {
+            nested = if objects {
+                Value::Object(serde_json::Map::from_iter([("nest".into(), nested)]))
+            } else {
+                Value::Array(vec![nested])
+            };
+        }
+        let mut response = envelope(json!({"data":{TOKEN:PASSWORD},"metadata":version()}));
+        response["data"]["data"]["nested"] = nested;
+        (
+            response,
+            format!("/data/data/nested{}", segment.repeat(depth - 3)),
+        )
+    }
+    let secrets = vec![TOKEN.into(), PASSWORD.into()];
+    for objects in [false, true] {
+        for depth in [api::MAX_DEPTH, api::MAX_DEPTH + 1] {
+            let (mut value, path) = response(depth, objects, json!("ordinary-visible"));
+            let decoded = api::json(&serde_json::to_vec(&value).unwrap());
+            assert_eq!(decoded.is_ok(), depth == api::MAX_DEPTH);
+            if let Ok(decoded) = decoded {
+                value = api::parse("read", decoded).unwrap().0;
+            }
+            api::redact_response(&mut value, "read", &secrets);
+            assert_eq!(
+                value.pointer(&path).unwrap(),
+                if depth == api::MAX_DEPTH {
+                    "ordinary-visible"
+                } else {
+                    "<redacted>"
+                }
+            );
+            assert_eq!(value["data"]["metadata"]["version"], 2);
+            assert_eq!(value["data"]["metadata"]["destroyed"], false);
+            assert_eq!(value["data"]["data"]["<redacted>"], "<redacted>");
+            let shown = value.to_string();
+            assert!(!shown.contains(TOKEN));
+            assert!(!shown.contains(PASSWORD));
+        }
+    }
+    // An in-memory handler value bypasses serde's wire depth limit. Omission
+    // must also dispose of the rejected subtree without recursive destruction.
+    let (mut deep, _) = response(10000, false, json!(TOKEN));
+    let mut leaf = &deep["data"]["data"]["nested"];
+    for _ in 3..10000 {
+        leaf = &leaf
+            .as_array()
+            .expect("fixture must retain every moved layer")[0];
+    }
+    assert_eq!(leaf.as_str(), Some(TOKEN));
+    api::redact_request(&mut deep, &secrets);
+    assert!(!deep.to_string().contains(TOKEN));
+}
+#[test]
+fn request_preflight_bounds_values_before_cloning_or_serialization() {
+    use netget::{
+        client::vault::actions::VaultClientProtocol,
+        llm::actions::client_trait::{Client, ClientActionResult},
+    };
+    fn write(depth: usize) -> Value {
+        let mut leaf = Value::String(PASSWORD.into());
+        for _ in 2..depth {
+            leaf = Value::Array(vec![leaf]);
+        }
+        let mut action =
+            json!({"type":"vault_request","operation":"write","path":"fixture/app","data":{}});
+        action["data"]["nested"] = leaf;
+        action
+    }
+    let action = write(api::MAX_DEPTH);
+    let result = api::request(&action, "secret", "userpass").unwrap();
+    let body = api::json(&result.body).unwrap();
+    let pointer = format!("/data/nested{}", "/0".repeat(api::MAX_DEPTH - 2));
+    assert_eq!(body.pointer(&pointer).unwrap(), PASSWORD);
+    for depth in [api::MAX_DEPTH + 1, 10000] {
+        let action = write(depth);
+        let result = api::request(&action, "secret", "userpass");
+        netget::utils::json_budget::drop_iteratively(action);
+        let error = result
+            .err()
+            .expect("over-depth request must reject before copying");
+        assert!(error.to_string().contains("depth/node/retained-content"));
+        assert!(!error.to_string().contains(PASSWORD));
+    }
+    let protocol = VaultClientProtocol::new();
+    assert!(matches!(
+        protocol.execute_action(write(api::MAX_DEPTH)).unwrap(),
+        ClientActionResult::Custom { .. }
+    ));
+    for depth in [api::MAX_DEPTH + 1, 10000] {
+        for disconnect in [false, true] {
+            let mut action = write(depth);
+            if disconnect {
+                action["type"] = json!("disconnect");
+            }
+            let error = protocol.execute_action(action).err().unwrap();
+            assert!(error.to_string().contains("depth/node/retained-content"));
+            assert!(!error.to_string().contains(PASSWORD));
+        }
+    }
+
+    // Five envelope nodes plus seven arrays. Each native array stays below its
+    // independent 10000-element cap, so total-node preflight decides the result.
+    for count in [api::MAX_NODES, api::MAX_NODES + 1] {
+        let mut action =
+            json!({"type":"vault_request","operation":"write","path":"fixture/app","data":{}});
+        let mut leaves = count - 5 - 7;
+        for field in 0..7 {
+            let length = leaves.min(api::MAX_ITEMS);
+            action["data"][format!("field{field}")] = Value::Array(vec![Value::Null; length]);
+            leaves -= length;
+        }
+        assert_eq!(leaves, 0);
+        let mut actual_nodes = 0;
+        let mut pending = vec![&action];
+        while let Some(value) = pending.pop() {
+            actual_nodes += 1;
+            match value {
+                Value::Object(fields) => pending.extend(fields.values()),
+                Value::Array(values) => pending.extend(values),
+                _ => {}
+            }
+        }
+        assert_eq!(actual_nodes, count);
+        let result = api::request(&action, "secret", "userpass");
+        if count == api::MAX_NODES {
+            let request = result.unwrap();
+            assert_eq!(
+                api::json(&request.body).unwrap()["data"]["field6"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                5524
+            );
+        } else {
+            assert!(result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("depth/node/retained-content"));
+        }
+    }
+
+    // One string node reaches the retained-content cap exactly. Its separate
+    // action-shape error proves budget acceptance; one extra byte fails first.
+    for extra in [0, 1] {
+        let action = Value::String(
+            "x".repeat(api::MAX_RETAINED_BYTES - std::mem::size_of::<Value>() + extra),
+        );
+        assert_eq!(api::action_within_budget(&action), extra == 0);
+        let error = api::request(&action, "secret", "userpass")
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(error.contains("depth/node/retained-content"), extra != 0);
+        if extra == 0 {
+            assert!(error.contains("Vault action type required"));
+        }
+    }
+}

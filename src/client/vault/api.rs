@@ -7,6 +7,9 @@ pub const MAX_BODY: usize = 1024 * 1024;
 pub const MAX_ITEMS: usize = 10000;
 pub const MAX_TEXT: usize = 16 * 1024;
 pub const MAX_TOKEN: usize = 8192;
+pub const MAX_DEPTH: usize = 32;
+pub const MAX_NODES: usize = 65536;
+pub const MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 pub struct Request {
     pub operation: String,
     pub method: &'static str,
@@ -53,7 +56,14 @@ pub fn mount(value: &str) -> Result<()> {
     );
     Ok(())
 }
+pub fn action_within_budget(action: &Value) -> bool {
+    crate::utils::json_budget::within_budget(action, MAX_RETAINED_BYTES, MAX_NODES, MAX_DEPTH)
+}
 pub fn request(action: &Value, default_mount: &str, auth_mount: &str) -> Result<Request> {
+    ensure!(
+        action_within_budget(action),
+        "Vault action depth/node/retained-content limit"
+    );
     let kind = action["type"]
         .as_str()
         .context("Vault action type required")?;
@@ -461,19 +471,29 @@ impl SecretRedactor {
             text.to_owned()
         }
     }
-    fn value(&self, value: &mut Value, redact_keys: bool) {
+    fn value(&self, value: &mut Value, redact_keys: bool, depth: usize) {
+        if depth > MAX_DEPTH {
+            // Programmatically constructed handler values need the same bound
+            // as wire JSON. Drop omitted subtrees iteratively as well.
+            let omitted = std::mem::replace(
+                value,
+                Value::String(crate::utils::redact::REDACTED.to_owned()),
+            );
+            crate::utils::json_budget::drop_iteratively(omitted);
+            return;
+        }
         match value {
             Value::String(s) => *s = self.text(s),
             Value::Array(a) => {
                 for v in a {
-                    self.value(v, redact_keys)
+                    self.value(v, redact_keys, depth + 1)
                 }
             }
             Value::Object(o) => {
                 // This is a display copy; the request keeps its real keys.
                 let original = std::mem::take(o);
                 for (key, mut value) in original {
-                    self.value(&mut value, redact_keys);
+                    self.value(&mut value, redact_keys, depth + 1);
                     o.insert(if redact_keys { self.text(&key) } else { key }, value);
                 }
             }
@@ -492,10 +512,10 @@ fn redact_schema(value: &mut Value, secrets: &[String], free_form_paths: &[&str]
     let redactor = SecretRedactor::new(secrets);
     // Fixed schema names are not credential reflections. Preserve their shape
     // even when a legitimate one-character password also occurs in a name.
-    redactor.value(value, false);
+    redactor.value(value, false, 0);
     for path in free_form_paths {
         if let Some(value) = value.pointer_mut(path) {
-            redactor.value(value, true);
+            redactor.value(value, true, path.matches('/').count());
         }
     }
 }
@@ -524,7 +544,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for Seed<'_> {
     ) -> std::result::Result<Value, D::Error> {
         use serde::de::Error;
         *self.nodes += 1;
-        if self.depth > 32 || *self.nodes > 65536 {
+        if self.depth > MAX_DEPTH || *self.nodes > MAX_NODES {
             return Err(D::Error::custom("Vault JSON nesting/node limit"));
         }
         d.deserialize_any(self)
