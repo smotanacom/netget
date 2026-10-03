@@ -222,6 +222,9 @@ impl Server for GeminiProtocol {
                     .transpose()?
                     .flatten())
             };
+            // Library callers do not necessarily install a process TLS provider.
+            // File-backed certificates must work even when both providers are compiled.
+            let _ = rustls::crypto::ring::default_provider().install_default();
             let tls_config = match (string("cert_path")?, string("key_path")?) {
                 (Some(cert), Some(key)) => {
                     crate::server::tls_cert_manager::load_tls_config_from_files(&cert, &key)?

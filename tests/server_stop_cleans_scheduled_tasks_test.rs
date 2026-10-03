@@ -32,15 +32,18 @@ async fn add_server(state: &AppState, port: u16) -> ServerId {
 
 async fn add_recurring(state: &AppState, name: &str, scope: TaskScope) {
     state
-        .add_task(ScheduledTask::new_recurring(
-            TaskId::new(0),
-            name.to_string(),
-            scope,
-            60,
-            None,
-            "tick".to_string(),
-            None,
-        ))
+        .add_task(
+            ScheduledTask::new_recurring(
+                TaskId::new(0),
+                name.to_string(),
+                scope,
+                60,
+                None,
+                "tick".to_string(),
+                None,
+            )
+            .unwrap(),
+        )
         .await;
 }
 

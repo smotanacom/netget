@@ -6,7 +6,7 @@ pub use actions::NntpClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace};
@@ -116,7 +116,12 @@ impl NntpClient {
                 let mut line = String::new();
 
                 // Read welcome message
-                match reader.read_line(&mut line).await {
+                match crate::client::response_reader::read_expected_response_line(
+                    &mut reader,
+                    &mut line,
+                )
+                .await
+                {
                     Ok(0) => {
                         error!("NNTP server closed connection before sending welcome");
                         app_state
@@ -215,7 +220,9 @@ impl NntpClient {
                 // Main read loop
                 loop {
                     line.clear();
-                    match reader.read_line(&mut line).await {
+                    match crate::client::response_reader::read_response_line(&mut reader, &mut line)
+                        .await
+                    {
                         Ok(0) => {
                             info!("NNTP client {} disconnected", client_id);
                             app_state
@@ -256,26 +263,24 @@ impl NntpClient {
 
                             // Collect multi-line responses
                             let full_response = if is_multiline {
-                                let mut lines = vec![response.clone()];
-                                loop {
-                                    line.clear();
-                                    match reader.read_line(&mut line).await {
-                                        Ok(0) => break,
-                                        Ok(_) => {
-                                            let data_line = line.trim();
-                                            if data_line == "." {
-                                                // End of multi-line response
-                                                break;
-                                            }
-                                            lines.push(data_line.to_string());
-                                        }
-                                        Err(e) => {
-                                            error!("Error reading multi-line response: {}", e);
-                                            break;
-                                        }
+                                match crate::client::response_reader::read_dot_response(
+                                    &mut reader,
+                                    response.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(response) => response,
+                                    Err(e) => {
+                                        error!("Error reading multi-line response: {}", e);
+                                        app_state
+                                            .update_client_status(
+                                                client_id,
+                                                ClientStatus::Error(e.to_string()),
+                                            )
+                                            .await;
+                                        break;
                                     }
                                 }
-                                lines.join("\n")
                             } else {
                                 response.clone()
                             };

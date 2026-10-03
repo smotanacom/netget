@@ -41,6 +41,8 @@ pub struct ProbeOutcome {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    /// Capture exceeded its explicit limit; this is a harness failure, never a model score.
+    pub output_truncated: bool,
     pub elapsed: Duration,
     /// The command line actually run, for the results file.
     pub command: String,
@@ -72,21 +74,49 @@ impl ProbeOutcome {
 /// `mysql_native_password` plugin NetGet's server offers and dies before a query
 /// exists — and a PATH-only search would report those as missing.
 pub fn binary_available(bin: &str) -> bool {
-    if bin.contains('/') {
-        return std::path::Path::new(bin).is_file();
+    let path = std::path::Path::new(bin);
+    if path.components().count() > 1 || path.is_absolute() {
+        return executable(path);
     }
-    which_path(bin).is_some()
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| {
+            let candidate = directory.join(bin);
+            if executable(&candidate) {
+                return true;
+            }
+            #[cfg(windows)]
+            {
+                if candidate.extension().is_none() {
+                    return std::env::var_os("PATHEXT")
+                        .unwrap_or_else(|| ".EXE;.COM;.BAT;.CMD".into())
+                        .to_string_lossy()
+                        .split(';')
+                        .any(|ext| {
+                            executable(&candidate.with_extension(ext.trim_start_matches('.')))
+                        });
+                }
+            }
+            false
+        })
+    })
 }
 
-fn which_path(bin: &str) -> Option<String> {
-    let path = std::env::var("PATH").ok()?;
-    for dir in path.split(':') {
-        let candidate = std::path::Path::new(dir).join(bin);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
+fn executable(path: &std::path::Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
     }
-    None
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn substitute(template: &str, port: u16) -> String {
@@ -96,174 +126,139 @@ fn substitute(template: &str, port: u16) -> String {
         .replace("{ADDR}", &format!("127.0.0.1:{}", port))
 }
 
-/// Read whatever an exited client left in a pipe, bounded so a pipe some
-/// grandchild still holds open cannot stall the run.
-async fn drain<R: tokio::io::AsyncRead + Unpin>(pipe: &mut R, buf: &mut Vec<u8>) {
-    let mut rest = Vec::new();
-    let _ = tokio::time::timeout(Duration::from_secs(2), pipe.read_to_end(&mut rest)).await;
-    buf.extend_from_slice(&rest);
-}
+/// Maximum retained bytes per output stream. Overflow is explicit in the
+/// outcome and cannot be counted as a passing or failing model response.
+pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
-/// Run the client against `127.0.0.1:port` and capture everything it said.
-///
-/// A timeout is not an error here — it is an observation ("the client waited and
-/// got nothing"), which is exactly what a model that never answered looks like
-/// from the peer's side. The classifier decides what it means.
 pub async fn run(probe: &Probe, port: u16, timeout: Duration) -> Result<ProbeOutcome, String> {
+    use netget::scripting::process_io::ProcessGroup;
     let args: Vec<String> = probe.args.iter().map(|a| substitute(a, port)).collect();
     let command_line = format!("{} {}", probe.bin, args.join(" "));
-
     let mut cmd = Command::new(probe.bin);
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    ProcessGroup::configure(&mut cmd);
     for (key, value) in &probe.env {
         cmd.env(key, substitute(value, port));
     }
-
     let started = Instant::now();
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("could not spawn {:?}: {}", probe.bin, e))?;
-
-    // A probe client can block indefinitely on a server that never answers —
-    // which is precisely the case this harness exists to measure — so a sweep
-    // killed mid-run would otherwise leave `nc`, `psql`, `redis-cli` behind on
-    // the loopback ports the next run wants. `kill_on_drop` covers the panic
-    // path only; this covers a hard-killed parent. See
-    // `tests/helpers/child_guard.rs`.
+        .map_err(|e| format!("could not spawn {:?}: {e}", probe.bin))?;
+    let group = ProcessGroup::new(&child).map_err(|e| format!("own probe process group: {e}"))?;
+    struct Untie(Option<u32>);
+    impl Drop for Untie {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                crate::helpers::child_guard::untie_child(pid);
+            }
+        }
+    }
     let probe_pid = child.id();
+    let _untie = Untie(probe_pid);
     if let Some(pid) = probe_pid {
         crate::helpers::child_guard::tie_child(pid);
     }
-
-    // Write the payload but KEEP the handle: dropping it is EOF, and for `nc`
-    // EOF is a socket close. Held until the reader is done.
-    let mut stdin_handle = child.stdin.take();
-    if let (Some(sink), Some(data)) = (stdin_handle.as_mut(), probe.stdin.as_ref()) {
-        let payload = substitute(data, port);
-        // A client that has already closed its end makes this fail; that is
-        // normal (the exchange is over), not a harness error.
-        let _ = sink.write_all(payload.as_bytes()).await;
-        let _ = sink.flush().await;
-    }
-    if !probe.hold_stdin {
-        // Clients that manage their own connection (curl, dig, psql…) want EOF
-        // so they stop reading their script and get on with it.
-        drop(stdin_handle.take());
-    }
-
+    let mut stdin = child.stdin.take();
+    let payload = probe.stdin.as_ref().map(|data| substitute(data, port));
+    let mut input = Box::pin(async move {
+        if let (Some(sink), Some(data)) = (stdin.as_mut(), payload.as_ref()) {
+            // Broken pipe is a normal early peer exit. Crucially, writing is
+            // polled alongside both readers and the same overall deadline.
+            let _ = sink.write_all(data.as_bytes()).await;
+            let _ = sink.flush().await;
+        }
+        if probe.hold_stdin {
+            stdin
+        } else {
+            None
+        }
+    });
+    let mut held_stdin = None;
+    let mut input_done = false;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out_buf = Vec::new();
     let mut err_buf = Vec::new();
-    // Time of the most recent byte, not of the first: a client that is still
-    // streaming must not be cut off two seconds into a long answer.
     let mut last_data_at: Option<Instant> = None;
-    let deadline = started + timeout;
-    let mut timed_out = false;
     let mut exited = None;
-
+    let mut timed_out = false;
+    let mut output_truncated = false;
+    let mut out_chunk = [0u8; 8192];
+    let mut err_chunk = [0u8; 8192];
     loop {
-        if Instant::now() >= deadline {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
             timed_out = true;
             break;
         }
-        // Settle: something arrived and then went quiet, so the response is
-        // complete as far as any of these clients will tell us. Not for a
-        // client that talks before the exchange — see `Probe::until_exit`.
-        if !probe.until_exit && last_data_at.is_some_and(|t| t.elapsed() >= IDLE_AFTER_FIRST_BYTE) {
+        if !probe.until_exit
+            && input_done
+            && last_data_at.is_some_and(|t| t.elapsed() >= IDLE_AFTER_FIRST_BYTE)
+        {
             break;
         }
-
-        let mut out_chunk = [0u8; 8192];
-        let mut err_chunk = [0u8; 8192];
-        let step = Duration::from_millis(250);
-
-        let mut progressed = false;
-        if let Some(pipe) = stdout.as_mut() {
-            if let Ok(Ok(n)) = tokio::time::timeout(step, pipe.read(&mut out_chunk)).await {
-                if n > 0 {
-                    out_buf.extend_from_slice(&out_chunk[..n]);
-                    last_data_at = Some(Instant::now());
-                    progressed = true;
-                } else {
-                    stdout = None;
-                }
-            }
-        }
-        if let Some(pipe) = stderr.as_mut() {
-            if let Ok(Ok(n)) = tokio::time::timeout(step, pipe.read(&mut err_chunk)).await {
-                if n > 0 {
-                    err_buf.extend_from_slice(&err_chunk[..n]);
-                    last_data_at = Some(Instant::now());
-                    progressed = true;
-                } else {
-                    stderr = None;
-                }
-            }
-        }
-
-        // Both pipes at EOF: the client is finished whatever its exit status.
-        if stdout.is_none() && stderr.is_none() {
-            exited = child.try_wait().ok().flatten().and_then(|s| s.code());
+        if stdout.is_none() && stderr.is_none() && exited.is_some() {
             break;
         }
-        if !progressed {
-            if let Ok(Some(status)) = child.try_wait() {
-                exited = status.code();
-                break;
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep(remaining) => { timed_out = true; break; }
+            result = child.wait(), if exited.is_none() => {
+                exited = Some(result.map_err(|e| format!("wait for probe: {e}"))?);
+                // Kill descendants that inherited pipes; buffered output is still
+                // drained concurrently below, under the original deadline.
+                group.kill();
             }
+            handle = &mut input, if !input_done => { held_stdin = handle; input_done = true; }
+            result = async { stdout.as_mut().unwrap().read(&mut out_chunk).await }, if stdout.is_some() => {
+                let n = result.map_err(|e| format!("read probe stdout: {e}"))?;
+                if n == 0 { stdout = None; }
+                else {
+                    let retain = n.min(MAX_CAPTURE_BYTES.saturating_sub(out_buf.len()));
+                    out_buf.extend_from_slice(&out_chunk[..retain]);
+                    last_data_at = Some(Instant::now());
+                    if retain < n { output_truncated = true; break; }
+                }
+            }
+            result = async { stderr.as_mut().unwrap().read(&mut err_chunk).await }, if stderr.is_some() => {
+                let n = result.map_err(|e| format!("read probe stderr: {e}"))?;
+                if n == 0 { stderr = None; }
+                else {
+                    let retain = n.min(MAX_CAPTURE_BYTES.saturating_sub(err_buf.len()));
+                    err_buf.extend_from_slice(&err_chunk[..retain]);
+                    last_data_at = Some(Instant::now());
+                    if retain < n { output_truncated = true; break; }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
         }
     }
-
-    // A client that exited may still have output sitting in its pipes: the
-    // loop notices the exit between two 250ms reads, and whatever the client
-    // wrote last — for `ipptool`, the entire response — arrived after the read
-    // that timed out. Without this drain a response that reached the client
-    // was recorded as a client that printed nothing after the request echo.
-    if exited.is_some() {
-        if let Some(p) = stdout.as_mut() {
-            drain(p, &mut out_buf).await;
-        }
-        if let Some(p) = stderr.as_mut() {
-            drain(p, &mut err_buf).await;
-        }
-    }
-
-    // Release stdin, then make sure the process is gone. `kill_on_drop` covers
-    // the panic path; this covers the normal one and lets us read the status.
-    drop(stdin_handle);
+    drop(input);
+    drop(held_stdin);
+    group.kill();
     if exited.is_none() {
-        match child.try_wait() {
-            Ok(Some(status)) => exited = status.code(),
-            _ => {
-                let _ = child.start_kill();
-                if let Ok(Ok(status)) =
-                    tokio::time::timeout(Duration::from_secs(5), child.wait()).await
-                {
-                    exited = status.code();
-                }
-            }
+        let _ = child.start_kill();
+        if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
+            exited = Some(status);
         }
     }
-    if let Some(pid) = probe_pid {
-        crate::helpers::child_guard::untie_child(pid);
+    let mut stderr_text = String::from_utf8_lossy(&err_buf).into_owned();
+    if output_truncated {
+        stderr_text
+            .push_str("\n[HARNESS: probe output exceeded the 1 MiB per-stream capture limit]");
+    } else if timed_out && out_buf.is_empty() && err_buf.is_empty() {
+        stderr_text = format!("(client killed after {timeout:?} with no answer)");
     }
-
-    let stderr_text = if timed_out && out_buf.is_empty() && err_buf.is_empty() {
-        format!("(client killed after {:?} with no answer)", timeout)
-    } else {
-        String::from_utf8_lossy(&err_buf).to_string()
-    };
-
     Ok(ProbeOutcome {
-        stdout: String::from_utf8_lossy(&out_buf).to_string(),
+        stdout: String::from_utf8_lossy(&out_buf).into_owned(),
         stderr: stderr_text,
-        exit_code: exited,
+        exit_code: exited.and_then(|s| s.code()),
         timed_out,
+        output_truncated,
         elapsed: started.elapsed(),
         command: command_line,
     })

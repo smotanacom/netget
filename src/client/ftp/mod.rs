@@ -10,7 +10,7 @@ pub use actions::FtpClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace};
@@ -199,7 +199,9 @@ impl FtpClient {
 
             loop {
                 line.clear();
-                match reader.read_line(&mut line).await {
+                match crate::client::response_reader::read_response_line(&mut reader, &mut line)
+                    .await
+                {
                     Ok(0) => {
                         info!("FTP client {} disconnected", client_id);
                         app_state

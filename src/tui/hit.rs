@@ -21,7 +21,7 @@ pub enum HitTarget {
     /// The stream (scroll wheel target).
     Stream,
     /// One visible stream entry, by index into the visible list.
-    StreamRow(usize),
+    StreamRow(u64),
     ChatInput,
     /// A clickable segment of the bottom status bar.
     StatusSegment(SegmentId),

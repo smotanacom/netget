@@ -2,8 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 use crate::state::app_state::WebSearchMode;
@@ -44,80 +43,58 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Get the path to the settings file
+    /// The canonical settings path; an existing legacy file is read until the
+    /// next explicit save safely migrates it into the shared config directory.
     pub fn settings_path() -> Option<PathBuf> {
-        dirs::home_dir().map(|mut path| {
-            path.push(".netget");
-            path
+        dirs::home_dir().map(|home| Self::path_at(&home))
+    }
+
+    fn path_at(home: &Path) -> PathBuf {
+        let root = home.join(".netget");
+        if root.is_file() {
+            root
+        } else if !root.exists() && home.join(".netget-legacy.json").is_file() {
+            home.join(".netget-legacy.json")
+        } else {
+            root.join("settings.json")
+        }
+    }
+
+    pub fn load() -> Self {
+        let result = dirs::home_dir()
+            .context("Cannot find home directory")
+            .and_then(|home| Self::load_at(&home));
+        result.unwrap_or_else(|error| {
+            warn!("Failed to load settings: {error:#}; using defaults");
+            Self::default()
         })
     }
 
-    /// Load settings from file
-    pub fn load() -> Self {
-        let Some(path) = Self::settings_path() else {
-            warn!("Could not determine home directory for settings file");
-            return Self::default();
-        };
-
+    /// Explicit home path permits migration tests without mutating process HOME.
+    pub fn load_at(home: &Path) -> Result<Self> {
+        let path = Self::path_at(home);
         if !path.exists() {
-            debug!("Settings file does not exist yet: {:?}", path);
-            return Self::default();
+            return Ok(Self::default());
         }
-
-        match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<Settings>(&contents) {
-                Ok(mut settings) => {
-                    debug!("Loaded settings from {:?}", path);
-
-                    // Migration: If legacy web_search_enabled field is present and web_search_mode is default,
-                    // migrate the old bool value to the new string mode
-                    if let Some(enabled) = settings.web_search_enabled {
-                        if settings.web_search_mode == default_web_search_mode() {
-                            settings.web_search_mode = if enabled {
-                                "on".to_string()
-                            } else {
-                                "off".to_string()
-                            };
-                            debug!(
-                                "Migrated web_search_enabled={} to web_search_mode={}",
-                                enabled, settings.web_search_mode
-                            );
-
-                            // Save migrated settings
-                            if let Err(e) = settings.save() {
-                                warn!("Failed to save migrated settings: {}", e);
-                            }
-                        }
-                        // Clear the legacy field after migration
-                        settings.web_search_enabled = None;
-                    }
-
-                    settings
-                }
-                Err(e) => {
-                    warn!("Failed to parse settings file: {}, using defaults", e);
-                    Self::default()
-                }
-            },
-            Err(e) => {
-                warn!("Failed to read settings file: {}, using defaults", e);
-                Self::default()
+        let contents = crate::utils::file_io::read_text(&path, 1024 * 1024)?;
+        let mut settings: Self = serde_json::from_str(&contents).context("parse settings")?;
+        if let Some(enabled) = settings.web_search_enabled.take() {
+            if settings.web_search_mode == default_web_search_mode() {
+                settings.web_search_mode = if enabled { "on" } else { "off" }.into();
             }
         }
+        Ok(settings)
     }
 
-    /// Save settings to file
     pub fn save(&self) -> Result<()> {
-        let Some(path) = Self::settings_path() else {
-            anyhow::bail!("Could not determine home directory for settings file");
-        };
+        self.save_at(&dirs::home_dir().context("Cannot find home directory")?)
+    }
 
-        let contents =
-            serde_json::to_string_pretty(self).context("Failed to serialize settings")?;
-
-        fs::write(&path, contents).context(format!("Failed to write settings to {:?}", path))?;
-
-        debug!("Saved settings to {:?}", path);
+    pub fn save_at(&self, home: &Path) -> Result<()> {
+        let directory = crate::utils::file_io::ensure_config_directory(home)?;
+        let contents = serde_json::to_vec_pretty(self).context("serialize settings")?;
+        crate::utils::file_io::write_atomic(&directory.join("settings.json"), &contents)?;
+        debug!("Saved settings in {}", directory.display());
         Ok(())
     }
 

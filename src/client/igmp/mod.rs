@@ -502,12 +502,11 @@ impl IgmpClient {
                 let port = data["port"]
                     .as_u64()
                     .context("send_multicast is missing 'port'")?;
-                let bytes: Vec<u8> = data["data"]
-                    .as_array()
-                    .context("send_multicast is missing decoded 'data'")?
-                    .iter()
-                    .filter_map(|v| v.as_u64().map(|n| n as u8))
-                    .collect();
+                let bytes = crate::client::wire_values::bytes(
+                    data["data"]
+                        .as_array()
+                        .context("send_multicast is missing decoded 'data'")?,
+                )?;
                 let dest_addr: SocketAddr = format!("{}:{}", mcast, port)
                     .parse()
                     .with_context(|| format!("invalid multicast destination {mcast}:{port}"))?;

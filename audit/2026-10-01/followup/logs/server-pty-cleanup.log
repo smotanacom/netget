@@ -1,0 +1,283 @@
+warning: unused import: `std::time::Duration`
+  --> tests/server/dot/e2e_test.rs:15:5
+   |
+15 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:461:9
+    |
+461 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/helpers/http_bounds.rs:553:9
+    |
+553 |     let mut server = start_netget_server(config(case)).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: use of deprecated field `netget::protocol::SpawnContext::listen_addr`: Use host/port fields instead
+  --> tests/server/quic/certificate_validation_test.rs:19:17
+   |
+19 |                 listen_addr: "127.0.0.1:0".parse().unwrap(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `expected_value`
+   --> tests/helpers/ollama_test_builder.rs:884:36
+    |
+884 |         Expectation::StaticHandler(expected_value) => {
+    |                                    ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_expected_value`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> tests/server/nntp/e2e_test.rs:115:9
+    |
+115 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/nntp/e2e_test.rs:302:9
+    |
+302 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/pop3/test.rs:51:9
+   |
+51 |     let mut server = helpers::start_netget_server(config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:158:9
+    |
+158 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:287:9
+    |
+287 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/pop3/test.rs:399:9
+    |
+399 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:211:13
+    |
+211 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:273:13
+    |
+273 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:340:13
+    |
+340 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:401:13
+    |
+401 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:463:13
+    |
+463 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:527:13
+    |
+527 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/proxy/e2e_test.rs:574:13
+    |
+574 |         let mut server = start_netget_server(server_config).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:205:9
+    |
+205 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:295:9
+    |
+295 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:384:9
+    |
+384 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:490:9
+    |
+490 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/ssh_agent/e2e_test.rs:601:9
+    |
+601 |     let mut server = helpers::start_netget_server(config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/torrent_peer/e2e_test.rs:67:9
+   |
+67 |     let mut server = start_netget_server(server_config).await?;
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/torrent_peer/e2e_test.rs:244:9
+    |
+244 |     let mut server = start_netget_server(server_config).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tests/server/webrtc_signaling/e2e_test.rs:90:13
+   |
+90 |         let mut server = start_netget_server(signaling_server(1)).await?;
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:109:13
+    |
+109 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:152:13
+    |
+152 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/e2e_test.rs:195:13
+    |
+195 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:101:13
+    |
+101 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:153:13
+    |
+153 |         let mut server = start_netget_server(signaling_server(2)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> tests/server/webrtc_signaling/relay_abuse_test.rs:202:13
+    |
+202 |         let mut server = start_netget_server(signaling_server(1)).await?;
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: function `event_to_json` is never used
+  --> tests/helpers/ollama_test_builder.rs:14:4
+   |
+14 | fn event_to_json(event: &Event) -> Result<Value> {
+   |    ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `get_primary_action` is never used
+   --> tests/helpers/ollama_test_builder.rs:705:4
+    |
+705 | fn get_primary_action<'a>(actions: &'a [Value], expected_type: Option<&str>) -> Option<&'a Value> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: `netget` (test "server") generated 34 warnings (run `cargo fix --test "server" -p netget` to apply 31 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 0.54s
+warning: the following packages contain code that will be rejected by a future version of Rust: binrw v0.15.0, num-bigint-dig v0.8.5
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
+     Running tests/server.rs (target/debug/deps/server-9533c7f6d2e808d3)
+
+running 1 test
+test server::pty::startup_cleanup_test::rejected_link_path_does_not_leak_pty_descriptors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 289 filtered out; finished in 0.14s
+

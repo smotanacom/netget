@@ -350,7 +350,8 @@ impl Client for Http3ClientProtocol {
 
                 let priority = action
                     .get("priority")
-                    .map(|v| v.as_u64().context("priority must be an integer from 0..7"))
+                    .filter(|value| !value.is_null())
+                    .map(|_| crate::client::wire_values::number::<u8>(&action, "priority", 0))
                     .transpose()?;
                 anyhow::ensure!(priority.is_none_or(|p| p <= 7), "priority must be 0..7");
 

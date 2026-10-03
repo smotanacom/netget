@@ -44,6 +44,70 @@ async fn new_state() -> AppState {
     state
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invalid_types_tls_material_and_task_delays_preserve_running_server() {
+    let state = new_state().await;
+    let (id, port) = create_http_server(&state, "STILL-RUNNING").await;
+    for params in [
+        serde_json::json!({"tls_enabled": "true"}),
+        serde_json::json!({"tls_enabled": true, "san_dns_names": ["localhost", 1]}),
+        serde_json::json!({"tls_enabled": true, "validity_days": 0}),
+        serde_json::json!({"tls_enabled": true, "cert_path": "/missing/cert"}),
+    ] {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        assert!(management::update_server(
+            &state,
+            id,
+            ServerForm {
+                startup_params: Some(params),
+                instruction: Some("must not apply".into()),
+                ..Default::default()
+            },
+            tx
+        )
+        .await
+        .is_err());
+        assert!(state.get_server(id).await.is_some());
+        assert!(http_get(port).contains("STILL-RUNNING"));
+    }
+    let bad_task = netget::llm::actions::common::ServerTaskDefinition {
+        task_id: "invalid-delay".into(),
+        recurring: false,
+        delay_secs: Some(u64::MAX),
+        interval_secs: None,
+        max_executions: None,
+        instruction: "noop".into(),
+        context: None,
+    };
+    let (tx, _rx) = mpsc::unbounded_channel();
+    assert!(management::update_server(
+        &state,
+        id,
+        ServerForm {
+            port: Some(0),
+            scheduled_tasks: Some(vec![bad_task.clone()]),
+            ..Default::default()
+        },
+        tx
+    )
+    .await
+    .is_err());
+    assert!(http_get(port).contains("STILL-RUNNING"));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    assert!(ServerForm {
+        protocol: "http".into(),
+        port: Some(0),
+        scheduled_tasks: Some(vec![bad_task]),
+        ..Default::default()
+    }
+    .create(&state, tx)
+    .await
+    .is_err());
+    assert_eq!(state.get_all_servers().await.len(), 1);
+    assert!(state.get_all_tasks().await.is_empty());
+    state.remove_server(id).await;
+}
+
 /// Wait until a server has a concrete bound address, returning its port. Polls
 /// `local_addr` (set once the listener is bound) rather than the requested port.
 async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
@@ -220,6 +284,40 @@ async fn update_bad_param_rejected_and_old_server_survives() {
         http_get(port).contains("SURVIVOR"),
         "old server must still serve its original response"
     );
+}
+
+/// An invalid update container is rejected before any restart or hot mutation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn non_object_startup_update_keeps_the_existing_server() {
+    let state = new_state().await;
+    let (id, port) = create_http_server(&state, "UNCHANGED").await;
+    for invalid in [
+        serde_json::json!([]),
+        serde_json::json!(true),
+        serde_json::json!("bad"),
+        serde_json::Value::Null,
+    ] {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = management::update_server(
+            &state,
+            id,
+            ServerForm {
+                startup_params: Some(invalid),
+                instruction: Some("must not be applied".into()),
+                ..Default::default()
+            },
+            tx,
+        )
+        .await
+        .expect_err("non-object update must be rejected before restart");
+        assert!(error.to_string().contains("JSON object"), "{error}");
+        assert!(state.get_server(id).await.is_some());
+        assert!(http_get(port).contains("UNCHANGED"));
+    }
+    state
+        .remove_server(id)
+        .await
+        .expect("remove original server");
 }
 
 /// Updating a client that does not exist errors cleanly (client mirror of #2).

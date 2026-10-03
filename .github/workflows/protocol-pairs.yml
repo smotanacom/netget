@@ -1,0 +1,611 @@
+name: Protocol pair interoperability
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-pairs-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_JOBS: '4'
+  PAIR_FEATURES: tcp,nut,doq,statsd
+
+jobs:
+  first-pairs:
+    name: NUT, DoQ and StatsD with independent peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Install build prerequisites and QUIC-capable Knot tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libltdl-dev
+          # Ubuntu's image includes Homebrew outside PATH. Its Knot formula enables
+          # QUIC explicitly; merely installing an older distro kdig is insufficient.
+          /home/linuxbrew/.linuxbrew/bin/brew install knot
+          printf '%s\n' '/home/linuxbrew/.linuxbrew/bin' >> "$GITHUB_PATH"
+
+      - name: Prepare pinned independent peers in runner temporary storage
+        run: |
+          sh scripts/test-peers/build-nut.sh "$RUNNER_TEMP/nut-peer"
+          python3 tests/server/statsd/install_peers.py "$RUNNER_TEMP/statsd-peer"
+          sh scripts/test-peers/install-dnsproxy.sh "$RUNNER_TEMP/dnsproxy-peer"
+          {
+            printf 'NUT_UPSC_BIN=%s/nut-peer/nut-2.8.4/clients/upsc\n' "$RUNNER_TEMP"
+            printf 'NUT_UPSCMD_BIN=%s/nut-peer/nut-2.8.4/clients/upscmd\n' "$RUNNER_TEMP"
+            printf 'NUT_UPSD_BIN=%s/nut-peer/nut-2.8.4/server/upsd\n' "$RUNNER_TEMP"
+            printf 'NUT_DUMMY_BIN=%s/nut-peer/nut-2.8.4/drivers/dummy-ups\n' "$RUNNER_TEMP"
+            printf 'PYTHONPATH=%s/statsd-peer/statsd-python\n' "$RUNNER_TEMP"
+            printf 'NODE_PATH=%s/statsd-peer/statsd-node/node_modules\n' "$RUNNER_TEMP"
+            printf 'NETGET_DNSPROXY_BIN=%s/dnsproxy-peer/linux-amd64/dnsproxy\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Server and client suites including independent interoperability
+        run: |
+          for filter in \
+            nut:: client/nut:: \
+            doq:: client/doq:: \
+            statsd:: client/statsd:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Protocol metadata and action wiring
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test well_known_port_declaration_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test
+
+  stream-pairs:
+    name: Graphite, queue, DICT, Gemini and raw QUIC with independent peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,graphite,beanstalkd,dict,gemini,quic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Install independent queue and dictionary daemons
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler beanstalkd dictd dictfmt dict tshark
+
+      - name: Prepare pinned independent Python peers
+        run: |
+          python3 tests/server/graphite/install_peers.py "$RUNNER_TEMP/stream-peers"
+          python3 -m pip install --no-cache-dir --target "$RUNNER_TEMP/stream-peers/queue-python" greenstalk==2.1.1 ignition-gemini==1.0.0
+          sh scripts/test-peers/fetch-agate.sh "$RUNNER_TEMP/stream-peers/agate"
+          python3 -m venv "$RUNNER_TEMP/stream-peers/aioquic"
+          "$RUNNER_TEMP/stream-peers/aioquic/bin/pip" install --no-cache-dir --only-binary=:all: aioquic==1.3.0
+          {
+            printf 'PYTHONPATH=%s/stream-peers/graphite-python:%s/stream-peers/graphite-python/opt/graphite/lib:%s/stream-peers/queue-python\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP"
+            printf 'NETGET_GRAPHITE_PYTHON=python3\n'
+            printf 'NETGET_TEST_AGATE=%s/stream-peers/agate/agate-3.3.24\n' "$RUNNER_TEMP"
+            printf 'NETGET_AIOQUIC_PYTHON=%s/stream-peers/aioquic/bin/python\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Server and client suites including independent interoperability
+        run: |
+          for filter in \
+            graphite:: client/graphite:: \
+            beanstalkd:: client/beanstalkd:: \
+            dict:: client/dict:: \
+            gemini:: client/gemini:: \
+            quic:: client/quic:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared metadata and task ownership
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test well_known_port_declaration_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test
+
+  gelf-pairs:
+    name: GELF TCP and UDP with independent emitters and collectors
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PAIR_FEATURES: tcp,gelf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Prepare pinned pygelf and official Graylog reader peers
+        run: |
+          python3 tests/server/gelf/install_peers.py "$RUNNER_TEMP/gelf-peers"
+          {
+            printf 'PYTHONPATH=%s/gelf-peers/python\n' "$RUNNER_TEMP"
+            printf 'NETGET_GELF_PYTHON=python3\n'
+            printf 'NETGET_GELF_READER=%s/gelf-peers/gelf-reader\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Both transports and directions with independent interoperability
+        run: |
+          for filter in \
+            gelf:: client/gelf:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared registration, semantics and lifecycle checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test well_known_port_declaration_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test failure_mode_declaration_test \
+            --test detached_task_drift_test
+
+  nsq-pairs:
+    name: NSQ publisher and subscriber with independent peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PAIR_FEATURES: tcp,nsq
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Prepare pinned official daemon and client peers
+        run: |
+          sh scripts/test-peers/install-nsq-linux.sh "$RUNNER_TEMP/nsq-peers"
+          printf '%s/nsq-peers/bin\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Server and client suites with independent interoperability
+        run: |
+          for filter in \
+            nsq:: client/nsq:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared metadata, events and task ownership
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test detached_task_drift_test
+
+  http3-pairs:
+    name: HTTP3 with independent aioquic peers and pending-read cancellation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PAIR_FEATURES: tcp,http3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Prepare pinned independent QUIC and HTTP3 peer
+        run: |
+          python3 -m venv "$RUNNER_TEMP/http3-peer"
+          "$RUNNER_TEMP/http3-peer/bin/python" -m pip install --no-cache-dir --only-binary=:all: -r tests/helpers/aioquic-requirements.txt
+          printf 'NETGET_AIOQUIC_PYTHON=%s/http3-peer/bin/python\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Server and client interoperability, authentication and lifecycle
+        run: |
+          for filter in \
+            http3:: client/http3:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test http3_cancellation_test
+
+      - name: Shared HTTP3 registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test
+
+  forward-pairs:
+    name: Fluent Forward with independent emitter and official Fluentd collector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PAIR_FEATURES: tcp,fluent-forward
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0.6'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Prepare pinned independent Forward peers in temporary storage
+        run: |
+          python3 tests/server/fluent_forward/install_peers.py "$RUNNER_TEMP/forward-peers"
+          {
+            printf 'PYTHONPATH=%s/forward-peers/python\n' "$RUNNER_TEMP"
+            printf 'NETGET_FORWARD_PYTHON=python3\n'
+            printf 'NETGET_FORWARD_RUBY=%s\n' "$(command -v ruby)"
+            printf 'GEM_HOME=%s/forward-peers/ruby\n' "$RUNNER_TEMP"
+            printf 'GEM_PATH=%s/forward-peers/ruby\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Both directions, all carriers and correlated ACKs
+        run: |
+          for filter in \
+            fluent_forward:: client/fluent_forward:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared Forward registration, silence and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test failure_mode_declaration_test \
+            --test detached_task_drift_test
+
+  gearman-pairs:
+    name: Gearman submitter and selected worker with independent peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PAIR_FEATURES: tcp,gearman
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Install bounded source-peer build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends protobuf-compiler build-essential curl ca-certificates pkg-config libtool gperf libevent-dev libboost-program-options-dev uuid-dev tshark
+
+      - name: Prepare pinned official Gearman daemon and tools
+        run: |
+          bash scripts/test-peers/install-gearman-linux.sh "$RUNNER_TEMP/gearman-peers"
+          printf '%s/gearman-peers/bin\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Both roles, priority jobs, exceptions and lifecycle
+        run: |
+          for filter in \
+            gearman:: client/gearman:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test
+
+      - name: Preserve peer build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gearman-peer-build-${{ github.run_id }}
+          path: ${{ runner.temp }}/gearman-peers/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ssh-sftp-pairs:
+    name: SSH and read-only SFTP with independent OpenSSH peers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PAIR_FEATURES: tcp,ssh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Install required SSH client and server peers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler openssh-server openssh-client libssl-dev pkg-config
+          sudo mkdir -p /run/sshd
+
+      - name: Both roles, host pinning, SFTP bounds and cancellation
+        run: |
+          for filter in \
+            ssh:: client/ssh:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared SSH registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test
+
+  influxdb-pairs:
+    name: InfluxDB writes with independent emitter, decoder and real service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PAIR_FEATURES: tcp,influxdb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: Prepare pinned independent InfluxDB peers in temporary storage
+        run: |
+          python3 tests/server/influxdb/install_peers.py "$RUNNER_TEMP/influxdb-peers"
+          python3 tests/client/influxdb/install_daemon.py "$RUNNER_TEMP/influxdb-peers"
+          {
+            printf 'PYTHONPATH=%s/influxdb-peers/python\n' "$RUNNER_TEMP"
+            printf 'NETGET_INFLUX_PYTHON=python3\n'
+            printf 'NETGET_INFLUX_RECEIVER=%s/influxdb-peers/influx-decoder-receiver\n' "$RUNNER_TEMP"
+            printf 'NETGET_INFLUX_DAEMON=%s/influxdb-peers/influxd-2.9.1\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+
+      - name: Both directions, five field types, precisions and service readback
+        run: |
+          for filter in \
+            influxdb:: client/influxdb:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared registration, collector semantics and ownership
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test \
+            --test failure_mode_declaration_test \
+            --test decision_tag_ratchet_test
+
+  prometheus-pairs:
+    name: Prometheus scraping with independent daemon and OpenMetrics exporter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PAIR_FEATURES: tcp,prometheus
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-${{ github.job }}
+
+      - name: Install required build and TLS-test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler openssl
+
+      - name: Prepare pinned official Prometheus and Python exporter peers
+        run: |
+          bash scripts/test-peers/install-prometheus-linux.sh "$RUNNER_TEMP/prometheus-peers"
+          python3 -m pip install --no-cache-dir --target "$RUNNER_TEMP/prometheus-peers/python" prometheus-client==0.22.1
+          printf '%s/prometheus-peers/bin\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          printf 'PYTHONPATH=%s/prometheus-peers/python\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Both directions, format negotiation, parser limits and cancellation
+        run: |
+          for filter in \
+            prometheus:: client/prometheus:: \
+          ; do
+            case "$filter" in
+              client/*) target=client; filter=${filter#client/} ;;
+              *) target=server ;;
+            esac
+            cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+              --test "$target" -- "$filter" --test-threads=4
+          done
+
+      - name: Shared Prometheus registration and ownership checks
+        run: |
+          cargo test --locked --no-default-features --features "$PAIR_FEATURES" \
+            --test event_action_declarations_test \
+            --test advertised_actions_test \
+            --test startup_param_defaults_test \
+            --test startup_param_drift_test \
+            --test protocol_startup_examples_test \
+            --test dual_protocol_test \
+            --test dashboard_wireshark_test \
+            --test client_event_wiring_test \
+            --test event_emit_sites_test \
+            --test task_registration_cancellation_test \
+            --test server_task_registry_test \
+            --test client_stop_releases_socket_test

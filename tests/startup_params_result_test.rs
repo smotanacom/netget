@@ -31,6 +31,49 @@ fn schema() -> Vec<ParameterDefinition> {
 }
 
 #[test]
+fn preflight_checks_required_types_typed_arrays_and_unions() {
+    let mut required = param("token", "string");
+    required.required = true;
+    assert!(StartupParams::new_validated(json!({}), vec![required.clone()]).is_err());
+    assert!(StartupParams::new_validated(json!({"token": null}), vec![required]).is_err());
+    for (hint, valid, invalid) in [
+        ("boolean", json!(false), json!("false")),
+        ("integer", json!(42), json!(1.5)),
+        ("array of strings", json!(["one"]), json!(["one", 2])),
+        ("string | number", json!(42), json!([])),
+        ("array of booleans", json!([true]), json!([1])),
+    ] {
+        StartupParams::new_validated(json!({"value": valid}), vec![param("value", hint)]).unwrap();
+        assert!(
+            StartupParams::new_validated(json!({"value": invalid}), vec![param("value", hint)])
+                .is_err(),
+            "{hint}"
+        );
+    }
+}
+
+#[test]
+fn parameter_container_must_be_an_object() {
+    for value in [
+        json!(null),
+        json!(true),
+        json!(42),
+        json!("send_first"),
+        json!([]),
+        json!([{"send_first": true}]),
+    ] {
+        let error = StartupParams::new(value.clone(), schema())
+            .expect_err("non-object parameter container accepted");
+        assert!(
+            matches!(error, StartupParamError::Invalid { .. }),
+            "{value}: {error}"
+        );
+        assert!(error.to_string().contains("JSON object"));
+    }
+    StartupParams::new(json!({}), schema()).expect("empty object remains valid");
+}
+
+#[test]
 fn undeclared_key_is_rejected_by_new() {
     let err = StartupParams::new(json!({ "undeclared_xyz": 1 }), schema())
         .expect_err("undeclared key must be rejected");

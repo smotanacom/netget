@@ -315,6 +315,35 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "loki")]
+        self.register(Arc::new(
+            crate::client::loki::actions::LokiClientProtocol::new(),
+        ));
+        #[cfg(feature = "influxdb")]
+        self.register(Arc::new(
+            crate::client::influxdb::actions::InfluxDbClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::client::fluent_forward::actions::FluentForwardClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(
+            crate::client::gelf::actions::GelfClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "graphite")]
+        self.register(Arc::new(
+            crate::client::graphite::actions::GraphiteClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "statsd")]
+        self.register(Arc::new(
+            crate::client::statsd::actions::StatsdClientProtocol::new(),
+        ));
+
         #[cfg(feature = "syslog")]
         self.register(Arc::new(crate::client::syslog::SyslogClientProtocol::new()));
 
@@ -366,6 +395,37 @@ impl ClientRegistry {
         #[cfg(feature = "websocket")]
         self.register(Arc::new(
             crate::client::websocket::WebSocketClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gemini")]
+        self.register(Arc::new(crate::client::gemini::GeminiClientProtocol::new()));
+
+        #[cfg(feature = "dict")]
+        self.register(Arc::new(crate::client::dict::DictClientProtocol::new()));
+
+        #[cfg(feature = "beanstalkd")]
+        self.register(Arc::new(
+            crate::client::beanstalkd::BeanstalkdClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "prometheus")]
+        self.register(Arc::new(
+            crate::client::prometheus::PrometheusClientProtocol::new(),
+        ));
+        #[cfg(feature = "docker")]
+        self.register(Arc::new(crate::client::docker::DockerClientProtocol::new()));
+
+        #[cfg(feature = "gearman")]
+        self.register(Arc::new(
+            crate::client::gearman::GearmanClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "nsq")]
+        self.register(Arc::new(crate::client::nsq::NsqClientProtocol::new()));
+
+        #[cfg(feature = "nut")]
+        self.register(Arc::new(
+            crate::client::nut::actions::NutClientProtocol::new(),
         ));
 
         #[cfg(feature = "whois")]
@@ -737,6 +797,16 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
+    ("Loki", "loki"),
+    ("LokiPush", "loki"),
+    ("InfluxDB", "influxdb"),
+    ("InfluxDB2", "influxdb"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
+    ("Graphite", "graphite"),
+    ("StatsD", "statsd"),
+    ("DogStatsD", "statsd"),
     ("TCP", "tcp"),
     ("Telnet", "telnet"),
     ("TLS", "tls"),
@@ -746,6 +816,14 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BitTorrent Tracker", "torrent-tracker"),
     ("TURN", "turn"),
     ("UDP", "udp"),
+    ("Gemini", "gemini"),
+    ("DICT", "dict"),
+    ("Beanstalkd", "beanstalkd"),
+    ("Gearman", "gearman"),
+    ("Prometheus", "prometheus"),
+    ("Docker", "docker"),
+    ("NSQ", "nsq"),
+    ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("STOMP", "stomp"),
     ("NetBIOS-NS", "netbios-ns"),

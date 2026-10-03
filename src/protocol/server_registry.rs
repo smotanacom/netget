@@ -117,6 +117,9 @@ impl ServerRegistry {
         #[cfg(feature = "tftp")]
         self.register(Arc::new(crate::server::TftpProtocol::new()));
 
+        #[cfg(feature = "nut")]
+        self.register(Arc::new(crate::server::nut::actions::NutProtocol::new()));
+
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
 
@@ -209,6 +212,31 @@ impl ServerRegistry {
 
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
+
+        #[cfg(feature = "loki")]
+        self.register(Arc::new(crate::server::loki::actions::LokiProtocol::new()));
+        #[cfg(feature = "influxdb")]
+        self.register(Arc::new(
+            crate::server::influxdb::actions::InfluxDbProtocol::new(),
+        ));
+
+        #[cfg(feature = "fluent-forward")]
+        self.register(Arc::new(
+            crate::server::fluent_forward::actions::FluentForwardProtocol::new(),
+        ));
+
+        #[cfg(feature = "gelf")]
+        self.register(Arc::new(crate::server::gelf::actions::GelfProtocol::new()));
+
+        #[cfg(feature = "graphite")]
+        self.register(Arc::new(
+            crate::server::graphite::actions::GraphiteProtocol::new(),
+        ));
+
+        #[cfg(feature = "statsd")]
+        self.register(Arc::new(
+            crate::server::statsd::actions::StatsdProtocol::new(),
+        ));
 
         #[cfg(feature = "syslog")]
         self.register(Arc::new(crate::server::SyslogProtocol::new()));
@@ -1205,6 +1233,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("BOOTP", "bootp"),
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
+    ("NUT", "nut"),
     ("WHOIS", "whois"),
     ("NDP", "ndp"),
     ("DHCPv6", "dhcpv6"),
@@ -1237,6 +1266,16 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("SNMP", "snmp"),
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),
+    ("FluentForward", "fluent-forward"),
+    ("Loki", "loki"),
+    ("LokiPush", "loki"),
+    ("InfluxDB", "influxdb"),
+    ("InfluxDB2", "influxdb"),
+    ("GELF", "gelf"),
+    ("Graylog", "gelf"),
+    ("Graphite", "graphite"),
+    ("StatsD", "statsd"),
+    ("DogStatsD", "statsd"),
     ("SSH", "ssh"),
     ("SSH Agent", "ssh-agent"),
     ("SVN", "svn"),

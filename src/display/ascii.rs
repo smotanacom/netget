@@ -29,16 +29,52 @@ impl AsciiRenderer {
         fg_color: Color,
         bg_color: Color,
     ) {
+        Self::render_with(
+            &mut self.text_renderer,
+            pixmap,
+            text,
+            font_size,
+            fg_color,
+            bg_color,
+        );
+    }
+
+    pub(crate) fn render_with(
+        text_renderer: &mut TextRenderer,
+        pixmap: &mut Pixmap,
+        text: &str,
+        font_size: u32,
+        fg_color: Color,
+        bg_color: Color,
+    ) {
         // Fill background
         let sk_bg = tiny_skia::Color::from_rgba8(bg_color.r, bg_color.g, bg_color.b, bg_color.a);
         pixmap.fill(sk_bg);
 
+        if font_size == 0 {
+            return;
+        }
+
         // Render each line of ASCII art
         let line_height = (font_size as f32 * 1.2) as u32;
         for (line_num, line) in text.lines().enumerate() {
-            let y = 10 + (line_num as u32 * line_height);
-            self.text_renderer
-                .draw_text(pixmap, 10, y, line, font_size, fg_color);
+            let y = 10u32.saturating_add(
+                u32::try_from(line_num)
+                    .unwrap_or(u32::MAX)
+                    .saturating_mul(line_height),
+            );
+            if y >= pixmap.height() {
+                break;
+            }
+            text_renderer.draw_with_family(
+                pixmap,
+                10,
+                y,
+                line,
+                font_size,
+                fg_color,
+                cosmic_text::Family::Monospace,
+            );
         }
     }
 }

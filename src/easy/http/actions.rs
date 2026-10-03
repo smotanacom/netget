@@ -185,7 +185,7 @@ impl Easy for HttpEasyProtocol {
 ///
 /// For now, this is a simple implementation. In the future, we could use
 /// a proper Markdown library like `pulldown-cmark` for full Markdown support.
-fn markdown_to_html(markdown: &str) -> String {
+pub fn markdown_to_html(markdown: &str) -> String {
     let mut html = String::from("<!DOCTYPE html>\n<html>\n<head>\n");
     html.push_str("<meta charset=\"utf-8\">\n");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
@@ -222,6 +222,10 @@ fn markdown_to_html(markdown: &str) -> String {
                 html.push_str("</code></pre>\n");
                 in_code_block = false;
             } else {
+                if in_list {
+                    html.push_str("</ul>\n");
+                    in_list = false;
+                }
                 html.push_str("<pre><code>");
                 in_code_block = true;
             }
@@ -298,27 +302,63 @@ fn parse_heading(line: &str) -> Option<String> {
     }
 }
 
-/// Process inline Markdown (bold, italic, code, links)
+/// Render the supported inline subset with paired tags. Unmatched delimiters stay
+/// literal, and code spans are escaped without interpreting their contents as emphasis.
 fn process_inline_markdown(text: &str) -> String {
-    let mut result = html_escape(text);
+    render_inline(text, 0)
+}
 
-    // Bold: **text** or __text__
-    result = result
-        .replace("**", "<strong>")
-        .replace("</strong><strong>", "</strong>");
-    result = result
-        .replace("__", "<strong>")
-        .replace("</strong><strong>", "</strong>");
-
-    // Italic: *text* or _text_
-    result = result.replace("*", "<em>").replace("</em><em>", "</em>");
-    result = result.replace("_", "<em>").replace("</em><em>", "</em>");
-
-    // Inline code: `code`
-    result = result
-        .replace("`", "<code>")
-        .replace("</code><code>", "</code>");
-
+fn render_inline(mut text: &str, depth: usize) -> String {
+    // Nested emphasis is input-controlled; keep both recursion and work bounded.
+    if depth == 32 {
+        return html_escape(text);
+    }
+    let mut result = String::new();
+    while !text.is_empty() {
+        let Some(start) = text.find(['`', '*', '_']) else {
+            result.push_str(&html_escape(text));
+            break;
+        };
+        result.push_str(&html_escape(&text[..start]));
+        let candidate = &text[start..];
+        let (delimiter, tag) = if candidate.starts_with('`') {
+            ("`", "code")
+        } else if candidate.starts_with("**") {
+            ("**", "strong")
+        } else if candidate.starts_with("__") {
+            ("__", "strong")
+        } else if candidate.starts_with('*') {
+            ("*", "em")
+        } else {
+            ("_", "em")
+        };
+        let rest = &candidate[delimiter.len()..];
+        // Do not treat underscores within identifiers as Markdown emphasis.
+        let in_word = delimiter.starts_with('_')
+            && text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+        if !in_word {
+            if let Some(end) = rest.find(delimiter).filter(|&end| end > 0) {
+                result.push('<');
+                result.push_str(tag);
+                result.push('>');
+                if tag == "code" {
+                    result.push_str(&html_escape(&rest[..end]));
+                } else {
+                    result.push_str(&render_inline(&rest[..end], depth + 1));
+                }
+                result.push_str("</");
+                result.push_str(tag);
+                result.push('>');
+                text = &rest[end + delimiter.len()..];
+                continue;
+            }
+        }
+        result.push_str(delimiter);
+        text = rest;
+    }
     result
 }
 

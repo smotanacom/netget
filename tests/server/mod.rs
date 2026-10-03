@@ -352,6 +352,24 @@ pub use super::helpers;
 
 #[cfg(feature = "doq")]
 pub mod doq;
+#[cfg(feature = "nut")]
+pub mod nut;
+#[cfg(feature = "statsd")]
+pub mod statsd;
 
+#[cfg(feature = "graphite")]
+pub mod graphite;
+
+#[cfg(feature = "gelf")]
+pub mod gelf;
+
+#[cfg(feature = "fluent-forward")]
+pub mod fluent_forward;
 #[cfg(feature = "http3")]
 pub mod http3;
+
+#[cfg(feature = "influxdb")]
+pub mod influxdb;
+
+#[cfg(feature = "loki")]
+pub mod loki;

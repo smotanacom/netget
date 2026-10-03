@@ -752,12 +752,11 @@ impl BluetoothClient {
                                     .as_str()
                                     .context("Missing characteristic_uuid")?,
                             )?;
-                            let value_bytes = data["value_bytes"]
-                                .as_array()
-                                .context("Missing value_bytes")?
-                                .iter()
-                                .map(|v| v.as_u64().unwrap_or(0) as u8)
-                                .collect::<Vec<u8>>();
+                            let value_bytes = crate::client::wire_values::bytes(
+                                data["value_bytes"]
+                                    .as_array()
+                                    .context("Missing value_bytes")?,
+                            )?;
                             let with_response = data["with_response"].as_bool().unwrap_or(true);
                             let written = value_bytes.len();
                             Self::write_characteristic(
