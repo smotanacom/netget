@@ -702,6 +702,9 @@ pub mod netflow_v9;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
 
+#[cfg(feature = "diameter")]
+pub mod diameter;
+
 #[cfg(feature = "bolt")]
 pub mod bolt;
 

@@ -78,6 +78,7 @@ portable-base = [
     "ipfix",
     "netflow-v9",
     "tacacs",
+    "diameter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -261,6 +262,7 @@ loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ipfix = [] # Native typed UDP IPFIX templates/options/records
 netflow-v9 = [] # Native RFC3954 v9 UDP templates/options/records
 tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
+diameter = [] # Native bounded TCP peer lifecycle and stateless NASREQ
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -517,6 +519,7 @@ dist-windows = [
     "ipfix",
     "netflow-v9",
     "tacacs",
+    "diameter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -675,6 +678,7 @@ all-protocols = [
     "ipfix",
     "netflow-v9",
     "tacacs",
+    "diameter",
     "sflow",
     "prometheus-remote-write",
     "ssh",

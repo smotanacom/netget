@@ -327,6 +327,11 @@ impl ClientRegistry {
         #[cfg(feature = "stun")]
         self.register(Arc::new(crate::client::stun::StunClientProtocol::new()));
 
+        #[cfg(feature = "diameter")]
+        self.register(Arc::new(
+            crate::client::diameter::actions::DiameterClientProtocol::new(),
+        ));
+
         #[cfg(feature = "tacacs")]
         self.register(Arc::new(
             crate::client::tacacs::actions::TacacsClientProtocol::new(),
@@ -895,6 +900,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Modbus", "modbus"),
     ("CoAP", "coap"),
     ("RADIUS", "radius"),
+    ("DIAMETER", "diameter"),
     ("SSDP", "ssdp"),
     ("Gopher", "gopher"),
     ("Finger", "finger"),
