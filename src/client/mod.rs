@@ -691,3 +691,6 @@ pub mod prometheus_remote_write;
 
 #[cfg(feature = "nostr")]
 pub mod nostr;
+
+#[cfg(feature = "netflow-v9")]
+pub mod netflow_v9;
