@@ -28,8 +28,18 @@ pub static CONNECTED: LazyLock<EventType> = LazyLock::new(|| {
         "otlp_connected",
         "OTLP transport connected",
         vec![
-            field("remote_addr", "string", "Remote socket address of the OpenTelemetry receiver", true),
-            field("transport", "string", "Transport used for this export: grpc or http", true),
+            field(
+                "remote_addr",
+                "string",
+                "Remote socket address of the OpenTelemetry receiver",
+                true,
+            ),
+            field(
+                "transport",
+                "string",
+                "Transport used for this export: grpc or http",
+                true,
+            ),
             field(
                 "tls_verified",
                 "boolean",
@@ -120,7 +130,11 @@ impl Protocol for OtlpClientProtocol {
                 field("scope_name", "string", "Instrumentation scope, at most 256 bytes; default netget", false),
             ]
         };
-        let action = |name: &str, description: &str, parameters: Vec<Parameter>, example: Value, log_message: &str| {
+        let action = |name: &str,
+                      description: &str,
+                      parameters: Vec<Parameter>,
+                      example: Value,
+                      log_message: &str| {
             ActionDefinition {
                 name: name.into(),
                 description: description.into(),
