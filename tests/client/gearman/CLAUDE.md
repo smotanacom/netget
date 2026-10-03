@@ -9,7 +9,7 @@ python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test -
 `real_server_test.rs` owns an independent gearmand daemon through RealServer, with
 loopback ephemeral ports and a private PID path. Its process group is reaped on success,
 failure and panic. `gearmand` and `gearman` are required and missing binaries fail;
-install `brew install gearman` or `apt install gearman-job-server gearman-tools`.
+install `brew install gearman` or build the pinned Linux peer below.
 Python3 drives the CLI worker's transform; no global Python packages are needed.
 Local independent peer: Homebrew gearmand/gearman 2.1.0, installed in
 /opt/homebrew/sbin and /opt/homebrew/bin. Source checked:
@@ -49,4 +49,34 @@ gearman-tools as 1.1.20+ds-1.2build4:
 https://packages.ubuntu.com/noble/gearman-job-server and
 https://packages.ubuntu.com/noble/misc/gearman-tools.
 The fixtures require compatible wire/CLI behavior, without asserting a specific
-version; local evidence above is 2.1.0. The Linux packaged-peer run is separate evidence.
+version. The selected worker exception gate requires the official 2.1.0 peer:
+
+```sh
+scripts/test-peers/install-gearman-linux.sh /absolute/owned/gear-peer
+PATH=/absolute/owned/gear-peer/bin:$PATH python3 /Users/matus/dev/netget/.protocol-expansion-20261001/run_cargo.py test --no-default-features --features tcp,gearman --test client --test server -- gearman:: --test-threads=100
+```
+
+The installer verifies the official release's SHA256 above, keeps TLS verification,
+disables optional persistent backends, and builds only gearmand/gearman/gearadmin
+with two jobs and configure/build deadlines inside the caller's peer root. Install
+its documented build dependencies separately. Linux runtime validation belongs to
+the blocking CI job; syntax/checksum inspection alone is not a Linux passing run.
+
+An actual local upstream 1.1.20 build (release SHA256
+`2f60fa207dcd730595ef96a9dc3ca899566707c8176106b3c63ecf47edc147a6`)
+passed 18/19 client tests and failed the CLI producer's unnegotiated exception.
+Complete, ordinary failure and negotiated exception work. Two independent raw
+clients reproduced the daemon defect without NetGet: JOB_CREATED body `H:test:1`
+has 8 bytes; WORK_EXCEPTION body `H:test:1` + NUL + `exception text` is converted
+into WORK_FAIL with a **9-byte body `H:test:1` + NUL**. The single-field WORK_FAIL
+must contain the original handle, so libgearman cannot correlate it and waits.
+In 1.1.20 `_server_queue_work_data` copies the exception argument size including
+its delimiter into the failure packet. Ubuntu's 1.1.20+ds-1.2build4 packaging
+patches (typos, documentation, Boost multiarch, version/VCS) do not change packet
+or server exception handling. This is upstream peer incompatibility; no scenario
+is skipped and NetGet's handle validation remains strict.
+
+Primary sources: https://github.com/gearman/gearmand/tree/1.1.20/libgearman-server,
+https://archive.ubuntu.com/ubuntu/pool/universe/g/gearmand/gearmand_1.1.20+ds-1.2build4.debian.tar.xz.
+The temporary local compatibility peers were resolved through PATH at
+`/private/tmp/netget-gearmand-1.1.20-20261002/bin`; both daemon and CLI used 1.1.20.

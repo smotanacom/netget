@@ -156,10 +156,7 @@ async fn independent_cli_producer_observes_selected_worker_progress_data_complet
         let mut producer = cli(&server);
         producer.args(["-f", "selected", "-u", &format!("job{n}"), "work ✓"]);
         let producer_task = tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_secs(10), producer.output())
-                .await
-                .unwrap()
-                .unwrap()
+            tokio::time::timeout(Duration::from_secs(10), producer.output()).await
         });
         event(&state, id, "gearman_worker_wakeup", after).await;
         let job = request(
@@ -181,7 +178,12 @@ async fn independent_cli_producer_observes_selected_worker_progress_data_complet
             send(&state,id,json!({"type":"gearman_worker","operation":"warning","job_handle":handle,"data":"caution"})).await;
         }
         send(&state,id,json!({"type":"gearman_worker","operation":outcome,"job_handle":handle,"result":"result ✓","text":"failed deliberately"})).await;
-        let output = producer_task.await?;
+        let output = producer_task.await?.unwrap_or_else(|_| {
+            panic!(
+                "CLI producer timed out for {outcome}; daemon log: {}",
+                server.log()
+            )
+        })?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if outcome == "complete" {
