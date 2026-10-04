@@ -402,6 +402,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mqtt" => tcp("mqtt"),
         "mqtt_sn" => udp("mqttsn"),
         "nbd" => tcp("nbd"),
+        // Wireshark ships no Zenoh dissector (the project offers a Lua plugin).
+        "zenoh" => with_note(PLAIN_TCP, "Wireshark has no built-in Zenoh dissector; the zenoh project publishes a Lua plugin (zenoh-dissector) that decodes this TCP stream."),
         // Wireshark has no ManageSieve dissector; the protocol is CRLF text, readable as TCP.
         "managesieve" => with_note(PLAIN_TCP, "ManageSieve is CRLF-delimited text: follow the TCP stream. Commands are atoms with quoted strings or {n+} literals; answers end in OK, NO or BYE."),
         // ---- remote desktop / files / industrial -------------------------
