@@ -110,3 +110,6 @@ pub mod dicom;
 
 #[cfg(feature = "acme")]
 pub mod acme;
+
+#[cfg(feature = "fix")]
+pub mod fix;

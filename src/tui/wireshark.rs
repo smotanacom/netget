@@ -381,6 +381,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // DRDA registers only a heuristic dissector — it is not in the
         // `tcp.port` decode-as table, so name it in the display filter alone.
         "db2" => with_display(PLAIN_TCP, "drda"),
+        // `fix` is a heuristic TCP dissector (fix_tcp, on by default), not in the decode-as table.
+        "fix" => with_display(PLAIN_TCP, "fix"),
         "redis" => tcp("resp"),
         "memcached" => tcp("memcache"),
         "ldap" => tcp("ldap"),

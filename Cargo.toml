@@ -95,6 +95,7 @@ portable-base = [
     "carddav",
     "dicom",
     "acme",
+    "fix",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -294,6 +295,7 @@ caldav = ["quick-xml", "urlencoding"] # CalDAV calendar server and client (RFC 4
 carddav = ["quick-xml", "urlencoding"] # CardDAV address book server and client (RFC 6352)
 dicom = [] # DICOM DIMSE SCP and SCU (C-ECHO, C-STORE, C-FIND)
 acme = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "rcgen/x509-parser", "ring"] # ACME (RFC 8555) test CA and client
+fix = [] # FIX 4.x acceptor and initiator (tag=value session layer)
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -568,6 +570,7 @@ dist-windows = [
     "carddav",
     "dicom",
     "acme",
+    "fix",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -743,6 +746,7 @@ all-protocols = [
     "carddav",
     "dicom",
     "acme",
+    "fix",
     "sflow",
     "prometheus-remote-write",
     "ssh",
