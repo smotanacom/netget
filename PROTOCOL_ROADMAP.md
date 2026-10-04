@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **57 / 72**; **15 remain**. Completed scopes comprise thirty-seven new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **58 / 72**; **14 remain**. Completed scopes comprise thirty-eight new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1177,12 +1177,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **37. MQTT-SN** — B/M; proposed feature `mqtt_sn`. [Specification/reference](https://mqtt.org/mqtt-specification/).
+- [x] **37. MQTT-SN** — B/M; proposed feature `mqtt_sn`. [Specification/reference](https://mqtt.org/mqtt-specification/).
   - Scope: Gateway/sensor roles, discovery, topic registration/IDs, publish/subscribe, datagram and sleeping-client behavior.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 MQTT-SN test functions pass. Unchanged mqtt-sn-tools (C) publish and subscribe through NetGet's gateway: wildcard and short-topic subscribers receive QoS 1, 0 and -1 publishes (the last on predefined id 7 with no connection, delivered under that id) and one sent through forwarder encapsulation; an admin/ publish the handler refuses never reaches its subscriber (mqtt-sn-pub itself ignores the PUBACK return code), and the refused client gets CONNACK 0x03. NetGet's client through the unchanged Eclipse Paho MQTT-SN Gateway (C++) in front of Mosquitto: QoS 1, 2 and 0 publishes reach mosquitto_sub, a subscription receives what mosquitto_pub sends, and a message published while the client sleeps is held by the Paho gateway and delivered on wake. NetGet's client against its own gateway covers QoS 2 both ways, a handler-published greeting with a lowered grant, a lost client's will after 1.5 x keep-alive, held messages on wake, a peer-handle injection and raw-socket refusals; every packet type round-trips. The Paho gateway buffers stdout on a pipe, so its readiness is a CONNECT it answers. The gateway is its own broker with no retained-message store; Experimental. Source `9a0595f0`, CI `b5730e6c`.
 
 - [ ] **38. LwM2M** — B/L; proposed feature `lwm2m`. [Specification/reference](https://www.openmobilealliance.org/release/LightweightM2M/V1_2-20201110-A/HTML-Version/OMA-TS-LightweightM2M_Core-V1_2-20201110-A.html).
   - Scope: Management server/device client, registration, bootstrap, object resources, observation and declared security.
