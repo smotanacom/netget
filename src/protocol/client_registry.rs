@@ -478,6 +478,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::webtransport::actions::WebTransportClientProtocol::new(),
         ));
+        #[cfg(feature = "jmap")]
+        self.register(Arc::new(
+            crate::client::jmap::actions::JmapClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -991,6 +995,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("LwM2M", "lwm2m"),
     ("RESTCONF", "restconf"),
     ("WebTransport", "webtransport"),
+    ("JMAP", "jmap"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

@@ -760,6 +760,8 @@ pub mod diameter;
 #[cfg(feature = "bolt")]
 pub mod bolt;
 
+#[cfg(feature = "jmap")]
+pub mod jmap;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 #[cfg(feature = "oci-registry")]

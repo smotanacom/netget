@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
         feature = "http2",
         feature = "http3",
         feature = "http_proxy",
+        feature = "jmap",
         feature = "kubernetes",
         feature = "kubernetes-server",
         feature = "nostr",

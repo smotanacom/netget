@@ -479,6 +479,8 @@ pub mod zenoh;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 
+#[cfg(feature = "jmap")]
+pub mod jmap;
 #[cfg(feature = "restconf")]
 pub mod restconf;
 #[cfg(feature = "webtransport")]

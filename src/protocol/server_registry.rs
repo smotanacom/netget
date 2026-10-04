@@ -330,6 +330,8 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::webtransport::actions::WebTransportProtocol::new(),
         ));
+        #[cfg(feature = "jmap")]
+        self.register(Arc::new(crate::server::jmap::actions::JmapProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1529,6 +1531,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("LwM2M", "lwm2m"),
     ("RESTCONF", "restconf"),
     ("WebTransport", "webtransport"),
+    ("JMAP", "jmap"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
