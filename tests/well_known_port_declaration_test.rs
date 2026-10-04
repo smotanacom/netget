@@ -144,6 +144,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("graphql", "GraphQL is served over HTTP(S) at an application-chosen path and port; none is assigned"),
     ("caldav", "CalDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/caldav or DNS SRV (RFC 6764); no port is assigned"),
     ("carddav", "CardDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/carddav or DNS SRV (RFC 6764); no port is assigned"),
+    ("srt", "SRT has no assigned port; each deployment picks one (srt-live-transmit and OBS examples use 9000, MediaMTX 8890)"),
     ("wamp", "WAMP runs over WebSocket on the web server's port; no port is assigned (Crossbar.io's 8080 is a convention)"),
     ("fix", "FIX has no assigned port: each venue publishes its own, and the QuickFIX examples use 9876 and 9878 by convention only"),
     ("acme", "ACME is JSON over HTTPS at a directory URL the CA publishes (RFC 8555 §7.1.1); no port is assigned, and test CAs such as Pebble use arbitrary ones"),

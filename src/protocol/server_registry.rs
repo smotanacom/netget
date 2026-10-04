@@ -296,6 +296,9 @@ impl ServerRegistry {
         #[cfg(feature = "rtmp")]
         self.register(Arc::new(crate::server::rtmp::actions::RtmpProtocol::new()));
 
+        #[cfg(feature = "srt")]
+        self.register(Arc::new(crate::server::srt::actions::SrtProtocol::new()));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -1483,6 +1486,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("FIX", "fix"),
     ("WAMP", "wamp"),
     ("RTMP", "rtmp"),
+    ("SRT", "srt"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

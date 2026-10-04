@@ -1303,6 +1303,8 @@ pub mod rtmp;
 pub mod scim;
 #[cfg(feature = "socketio")]
 pub mod socketio;
+#[cfg(feature = "srt")]
+pub mod srt;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
 #[cfg(feature = "wamp")]

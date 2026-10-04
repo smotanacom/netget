@@ -98,6 +98,7 @@ portable-base = [
     "fix",
     "wamp",
     "rtmp",
+    "srt",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -300,6 +301,7 @@ acme = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "rc
 fix = [] # FIX 4.x acceptor and initiator (tag=value session layer)
 wamp = ["dep:tokio-tungstenite", "ring"] # WAMP v2 router and client (JSON over WebSocket)
 rtmp = ["ring"] # RTMP live server (publish/play relay) and client
+srt = ["dep:srt-tokio"] # SRT listener (publish/request relay) and caller
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -577,6 +579,7 @@ dist-windows = [
     "fix",
     "wamp",
     "rtmp",
+    "srt",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -755,6 +758,7 @@ all-protocols = [
     "fix",
     "wamp",
     "rtmp",
+    "srt",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -1061,6 +1065,7 @@ webrtc = { version = "0.11", optional = true }
 
 # WebRTC Signaling Server (WebSocket-based SDP relay)
 tokio-tungstenite = { version = "0.21", optional = true }
+srt-tokio = { version = "0.4.4", optional = true }  # SRT (Secure Reliable Transport): pure-Rust ARQ, TSBPD and AES
 
 # LDAP server (ASN.1 BER encoding for LDAP protocol)
 ldap3_proto = { version = "0.3", optional = true }

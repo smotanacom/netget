@@ -8273,6 +8273,7 @@ dependencies = [
  "snmp",
  "socket2 0.5.10",
  "socketcan",
+ "srt-tokio",
  "ssh-agent-lib",
  "ssh2",
  "stunclient",
@@ -12715,6 +12716,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha-1"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5058ada175748e33390e40e872bd0fe59a19f265d0158daa551c5a88a76009c"
+dependencies = [
+ "cfg-if 1.0.4",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13059,6 +13071,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "srt-protocol"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22790a85cd5d34355e9fc246ded6a1f037add6fd0e0efe4d4914c2d51c20f246"
+dependencies = [
+ "aes 0.8.4",
+ "array-init",
+ "arraydeque",
+ "bitflags 2.10.0",
+ "bytes",
+ "cipher 0.4.4",
+ "ctr 0.9.2",
+ "derive_more 0.99.20",
+ "hex",
+ "hmac 0.12.1",
+ "keyed_priority_queue",
+ "log",
+ "pbkdf2 0.12.2",
+ "rand 0.8.5",
+ "regex",
+ "sha-1",
+ "streaming-stats",
+ "take-until",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
+name = "srt-tokio"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a55cb90afac5672b00954e3291846dd262cfef3b52d1b507f580180433373d3"
+dependencies = [
+ "bytes",
+ "futures",
+ "log",
+ "rand 0.8.5",
+ "socket2 0.5.10",
+ "srt-protocol",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "sse-stream"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13190,6 +13246,15 @@ dependencies = [
  "cfg-if 1.0.4",
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "streaming-stats"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0d670ce4e348a2081843569e0f79b21c99c91bb9028b3b3ecb0f050306de547"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -13598,6 +13663,12 @@ name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
+
+[[package]]
+name = "take-until"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bdb6fa0dfa67b38c1e66b7041ba9dcf23b99d8121907cd31c807a332f7a0bbb"
 
 [[package]]
 name = "take_mut"
