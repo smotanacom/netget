@@ -466,6 +466,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::zenoh::actions::ZenohClientProtocol::new(),
         ));
+        #[cfg(feature = "lwm2m")]
+        self.register(Arc::new(
+            crate::client::lwm2m::actions::Lwm2mClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -976,6 +980,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("NBD", "nbd"),
     ("ManageSieve", "managesieve"),
     ("Zenoh", "zenoh"),
+    ("LwM2M", "lwm2m"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

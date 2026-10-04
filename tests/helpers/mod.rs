@@ -143,3 +143,6 @@ pub mod managesieve;
 
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
+
+#[cfg(feature = "lwm2m")]
+pub mod lwm2m;
