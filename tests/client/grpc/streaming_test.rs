@@ -664,7 +664,20 @@ async fn independent_stream_input_and_response_counts_are_bounded() {
     let ended = event(&state, id, "grpc_stream_ended", 1, "", Value::Null).await;
     assert_eq!(ended["code"], 8);
     assert_eq!(ended["response_count"], 256);
-    queued(&state, id, start(2, "Collect", json!({"value":1}))).await;
+    // Stream 1's ended event can be logged while handler calls for its earlier messages are
+    // still in flight; until they finish the client refuses a new stream at its handler cap.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        match send(&state, id, start(2, "Collect", json!({"value":1}))).await {
+            Ok(ClientSendOutcome::Executed { .. }) => break,
+            Err(e)
+                if e.to_string().contains("capacity") && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            other => panic!("{other:?}"),
+        }
+    }
     for sequence in 1..=256 {
         event(
             &state,
