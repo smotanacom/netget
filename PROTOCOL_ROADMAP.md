@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **48 / 72**; **24 remain**. Completed scopes comprise twenty-eight new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **49 / 72**; **23 remain**. Completed scopes comprise twenty-nine new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1274,12 +1274,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 7 checks pass. python-hl7 0.4.5's MLLP client (ADT^A01, ORU^R01, QRY^A19 v2.3) against the endpoint and its MLLP server against the sender (AA, AE with ERR, AR; receiver-side parse asserted); NetGet pair, MLLP framing refusals, `\F\` escaping and segment-forgery refusal, handler-less AE, mismatched MSA-2. No clinical store or profile engine; Experimental. Source `a5aa48ff`, CI `5b86eb17`.
 
-- [ ] **51. DICOM DIMSE** — C/L; proposed feature `dicom`. [Specification/reference](https://dicom.nema.org/medical/dicom/current/output/html/part08.html).
+- [x] **51. DICOM DIMSE** — C/L; proposed feature `dicom`. [Specification/reference](https://dicom.nema.org/medical/dicom/current/output/html/part08.html).
   - Scope: Association/transfer syntax negotiation, C-ECHO and an explicitly selected useful service set, structured actions.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 8 DICOM test functions pass. Unchanged pynetdicom 3.0.4 (on pydicom 3.0.2) as the SCU is refused for a wrong called AE title, a rejected calling AE and an undecided association, negotiates Explicit VR Little Endian, echoes, stores three instances (one refused A700 with its comment) and gets wildcard, date-range, patient-root and empty C-FIND results matched and projected by Rust; as the SCP it decodes what NetGet's client stores (pixel bytes included), answers its C-FIND and refuses a wrong called AE title. Raw PDU tests cover an oversized PDU, a non-RQ first PDU, a SOP UID mismatch (A900, handler not asked), an unknown command (0211) and the idle abort; codec tests use literal Implicit/Explicit LE bytes, hostile lengths, an undelimited sequence and a depth bomb. Services: C-ECHO, C-STORE, C-FIND (Patient and Study Root); no C-MOVE, C-GET, N-services, compressed transfer syntaxes or TLS; Experimental. Source `917f1e24`, CI `7e6e4aa4`.
 
 - [ ] **52. FIX** — C/L; proposed feature `fix`. [Specification/reference](https://fixtrading.org/packages/fix-session-layer-technical-proposal/).
   - Scope: Acceptor/initiator session engine, dictionaries, heartbeat/resend/recovery and scripted application messages.

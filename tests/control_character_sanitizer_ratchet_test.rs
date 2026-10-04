@@ -56,6 +56,13 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          instead of rewriting the value",
     ),
     (
+        "src/server/dicom/dataset.rs",
+        1,
+        "validator: refuse a control character in a DICOM string value the model supplied \
+         (PS3.5 6.2 allows them only in LT, ST and UT), since a rewritten value would name \
+         a different patient, study or UID",
+    ),
+    (
         "src/server/redfish/model.rs",
         1,
         "validator: refuse a Redfish request path containing a control character instead of \

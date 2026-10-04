@@ -705,6 +705,8 @@ pub mod a2a;
 pub mod caldav;
 #[cfg(feature = "carddav")]
 pub mod carddav;
+#[cfg(feature = "dicom")]
+pub mod dicom;
 #[cfg(feature = "fastcgi")]
 pub mod fastcgi;
 #[cfg(feature = "graphql")]
