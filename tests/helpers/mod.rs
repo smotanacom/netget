@@ -107,3 +107,6 @@ pub mod dav;
 
 #[cfg(feature = "dicom")]
 pub mod dicom;
+
+#[cfg(feature = "acme")]
+pub mod acme;

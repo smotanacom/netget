@@ -56,6 +56,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          instead of rewriting the value",
     ),
     (
+        "src/client/acme/mod.rs",
+        1,
+        "validator: refuse a directory_path startup parameter containing a control character or \
+         a space, which would otherwise be pasted into the directory URL",
+    ),
+    (
         "src/server/dicom/dataset.rs",
         1,
         "validator: refuse a control character in a DICOM string value the model supplied \

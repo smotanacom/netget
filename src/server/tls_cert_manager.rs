@@ -224,6 +224,10 @@ pub fn load_tls_config_from_files(cert_path: &str, key_path: &str) -> Result<Arc
         .context("Failed to parse private key PEM")?
         .ok_or_else(|| anyhow::anyhow!("No private key found in key file"))?;
 
+    // As in create_rustls_server_config: ServerConfig::builder() panics unless a process-level
+    // provider is installed, which the binary does at startup and an in-process caller may not.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Build rustls ServerConfig
     let config = ServerConfig::builder()
         .with_no_client_auth()

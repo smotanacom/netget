@@ -204,7 +204,7 @@ impl Protocol for DicomProtocol {
             .well_known_port(104)
             .implementation("Hand-written PS3.8 upper layer (A-ASSOCIATE, P-DATA with fragmentation, A-RELEASE, A-ABORT) and PS3.7 DIMSE; Implicit and Explicit VR Little Endian dataset codec with DICOM JSON; C-FIND matching per PS3.4 C.2.2.2 in Rust")
             .llm_control("Which associations to accept, what to do with each stored instance, and which records exist for queries")
-            .e2e_testing("tests/server/dicom: pynetdicom 3.0.4 (independent) associates, runs C-ECHO, C-STORE of a CT instance and Study Root / Patient Root C-FIND with wildcard, range and UID-list keys, and is rejected with a wrong called AE title")
+            .e2e_testing("tests/server/dicom: pynetdicom 3.0.4 (independent) associates, runs C-ECHO, C-STORE of Secondary Capture instances (one refused) and Study Root / Patient Root C-FIND with wildcard and date-range keys, and is rejected for a wrong called AE title, a refused calling AE and an undecided association; NetGet's SCU against pynetdicom as SCP")
             .notes("Services: Verification, Storage (any SOP class under 1.2.840.10008.5.1.4.1.1), Patient and Study Root C-FIND. No C-MOVE, C-GET, C-CANCEL handling, compressed or Big Endian transfer syntaxes, TLS or extended negotiation. Bulk data is never given to the handler. No storage: the handler owns every record.")
             .answers_on_failure()
             .max_inbound_bytes(pdu::MAX_PDU as usize)

@@ -89,6 +89,7 @@ fn golden_duals_map() {
         "CalDAV",
         "CardDAV",
         "DICOM",
+        "ACME",
         "Nostr",
         "Vault",
         "Bolt",

@@ -174,6 +174,7 @@ pub struct RealServerBuilder {
     binary: String,
     hint: InstallHint,
     args: Vec<String>,
+    env: Vec<(String, String)>,
     files: Vec<(String, String)>,
     setup: Vec<SetupCommand>,
     port: PortSource,
@@ -214,6 +215,13 @@ impl RealServerBuilder {
         S: Into<String>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Set an environment variable for the server process. The same placeholders as
+    /// [`args`](Self::args) are substituted into `value`.
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_owned(), value.to_owned()));
         self
     }
 
@@ -381,6 +389,7 @@ impl RealServerBuilder {
         let mut command = Command::new(program);
         command
             .args(&args)
+            .envs(self.env.iter().map(|(k, v)| (k, substitute(v))))
             .current_dir(dir.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -506,6 +515,7 @@ impl RealServer {
             binary: binary.to_string(),
             hint,
             args: Vec::new(),
+            env: Vec::new(),
             files: Vec::new(),
             setup: Vec::new(),
             port: PortSource::Probe,

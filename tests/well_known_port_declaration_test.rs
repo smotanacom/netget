@@ -144,6 +144,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("graphql", "GraphQL is served over HTTP(S) at an application-chosen path and port; none is assigned"),
     ("caldav", "CalDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/caldav or DNS SRV (RFC 6764); no port is assigned"),
     ("carddav", "CardDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/carddav or DNS SRV (RFC 6764); no port is assigned"),
+    ("acme", "ACME is JSON over HTTPS at a directory URL the CA publishes (RFC 8555 §7.1.1); no port is assigned, and test CAs such as Pebble use arbitrary ones"),
     ("socketio", "Socket.IO is served over HTTP(S) at a path (/socket.io/) on an application-chosen port; none is assigned"),
     ("scim", "SCIM is a REST API served over HTTPS at an application-chosen path and port; none is assigned"),
     ("redfish", "Redfish is served over HTTPS on the BMC's web port (443 by convention, often shared with its web UI); no port is assigned to Redfish itself"),
