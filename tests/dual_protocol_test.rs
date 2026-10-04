@@ -85,6 +85,7 @@ fn golden_duals_map() {
         "FastCGI",
         "Redfish",
         "SCIM",
+        "Socket.IO",
         "Nostr",
         "Vault",
         "Bolt",

@@ -90,6 +90,7 @@ portable-base = [
     "fastcgi",
     "redfish",
     "scim",
+    "socketio",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -284,6 +285,7 @@ a2a = [] # Agent2Agent protocol 1.0 agent and client (JSON-RPC binding)
 fastcgi = [] # FastCGI 1.0 Responder application and web-server-side client
 redfish = [] # DMTF Redfish service and client (sessions, tasks, Base-registry errors)
 scim = ["urlencoding"] # SCIM 2.0 provisioning service and client (RFC 7643/7644)
+socketio = ["dep:tokio-tungstenite"] # Socket.IO v5 over Engine.IO v4 server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -553,6 +555,7 @@ dist-windows = [
     "fastcgi",
     "redfish",
     "scim",
+    "socketio",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -723,6 +726,7 @@ all-protocols = [
     "fastcgi",
     "redfish",
     "scim",
+    "socketio",
     "sflow",
     "prometheus-remote-write",
     "ssh",

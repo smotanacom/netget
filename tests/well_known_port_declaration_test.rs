@@ -142,6 +142,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("ocpp", "OCPP-J runs on the WebSocket URL a CSMS publishes to its charge points; no port is assigned"),
     ("a2a", "an A2A agent is an HTTP(S) service its agent card points at; no port is assigned"),
     ("graphql", "GraphQL is served over HTTP(S) at an application-chosen path and port; none is assigned"),
+    ("socketio", "Socket.IO is served over HTTP(S) at a path (/socket.io/) on an application-chosen port; none is assigned"),
     ("scim", "SCIM is a REST API served over HTTPS at an application-chosen path and port; none is assigned"),
     ("redfish", "Redfish is served over HTTPS on the BMC's web port (443 by convention, often shared with its web UI); no port is assigned to Redfish itself"),
     ("fastcgi", "FastCGI has no assigned port; an application listens wherever its web server is told to pass requests (php-fpm's 9000 is a convention, not an assignment)"),
