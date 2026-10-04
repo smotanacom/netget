@@ -346,6 +346,9 @@ pub mod amqp1;
 #[cfg(feature = "thrift")]
 pub mod thrift;
 
+#[cfg(feature = "bmp")]
+pub mod bmp;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
 
