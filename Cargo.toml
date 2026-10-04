@@ -88,6 +88,7 @@ portable-base = [
     "a2a",
     "graphql",
     "fastcgi",
+    "redfish",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -280,6 +281,7 @@ icap = [] # ICAP content adaptation server and client (RFC 3507)
 ocpp = ["dep:tokio-tungstenite"] # OCPP-J 1.6 / 2.0.1 central system and charge point
 a2a = [] # Agent2Agent protocol 1.0 agent and client (JSON-RPC binding)
 fastcgi = [] # FastCGI 1.0 Responder application and web-server-side client
+redfish = [] # DMTF Redfish service and client (sessions, tasks, Base-registry errors)
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -547,6 +549,7 @@ dist-windows = [
     "a2a",
     "graphql",
     "fastcgi",
+    "redfish",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -715,6 +718,7 @@ all-protocols = [
     "a2a",
     "graphql",
     "fastcgi",
+    "redfish",
     "sflow",
     "prometheus-remote-write",
     "ssh",

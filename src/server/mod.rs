@@ -1280,6 +1280,8 @@ pub mod netconf;
 pub mod ocpp;
 #[cfg(feature = "rdap")]
 pub mod rdap;
+#[cfg(feature = "redfish")]
+pub mod redfish;
 #[cfg(feature = "rpki_rtr")]
 pub mod rpki_rtr;
 #[cfg(feature = "tacacs")]

@@ -56,6 +56,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          instead of rewriting the value",
     ),
     (
+        "src/server/redfish/model.rs",
+        1,
+        "validator: refuse a Redfish request path containing a control character instead of \
+         rewriting it, because a rewritten path would name a different resource",
+    ),
+    (
         "src/server/ocpp/frame.rs",
         1,
         "validator: refuse an OCPP message id containing a control character instead of \

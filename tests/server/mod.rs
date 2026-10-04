@@ -422,5 +422,8 @@ pub mod graphql;
 #[cfg(feature = "fastcgi")]
 pub mod fastcgi;
 
+#[cfg(feature = "redfish")]
+pub mod redfish;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
