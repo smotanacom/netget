@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **58 / 72**; **14 remain**. Completed scopes comprise thirty-eight new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **59 / 72**; **13 remain**. Completed scopes comprise thirty-nine new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1244,12 +1244,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 6 checks pass. c-icap 0.6.5's c-icap-client against the server (OPTIONS, clean/blocked RESPMOD, redacted REQMOD, 512-byte preview continued to 3000 bytes) — it caught a request head wrongly echoed in RESPMOD responses that the NetGet pair had accepted; c-icap's echo service against the client (OPTIONS, RESPMOD, REQMOD, continued preview); framing and refusal tests. No scanning engine, 206 or TLS; Experimental. Source `d0c3d9d1`, CI `4db89756`.
 
-- [ ] **46. NBD** — C/L; proposed feature `nbd`. [Specification/reference](https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md).
+- [x] **46. NBD** — C/L; proposed feature `nbd`. [Specification/reference](https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md).
   - Scope: Read-only scripted block target and userspace client, negotiation, bounds, read/errors and structured replies.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 NBD test functions pass. Unchanged libnbd 1.24.3 (C) against NetGet's server: nbdinfo lists both exports with descriptions, describes disk0 (1 MiB, read-only, base:allocation, structured replies, preferred block size, description) and maps its allocation run by run exactly as the handler described it; nbdcopy copies disk0 byte for byte and fails with an I/O error on the export whose error region holds data (with the region in a hole, nbdcopy correctly skipped it via block status); a policy refusal and an unknown export are reported as such. NetGet's client against unchanged nbdkit 1.48.1 (C) with its data plugin and error filter: the export list, size and block sizes, the plugin's bytes, a zero region, allocation from block status, flush, and EIO once the filter is armed. The client against the server covers structured replies, block status, an error offset and EINVAL past the end; a raw client covers simple replies, EPERM for writes and trims, ERR_UNKNOWN, ERR_UNSUP and an oversized option. Read-only, no TLS or extended headers; Experimental. Source `67464673`, CI `7be38c85`.
 
 - [x] **47. RTMP** — C/L; proposed feature `rtmp`. [Specification/reference](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf).
   - Scope: Playback/publication endpoints, handshake, chunks, AMF command handling and supplied media with timestamps.
