@@ -701,6 +701,8 @@ pub mod netflow_v9;
 
 #[cfg(feature = "a2a")]
 pub mod a2a;
+#[cfg(feature = "graphql")]
+pub mod graphql;
 #[cfg(feature = "hl7")]
 pub mod hl7;
 #[cfg(feature = "icap")]
