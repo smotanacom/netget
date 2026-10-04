@@ -110,6 +110,7 @@ portable-base = [
     "restconf",
     "webtransport",
     "jmap",
+    "epp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -322,6 +323,7 @@ managesieve = [] # ManageSieve (RFC 5804) server and client
 zenoh = ["dep:zenoh"] # Zenoh router/peer and client over the zenoh runtime (TCP transport)
 lwm2m = ["coap"] # LwM2M 1.1 server and device over the coap feature's CoAP codec
 restconf = ["urlencoding"] # RESTCONF (RFC 8040) server and client
+epp = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "quick-xml"] # EPP (RFC 5730/5734) registry server and registrar client
 jmap = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"] # JMAP (RFC 8620/8621) server and client
 webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
@@ -613,6 +615,7 @@ dist-windows = [
     "restconf",
     "webtransport",
     "jmap",
+    "epp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -803,6 +806,7 @@ all-protocols = [
     "restconf",
     "webtransport",
     "jmap",
+    "epp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
