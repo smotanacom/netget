@@ -1272,6 +1272,8 @@ pub mod caldav;
 pub mod carddav;
 #[cfg(any(feature = "caldav", feature = "carddav"))]
 pub mod dav_common;
+#[cfg(feature = "dicom")]
+pub mod dicom;
 #[cfg(feature = "fastcgi")]
 pub mod fastcgi;
 #[cfg(feature = "graphql")]

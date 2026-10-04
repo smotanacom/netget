@@ -104,3 +104,6 @@ pub mod socketio;
 
 #[cfg(any(feature = "caldav", feature = "carddav"))]
 pub mod dav;
+
+#[cfg(feature = "dicom")]
+pub mod dicom;

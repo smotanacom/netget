@@ -407,6 +407,11 @@ impl ClientRegistry {
             crate::client::carddav::actions::CardDavClientProtocol::new(),
         ));
 
+        #[cfg(feature = "dicom")]
+        self.register(Arc::new(
+            crate::client::dicom::actions::DicomClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -903,6 +908,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Socket.IO", "socketio"),
     ("CalDAV", "caldav"),
     ("CardDAV", "carddav"),
+    ("DICOM", "dicom"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
