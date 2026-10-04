@@ -431,5 +431,11 @@ pub mod scim;
 #[cfg(feature = "socketio")]
 pub mod socketio;
 
+#[cfg(feature = "caldav")]
+pub mod caldav;
+
+#[cfg(feature = "carddav")]
+pub mod carddav;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;

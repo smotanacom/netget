@@ -701,6 +701,10 @@ pub mod netflow_v9;
 
 #[cfg(feature = "a2a")]
 pub mod a2a;
+#[cfg(feature = "caldav")]
+pub mod caldav;
+#[cfg(feature = "carddav")]
+pub mod carddav;
 #[cfg(feature = "fastcgi")]
 pub mod fastcgi;
 #[cfg(feature = "graphql")]
