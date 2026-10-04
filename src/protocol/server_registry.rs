@@ -308,6 +308,10 @@ impl ServerRegistry {
         ));
         #[cfg(feature = "bmp")]
         self.register(Arc::new(crate::server::bmp::actions::BmpProtocol::new()));
+        #[cfg(feature = "mqtt_sn")]
+        self.register(Arc::new(
+            crate::server::mqtt_sn::actions::MqttSnProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1500,6 +1504,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("AMQP1", "amqp1"),
     ("Thrift", "thrift"),
     ("BMP", "bmp"),
+    ("MQTT-SN", "mqtt_sn"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

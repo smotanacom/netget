@@ -696,6 +696,8 @@ pub use nntp::NntpServer;
 
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
+#[cfg(feature = "mqtt_sn")]
+pub mod mqtt_sn;
 #[cfg(feature = "mqtt")]
 pub use mqtt::actions::MqttProtocol;
 #[cfg(feature = "mqtt")]

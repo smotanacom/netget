@@ -450,6 +450,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::bmp::actions::BmpClientProtocol::new(),
         ));
+        #[cfg(feature = "mqtt_sn")]
+        self.register(Arc::new(
+            crate::client::mqtt_sn::actions::MqttSnClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -956,6 +960,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("AMQP1", "amqp1"),
     ("Thrift", "thrift"),
     ("BMP", "bmp"),
+    ("MQTT-SN", "mqtt_sn"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
