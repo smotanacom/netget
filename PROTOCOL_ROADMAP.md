@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **46 / 72**; **26 remain**. Completed scopes comprise twenty-six new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **48 / 72**; **24 remain**. Completed scopes comprise twenty-eight new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1045,19 +1045,21 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **21. CalDAV** — B/L; proposed feature `caldav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc4791.html).
+- [x] **21. CalDAV** — B/L; proposed feature `caldav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc4791.html).
   - Scope: Calendar discovery, resources, REPORT queries, event CRUD and documented iCalendar/recurrence coverage.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 11 DAV test functions pass twice in a row (shared engine with item 22). Unchanged python caldav 3.3.1 is refused a bad password, discovers the principal and home, creates a calendar with MKCALENDAR, saves events, gets only the in-range event from a time-range search, updates and deletes by UID and refuses a duplicate UID; unchanged vdirsyncer 0.21.0 syncs a calendar both ways including a delete; NetGet's client discovers, creates, writes with If-None-Match and If-Match, lists, queries, reads and deletes against unchanged Radicale 3.8.1; wire tests cover PROPFIND, calendar-query (time-range and text), multiget, preconditions, no-uid-conflict and fail-closed logins. Recurrence sets are not expanded (a recurring object matches any range after its first start); no sync-collection, scheduling or free-busy; Experimental. Source `198024a7`, CI `61f8fd30`.
 
-- [ ] **22. CardDAV** — B/M-L; proposed feature `carddav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6352.html).
+- [x] **22. CardDAV** — B/M-L; proposed feature `carddav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6352.html).
   - Scope: Address-book discovery, vCard resource CRUD, REPORT queries and identifiers.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: shares the DAV engine and test run with item 21. Unchanged vdirsyncer 0.21.0 discovers and downloads cards, uploads an edit and a new vCard 4.0 card and propagates a delete; NetGet's client creates an address book with extended MKCOL, writes, lists, queries, reads and deletes against unchanged Radicale 3.8.1; wire tests cover addressbook-query match types, negation, anyof/allof, is-not-defined, limit, multiget and MKCOL resourcetype checks. No sync-collection or vCard version conversion; Experimental. Source `198024a7`, CI `61f8fd30`.
 
 - [x] **23. StatsD and DogStatsD** — A/S-M; proposed feature `statsd`. [Specification/reference](https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/).
   - Scope: Collector/emitter, typed metrics, sample rates/tags, DogStatsD events/service checks and bounded datagram parsing.
