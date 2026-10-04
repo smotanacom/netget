@@ -81,6 +81,7 @@ fn golden_duals_map() {
         "ICAP",
         "OCPP",
         "A2A",
+        "GraphQL",
         "Nostr",
         "Vault",
         "Bolt",
