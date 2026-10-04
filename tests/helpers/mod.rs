@@ -83,3 +83,6 @@ pub mod icap;
 
 #[cfg(feature = "ocpp")]
 pub mod ocpp;
+
+#[cfg(feature = "a2a")]
+pub mod a2a;

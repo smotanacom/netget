@@ -1264,6 +1264,8 @@ pub mod prometheus_remote_write;
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
 
+#[cfg(feature = "a2a")]
+pub mod a2a;
 #[cfg(feature = "hl7")]
 pub mod hl7;
 #[cfg(feature = "icap")]
