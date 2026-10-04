@@ -322,6 +322,10 @@ impl ServerRegistry {
         self.register(Arc::new(crate::server::zenoh::actions::ZenohProtocol::new()));
         #[cfg(feature = "lwm2m")]
         self.register(Arc::new(crate::server::lwm2m::actions::Lwm2mProtocol::new()));
+        #[cfg(feature = "restconf")]
+        self.register(Arc::new(
+            crate::server::restconf::actions::RestconfProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1519,6 +1523,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("ManageSieve", "managesieve"),
     ("Zenoh", "zenoh"),
     ("LwM2M", "lwm2m"),
+    ("RESTCONF", "restconf"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
