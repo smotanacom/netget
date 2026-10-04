@@ -91,6 +91,7 @@ fn golden_duals_map() {
         "DICOM",
         "ACME",
         "FIX",
+        "WAMP",
         "Nostr",
         "Vault",
         "Bolt",
