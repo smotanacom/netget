@@ -86,6 +86,8 @@ fn golden_duals_map() {
         "Redfish",
         "SCIM",
         "Socket.IO",
+        "CalDAV",
+        "CardDAV",
         "Nostr",
         "Vault",
         "Bolt",
