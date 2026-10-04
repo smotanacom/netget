@@ -147,6 +147,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("srt", "SRT has no assigned port; each deployment picks one (srt-live-transmit and OBS examples use 9000, MediaMTX 8890)"),
     ("wamp", "WAMP runs over WebSocket on the web server's port; no port is assigned (Crossbar.io's 8080 is a convention)"),
     ("restconf", "RESTCONF is carried on HTTP(S) at whatever port the web server uses; RFC 8040 assigns none (443 for HTTPS by convention)"),
+    ("webtransport", "WebTransport sessions are extended CONNECT requests on an HTTP/3 server's port; the draft assigns none (443/UDP by convention)"),
     ("bmp", "BMP has no assigned port (RFC 7854 leaves it to configuration); collectors use 5000 or 11019 by convention"),
     ("thrift", "Thrift has no assigned port: every service picks its own, and Apache's tutorial uses 9090 (IANA's websm) by convention only"),
     ("fix", "FIX has no assigned port: each venue publishes its own, and the QuickFIX examples use 9876 and 9878 by convention only"),

@@ -287,6 +287,11 @@ pub fn wire_for(protocol: &str) -> Wire {
             with_display(udp("quic"), "http3 || quic"),
             "HTTP/3 uses ALPN h3 over UDP. Wireshark needs TLS session secrets to inspect HTTP/3 headers and data; otherwise the capture shows QUIC.",
         ),
+        // WebTransport sessions are HTTP/3 extended CONNECT; streams and datagrams ride QUIC.
+        "webtransport" => with_note(
+            with_display(udp("quic"), "http3 || quic"),
+            "WebTransport is an HTTP/3 extended CONNECT (ALPN h3) whose streams and datagrams are QUIC payload. Wireshark needs the TLS session secrets to show the CONNECT and the session's data; otherwise the capture shows QUIC.",
+        ),
         "fluentforward" | "fluent_forward" | "fluentd" => with_note(
             PLAIN_TCP,
             "Fluent Forward uses MessagePack over TCP. This Wireshark build has no Forward dissector; inspect the stream bytes and correlated ACKs.",
