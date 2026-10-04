@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 /// Largest shell line the server will accumulate on one channel before discarding it.
@@ -90,11 +91,20 @@ const CONNECTION_CAP_REFUSAL: &[u8] = b"Exceeded MaxStartups\r\n";
 /// wrap — the shape every other protocol in this sweep uses. `IdleTimeoutReader` exists for
 /// exactly that case; this type is the two-line adapter that lets russh, which wants one
 /// `AsyncRead + AsyncWrite`, take a reader with a deadline on it.
+///
+/// It also carries the connection owner's [`CancellationToken`]. russh spawns its session
+/// driver inside `run_stream` and hands back only a `RunningSession` whose `JoinHandle` does
+/// not abort on drop, so aborting the task that owns the connection — which is what
+/// `stop_server` does — cannot reach the driver directly. Every read and write therefore polls
+/// the token first: once the owner is gone the next poll fails, and a read already parked on
+/// the socket is woken by the token rather than waiting for the peer or the idle deadline.
 struct DeadlinedStream {
     reader: crate::server::accept_bounded::IdleTimeoutReader<
         tokio::io::ReadHalf<tokio::net::TcpStream>,
     >,
     writer: tokio::io::WriteHalf<tokio::net::TcpStream>,
+    owner: CancellationToken,
+    owner_gone: std::pin::Pin<Box<tokio_util::sync::WaitForCancellationFutureOwned>>,
 }
 
 impl DeadlinedStream {
@@ -102,6 +112,7 @@ impl DeadlinedStream {
         stream: tokio::net::TcpStream,
         first: std::time::Duration,
         idle: std::time::Duration,
+        owner: CancellationToken,
     ) -> Self {
         let (read_half, writer) = tokio::io::split(stream);
         Self {
@@ -109,7 +120,22 @@ impl DeadlinedStream {
                 read_half, first, idle,
             ),
             writer,
+            owner_gone: Box::pin(owner.clone().cancelled_owned()),
+            owner,
         }
+    }
+
+    /// `Some` once the connection's owner has dropped. Polling the owner future registers
+    /// this task's waker, which is what wakes a read parked on a quiet socket.
+    fn owner_dropped(&mut self, cx: &mut std::task::Context<'_>) -> Option<std::io::Error> {
+        let gone = self.owner.is_cancelled()
+            || std::future::Future::poll(self.owner_gone.as_mut(), cx).is_ready();
+        gone.then(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "SSH connection owner dropped",
+            )
+        })
     }
 }
 
@@ -119,6 +145,9 @@ impl tokio::io::AsyncRead for DeadlinedStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(e) = self.owner_dropped(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
         std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
     }
 }
@@ -129,6 +158,9 @@ impl tokio::io::AsyncWrite for DeadlinedStream {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
+        if let Some(e) = self.owner_dropped(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
         std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
     }
 
@@ -136,6 +168,9 @@ impl tokio::io::AsyncWrite for DeadlinedStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(e) = self.owner_dropped(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
         std::pin::Pin::new(&mut self.writer).poll_flush(cx)
     }
 
@@ -143,7 +178,27 @@ impl tokio::io::AsyncWrite for DeadlinedStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(e) = self.owner_dropped(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
         std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+    }
+}
+
+/// Await a model round-trip unless the connection's owner goes first.
+///
+/// Dropping `call` is what retires a `manual` intercept parked for a human: its waiter goes
+/// with the future, and the pending entry reads as dead from then on.
+pub(crate) async fn until_owner_drops<T>(
+    owner: &CancellationToken,
+    call: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = owner.cancelled() => Err(anyhow::anyhow!(
+            "SSH connection closed by its owner before the answer arrived"
+        )),
+        result = call => result,
     }
 }
 
@@ -308,6 +363,7 @@ impl SshServer {
                         }
 
                         // Create handler for this connection
+                        let owner = CancellationToken::new();
                         let handler = SshHandler::new(
                             connection_id,
                             config.clone(),
@@ -316,6 +372,7 @@ impl SshServer {
                             status_tx.clone(),
                             server_id,
                             Some(peer_addr),
+                            owner.clone(),
                         );
 
                         let config_clone = russh_config.clone();
@@ -333,6 +390,10 @@ impl SshServer {
                                 // releases the slot while the peer is still here, which
                                 // silently un-caps the server.
                                 let _permit = permit;
+                                // Declared after the permit so it drops first: when this task
+                                // ends or is aborted, russh's spawned driver and every parked
+                                // model call are told before the slot is released.
+                                let _cancel_on_drop = owner.clone().drop_guard();
 
                                 Log::new(Some(&status_tx_clone))
                                     .debug(format!("SSH: Starting SSH protocol for {}", peer_addr));
@@ -346,11 +407,22 @@ impl SshServer {
                                     tcp_stream,
                                     FIRST_BYTE_READ_TIMEOUT,
                                     IDLE_SESSION_TIMEOUT,
+                                    owner,
                                 );
 
-                                match russh::server::run_stream(config_clone, tcp_stream, handler)
-                                    .await
-                                {
+                                // `run_stream` returns once the identification strings are
+                                // exchanged and the driver is spawned; the session itself is
+                                // the `RunningSession` it hands back. Awaiting only the first
+                                // released the permit and marked the connection closed while
+                                // the peer was still logged in.
+                                let session =
+                                    russh::server::run_stream(config_clone, tcp_stream, handler)
+                                        .await;
+                                let outcome = match session {
+                                    Ok(running) => running.await,
+                                    Err(e) => Err(e),
+                                };
+                                match outcome {
                                     Ok(_) => {
                                         Log::new(Some(&status_tx_clone))
                                             .info(format!("SSH: Connection closed: {}", peer_addr));
@@ -464,6 +536,9 @@ pub struct SshHandler {
     /// is ready, and then the client's own EOF arrives and `channel_eof` sent a second CLOSE.
     /// See `close_channel_once`.
     channels_closed: Arc<Mutex<HashSet<ChannelId>>>,
+    /// Cancelled when the task owning this connection ends or is aborted; every model
+    /// round-trip, including a `manual` rule parked for a human, races it.
+    owner: CancellationToken,
 }
 
 /// Type of SSH channel
@@ -482,6 +557,7 @@ impl SshHandler {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: Option<crate::state::ServerId>,
         remote_addr: Option<SocketAddr>,
+        owner: CancellationToken,
     ) -> Self {
         Self {
             connection_id,
@@ -497,6 +573,7 @@ impl SshHandler {
             shell_buffers: Arc::new(Mutex::new(HashMap::new())),
             channel_initialized: Arc::new(Mutex::new(HashMap::new())),
             channels_closed: Arc::new(Mutex::new(HashSet::new())),
+            owner,
         }
     }
 
@@ -592,13 +669,16 @@ impl SshHandler {
         }
         let event = Event::new(&SSH_AUTH_EVENT, event_data);
 
-        match call_llm(
-            &self.llm_client,
-            &self.app_state,
-            server_id,
-            Some(self.connection_id),
-            &event,
-            self.protocol.as_ref(),
+        match until_owner_drops(
+            &self.owner,
+            call_llm(
+                &self.llm_client,
+                &self.app_state,
+                server_id,
+                Some(self.connection_id),
+                &event,
+                self.protocol.as_ref(),
+            ),
         )
         .await
         {
@@ -672,13 +752,16 @@ impl SshHandler {
         // Create banner event with no data
         let event = Event::new(&SSH_BANNER_EVENT, serde_json::json!({}));
 
-        match call_llm(
-            &self.llm_client,
-            &self.app_state,
-            server_id,
-            Some(self.connection_id),
-            &event,
-            self.protocol.as_ref(),
+        match until_owner_drops(
+            &self.owner,
+            call_llm(
+                &self.llm_client,
+                &self.app_state,
+                server_id,
+                Some(self.connection_id),
+                &event,
+                self.protocol.as_ref(),
+            ),
         )
         .await
         {
@@ -759,13 +842,16 @@ impl SshHandler {
             }),
         );
 
-        match call_llm(
-            &self.llm_client,
-            &self.app_state,
-            server_id,
-            Some(self.connection_id),
-            &event,
-            self.protocol.as_ref(),
+        match until_owner_drops(
+            &self.owner,
+            call_llm(
+                &self.llm_client,
+                &self.app_state,
+                server_id,
+                Some(self.connection_id),
+                &event,
+                self.protocol.as_ref(),
+            ),
         )
         .await
         {
@@ -966,6 +1052,7 @@ impl russh::server::Handler for SshHandler {
                     self.app_state.clone(),
                     self.protocol.clone(),
                     self.status_tx.clone(),
+                    self.owner.clone(),
                 );
 
                 // Run SFTP protocol (this handles all packet parsing)
