@@ -3,6 +3,7 @@
 //! the data behind every query and mutation.
 pub mod actions;
 pub mod engine;
+pub mod ws;
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
@@ -30,11 +31,14 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const GRAPHQL_RESPONSE: &str = "application/graphql-response+json";
 
+type UpgradeSlot = Arc<std::sync::Mutex<Option<hyper::upgrade::OnUpgrade>>>;
+
 struct Shared {
     ctx: SpawnContext,
     schema: Valid<Schema>,
     endpoint: String,
     introspection: bool,
+    init_timeout: Duration,
 }
 
 pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
@@ -62,6 +66,15 @@ pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
         .transpose()?
         .flatten()
         .unwrap_or(DEFAULT_INTROSPECTION);
+    let init_timeout = p
+        .map(|p| p.get_optional_u64("connection_init_timeout_secs"))
+        .transpose()?
+        .flatten()
+        .unwrap_or(ws::CONNECTION_INIT_TIMEOUT.as_secs());
+    anyhow::ensure!(
+        (1..=300).contains(&init_timeout),
+        "connection_init_timeout_secs must be 1..=300"
+    );
     let listener = tokio::net::TcpListener::bind(ctx.legacy_listen_addr()).await?;
     let local = listener.local_addr()?;
     Log::new(Some(&ctx.status_tx)).info(format!(
@@ -73,6 +86,7 @@ pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
         schema,
         endpoint,
         introspection,
+        init_timeout: Duration::from_secs(init_timeout),
     });
     let server_id = ctx.server_id;
     let accept = tokio::spawn(async move {
@@ -111,9 +125,12 @@ pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
                 .spawn_server_task(server_id, async move {
                     let _permit = permit;
                     let svc_shared = child.clone();
+                    let upgrade: UpgradeSlot = Arc::default();
+                    let svc_upgrade = upgrade.clone();
                     let service = service_fn(move |req| {
                         let shared = svc_shared.clone();
-                        async move { Ok::<_, Infallible>(handle(&shared, id, req).await) }
+                        let upgrade = svc_upgrade.clone();
+                        async move { Ok::<_, Infallible>(handle(&shared, id, req, &upgrade).await) }
                     });
                     let mut builder = http1::Builder::new();
                     builder
@@ -123,10 +140,25 @@ pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
                         .max_buf_size(32 * 1024);
                     if let Err(e) = builder
                         .serve_connection(TokioIo::new(stream), service)
+                        .with_upgrades()
                         .await
                     {
                         Log::new(Some(&child.ctx.status_tx))
                             .debug(format!("GraphQL connection {id}: {e}"));
+                    }
+                    // An accepted WebSocket upgrade continues in this task, so it keeps the
+                    // connection's permit and its place in the server's task registry.
+                    let pending = upgrade.lock().ok().and_then(|mut u| u.take());
+                    if let Some(on_upgrade) = pending {
+                        if let Ok(upgraded) = on_upgrade.await {
+                            let socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                                TokioIo::new(upgraded),
+                                tokio_tungstenite::tungstenite::protocol::Role::Server,
+                                Some(ws::ws_config()),
+                            )
+                            .await;
+                            ws::session(child.clone(), id, socket).await;
+                        }
                     }
                     child
                         .ctx
@@ -250,6 +282,7 @@ async fn handle(
     shared: &Shared,
     id: ConnectionId,
     req: Request<Incoming>,
+    upgrade: &UpgradeSlot,
 ) -> Response<Full<Bytes>> {
     let ctx = &shared.ctx;
     ctx.state
@@ -262,7 +295,7 @@ async fn handle(
             None,
         )
         .await;
-    let response = route(shared, id, req).await;
+    let response = route(shared, id, req, upgrade).await;
     let sent = hyper::body::Body::size_hint(response.body())
         .exact()
         .unwrap_or(0);
@@ -341,9 +374,25 @@ fn from_query_string(qs: &str) -> Result<GraphqlRequest, &'static str> {
     decode_params(query, name, vars)
 }
 
-async fn route(shared: &Shared, id: ConnectionId, req: Request<Incoming>) -> Response<Full<Bytes>> {
+async fn route(
+    shared: &Shared,
+    id: ConnectionId,
+    mut req: Request<Incoming>,
+    upgrade: &UpgradeSlot,
+) -> Response<Full<Bytes>> {
     if req.uri().path() != shared.endpoint {
         return respond(404, "text/plain", b"not found".to_vec());
+    }
+    if ws::is_upgrade(&req) {
+        return match ws::handshake(&req) {
+            Ok(accepted) => {
+                if let Ok(mut slot) = upgrade.lock() {
+                    *slot = Some(hyper::upgrade::on(&mut req));
+                }
+                accepted.map(|()| Full::new(Bytes::new()))
+            }
+            Err((status, why)) => respond(status, "text/plain", why.as_bytes().to_vec()),
+        };
     }
     let method = req.method().clone();
     if method != Method::GET && method != Method::POST {
@@ -423,36 +472,51 @@ async fn route(shared: &Shared, id: ConnectionId, req: Request<Incoming>) -> Res
             return request_error(media, true, &errors);
         }
     };
-    let op_type = engine::operation_type_name(prepared.operation_type);
     match prepared.operation_type {
         OperationType::Mutation if method == Method::GET => return not_allowed("POST"),
         OperationType::Subscription => {
             return request_error(
                 media,
                 true,
-                &RequestErrors::one("subscriptions are not served over GraphQL over HTTP here"),
+                &RequestErrors::one(
+                    "subscriptions need a WebSocket using the graphql-transport-ws subprotocol",
+                ),
             )
         }
         _ => {}
     }
-    if prepared.is_introspection() {
-        return match prepared.execute(&shared.schema, &json!({}), shared.introspection) {
-            Ok(r) => graphql(200, media, &serde_json::to_value(r).unwrap_or_default()),
-            Err(e) => request_error(media, true, &RequestErrors::one(e.to_string())),
-        };
+    match answer_operation(shared, id, &prepared, &request.query, method.as_str()).await {
+        Ok(body) => graphql(200, media, &body),
+        Err(e) => unavailable(media, &e),
     }
-    let event = Event::new(
-        &actions::OPERATION_EVENT,
-        json!({
-            "operation_type": op_type,
-            "operation_name": prepared.operation_name,
-            "query": request.query,
-            "variables": prepared.variables_json(),
-            "root_fields": prepared.root_fields(),
-            "shape": prepared.shape(&shared.schema),
-            "method": method.as_str(),
-        }),
-    );
+}
+
+/// Collect the handler's answers: custom results named in `allowed`, and a close request as
+/// `{"type": "disconnect"}`, in the order the handler gave them.
+fn collect_answers(results: Vec<ActionResult>, allowed: &[&str]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for r in results {
+        match r {
+            ActionResult::Custom { name, data } if allowed.contains(&name.as_str()) => {
+                out.push(data)
+            }
+            ActionResult::CloseConnection => out.push(json!({"type": "disconnect"})),
+            ActionResult::Multiple(items) => out.extend(collect_answers(items, allowed)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Ask the handler about `event`. Every failure is logged with its decision tag and returned
+/// as `Err`, which the caller turns into a category error — never into data.
+async fn ask(
+    shared: &Shared,
+    id: ConnectionId,
+    event: Event,
+    op_type: &str,
+    allowed: &[&str],
+) -> anyhow::Result<Vec<Value>> {
     let ctx = &shared.ctx;
     let result = match call_llm(
         &ctx.llm_client,
@@ -467,65 +531,98 @@ async fn route(shared: &Shared, id: ConnectionId, req: Request<Incoming>) -> Res
         Ok(r) => r,
         Err(e) => {
             outcome(ctx, id, op_type, "fail_closed_llm_error");
-            return unavailable(media, &e);
+            return Err(e);
         }
     };
     if !result.failures.is_empty() {
         outcome(ctx, id, op_type, "fail_closed_invalid_reply");
-        return unavailable(media, &anyhow::anyhow!("invalid handler answer"));
+        anyhow::bail!("invalid handler answer");
     }
-    let mut answers = Vec::new();
-    let mut pending = result.protocol_results;
-    while let Some(r) = pending.pop() {
-        match r {
-            ActionResult::Custom { name, data }
-                if name == "graphql_result" || name == "graphql_error" =>
-            {
-                answers.push(data)
-            }
-            ActionResult::Multiple(items) => pending.extend(items),
-            _ => {}
-        }
+    Ok(collect_answers(result.protocol_results, allowed))
+}
+
+/// Answer a query or mutation: introspection by Rust alone, everything else by executing the
+/// handler's data. `Ok` is a complete GraphQL response body.
+async fn answer_operation(
+    shared: &Shared,
+    id: ConnectionId,
+    prepared: &engine::Prepared,
+    query: &str,
+    method: &str,
+) -> anyhow::Result<Value> {
+    if prepared.is_introspection() {
+        let r = prepared.execute(&shared.schema, &json!({}), shared.introspection)?;
+        return Ok(serde_json::to_value(r)?);
     }
+    let op_type = engine::operation_type_name(prepared.operation_type);
+    let event = Event::new(
+        &actions::OPERATION_EVENT,
+        json!({
+            "operation_type": op_type,
+            "operation_name": prepared.operation_name,
+            "query": query,
+            "variables": prepared.variables_json(),
+            "root_fields": prepared.root_fields(),
+            "shape": prepared.shape(&shared.schema),
+            "method": method,
+        }),
+    );
+    let ctx = &shared.ctx;
+    let mut answers = ask(
+        shared,
+        id,
+        event,
+        op_type,
+        &["graphql_result", "graphql_error"],
+    )
+    .await?;
     let answer = match answers.len() {
         1 => answers.remove(0),
         0 => {
             outcome(ctx, id, op_type, "model_silent");
-            return unavailable(media, &anyhow::anyhow!("no handler answer"));
+            anyhow::bail!("no handler answer");
         }
         _ => {
             outcome(ctx, id, op_type, "fail_closed_invalid_reply");
-            return unavailable(media, &anyhow::anyhow!("more than one handler answer"));
+            anyhow::bail!("more than one handler answer");
         }
     };
     if answer["type"] == "graphql_error" {
         outcome(ctx, id, op_type, "model_reject");
-        let mut error = json!({"message": answer["message"]});
-        if let Some(x) = answer.get("extensions").filter(|x| x.is_object()) {
-            error["extensions"] = x.clone();
-        }
-        return graphql(200, media, &json!({"errors": [error], "data": null}));
+        return Ok(json!({"errors": [refusal(&answer)], "data": null}));
     }
-    let built = prepared
-        .execute(&shared.schema, &answer["data"], shared.introspection)
-        .and_then(|mut r| {
-            r.errors
-                .extend(engine::handler_errors(answer.get("errors"))?);
-            Ok(r)
-        });
-    match built {
-        Ok(r) => {
+    match execute_answer(shared, prepared, &answer) {
+        Ok(body) => {
             outcome(ctx, id, op_type, "model_answer");
-            graphql(200, media, &serde_json::to_value(r).unwrap_or_default())
+            Ok(body)
         }
-        Err(_) => {
+        Err(e) => {
             outcome(ctx, id, op_type, "fail_closed_invalid_reply");
-            unavailable(
-                media,
-                &anyhow::anyhow!("handler answer could not be executed"),
-            )
+            Err(e)
         }
     }
+}
+
+/// A `graphql_error` answer as one GraphQL error.
+fn refusal(answer: &Value) -> Value {
+    let mut error = json!({"message": answer["message"]});
+    if let Some(x) = answer.get("extensions").filter(|x| x.is_object()) {
+        error["extensions"] = x.clone();
+    }
+    error
+}
+
+/// Execute a `graphql_result` or `graphql_event` answer over the operation, appending the
+/// handler's own errors.
+fn execute_answer(
+    shared: &Shared,
+    prepared: &engine::Prepared,
+    answer: &Value,
+) -> anyhow::Result<Value> {
+    let mut r = prepared.execute(&shared.schema, &answer["data"], shared.introspection)?;
+    r.errors
+        .extend(engine::handler_errors(answer.get("errors"))?);
+    Ok(serde_json::to_value(r)?)
 }
 
 /// The handler could not answer: 503 when overloaded, 500 otherwise, with a category message —

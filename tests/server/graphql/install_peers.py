@@ -1,5 +1,5 @@
 """Pinned, unchanged GraphQL peers in an owned venv: gql 4.4.0 (client, with its requests
-transport) and strawberry-graphql 0.330.2 (server, its asgi extra under uvicorn 0.34.0). Both MIT.
+and websockets transports) and strawberry-graphql 0.330.2 (server, its asgi extra under uvicorn 0.34.0). Both MIT.
 
 Usage: python3 install_peers.py /absolute/owned/root   (Python >= 3.10)
 """
@@ -30,6 +30,6 @@ if not (env / "bin" / "python").exists():
     venv.EnvBuilder(with_pip=True).create(env)
 python = str(env / "bin" / "python")
 subprocess.run([python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-                f"{paths[0]}[requests]", f"{paths[1]}[asgi]", "uvicorn==0.34.0"], check=True, timeout=900)
+                f"{paths[0]}[requests,websockets]", f"{paths[1]}[asgi]", "uvicorn==0.34.0"], check=True, timeout=900)
 subprocess.run([python, "-c", "import importlib.metadata as m; assert m.version('gql') == '4.4.0' and m.version('strawberry-graphql') == '0.330.2'"], check=True, timeout=30)
 print("export NETGET_GRAPHQL_PYTHON=" + python)

@@ -109,3 +109,102 @@ async fn client_runs_queries_and_mutations_against_strawberry() {
     drop(child.stdin.take());
     let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
 }
+
+/// NetGet's client over strawberry's graphql-transport-ws: a countdown that completes, an
+/// endless subscription the client cancels, and a subscription strawberry refuses.
+#[tokio::test(flavor = "multi_thread")]
+async fn client_subscribes_against_strawberry() {
+    let mut child = tokio::process::Command::new(python())
+        .arg(peer_script())
+        .arg("server")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let first: Value = serde_json::from_str(
+        &tokio::time::timeout(Duration::from_secs(60), lines.next_line())
+            .await
+            .expect("strawberry did not start")
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let port = first["port"].as_u64().unwrap();
+    let state = state();
+    let cid = client_in(
+        &state,
+        format!("127.0.0.1:{port}"),
+        json!({"introspect": false}),
+    )
+    .await
+    .unwrap();
+    let owner = AccessLogOwner::Client(cid.as_u32());
+    let send = |a: Value| {
+        let state = &state;
+        async move {
+            state
+                .send_to_client(cid, a, Duration::from_secs(20))
+                .await
+                .unwrap()
+        }
+    };
+    assert!(matches!(
+        send(json!({"type":"graphql_subscribe","query":"subscription C($n: Int!) { countdown(from: $n) }","variables":{"n":3}})).await,
+        ClientSendOutcome::Sent { .. }
+    ));
+    let events = logs(&state, owner, "graphql_subscription_event", 3).await;
+    let values: Vec<&Value> = events
+        .iter()
+        .map(|e| &e.request["data"]["countdown"])
+        .collect();
+    assert_eq!(values, [&json!(3), &json!(2), &json!(1)]);
+    assert_eq!(events[0].request["operation_name"], "C");
+    let done = logs(&state, owner, "graphql_subscription_complete", 1).await;
+    assert_eq!(
+        done[0].request["subscription_id"],
+        events[0].request["subscription_id"]
+    );
+
+    assert!(matches!(
+        send(json!({"type":"graphql_subscribe","query":"subscription { ticks }"})).await,
+        ClientSendOutcome::Sent { .. }
+    ));
+    let ticks = logs(&state, owner, "graphql_subscription_event", 5).await;
+    let tick_id = ticks[3].request["subscription_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(
+        tick_id,
+        events[0].request["subscription_id"].as_str().unwrap()
+    );
+    assert!(matches!(
+        send(json!({"type":"graphql_unsubscribe","subscription_id":tick_id})).await,
+        ClientSendOutcome::Sent { .. }
+    ));
+    assert!(matches!(
+        send(json!({"type":"graphql_unsubscribe","subscription_id":tick_id})).await,
+        ClientSendOutcome::Rejected { .. }
+    ));
+    assert!(matches!(
+        send(json!({"type":"graphql_subscribe","query":"subscription { nope }"})).await,
+        ClientSendOutcome::Sent { .. }
+    ));
+    let refused = logs(&state, owner, "graphql_subscription_error", 1).await;
+    assert!(refused[0].request["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("nope"));
+    // The cancelled subscription never completed from the server's side.
+    let completes = logs(&state, owner, "graphql_subscription_complete", 1).await;
+    assert_eq!(completes.len(), 1);
+    assert!(matches!(
+        send(json!({"type":"graphql_subscribe","query":"{ hello }"})).await,
+        ClientSendOutcome::Rejected { .. }
+    ));
+    state.remove_client(cid).await;
+    drop(child.stdin.take());
+    let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+}
