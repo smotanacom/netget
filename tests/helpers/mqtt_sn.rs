@@ -254,7 +254,8 @@ pub(crate) async fn start_paho_gateway(broker: u16) -> super::E2EResult<RealServ
         if tokio::time::Instant::now() > deadline {
             return Err(format!("the Paho gateway never answered CONNECT:\n{}", gw.log()).into());
         }
-        probe.send(&connect).await?;
+        // Before the gateway binds, Linux reports the ICMP refusal on the next send or recv.
+        let _ = probe.send(&connect).await;
         if let Ok(Ok(n)) =
             tokio::time::timeout(Duration::from_millis(500), probe.recv(&mut buf)).await
         {
