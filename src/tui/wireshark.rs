@@ -348,6 +348,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `dicom` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 104).
         "dicom" => tcp("dicom"),
         // CalDAV and CardDAV are WebDAV verbs (PROPFIND, REPORT, MKCALENDAR) over HTTP.
+        // ACME is JWS-signed JSON over HTTP(S); there is no ACME dissector.
+        "acme" => with_note(tcp("http"), "ACME is application/jose+json over HTTP: JWS-signed POSTs to the directory's URLs, application/problem+json errors and PEM certificate chains; with tls_cert_file the listener is HTTPS and Wireshark shows only TLS without the key."),
         "caldav" => with_note(tcp("http"), "CalDAV is WebDAV over HTTP: PROPFIND, REPORT and MKCALENDAR with XML bodies, iCalendar in GET and PUT; production servers use HTTPS."),
         "carddav" => with_note(tcp("http"), "CardDAV is WebDAV over HTTP: PROPFIND, REPORT and extended MKCOL with XML bodies, vCards in GET and PUT; production servers use HTTPS."),
         // Socket.IO is Engine.IO text over HTTP long-polling or WebSocket; no dedicated dissector.
