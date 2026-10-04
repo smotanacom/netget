@@ -12,6 +12,7 @@ pub mod sanitize;
 pub mod save_load;
 pub mod shutdown;
 pub mod sql;
+pub mod task_guard;
 pub mod truncate;
 pub mod wire_failure;
 

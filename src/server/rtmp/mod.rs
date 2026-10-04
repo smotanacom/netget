@@ -33,13 +33,7 @@ const OUT_CHUNK_SIZE: usize = 4096;
 const WINDOW: u32 = 2_500_000;
 const PLAYER_QUEUE: usize = 1024;
 
-/// Stops a task when its owner goes away (aborting a task does not abort what it spawned).
-pub struct AbortOnDrop(pub tokio::task::JoinHandle<()>);
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
+pub use crate::utils::task_guard::AbortOnDrop;
 
 /// Media and data relayed to one player: (type, publisher timestamp, payload).
 type Relay = (u8, u32, Arc<Vec<u8>>);
