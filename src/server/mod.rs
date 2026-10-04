@@ -1264,8 +1264,14 @@ pub mod prometheus_remote_write;
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
 
+#[cfg(feature = "hl7")]
+pub mod hl7;
+#[cfg(feature = "icap")]
+pub mod icap;
 #[cfg(feature = "netconf")]
 pub mod netconf;
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
 #[cfg(feature = "rdap")]
 pub mod rdap;
 #[cfg(feature = "rpki_rtr")]

@@ -82,6 +82,9 @@ portable-base = [
     "netconf",
     "rpki_rtr",
     "rdap",
+    "hl7",
+    "icap",
+    "ocpp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -269,6 +272,9 @@ diameter = [] # Native bounded TCP peer lifecycle and stateless NASREQ
 netconf = ["russh", "russh-keys", "quick-xml"] # NETCONF 1.0/1.1 over SSH, handler-controlled datastores
 rpki_rtr = [] # RPKI-to-Router cache and router roles (RFC 8210/6810)
 rdap = [] # RDAP registration data server and client (RFC 7480/9082/9083)
+hl7 = [] # HL7 v2 over MLLP integration endpoint and sender
+icap = [] # ICAP content adaptation server and client (RFC 3507)
+ocpp = ["dep:tokio-tungstenite"] # OCPP-J 1.6 / 2.0.1 central system and charge point
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -529,6 +535,9 @@ dist-windows = [
     "netconf",
     "rpki_rtr",
     "rdap",
+    "hl7",
+    "icap",
+    "ocpp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -691,6 +700,9 @@ all-protocols = [
     "netconf",
     "rpki_rtr",
     "rdap",
+    "hl7",
+    "icap",
+    "ocpp",
     "sflow",
     "prometheus-remote-write",
     "ssh",

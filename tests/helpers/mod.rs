@@ -74,3 +74,12 @@ pub mod rpki_rtr;
 
 #[cfg(feature = "rdap")]
 pub mod rdap;
+
+#[cfg(feature = "hl7")]
+pub mod hl7;
+
+#[cfg(feature = "icap")]
+pub mod icap;
+
+#[cfg(feature = "ocpp")]
+pub mod ocpp;

@@ -273,6 +273,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // as `http`, the 101 hands the stream to Wireshark's own `websocket` dissector, whose
         // payload it reads as JSON — checked with `-d tcp.port==N,http -Y websocket`.
         "nostr" => with_display(tcp("http"), "websocket"),
+        // OCPP-J is JSON text in WebSocket frames; no OCPP dissector exists in this build.
+        "ocpp" => with_note(with_display(tcp("http"), "websocket"), "OCPP-J messages are JSON arrays in WebSocket text frames; the websocket filter shows each CALL, CALLRESULT and CALLERROR."),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
@@ -334,6 +336,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `rpkirtr` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 323).
         "rpki_rtr" | "rpki-rtr" | "rpki" => tcp("rpkirtr"),
         // RDAP is JSON over HTTP; Wireshark has no RDAP dissector, the HTTP one shows it all.
+        // `hl7` decodes MLLP-framed HL7 v2 on tcp.port (tshark -G decodes: tcp.port 2575).
+        "hl7" | "mllp" => tcp("hl7"),
+        // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
+        "icap" => tcp("icap"),
         "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
         "netconf" => with_note(
             tcp("ssh"),
