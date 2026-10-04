@@ -334,6 +334,9 @@ pub mod fix;
 #[cfg(feature = "wamp")]
 pub mod wamp;
 
+#[cfg(feature = "rtmp")]
+pub mod rtmp;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
 

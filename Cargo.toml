@@ -97,6 +97,7 @@ portable-base = [
     "acme",
     "fix",
     "wamp",
+    "rtmp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -298,6 +299,7 @@ dicom = [] # DICOM DIMSE SCP and SCU (C-ECHO, C-STORE, C-FIND)
 acme = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "rcgen/x509-parser", "ring"] # ACME (RFC 8555) test CA and client
 fix = [] # FIX 4.x acceptor and initiator (tag=value session layer)
 wamp = ["dep:tokio-tungstenite", "ring"] # WAMP v2 router and client (JSON over WebSocket)
+rtmp = ["ring"] # RTMP live server (publish/play relay) and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -574,6 +576,7 @@ dist-windows = [
     "acme",
     "fix",
     "wamp",
+    "rtmp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -751,6 +754,7 @@ all-protocols = [
     "acme",
     "fix",
     "wamp",
+    "rtmp",
     "sflow",
     "prometheus-remote-write",
     "ssh",
