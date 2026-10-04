@@ -99,6 +99,7 @@ fn golden_duals_map() {
         "BMP",
         "MQTT-SN",
         "NBD",
+        "ManageSieve",
         "Nostr",
         "Vault",
         "Bolt",
