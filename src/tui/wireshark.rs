@@ -344,6 +344,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "hl7" | "mllp" => tcp("hl7"),
         // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
         "icap" => tcp("icap"),
+        "fastcgi" => tcp("fcgi"),
         "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
         "netconf" => with_note(
             tcp("ssh"),
