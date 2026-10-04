@@ -53,9 +53,11 @@ if not (prefix / "libexec" / "dovecot" / "managesieve").exists():
     if sys.platform == "darwin":
         openssl = subprocess.run(["brew", "--prefix", "openssl@3"], check=True, capture_output=True, text=True).stdout.strip()
         env.update(CPPFLAGS=f"-I{openssl}/include", LDFLAGS=f"-L{openssl}/lib", LIBS="-liconv")
+    # No systemd units: on Linux the default installs them under /usr, outside the owned root.
+    env["systemdsystemunitdir"] = str(prefix / "lib" / "systemd")
     run(["./configure", f"--prefix={prefix}", "--without-ldap", "--without-lua", "--without-sqlite",
          "--without-pgsql", "--without-mysql", "--without-icu", "--without-stemmer", "--without-libcap",
-         "--with-ssl=openssl"], trees["dovecot"], env)
+         "--without-systemd", "--with-ssl=openssl"], trees["dovecot"], env)
     run(["make", f"-j{os.cpu_count() or 4}"], trees["dovecot"], env)
     run(["make", "install"], trees["dovecot"], env)
     run(["./configure", f"--prefix={prefix}", f"--with-dovecot={prefix}/lib/dovecot"], trees["pigeonhole"], env)
