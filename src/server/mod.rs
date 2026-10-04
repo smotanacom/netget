@@ -1271,6 +1271,8 @@ pub mod a2a;
 pub mod acme;
 #[cfg(feature = "amqp1")]
 pub mod amqp1;
+#[cfg(feature = "bmp")]
+pub mod bmp;
 #[cfg(feature = "caldav")]
 pub mod caldav;
 #[cfg(feature = "carddav")]

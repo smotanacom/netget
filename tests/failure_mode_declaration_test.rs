@@ -67,6 +67,8 @@ const UNDECLARED_CONNECTIONLESS_BASELINE: &[&str] = &[];
 /// with its reason; the per-protocol `CLAUDE.md` failure section says why.
 const DOCUMENTED_SILENT: &[&str] = &[
     "arp",
+    // RFC 7854 defines no collector-to-router message; failed handling closes the session.
+    "bmp",
     "bootp",
     "can",
     "cdp",
