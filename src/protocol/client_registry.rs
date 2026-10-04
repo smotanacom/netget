@@ -382,6 +382,16 @@ impl ClientRegistry {
             crate::client::fastcgi::actions::FastcgiClientProtocol::new(),
         ));
 
+        #[cfg(feature = "redfish")]
+        self.register(Arc::new(
+            crate::client::redfish::actions::RedfishClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "scim")]
+        self.register(Arc::new(
+            crate::client::scim::actions::ScimClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -873,6 +883,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("A2A", "a2a"),
     ("GraphQL", "graphql"),
     ("FastCGI", "fastcgi"),
+    ("Redfish", "redfish"),
+    ("SCIM", "scim"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
