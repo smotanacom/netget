@@ -432,6 +432,11 @@ impl ClientRegistry {
             crate::client::rtmp::actions::RtmpClientProtocol::new(),
         ));
 
+        #[cfg(feature = "srt")]
+        self.register(Arc::new(
+            crate::client::srt::actions::SrtClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -933,6 +938,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("FIX", "fix"),
     ("WAMP", "wamp"),
     ("RTMP", "rtmp"),
+    ("SRT", "srt"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

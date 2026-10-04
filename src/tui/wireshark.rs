@@ -381,6 +381,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // DRDA registers only a heuristic dissector — it is not in the
         // `tcp.port` decode-as table, so name it in the display filter alone.
         "db2" => with_display(PLAIN_TCP, "drda"),
+        // `srt` is a heuristic UDP dissector (srt_udp, on by default).
+        "srt" => with_display(PLAIN_UDP, "srt"),
         // Wireshark's RTMP dissector is `rtmpt`, in the tcp.port decode-as table (1935).
         "rtmp" => tcp("rtmpt"),
         // WAMP is JSON in WebSocket text frames (subprotocol wamp.2.json); no WAMP dissector.

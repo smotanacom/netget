@@ -452,5 +452,8 @@ pub mod wamp;
 #[cfg(feature = "rtmp")]
 pub mod rtmp;
 
+#[cfg(feature = "srt")]
+pub mod srt;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
