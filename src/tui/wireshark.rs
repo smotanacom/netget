@@ -402,6 +402,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mqtt" => tcp("mqtt"),
         "mqtt_sn" => udp("mqttsn"),
         "nbd" => tcp("nbd"),
+        // RESTCONF is HTTP carrying YANG JSON.
+        "restconf" => tcp("http"),
         // LwM2M is CoAP: the coap dissector shows the operations (lwm2mtlv decodes TLV bodies).
         "lwm2m" => udp("coap"),
         // Wireshark ships no Zenoh dissector (the project offers a Lua plugin).

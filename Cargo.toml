@@ -107,6 +107,7 @@ portable-base = [
     "managesieve",
     "zenoh",
     "lwm2m",
+    "restconf",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -318,6 +319,7 @@ nbd = ["dep:sha2"] # Network Block Device read-only server and client
 managesieve = [] # ManageSieve (RFC 5804) server and client
 zenoh = ["dep:zenoh"] # Zenoh router/peer and client over the zenoh runtime (TCP transport)
 lwm2m = ["coap"] # LwM2M 1.1 server and device over the coap feature's CoAP codec
+restconf = ["urlencoding"] # RESTCONF (RFC 8040) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -604,6 +606,7 @@ dist-windows = [
     "managesieve",
     "zenoh",
     "lwm2m",
+    "restconf",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -791,6 +794,7 @@ all-protocols = [
     "managesieve",
     "zenoh",
     "lwm2m",
+    "restconf",
     "sflow",
     "prometheus-remote-write",
     "ssh",

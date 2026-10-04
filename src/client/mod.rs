@@ -764,5 +764,7 @@ pub mod bolt;
 pub mod lwm2m;
 #[cfg(feature = "oci-registry")]
 pub mod oci_registry;
+#[cfg(feature = "restconf")]
+pub mod restconf;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
