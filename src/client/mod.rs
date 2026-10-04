@@ -699,6 +699,8 @@ pub mod nostr;
 #[cfg(feature = "netflow-v9")]
 pub mod netflow_v9;
 
+#[cfg(feature = "hl7")]
+pub mod hl7;
 #[cfg(feature = "netconf")]
 pub mod netconf;
 #[cfg(feature = "rdap")]

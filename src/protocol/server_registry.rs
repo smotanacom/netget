@@ -236,6 +236,9 @@ impl ServerRegistry {
         #[cfg(feature = "rdap")]
         self.register(Arc::new(crate::server::rdap::actions::RdapProtocol::new()));
 
+        #[cfg(feature = "hl7")]
+        self.register(Arc::new(crate::server::hl7::actions::Hl7Protocol::new()));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -1407,6 +1410,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("NETCONF", "netconf"),
     ("RPKI-RTR", "rpki_rtr"),
     ("RDAP", "rdap"),
+    ("HL7", "hl7"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

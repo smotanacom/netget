@@ -49,6 +49,13 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          tab/CR/LF rather than changing the HTTP response decision",
     ),
     (
+        "src/server/hl7/wire.rs",
+        2,
+        "validator: refuse a CR, LF or other control character in an HL7 field (which would end \
+         the segment and forge the next) or in a parsed segment, rather than strip it and change \
+         the clinical value the message carries",
+    ),
+    (
         "src/server/rdap/query.rs",
         2,
         "validator: refuse an RDAP query value or redirect URL containing a control character \

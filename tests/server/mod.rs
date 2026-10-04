@@ -404,5 +404,8 @@ pub mod rpki_rtr;
 #[cfg(feature = "rdap")]
 pub mod rdap;
 
+#[cfg(feature = "hl7")]
+pub mod hl7;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
