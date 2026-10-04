@@ -92,6 +92,7 @@ fn golden_duals_map() {
         "ACME",
         "FIX",
         "WAMP",
+        "RTMP",
         "Nostr",
         "Vault",
         "Bolt",
