@@ -131,3 +131,6 @@ pub mod thrift;
 
 #[cfg(feature = "bmp")]
 pub mod bmp;
+
+#[cfg(feature = "mqtt_sn")]
+pub mod mqtt_sn;
