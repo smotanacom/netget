@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **43 / 72**; **29 remain**. Completed scopes comprise twenty-three new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **45 / 72**; **27 remain**. Completed scopes comprise twenty-five new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -921,12 +921,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 13 both-role checks pass with unchanged pinned gNMIc 0.49.0 and grpcio peers and the NetGet pair; 38 native gRPC neighbour and 39 seam/shared-codec/wire checks also pass. Selected Capabilities/Get/transaction-wide Set and ONCE/POLL/STREAM subscriptions with typed paths/values, explicit verified TLS and native HTTP/2 bounds on TCP 9339. No YANG/device datastore, auth/reflection, SAMPLE/heartbeat, extensions or opaque values; Experimental. Source `306ffb43`/`5ed53683`, merge `94caa797`, central CI `11854297`.
 
-- [ ] **05. Redfish** — A/M; proposed feature `redfish`. [Specification/reference](https://www.dmtf.org/standards/redfish).
+- [x] **05. Redfish** — A/M; proposed feature `redfish`. [Specification/reference](https://www.dmtf.org/standards/redfish).
   - Scope: Service root, Systems/Chassis/Managers, inventory/sensors, sessions, a documented action set and tasks.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 test functions pass. Unchanged gofish v0.26.0 (Go) is refused a wrong password, logs in by session, reads systems (typed summaries and allowable reset types), resets through a task monitor it polls to Completed, PATCHes AssetTag and reads it back, walks chassis sensors, managers and sessions, and logs out; unchanged DMTF redfishtool 1.1.8 reads with Basic and session auth, waits on a reset and is refused a wrong password; NetGet's client logs in to, reads, patches and resets DMTF Redfish-Mockup-Server 1.3.0's public-rackmount1 mockup; HTTP rules, fail-closed logins and the NetGet pair. Plain HTTP, no $expand/$select/$filter, ETags or event subscriptions; Experimental. Source `35d3d586`, CI `2f934687`.
 
 - [x] **06. NUT UPS management** — A/S-M; proposed feature `nut`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9271.html).
   - Scope: UPS discovery, variables, supported authenticated operations, errors and programmable power scenarios.
@@ -999,12 +1000,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 5 test functions pass. Unchanged a2a-sdk 1.2.1 (protocol 1.0) drives the agent as client (card resolution, direct message, streamed task in snapshot/working/artifact/completed order, GetTask, cancellation, task-not-found) and serves an echo agent to the client over the same calls; raw JSON-RPC refusals (missing and 0.3 versions, parse, envelope, unknown and push methods, unadvertised streaming, agent-role messages), handler-less -32603 and a card redirect refused. JSON-RPC binding only, no push notifications, SubscribeToTask, extended card or task store; Experimental. Source `0f995b77`, CI `ed1f40cf`.
 
-- [ ] **15. SCIM 2.0** — B/M-L; proposed feature `scim`. [Specification/reference](https://www.rfc-editor.org/info/rfc7644/).
+- [x] **15. SCIM 2.0** — B/M-L; proposed feature `scim`. [Specification/reference](https://www.rfc-editor.org/info/rfc7644/).
   - Scope: User/group provisioning, discovery, CRUD/PATCH, filtering and pagination within declared capabilities.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 test functions pass. Unchanged scim2-tester 0.5.1 builds its models from NetGet's discovery and passes every check it runs (discovery, CRUD, PATCH add/replace/remove on every User, Enterprise and Group attribute, attribute selection on get, list and /.search) with no error; unchanged scim2-cli 0.4.0 creates, runs a compound value-path filter sorted descending, a case-insensitive filter, attribute selection, a uniqueness conflict, replace and delete; NetGet's client provisions against unchanged scim2-server 0.4.0; filter, PATCH-path, projection, refusal and NetGet pair tests. Discovery comes from RFC 7643's own schema text; Users and Groups only, no Bulk, /Me, ETags or changePassword; Experimental. Source `ac6c6131`, CI `c218e696`.
 
 - [ ] **16. ACME** — B/L; proposed feature `acme`. [Specification/reference](https://www.rfc-editor.org/info/rfc8555/).
   - Scope: Account/order/challenge/finalize/certificate workflow with deterministic JWS, nonces and certificate processing.
