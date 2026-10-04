@@ -3489,6 +3489,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Prepare hash-verified unchanged thriftpy2 and Apache Thrift in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/thrift/install_peers.py "$RUNNER_TEMP/thrift-peers" | tee "$RUNNER_TEMP/thrift-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/thrift-env" >> "$GITHUB_ENV"
       - name: Compile Thrift as a standalone Cargo feature
@@ -3568,6 +3569,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Prepare pinned unchanged GoBGP and gobmp in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/bmp/install_peers.py "$RUNNER_TEMP/bmp-peers" | tee "$RUNNER_TEMP/bmp-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/bmp-env" >> "$GITHUB_ENV"
       - name: Compile BMP as a standalone Cargo feature
@@ -3643,6 +3645,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler cmake g++ libssl-dev mosquitto mosquitto-clients
       - name: Prepare hash-pinned unchanged mqtt-sn-tools and Paho MQTT-SN Gateway in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/mqtt_sn/install_peers.py "$RUNNER_TEMP/mqtt-sn-peers" | tee "$RUNNER_TEMP/mqtt-sn-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/mqtt-sn-env" >> "$GITHUB_ENV"
       - name: Compile MQTT-SN as a standalone Cargo feature
@@ -3718,6 +3721,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler pkg-config libgnutls28-dev
       - name: Prepare hash-pinned unchanged libnbd and nbdkit in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/nbd/install_peers.py "$RUNNER_TEMP/nbd-peers" | tee "$RUNNER_TEMP/nbd-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/nbd-env" >> "$GITHUB_ENV"
       - name: Compile NBD as a standalone Cargo feature
@@ -3793,6 +3797,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler pkg-config libssl-dev
       - name: Prepare hash-pinned unchanged Dovecot, Pigeonhole and sievelib in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/managesieve/install_peers.py "$RUNNER_TEMP/managesieve-peers" | tee "$RUNNER_TEMP/managesieve-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/managesieve-env" >> "$GITHUB_ENV"
       - name: Compile ManageSieve as a standalone Cargo feature
@@ -3868,6 +3873,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler cmake
       - name: Prepare hash-pinned unchanged zenoh-pico in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/zenoh/install_peers.py "$RUNNER_TEMP/zenoh-peers" | tee "$RUNNER_TEMP/zenoh-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/zenoh-env" >> "$GITHUB_ENV"
       - name: Compile Zenoh as a standalone Cargo feature
@@ -3947,6 +3953,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Prepare hash-pinned unchanged Leshan demos in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/lwm2m/install_peers.py "$RUNNER_TEMP/lwm2m-peers" | tee "$RUNNER_TEMP/lwm2m-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/lwm2m-env" >> "$GITHUB_ENV"
       - name: Compile LwM2M as a standalone Cargo feature
@@ -4026,6 +4033,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Prepare pinned unchanged FreeCONF RESTCONF in an owned path
         run: |
+          set -euo pipefail
           python3 tests/server/restconf/install_peers.py "$RUNNER_TEMP/restconf-peers" | tee "$RUNNER_TEMP/restconf-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/restconf-env" >> "$GITHUB_ENV"
       - name: Compile RESTCONF as a standalone Cargo feature
