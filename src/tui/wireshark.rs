@@ -275,6 +275,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "nostr" => with_display(tcp("http"), "websocket"),
         // OCPP-J is JSON text in WebSocket frames; no OCPP dissector exists in this build.
         "ocpp" => with_note(with_display(tcp("http"), "websocket"), "OCPP-J messages are JSON arrays in WebSocket text frames; the websocket filter shows each CALL, CALLRESULT and CALLERROR."),
+        // A2A is JSON-RPC over plain HTTP (SSE for streams); no A2A dissector exists.
+        "a2a" => with_note(tcp("http"), "A2A 1.0 is JSON-RPC 2.0 in HTTP POST bodies to /, with streamed answers as text/event-stream; the agent card is GET /.well-known/agent-card.json."),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
