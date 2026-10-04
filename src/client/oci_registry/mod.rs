@@ -91,9 +91,12 @@ async fn fetch(
             .await?;
         let (parts, body) = response.into_parts();
         api::headers(&parts.headers)?;
+        // `Limited`'s error is a boxed `dyn Error`, which `?` cannot convert into anyhow on
+        // every target (the wasm32 build has no other conversion in scope); say it explicitly.
         let body = Limited::new(body, api::MAX_BODY)
             .collect()
-            .await?
+            .await
+            .map_err(|e| anyhow::anyhow!("OCI response body: {e}"))?
             .to_bytes();
         Ok((parts.status.as_u16(), parts.headers, body.to_vec()))
     };
