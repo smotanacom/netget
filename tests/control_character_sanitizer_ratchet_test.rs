@@ -49,6 +49,13 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          tab/CR/LF rather than changing the HTTP response decision",
     ),
     (
+        "src/client/oci_registry/api.rs",
+        1,
+        "validator: refuse a control byte inside a registry-supplied WWW-Authenticate \
+         quoted-string rather than strip it, because rewriting the realm would change which \
+         token endpoint the client contacts",
+    ),
+    (
         "src/client/http_fetch/transport.rs",
         1,
         "validator: reject unescaped whitespace and controls before URL parsers can silently \
