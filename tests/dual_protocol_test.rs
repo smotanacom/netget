@@ -104,6 +104,7 @@ fn golden_duals_map() {
         "LwM2M",
         "RESTCONF",
         "WebTransport",
+        "JMAP",
         "Nostr",
         "Vault",
         "Bolt",
