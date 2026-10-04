@@ -146,6 +146,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("carddav", "CardDAV is WebDAV over HTTP(S) on the web server's port, found through /.well-known/carddav or DNS SRV (RFC 6764); no port is assigned"),
     ("srt", "SRT has no assigned port; each deployment picks one (srt-live-transmit and OBS examples use 9000, MediaMTX 8890)"),
     ("wamp", "WAMP runs over WebSocket on the web server's port; no port is assigned (Crossbar.io's 8080 is a convention)"),
+    ("thrift", "Thrift has no assigned port: every service picks its own, and Apache's tutorial uses 9090 (IANA's websm) by convention only"),
     ("fix", "FIX has no assigned port: each venue publishes its own, and the QuickFIX examples use 9876 and 9878 by convention only"),
     ("acme", "ACME is JSON over HTTPS at a directory URL the CA publishes (RFC 8555 §7.1.1); no port is assigned, and test CAs such as Pebble use arbitrary ones"),
     ("socketio", "Socket.IO is served over HTTP(S) at a path (/socket.io/) on an application-chosen port; none is assigned"),

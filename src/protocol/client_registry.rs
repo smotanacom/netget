@@ -442,6 +442,11 @@ impl ClientRegistry {
             crate::client::amqp1::actions::Amqp1ClientProtocol::new(),
         ));
 
+        #[cfg(feature = "thrift")]
+        self.register(Arc::new(
+            crate::client::thrift::actions::ThriftClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -945,6 +950,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("RTMP", "rtmp"),
     ("SRT", "srt"),
     ("AMQP1", "amqp1"),
+    ("Thrift", "thrift"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
