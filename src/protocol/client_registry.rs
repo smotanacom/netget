@@ -347,6 +347,11 @@ impl ClientRegistry {
             crate::client::rpki_rtr::actions::RpkiRtrClientProtocol::new(),
         ));
 
+        #[cfg(feature = "rdap")]
+        self.register(Arc::new(
+            crate::client::rdap::actions::RdapClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -831,6 +836,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("TACACS", "tacacs"),
     ("NETCONF", "netconf"),
     ("RPKI-RTR", "rpki_rtr"),
+    ("RDAP", "rdap"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

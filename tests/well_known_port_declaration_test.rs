@@ -138,6 +138,7 @@ const NO_WELL_KNOWN_PORT: &[(&str, &str)] = &[
     ("grpc", "gRPC rides on HTTP/2 and has no registered port of its own"),
     ("grpc_web", "binary gRPC-Web rides on the configured HTTP origin and has no registered port of its own"),
     ("connect_rpc", "ConnectRPC rides on the configured HTTP origin and has no registered port of its own"),
+    ("rdap", "RDAP is an HTTP(S) service under a base URL (RFC 7480) and has no port of its own"),
     ("hls", "HLS is playlists and segments served over plain HTTP; no port of its own"),
     ("jsonrpc", "JSON-RPC over HTTP has no registered port; each service picks its own"),
     ("maven", "a Maven repository is a layout over plain HTTP; no port of its own"),
