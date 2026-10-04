@@ -1284,6 +1284,8 @@ pub mod rdap;
 pub mod redfish;
 #[cfg(feature = "rpki_rtr")]
 pub mod rpki_rtr;
+#[cfg(feature = "scim")]
+pub mod scim;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
 
