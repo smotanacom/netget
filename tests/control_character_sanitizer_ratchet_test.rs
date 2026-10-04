@@ -49,6 +49,13 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          tab/CR/LF rather than changing the HTTP response decision",
     ),
     (
+        "src/server/fastcgi/record.rs",
+        1,
+        "validator: refuse a CR, LF or other control character in a CGI response header value \
+         the handler supplied (which would end the header block and forge the next header) \
+         instead of rewriting the value",
+    ),
+    (
         "src/server/ocpp/frame.rs",
         1,
         "validator: refuse an OCPP message id containing a control character instead of \

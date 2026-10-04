@@ -419,5 +419,8 @@ pub mod a2a;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 
+#[cfg(feature = "fastcgi")]
+pub mod fastcgi;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
