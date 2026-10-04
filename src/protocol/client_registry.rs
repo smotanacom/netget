@@ -337,6 +337,11 @@ impl ClientRegistry {
             crate::client::tacacs::actions::TacacsClientProtocol::new(),
         ));
 
+        #[cfg(feature = "netconf")]
+        self.register(Arc::new(
+            crate::client::netconf::actions::NetconfClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -819,6 +824,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("gNMI", "gnmi"),
     ("ConnectRPC", "connect_rpc"),
     ("TACACS", "tacacs"),
+    ("NETCONF", "netconf"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

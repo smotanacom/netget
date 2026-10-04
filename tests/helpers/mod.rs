@@ -65,3 +65,6 @@ pub mod tacacs;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;
+
+#[cfg(feature = "netconf")]
+pub mod netconf;
