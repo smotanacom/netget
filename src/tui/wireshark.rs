@@ -333,6 +333,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // honest recipe decodes the SSH transport on the NETCONF port.
         // `rpkirtr` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 323).
         "rpki_rtr" | "rpki-rtr" | "rpki" => tcp("rpkirtr"),
+        // RDAP is JSON over HTTP; Wireshark has no RDAP dissector, the HTTP one shows it all.
+        "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
         "netconf" => with_note(
             tcp("ssh"),
             "NETCONF runs inside an encrypted SSH channel (RFC 6242). Wireshark shows the SSH handshake and encrypted packets; the XML is not visible without the session keys.",

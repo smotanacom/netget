@@ -76,6 +76,7 @@ fn golden_duals_map() {
         "Diameter",
         "NETCONF",
         "RPKI-RTR",
+        "RDAP",
         "Nostr",
         "Vault",
         "Bolt",
