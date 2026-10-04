@@ -394,6 +394,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "ldap" => tcp("ldap"),
         "kafka" => tcp("kafka"),
         "amqp" => tcp("amqp"),
+        // Wireshark's `amqp` dissector reads 1.0 as well as 0-9-1 from the protocol header.
+        "amqp1" => tcp("amqp"),
         "mqtt" => tcp("mqtt"),
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),

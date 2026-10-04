@@ -94,6 +94,7 @@ fn golden_duals_map() {
         "WAMP",
         "RTMP",
         "SRT",
+        "AMQP1",
         "Nostr",
         "Vault",
         "Bolt",
