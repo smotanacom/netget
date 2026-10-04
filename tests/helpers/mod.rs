@@ -113,3 +113,6 @@ pub mod acme;
 
 #[cfg(feature = "fix")]
 pub mod fix;
+
+#[cfg(feature = "wamp")]
+pub mod wamp;

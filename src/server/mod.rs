@@ -1303,6 +1303,8 @@ pub mod scim;
 pub mod socketio;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+#[cfg(feature = "wamp")]
+pub mod wamp;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;

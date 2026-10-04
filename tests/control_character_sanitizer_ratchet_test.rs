@@ -62,11 +62,23 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          a space, which would otherwise be pasted into the directory URL",
     ),
     (
+        "src/client/wamp/mod.rs",
+        1,
+        "validator: refuse a path or authid startup parameter containing a control character, \
+         which would otherwise reach the request line or HELLO",
+    ),
+    (
         "src/server/dicom/dataset.rs",
         1,
         "validator: refuse a control character in a DICOM string value the model supplied \
          (PS3.5 6.2 allows them only in LT, ST and UT), since a rewritten value would name \
          a different patient, study or UID",
+    ),
+    (
+        "src/server/wamp/uri.rs",
+        1,
+        "validator: a WAMP URI with a control character is refused as invalid_uri, never \
+         rewritten, because a rewritten URI would name another topic or procedure",
     ),
     (
         "src/server/redfish/model.rs",

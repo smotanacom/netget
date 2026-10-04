@@ -290,6 +290,9 @@ impl ServerRegistry {
         #[cfg(feature = "fix")]
         self.register(Arc::new(crate::server::fix::actions::FixProtocol::new()));
 
+        #[cfg(feature = "wamp")]
+        self.register(Arc::new(crate::server::wamp::actions::WampProtocol::new()));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -1475,6 +1478,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("DICOM", "dicom"),
     ("ACME", "acme"),
     ("FIX", "fix"),
+    ("WAMP", "wamp"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
