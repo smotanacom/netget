@@ -1266,6 +1266,8 @@ pub mod netflow_v9;
 
 #[cfg(feature = "hl7")]
 pub mod hl7;
+#[cfg(feature = "icap")]
+pub mod icap;
 #[cfg(feature = "netconf")]
 pub mod netconf;
 #[cfg(feature = "rdap")]

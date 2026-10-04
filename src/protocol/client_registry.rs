@@ -357,6 +357,11 @@ impl ClientRegistry {
             crate::client::hl7::actions::Hl7ClientProtocol::new(),
         ));
 
+        #[cfg(feature = "icap")]
+        self.register(Arc::new(
+            crate::client::icap::actions::IcapClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -843,6 +848,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("RPKI-RTR", "rpki_rtr"),
     ("RDAP", "rdap"),
     ("HL7", "hl7"),
+    ("ICAP", "icap"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

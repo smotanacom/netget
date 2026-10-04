@@ -407,5 +407,8 @@ pub mod rdap;
 #[cfg(feature = "hl7")]
 pub mod hl7;
 
+#[cfg(feature = "icap")]
+pub mod icap;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
