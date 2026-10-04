@@ -88,6 +88,7 @@ fn golden_duals_map() {
         "Socket.IO",
         "CalDAV",
         "CardDAV",
+        "DICOM",
         "Nostr",
         "Vault",
         "Bolt",
