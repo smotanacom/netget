@@ -49,6 +49,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          tab/CR/LF rather than changing the HTTP response decision",
     ),
     (
+        "src/server/ocpp/frame.rs",
+        1,
+        "validator: refuse an OCPP message id containing a control character instead of \
+         rewriting it, because a changed id would no longer correlate the answer to its CALL",
+    ),
+    (
         "src/server/hl7/wire.rs",
         2,
         "validator: refuse a CR, LF or other control character in an HL7 field (which would end \

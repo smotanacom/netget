@@ -705,6 +705,8 @@ pub mod hl7;
 pub mod icap;
 #[cfg(feature = "netconf")]
 pub mod netconf;
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
 #[cfg(feature = "rdap")]
 pub mod rdap;
 #[cfg(feature = "rpki_rtr")]

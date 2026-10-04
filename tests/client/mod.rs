@@ -295,6 +295,9 @@ pub mod hl7;
 #[cfg(feature = "icap")]
 pub mod icap;
 
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
 

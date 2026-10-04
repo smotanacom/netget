@@ -80,3 +80,6 @@ pub mod hl7;
 
 #[cfg(feature = "icap")]
 pub mod icap;
+
+#[cfg(feature = "ocpp")]
+pub mod ocpp;
