@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **51 / 72**; **21 remain**. Completed scopes comprise thirty-one new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **52 / 72**; **20 remain**. Completed scopes comprise thirty-two new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1145,12 +1145,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **33. WAMP** — C/M-L; proposed feature `wamp`. [Specification/reference](https://wamp-proto.org/).
+- [x] **33. WAMP** — C/M-L; proposed feature `wamp`. [Specification/reference](https://wamp-proto.org/).
   - Scope: Router/client sessions, realms, routed RPC and pub/sub with correlation and errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 WAMP test functions pass. Unchanged autobahn-python 24.4.2 and nexus 3.3.0 (Go) join realm1 on the router, register and call through it (autobahn also sees its own callee's runtime error routed back), publish with acknowledgement and receive their own events, subscribe by prefix (autobahn), call the router's handler-answered procedures (a result and an application error), are refused a duplicate registration (autobahn) and realm "blocked", and leave with GOODBYE. NetGet's client against the unchanged nexus router calls nexus's callee (result and error), receives its ticks, publishes to its subscriber and registers a procedure that nexus's caller invokes and the handler answers, all asserted from nexus's own output. Raw WebSocket tests cover subprotocol refusal, HELLO rules and timeout, wildcard/exact subscriptions with exclusion and black/white listing, routed RPC with disclose_me, routed errors, unknown subscription/registration, a callee leaving mid-call, an injected publication and violations after WELCOME; no handler answer is ABORT not_authorized / ERROR unavailable; the NetGet pair covers all four client roles. JSON over WebSocket only; anonymous auth; no progressive results, cancellation, shared registrations or meta API; Experimental. Source `c26eb71c`, CI `c252f69b`.
 
 - [ ] **34. Apache Thrift** — B/L; proposed feature `thrift`. [Specification/reference](https://thrift.apache.org/docs/).
   - Scope: Explicit IDL/schema-driven RPC, selected transports/encodings and structured calls/results/errors.
