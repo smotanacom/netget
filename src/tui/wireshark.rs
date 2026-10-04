@@ -401,6 +401,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "amqp1" => tcp("amqp"),
         "mqtt" => tcp("mqtt"),
         "mqtt_sn" => udp("mqttsn"),
+        "nbd" => tcp("nbd"),
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),
         "rdp" => with_display(tcp("tpkt"), "rdp"),
