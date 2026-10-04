@@ -328,6 +328,13 @@ pub fn wire_for(protocol: &str) -> Wire {
         "xmpp" => tcp("xmpp"),
         "telnet" => tcp("telnet"),
         "ssh" => tcp("ssh"),
+        // No NETCONF dissector exists in this Wireshark build (4.6.8: `tshark -G protocols`
+        // lists none), and NETCONF over SSH is inside the encrypted channel anyway, so the
+        // honest recipe decodes the SSH transport on the NETCONF port.
+        "netconf" => with_note(
+            tcp("ssh"),
+            "NETCONF runs inside an encrypted SSH channel (RFC 6242). Wireshark shows the SSH handshake and encrypted packets; the XML is not visible without the session keys.",
+        ),
         "ftp" => tcp("ftp"),
         "whois" => tcp("whois"),
         "socks5" => tcp("socks"),

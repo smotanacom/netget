@@ -74,6 +74,7 @@ fn golden_duals_map() {
         "gNMI",
         "TACACS",
         "Diameter",
+        "NETCONF",
         "Nostr",
         "Vault",
         "Bolt",
