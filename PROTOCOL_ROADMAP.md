@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **52 / 72**; **20 remain**. Completed scopes comprise thirty-two new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **53 / 72**; **19 remain**. Completed scopes comprise thirty-three new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1247,12 +1247,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **47. RTMP** — C/L; proposed feature `rtmp`. [Specification/reference](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf).
+- [x] **47. RTMP** — C/L; proposed feature `rtmp`. [Specification/reference](https://rtmp.veriskope.com/pdf/rtmp_specification_1.0.pdf).
   - Scope: Playback/publication endpoints, handshake, chunks, AMF command handling and supplied media with timestamps.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 4 RTMP test functions pass. Unchanged FFmpeg publishes an H.264/AAC clip that ffprobe reads back (h264 320x240, aac) and FFmpeg decodes, and unchanged MediaMTX 1.21.1 (its own Go RTMP stack) pulls the stream and reports H264 and MPEG-4 Audio tracks; FFmpeg is refused a stream key, an app and a play the policy rejects. NetGet's client plays from MediaMTX (Play.Start, avc/aac, counts, timestamps) and publishes the clip, which MediaMTX's API reports with both tracks. Raw-wire tests cover the handshake echo, connect accept/reject, ping, AMF3 and an oversized message closing the connection, and no handler answer; the NetGet pair covers cached metadata, sequence headers, keyframe join and an injected onTextData. MediaMTX exposed two compatibility points that are now handled: it sends the whole path as the app with an empty stream name, and treats a connection as one reader or publisher (and keeps streaming after deleteStream, which taught the client to wait on one overall deadline). Live relay only, AMF0 only, no RTMPS/RTMPT or digest handshake; Experimental. Source `89e60cda`, CI `fa1ff8cf`.
 
 - [ ] **48. SRT** — C/L; proposed feature `srt`. [Specification/reference](https://github.com/Haivision/srt).
   - Scope: Listening/connecting endpoints exchanging supplied media/data through a real retransmission/timing implementation.
