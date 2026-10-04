@@ -68,6 +68,12 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          which would otherwise reach the request line or HELLO",
     ),
     (
+        "src/server/amqp1/message.rs",
+        1,
+        "encoding predicate: a binary data section is shown to the handler as text only when it is \
+         UTF-8 without control characters, and otherwise by its length; nothing is filtered",
+    ),
+    (
         "src/server/dicom/dataset.rs",
         1,
         "validator: refuse a control character in a DICOM string value the model supplied \
