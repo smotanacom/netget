@@ -100,6 +100,7 @@ portable-base = [
     "rtmp",
     "srt",
     "amqp1",
+    "thrift",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -304,6 +305,7 @@ wamp = ["dep:tokio-tungstenite", "ring"] # WAMP v2 router and client (JSON over 
 rtmp = ["ring"] # RTMP live server (publish/play relay) and client
 srt = ["dep:srt-tokio"] # SRT listener (publish/request relay) and caller
 amqp1 = [] # AMQP 1.0 container and client (separate from AMQP 0-9-1)
+thrift = [] # Apache Thrift RPC server and client (IDL-driven, binary and compact)
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -583,6 +585,7 @@ dist-windows = [
     "rtmp",
     "srt",
     "amqp1",
+    "thrift",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -763,6 +766,7 @@ all-protocols = [
     "rtmp",
     "srt",
     "amqp1",
+    "thrift",
     "sflow",
     "prometheus-remote-write",
     "ssh",

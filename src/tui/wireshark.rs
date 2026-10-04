@@ -389,6 +389,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "wamp" => with_note(with_display(tcp("http"), "websocket"), "WAMP messages are JSON arrays in WebSocket text frames: [1, realm, details] is HELLO, 48 CALL, 50 RESULT, 16 PUBLISH, 36 EVENT."),
         // `fix` is a heuristic TCP dissector (fix_tcp, on by default), not in the decode-as table.
         "fix" => with_display(PLAIN_TCP, "fix"),
+        // Framed or unframed, binary or compact: the `thrift` dissector reads all four.
+        "thrift" => tcp("thrift"),
         "redis" => tcp("resp"),
         "memcached" => tcp("memcache"),
         "ldap" => tcp("ldap"),

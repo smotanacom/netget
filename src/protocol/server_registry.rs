@@ -302,6 +302,11 @@ impl ServerRegistry {
         #[cfg(feature = "amqp1")]
         self.register(Arc::new(crate::server::amqp1::actions::Amqp1Protocol::new()));
 
+        #[cfg(feature = "thrift")]
+        self.register(Arc::new(
+            crate::server::thrift::actions::ThriftProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -1491,6 +1496,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("RTMP", "rtmp"),
     ("SRT", "srt"),
     ("AMQP1", "amqp1"),
+    ("Thrift", "thrift"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

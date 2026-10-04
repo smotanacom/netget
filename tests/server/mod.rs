@@ -458,5 +458,8 @@ pub mod srt;
 #[cfg(feature = "amqp1")]
 pub mod amqp1;
 
+#[cfg(feature = "thrift")]
+pub mod thrift;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;

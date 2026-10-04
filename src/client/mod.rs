@@ -741,6 +741,8 @@ pub mod socketio;
 pub mod srt;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+#[cfg(feature = "thrift")]
+pub mod thrift;
 #[cfg(feature = "wamp")]
 pub mod wamp;
 
