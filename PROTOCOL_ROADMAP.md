@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **56 / 72**; **16 remain**. Completed scopes comprise thirty-six new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **57 / 72**; **15 remain**. Completed scopes comprise thirty-seven new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -962,12 +962,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 18 checks pass. StayRTR 0.6.4 rtrdump (Go; v1, v0, serial delta, foreign-session Cache Reset) and RTRlib 0.8.0 rtrclient (C; Serial Notify → incremental withdrawal) against the cache; StayRTR's cache against the router (notify-driven delta, version 0); NetGet pair, RFC 8210 error codes both ways, parked-manual removal, literal-byte codec. No VRP store, ROV, SSH/TLS transports, Router Key/ASPA; Experimental. Source `533b7073`, CI `d3457253`.
 
-- [ ] **10. BMP** — B/M; proposed feature `bmp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc7854.html).
+- [x] **10. BMP** — B/M; proposed feature `bmp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc7854.html).
   - Scope: Collector/exporter roles, peer up/down, route monitoring, statistics and bounded BGP payload parsing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 BMP test functions pass. Unchanged GoBGP 4.9.0 (Go), peered with a second GoBGP, exports to NetGet's collector: Initiation (sysName GoBGP), Peer Up with both OPENs and the peer's port, Route Monitoring for routes added through the gobgp CLI (community and MED intact) and for a withdrawal, Statistics (adj_rib_in_routes 1 after the withdrawal), and Peer Down when the route source is killed. NetGet's exporter against unchanged gobmp 1.1.0 (Go): gobmp parses the peer up (ASNs, BGP IDs, port), announcements with AS path, origin, MED, local preference and community, the withdrawal, the statistics (prefixes_rejected_inbound 3, ads_rib_in 1), the peer down with its NOTIFICATION, and the termination; a route for a peer that is not up is refused before the wire. Wire tests cover per-peer header and distinguisher round trips, exporter-to-collector exact values for every message type, and collector refusals (no Initiation first, version 2, oversized, truncated per-peer header, a rejected router). The `bmp` feature enables `bgp` for netgauze's BGP codec; IPv4 routes only on the exporter; no Route Mirroring export; Experimental. Source `4af65899`, CI `a7a2760c`.
 
 - [x] **11. GraphQL over HTTP** — A/M-L; proposed feature `graphql`. [Specification/reference](https://http-spec.graphql.org/draft/).
   - Scope: Runtime schema, query/mutation execution, variables, introspection and spec-shaped errors; subscriptions tracked separately below.
