@@ -57,7 +57,8 @@ pub mod http_common;
     feature = "tls",
     feature = "kubernetes-server",
     feature = "gemini",
-    feature = "acme"
+    feature = "acme",
+    feature = "jmap"
 ))]
 pub mod tls_cert_manager;
 
@@ -1324,6 +1325,8 @@ pub mod wamp;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;
+#[cfg(feature = "jmap")]
+pub mod jmap;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 #[cfg(feature = "restconf")]

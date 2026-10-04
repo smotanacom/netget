@@ -409,6 +409,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "nbd" => tcp("nbd"),
         // RESTCONF is HTTP carrying YANG JSON.
         "restconf" => tcp("http"),
+        // JMAP is JSON over HTTPS (or HTTP with tls: false); TLS hides it without session keys.
+        "jmap" => with_note(with_display(tcp("http"), "http || tls"), "JMAP requests are JSON POSTs to the session's apiUrl. Over HTTPS (the default) Wireshark needs the TLS session keys to show them; with tls: false the http dissector shows the JSON."),
         // LwM2M is CoAP: the coap dissector shows the operations (lwm2mtlv decodes TLV bodies).
         "lwm2m" => udp("coap"),
         // Wireshark ships no Zenoh dissector (the project offers a Lua plugin).
