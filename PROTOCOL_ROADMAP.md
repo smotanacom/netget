@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **45 / 72**; **27 remain**. Completed scopes comprise twenty-five new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **46 / 72**; **26 remain**. Completed scopes comprise twenty-six new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -977,12 +977,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 6 test functions pass. Unchanged gql 4.4.0 builds its client schema from NetGet's introspection (graphql-core `build_client_schema`), validates locally and runs variables, aliases, a union with fragments, a mutation and a field error under both application/json and application/graphql-response+json; unchanged strawberry-graphql 0.330.2 answers the client's introspection, POST and GET queries, union, mutation, resolver error and validation error; HTTP rules (200/400 by media type, 405 for GET mutations, 406, 415), execution over handler data and the NetGet pair. Queries and mutations only (subscriptions are item 72), no batching, uploads or persisted queries; Experimental. Source `c5c6852d`, CI `152eb829`.
 
-- [ ] **12. Socket.IO** — A/M; proposed feature `socketio`. [Specification/reference](https://socket.io/docs/v4/socket-io-protocol/).
+- [x] **12. Socket.IO** — A/M; proposed feature `socketio`. [Specification/reference](https://socket.io/docs/v4/socket-io-protocol/).
   - Scope: Explicit protocol revision, Engine.IO polling/WebSocket, events, namespaces, acknowledgments and disconnects.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 test functions pass (twice in a row). Protocol revision: Socket.IO v5 over Engine.IO v4. The reference socket.io-client 4.8.4 (JavaScript) and python-socketio 5.17.0, both unchanged, each connect over long-polling upgraded to WebSocket and over WebSocket only, emit with acknowledgements, receive broadcasts, acknowledge a server event, connect an auth-gated namespace, are refused it with bad auth and refused an unknown namespace, and are disconnected by the server; NetGet's client does the same against python-socketio's server over WebSocket and polling; wire tests cover Engine.IO errors, the two-poll error, ping timeout, rooms, peer pushes and a handler-less CONNECT_ERROR. Text packets only, no CORS, no polling-to-WebSocket upgrade in the client; Experimental. Source `347a8baf`, CI `336ff66a`.
 
 - [x] **13. Connect RPC** — B/M-L; proposed feature `connect_rpc`. [Specification/reference](https://connectrpc.com/docs/protocol/).
   - Scope: Protobuf-defined RPC with Connect framing, structured messages and errors; gRPC-Web tracked separately below.
