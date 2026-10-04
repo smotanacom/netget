@@ -99,6 +99,7 @@ portable-base = [
     "wamp",
     "rtmp",
     "srt",
+    "amqp1",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -302,6 +303,7 @@ fix = [] # FIX 4.x acceptor and initiator (tag=value session layer)
 wamp = ["dep:tokio-tungstenite", "ring"] # WAMP v2 router and client (JSON over WebSocket)
 rtmp = ["ring"] # RTMP live server (publish/play relay) and client
 srt = ["dep:srt-tokio"] # SRT listener (publish/request relay) and caller
+amqp1 = [] # AMQP 1.0 container and client (separate from AMQP 0-9-1)
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -580,6 +582,7 @@ dist-windows = [
     "wamp",
     "rtmp",
     "srt",
+    "amqp1",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -759,6 +762,7 @@ all-protocols = [
     "wamp",
     "rtmp",
     "srt",
+    "amqp1",
     "sflow",
     "prometheus-remote-write",
     "ssh",

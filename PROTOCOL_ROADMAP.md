@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **54 / 72**; **18 remain**. Completed scopes comprise thirty-four new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **55 / 72**; **17 remain**. Completed scopes comprise thirty-five new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1131,12 +1131,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: **27 checks** (17 collector, ten exporter) passed at 100 threads with pinned BSD Cistern/sflow and actual GoFlow2 2.2.7. All four v5 sample carriers, literal wire fixtures, selected typed flow/interface/Ethernet/VLAN records, sequence/session/queue bounds and cancellation are covered. Source `9be47d52`, peer output-order correction `d3686cce`. Experimental; no SNMP polling, full record catalog, auth, durable flow store, fuzz or pcap claim.
 
-- [ ] **31. AMQP 1.0** — B/L; proposed feature `amqp1`. [Specification/reference](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html).
+- [x] **31. AMQP 1.0** — B/L; proposed feature `amqp1`. [Specification/reference](https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html).
   - Scope: Separate from 0-9-1: connection/session/link lifecycle, credit, send/receive, settlement and outcomes.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 AMQP 1.0 test functions pass. Unchanged rhea 3.0.5 (JavaScript) and go-amqp 1.7.0 (Go) authenticate with SASL PLAIN, publish and consume through the container, get accepted and rejected outcomes (conditions and descriptions intact), receive the confirmation the handler routes to another address, and are refused a forbidden address and a wrong password; rhea also receives the message the handler produces for its credited news receiver and its own data message relayed on chat. NetGet's client against an unchanged rhea broker sends (accepted, rejected, refused link) and receives with credit. Codec tests cover compact encodings, round trips and hostile input; the pair covers relay and produced messages; no handler answer fails closed. rhea exposed two points now handled: answering a client's detach of an already-refused link must not detach twice, and rhea's broker accepts an attach without echoing the terminus (a null terminus is a refusal only if its detach follows). Addresses are topics; no transactions, link recovery, filters or storage; Experimental. Source `37c9673b` (shared task guard `5ab69c55`), CI `2083abe1`.
 
 - [ ] **32. Zenoh** — B/M-L; proposed feature `zenoh`. [Specification/reference](https://zenoh.io/docs/overview/what-is-zenoh/).
   - Scope: Listening/connecting peer roles, publication, subscriptions and query/queryable handlers using existing runtime.
