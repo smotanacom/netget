@@ -79,6 +79,7 @@ fn golden_duals_map() {
         "RDAP",
         "HL7",
         "ICAP",
+        "OCPP",
         "Nostr",
         "Vault",
         "Bolt",

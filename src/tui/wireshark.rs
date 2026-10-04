@@ -273,6 +273,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // as `http`, the 101 hands the stream to Wireshark's own `websocket` dissector, whose
         // payload it reads as JSON — checked with `-d tcp.port==N,http -Y websocket`.
         "nostr" => with_display(tcp("http"), "websocket"),
+        // OCPP-J is JSON text in WebSocket frames; no OCPP dissector exists in this build.
+        "ocpp" => with_note(with_display(tcp("http"), "websocket"), "OCPP-J messages are JSON arrays in WebSocket text frames; the websocket filter shows each CALL, CALLRESULT and CALLERROR."),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
