@@ -345,6 +345,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
         "icap" => tcp("icap"),
         "fastcgi" => tcp("fcgi"),
+        // Socket.IO is Engine.IO text over HTTP long-polling or WebSocket; no dedicated dissector.
+        "socketio" => with_note(with_display(tcp("http"), "http || websocket"), "Engine.IO packets are text: long-polling bodies split on U+001E, or one packet per WebSocket text frame (4 = message; 42 = a Socket.IO event)."),
         // SCIM is JSON (application/scim+json) over HTTP; there is no SCIM dissector.
         "scim" => with_note(tcp("http"), "SCIM is application/scim+json over HTTP under the service's base path (often /scim/v2); production services use HTTPS."),
         // Redfish is JSON over HTTP(S); there is no Redfish dissector.
