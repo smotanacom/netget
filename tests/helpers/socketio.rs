@@ -54,13 +54,7 @@ pub(crate) async fn server_in(
     params: Value,
 ) -> (ServerId, SocketAddr) {
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    tokio::spawn(async move {
-        while let Some(m) = rx.recv().await {
-            if std::env::var("GQL_DEBUG").is_ok() {
-                eprintln!("STATUS {m}");
-            }
-        }
-    });
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let id = ServerForm {
         protocol: "socketio".into(),
         host: Some("127.0.0.1".into()),
