@@ -428,5 +428,8 @@ pub mod redfish;
 #[cfg(feature = "scim")]
 pub mod scim;
 
+#[cfg(feature = "socketio")]
+pub mod socketio;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;

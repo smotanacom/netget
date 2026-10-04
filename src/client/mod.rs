@@ -721,6 +721,8 @@ pub mod redfish;
 pub mod rpki_rtr;
 #[cfg(feature = "scim")]
 pub mod scim;
+#[cfg(feature = "socketio")]
+pub mod socketio;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
 
