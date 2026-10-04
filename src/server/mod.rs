@@ -1328,5 +1328,7 @@ pub mod diameter;
 pub mod lwm2m;
 #[cfg(feature = "restconf")]
 pub mod restconf;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;

@@ -37,6 +37,12 @@ use std::path::{Path, PathBuf};
 /// The count is the number of occurrences allowed in that file. It may only go down.
 const ALLOWED: &[(&str, usize, &str)] = &[
     (
+        "src/client/webtransport/mod.rs",
+        1,
+        "validator: the session path becomes the request's :path; one with whitespace or a \
+         control character is refused at startup rather than altered",
+    ),
+    (
         "src/server/managesieve/proto.rs",
         1,
         "validator: RFC 5804 forbids control characters in script names; a name with one is \

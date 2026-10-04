@@ -108,6 +108,7 @@ portable-base = [
     "zenoh",
     "lwm2m",
     "restconf",
+    "webtransport",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -320,6 +321,7 @@ managesieve = [] # ManageSieve (RFC 5804) server and client
 zenoh = ["dep:zenoh"] # Zenoh router/peer and client over the zenoh runtime (TCP transport)
 lwm2m = ["coap"] # LwM2M 1.1 server and device over the coap feature's CoAP codec
 restconf = ["urlencoding"] # RESTCONF (RFC 8040) server and client
+webtransport = ["dep:rustls", "dep:wtransport", "dep:wtransport-proto", "dep:sha2"] # WebTransport over HTTP/3 (draft-02) server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -607,6 +609,7 @@ dist-windows = [
     "zenoh",
     "lwm2m",
     "restconf",
+    "webtransport",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -795,6 +798,7 @@ all-protocols = [
     "zenoh",
     "lwm2m",
     "restconf",
+    "webtransport",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -1210,6 +1214,8 @@ kafka-protocol = { version = "0.14", optional = true }  # Code-generated Kafka p
 quinn = { version = "0.11", optional = true }  # Async QUIC implementation for HTTP/3
 h3 = { version = "0.0.8", optional = true }  # HTTP/3 implementation
 h3-quinn = { version = "0.0.10", optional = true }  # QUIC adapter for HTTP/3
+wtransport = { version = "=0.7.2", default-features = false, features = ["ring", "quinn", "self-signed"], optional = true }  # WebTransport (vendored with fixes, see vendor/wtransport/README.netget.md)
+wtransport-proto = { version = "=0.7.2", features = ["async"], optional = true }
 
 # BitTorrent protocols (bencode encoding/decoding)
 serde_bencode = { version = "0.2", optional = true }  # Bencode serialization for BitTorrent protocols
@@ -1477,3 +1483,7 @@ h3-quinn = { path = "vendor/h3-quinn" }
 # Bound tonic0.12.3 decompression with the configured receive limit in both directions.
 # See vendor/tonic/README.netget.md and tests/vendored_tonic_patch_test.rs.
 tonic = { path = "vendor/tonic" }
+# Owned, bounded wtransport 0.7.2 driver with checked SETTINGS and bounded QPACK.
+# See vendor/wtransport/README.netget.md and tests/vendored_wtransport_patch_test.rs.
+wtransport = { path = "vendor/wtransport" }
+wtransport-proto = { path = "vendor/wtransport-proto" }

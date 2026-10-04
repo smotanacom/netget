@@ -474,6 +474,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::restconf::actions::RestconfClientProtocol::new(),
         ));
+        #[cfg(feature = "webtransport")]
+        self.register(Arc::new(
+            crate::client::webtransport::actions::WebTransportClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -986,6 +990,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Zenoh", "zenoh"),
     ("LwM2M", "lwm2m"),
     ("RESTCONF", "restconf"),
+    ("WebTransport", "webtransport"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

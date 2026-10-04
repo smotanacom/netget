@@ -149,3 +149,5 @@ pub mod lwm2m;
 
 #[cfg(feature = "restconf")]
 pub mod restconf;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
