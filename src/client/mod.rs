@@ -711,6 +711,8 @@ pub mod carddav;
 pub mod dicom;
 #[cfg(feature = "fastcgi")]
 pub mod fastcgi;
+#[cfg(feature = "fix")]
+pub mod fix;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 #[cfg(feature = "hl7")]
