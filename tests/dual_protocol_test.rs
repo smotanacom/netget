@@ -103,6 +103,7 @@ fn golden_duals_map() {
         "Zenoh",
         "LwM2M",
         "RESTCONF",
+        "WebTransport",
         "Nostr",
         "Vault",
         "Bolt",

@@ -766,5 +766,7 @@ pub mod lwm2m;
 pub mod oci_registry;
 #[cfg(feature = "restconf")]
 pub mod restconf;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;

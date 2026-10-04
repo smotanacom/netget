@@ -367,8 +367,12 @@ fn resolves_current(span: &str, doc_dir_rel: &str, files: &BTreeSet<String>) -> 
     if files.contains(&sibling) {
         return true;
     }
+    // Vendored crates are named by full path: their `src/session.rs` is not the `src/session.rs`
+    // of some other dependency a doc cites.
     let suffix = format!("/{s}");
-    files.iter().any(|f| f.ends_with(&suffix))
+    files
+        .iter()
+        .any(|f| f.ends_with(&suffix) && !f.starts_with("vendor/"))
 }
 
 #[test]

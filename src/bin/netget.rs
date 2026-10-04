@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
         feature = "tls",
         feature = "tor",
         feature = "webrtc",
+        feature = "webtransport",
     ))]
     {
         use rustls::crypto::CryptoProvider;
