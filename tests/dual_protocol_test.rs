@@ -78,6 +78,7 @@ fn golden_duals_map() {
         "RPKI-RTR",
         "RDAP",
         "HL7",
+        "ICAP",
         "Nostr",
         "Vault",
         "Bolt",

@@ -336,6 +336,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // RDAP is JSON over HTTP; Wireshark has no RDAP dissector, the HTTP one shows it all.
         // `hl7` decodes MLLP-framed HL7 v2 on tcp.port (tshark -G decodes: tcp.port 2575).
         "hl7" | "mllp" => tcp("hl7"),
+        // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
+        "icap" => tcp("icap"),
         "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
         "netconf" => with_note(
             tcp("ssh"),
