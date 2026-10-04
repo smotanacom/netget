@@ -1266,6 +1266,8 @@ pub mod netflow_v9;
 
 #[cfg(feature = "netconf")]
 pub mod netconf;
+#[cfg(feature = "rpki_rtr")]
+pub mod rpki_rtr;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
 
