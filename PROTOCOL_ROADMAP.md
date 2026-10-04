@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **41 / 72**; **31 remain**. Completed scopes comprise twenty-two new families, fifteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 30 new families and GraphQL subscriptions.
+- Completed: **43 / 72**; **29 remain**. Completed scopes comprise twenty-three new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1217,12 +1217,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **44. FastCGI** — B/M; proposed feature `fastcgi`. [Specification/reference](https://fastcgi-archives.github.io/FastCGI_Specification.html).
+- [x] **44. FastCGI** — B/M; proposed feature `fastcgi`. [Specification/reference](https://fastcgi-archives.github.io/FastCGI_Specification.html).
   - Scope: Application responder/client, parameters, input/output streams, request IDs, abort/end and bounded framing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 test functions pass. Unchanged nginx forwards GET with query and header, a 100 KB POST (several STDIN records), a 200 000-byte answer (several STDOUT records), a binary answer and a STDERR line it logs, over one kept-alive upstream connection, and gets a 500 from a handler-less responder; unchanged flup 1.0.3 answers the client's GET, POST, large, stderr, 404, redirect, GET_VALUES (empty: flup's Python 3 lookup compares bytes with str keys) and a slow request the client aborts; raw records cover GET_VALUES, UNKNOWN_TYPE, UNKNOWN_ROLE, CANT_MPX_CONN, ABORT_REQUEST, KEEP_CONN, 431/413 bounds and versions. Responder role only, one request per connection, no Unix sockets; Experimental. Source `9b64a0ed`, CI `b0c9daaf`.
 
 - [x] **45. ICAP** — B/M-L; proposed feature `icap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc3507.html).
   - Scope: Adaptation server/client, OPTIONS/REQMOD/RESPMOD, encapsulation offsets, preview, chunks and 204 behavior.
@@ -1429,10 +1430,11 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - Selected scope: native RFC3954 UDP v9 templates, options and typed data for 35 fixed-width fields and five scope kinds. Count tracks all records and sequence tracks export packets; source IP + SourceID owns the bounded transactional template cache. TTL/idle expiry and template refresh run in owned tasks. No IPFIX conflation, UDP acknowledgement, persistent flow store, enterprise/variable fields or full standard/pcap/fuzz claim; state is Experimental.
   - Evidence: coordinator **23 collector + seven exporter checks** pass at 100 threads with unmodified softflowd 1.1.1 in its upstream legacy build profile and official GoFlow2 2.2.7, including literal wire fixtures and the NetGet pair. Cache/count/sequence/padding/malformed input, typed scope handling, expiry/refresh and cancellation pass. Local send never claims remote collection. Source `6c83cd96`; feature `netflow-v9`; pinned bootstrap and reproduction in `tests/server/netflow_v9/AGENTS.md` and `tests/client/netflow_v9/AGENTS.md`.
 
-- [ ] **72. GraphQL subscriptions**.
+- [x] **72. GraphQL subscriptions**.
   - Scope: Explicit subscription transport such as graphql-transport-ws; client/server lifecycle, typed execution and cancellation.
-  - [ ] Implementation and all required server/client integration complete.
-  - [ ] Independent validation, feature build, documentation and integrated commit recorded.
+  - [x] Implementation and all required server/client integration complete.
+  - [x] Independent validation, feature build, documentation and integrated commit recorded.
+  - Validation: 4 subscription test functions pass alongside the 6 GraphQL ones (10 total). Unchanged gql 4.4.0's websockets transport (graphql-transport-ws) fetches the schema over the socket and runs a query, a completed countdown, a refused subscription and a `send_to_peer`-fed subscription it cancels; unchanged strawberry-graphql 0.330.2 serves the client a countdown with variables, an endless subscription the client cancels, and a refusal; lifecycle close codes 4400/4401/4408/4409/4429, peer-pushed events and the NetGet pair. gql must be configured with graphql-transport-ws only: it reads the agreed subprotocol case-sensitively and hyper writes lower-case header names. No SSE transport or legacy subscriptions-transport-ws; Experimental. Source `483c608a`.
 
 ## Integrated validation evidence
 

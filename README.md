@@ -2,7 +2,7 @@
 
 **LLM-Controlled Network Protocol Server & Client**
 
-NetGet is a Rust CLI application exposing 204 network protocols as Cargo features, with server and client roles controlled by an LLM (via Ollama). Instead of hardcoding protocol logic, NetGet provides the network stack while the LLM constructs raw protocol datagrams or high-level responses based on natural language instructions.
+NetGet is a Rust CLI application exposing 205 network protocols as Cargo features, with server and client roles controlled by an LLM (via Ollama). Instead of hardcoding protocol logic, NetGet provides the network stack while the LLM constructs raw protocol datagrams or high-level responses based on natural language instructions.
 
 ```bash
 # Start a MySQL server that reads schema from files
@@ -641,4 +641,4 @@ MIT
 - Built with [Tokio](https://tokio.rs/) for async runtime
 - Terminal UI powered by [Crossterm](https://github.com/crossterm-rs/crossterm)
 - LLM integration via [Ollama](https://ollama.ai/)
-- 204 protocol features, built on best-in-class Rust crates
+- 205 protocol features, built on best-in-class Rust crates

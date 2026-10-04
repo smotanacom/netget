@@ -31,6 +31,31 @@ fn query_action() -> ActionDefinition {
         json!({"type":"graphql_query","query":"{ hello }"}),
     )
 }
+fn subscribe_action() -> ActionDefinition {
+    action(
+        "graphql_subscribe",
+        "Start a subscription over a graphql-transport-ws WebSocket to the same endpoint (opened and initialised on first use). Rust assigns the subscription id; each event arrives as graphql_subscription_event.",
+        vec![
+            parameter("query", "string", "A subscription document, e.g. subscription { bookAdded { title } }", true),
+            parameter("variables", "object", "Values for the document's variables, keyed by name without the $", false),
+            parameter("operation_name", "string", "Which operation to run when the document holds several", false),
+        ],
+        json!({"type":"graphql_subscribe","query":"subscription { bookAdded { title } }"}),
+    )
+}
+fn unsubscribe_action() -> ActionDefinition {
+    action(
+        "graphql_unsubscribe",
+        "Stop an active subscription (sends graphql-transport-ws complete)",
+        vec![parameter(
+            "subscription_id",
+            "string",
+            "The id reported in graphql_subscription_event",
+            true,
+        )],
+        json!({"type":"graphql_unsubscribe","subscription_id":"1"}),
+    )
+}
 fn disconnect_action() -> ActionDefinition {
     action(
         "disconnect",
@@ -40,7 +65,12 @@ fn disconnect_action() -> ActionDefinition {
     )
 }
 fn actions() -> Vec<ActionDefinition> {
-    vec![query_action(), disconnect_action()]
+    vec![
+        query_action(),
+        subscribe_action(),
+        unsubscribe_action(),
+        disconnect_action(),
+    ]
 }
 
 pub static CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -99,6 +129,72 @@ pub static RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_actions(actions())
 });
 
+fn subscription_parameters(
+    extra: Vec<crate::llm::actions::Parameter>,
+) -> Vec<crate::llm::actions::Parameter> {
+    let mut p = vec![
+        parameter(
+            "subscription_id",
+            "string",
+            "Rust-assigned id of the subscription",
+            true,
+        ),
+        parameter(
+            "operation_name",
+            "string",
+            "Name of the subscription operation, when it had one",
+            false,
+        ),
+    ];
+    p.extend(extra);
+    p
+}
+pub static SUBSCRIPTION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "graphql_subscription_event",
+        "One event (`next`) of an active subscription",
+        unsubscribe_action().example.clone(),
+    )
+    .with_parameters(subscription_parameters(vec![
+        parameter(
+            "data",
+            "object",
+            "The event's data shaped by the subscription's selection",
+            false,
+        ),
+        parameter(
+            "errors",
+            "array",
+            "Field errors reported with this event",
+            false,
+        ),
+    ]))
+    .with_actions(actions())
+});
+pub static SUBSCRIPTION_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "graphql_subscription_error",
+        "The server refused or ended a subscription with errors, or the WebSocket closed under it",
+        subscribe_action().example.clone(),
+    )
+    .with_parameters(subscription_parameters(vec![parameter(
+        "errors",
+        "array",
+        "Errors explaining why: [{message, locations, extensions}]",
+        true,
+    )]))
+    .with_actions(actions())
+});
+pub static SUBSCRIPTION_COMPLETE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "graphql_subscription_complete",
+        "The server ended a subscription normally; no more events will arrive for it",
+        disconnect_action().example.clone(),
+    )
+    .with_parameters(subscription_parameters(vec![]))
+    .with_actions(actions())
+});
+
 impl Protocol for GraphqlClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "GraphQL"
@@ -107,10 +203,16 @@ impl Protocol for GraphqlClientProtocol {
         "ETH>IP>TCP>HTTP>GraphQL"
     }
     fn keywords(&self) -> Vec<&'static str> {
-        vec!["graphql", "gql", "graphql client"]
+        vec![
+            "graphql",
+            "gql",
+            "graphql client",
+            "graphql subscriptions",
+            "graphql-ws",
+        ]
     }
     fn description(&self) -> &'static str {
-        "GraphQL over HTTP client: introspects the root fields, runs queries and mutations, checks responses"
+        "GraphQL client: introspects the root fields, runs queries and mutations over HTTP and subscriptions over graphql-transport-ws"
     }
     fn get_async_actions(&self, _: &crate::state::app_state::AppState) -> Vec<ActionDefinition> {
         actions()
@@ -119,7 +221,13 @@ impl Protocol for GraphqlClientProtocol {
         vec![]
     }
     fn get_event_types(&self) -> Vec<EventType> {
-        vec![CONNECTED_EVENT.clone(), RESPONSE_EVENT.clone()]
+        vec![
+            CONNECTED_EVENT.clone(),
+            RESPONSE_EVENT.clone(),
+            SUBSCRIPTION_EVENT.clone(),
+            SUBSCRIPTION_ERROR_EVENT.clone(),
+            SUBSCRIPTION_COMPLETE_EVENT.clone(),
+        ]
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
         vec![
@@ -146,10 +254,10 @@ impl Protocol for GraphqlClientProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
-            .implementation("Shared http_fetch client (reqwest natively, no redirects); GraphQL over HTTP POST/GET with Accept application/graphql-response+json then application/json; apollo-compiler syntax check; response shape checked")
-            .llm_control("Which queries and mutations to run, with which variables, and what to do with the answers")
-            .e2e_testing("tests/client/graphql: strawberry-graphql 0.330.2 (independent) answers introspection, POST and GET queries, variables, a union, a mutation, a field error and a validation error")
-            .notes("Plain HTTP; no subscriptions, batching, uploads or persisted queries. 1 MiB answers, 30 s per request.")
+            .implementation("Shared http_fetch client (reqwest natively, no redirects); GraphQL over HTTP POST/GET with Accept application/graphql-response+json then application/json; graphql-transport-ws subscriptions over tokio-tungstenite; apollo-compiler syntax check; response shape checked")
+            .llm_control("Which queries, mutations and subscriptions to run, with which variables, when to stop a subscription, and what to do with each answer and event")
+            .e2e_testing("tests/client/graphql: strawberry-graphql 0.330.2 (independent) answers introspection, POST and GET queries, variables, a union, a mutation, a field error and a validation error, and serves graphql-transport-ws subscriptions (completion, cancellation, refusal)")
+            .notes("Plain HTTP and ws://; no batching, uploads or persisted queries, no SSE or legacy subscriptions-transport-ws. 1 MiB answers and messages, 30 s per request, 64 subscriptions per socket.")
             .max_inbound_bytes(engine::MAX_BODY_BYTES)
             .build()
     }
@@ -187,7 +295,7 @@ impl Client for GraphqlClientProtocol {
                 let (op, _) = engine::parse_operation(query, v["operation_name"].as_str())?;
                 ensure!(
                     op != apollo_compiler::executable::OperationType::Subscription,
-                    "subscriptions are not supported over GraphQL over HTTP"
+                    "subscriptions go over the WebSocket: use graphql_subscribe"
                 );
                 if let Some(vars) = v.get("variables").filter(|x| !x.is_null()) {
                     ensure!(vars.is_object(), "variables must be an object");
@@ -195,6 +303,29 @@ impl Client for GraphqlClientProtocol {
                 ensure!(
                     engine::budget_ok(&v),
                     "operation exceeds the GraphQL bounds"
+                );
+            }
+            Some("graphql_subscribe") => {
+                let query = v["query"].as_str().unwrap_or_default();
+                let (op, _) = engine::parse_operation(query, v["operation_name"].as_str())?;
+                ensure!(
+                    op == apollo_compiler::executable::OperationType::Subscription,
+                    "graphql_subscribe needs a subscription operation; use graphql_query for queries and mutations"
+                );
+                if let Some(vars) = v.get("variables").filter(|x| !x.is_null()) {
+                    ensure!(vars.is_object(), "variables must be an object");
+                }
+                ensure!(
+                    engine::budget_ok(&v),
+                    "operation exceeds the GraphQL bounds"
+                );
+            }
+            Some("graphql_unsubscribe") => {
+                ensure!(
+                    v["subscription_id"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty() && s.len() <= 128),
+                    "subscription_id is required"
                 );
             }
             Some("disconnect") => return Ok(ClientActionResult::Disconnect),

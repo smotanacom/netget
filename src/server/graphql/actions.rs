@@ -66,6 +66,54 @@ fn error_action() -> ActionDefinition {
     )
 }
 
+fn event_action() -> ActionDefinition {
+    action(
+        "graphql_event",
+        "Push one event to an active subscription (graphql-transport-ws `next`). data is keyed like the subscription's `shape`; Rust executes the subscription's selection over it.",
+        vec![
+            parameter("subscription_id", "string", "The subscription to feed; may be omitted when answering that subscription's own start event", false),
+            parameter("data", "object", "Event data keyed by response key, e.g. {\"bookAdded\": {\"title\": \"Emma\"}}", true),
+            parameter("errors", "array", "Optional field errors for this event: [{message, path, extensions}]", false),
+        ],
+        json!({"type":"graphql_event","subscription_id":"1","data":{"bookAdded":{"title":"Emma"}}}),
+    )
+}
+
+fn complete_action() -> ActionDefinition {
+    action(
+        "graphql_complete",
+        "End an active subscription normally (graphql-transport-ws `complete`); no further events can be sent to it",
+        vec![parameter("subscription_id", "string", "The subscription to end; may be omitted when answering its own start event", false)],
+        json!({"type":"graphql_complete","subscription_id":"1"}),
+    )
+}
+
+fn disconnect_action() -> ActionDefinition {
+    action(
+        "disconnect",
+        "Close this WebSocket connection and every subscription on it",
+        vec![],
+        json!({"type":"disconnect"}),
+    )
+}
+
+pub static SUBSCRIPTION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "graphql_subscription_start",
+        "A subscription over graphql-transport-ws validated against the schema. Answer with zero or more graphql_event (sent in order), optionally graphql_complete, or graphql_error to refuse it; later events can be pushed to the connection with send_to_peer.",
+        json!({"type":"graphql_event","data":{"bookAdded":{"title":"Emma"}}}),
+    )
+    .with_parameters(vec![
+        parameter("subscription_id", "string", "The client's id for this subscription", true),
+        parameter("operation_name", "string", "The operation's name, when it has one", false),
+        parameter("query", "string", "The GraphQL document as sent", true),
+        parameter("variables", "object", "Variables after coercion to their declared types", true),
+        parameter("root_fields", "array", "The subscription's root field: [{response_key, field, arguments}]", true),
+        parameter("shape", "object", "Skeleton of each event's data: response keys mapped to GraphQL types or nested skeletons", true),
+    ])
+    .with_actions(vec![event_action(), complete_action(), error_action()])
+});
+
 pub static OPERATION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "graphql_operation",
@@ -79,7 +127,7 @@ pub static OPERATION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         parameter("variables", "object", "Variables after coercion to their declared types", true),
         parameter("root_fields", "array", "Root fields asked for: [{response_key, field, arguments}] with variables substituted", true),
         parameter("shape", "object", "Skeleton of the data to return: response keys mapped to GraphQL types or nested skeletons", true),
-        parameter("method", "string", "HTTP method (GET or POST)", true),
+        parameter("method", "string", "GET or POST, or WS for an operation sent over a graphql-transport-ws socket", true),
     ])
     .with_actions(vec![result_action(), error_action()])
 });
@@ -109,19 +157,31 @@ impl Protocol for GraphqlProtocol {
         "ETH>IP>TCP>HTTP>GraphQL"
     }
     fn description(&self) -> &'static str {
-        "GraphQL over HTTP server: schema-validated queries and mutations, introspection, spec execution over handler data"
+        "GraphQL server over HTTP and graphql-transport-ws: schema-validated queries, mutations and subscriptions, introspection, spec execution over handler data"
     }
     fn keywords(&self) -> Vec<&'static str> {
-        vec!["graphql", "gql", "graphql server", "graphql api"]
+        vec![
+            "graphql",
+            "gql",
+            "graphql server",
+            "graphql api",
+            "graphql subscriptions",
+            "graphql-ws",
+        ]
     }
     fn get_async_actions(&self, _: &AppState) -> Vec<ActionDefinition> {
-        vec![]
+        vec![event_action(), complete_action(), disconnect_action()]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![result_action(), error_action()]
+        vec![
+            result_action(),
+            error_action(),
+            event_action(),
+            complete_action(),
+        ]
     }
     fn get_event_types(&self) -> Vec<EventType> {
-        vec![OPERATION_EVENT.clone()]
+        vec![OPERATION_EVENT.clone(), SUBSCRIPTION_EVENT.clone()]
     }
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
         vec![
@@ -140,6 +200,13 @@ impl Protocol for GraphqlProtocol {
                 Some(json!(super::DEFAULT_ENDPOINT)),
             ),
             startup(
+                "connection_init_timeout_secs",
+                "integer",
+                "Seconds a graphql-transport-ws socket may wait before connection_init; later it is closed with 4408 (1 to 300)",
+                json!(3),
+                Some(json!(super::ws::CONNECTION_INIT_TIMEOUT.as_secs())),
+            ),
+            startup(
                 "introspection",
                 "boolean",
                 "Answer __schema and __type queries (off: they become field errors)",
@@ -153,11 +220,10 @@ impl Protocol for GraphqlProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
-            .implementation("hyper HTTP/1.1 per the GraphQL-over-HTTP draft (POST JSON and GET, application/graphql-response+json and application/json); apollo-compiler 1.33 parses, validates, introspects and executes")
-            .llm_control("The data (and field errors) behind every query and mutation, or a refusal")
-            .e2e_testing("tests/server/graphql: gql 4.4.0 (independent; builds its schema from our introspection and validates locally) runs queries, aliases, fragments on a union, variables, a mutation and field errors; raw HTTP status/media-type rules")
-            .notes("No subscriptions, batching, persisted queries, file uploads or @defer/@stream. No resolvers in Rust: the handler supplies the data, Rust executes the query over it. 1 MiB bodies, 64 KiB queries, parser depth 64.")
-            .request_only("GraphQL over HTTP answers each request; nothing is pushed")
+            .implementation("hyper HTTP/1.1 per the GraphQL-over-HTTP draft (POST JSON and GET, application/graphql-response+json and application/json) plus graphql-transport-ws subscriptions on the same endpoint (tokio-tungstenite after hyper's upgrade); apollo-compiler 1.33 parses, validates, introspects and executes")
+            .llm_control("The data (and field errors) behind every query and mutation, each subscription's events and completion, or a refusal")
+            .e2e_testing("tests/server/graphql: gql 4.4.0 (independent; builds its schema from our introspection and validates locally) runs queries, aliases, fragments on a union, variables, a mutation and field errors over HTTP, and subscriptions over graphql-transport-ws; raw HTTP and WebSocket lifecycle rules")
+            .notes("Subscriptions only over graphql-transport-ws (no SSE, no legacy subscriptions-transport-ws); connection_init is always acknowledged (no auth hook). No batching, persisted queries, file uploads or @defer/@stream. No resolvers in Rust: the handler supplies the data, Rust executes the query over it. 1 MiB bodies and messages, 64 KiB queries, parser depth 64, 64 subscriptions per socket.")
             .answers_on_failure()
             .max_inbound_bytes(engine::MAX_BODY_BYTES)
             .build()
@@ -177,6 +243,34 @@ impl Protocol for GraphqlProtocol {
     }
     fn group_name(&self) -> &'static str {
         "AI & API"
+    }
+}
+
+impl GraphqlProtocol {
+    /// Shape checks for the actions a subscription accepts (`graphql_event`, `graphql_complete`,
+    /// `disconnect`); whether the subscription exists is the connection's business.
+    pub fn check_peer_action(v: &Value) -> Result<()> {
+        ensure!(engine::budget_ok(v), "action exceeds the GraphQL bounds");
+        if let Some(id) = v.get("subscription_id").filter(|x| !x.is_null()) {
+            ensure!(
+                id.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 128),
+                "subscription_id must be 1..128 characters"
+            );
+        }
+        match v["type"].as_str() {
+            Some("graphql_event") => {
+                ensure!(
+                    v["data"].is_object(),
+                    "data must be an object keyed by response key"
+                );
+                engine::handler_errors(v.get("errors"))?;
+            }
+            Some("graphql_complete" | "disconnect") => {}
+            _ => {
+                bail!("a GraphQL connection accepts graphql_event, graphql_complete or disconnect")
+            }
+        }
+        Ok(())
     }
 }
 
@@ -209,6 +303,8 @@ impl Server for GraphqlProtocol {
                     ensure!(x.is_object(), "extensions must be an object");
                 }
             }
+            Some("graphql_event" | "graphql_complete") => Self::check_peer_action(&v)?,
+            Some("disconnect") => return Ok(ActionResult::CloseConnection),
             _ => bail!("Unknown GraphQL server action"),
         }
         Ok(ActionResult::Custom {

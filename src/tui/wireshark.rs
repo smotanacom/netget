@@ -278,7 +278,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         // A2A is JSON-RPC over plain HTTP (SSE for streams); no A2A dissector exists.
         "a2a" => with_note(tcp("http"), "A2A 1.0 is JSON-RPC 2.0 in HTTP POST bodies to /, with streamed answers as text/event-stream; the agent card is GET /.well-known/agent-card.json."),
         // GraphQL is JSON over plain HTTP; no GraphQL dissector exists in this build.
-        "graphql" => with_note(tcp("http"), "GraphQL requests are JSON POST bodies (or GET query strings) to the endpoint path; answers are application/graphql-response+json or application/json."),
+        "graphql" => with_note(tcp("http"), "GraphQL requests are JSON POST bodies (or GET query strings) to the endpoint path; answers are application/graphql-response+json or application/json. Subscriptions are graphql-transport-ws JSON in WebSocket text frames on the same path: add the websocket display filter."),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
@@ -344,6 +344,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "hl7" | "mllp" => tcp("hl7"),
         // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
         "icap" => tcp("icap"),
+        "fastcgi" => tcp("fcgi"),
         "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
         "netconf" => with_note(
             tcp("ssh"),

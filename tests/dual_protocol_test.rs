@@ -82,6 +82,7 @@ fn golden_duals_map() {
         "OCPP",
         "A2A",
         "GraphQL",
+        "FastCGI",
         "Nostr",
         "Vault",
         "Bolt",

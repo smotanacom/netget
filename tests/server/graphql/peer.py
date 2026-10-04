@@ -3,6 +3,9 @@
 client URL   gql 4.4.0 with its requests transport: builds the schema from the server's
              introspection (fetch_schema_from_transport), validates every document against it
              locally, then runs the operations below and prints one JSON line per result.
+ws URL       gql's websockets transport (graphql-transport-ws): schema over the socket, a query,
+             a completed countdown, a refused subscription, then two pushed bookAdded events
+             before it cancels; prints {"step": "waiting"} before that last subscription.
 server       strawberry-graphql 0.330.2 ASGI app under uvicorn on 127.0.0.1:0; prints
              {"port": N} and serves until stdin closes.
 """
@@ -38,6 +41,45 @@ def client(url):
                 out(step="local_validation", error=None)
             except GraphQLError as e:
                 out(step="local_validation", error=str(e))
+
+
+def ws(url):
+    import asyncio
+    from gql import Client, gql
+    from gql.transport.exceptions import TransportQueryError
+    from gql.transport.websockets import WebsocketsTransport
+
+    out = lambda **kw: print(json.dumps(kw), flush=True)
+
+    async def main():
+        # gql reads the agreed subprotocol from a case-sensitive "Sec-WebSocket-Protocol"
+        # key and falls back to the legacy Apollo protocol when it misses; hyper writes header
+        # names in lower case, so name graphql-transport-ws explicitly.
+        transport = WebsocketsTransport(
+            url=url.replace("http://", "ws://", 1),
+            subprotocols=[WebsocketsTransport.GRAPHQLWS_SUBPROTOCOL],
+        )
+        async with Client(transport=transport, fetch_schema_from_transport=True) as s:
+            out(step="schema", subprotocol=transport.subprotocol,
+                subscription=sorted(s.client.schema.subscription_type.fields))
+            out(step="query", result=await s.execute(gql("{ hello(name: \"socket\") }")))
+            events = [r async for r in s.subscribe(gql("subscription { countdown(from: 3) }"))]
+            out(step="countdown", events=events)
+            try:
+                [r async for r in s.subscribe(gql("subscription { forbidden }"))]
+                out(step="forbidden", error=None)
+            except TransportQueryError as e:
+                out(step="forbidden", error=e.errors)
+            out(step="waiting")
+            got = []
+            async for r in s.subscribe(gql("subscription { bookAdded { title author { name } } }")):
+                got.append(r)
+                if len(got) == 2:
+                    break
+            out(step="pushed", events=got)
+            await asyncio.sleep(1.0)
+
+    asyncio.run(main())
 
 
 def server():
@@ -76,6 +118,22 @@ def server():
             return [BOOKS["1"], Author(name="Frank Herbert")]
 
     @strawberry.type
+    class Subscription:
+        @strawberry.subscription
+        async def countdown(self, from_: typing.Annotated[int, strawberry.argument(name="from")]) -> typing.AsyncGenerator[int, None]:
+            for i in range(from_, 0, -1):
+                yield i
+                await asyncio.sleep(0.01)
+
+        @strawberry.subscription
+        async def ticks(self) -> typing.AsyncGenerator[int, None]:
+            i = 0
+            while True:
+                i += 1
+                yield i
+                await asyncio.sleep(0.05)
+
+    @strawberry.type
     class Mutation:
         @strawberry.mutation
         def add_book(self, title: str, year: typing.Optional[int] = None) -> Book:
@@ -83,7 +141,7 @@ def server():
             BOOKS[book.id] = book
             return book
 
-    app = GraphQL(strawberry.Schema(query=Query, mutation=Mutation))
+    app = GraphQL(strawberry.Schema(query=Query, mutation=Mutation, subscription=Subscription))
 
     async def main():
         config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
@@ -101,4 +159,4 @@ def server():
 
 
 if __name__ == "__main__":
-    client(sys.argv[2]) if sys.argv[1] == "client" else server()
+    {"client": lambda: client(sys.argv[2]), "ws": lambda: ws(sys.argv[2]), "server": server}[sys.argv[1]]()

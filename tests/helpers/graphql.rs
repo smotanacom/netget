@@ -14,10 +14,12 @@ pub(crate) fn state() -> AppState {
     AppState::new_with_options(false, "http://127.0.0.1:1".into())
 }
 
-pub(crate) const BOOK_SCHEMA: &str = "type Query { hello(name: String): String! book(id: ID!): Book search(term: String!): [SearchResult!]! secret: String } type Mutation { addBook(title: String!, year: Int): Book! } type Book { id: ID! title: String! year: Int author: Author! } type Author { name: String! } union SearchResult = Book | Author";
+pub(crate) const BOOK_SCHEMA: &str = "type Query { hello(name: String): String! book(id: ID!): Book search(term: String!): [SearchResult!]! secret: String } type Mutation { addBook(title: String!, year: Int): Book! } type Book { id: ID! title: String! year: Int author: Author! } type Author { name: String! } union SearchResult = Book | Author type Subscription { countdown(from: Int!): Int! bookAdded: Book! forbidden: String }";
 
 /// Answers every root field from a small catalogue: book "404" is a field error, `secret`
-/// refuses the whole operation, `addBook` echoes its arguments as book 3.
+/// refuses the whole operation, `addBook` echoes its arguments as book 3. Subscriptions:
+/// `countdown(from)` answers every event at once and completes, `bookAdded` waits for events
+/// pushed with `send_to_peer`, `forbidden` is refused.
 pub(crate) fn book_policy() -> Vec<Value> {
     vec![
         json!({"event_pattern":"graphql_operation","handler":{"type":"script","language":"python","code":concat!(
@@ -38,6 +40,15 @@ pub(crate) fn book_policy() -> Vec<Value> {
             "else: a={'type':'graphql_result','data':data,'errors':errors}\n",
             "print(json.dumps({'actions':[a]}))\n"
         )}}),
+        json!({"event_pattern":"graphql_subscription_start","handler":{"type":"script","language":"python","code":concat!(
+            "import json,sys\n",
+            "e=json.load(sys.stdin)['event']\n",
+            "f=e['root_fields'][0]; k=f['response_key']\n",
+            "if f['field']=='countdown': acts=[{'type':'graphql_event','data':{k:i}} for i in range(f['arguments']['from'],0,-1)]+[{'type':'graphql_complete'}]\n",
+            "elif f['field']=='forbidden': acts=[{'type':'graphql_error','message':'not authorized'}]\n",
+            "else: acts=[]\n",
+            "print(json.dumps({'actions':acts}))\n"
+        )}}),
     ]
 }
 
@@ -47,7 +58,13 @@ pub(crate) async fn server_in(
     params: Value,
 ) -> (ServerId, SocketAddr) {
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    tokio::spawn(async move {
+        while let Some(m) = rx.recv().await {
+            if std::env::var("GQL_DEBUG").is_ok() {
+                eprintln!("STATUS {m}");
+            }
+        }
+    });
     let id = ServerForm {
         protocol: "graphql".into(),
         host: Some("127.0.0.1".into()),
@@ -83,6 +100,9 @@ pub(crate) async fn client_in(
     let handlers = vec![
         json!({"event_pattern":"graphql_connected","handler":{"type":"static","actions":[]}}),
         json!({"event_pattern":"graphql_response","handler":{"type":"static","actions":[]}}),
+        json!({"event_pattern":"graphql_subscription_event","handler":{"type":"static","actions":[]}}),
+        json!({"event_pattern":"graphql_subscription_error","handler":{"type":"static","actions":[]}}),
+        json!({"event_pattern":"graphql_subscription_complete","handler":{"type":"static","actions":[]}}),
     ];
     let id = ClientForm {
         protocol: "graphql".into(),
