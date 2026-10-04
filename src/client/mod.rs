@@ -760,6 +760,8 @@ pub mod diameter;
 #[cfg(feature = "bolt")]
 pub mod bolt;
 
+#[cfg(feature = "epp")]
+pub mod epp;
 #[cfg(feature = "jmap")]
 pub mod jmap;
 #[cfg(feature = "lwm2m")]

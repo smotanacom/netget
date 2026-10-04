@@ -147,6 +147,8 @@ pub mod zenoh;
 #[cfg(feature = "lwm2m")]
 pub mod lwm2m;
 
+#[cfg(feature = "epp")]
+pub mod epp;
 #[cfg(feature = "jmap")]
 pub mod jmap;
 #[cfg(feature = "restconf")]
