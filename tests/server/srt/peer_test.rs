@@ -87,12 +87,16 @@ async fn libsrt_against_netget_listener() {
                 closed.iter().map(|c| &c.request).collect::<Vec<_>>()
             )
         });
-    // Several seconds of a ~250 kbit/s stream, in whatever message size libsrt chose.
+    // The publisher's counters cover at least what the reader was relayed. They are srt-tokio's
+    // last once-a-second snapshot, so allow half; the clip's bitrate varies with the encoder.
     let stats = &pubc.request["statistics"];
+    let (rx_bytes, rx_packets) = (
+        stats["rx_bytes"].as_u64().unwrap_or(0),
+        stats["rx_packets"].as_u64().unwrap_or(0),
+    );
     assert!(
-        stats["rx_bytes"].as_u64().unwrap_or(0) > 150_000
-            && stats["rx_packets"].as_u64().unwrap_or(0) > 50,
-        "{}",
+        rx_bytes >= size / 2 && rx_packets * 1500 >= size / 2,
+        "relayed {size} bytes: {}",
         pubc.request
     );
     state.remove_server(sid).await;
