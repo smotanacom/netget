@@ -75,6 +75,7 @@ fn golden_duals_map() {
         "TACACS",
         "Diameter",
         "NETCONF",
+        "RPKI-RTR",
         "Nostr",
         "Vault",
         "Bolt",
