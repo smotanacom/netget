@@ -268,6 +268,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // dissector (`tshark -G protocols` lists none), so the TLS layer is the most any
         // capture can show without the session keys.
         "gemini" => tcp("tls"),
+        // EPP is RFC 5734 length-prefixed XML inside TLS; this build has no EPP dissector.
+        "epp" => with_note(tcp("tls"), "EPP frames are a 4-byte length and an XML document inside TLS. Without the TLS session keys only the handshake shows; with tls: false follow the TCP stream to read the XML."),
         // Nostr relay: NIP-01 JSON in WebSocket text frames after an HTTP/1.1 upgrade. There is
         // no nostr dissector in this Wireshark build (`tshark -G protocols` lists none); decoded
         // as `http`, the 101 hands the stream to Wireshark's own `websocket` dissector, whose
