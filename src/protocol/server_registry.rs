@@ -223,6 +223,11 @@ impl ServerRegistry {
             crate::server::tacacs::actions::TacacsProtocol::new(),
         ));
 
+        #[cfg(feature = "netconf")]
+        self.register(Arc::new(
+            crate::server::netconf::actions::NetconfProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -1391,6 +1396,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("gNMI", "gnmi"),
     ("ConnectRPC", "connect_rpc"),
     ("TACACS", "tacacs"),
+    ("NETCONF", "netconf"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
