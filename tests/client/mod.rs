@@ -352,6 +352,9 @@ pub mod bmp;
 #[cfg(feature = "mqtt_sn")]
 pub mod mqtt_sn;
 
+#[cfg(feature = "nbd")]
+pub mod nbd;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
 
