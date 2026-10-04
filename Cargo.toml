@@ -80,6 +80,8 @@ portable-base = [
     "tacacs",
     "diameter",
     "netconf",
+    "rpki_rtr",
+    "rdap",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -265,6 +267,8 @@ netflow-v9 = [] # Native RFC3954 v9 UDP templates/options/records
 tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
 diameter = [] # Native bounded TCP peer lifecycle and stateless NASREQ
 netconf = ["russh", "russh-keys", "quick-xml"] # NETCONF 1.0/1.1 over SSH, handler-controlled datastores
+rpki_rtr = [] # RPKI-to-Router cache and router roles (RFC 8210/6810)
+rdap = [] # RDAP registration data server and client (RFC 7480/9082/9083)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -523,6 +527,8 @@ dist-windows = [
     "tacacs",
     "diameter",
     "netconf",
+    "rpki_rtr",
+    "rdap",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -683,6 +689,8 @@ all-protocols = [
     "tacacs",
     "diameter",
     "netconf",
+    "rpki_rtr",
+    "rdap",
     "sflow",
     "prometheus-remote-write",
     "ssh",

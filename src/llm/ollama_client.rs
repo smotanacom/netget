@@ -967,7 +967,7 @@ fn without_proxy_for_loopback(
 /// Both endpoint short-circuits in one place, so no constructor can acquire one and miss
 /// the other. Every client NetGet builds from a configured URL goes through here.
 #[cfg(not(target_arch = "wasm32"))]
-fn configured_for_endpoint(
+pub(crate) fn configured_for_endpoint(
     builder: reqwest::ClientBuilder,
     base_url: &str,
 ) -> reqwest::ClientBuilder {

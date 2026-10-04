@@ -879,7 +879,8 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **33 / 72**; **39 remain**. Completed scopes comprise fourteen new families, fifteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 38 new families and GraphQL subscriptions.
+- Completed: **36 / 72**; **36 remain**. Completed scopes comprise seventeen new families, fifteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 35 new families and GraphQL subscriptions.
+- 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
 - The SSH server ownership defect is fixed (`0cad604b`): the connection task awaits russh's `RunningSession`, and a per-connection cancellation token reaches the detached driver through the stream wrapper and races every model call. `tests/server/ssh/session_ownership_test.rs` proves live state, socket closure on stop and retirement of a parked manual authentication through libssh2; both tests fail when the session is dropped again. All 16 SSH server tests pass.
@@ -897,12 +898,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
   - Validation: 9 server and 8 client tests passed with Knot `kdig 3.6.0` and AdGuard `dnsproxy 0.85.0`. Code `e900e753`, integration merge `07339b83`. Experimental; declared server DNS record subset and no AXFR/IXFR.
 
-- [ ] **02. NETCONF** — A/L; proposed feature `netconf`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6241.html).
+- [x] **02. NETCONF** — A/L; proposed feature `netconf`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc6241.html).
   - Scope: SSH subsystem, hello/capabilities, NETCONF 1.0/1.1 framing, get/get-config/edit-config, errors and explicitly supported datastores.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 27 checks pass at 100 threads. Unchanged ncclient 0.7.1 (Paramiko 3.5.1) drives the server and the netconf 2.1.0 Python server answers the client, each over base:1.0 end-of-message and base:1.1 chunked framing; NetGet pair across every reply shape, kill-session, pinned host key, hello deadline, parked-manual removal; envelope and codec bounds. SSH netconf subsystem on russh 0.45, RFC 6241 envelopes, capability-checked datastores, handler-controlled data (no datastore in Rust); copy/delete-config, confirmed commit, url, notifications, TLS and public-key auth excluded; Experimental. Source `77458401`, CI `14f4e7d1`, published `ace1e3cd`.
 
 - [ ] **03. RESTCONF** — B/M-L; proposed feature `restconf`. [Specification/reference](https://www.rfc-editor.org/info/rfc8040/).
   - Scope: YANG-shaped HTTP resources, discovery, reads/edits, media types and protocol errors; declare modeled scope.
@@ -951,12 +953,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 32 both-role checks pass against unchanged go-diameter 4.5.0 and the pinned Python SDK plus the NetGet pair. Clear TCP 3868 RFC 6733 base (CER/CEA, DWR/DWA, DPR/DPA) and RFC 7155 stateless NASREQ application 1 with UTF-8 PAP. No TLS/DTLS/SCTP, routing/failover, vendor applications, accounting or stateful multi-round sessions; Experimental. Source `6c425f75`/`37acc38b`, merge `090588fb`, central CI `11854297`.
 
-- [ ] **09. RPKI to Router** — B/M; proposed feature `rpki_rtr`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8210.html).
+- [x] **09. RPKI to Router** — B/M; proposed feature `rpki_rtr`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc8210.html).
   - Scope: Cache/router roles, route-validation records, session and serial management, reset and incremental updates.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 18 checks pass. StayRTR 0.6.4 rtrdump (Go; v1, v0, serial delta, foreign-session Cache Reset) and RTRlib 0.8.0 rtrclient (C; Serial Notify → incremental withdrawal) against the cache; StayRTR's cache against the router (notify-driven delta, version 0); NetGet pair, RFC 8210 error codes both ways, parked-manual removal, literal-byte codec. No VRP store, ROV, SSH/TLS transports, Router Key/ASPA; Experimental. Source `533b7073`, CI `d3457253`.
 
 - [ ] **10. BMP** — B/M; proposed feature `bmp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc7854.html).
   - Scope: Collector/exporter roles, peer up/down, route monitoring, statistics and bounded BGP payload parsing.
@@ -1008,12 +1011,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **17. RDAP** — B/S-M; proposed feature `rdap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9082.html).
+- [x] **17. RDAP** — B/S-M; proposed feature `rdap`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc9082.html).
   - Scope: Domain/IP/ASN queries, structured objects, links/notices, response schemas and errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 test functions (dozens of queries) pass. OpenRDAP 0.10.2 and ICANN rdap 1.0.0 query every object class, search, help, 404 and 403 against the server; ICANN rdap-srv 1.0.0 serves every class, search, help, 404 and a 307 referral to the client; NetGet pair, RFC 9082 normalization/refusal and RFC 9083 envelope tests. Plain HTTP, no bootstrap, storage or authentication; Experimental. Source `844fb81f`, CI `07d19cd3`.
 
 - [ ] **18. EPP** — C/L; proposed feature `epp`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5730.html).
   - Scope: Registry/client sessions and selected domain/host/contact mappings with check/create/renew/transfer operations.

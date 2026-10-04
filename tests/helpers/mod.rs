@@ -68,3 +68,9 @@ pub mod diameter;
 
 #[cfg(feature = "netconf")]
 pub mod netconf;
+
+#[cfg(feature = "rpki_rtr")]
+pub mod rpki_rtr;
+
+#[cfg(feature = "rdap")]
+pub mod rdap;

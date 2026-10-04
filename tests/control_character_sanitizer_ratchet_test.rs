@@ -49,6 +49,13 @@ const ALLOWED: &[(&str, usize, &str)] = &[
          tab/CR/LF rather than changing the HTTP response decision",
     ),
     (
+        "src/server/rdap/query.rs",
+        2,
+        "validator: refuse an RDAP query value or redirect URL containing a control character \
+         (400 / invalid action) rather than strip it, because the cleaned value would name a \
+         different object than the one requested",
+    ),
+    (
         "src/client/oci_registry/api.rs",
         1,
         "validator: refuse a control byte inside a registry-supplied WWW-Authenticate \
