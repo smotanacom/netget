@@ -312,6 +312,8 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::mqtt_sn::actions::MqttSnProtocol::new(),
         ));
+        #[cfg(feature = "nbd")]
+        self.register(Arc::new(crate::server::nbd::actions::NbdProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1505,6 +1507,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("Thrift", "thrift"),
     ("BMP", "bmp"),
     ("MQTT-SN", "mqtt_sn"),
+    ("NBD", "nbd"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

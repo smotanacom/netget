@@ -231,6 +231,8 @@ pub use mdns::actions::MdnsClientProtocol;
 pub mod mqtt;
 #[cfg(feature = "mqtt_sn")]
 pub mod mqtt_sn;
+#[cfg(feature = "nbd")]
+pub mod nbd;
 #[cfg(feature = "mqtt")]
 pub use mqtt::actions::MqttClientProtocol;
 

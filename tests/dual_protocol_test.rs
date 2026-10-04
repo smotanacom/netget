@@ -98,6 +98,7 @@ fn golden_duals_map() {
         "Thrift",
         "BMP",
         "MQTT-SN",
+        "NBD",
         "Nostr",
         "Vault",
         "Bolt",

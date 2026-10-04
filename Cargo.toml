@@ -103,6 +103,7 @@ portable-base = [
     "thrift",
     "bmp",
     "mqtt_sn",
+    "nbd",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -310,6 +311,7 @@ amqp1 = [] # AMQP 1.0 container and client (separate from AMQP 0-9-1)
 thrift = [] # Apache Thrift RPC server and client (IDL-driven, binary and compact)
 bmp = ["bgp"] # BGP Monitoring Protocol collector and exporter (RFC 7854); BGP PDUs through the bgp feature
 mqtt_sn = [] # MQTT-SN 1.2 gateway and sensor client over UDP
+nbd = ["dep:sha2"] # Network Block Device read-only server and client
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -592,6 +594,7 @@ dist-windows = [
     "thrift",
     "bmp",
     "mqtt_sn",
+    "nbd",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -775,6 +778,7 @@ all-protocols = [
     "thrift",
     "bmp",
     "mqtt_sn",
+    "nbd",
     "sflow",
     "prometheus-remote-write",
     "ssh",
