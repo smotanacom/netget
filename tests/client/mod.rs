@@ -355,6 +355,9 @@ pub mod mqtt_sn;
 #[cfg(feature = "nbd")]
 pub mod nbd;
 
+#[cfg(feature = "managesieve")]
+pub mod managesieve;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
 

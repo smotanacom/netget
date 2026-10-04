@@ -227,6 +227,8 @@ pub mod mdns;
 pub use mdns::actions::MdnsClientProtocol;
 
 // mqtt client
+#[cfg(feature = "managesieve")]
+pub mod managesieve;
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
 #[cfg(feature = "mqtt_sn")]

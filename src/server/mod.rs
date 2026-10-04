@@ -694,6 +694,8 @@ pub use nntp::actions::NntpProtocol;
 #[cfg(feature = "nntp")]
 pub use nntp::NntpServer;
 
+#[cfg(feature = "managesieve")]
+pub mod managesieve;
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
 #[cfg(feature = "mqtt_sn")]
