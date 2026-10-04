@@ -402,6 +402,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mqtt" => tcp("mqtt"),
         "mqtt_sn" => udp("mqttsn"),
         "nbd" => tcp("nbd"),
+        // Wireshark has no ManageSieve dissector; the protocol is CRLF text, readable as TCP.
+        "managesieve" => with_note(PLAIN_TCP, "ManageSieve is CRLF-delimited text: follow the TCP stream. Commands are atoms with quoted strings or {n+} literals; answers end in OK, NO or BYE."),
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),
         "rdp" => with_display(tcp("tpkt"), "rdp"),

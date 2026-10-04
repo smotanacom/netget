@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **59 / 72**; **13 remain**. Completed scopes comprise thirty-nine new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
+- Completed: **60 / 72**; **12 remain**. Completed scopes comprise forty new families, fifteen existing-protocol completions and five separated extensions. All remaining entries are authorized new families.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -1040,12 +1040,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **20. ManageSieve** — B/M; proposed feature `managesieve`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5804.html).
+- [x] **20. ManageSieve** — B/M; proposed feature `managesieve`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc5804.html).
   - Scope: List/upload/activate/delete filter scripts, authentication, literals and errors; script execution is not implicit.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 ManageSieve test functions pass. Unchanged sievelib 1.5.0 (Python) logs in to NetGet's server and uploads, checks, activates, lists, reads, renames, deletes and asks for space, getting the handler's refusals (a script error, NONEXISTENT, ACTIVE, ALREADYEXISTS, QUOTA/MAXSIZE) and a refused login; sievelib normalizes scripts it reads to LF lines, so exact bytes are checked on the server's side. NetGet's client against unchanged Dovecot 2.4.5 with Pigeonhole 2.4.5 (C), built from pinned tarballs and run unprivileged: uploads, Pigeonhole's real compiler error for a bad script, CHECKSCRIPT, activation, listing, retrieval, renaming (read back from Dovecot's own script file and active link), ACTIVE and NONEXISTENT refusals, HAVESPACE, and a refused login. The earlier deferral over Dovecot 2.3 versus 2.4 configuration is resolved by building one pinned 2.4.5 everywhere; macOS needs `default_vsz_limit = 1024G` and a runtime directory short enough for sun_path. Wire tests cover the grammar, client against server, and raw refusals. NetGet never parses or runs Sieve; no STARTTLS; Experimental. Source `02e0a6d3`, CI `aba322bb`.
 
 - [x] **21. CalDAV** — B/L; proposed feature `caldav`. [Specification/reference](https://www.rfc-editor.org/rfc/rfc4791.html).
   - Scope: Calendar discovery, resources, REPORT queries, event CRUD and documented iCalendar/recurrence coverage.

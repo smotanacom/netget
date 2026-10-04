@@ -314,6 +314,10 @@ impl ServerRegistry {
         ));
         #[cfg(feature = "nbd")]
         self.register(Arc::new(crate::server::nbd::actions::NbdProtocol::new()));
+        #[cfg(feature = "managesieve")]
+        self.register(Arc::new(
+            crate::server::managesieve::actions::ManageSieveProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1508,6 +1512,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("BMP", "bmp"),
     ("MQTT-SN", "mqtt_sn"),
     ("NBD", "nbd"),
+    ("ManageSieve", "managesieve"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

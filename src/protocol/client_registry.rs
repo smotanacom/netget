@@ -458,6 +458,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::nbd::actions::NbdClientProtocol::new(),
         ));
+        #[cfg(feature = "managesieve")]
+        self.register(Arc::new(
+            crate::client::managesieve::actions::ManageSieveClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -966,6 +970,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BMP", "bmp"),
     ("MQTT-SN", "mqtt_sn"),
     ("NBD", "nbd"),
+    ("ManageSieve", "managesieve"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
