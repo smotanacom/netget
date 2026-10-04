@@ -879,7 +879,7 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 
 ## Active assignments and progress
 
-- Completed: **39 / 72**; **33 remain**. Completed scopes comprise twenty new families, fifteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 32 new families and GraphQL subscriptions.
+- Completed: **41 / 72**; **31 remain**. Completed scopes comprise twenty-two new families, fifteen existing-protocol completions and four separated extensions. All remaining entries are authorized: 30 new families and GraphQL subscriptions.
 - 4 October 2026: NETCONF02, RPKI-RTR09 and RDAP17 pass every coordinator gate (roles with independent peers, shared audits, privacy, startup, standalone feature, clippy, format, module reachability) through `.protocol-expansion-20261001/validate_scope.py`, the per-scope driver that replaces the per-batch scripts. Master `4becfaf0` passed all 28 protocol-pair jobs, Browser build and the single-feature shards after two CI repairs found on first publication: gNMI's protos now vendor protobuf's well-known types (Ubuntu's protoc ships without them) and the OCI client converts its body-limit error explicitly for wasm32.
 - Batch 11 (gNMI04, Diameter08, OCI62) passed every coordinator gate on 4 October 2026 at integration `11854297`: OCI 48, gNMI 13 and Diameter 32 both-role checks, native gRPC neighbours 38, gNMI seams/shared codec 39, shared audits 195, privacy 148, startup 45, standalone `gnmi` and `diameter` all-target checks, clippy (correctness, suspicious, unused_must_use), whole-tree format, module reachability (2651 files) and the protocol-pair workflow verifier. No failures and no ignored tests. Evidence: `.protocol-expansion-20261001/logs/batch11-*-h2-*.log` and `batch11-h2-*-results.json`.
 - The two shared blockers were fixed without relaxing a baseline. The control-character ratchet matched the OCI client's `WWW-Authenticate` quoted-string validator (`api.rs:393`, not the Basic username at line 121, which the scan does not see), now listed as a validator with its reason; the binary's rustls provider gate names `gnmi`. Follow-up: eight files pass a control-character predicate as a function path (`char::is_control`) that the ratchet's token scan misses — `influxdb` (server and client), `gemini`, `docker`, `dict`, `vault` and the OCI client.
@@ -968,12 +968,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
   - [ ] Documentation, honest metadata and integrated commit recorded.
 
-- [ ] **11. GraphQL over HTTP** — A/M-L; proposed feature `graphql`. [Specification/reference](https://http-spec.graphql.org/draft/).
+- [x] **11. GraphQL over HTTP** — A/M-L; proposed feature `graphql`. [Specification/reference](https://http-spec.graphql.org/draft/).
   - Scope: Runtime schema, query/mutation execution, variables, introspection and spec-shaped errors; subscriptions tracked separately below.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 6 test functions pass. Unchanged gql 4.4.0 builds its client schema from NetGet's introspection (graphql-core `build_client_schema`), validates locally and runs variables, aliases, a union with fragments, a mutation and a field error under both application/json and application/graphql-response+json; unchanged strawberry-graphql 0.330.2 answers the client's introspection, POST and GET queries, union, mutation, resolver error and validation error; HTTP rules (200/400 by media type, 405 for GET mutations, 406, 415), execution over handler data and the NetGet pair. Queries and mutations only (subscriptions are item 72), no batching, uploads or persisted queries; Experimental. Source `c5c6852d`, CI `152eb829`.
 
 - [ ] **12. Socket.IO** — A/M; proposed feature `socketio`. [Specification/reference](https://socket.io/docs/v4/socket-io-protocol/).
   - Scope: Explicit protocol revision, Engine.IO polling/WebSocket, events, namespaces, acknowledgments and disconnects.
@@ -990,12 +991,13 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: **13 server + nine client checks** pass at 100 threads against pinned independent Connect-ES 2.2.0 / protobuf-es 2.16.0 Node/Fetch transports and the NetGet pair. Native binary protobuf HTTP/1.1 unary and server streaming, Connect errors/EndStream, gzip, bounded metadata, real 30-second first-byte and 120-second empty/nonempty idle limits are verified. JSON-message/GET/client-bidi/reflection/TLS/browser/CORS/pcap/fuzz claims are excluded; Experimental. Sources `9b5b9488`, refreshed `9938b6e7`; central `42cae6ca`/`8c0e486a`, explicit backpressure fixture `00af53ab`; reproduction in corresponding server/client test documents.
 
-- [ ] **14. A2A** — B/M-L; proposed feature `a2a`. [Specification/reference](https://a2a-protocol.org/latest/specification/).
+- [x] **14. A2A** — B/M-L; proposed feature `a2a`. [Specification/reference](https://a2a-protocol.org/latest/specification/).
   - Scope: Pin released version/binding; agent discovery, messages, tasks, streaming/cancellation as advertised.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: 5 test functions pass. Unchanged a2a-sdk 1.2.1 (protocol 1.0) drives the agent as client (card resolution, direct message, streamed task in snapshot/working/artifact/completed order, GetTask, cancellation, task-not-found) and serves an echo agent to the client over the same calls; raw JSON-RPC refusals (missing and 0.3 versions, parse, envelope, unknown and push methods, unadvertised streaming, agent-role messages), handler-less -32603 and a card redirect refused. JSON-RPC binding only, no push notifications, SubscribeToTask, extended card or task store; Experimental. Source `0f995b77`, CI `ed1f40cf`.
 
 - [ ] **15. SCIM 2.0** — B/M-L; proposed feature `scim`. [Specification/reference](https://www.rfc-editor.org/info/rfc7644/).
   - Scope: User/group provisioning, discovery, CRUD/PATCH, filtering and pagination within declared capabilities.

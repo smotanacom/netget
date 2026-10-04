@@ -85,6 +85,8 @@ portable-base = [
     "hl7",
     "icap",
     "ocpp",
+    "a2a",
+    "graphql",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -275,6 +277,8 @@ rdap = [] # RDAP registration data server and client (RFC 7480/9082/9083)
 hl7 = [] # HL7 v2 over MLLP integration endpoint and sender
 icap = [] # ICAP content adaptation server and client (RFC 3507)
 ocpp = ["dep:tokio-tungstenite"] # OCPP-J 1.6 / 2.0.1 central system and charge point
+a2a = [] # Agent2Agent protocol 1.0 agent and client (JSON-RPC binding)
+graphql = ["dep:apollo-compiler"] # GraphQL over HTTP server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -538,6 +542,8 @@ dist-windows = [
     "hl7",
     "icap",
     "ocpp",
+    "a2a",
+    "graphql",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -703,6 +709,8 @@ all-protocols = [
     "hl7",
     "icap",
     "ocpp",
+    "a2a",
+    "graphql",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -875,6 +883,7 @@ toml = "0.8"  # TOML serialization for config files
 # MCP STDIO server (Model Context Protocol)
 rmcp = { version = "1.2", optional = true, features = ["server", "transport-io"] }
 schemars = { version = "1.0", optional = true }
+apollo-compiler = { version = "1.33.0", optional = true } # graphql: parse, validate, introspect, execute
 
 # Error handling
 anyhow = "1.0"

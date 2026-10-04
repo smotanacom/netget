@@ -367,6 +367,16 @@ impl ClientRegistry {
             crate::client::ocpp::actions::OcppClientProtocol::new(),
         ));
 
+        #[cfg(feature = "a2a")]
+        self.register(Arc::new(
+            crate::client::a2a::actions::A2aClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "graphql")]
+        self.register(Arc::new(
+            crate::client::graphql::actions::GraphqlClientProtocol::new(),
+        ));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::client::netflow_v9::actions::NetflowV9ClientProtocol::new(),
@@ -855,6 +865,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("HL7", "hl7"),
     ("ICAP", "icap"),
     ("OCPP", "ocpp"),
+    ("A2A", "a2a"),
+    ("GraphQL", "graphql"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
