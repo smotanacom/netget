@@ -440,5 +440,8 @@ pub mod carddav;
 #[cfg(feature = "dicom")]
 pub mod dicom;
 
+#[cfg(feature = "acme")]
+pub mod acme;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;

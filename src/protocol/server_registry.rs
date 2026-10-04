@@ -284,6 +284,9 @@ impl ServerRegistry {
         #[cfg(feature = "dicom")]
         self.register(Arc::new(crate::server::dicom::actions::DicomProtocol::new()));
 
+        #[cfg(feature = "acme")]
+        self.register(Arc::new(crate::server::acme::actions::AcmeProtocol::new()));
+
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
             crate::server::netflow_v9::actions::NetflowV9Protocol::new(),
@@ -1467,6 +1470,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("CalDAV", "caldav"),
     ("CardDAV", "carddav"),
     ("DICOM", "dicom"),
+    ("ACME", "acme"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

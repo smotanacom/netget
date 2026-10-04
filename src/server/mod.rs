@@ -56,7 +56,8 @@ pub mod http_common;
     feature = "pop3",
     feature = "tls",
     feature = "kubernetes-server",
-    feature = "gemini"
+    feature = "gemini",
+    feature = "acme"
 ))]
 pub mod tls_cert_manager;
 
@@ -1266,6 +1267,8 @@ pub mod netflow_v9;
 
 #[cfg(feature = "a2a")]
 pub mod a2a;
+#[cfg(feature = "acme")]
+pub mod acme;
 #[cfg(feature = "caldav")]
 pub mod caldav;
 #[cfg(feature = "carddav")]
