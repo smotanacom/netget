@@ -84,6 +84,7 @@ fn golden_duals_map() {
         "GraphQL",
         "FastCGI",
         "Redfish",
+        "SCIM",
         "Nostr",
         "Vault",
         "Bolt",

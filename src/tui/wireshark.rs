@@ -345,6 +345,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `icap` is in the tcp.port decode-as table (tshark -G decodes: tcp.port 1344).
         "icap" => tcp("icap"),
         "fastcgi" => tcp("fcgi"),
+        // SCIM is JSON (application/scim+json) over HTTP; there is no SCIM dissector.
+        "scim" => with_note(tcp("http"), "SCIM is application/scim+json over HTTP under the service's base path (often /scim/v2); production services use HTTPS."),
         // Redfish is JSON over HTTP(S); there is no Redfish dissector.
         "redfish" => with_note(tcp("http"), "Redfish is JSON over HTTP under /redfish/v1; real BMCs use HTTPS, so capture shows TLS unless the service runs plain HTTP as NetGet's does."),
         "rdap" => with_note(tcp("http"), "RDAP is JSON over HTTP (application/rdap+json); the HTTP dissector shows each query and answer. Production RDAP is HTTPS."),
