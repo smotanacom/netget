@@ -402,6 +402,8 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mqtt" => tcp("mqtt"),
         "mqtt_sn" => udp("mqttsn"),
         "nbd" => tcp("nbd"),
+        // LwM2M is CoAP: the coap dissector shows the operations (lwm2mtlv decodes TLV bodies).
+        "lwm2m" => udp("coap"),
         // Wireshark ships no Zenoh dissector (the project offers a Lua plugin).
         "zenoh" => with_note(PLAIN_TCP, "Wireshark has no built-in Zenoh dissector; the zenoh project publishes a Lua plugin (zenoh-dissector) that decodes this TCP stream."),
         // Wireshark has no ManageSieve dissector; the protocol is CRLF text, readable as TCP.

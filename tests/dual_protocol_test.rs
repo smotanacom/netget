@@ -101,6 +101,7 @@ fn golden_duals_map() {
         "NBD",
         "ManageSieve",
         "Zenoh",
+        "LwM2M",
         "Nostr",
         "Vault",
         "Bolt",
