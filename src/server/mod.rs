@@ -1324,3 +1324,5 @@ pub mod wamp;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;
+#[cfg(feature = "zenoh")]
+pub mod zenoh;

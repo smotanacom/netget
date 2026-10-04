@@ -318,6 +318,8 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::managesieve::actions::ManageSieveProtocol::new(),
         ));
+        #[cfg(feature = "zenoh")]
+        self.register(Arc::new(crate::server::zenoh::actions::ZenohProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1513,6 +1515,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("MQTT-SN", "mqtt_sn"),
     ("NBD", "nbd"),
     ("ManageSieve", "managesieve"),
+    ("Zenoh", "zenoh"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

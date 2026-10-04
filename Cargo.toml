@@ -105,6 +105,7 @@ portable-base = [
     "mqtt_sn",
     "nbd",
     "managesieve",
+    "zenoh",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -314,6 +315,7 @@ bmp = ["bgp"] # BGP Monitoring Protocol collector and exporter (RFC 7854); BGP P
 mqtt_sn = [] # MQTT-SN 1.2 gateway and sensor client over UDP
 nbd = ["dep:sha2"] # Network Block Device read-only server and client
 managesieve = [] # ManageSieve (RFC 5804) server and client
+zenoh = ["dep:zenoh"] # Zenoh router/peer and client over the zenoh runtime (TCP transport)
 graphql = ["dep:apollo-compiler", "dep:tokio-tungstenite"] # GraphQL over HTTP and graphql-transport-ws server and client (apollo-compiler validation, introspection, execution)
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
@@ -598,6 +600,7 @@ dist-windows = [
     "mqtt_sn",
     "nbd",
     "managesieve",
+    "zenoh",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -783,6 +786,7 @@ all-protocols = [
     "mqtt_sn",
     "nbd",
     "managesieve",
+    "zenoh",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -1112,6 +1116,7 @@ openidconnect = { version = "3.5", optional = true }
 tokio-socks = { version = "0.5", optional = true }
 
 # BGP server (Border Gateway Protocol)
+zenoh = { version = "=1.10.1", optional = true, default-features = false, features = ["transport_tcp", "unstable"] }  # Zenoh runtime for the zenoh feature; TCP only
 netgauze-bgp-pkt = { version = "0.7", optional = true, features = ["serde", "codec"] }
 
 # Bitcoin P2P protocol (blockchain P2P network)

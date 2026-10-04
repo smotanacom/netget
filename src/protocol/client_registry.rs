@@ -462,6 +462,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::managesieve::actions::ManageSieveClientProtocol::new(),
         ));
+        #[cfg(feature = "zenoh")]
+        self.register(Arc::new(
+            crate::client::zenoh::actions::ZenohClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -971,6 +975,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("MQTT-SN", "mqtt_sn"),
     ("NBD", "nbd"),
     ("ManageSieve", "managesieve"),
+    ("Zenoh", "zenoh"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
