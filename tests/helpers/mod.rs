@@ -52,6 +52,8 @@ pub mod prometheus_remote_write;
 
 #[cfg(feature = "connect_rpc")]
 pub mod connect_rpc_peer;
+#[cfg(feature = "gnmi")]
+pub mod gnmi_peer;
 #[cfg(feature = "grpc-web")]
 pub mod grpcweb_peer;
 
@@ -60,3 +62,6 @@ pub mod netflow_v9;
 
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+
+#[cfg(feature = "diameter")]
+pub mod diameter;

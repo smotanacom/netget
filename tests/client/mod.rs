@@ -44,6 +44,8 @@ pub mod finger;
 pub mod ftp;
 #[cfg(feature = "git")]
 pub mod git;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "grpc")]
@@ -278,5 +280,11 @@ pub mod netflow_v9;
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
 
+#[cfg(feature = "diameter")]
+pub mod diameter;
+
 #[cfg(feature = "bolt")]
 pub mod bolt;
+
+#[cfg(feature = "oci-registry")]
+pub mod oci_registry;

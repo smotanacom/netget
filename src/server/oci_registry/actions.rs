@@ -55,6 +55,18 @@ pub const DEFAULT_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1
 pub const DEFAULT_LAYER_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 /// Media type used for a served blob when the action does not say.
 pub const DEFAULT_BLOB_MEDIA_TYPE: &str = "application/octet-stream";
+pub const MAX_ACTION_DEPTH: usize = 32;
+pub const MAX_ACTION_NODES: usize = 65_536;
+pub const MAX_ACTION_RETAINED_BYTES: usize = 8 * 1024 * 1024;
+
+pub fn action_within_budget(value: &Value) -> bool {
+    crate::utils::json_budget::within_budget(
+        value,
+        MAX_ACTION_RETAINED_BYTES,
+        MAX_ACTION_NODES,
+        MAX_ACTION_DEPTH,
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers. Public so `tests/server/oci_registry/` can exercise them
@@ -251,6 +263,9 @@ fn descriptor(existing: Option<&Value>, blob: &ResolvedBlob, default_media_type:
 /// warning list — they will still fail digest verification when the client fetches
 /// them, which is correct, but the operator deserves to be told why.
 pub fn apply_blob_descriptors(manifest: &mut Value, blobs: &[ResolvedBlob]) -> Result<Vec<String>> {
+    if !action_within_budget(manifest) {
+        bail!("OCI manifest depth/node/retained-content limit");
+    }
     if !manifest.is_object() {
         bail!("manifest must be a JSON object");
     }
@@ -660,6 +675,10 @@ impl Server for OciRegistryProtocol {
     }
 
     fn execute_action(&self, action: Value) -> Result<ActionResult> {
+        if !action_within_budget(&action) {
+            crate::utils::json_budget::drop_iteratively(action);
+            bail!("OCI action depth/node/retained-content limit");
+        }
         let action_type = action
             .get("type")
             .and_then(|v| v.as_str())
@@ -771,6 +790,10 @@ fn execute_manifest(action: &Value) -> Result<ActionResult> {
         ),
     };
 
+    if !action_within_budget(&doc) {
+        crate::utils::json_budget::drop_iteratively(doc);
+        bail!("OCI manifest depth/node/retained-content limit");
+    }
     let body = if let (Some(text), true) = (verbatim.as_ref(), blobs.is_empty()) {
         // Byte-exact passthrough: nothing to rewrite.
         text.clone()

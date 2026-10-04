@@ -5,4 +5,6 @@ mod llm_failure_test;
 #[cfg(all(test, feature = "ssh"))]
 mod real_client_test;
 #[cfg(all(test, feature = "ssh"))]
+mod session_ownership_test;
+#[cfg(all(test, feature = "ssh"))]
 mod test;

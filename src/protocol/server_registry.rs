@@ -213,6 +213,11 @@ impl ServerRegistry {
         #[cfg(feature = "igmp")]
         self.register(Arc::new(crate::server::IgmpProtocol::new()));
 
+        #[cfg(feature = "diameter")]
+        self.register(Arc::new(
+            crate::server::diameter::actions::DiameterProtocol::new(),
+        ));
+
         #[cfg(feature = "tacacs")]
         self.register(Arc::new(
             crate::server::tacacs::actions::TacacsProtocol::new(),
@@ -557,6 +562,8 @@ impl ServerRegistry {
         self.register(Arc::new(
             crate::server::grpc_web::actions::GrpcWebProtocol::new(),
         ));
+        #[cfg(feature = "gnmi")]
+        self.register(Arc::new(crate::server::gnmi::actions::GnmiProtocol::new()));
         #[cfg(feature = "connect_rpc")]
         self.register(Arc::new(
             crate::server::connect_rpc::actions::ConnectRpcProtocol::new(),
@@ -1333,6 +1340,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("PostgreSQL", "postgresql"),
     ("Memcached", "memcached"),
     ("RADIUS", "radius"),
+    ("DIAMETER", "diameter"),
     ("Redis", "redis"),
     ("RSS", "rss"),
     ("Cassandra", "cassandra"),
@@ -1380,6 +1388,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("XML-RPC", "xmlrpc"),
     ("gRPC", "grpc"),
     ("gRPC-Web", "grpc-web"),
+    ("gNMI", "gnmi"),
     ("ConnectRPC", "connect_rpc"),
     ("TACACS", "tacacs"),
     ("etcd", "etcd"),

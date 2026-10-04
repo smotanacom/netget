@@ -98,6 +98,8 @@ pub mod gearman;
 pub mod gemini;
 #[cfg(feature = "git")]
 pub mod git;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "grpc")]
@@ -392,3 +394,6 @@ pub mod netflow_v9;
 
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+
+#[cfg(feature = "diameter")]
+pub mod diameter;

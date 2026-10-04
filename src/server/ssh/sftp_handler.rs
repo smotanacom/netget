@@ -17,6 +17,7 @@ use russh_sftp::protocol::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 
 /// LLM-controlled SFTP handler
@@ -35,6 +36,8 @@ pub struct LlmSftpHandler {
     handles: Arc<Mutex<HashMap<String, HandleInfo>>>,
     /// SFTP protocol version
     version: Option<u32>,
+    /// The SSH connection's owner; see `super::until_owner_drops`.
+    owner: CancellationToken,
 }
 
 /// The action names that count as an answer to an `sftp_operation` event.
@@ -127,6 +130,7 @@ impl LlmSftpHandler {
         app_state: Arc<AppState>,
         protocol: Arc<SshProtocol>,
         status_tx: mpsc::UnboundedSender<String>,
+        owner: CancellationToken,
     ) -> Self {
         Self {
             connection_id,
@@ -137,6 +141,7 @@ impl LlmSftpHandler {
             status_tx,
             handles: Arc::new(Mutex::new(HashMap::new())),
             version: None,
+            owner,
         }
     }
 
@@ -178,13 +183,16 @@ impl LlmSftpHandler {
         ));
 
         // Call LLM with Event-based approach
-        match call_llm(
-            &self.llm_client,
-            &self.app_state,
-            self.server_id,
-            Some(self.connection_id),
-            &event,
-            self.protocol.as_ref(),
+        match super::until_owner_drops(
+            &self.owner,
+            call_llm(
+                &self.llm_client,
+                &self.app_state,
+                self.server_id,
+                Some(self.connection_id),
+                &event,
+                self.protocol.as_ref(),
+            ),
         )
         .await
         {

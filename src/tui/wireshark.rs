@@ -243,6 +243,10 @@ pub fn wire_for(protocol: &str) -> Wire {
             tcp("tacplus"),
             "This feature speaks legacy RFC 8907 TACACS+. Its obfuscated body requires the configured shared secret in Wireshark to decode; it does not speak the TLS profile.",
         ),
+        "diameter" => with_note(
+            tcp("diameter"),
+            "This binding uses clear TCP for the selected stateless NASREQ application. TLS, SCTP and vendor applications are outside its implemented surface.",
+        ),
         // Neo4j's Bolt (TCP 7687) has no dissector in this Wireshark build (4.6.8): `tshark -G
         // protocols` lists nothing matching bolt, neo4j or packstream. Plain TCP; the chunked
         // PackStream is binary, so "Follow TCP Stream" in hex is what a capture offers.
@@ -303,6 +307,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "doh" => tcp("tls"),
         "http2" => tcp("http2"),
         "grpc" | "etcd" => with_display(tcp("http2"), "grpc || http2"),
+        "gnmi" => with_note(
+            with_display(tcp("http2"), "grpc || http2"),
+            "gNMI uses native HTTP/2 and the OpenConfig gNMI protobuf schema. This recipe decodes the cleartext carrier; explicitly enabled TLS requires session keys and TLS Decode As in Wireshark.",
+        ),
         "connect_rpc" | "connectrpc" | "connect rpc" => with_note(
             tcp("http"),
             "This binding uses binary protobuf ConnectRPC over cleartext HTTP/1.1. The HTTP carrier is decoded; protobuf bodies require the matching schema and streamed replies end with a Connect EndStream envelope.",

@@ -285,3 +285,10 @@ two bounds onto one number, which is exactly what the pair exists to avoid.
 fail: with the `peek` deadline gone the silent peer still held the socket at 60s; with the idle
 bound collapsed to 30s an answered connection was closed after 38s of silence; with the permit
 released early the connection past the cap was served instead of refused. The real-client evidence this protocol's rating rests on — the real `crane` binary (`test_oci_registry_against_crane`) — still passes.
+
+Constructed action values are preflighted iteratively before clone/serialization:
+depth32,65,536nodes and8MiB retained content. Owned refused actions are disposed
+iteratively. The public descriptor-rewriting helper checks the same budget before
+copying descriptors, and string manifests are checked after JSON parsing before
+passthrough/serialization. Repository separators follow the actual grammar: one
+dot, one or two underscores, or one or more hyphens between alphanumeric runs.

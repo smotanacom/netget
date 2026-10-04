@@ -78,6 +78,7 @@ portable-base = [
     "ipfix",
     "netflow-v9",
     "tacacs",
+    "diameter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -145,6 +146,7 @@ portable-base = [
     "grpc",
     "grpc-web",
     "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "tor",
     "vnc",
@@ -260,6 +262,7 @@ loki = ["dep:flate2"] # Typed Loki JSON/gzip and native protobuf/Snappy push
 ipfix = [] # Native typed UDP IPFIX templates/options/records
 netflow-v9 = [] # Native RFC3954 v9 UDP templates/options/records
 tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
+diameter = [] # Native bounded TCP peer lifecycle and stateless NASREQ
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
@@ -330,7 +333,7 @@ dynamodb = ["aws-config", "aws-sdk-dynamodb", "aws-smithy-types", "dep:aws-crede
 s3 = ["aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types", "dep:rust-s3"]  # S3 client
 sqs = ["aws-config", "aws-sdk-sqs"]  # AWS SQS queue
 npm = ["http", "urlencoding"]  # NPM registry server and client (built on HTTP, uses urlencoding for search queries)
-oci-registry = ["dep:sha2"]  # OCI Distribution v2 container registry server (pull path). Serves HTTP over hyper directly (unconditional dep) and needs sha2 for real content digests; links no system library, so it is in every dist set
+oci-registry = ["dep:sha2", "dep:rustls"]  # OCI pull server/client; SHA256 verifies native content and Rustls verifies HTTPS. No system library; included in every dist set
 openai = ["async-openai"]  # OpenAI API client
 ollama = []  # Ollama API server and client (uses existing reqwest, no extra deps)
 oauth2 = ["dep:oauth2", "urlencoding"]  # OAuth2 authorization server and client
@@ -351,6 +354,7 @@ mcp = ["dep:axum", "dep:tower-http"]  # Model Context Protocol (JSON-RPC 2.0 ove
 grpc = ["dep:tonic", "tonic/tls-webpki-roots", "dep:h2", "dep:rustls", "dep:prost", "dep:prost-reflect", "dep:prost-types", "dep:tonic-reflection", "dep:tower", "dep:tempfile"]  # Dynamic unary/streaming gRPC and bounded reflection
 grpc-web = ["grpc", "dep:tonic-web", "dep:flate2"] # Binary HTTP/1.1 unary and server-streaming binding
 connect_rpc = ["grpc", "dep:flate2"] # Binary HTTP/1.1 Connect unary and server-streaming binding
+gnmi = ["grpc", "dep:tokio-rustls", "dep:rustls-pemfile"] # Typed native OpenConfig gNMI
 etcd = ["grpc", "dep:etcd-client"]  # etcd v3 key-value store server (KV service via gRPC)
 zookeeper = ["dep:zookeeper-async"]  # ZooKeeper distributed coordination server and client with binary protocol support
 xmlrpc = ["quick-xml", "dep:xmlrpc"]  # XML-RPC server and client with LLM-controlled method execution
@@ -515,6 +519,7 @@ dist-windows = [
     "ipfix",
     "netflow-v9",
     "tacacs",
+    "diameter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -576,6 +581,7 @@ dist-windows = [
     "grpc",
     "grpc-web",
     "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "vnc",
     "reverse-shell",
@@ -672,6 +678,7 @@ all-protocols = [
     "ipfix",
     "netflow-v9",
     "tacacs",
+    "diameter",
     "sflow",
     "prometheus-remote-write",
     "ssh",
@@ -743,6 +750,7 @@ all-protocols = [
     "grpc",
     "grpc-web",
     "connect_rpc",
+    "gnmi",
     "xmlrpc",
     "tor",
     "vnc",

@@ -926,6 +926,8 @@ pub use mcp::McpServer;
 
 #[cfg(feature = "connect_rpc")]
 pub mod connect_rpc;
+#[cfg(feature = "gnmi")]
+pub mod gnmi;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc-web")]
@@ -1264,3 +1266,6 @@ pub mod netflow_v9;
 
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+
+#[cfg(feature = "diameter")]
+pub mod diameter;
