@@ -358,6 +358,9 @@ pub mod nbd;
 #[cfg(feature = "managesieve")]
 pub mod managesieve;
 
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
+
 #[cfg(feature = "diameter")]
 pub mod diameter;
 

@@ -762,3 +762,5 @@ pub mod bolt;
 
 #[cfg(feature = "oci-registry")]
 pub mod oci_registry;
+#[cfg(feature = "zenoh")]
+pub mod zenoh;
