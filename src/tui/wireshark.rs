@@ -391,6 +391,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "fix" => with_display(PLAIN_TCP, "fix"),
         // Framed or unframed, binary or compact: the `thrift` dissector reads all four.
         "thrift" => tcp("thrift"),
+        "bmp" => tcp("bmp"),
         "redis" => tcp("resp"),
         "memcached" => tcp("memcache"),
         "ldap" => tcp("ldap"),

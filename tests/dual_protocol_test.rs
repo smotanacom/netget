@@ -96,6 +96,7 @@ fn golden_duals_map() {
         "SRT",
         "AMQP1",
         "Thrift",
+        "BMP",
         "Nostr",
         "Vault",
         "Bolt",
