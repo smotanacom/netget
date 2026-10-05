@@ -213,9 +213,9 @@ impl Client for Amqp1ClientProtocol {
             crate::utils::json_budget::within_budget(&v, 1024 * 1024, 100_000, 32),
             "action exceeds the AMQP bounds"
         );
-        let address_ok = v["address"]
-            .as_str()
-            .is_some_and(|a| !a.is_empty() && a.len() <= 256 && !a.chars().any(char::is_control));
+        let address_ok = v["address"].as_str().is_some_and(|a| {
+            !a.is_empty() && a.len() <= 256 && !crate::utils::sanitize::has_controls(&a)
+        });
         match v["type"].as_str() {
             Some("amqp1_send") => {
                 ensure!(address_ok, "address is a node name");

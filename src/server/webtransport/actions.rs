@@ -271,7 +271,7 @@ pub fn validate(v: &Value) -> Result<()> {
                     );
                     let value = value.as_str().context("header values are strings")?;
                     ensure!(
-                        value.len() <= 1024 && !value.chars().any(char::is_control),
+                        value.len() <= 1024 && !crate::utils::sanitize::has_controls(&value),
                         "the {k} header value is too long or carries control characters"
                     );
                 }

@@ -625,7 +625,7 @@ pub fn check_action(flavor_prefix: &str, kind: Kind, v: &Value) -> Result<Client
         !coll.is_empty()
             && coll.len() <= 512
             && !coll.contains("..")
-            && !coll.chars().any(char::is_control),
+            && !crate::utils::sanitize::has_controls(&coll),
         "collection is a name or an absolute path"
     );
     if matches!(op, "get" | "put") {

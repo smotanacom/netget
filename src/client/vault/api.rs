@@ -394,7 +394,7 @@ pub fn parse(operation: &str, value: Value) -> Result<(Value, Option<hyper::head
                                 !name.is_empty()
                                     && name.len() <= 256
                                     && !name.contains('/')
-                                    && !name.chars().any(char::is_control),
+                                    && !crate::utils::sanitize::has_controls(&name),
                                 "invalid Vault list key"
                             );
                         }

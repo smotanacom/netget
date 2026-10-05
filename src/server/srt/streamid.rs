@@ -11,7 +11,7 @@ pub struct Target {
 }
 
 pub fn parse(stream_id: &str) -> Result<Target, String> {
-    if stream_id.len() > 512 || stream_id.chars().any(char::is_control) {
+    if stream_id.len() > 512 || crate::utils::sanitize::has_controls(&stream_id) {
         return Err("stream ID is over 512 characters or holds a control character".into());
     }
     if let Some(list) = stream_id.strip_prefix("#!::") {

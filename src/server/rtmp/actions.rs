@@ -176,7 +176,7 @@ pub fn check_answer(v: &Value) -> Result<()> {
         Some("rtmp_reject") => ensure!(
             v["description"].as_str().is_some_and(|d| !d.is_empty()
                 && d.len() <= 256
-                && !d.chars().any(char::is_control)),
+                && !crate::utils::sanitize::has_controls(&d)),
             "description is 1 to 256 printable characters"
         ),
         Some("rtmp_send_data") => {

@@ -141,7 +141,7 @@ pub fn check_answer(v: &Value) -> Result<()> {
         Some("thrift_error") => ensure!(
             v["message"]
                 .as_str()
-                .is_some_and(|m| m.len() <= 256 && !m.chars().any(char::is_control)),
+                .is_some_and(|m| m.len() <= 256 && !crate::utils::sanitize::has_controls(&m)),
             "message is up to 256 printable characters"
         ),
         _ => bail!("Unknown Thrift server action"),

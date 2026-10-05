@@ -120,7 +120,9 @@ pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
     };
     let ca_name = s("ca_name")?.unwrap_or_else(|| DEFAULT_CA_NAME.to_owned());
     anyhow::ensure!(
-        !ca_name.is_empty() && ca_name.len() <= 64 && !ca_name.chars().any(char::is_control),
+        !ca_name.is_empty()
+            && ca_name.len() <= 64
+            && !crate::utils::sanitize::has_controls(&ca_name),
         "ca_name is 1 to 64 printable characters"
     );
     let validity_days = p
@@ -707,7 +709,7 @@ fn check_contact(payload: &Value) -> Result<Vec<String>, Problem> {
                 || domain.is_empty()
                 || u.len() > 256
                 || addr.contains(['?', ',', ' '])
-                || addr.chars().any(char::is_control)
+                || crate::utils::sanitize::has_controls(&addr)
             {
                 return Err(problem(
                     400,

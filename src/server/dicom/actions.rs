@@ -277,7 +277,7 @@ pub fn check_answer(v: &Value) -> Result<()> {
             if let Some(c) = v.get("comment").filter(|c| !c.is_null()) {
                 ensure!(
                     c.as_str()
-                        .is_some_and(|c| c.len() <= 64 && !c.chars().any(char::is_control)),
+                        .is_some_and(|c| c.len() <= 64 && !crate::utils::sanitize::has_controls(&c)),
                     "comment is up to 64 printable characters"
                 );
             }

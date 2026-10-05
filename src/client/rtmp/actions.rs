@@ -206,7 +206,7 @@ impl Protocol for RtmpClientProtocol {
 }
 
 fn name_ok(s: Option<&str>) -> bool {
-    s.is_some_and(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
+    s.is_some_and(|s| !s.is_empty() && s.len() <= 256 && !crate::utils::sanitize::has_controls(&s))
 }
 
 impl Client for RtmpClientProtocol {

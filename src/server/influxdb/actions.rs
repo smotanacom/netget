@@ -107,7 +107,9 @@ impl Protocol for InfluxDbProtocol {
 fn message(action: &Value) -> Result<String> {
     let message = action["message"].as_str().context("message required")?;
     ensure!(
-        !message.is_empty() && message.len() <= 1024 && !message.chars().any(char::is_control),
+        !message.is_empty()
+            && message.len() <= 1024
+            && !crate::utils::sanitize::has_controls(&message),
         "message byte/control limit"
     );
     Ok(message.into())

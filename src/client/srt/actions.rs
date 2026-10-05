@@ -233,7 +233,7 @@ impl Client for SrtClientProtocol {
                 ensure!(
                     v["path"].as_str().is_some_and(|p| !p.is_empty()
                         && p.len() <= 1024
-                        && !p.chars().any(char::is_control)),
+                        && !crate::utils::sanitize::has_controls(&p)),
                     "path is a file path"
                 );
                 if let Some(b) = v.get("bitrate_kbps").filter(|b| !b.is_null()) {

@@ -147,7 +147,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         .flatten()
         .unwrap_or_else(|| DEFAULT_APP.to_owned());
     ensure!(
-        !app.is_empty() && app.len() <= 256 && !app.chars().any(char::is_control),
+        !app.is_empty() && app.len() <= 256 && !crate::utils::sanitize::has_controls(&app),
         "app is a name"
     );
     let mut stream = tokio::time::timeout(TIMEOUT, TcpStream::connect(&ctx.remote_addr))

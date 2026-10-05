@@ -181,7 +181,7 @@ pub fn check_answer(v: &Value) -> Result<()> {
             ensure!(
                 v["description"]
                     .as_str()
-                    .is_some_and(|d| d.len() <= 256 && !d.chars().any(char::is_control)),
+                    .is_some_and(|d| d.len() <= 256 && !crate::utils::sanitize::has_controls(&d)),
                 "description is up to 256 printable characters"
             );
         }
@@ -190,7 +190,7 @@ pub fn check_answer(v: &Value) -> Result<()> {
                 ensure!(
                     a.as_str().is_some_and(|a| !a.is_empty()
                         && a.len() <= 256
-                        && !a.chars().any(char::is_control)),
+                        && !crate::utils::sanitize::has_controls(&a)),
                     "address is a node name"
                 );
             }
