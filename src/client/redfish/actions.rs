@@ -304,8 +304,9 @@ impl Client for RedfishClientProtocol {
                 );
                 if let Some(e) = v.get("if_match").filter(|e| !e.is_null()) {
                     ensure!(
-                        e.as_str()
-                            .is_some_and(|e| e.len() <= 256 && !e.chars().any(char::is_control)),
+                        e.as_str().is_some_and(
+                            |e| e.len() <= 256 && !crate::utils::sanitize::has_controls(&e)
+                        ),
                         "if_match must be text"
                     );
                 }

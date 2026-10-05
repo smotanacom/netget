@@ -231,7 +231,7 @@ impl Client for AcmeClientProtocol {
                     ensure!(
                         c.as_array().is_some_and(|l| l.len() <= 10
                             && l.iter().all(|u| u.as_str().is_some_and(
-                                |u| u.len() <= 256 && !u.chars().any(char::is_control)
+                                |u| u.len() <= 256 && !crate::utils::sanitize::has_controls(&u)
                             ))),
                         "contact is up to 10 URLs"
                     );
@@ -263,7 +263,7 @@ impl Client for AcmeClientProtocol {
                     ensure!(
                         k.as_str().is_some_and(|k| !k.is_empty()
                             && k.len() <= 1024
-                            && !k.chars().any(char::is_control)),
+                            && !crate::utils::sanitize::has_controls(&k)),
                         "key_file is a path"
                     );
                 }

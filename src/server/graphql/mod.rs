@@ -58,7 +58,7 @@ pub async fn spawn(ctx: SpawnContext) -> anyhow::Result<SocketAddr> {
         endpoint.starts_with('/')
             && endpoint.len() <= 256
             && !endpoint.contains(['?', '#', ' '])
-            && !endpoint.chars().any(char::is_control),
+            && !crate::utils::sanitize::has_controls(&endpoint),
         "endpoint must be an absolute path without query or fragment"
     );
     let introspection = p

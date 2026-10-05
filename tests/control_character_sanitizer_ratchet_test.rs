@@ -220,7 +220,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
 /// register; `src/server/openvpn/packet.rs` shows that even then the receiver can be something
 /// other than a `char`, which is why the allow-list carries a reason per file rather than the
 /// scan trying to infer one.
-const PREDICATES: &[&str] = &["is_ascii_control", "is_control()"];
+///
+/// `char::is_control` is the same predicate passed as a function path —
+/// `s.chars().any(char::is_control)` — which a scan for the call form never saw. Forty-five
+/// validators used it unnoticed; they now call `crate::utils::sanitize::has_controls`.
+const PREDICATES: &[&str] = &["is_ascii_control", "is_control()", "char::is_control"];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

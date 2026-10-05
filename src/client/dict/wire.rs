@@ -22,7 +22,7 @@ impl Request {
                 .map(|v| v.as_str().context("Expected string"))
                 .unwrap_or_else(|| default.context("Missing parameter"))?;
             ensure!(
-                !s.chars().any(char::is_control),
+                !crate::utils::sanitize::has_controls(&s),
                 "DICT parameters cannot contain control characters"
             );
             Ok(wire::quoted(s))

@@ -175,8 +175,9 @@ pub fn check_answer(v: &Value) -> Result<()> {
             );
             if let Some(m) = v.get("message").filter(|m| !m.is_null()) {
                 ensure!(
-                    m.as_str()
-                        .is_some_and(|m| m.len() <= 256 && !m.chars().any(char::is_control)),
+                    m.as_str().is_some_and(
+                        |m| m.len() <= 256 && !crate::utils::sanitize::has_controls(&m)
+                    ),
                     "message is up to 256 printable characters"
                 );
             }

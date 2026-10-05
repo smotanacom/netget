@@ -82,7 +82,9 @@ pub async fn spawn(ctx: SpawnContext) -> Result<SocketAddr> {
         .flatten()
         .unwrap_or_else(|| DEFAULT_CONTAINER.to_owned());
     ensure!(
-        !container.is_empty() && container.len() <= 256 && !container.chars().any(char::is_control),
+        !container.is_empty()
+            && container.len() <= 256
+            && !crate::utils::sanitize::has_controls(&container),
         "container_id is 1 to 256 printable characters"
     );
     let require_sasl = p
@@ -846,35 +848,37 @@ async fn on_attach(c: &mut Conn<'_>, channel: u16, perf: &Value) -> Result<()> {
     } else {
         "publish"
     };
-    let decision =
-        if address.is_empty() || address.len() > 256 || address.chars().any(char::is_control) {
-            Err((
-                "amqp:invalid-field".to_owned(),
-                "the link names no address".to_owned(),
-            ))
-        } else {
-            let event = Event::new(
-                &actions::ATTACH_EVENT,
-                json!({"direction": direction, "address": address, "link_name": name}),
-            );
-            match ask(c.shared, c.id, event, "attach").await {
-                Ok(a) if a.first().is_some_and(|a| a["type"] == "amqp1_accept") => Ok(()),
-                Ok(a) => {
-                    let first = a.first().cloned().unwrap_or_default();
-                    Err((
-                        first["condition"]
-                            .as_str()
-                            .unwrap_or("amqp:unauthorized-access")
-                            .to_owned(),
-                        first["description"]
-                            .as_str()
-                            .unwrap_or("refused")
-                            .to_owned(),
-                    ))
-                }
-                Err(text) => Err(("amqp:internal-error".to_owned(), text)),
+    let decision = if address.is_empty()
+        || address.len() > 256
+        || crate::utils::sanitize::has_controls(&address)
+    {
+        Err((
+            "amqp:invalid-field".to_owned(),
+            "the link names no address".to_owned(),
+        ))
+    } else {
+        let event = Event::new(
+            &actions::ATTACH_EVENT,
+            json!({"direction": direction, "address": address, "link_name": name}),
+        );
+        match ask(c.shared, c.id, event, "attach").await {
+            Ok(a) if a.first().is_some_and(|a| a["type"] == "amqp1_accept") => Ok(()),
+            Ok(a) => {
+                let first = a.first().cloned().unwrap_or_default();
+                Err((
+                    first["condition"]
+                        .as_str()
+                        .unwrap_or("amqp:unauthorized-access")
+                        .to_owned(),
+                    first["description"]
+                        .as_str()
+                        .unwrap_or("refused")
+                        .to_owned(),
+                ))
             }
-        };
+            Err(text) => Err(("amqp:internal-error".to_owned(), text)),
+        }
+    };
     // Our attach mirrors the client's, with the opposite role.
     let our_role = Value::Bool(!client_receives);
     match decision {

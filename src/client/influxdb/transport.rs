@@ -187,9 +187,9 @@ pub async fn write(
                 ensure!(
                     !error.code.is_empty()
                         && error.code.len() <= 128
-                        && !error.code.chars().any(char::is_control)
+                        && !crate::utils::sanitize::has_controls(&error.code)
                         && error.message.len() <= 1024
-                        && !error.message.chars().any(char::is_control),
+                        && !crate::utils::sanitize::has_controls(&error.message),
                     "error text limit"
                 );
                 if let Some(line) = error.line {

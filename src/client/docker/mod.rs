@@ -119,7 +119,7 @@ pub fn request(action: &Value, version: &str) -> Result<Request> {
             for v in values {
                 let text = v.as_str().context("filter value must be string")?;
                 ensure!(
-                    text.len() <= 1024 && !text.chars().any(char::is_control),
+                    text.len() <= 1024 && !crate::utils::sanitize::has_controls(&text),
                     "filter value limit/control character"
                 );
             }
@@ -159,7 +159,7 @@ impl Endpoint {
             ensure!(
                 path.starts_with('/')
                     && path.len() <= 4096
-                    && !path.chars().any(char::is_control)
+                    && !crate::utils::sanitize::has_controls(&path)
                     && !path.contains(['?', '#']),
                 "Unix endpoint must be an absolute socket path"
             );

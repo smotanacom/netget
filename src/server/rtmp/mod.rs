@@ -324,8 +324,10 @@ impl<'a> Conn<'a> {
         } else {
             (name.to_owned(), format!("{app}/{name}"))
         };
-        (!stream.is_empty() && stream.len() <= 256 && !stream.chars().any(char::is_control))
-            .then_some((stream, key))
+        (!stream.is_empty()
+            && stream.len() <= 256
+            && !crate::utils::sanitize::has_controls(&stream))
+        .then_some((stream, key))
     }
 
     async fn run(&mut self, mut stream: TcpStream) -> Result<()> {
@@ -649,7 +651,7 @@ impl<'a> Conn<'a> {
                 if self.app.is_some()
                     || app.is_empty()
                     || app.len() > 256
-                    || app.chars().any(char::is_control)
+                    || crate::utils::sanitize::has_controls(&app)
                 {
                     self.command(
                         0,

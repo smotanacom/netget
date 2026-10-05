@@ -197,7 +197,9 @@ pub fn body_fields(v: &Value) -> Result<Vec<(u32, String)>> {
                 _ => bail!("tag {tag}: value is a string or number"),
             };
             ensure!(
-                !value.is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control),
+                !value.is_empty()
+                    && value.len() <= 4096
+                    && !crate::utils::sanitize::has_controls(&value),
                 "tag {tag}: value is 1 to 4096 printable characters"
             );
             Ok((tag, value))
@@ -230,7 +232,7 @@ fn text_ok(v: &Value, key: &str, required: bool) -> Result<()> {
         Some(t) => ensure!(
             t.as_str().is_some_and(|t| !t.is_empty()
                 && t.len() <= 256
-                && !t.chars().any(char::is_control)),
+                && !crate::utils::sanitize::has_controls(&t)),
             "{key} is 1 to 256 printable characters"
         ),
     }

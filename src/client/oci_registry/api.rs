@@ -118,7 +118,7 @@ pub fn action(v: &Value) -> Result<Action> {
             );
             if let Some(s) = username {
                 ensure!(
-                    !s.contains(':') && !s.chars().any(char::is_control),
+                    !s.contains(':') && !crate::utils::sanitize::has_controls(&s),
                     "OCI basic principal refusal"
                 );
             }

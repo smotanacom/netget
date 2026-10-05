@@ -119,8 +119,9 @@ async fn close(sink: &Sink, code: u16, reason: &str) {
 }
 
 fn valid_id(v: &Value) -> Option<&str> {
-    v.as_str()
-        .filter(|s| !s.is_empty() && s.len() <= MAX_ID_LEN && !s.chars().any(char::is_control))
+    v.as_str().filter(|s| {
+        !s.is_empty() && s.len() <= MAX_ID_LEN && !crate::utils::sanitize::has_controls(&s)
+    })
 }
 
 /// Run one upgraded connection until either side closes.

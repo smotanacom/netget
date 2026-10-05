@@ -111,7 +111,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
     let authid = s("authid")?;
     if let Some(a) = &authid {
         ensure!(
-            !a.is_empty() && a.len() <= 128 && !a.chars().any(char::is_control),
+            !a.is_empty() && a.len() <= 128 && !crate::utils::sanitize::has_controls(&a),
             "authid is 1 to 128 printable characters"
         );
     }

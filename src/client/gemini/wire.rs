@@ -16,7 +16,7 @@ impl Request {
     pub fn from_action(v: &Value) -> Result<Self> {
         let raw = v["url"].as_str().context("Missing Gemini URL")?;
         ensure!(
-            !raw.chars().any(char::is_control),
+            !crate::utils::sanitize::has_controls(&raw),
             "URL contains control characters"
         );
         crate::server::gemini::wire::parse_request(raw)
@@ -75,7 +75,7 @@ pub async fn response<R: AsyncBufRead + Unpin>(r: &mut R, request: &Request) -> 
     let status = (header[0] - b'0') * 10 + header[1] - b'0';
     let meta = std::str::from_utf8(&header[3..])?;
     ensure!(
-        !meta.chars().any(char::is_control),
+        !crate::utils::sanitize::has_controls(&meta),
         "Control character in Gemini meta"
     );
     let mut out = json!({"status":status,"meta":meta});

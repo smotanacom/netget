@@ -32,7 +32,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         .flatten();
     if let Some(s) = &stream_id {
         ensure!(
-            s.len() <= 512 && !s.chars().any(char::is_control),
+            s.len() <= 512 && !crate::utils::sanitize::has_controls(&s),
             "stream_id is up to 512 printable characters"
         );
     }

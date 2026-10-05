@@ -248,7 +248,7 @@ pub fn check_path(p: &str, allow_empty: bool) -> Result<()> {
     }
     path::parse(p)?;
     ensure!(
-        !p.contains(['?', '#', ' ']) && !p.chars().any(char::is_control),
+        !p.contains(['?', '#', ' ']) && !crate::utils::sanitize::has_controls(&p),
         "path has no ?, # or spaces (percent-encode key values)"
     );
     Ok(())

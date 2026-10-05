@@ -123,7 +123,9 @@ pub fn validate_token(value: &str) -> Result<()> {
 }
 pub fn validate_target(value: &str) -> Result<()> {
     ensure!(
-        !value.is_empty() && value.len() <= MAX_NAME_BYTES && !value.chars().any(char::is_control),
+        !value.is_empty()
+            && value.len() <= MAX_NAME_BYTES
+            && !crate::utils::sanitize::has_controls(&value),
         "org/bucket must be nonempty, <=1024 bytes, without controls"
     );
     Ok(())

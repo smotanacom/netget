@@ -84,7 +84,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         for (k, v) in headers {
             let v = v.as_str().context("header values are strings")?;
             ensure!(
-                !v.chars().any(char::is_control),
+                !crate::utils::sanitize::has_controls(&v),
                 "the {k} header carries control characters"
             );
             options = options.add_header(k.to_ascii_lowercase(), v);

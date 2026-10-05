@@ -99,7 +99,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
     let (username, password) = (s("username")?, s("password")?);
     for v in [&username, &password].into_iter().flatten() {
         ensure!(
-            !v.is_empty() && v.len() <= 256 && !v.chars().any(char::is_control),
+            !v.is_empty() && v.len() <= 256 && !crate::utils::sanitize::has_controls(&v),
             "username and password are 1 to 256 printable characters"
         );
     }

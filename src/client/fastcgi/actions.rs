@@ -245,7 +245,7 @@ impl Client for FastcgiClientProtocol {
                 ensure!(
                     path.starts_with('/')
                         && path.len() <= 2048
-                        && !path.chars().any(char::is_control),
+                        && !crate::utils::sanitize::has_controls(&path),
                     "path must start with / and contain no control characters"
                 );
                 if let Some(m) = v.get("method").filter(|m| !m.is_null()) {
@@ -258,8 +258,9 @@ impl Client for FastcgiClientProtocol {
                 }
                 if let Some(q) = v.get("query").filter(|q| !q.is_null()) {
                     ensure!(
-                        q.as_str()
-                            .is_some_and(|q| q.len() <= 8192 && !q.chars().any(char::is_control)),
+                        q.as_str().is_some_and(
+                            |q| q.len() <= 8192 && !crate::utils::sanitize::has_controls(&q)
+                        ),
                         "query must be text without control characters"
                     );
                 }
