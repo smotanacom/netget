@@ -362,6 +362,36 @@ impl ClientRegistry {
             crate::client::icap::actions::IcapClientProtocol::new(),
         ));
 
+        #[cfg(feature = "s7comm")]
+        self.register(Arc::new(
+            crate::client::s7comm::actions::S7commClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "ethernet_ip")]
+        self.register(Arc::new(
+            crate::client::ethernet_ip::actions::EthernetIpClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "dnp3")]
+        self.register(Arc::new(
+            crate::client::dnp3::actions::Dnp3ClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "iec104")]
+        self.register(Arc::new(
+            crate::client::iec104::actions::Iec104ClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "bacnet")]
+        self.register(Arc::new(
+            crate::client::bacnet::actions::BacnetClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "opcua")]
+        self.register(Arc::new(
+            crate::client::opcua::actions::OpcuaClientProtocol::new(),
+        ));
+
         #[cfg(feature = "ocpp")]
         self.register(Arc::new(
             crate::client::ocpp::actions::OcppClientProtocol::new(),

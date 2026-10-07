@@ -129,7 +129,13 @@ fn tcp_servers() -> Vec<(String, String)> {
     let mut found = Vec::new();
 
     for entry in walk_dirs(&root) {
-        let own_source = rust_sources(&entry);
+        let mut own_source = rust_sources(&entry);
+        if own_source.contains("ics_support::spawn") {
+            // These codecs delegate their socket ownership, cap and read deadlines.
+            own_source.push_str(
+                &std::fs::read_to_string(root.join("ics_support.rs")).expect("ICS transport owner"),
+            );
+        }
         // Every way a server here opens a stream accept loop, looked for in every file of the
         // directory. Matching only `TcpListener` is what hid 60 of 92 protocols from this test:
         // `create_reusable_tcp_listener` returns a `TcpListener` without its caller ever
@@ -258,7 +264,15 @@ fn every_tcp_accept_loop_goes_through_the_shared_connection_cap() {
     let mut missing = Vec::new();
 
     for (name, source) in tcp_servers() {
-        let has_cap = source.contains("accept_bounded");
+        let has_cap = source.contains("accept_bounded")
+            || (name == "opcua" && source.contains("server.run_with(listener)") && {
+                // The external stack owns its accept loop. Verify the real bounded vendored loop,
+                // rather than exempting this protocol from the connection-cap ratchet.
+                let adapter = std::fs::read_to_string("vendor/async-opcua-server/src/server.rs")
+                    .expect("OPC UA adapter source");
+                adapter.contains("self.connections.len() < 256")
+                    && adapter.contains("if accepting =>")
+            });
         if allowed.contains(leaf(&name)) {
             if has_cap {
                 // It grew a cap: the baseline entry is stale and must go.

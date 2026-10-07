@@ -1,6 +1,6 @@
 [package]
 name = "netget"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/smotanacom/netget"
@@ -84,6 +84,12 @@ portable-base = [
     "rdap",
     "hl7",
     "icap",
+    "s7comm",
+    "ethernet_ip",
+    "dnp3",
+    "iec104",
+    "bacnet",
+    "opcua",
     "ocpp",
     "a2a",
     "graphql",
@@ -300,6 +306,12 @@ rpki_rtr = [] # RPKI-to-Router cache and router roles (RFC 8210/6810)
 rdap = [] # RDAP registration data server and client (RFC 7480/9082/9083)
 hl7 = [] # HL7 v2 over MLLP integration endpoint and sender
 icap = [] # ICAP content adaptation server and client (RFC 3507)
+s7comm = [] # ISO-on-TCP legacy byte data-area PLC simulator and scanner
+ethernet_ip = [] # Selected EtherNet/IP device and scanner operations
+dnp3 = [] # Selected DNP3 device and scanner operations
+iec104 = [] # Selected IEC 60870-5-104 device and scanner operations
+bacnet = [] # Selected BACnet/IP device and scanner operations
+opcua = ["dep:async-opcua"] # Selected OPC UA device and scanner operations
 ocpp = ["dep:tokio-tungstenite"] # OCPP-J 1.6 / 2.0.1 central system and charge point
 a2a = [] # Agent2Agent protocol 1.0 agent and client (JSON-RPC binding)
 fastcgi = [] # FastCGI 1.0 Responder application and web-server-side client
@@ -589,6 +601,12 @@ dist-windows = [
     "rdap",
     "hl7",
     "icap",
+    "s7comm",
+    "ethernet_ip",
+    "dnp3",
+    "iec104",
+    "bacnet",
+    "opcua",
     "ocpp",
     "a2a",
     "graphql",
@@ -780,6 +798,12 @@ all-protocols = [
     "rdap",
     "hl7",
     "icap",
+    "s7comm",
+    "ethernet_ip",
+    "dnp3",
+    "iec104",
+    "bacnet",
+    "opcua",
     "ocpp",
     "a2a",
     "graphql",
@@ -942,6 +966,8 @@ tun = ["dep:tun"]
 sha1 = ["dep:sha1"]
 
 [dependencies]
+async-opcua = { version = "=0.19.0", optional = true, features = ["server", "client"] }
+
 # Async runtime
 tokio-util = { version = "0.7", features = ["codec", "compat"] }
 tokio-stream = "0.1"
@@ -1486,6 +1512,8 @@ panic = "abort"
 # unchanged. vendor/hyper/README.md has the diff and how to re-apply it on a hyper upgrade;
 # tests/vendored_hyper_patch_test.rs fails when Cargo.lock and the vendored copy disagree.
 [patch.crates-io]
+async-opcua-core = { path = "vendor/async-opcua-core" }
+async-opcua-server = { path = "vendor/async-opcua-server" }
 hyper = { path = "vendor/hyper" }
 h3-quinn = { path = "vendor/h3-quinn" }
 # Bound tonic0.12.3 decompression with the configured receive limit in both directions.
@@ -1495,3 +1523,4 @@ tonic = { path = "vendor/tonic" }
 # See vendor/wtransport/README.netget.md and tests/vendored_wtransport_patch_test.rs.
 wtransport = { path = "vendor/wtransport" }
 wtransport-proto = { path = "vendor/wtransport-proto" }
+

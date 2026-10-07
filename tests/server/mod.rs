@@ -490,3 +490,21 @@ pub mod webtransport;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;
+
+#[cfg(feature = "s7comm")]
+pub mod s7comm;
+
+#[cfg(feature = "ethernet_ip")]
+pub mod ethernet_ip;
+
+#[cfg(feature = "dnp3")]
+pub mod dnp3;
+
+#[cfg(feature = "iec104")]
+mod iec104;
+
+#[cfg(feature = "bacnet")]
+mod bacnet;
+
+#[cfg(feature = "opcua")]
+mod opcua;

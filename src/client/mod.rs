@@ -774,3 +774,21 @@ pub mod restconf;
 pub mod webtransport;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
+
+#[cfg(feature = "s7comm")]
+pub mod s7comm;
+
+#[cfg(feature = "ethernet_ip")]
+pub mod ethernet_ip;
+
+#[cfg(feature = "dnp3")]
+pub mod dnp3;
+
+#[cfg(feature = "iec104")]
+pub mod iec104;
+
+#[cfg(feature = "bacnet")]
+pub mod bacnet;
+
+#[cfg(feature = "opcua")]
+pub mod opcua;

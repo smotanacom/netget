@@ -448,6 +448,12 @@ fn load_servers() -> Vec<ServerSource> {
                     contract.push('\n');
                 }
             }
+            if contract.contains("ics_support::spawn") {
+                contract.push_str(&strip_comments(
+                    &std::fs::read_to_string("src/server/ics_support.rs")
+                        .expect("shared ICS peer owner"),
+                ));
+            }
             ServerSource {
                 name,
                 body: strip_comments(&raw),
