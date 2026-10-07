@@ -392,3 +392,6 @@ pub mod netflow_v9;
 
 #[cfg(feature = "tacacs")]
 pub mod tacacs;
+
+#[cfg(feature = "netconf")]
+pub mod netconf;

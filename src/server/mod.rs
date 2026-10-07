@@ -5,6 +5,8 @@
 pub mod accept_bounded;
 pub mod connection;
 pub mod peer_support;
+#[cfg(feature = "netconf")]
+pub mod netconf;
 // server_trait requires async-trait, so only compile when features that provide it are enabled
 #[cfg(any(
     feature = "tcp",

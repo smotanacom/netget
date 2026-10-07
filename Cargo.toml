@@ -263,6 +263,7 @@ tacacs = ["dep:md-5"] # Native selected RFC8907 legacy AAA; existing MD5
 sflow = [] # Native typed sFlow v5 UDP samples/counters
 prometheus-remote-write = [] # Published v1 float-sample protobuf/Snappy sender/receiver
 ssh = ["russh", "russh-keys", "russh-sftp", "dep:ssh2"]
+netconf = ["dep:russh", "dep:russh-keys", "dep:quick-xml", "tokio-util/rt"] # Selected native SSH NETCONF1.0/1.1 roles
 ssh-agent = ["dep:ssh-agent-lib", "dep:tempfile"]  # SSH Key Agent protocol (server and client for key management)
 svn = []  # SVN (Subversion) uses only TCP, no extra deps
 irc = ["dep:irc"]  # IRC client support
@@ -605,6 +606,7 @@ dist-windows = [
     "usb",
 ]
 all-protocols = [
+    "netconf",
     "tcp",
     "socket_file",
     "named_pipe",
