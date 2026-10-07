@@ -370,7 +370,8 @@ async fn misbehaving_cache(
         }
         read_pdu(&mut s).await
     });
-    let cid = client_in(&state, addr.to_string(), quiet_router(), params)
+    // The router may refuse and close before its handle is observable, so only create it.
+    let cid = client_create(&state, addr.to_string(), quiet_router(), params)
         .await
         .unwrap();
     let reply = accept.await.unwrap();

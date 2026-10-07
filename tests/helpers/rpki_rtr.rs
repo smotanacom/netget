@@ -70,7 +70,10 @@ pub(crate) async fn server_in(
     (id, addr)
 }
 
-pub(crate) async fn client_in(
+/// Create the client and return as soon as it is registered, without waiting to observe its
+/// command handle: a router that refuses its cache's first PDUs is gone again within
+/// milliseconds, and waiting for a handle that already came and went reads as "did not connect".
+pub(crate) async fn client_create(
     state: &AppState,
     remote: String,
     handlers: Vec<Value>,
@@ -92,6 +95,16 @@ pub(crate) async fn client_in(
         tx,
     )
     .await?;
+    Ok(id)
+}
+
+pub(crate) async fn client_in(
+    state: &AppState,
+    remote: String,
+    handlers: Vec<Value>,
+    params: Value,
+) -> anyhow::Result<ClientId> {
+    let id = client_create(state, remote, handlers, params).await?;
     tokio::time::timeout(Duration::from_secs(10), async {
         while !state.has_client_handle(id).await {
             if let Some(ClientStatus::Error(e)) = state.get_client(id).await.map(|c| c.status) {
