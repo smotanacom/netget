@@ -395,6 +395,7 @@ quic = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpk
 # HTTP/3 server and client (RFC 9114, via the h3 crate). Independent of `quic`: enabling this does
 # NOT build the QUIC server, and the two cannot talk to each other.
 http3 = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "dep:h3", "dep:h3-quinn"]
+webtransport = ["dep:quinn", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots", "dep:wtransport", "dep:wtransport-proto"] # Selected native earlier-draft HTTP/3 WebTransport
 torrent-tracker = ["dep:serde_bencode", "urlencoding"]  # BitTorrent Tracker (HTTP-based peer discovery with announce/scrape)
 torrent-dht = ["dep:serde_bencode"]  # BitTorrent DHT (Kademlia-based distributed peer discovery)
 torrent-peer = ["dep:serde_bencode"]  # BitTorrent Peer Wire Protocol (peer-to-peer data transfer)
@@ -1087,6 +1088,8 @@ kafka-protocol = { version = "0.14", optional = true }  # Code-generated Kafka p
 quinn = { version = "0.11", optional = true }  # Async QUIC implementation for HTTP/3
 h3 = { version = "0.0.8", optional = true }  # HTTP/3 implementation
 h3-quinn = { version = "0.0.10", optional = true }  # QUIC adapter for HTTP/3
+wtransport = { version = "=0.7.2", default-features = false, features = ["ring", "quinn"], optional = true }
+wtransport-proto = { version = "=0.7.2", features = ["async"], optional = true }
 
 # BitTorrent protocols (bencode encoding/decoding)
 serde_bencode = { version = "0.2", optional = true }  # Bencode serialization for BitTorrent protocols
@@ -1354,3 +1357,5 @@ h3-quinn = { path = "vendor/h3-quinn" }
 # Bound tonic0.12.3 decompression with the configured receive limit in both directions.
 # See vendor/tonic/README.netget.md and tests/vendored_tonic_patch_test.rs.
 tonic = { path = "vendor/tonic" }
+wtransport = { path = "vendor/wtransport" }
+wtransport-proto = { path = "vendor/wtransport-proto" }
