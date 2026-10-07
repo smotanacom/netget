@@ -18,8 +18,15 @@ pub async fn spawn(ctx: SpawnContext) -> Result<SocketAddr> {
         a["type"] = serde_json::json!("ethernet_ip_get");
         codec::validate(&a)?;
     }
+    // Acquire both sockets before starting any task. A UDP port conflict must not leave
+    // the TCP adapter alive after startup fails.
+    let listener =
+        crate::server::socket_helpers::create_reusable_tcp_listener(ctx.legacy_listen_addr())
+            .await?;
+    let addr = listener.local_addr()?;
+    let socket = tokio::net::UdpSocket::bind(addr).await?;
     let schemas = types.clone();
-    let addr = crate::server::ics_support::spawn(
+    let addr = crate::server::ics_support::spawn_accept_bounded(
         ctx.clone(),
         Arc::new(actions::EthernetIpProtocol),
         move || {
@@ -28,9 +35,9 @@ pub async fn spawn(ctx: SpawnContext) -> Result<SocketAddr> {
             device
         },
         &actions::EVENTS,
+        listener,
     )
     .await?;
-    let socket = tokio::net::UdpSocket::bind(addr).await?;
     let state = ctx.state.clone();
     let sid = ctx.server_id;
     state

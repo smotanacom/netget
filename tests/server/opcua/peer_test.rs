@@ -114,6 +114,31 @@ async fn connection_cap_and_all_live_sockets_close() {
             .await
             .is_err()
     );
+    let connections = s.get_server(id).await.unwrap().connections;
+    let first_addr = peers[0].local_addr().unwrap();
+    let first = connections
+        .values()
+        .find(|c| c.remote_addr == first_addr)
+        .unwrap()
+        .id;
+    assert!(s.has_peer_handle(id, first.as_u32()).await);
+    let result = s
+        .send_to_peer(
+            id,
+            first.as_u32(),
+            json!({"type":"disconnect"}),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        netget::state::client_handles::ClientSendOutcome::Disconnected
+    ));
+    let n = tokio::time::timeout(std::time::Duration::from_secs(2), peers[0].read(&mut b))
+        .await
+        .unwrap();
+    assert!(n.is_err() || n.unwrap() == 0);
     s.remove_server(id).await;
     for mut c in peers {
         let n = tokio::time::timeout(std::time::Duration::from_secs(2), c.read(&mut b))

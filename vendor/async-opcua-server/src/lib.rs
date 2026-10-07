@@ -34,7 +34,7 @@ pub use identity_token::IdentityToken;
 pub use info::ServerInfo;
 pub use opcua_types::event_field::EventField;
 pub use reverse_connect::ReverseConnectTargetConfig;
-pub use server::Server;
+pub use server::{Server,ConnectionControl};
 pub use server_handle::ServerHandle;
 pub use server_status::ServerStatusWrapper;
 pub use session::continuation_points::ContinuationPoint;

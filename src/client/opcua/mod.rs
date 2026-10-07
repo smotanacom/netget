@@ -12,6 +12,7 @@ use anyhow::{ensure, Result};
 use serde_json::Value;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 struct Bridge {
+    lost: tokio::sync::watch::Receiver<bool>,
     updates: tokio::sync::mpsc::Receiver<serde_json::Value>,
     notify: tokio::sync::mpsc::Sender<serde_json::Value>,
     subscriptions: usize,
@@ -19,7 +20,7 @@ struct Bridge {
 impl Bridge {
     async fn idle(&mut self, s: &mut Arc<Session>) -> Result<Option<serde_json::Value>> {
         let _ = s;
-        Ok(self.updates.recv().await)
+        tokio::select! {v=self.updates.recv()=>Ok(v),_=self.lost.changed()=>anyhow::bail!("OPC UA session ended")}
     }
     async fn exchange(
         &mut self,
@@ -189,17 +190,21 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         client.connect_to_matching_endpoint(endpoint, IdentityToken::Anonymous),
     )
     .await??;
+    let (lost_tx, lost) = tokio::sync::watch::channel(false);
     ctx.state
         .spawn_client_task(ctx.client_id, async move {
             let _ = event_loop.run().await;
+            let _ = lost_tx.send(true);
         })
         .await;
     ensure!(
         tokio::time::timeout(Duration::from_secs(10), stream.wait_for_connection()).await?,
         "UA session failed"
     );
+    stream.disable_reconnects();
     let (notify, updates) = tokio::sync::mpsc::channel(32);
     let mut session = Bridge {
+        lost,
         updates,
         notify,
         subscriptions: 0,
@@ -214,6 +219,7 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
     let cid = ctx.client_id;
     state
         .spawn_client_task(cid, async move {
+            let _session_guard=stream.close_on_drop();
             // Handler work has its own task so an unanswered manual turn does not block injected commands.
             let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<Event>(32);
             let (actions_tx, mut actions_rx) = tokio::sync::mpsc::channel::<Value>(32);

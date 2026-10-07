@@ -506,8 +506,11 @@ impl SessionController {
                     .handle_message(message, session_id, session, user_token, id)
                 {
                     super::message_handler::HandleMessageResult::AsyncMessage(mut handle) => {
-                        if self.pending_messages.len() >= 64 {handle.abort();return RequestProcessResult::Close;}
-                        let service_guard=AbortServiceOnDrop(handle.abort_handle());
+                        if self.pending_messages.len() >= 64 {
+                            handle.abort();
+                            return RequestProcessResult::Close;
+                        }
+                        let service_guard = AbortServiceOnDrop(handle.abort_handle());
                         self.pending_messages
                             .push(Box::pin(async move {
                                 let _service_guard=service_guard;
@@ -777,4 +780,8 @@ impl SecureChannelState {
 
 // NetGet: dropping a connection also cancels every in-flight service handler.
 struct AbortServiceOnDrop(tokio::task::AbortHandle);
-impl Drop for AbortServiceOnDrop {fn drop(&mut self){self.0.abort();}}
+impl Drop for AbortServiceOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}

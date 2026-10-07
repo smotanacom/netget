@@ -100,12 +100,7 @@ impl Client for S7commClientProtocol {
         &self,
         ctx: ConnectContext,
     ) -> Pin<Box<dyn Future<Output = Result<SocketAddr>> + Send>> {
-        Box::pin(crate::server::ics_support::connect(
-            ctx,
-            Arc::new(Self),
-            crate::server::s7comm::codec::Scanner::default(),
-            &EVENTS,
-        ))
+        Box::pin(super::connect(ctx))
     }
     fn execute_action(&self, v: Value) -> Result<ClientActionResult> {
         if v["type"] == "disconnect" {

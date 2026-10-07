@@ -248,7 +248,7 @@ pub async fn spawn(ctx: SpawnContext) -> Result<SocketAddr> {
         a.add_namespace("urn:netget:device", ns);
         Manager { ctx, ns }
     });
-    let (server, _handle) = ServerBuilder::new_anonymous("NetGet device")
+    let (mut server, _handle) = ServerBuilder::new_anonymous("NetGet device")
         .host(addr.ip().to_string())
         .port(addr.port())
         .application_uri("urn:netget:device-server")
@@ -263,6 +263,17 @@ pub async fn spawn(ctx: SpawnContext) -> Result<SocketAddr> {
         .with_node_manager(manager)
         .build()
         .map_err(anyhow::Error::msg)?;
+    let observed = state.clone();
+    server.set_connection_hook(move |peer,local,control| {let state=observed.clone();Box::pin(async move {
+        use crate::server::connection::ConnectionId;
+        let id=ConnectionId::new(state.get_next_unified_id().await);let now=crate::utils::clock::Instant::now();
+        state.add_connection_to_server(sid,crate::state::server::ConnectionState{id,remote_addr:peer,local_addr:local,bytes_sent:0,bytes_received:0,packets_sent:0,packets_received:0,last_activity:now,status:crate::state::server::ConnectionStatus::Active,status_changed_at:now,protocol_info:crate::state::server::ProtocolConnectionInfo::empty()}).await;
+        let mut commands=crate::server::peer_support::register_peer_channel(&state,sid,id.as_u32()).await;
+        let owner=state.clone();state.spawn_server_task(sid,async move {loop {tokio::select! {
+            _=control.closed()=>break,
+            Some(command)=commands.recv()=>{if command.action["type"]=="disconnect"{control.close().await;crate::client::command_support::reply(command,Ok(crate::state::client_handles::ClientSendOutcome::Disconnected));}else{crate::client::command_support::reply(command,Ok(crate::state::client_handles::ClientSendOutcome::Rejected{error:"UA replies require a pending handler request".into()}));}}
+        }}owner.remove_peer_handle(sid,id.as_u32()).await;owner.update_connection_status(sid,id,crate::state::server::ConnectionStatus::Closed).await;}).await;
+    })});
     state
         .spawn_server_task(sid, async move {
             let _ = server.run_with(listener).await;

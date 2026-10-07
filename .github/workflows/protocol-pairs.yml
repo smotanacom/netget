@@ -4355,8 +4355,11 @@ jobs:
           python3 tests/helpers/install_ics_peers.py "$RUNNER_TEMP/ics-peers" | tee "$RUNNER_TEMP/ics-env"
           sed -n 's/^export //p' "$RUNNER_TEMP/ics-env" >> "$GITHUB_ENV"
       - name: Standalone feature build
-        run: cargo check --locked --no-default-features --features ${{ matrix.feature }} --all-targets
+        run: |
+          cargo check --locked --no-default-features --features ${{ matrix.feature }} --all-targets
       - name: Independent interoperability, negative and lifecycle checks
-        run: cargo test --locked --no-default-features --features ${{ matrix.feature }} --test server --test client -- ${{ matrix.feature }}:: --test-threads=100
+        run: |
+          cargo test --locked --no-default-features --features ${{ matrix.feature }} --test server --test client -- ${{ matrix.feature }}:: --test-threads=100
       - name: Blocking lint
-        run: cargo clippy --locked --no-default-features --features ${{ matrix.feature }} --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
+        run: |
+          cargo clippy --locked --no-default-features --features ${{ matrix.feature }} --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use

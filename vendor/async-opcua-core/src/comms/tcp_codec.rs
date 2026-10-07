@@ -71,8 +71,14 @@ impl Decoder for TcpCodec {
             // the message. The buffer needs to have at least that amount of bytes in it for the
             // whole message to be extracted.
             let message_size = message_header.message_size as usize;
-            if message_size < MESSAGE_HEADER_LEN || (self.decoding_options.max_message_size != 0 && message_size > self.decoding_options.max_message_size) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,"OPC UA chunk length outside configured bound"));
+            if message_size < MESSAGE_HEADER_LEN
+                || (self.decoding_options.max_message_size != 0
+                    && message_size > self.decoding_options.max_message_size)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OPC UA chunk length outside configured bound",
+                ));
             }
             if buf.len() >= message_size {
                 // Extract the message bytes from the buffer & decode them into a message

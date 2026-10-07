@@ -56,3 +56,26 @@ async fn independent_asyncua_server_all_operations() {
     drop(p.stdin.take());
     assert!(p.wait().await.unwrap().success());
 }
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_stop_updates_client_status_without_another_command() {
+    let (mut p, a) = peer_server("opcua").await;
+    let s = state();
+    let id = client_in(&s, a.to_string(), "opcua", quiet(), json!({}))
+        .await
+        .unwrap();
+    p.kill().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                s.get_client(id).await.unwrap().status,
+                netget::state::ClientStatus::Disconnected
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("remote close left UA client connected");
+    s.remove_client(id).await;
+}

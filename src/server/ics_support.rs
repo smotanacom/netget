@@ -94,6 +94,18 @@ pub async fn spawn<S: DeviceSession, F: Fn() -> S + Send + Sync + Clone + 'stati
     let listener =
         crate::server::socket_helpers::create_reusable_tcp_listener(ctx.legacy_listen_addr())
             .await?;
+    spawn_accept_bounded(ctx, protocol, factory, kinds, listener).await
+}
+pub async fn spawn_accept_bounded<
+    S: DeviceSession,
+    F: Fn() -> S + Send + Sync + Clone + 'static,
+>(
+    ctx: SpawnContext,
+    protocol: Arc<dyn Server>,
+    factory: F,
+    kinds: &'static [crate::protocol::EventType],
+    listener: tokio::net::TcpListener,
+) -> Result<SocketAddr> {
     let local = listener.local_addr()?;
     let state = ctx.state.clone();
     let sid = ctx.server_id;

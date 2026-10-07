@@ -24,5 +24,5 @@ run('cmake','-S',iec,'-B',root/'iec-build','-DBUILD_EXAMPLES=OFF','-DBUILD_TESTS
 run('cmake','--build',root/'iec-build','-j2')
 repo=pathlib.Path(__file__).resolve().parents[2]
 run(os.environ.get('CXX','c++'),'-std=c++14','-O2','-I'+str(dnp/'cpp/lib/include'),repo/'tests/server/dnp3/peer.cpp',root/'dnp-build/cpp/lib/libopendnp3.a','-lpthread','-o',root/'dnp-peer')
-run(os.environ.get('CC','cc'),'-std=c11','-O2','-I'+str(iec/'src/inc/api'),'-I'+str(iec/'src/hal/inc'),repo/'tests/server/iec104/peer.c',root/'iec-build/src/liblib60870.a','-lpthread','-o',root/'iec-peer')
+run(os.environ.get('CC','cc'),'-std=c11','-O2','-I'+str(iec/'src/inc/api'),'-I'+str(iec/'src/hal/inc'),repo/'tests/server/iec104/peer.c',root/'iec-build/src/liblib60870.a','-lpthread','-lm','-o',root/'iec-peer')
 for key,path in [('NETGET_ICS_PYTHON',python),('NETGET_DNP3_PEER',root/'dnp-peer'),('NETGET_IEC104_PEER',root/'iec-peer')]:print('export '+key+'='+shlex.quote(str(path)))

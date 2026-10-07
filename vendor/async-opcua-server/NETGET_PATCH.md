@@ -5,3 +5,7 @@ NetGet's registered task cancellation close accepted sockets rather than detach 
 
 In src/session/controller.rs, cap pending services at 64 and abort their owned
 JoinHandles on drop, so handler work cannot outlive a stopped connection.
+
+Server connection hooks let NetGet register accepted peers and route disconnect
+commands. Each connection has a cancellation token and an owned closed signal,
+including during HEL/secure-channel setup. No device values are stored.

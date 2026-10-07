@@ -65,6 +65,7 @@ fn log_connection_panic(id: u32, payload: Box<dyn std::any::Any + Send>) {
 /// The server struct. This is consumed when run, so you will typically not hold onto this for longer
 /// periods of time.
 pub struct Server {
+    connection_hook: Option<ConnectionHook>,
     /// Certificate store
     certificate_store: Arc<RwLock<CertificateStore>>,
     /// Session manager
@@ -92,7 +93,39 @@ pub struct Server {
     reverse_connect_manager: ReverseConnectionManager,
 }
 
+type ConnectionHook = Arc<
+    dyn Fn(SocketAddr, SocketAddr, ConnectionControl) -> futures::future::BoxFuture<'static, ()>
+        + Send
+        + Sync,
+>;
+/// NetGet control and lifecycle observation for an accepted OPC UA connection.
+#[derive(Clone)]
+pub struct ConnectionControl {
+    stop: CancellationToken,
+    closed: CancellationToken,
+}
+impl ConnectionControl {
+    /// Request a graceful transport close.
+    pub async fn close(&self) {
+        self.stop.cancel();
+    }
+    /// Wait until the transport task has finished or has been aborted.
+    pub async fn closed(&self) {
+        self.closed.cancelled().await;
+    }
+}
 impl Server {
+    /// Attach application-owned connection bookkeeping before running the server.
+    pub fn set_connection_hook<F>(&mut self, hook: F)
+    where
+        F: Fn(SocketAddr, SocketAddr, ConnectionControl) -> futures::future::BoxFuture<'static, ()>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.connection_hook = Some(Arc::new(hook));
+    }
+
     pub(crate) fn new_from_builder(builder: ServerBuilder) -> Result<(Self, ServerHandle), String> {
         if let Err(e) = builder.config.validate() {
             return Err(format!(
@@ -237,6 +270,7 @@ impl Server {
         );
         Ok((
             Self {
+                connection_hook: None,
                 certificate_store,
                 session_manager,
                 connections: FuturesUnordered::new(),
@@ -391,14 +425,13 @@ impl Server {
                             );
 
                             let (send, recv) = tokio::sync::mpsc::channel(5);
+                            let closed=CancellationToken::new();let stop=CancellationToken::new();
+                            let closed_guard=closed.clone().drop_guard();
+                            if let Some(hook)=&self.connection_hook {hook(addr,listener.local_addr().expect("bound listener"),ConnectionControl{stop:stop.clone(),closed}).await;}
                             let handle = tokio::spawn(async move {
-                                if let Err(payload) =
-                                    std::panic::AssertUnwindSafe(conn.run(recv, |_| {}))
-                                        .catch_unwind()
-                                        .await
-                                {
-                                    log_connection_panic(connection_counter, payload);
-                                }
+                                let _closed_guard=closed_guard;
+                                let run=async {if let Err(payload)=std::panic::AssertUnwindSafe(conn.run(recv, |_| {})).catch_unwind().await {log_connection_panic(connection_counter,payload);}};
+                                tokio::select!{_=stop.cancelled()=>{},_=run=>{}}
                                 connection_counter
                             });
                             self.connections.push(handle);
@@ -556,5 +589,10 @@ impl Server {
 
 // NetGet lifecycle patch: task cancellation must close all accepted sockets.
 impl Drop for Server {
-    fn drop(&mut self) {self.token.cancel();for connection in self.connections.iter(){connection.abort();}}
+    fn drop(&mut self) {
+        self.token.cancel();
+        for connection in self.connections.iter() {
+            connection.abort();
+        }
+    }
 }

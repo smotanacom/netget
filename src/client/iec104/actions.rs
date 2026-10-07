@@ -5,12 +5,7 @@ use crate::server::ics_support::{action, parameter};
 use crate::state::AppState;
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::{
-    future::Future,
-    net::SocketAddr,
-    pin::Pin,
-    sync::{Arc, LazyLock},
-};
+use std::{future::Future, net::SocketAddr, pin::Pin, sync::LazyLock};
 #[derive(Default)]
 pub struct Iec104ClientProtocol;
 impl Iec104ClientProtocol {
@@ -145,12 +140,7 @@ impl Client for Iec104ClientProtocol {
         &self,
         ctx: ConnectContext,
     ) -> Pin<Box<dyn Future<Output = Result<SocketAddr>> + Send>> {
-        Box::pin(crate::server::ics_support::connect(
-            ctx,
-            Arc::new(Self),
-            crate::server::iec104::codec::Scanner::default(),
-            &EVENTS,
-        ))
+        Box::pin(super::connect(ctx))
     }
     fn execute_action(&self, v: Value) -> Result<ClientActionResult> {
         if v["type"] == "disconnect" {

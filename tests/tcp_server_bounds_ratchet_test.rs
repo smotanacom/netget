@@ -129,7 +129,13 @@ fn tcp_servers() -> Vec<(String, String)> {
     let mut found = Vec::new();
 
     for entry in walk_dirs(&root) {
-        let own_source = rust_sources(&entry);
+        let mut own_source = rust_sources(&entry);
+        if own_source.contains("ics_support::spawn") {
+            // These codecs delegate their socket ownership, cap and read deadlines.
+            own_source.push_str(
+                &std::fs::read_to_string(root.join("ics_support.rs")).expect("ICS transport owner"),
+            );
+        }
         // Every way a server here opens a stream accept loop, looked for in every file of the
         // directory. Matching only `TcpListener` is what hid 60 of 92 protocols from this test:
         // `create_reusable_tcp_listener` returns a `TcpListener` without its caller ever
