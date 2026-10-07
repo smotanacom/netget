@@ -6,7 +6,7 @@ pub use actions::DcClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::client::TlsStream;
@@ -529,9 +529,19 @@ where
         // and BufReader keeps any bytes after the delimiter buffered for the next call,
         // so partial messages are carried across reads correctly.
         loop {
-            let mut buf = Vec::new();
-            match reader.read_until(b'|', &mut buf).await {
-                Ok(0) => {
+            let framed = tokio::time::timeout(
+                std::time::Duration::from_secs(600),
+                crate::utils::line_reader::read_bounded_delimited(&mut reader, b'|', 64 * 1024),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "DC frame deadline",
+                ))
+            });
+            match framed {
+                Ok(None) => {
                     info!("DC client {} disconnected from hub", client_id);
                     app_state
                         .update_client_status(client_id, ClientStatus::Disconnected)
@@ -541,7 +551,8 @@ where
                     let _ = status_tx.send("__UPDATE_UI__".to_string());
                     break;
                 }
-                Ok(_) => {
+                Ok(Some(frame)) => {
+                    let buf = frame;
                     // Strip the trailing '|' delimiter (absent only on EOF with a partial
                     // trailing message, which we still process). Trim whitespace so hubs
                     // that send "|\r\n" between messages don't produce phantom segments.
@@ -959,11 +970,17 @@ async fn handle_lock_message(
     }
 
     // Calculate key from lock
-    let key = calculate_dc_key(lock_str);
+    let key = calculate_dc_key(lock_str.as_bytes())?;
 
     // Send Key response
-    let key_cmd = format!("$Key {}|", key);
-    send_dc_command(write_half, &key_cmd).await?;
+    let mut key_cmd = b"$Key ".to_vec();
+    key_cmd.extend(key);
+    key_cmd.push(b'|');
+    {
+        let mut writer = write_half.lock().await;
+        writer.write_all(&key_cmd).await?;
+        writer.flush().await?;
+    }
     info!("DC client {} sent Key", client_id);
 
     // Send ValidateNick
@@ -1904,13 +1921,13 @@ fn escape_xml(s: &str) -> String {
 }
 
 /// Calculate DC key from lock using NMDC algorithm
-fn calculate_dc_key(lock: &str) -> String {
-    let lock_bytes = lock.as_bytes();
+pub fn calculate_dc_key(lock_bytes: &[u8]) -> Result<Vec<u8>> {
     let len = lock_bytes.len();
 
-    if len == 0 {
-        return String::new();
-    }
+    anyhow::ensure!(
+        (2..=64 * 1024).contains(&len),
+        "NMDC Lock must contain 2..65536 bytes"
+    );
 
     let mut key = vec![0u8; len];
 
@@ -1927,6 +1944,14 @@ fn calculate_dc_key(lock: &str) -> String {
         *byte = ((*byte << 4) & 0xF0) | ((*byte >> 4) & 0x0F);
     }
 
-    // Convert to string, escaping non-printable
-    String::from_utf8_lossy(&key).to_string()
+    // The key is binary, not UTF-8. Escape only the six bytes mandated by NMDC.
+    let mut escaped = Vec::with_capacity(len);
+    for byte in key {
+        if matches!(byte, 0 | 5 | 36 | 96 | 124 | 126) {
+            escaped.extend_from_slice(format!("/%DCN{byte:03}%/").as_bytes());
+        } else {
+            escaped.push(byte);
+        }
+    }
+    Ok(escaped)
 }

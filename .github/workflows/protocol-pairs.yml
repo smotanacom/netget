@@ -4363,3 +4363,34 @@ jobs:
       - name: Blocking lint
         run: |
           cargo clippy --locked --no-default-features --features ${{ matrix.feature }} --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
+
+  p2p-news:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: protocol-pairs-p2p-news
+      - name: Install independent peer build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libssl-dev libsqlite3-dev libglib2.0-dev libgnutls28-dev libncurses-dev libbz2-dev zlib1g-dev libxml2-dev bison
+      - name: Build pinned independent peers
+        run: |
+          NETGET_PEER_BOOTSTRAP_PYTHON=python tests/peers/bootstrap-p2p.sh "$RUNNER_TEMP/p2p-peers" | tee "$RUNNER_TEMP/p2p-bootstrap.log"
+          sed -n 's/^export \([^=]*\)=\(.*\)$/\1=\2/p' "$RUNNER_TEMP/p2p-bootstrap.log" >> "$GITHUB_ENV"
+      - name: Verify role pairs, metadata, site and action catalogs
+        env:
+          CARGO_BUILD_JOBS: 4
+        run: |
+          cargo test --locked --no-default-features --features adc_peer,dc_peer,soulseek_peer,gnutella,nntp --test server --test client -- --test-threads=8
+          cargo test --locked --no-default-features --features adc_peer,dc_peer,soulseek_peer,gnutella,nntp --test site_protocol_list_test --test protocol_startup_examples_test --test dual_protocol_test --test event_action_declarations_test --test protocol_name_resolution_test --test advertised_actions_test
+          for feature in adc adc_peer dc_peer soulseek soulseek_peer gnutella nntp; do
+            cargo check --locked --no-default-features --features "$feature" --all-targets
+          done
+          cargo clippy --locked --no-default-features --features adc_peer,dc_peer,soulseek_peer,gnutella,nntp --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use

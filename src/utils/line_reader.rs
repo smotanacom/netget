@@ -24,6 +24,43 @@
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
+/// Read one complete byte-delimited frame, preserving binary payloads and enforcing
+/// the cap before allocation. EOF with a fragment is an error. Keep this future alive
+/// across unrelated commands: like `read_until`, cancellation discards its partial frame.
+pub async fn read_bounded_delimited<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    delimiter: u8,
+    max_len: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut frame = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if frame.is_empty() {
+                Ok(None)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "partial delimited frame",
+                ))
+            };
+        }
+        let end = available.iter().position(|&b| b == delimiter);
+        let take = end.map_or(available.len(), |n| n + 1);
+        if take > max_len.saturating_sub(frame.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "delimited frame exceeds cap",
+            ));
+        }
+        frame.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if end.is_some() {
+            return Ok(Some(frame));
+        }
+    }
+}
+
 /// The outcome of one bounded line read.
 #[derive(Debug)]
 pub enum BoundedLine {

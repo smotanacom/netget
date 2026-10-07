@@ -124,19 +124,7 @@ The `nntp_post` action follows the proper NNTP POST protocol flow:
 
 ### Dashboard injection (`[ nntp_group ]`, `[ nntp_list ]`, … `[ nntp_quit ]`)
 
-`connect_with_llm_actions` registers a command channel
-(`client::command_support::register_command_channel`) *before* the read-loop task and therefore
-before the `nntp_connected` LLM call, which a manual rule can park. Because `read_line` is not
-cancellation-safe, commands are drained by a separate `command_loop` task (registered with
-`register_client_task`) that shares the write half, not by a `select!` arm. Every wire verb
-yields `ClientActionResult::Custom` (`nntp_command` / `nntp_post`), which the generic
-`handle_stream_client_command` cannot write, so `command_loop` routes the result through
-`apply_action` — the one function the LLM path also uses to encode commands (including the
-POST-then-340 article hand-off) — then records an `injected_action` access-log entry and
-replies with `ClientSendOutcome`. An injected `nntp_quit` writes `QUIT` and half-closes; the
-read loop sees EOF. The command handle is removed on every read-loop exit (missing welcome,
-read error, EOF, injected quit) so the rail stops offering `[ send ]` on a dead client. Test:
-`tests/client/nntp/command_channel_test.rs` (zero LLM calls).
+`p2p_support::connect` registers the client command handle and tracks the transport and event worker under the owning client. Its cancellation-safe Framer retains partial input across command selection. `Session::exchange` encodes each command and awaits its matching reply, including POST/340/article/final status; simple commands retain byte-count acknowledgements. Injected actions are recorded, and QUIT awaits 205 before closing. Owner removal aborts the transport and event tasks. See `tests/client/nntp/command_channel_test.rs` and `extensions_test.rs`.
 
 ## Response Codes
 
@@ -203,23 +191,16 @@ LLM flow:
 
 ## Limitations
 
-1. **No Authentication**: Current implementation doesn't support AUTHINFO (NNTP authentication)
-2. **No Pipelining**: Commands are sent one at a time
-3. **No Binary Support**: No support for binary attachments (yEnc, uuencode)
-4. **Limited Error Handling**: Error responses are passed to LLM but not parsed structurally
-5. **No Compression**: No support for COMPRESS or MODE STREAM
-6. **No SSL/TLS**: No built-in support for NNTP over SSL (port 563)
+1. **Authentication**: AUTHINFO USER/PASS requires verified implicit TLS; SASL and STARTTLS are outside scope.
+2. **Sequential Transactions**: Commands and MODE STREAM/CHECK/TAKETHIS feeds are processed one at a time.
+3. **No Binary Decoding**: No yEnc or uuencode attachment codec is supplied.
+4. **Response Parsing**: Status codes and bounded multiline responses are structured; specialized article/range fields remain response text.
+5. **No Compression**: COMPRESS is outside scope.
+6. **TLS**: `use_tls=true` validates certificates using public roots or an optional PEM `ca_path`; `server_name` selects the expected hostname.
 
 ## Future Improvements
 
-1. **AUTHINFO Support**: Add username/password authentication
-2. **STARTTLS**: Upgrade connection to TLS for security
-3. **Binary Attachments**: Support yEnc decoding/encoding for binary data
-4. **Response Parsing**: Parse structured responses (article numbers, ranges, etc.)
-5. **Pipelining**: Send multiple commands without waiting for responses
-6. **CAPABILITIES**: Discover server capabilities via CAPABILITIES command
-7. **HDR/OVER**: Support newer HDR and OVER commands (RFC 3977)
-8. **Better Error Recovery**: Automatic retry logic for transient errors
+STARTTLS, SASL, attachment codecs, pipelining, specialized header/overview parsing and automatic transient-error retries remain separate work.
 
 ## Testing
 
@@ -249,3 +230,9 @@ then enforce a 30-second absolute line-completion deadline. Dot-terminated bodie
 30-second whole-response deadline in addition to their byte cap. NNTP greetings are bounded
 from the first wait; HTTP CONNECT has a single deadline spanning status and headers. A framing
 timeout is terminal because resuming an interrupted parse would misalign the stream.
+
+## October 2026 extensions
+
+The client now uses sequential bounded command/reply transactions and reads multiline CAPABILITIES (101). POST awaits 340 before sending a validated, dot-stuffed article; IHAVE awaits 335; MODE STREAM/CHECK/TAKETHIS support sequential feeds with matching message IDs. AUTHINFO USER/PASS requires verified implicit TLS (`use_tls`, optional PEM `ca_path`, expected `server_name`). QUIT still reaches the wire, and existing simple-command byte-count acknowledgements are preserved. No STARTTLS, SASL, compression or pipelined feed scheduler is claimed.
+
+Independent TLS/authentication/posting coverage uses nntpserver 0.0.3. Untrusted certificates must fail. See `tests/client/nntp/extensions_test.rs` and `tests/peers/README.md`.

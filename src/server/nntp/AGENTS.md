@@ -8,7 +8,7 @@ POST, etc.) with line-based text protocol.
 
 **Status**: Experimental (Application Protocol)
 **RFC**: RFC 3977 (Network News Transfer Protocol), RFC 2980 (Common NNTP Extensions)
-**Port**: 119 (plain TCP), 563 (with TLS, not implemented)
+**Port**: 119 (plain TCP), 563 (verified implicit TLS when configured)
 
 ## Library Choices
 
@@ -100,7 +100,7 @@ under test was never sent. It also answered one greeting with two, and an unknow
 logged `decision=netget_answer`. Each has one correct form. `CAPABILITIES` is `101` with
 `VERSION 2`, `READER`, `LIST ACTIVE` and `OVER` - what this server has actions for
 (`send_nntp_group`/`send_nntp_article`, `send_nntp_list`'s active format, `send_nntp_overview`),
-and nothing it does not implement (`POST`, `IHAVE`, `AUTHINFO`). `MODE READER` repeats the
+plus the selected posting/feed extensions: `POST` when the greeting is 200, `IHAVE`, `STREAMING`, and `AUTHINFO USER` only on TLS. `MODE READER` repeats the
 greeting's own status: `200` if the greeting said `200`, otherwise `201`. A hint could not have
 fixed `CAPABILITIES`: its answer is a multi-line `101` block no action renders except the raw
 `send_nntp_message`, so answering it removes the failure class outright. The cost is that an
@@ -376,34 +376,21 @@ Tests: `tests/server/nntp/llm_failure_test.rs` covers all four failure rows.
 
 **Workaround**: LLM can maintain pseudo-storage through conversation context or external database via actions.
 
-### 2. No Authentication
+### 2. Handler-owned Authentication
 
-- No AUTHINFO USER/PASS support
-- No SASL authentication (RFC 4643)
-- All users treated as anonymous
+AUTHINFO USER/PASS requires implicit TLS. Handlers approve or reject each login; there is no account database. SASL is outside the scope. `require_auth=true` refuses reader/feed commands before approval.
 
-**Future Enhancement**: Add AUTHINFO commands and authentication actions.
+### 3. Handler-owned Posting
 
-### 3. No Posting Support (Yet)
+POST, IHAVE and TAKETHIS accept bounded articles through handler decisions. No articles are retained automatically; external storage belongs to the handler.
 
-- No POST command handling
-- Read-only news server
-- Clients can retrieve but not post articles
+### 4. Sequential Feed Transactions
 
-**Future Enhancement**: Add POST action and article submission handling.
+MODE STREAM, CHECK and TAKETHIS are supported on the selected connection. No asynchronous feed scheduler, peer routing or durable delivery queue is supplied.
 
-### 4. No Feed Management
+### 5. Implicit TLS Only
 
-- No peer-to-peer article distribution
-- No IHAVE/CHECK/TAKETHIS commands
-- Single-server only
-
-### 5. No TLS Support
-
-- Plain TCP only (port 119)
-- No SSL/TLS encryption (port 563)
-
-**Workaround**: Use reverse proxy (e.g., nginx) for TLS termination.
+`use_tls=true` requires PEM `cert_path`/`key_path`. STARTTLS is not implemented.
 
 ### 6. Limited NNTP Extensions
 
@@ -634,3 +621,11 @@ marking, the cap — and watching it fail; the default was verified by putting 6
 the regression test fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
 is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
 itself, including that a busy connection is never reported as idle.
+
+## October 2026 extensions
+
+POST, IHAVE and RFC 4644 MODE STREAM/CHECK/TAKETHIS are now supported as sequential transactions. Handlers receive `operation`, `article`, `message_id` and `answer_with`; respond with `nntp_article_result` or `nntp_check_result` and an explicit `accepted` boolean. No article database is retained. Streaming mode does not promise an autonomous feed scheduler or delivery outside the selected connection.
+
+Implicit NNTPS uses `use_tls`, PEM `cert_path`/`key_path`. AUTHINFO USER/PASS is offered only on encrypted connections and cleartext credentials receive 483. With `require_auth=true`, authentication is handler-approved through `nntp_auth_result`; application commands receive 480 until approved. STARTTLS and SASL are outside this scope. A 201 greeting excludes POST from capabilities and rejects posting with 440. Articles are capped at 8 MiB and lines at 64 KiB; commands remain capped at 512 bytes. Invalid feed IDs and ordering return protocol errors. Authentication secrets are redacted from wire diagnostics.
+
+Independent extension verification uses Python 3.10 nntplib, including its verified SSL implementation. See `tests/server/nntp/extensions_test.rs` and `tests/peers/README.md`.

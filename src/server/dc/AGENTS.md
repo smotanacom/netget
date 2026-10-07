@@ -641,3 +641,7 @@ EOF. Each was verified by removing the thing it tests — the deadline, the busy
 and watching it fail. `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound
 is removed from the source, and `tests/accept_bounded_test.rs` covers the shared cap mechanism
 itself, including that a busy connection is never reported as idle.
+
+## October 2026 family expansion
+
+The existing `dc` role remains the NMDC hub. Modern ADC/ADCS hubs are separately registered as `adc`; real file-transfer listeners/connectors are separately registered as `dc_peer` and `adc_peer`. Hub rendezvous and peer role startup are controlled by handlers, without an autonomous download scheduler. This supersedes the earlier statement that ADC would be added later. NMDC is delimiter-framed, and lock/key authentication contains arbitrary octets rather than plain UTF-8 text.

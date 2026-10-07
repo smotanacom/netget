@@ -165,3 +165,12 @@ pub mod webtransport;
     feature = "opcua"
 ))]
 pub mod ics;
+
+#[cfg(any(
+    feature = "adc",
+    feature = "dc_peer",
+    feature = "soulseek",
+    feature = "gnutella",
+    feature = "nntp"
+))]
+pub mod p2p;

@@ -79,8 +79,11 @@ impl NntpClientProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for NntpClientProtocol {
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        crate::server::p2p_support::tls_parameters(false)
+    }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
+        let mut actions = vec![
             ActionDefinition {
                 name: "nntp_group".to_string(),
                 description: "Select a newsgroup (GROUP command)".to_string(),
@@ -228,7 +231,9 @@ impl Protocol for NntpClientProtocol {
                 }),
                 log_template: None,
             },
-        ]
+        ];
+        actions.extend(crate::server::nntp::extensions::client_actions());
+        actions
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
@@ -286,9 +291,11 @@ impl Protocol for NntpClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("Direct TCP with NNTP command protocol")
-            .llm_control("Full control over NNTP commands (GROUP, ARTICLE, POST, etc.)")
-            .e2e_testing("Test NNTP server or public Usenet server")
+            .implementation("Bounded sequential NNTP transactions with optional verified implicit TLS")
+            .llm_control("Selected reader commands, POST, AUTHINFO USER/PASS and sequential article-feed transactions")
+            .e2e_testing("Independent nntpserver posting and TLS authentication, nntplib server tests, negative/lifecycle checks")
+            .max_inbound_bytes(crate::server::nntp::extensions::MAX_ARTICLE)
+            .notes("No STARTTLS, SASL, compression or persistent article spool. Credentials require TLS; certificate verification is mandatory. MODE STREAM/CHECK/TAKETHIS are sequential transactions.")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -366,17 +373,7 @@ impl Client for NntpClientProtocol {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<std::net::SocketAddr>> + Send>,
     > {
-        Box::pin(async move {
-            use crate::client::nntp::NntpClient;
-            NntpClient::connect_with_llm_actions(
-                ctx.remote_addr,
-                ctx.llm_client,
-                ctx.state,
-                ctx.status_tx,
-                ctx.client_id,
-            )
-            .await
-        })
+        Box::pin(super::connect(ctx))
     }
     fn execute_action(&self, action: serde_json::Value) -> Result<ClientActionResult> {
         let action_type = action
@@ -384,6 +381,9 @@ impl Client for NntpClientProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'type' field in action")?;
 
+        if let Some(action) = crate::server::nntp::extensions::client_action(&action)? {
+            return Ok(action);
+        }
         match action_type {
             "nntp_group" => {
                 let group_name = action
@@ -467,6 +467,7 @@ impl Client for NntpClientProtocol {
                 })
             }
             "nntp_post" => {
+                crate::server::nntp::extensions::article(&action)?;
                 let headers = action
                     .get("headers")
                     .and_then(|v| v.as_object())

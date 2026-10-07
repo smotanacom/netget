@@ -495,3 +495,11 @@ See `tests/client/dc/AGENTS.md` for comprehensive testing documentation.
 - [DC++ Official Site](https://dcplusplus.sourceforge.io/)
 - Server implementation: `src/server/dc/AGENTS.md`
 - Existing client patterns: `src/client/tcp/`, `src/client/redis/`
+
+The Lock/Key reply is binary: `calculate_dc_key(&[u8])` rejects challenges shorter
+than two bytes or above 64 KiB, swaps nibbles, and escapes exactly 0, 5, 36, 96,
+124 and 126. It never converts the key to UTF-8. The read loop requires complete
+pipe-delimited frames, enforces a 64 KiB frame cap before allocation and a 600 s
+whole-frame deadline, and refuses partial EOF. `tests/client/dc/key_test.rs`
+checks the standard DC++ lock, reserved octets, short challenges and fragmented,
+coalesced, truncated and oversized framing.
