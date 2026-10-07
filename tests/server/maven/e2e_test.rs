@@ -576,10 +576,29 @@ async fn test_maven_cli_download() -> E2EResult<()> {
 
     // The split local repository's tail. Reads only — Maven writes into the head below.
     let tail_repo = dirs_home()?.join(".m2").join("repository");
-    if !tail_repo
-        .join("org/apache/maven/plugins/maven-dependency-plugin")
-        .is_dir()
-    {
+    // The cached plugin, named by its full coordinates when invoked: the `dependency:` prefix
+    // is resolved through plugin-group metadata from a repository, and with every repository
+    // mirrored to NetGet that lookup sometimes failed ("No plugin found for prefix
+    // 'dependency'") although the plugin itself was cached.
+    let plugin_dir = tail_repo.join("org/apache/maven/plugins/maven-dependency-plugin");
+    let plugin_version = std::fs::read_dir(&plugin_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let v = e.file_name().to_string_lossy().into_owned();
+            e.path()
+                .join(format!("maven-dependency-plugin-{v}.jar"))
+                .is_file()
+                .then_some(v)
+        })
+        .max_by_key(|v| {
+            v.split(|c: char| !c.is_ascii_digit())
+                .map(|n| n.parse::<u64>().unwrap_or(0))
+                .collect::<Vec<_>>()
+        });
+    let Some(plugin_version) = plugin_version else {
         return Err(format!(
             "{} has no cached maven-dependency-plugin. This test resolves plugins from \
              that cache on purpose so it never contacts Maven Central; warm it once with \
@@ -587,7 +606,8 @@ async fn test_maven_cli_download() -> E2EResult<()> {
             tail_repo.display()
         )
         .into());
-    }
+    };
+    let plugin = format!("org.apache.maven.plugins:maven-dependency-plugin:{plugin_version}");
 
     // The exact bytes served, and their SHA-1s computed by `shasum` — an implementation
     // NetGet does not own. Maven verifies the `.sha1` companion against what it received
@@ -702,7 +722,7 @@ async fn test_maven_cli_download() -> E2EResult<()> {
         .arg(&settings)
         .arg(format!("-Dmaven.repo.local={}", head_repo.display()))
         .arg(format!("-Dmaven.repo.local.tail={}", tail_repo.display()))
-        .arg("dependency:get")
+        .arg(format!("{plugin}:get"))
         .arg("-Dartifact=com.netget.test:maven-test:1.0.0")
         .output()
         .await?;
@@ -758,7 +778,7 @@ async fn test_maven_cli_download() -> E2EResult<()> {
         .arg(&settings)
         .arg(format!("-Dmaven.repo.local={}", head_repo.display()))
         .arg(format!("-Dmaven.repo.local.tail={}", tail_repo.display()))
-        .arg("dependency:unpack")
+        .arg(format!("{plugin}:unpack"))
         .arg("-Dartifact=com.netget.test:maven-test:1.0.0")
         .arg(format!("-DoutputDirectory={}", unpacked.display()))
         // Outside a project, `dependency:unpack` writes its marker directory relative to
