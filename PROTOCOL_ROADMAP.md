@@ -1571,3 +1571,5 @@ User-authorized extension of both DC++ hub and file-transfer scopes, NNTP and re
 - [x] Source/test documentation and honest Experimental metadata are committed in `17a20aae`, integrated into master by signed merge `47e01748` (NMDC key fix `c7978e42` included).
 
 Release preparation targets 0.3.3. Linux peer CI and native release publication are separate gates; publication results are recorded only after they complete. The site catalog has been checked at desktop/mobile widths in light/dark modes; its browser demo smoke test passes. Native release builds bundle bzip2 statically. The peer workflow offers a focused `p2p-news` dispatch without launching unrelated protocol families.
+
+Additional integration coverage: NMDC transfer listener/connector `nickname` can match hub rendezvous identities and rejects delimiter injection. The rebuilt 0.3.3 browser bundle passes general smoke tests and `web/test/nntp.mjs` posting/feed coverage in both roles.

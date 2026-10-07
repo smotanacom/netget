@@ -13,3 +13,5 @@ Optional implicit TLS is configured with `use_tls`; listeners require PEM `cert_
 Tests use the independent ncdc 1.25 stack, not the NetGet role pair as interoperability evidence. See `tests/server/dc_peer/AGENTS.md`. The roadmap records completed release gates; metadata remains Experimental.
 
 Specification: https://nmdc.sourceforge.io/NMDC.html
+
+Set `nickname` to the nickname announced by the associated hub connection. The listener defaults to `NetGet`, the connector to `NetGetClient`; hub clients have their own `nickname` setting. Names are limited to 64 printable ASCII bytes without spaces or `$|<>`. The roles do not schedule hub discovery automatically.

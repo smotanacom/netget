@@ -7,6 +7,26 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const MAX_COMMAND: usize = 64 * 1024;
 pub const LOCK: &[u8] = b"EXTENDEDPROTOCOLABCABCABCABCABCABC";
+pub const DEFAULT_LISTENER_NICKNAME: &str = "NetGet";
+pub const DEFAULT_CONNECTOR_NICKNAME: &str = "NetGetClient";
+pub fn nickname(value: &str) -> Result<&str> {
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|b| (33..127).contains(&b) && !matches!(b, b'$' | b'|' | b'<' | b'>')),
+        "invalid NMDC nickname"
+    );
+    Ok(value)
+}
+pub fn nickname_parameter(default: &str) -> crate::llm::actions::ParameterDefinition {
+    crate::llm::actions::ParameterDefinition {
+        name: "nickname".into(), type_hint: "string".into(),
+        description: "Local NMDC peer nickname; match the identity announced on the hub (1..64 printable ASCII bytes, no spaces or $|<>)".into(),
+        required: false, example: json!(default), default: Some(json!(default)),
+    }
+}
 fn field(v: &str) -> Result<&str> {
     ensure!(
         !v.is_empty() && v.len() <= 4096 && !v.bytes().any(|b| b <= 32 || matches!(b, b'|' | b'$')),
@@ -44,14 +64,28 @@ pub fn transfer_event(command: &str) -> Result<Value> {
 pub struct Device {
     frame: Framer,
     nick: bool,
+    nickname: Option<String>,
     key: bool,
     lock: bool,
+}
+impl Device {
+    pub fn with_nickname(nickname: String) -> Self {
+        Self {
+            nickname: Some(nickname),
+            ..Self::default()
+        }
+    }
 }
 #[async_trait]
 impl DeviceSession for Device {
     fn greeting(&mut self) -> Result<Vec<u8>> {
         Ok(format!(
-            "$MyNick NetGet|$Lock {} Pk=NetGet|",
+            "$MyNick {}|$Lock {} Pk=NetGet|",
+            nickname(
+                self.nickname
+                    .as_deref()
+                    .unwrap_or(DEFAULT_LISTENER_NICKNAME)
+            )?,
             std::str::from_utf8(LOCK)?
         )
         .into_bytes())
@@ -115,13 +149,27 @@ impl DeviceSession for Device {
 #[derive(Default)]
 pub struct Scanner {
     frame: Framer,
+    nickname: Option<String>,
+}
+impl Scanner {
+    pub fn with_nickname(nickname: String) -> Self {
+        Self {
+            nickname: Some(nickname),
+            ..Self::default()
+        }
+    }
 }
 #[async_trait]
 impl ScannerSession for Scanner {
     async fn open(&mut self, s: &mut Stream) -> Result<()> {
         s.write_all(
             format!(
-                "$MyNick NetGetClient|$Lock {} Pk=NetGet|",
+                "$MyNick {}|$Lock {} Pk=NetGet|",
+                nickname(
+                    self.nickname
+                        .as_deref()
+                        .unwrap_or(DEFAULT_CONNECTOR_NICKNAME)
+                )?,
                 std::str::from_utf8(LOCK)?
             )
             .as_bytes(),

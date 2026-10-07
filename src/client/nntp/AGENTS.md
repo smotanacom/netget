@@ -236,3 +236,5 @@ timeout is terminal because resuming an interrupted parse would misalign the str
 The client now uses sequential bounded command/reply transactions and reads multiline CAPABILITIES (101). POST awaits 340 before sending a validated, dot-stuffed article; IHAVE awaits 335; MODE STREAM/CHECK/TAKETHIS support sequential feeds with matching message IDs. AUTHINFO USER/PASS requires verified implicit TLS (`use_tls`, optional PEM `ca_path`, expected `server_name`). QUIT still reaches the wire, and existing simple-command byte-count acknowledgements are preserved. No STARTTLS, SASL, compression or pipelined feed scheduler is claimed.
 
 Independent TLS/authentication/posting coverage uses nntpserver 0.0.3. Untrusted certificates must fail. See `tests/client/nntp/extensions_test.rs` and `tests/peers/README.md`.
+
+Browser regression: after `./web/build.sh`, run `node web/test/nntp.mjs`. It drives both roles through capabilities, dot-stuffed POST, sequential TAKETHIS and QUIT over the browser’s virtual loopback; this is runtime coverage, not independent-peer interoperability evidence. Browser CI runs it beside the general bundle smoke test.
