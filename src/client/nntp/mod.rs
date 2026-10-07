@@ -169,7 +169,10 @@ pub async fn connect(ctx: crate::protocol::ConnectContext) -> Result<std::net::S
             tls,
             ..Default::default()
         },
-        [&actions::NNTP_CLIENT_CONNECTED_EVENT, &actions::NNTP_CLIENT_RESPONSE_RECEIVED_EVENT],
+        [
+            &actions::NNTP_CLIENT_CONNECTED_EVENT,
+            &actions::NNTP_CLIENT_RESPONSE_RECEIVED_EVENT,
+        ],
     )
     .await
 }

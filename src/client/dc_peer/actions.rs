@@ -78,7 +78,11 @@ impl Protocol for DcPeerClientProtocol {
         "Peer-to-peer"
     }
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        crate::server::p2p_support::tls_parameters(false)
+        let mut fields = crate::server::p2p_support::tls_parameters(false);
+        fields.push(crate::server::dc_peer::codec::nickname_parameter(
+            crate::server::dc_peer::codec::DEFAULT_CONNECTOR_NICKNAME,
+        ));
+        fields
     }
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         let base = json!({"type":"open_client","protocol":"dc_peer","remote_addr":"127.0.0.1:412","instruction":"Use selected NMDC Peer operations"});
@@ -98,7 +102,7 @@ impl Protocol for DcPeerClientProtocol {
         EVENTS.clone()
     }
     fn metadata(&self) -> crate::protocol::ProtocolMetadataV2 {
-        crate::protocol::ProtocolMetadataV2::builder().state(crate::protocol::metadata::DevelopmentState::Experimental).implementation("Native bounded NMDC Peer selected codec; TCP and optional implicit TLS").llm_control("Handler-supplied file and file-list downloads, ranges and refusals").e2e_testing("Independent peer exchanges, malformed input, owner shutdown and standalone feature builds").notes("NMDC uploader/listener and downloader/connector. ADCGET/ADCSND file requests, XML/BZip2 file lists and optional full-payload Tiger tree hash verification. 1 MiB per transfer; no filesystem access, multi-source scheduler, peer discovery or push uploads. 256 connections, 30 s first frame, 600 s idle, 10 s handshake/exchange. No persistent protocol data; handlers supply content and decisions.").max_inbound_bytes(crate::server::dc_peer::codec::MAX_COMMAND).well_known_port(412).build()
+        crate::protocol::ProtocolMetadataV2::builder().state(crate::protocol::metadata::DevelopmentState::Experimental).implementation("Native bounded NMDC Peer selected codec; TCP and optional implicit TLS").llm_control("Handler-supplied file and file-list downloads, ranges and refusals").e2e_testing("Independent peer exchanges, malformed input, owner shutdown and standalone feature builds").notes("NMDC uploader/listener and downloader/connector. ADCGET/ADCSND file requests, XML/BZip2 file lists and optional full-payload Tiger tree hash verification. Configurable local nickname must match hub rendezvous identity. 1 MiB per transfer; no filesystem access, multi-source scheduler, peer discovery or push uploads. 256 connections, 30 s first frame, 600 s idle, 10 s handshake/exchange. No persistent protocol data; handlers supply content and decisions.").max_inbound_bytes(crate::server::dc_peer::codec::MAX_COMMAND).well_known_port(412).build()
     }
 }
 impl Client for DcPeerClientProtocol {

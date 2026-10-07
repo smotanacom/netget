@@ -34,3 +34,29 @@ async fn peer_transfer_ranges_and_hash_rejection() {
     assert!(scanner.exchange(&mut stream,&json!({"type":"dc_peer_get","identifier":"TTH/example","offset":0,"length":-1,"expected_tth":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})).await.is_err());
     s.remove_server(id).await;
 }
+
+#[tokio::test]
+async fn configured_hub_identity_and_nickname_injection() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let s = h::state();
+    let (id, addr) =
+        h::server_in(&s, "dc_peer", h::quiet(), json!({"nickname":"HubIdentity"})).await;
+    let mut peer = BufReader::new(tokio::net::TcpStream::connect(addr).await.unwrap());
+    let mut first = Vec::new();
+    peer.read_until(b'|', &mut first).await.unwrap();
+    assert_eq!(first, b"$MyNick HubIdentity|");
+    s.remove_server(id).await;
+    let error = h::client_in(
+        &s,
+        "127.0.0.1:1".into(),
+        "dc_peer",
+        h::quiet(),
+        json!({"nickname":"bad|$MyNick injected"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("invalid NMDC nickname"),
+        "{error}"
+    );
+}

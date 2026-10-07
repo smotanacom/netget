@@ -1498,7 +1498,9 @@ jobs:
         run: ./web/build.sh
 
       - name: smoke-test the bundle headlessly
-        run: node web/test/smoke.mjs
+        run: |
+          node web/test/smoke.mjs
+          node web/test/nntp.mjs
 
       - uses: actions/setup-python@v5
         with:
