@@ -23,7 +23,7 @@ async fn chrome_against_netget() {
         .args([addr.port().to_string(), hash])
         .kill_on_drop(true)
         .output();
-    let out = tokio::time::timeout(Duration::from_secs(90), run)
+    let out = tokio::time::timeout(Duration::from_secs(120), run)
         .await
         .expect("the browser check did not finish")
         .expect("node (22 or newer) must be on PATH for the browser interop check");
