@@ -258,7 +258,15 @@ fn every_tcp_accept_loop_goes_through_the_shared_connection_cap() {
     let mut missing = Vec::new();
 
     for (name, source) in tcp_servers() {
-        let has_cap = source.contains("accept_bounded");
+        let has_cap = source.contains("accept_bounded")
+            || (name == "opcua" && source.contains("server.run_with(listener)") && {
+                // The external stack owns its accept loop. Verify the real bounded vendored loop,
+                // rather than exempting this protocol from the connection-cap ratchet.
+                let adapter = std::fs::read_to_string("vendor/async-opcua-server/src/server.rs")
+                    .expect("OPC UA adapter source");
+                adapter.contains("self.connections.len() < 256")
+                    && adapter.contains("if accepting =>")
+            });
         if allowed.contains(leaf(&name)) {
             if has_cap {
                 // It grew a cap: the baseline entry is stale and must go.

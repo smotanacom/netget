@@ -155,3 +155,13 @@ pub mod jmap;
 pub mod restconf;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
+
+#[cfg(any(
+    feature = "s7comm",
+    feature = "ethernet_ip",
+    feature = "dnp3",
+    feature = "iec104",
+    feature = "bacnet",
+    feature = "opcua"
+))]
+pub mod ics;

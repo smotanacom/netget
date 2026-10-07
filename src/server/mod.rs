@@ -1338,3 +1338,31 @@ pub mod restconf;
 pub mod webtransport;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
+
+#[cfg(feature = "s7comm")]
+pub mod s7comm;
+
+#[cfg(any(
+    feature = "s7comm",
+    feature = "ethernet_ip",
+    feature = "dnp3",
+    feature = "iec104",
+    feature = "bacnet",
+    feature = "opcua"
+))]
+pub mod ics_support;
+
+#[cfg(feature = "ethernet_ip")]
+pub mod ethernet_ip;
+
+#[cfg(feature = "dnp3")]
+pub mod dnp3;
+
+#[cfg(feature = "iec104")]
+pub mod iec104;
+
+#[cfg(feature = "bacnet")]
+pub mod bacnet;
+
+#[cfg(feature = "opcua")]
+pub mod opcua;

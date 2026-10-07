@@ -1,0 +1,15 @@
+/* Independent lib60870 2.3.4 stack harness. */
+#include "cs104_connection.h"
+#include "cs104_slave.h"
+#include "hal_thread.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdatomic.h>
+static atomic_int binary,analog,term,command;
+static bool received(void*p,int address,CS101_ASDU a){TypeID t=CS101_ASDU_getTypeID(a);if(t==M_SP_NA_1||t==M_ME_NC_1){for(int i=0;i<CS101_ASDU_getNumberOfElements(a);i++){InformationObject o=CS101_ASDU_getElement(a,i);if(t==M_SP_NA_1&&SinglePointInformation_getValue((SinglePointInformation)o))binary=1;if(t==M_ME_NC_1&&MeasuredValueShort_getValue((MeasuredValueShort)o)==12.5f)analog=1;InformationObject_destroy(o);}}if(t==C_IC_NA_1&&CS101_ASDU_getCOT(a)==CS101_COT_ACTIVATION_TERMINATION)term=1;if(t==C_SC_NA_1&&CS101_ASDU_getCOT(a)==CS101_COT_ACTIVATION_TERMINATION)command=1;return true;}
+static void points(IMasterConnection c,int cause){CS101_AppLayerParameters p=IMasterConnection_getApplicationLayerParameters(c);for(int i=0;i<2;i++){CS101_ASDU a=CS101_ASDU_create(p,false,cause,0,1,false,false);InformationObject o=i?(InformationObject)MeasuredValueShort_create(NULL,2,12.5f,0):(InformationObject)SinglePointInformation_create(NULL,1,true,0);CS101_ASDU_addInformationObject(a,o);IMasterConnection_sendASDU(c,a);InformationObject_destroy(o);CS101_ASDU_destroy(a);}}
+static bool gi(void*p,IMasterConnection c,CS101_ASDU a,uint8_t q){IMasterConnection_sendACT_CON(c,a,q!=20);if(q==20){points(c,CS101_COT_INTERROGATED_BY_STATION);IMasterConnection_sendACT_TERM(c,a);}return true;}
+static bool readpoint(void*p,IMasterConnection c,CS101_ASDU a,int ioa){points(c,CS101_COT_REQUEST);return true;}
+static bool operation(void*p,IMasterConnection c,CS101_ASDU a){if(CS101_ASDU_getTypeID(a)==C_SC_NA_1){IMasterConnection_sendACT_CON(c,a,false);IMasterConnection_sendACT_TERM(c,a);return true;}return false;}
+int main(int n,char**v){if(n!=4)return 2;int port=atoi(v[3]);if(!strcmp(v[1],"client")){CS104_Connection c=CS104_Connection_create(v[2],port);CS104_Connection_setASDUReceivedHandler(c,received,NULL);if(!CS104_Connection_connect(c))return 3;CS104_Connection_sendStartDT(c);Thread_sleep(50);CS104_Connection_sendInterrogationCommand(c,CS101_COT_ACTIVATION,1,20);for(int i=0;i<800&&!(binary&&analog&&term);i++)Thread_sleep(10);if(!(binary&&analog&&term))return 4;SingleCommand o=SingleCommand_create(NULL,1,true,false,0);CS104_Connection_sendProcessCommandEx(c,CS101_COT_ACTIVATION,1,(InformationObject)o);SingleCommand_destroy(o);for(int i=0;i<800&&!command;i++)Thread_sleep(10);if(!command)return 5;CS104_Connection_destroy(c);puts("{\"binary\":true,\"analog\":true,\"command\":true}");}else{CS104_Slave s=CS104_Slave_create(100,100);CS104_Slave_setLocalAddress(s,v[2]);CS104_Slave_setLocalPort(s,port);CS104_Slave_setInterrogationHandler(s,gi,NULL);CS104_Slave_setReadHandler(s,readpoint,NULL);CS104_Slave_setASDUHandler(s,operation,NULL);CS104_Slave_start(s);if(!CS104_Slave_isRunning(s))return 6;printf("{\"port\":%d}\n",port);fflush(stdout);getchar();CS104_Slave_stop(s);CS104_Slave_destroy(s);}return 0;}

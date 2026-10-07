@@ -242,6 +242,32 @@ impl ServerRegistry {
         #[cfg(feature = "icap")]
         self.register(Arc::new(crate::server::icap::actions::IcapProtocol::new()));
 
+        #[cfg(feature = "s7comm")]
+        self.register(Arc::new(
+            crate::server::s7comm::actions::S7commProtocol::new(),
+        ));
+
+        #[cfg(feature = "ethernet_ip")]
+        self.register(Arc::new(
+            crate::server::ethernet_ip::actions::EthernetIpProtocol::new(),
+        ));
+
+        #[cfg(feature = "dnp3")]
+        self.register(Arc::new(crate::server::dnp3::actions::Dnp3Protocol::new()));
+
+        #[cfg(feature = "iec104")]
+        self.register(Arc::new(
+            crate::server::iec104::actions::Iec104Protocol::new(),
+        ));
+
+        #[cfg(feature = "bacnet")]
+        self.register(Arc::new(
+            crate::server::bacnet::actions::BacnetProtocol::new(),
+        ));
+
+        #[cfg(feature = "opcua")]
+        self.register(Arc::new(crate::server::opcua::actions::OpcuaProtocol::new()));
+
         #[cfg(feature = "ocpp")]
         self.register(Arc::new(crate::server::ocpp::actions::OcppProtocol::new()));
 

@@ -4331,3 +4331,32 @@ jobs:
             --test test_suite_hygiene_test \
             --test real_client_evidence_is_run_test \
             -- --test-threads=32
+
+  ics:
+    name: ICS independent peers (${{ matrix.feature }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        feature: [s7comm, ethernet_ip, dnp3, iec104, bacnet, opcua]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ics-${{ matrix.feature }}
+      - name: Install independent peer toolchains
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libssl-dev python3-venv
+      - name: Prepare pinned independent stacks
+        run: |
+          python3 tests/helpers/install_ics_peers.py "$RUNNER_TEMP/ics-peers" | tee "$RUNNER_TEMP/ics-env"
+          sed -n 's/^export //p' "$RUNNER_TEMP/ics-env" >> "$GITHUB_ENV"
+      - name: Standalone feature build
+        run: cargo check --locked --no-default-features --features ${{ matrix.feature }} --all-targets
+      - name: Independent interoperability, negative and lifecycle checks
+        run: cargo test --locked --no-default-features --features ${{ matrix.feature }} --test server --test client -- ${{ matrix.feature }}:: --test-threads=100
+      - name: Blocking lint
+        run: cargo clippy --locked --no-default-features --features ${{ matrix.feature }} --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
