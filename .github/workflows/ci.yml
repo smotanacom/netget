@@ -1004,7 +1004,9 @@ jobs:
         timeout-minutes: 40
         run: |
           echo "::notice::Advisory only. Covers all registered protocols, not just CI_FEATURES."
-          cargo test --locked --all-features \
+          # --no-fail-fast: without it one failing target hides every target after it, which is
+          # how a CalDAV keyword clash silently cut this audit short for weeks.
+          cargo test --locked --all-features --no-fail-fast \
             --test event_action_declarations_test \
             --test placeholder_examples_test \
             --test base_stack_test \

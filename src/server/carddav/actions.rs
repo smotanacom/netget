@@ -45,7 +45,7 @@ impl Protocol for CardDavProtocol {
         "CardDAV address book server (RFC 6352): discovery, address books, vCard CRUD, addressbook-query and multiget REPORTs"
     }
     fn keywords(&self) -> Vec<&'static str> {
-        vec!["carddav", "contacts", "vcard", "address book", "webdav"]
+        vec!["carddav", "contacts", "vcard", "address book"]
     }
     fn get_async_actions(&self, _: &AppState) -> Vec<ActionDefinition> {
         vec![]
