@@ -363,6 +363,7 @@ impl Protocol for WebTransportProtocol {
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::*;
         ProtocolMetadataV2::builder()
+            .port_transport(PortTransport::Udp)
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("wtransport 0.7.2 (vendored with driver, settings and QPACK bounds) over quinn: HTTP/3 extended CONNECT with draft-02 headers, session admission, bidirectional and unidirectional streams read to their end, and datagrams")

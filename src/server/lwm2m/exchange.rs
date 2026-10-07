@@ -25,6 +25,11 @@ type Key = (SocketAddr, Vec<u8>);
 
 pub struct Exchange {
     socket: Arc<UdpSocket>,
+    /// The one peer of a connected socket (the client's server). A connected UDP socket is
+    /// told by the kernel when nothing listens there, which an unconnected one never is.
+    connected: Option<SocketAddr>,
+    /// Set when the connected peer refused (ICMP port unreachable); waiting requests fail.
+    refused: std::sync::atomic::AtomicBool,
     pending: Mutex<HashMap<Key, oneshot::Sender<CoapMessage>>>,
     acked: Mutex<HashMap<(SocketAddr, u16), oneshot::Sender<()>>>,
     observations: Mutex<HashMap<Key, mpsc::Sender<CoapMessage>>>,
@@ -43,6 +48,8 @@ impl Exchange {
             .as_nanos() as u64;
         Arc::new(Self {
             socket,
+            connected: None,
+            refused: std::sync::atomic::AtomicBool::new(false),
             pending: Mutex::new(HashMap::new()),
             acked: Mutex::new(HashMap::new()),
             observations: Mutex::new(HashMap::new()),
@@ -51,6 +58,31 @@ impl Exchange {
             mid: AtomicU16::new(seed as u16),
             token: AtomicU64::new(seed),
         })
+    }
+
+    /// An exchange over a socket already connected to `peer`, its only peer: a closed port is
+    /// reported at once instead of after the whole retransmission schedule.
+    pub fn connected(socket: Arc<UdpSocket>, peer: SocketAddr) -> Arc<Self> {
+        let mut ex = Arc::into_inner(Self::new(socket)).expect("a new exchange has one owner");
+        ex.connected = Some(peer);
+        Arc::new(ex)
+    }
+
+    async fn transmit(&self, bytes: &[u8], peer: SocketAddr) -> std::io::Result<()> {
+        match self.connected {
+            Some(c) if c == peer => self.socket.send(bytes).await.map(|_| ()),
+            Some(_) => Err(std::io::Error::other(
+                "this exchange talks to one peer only",
+            )),
+            None => self.socket.send_to(bytes, peer).await.map(|_| ()),
+        }
+    }
+
+    async fn receive(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        match self.connected {
+            Some(c) => self.socket.recv(buf).await.map(|n| (n, c)),
+            None => self.socket.recv_from(buf).await,
+        }
     }
 
     pub fn socket(&self) -> &UdpSocket {
@@ -63,7 +95,7 @@ impl Exchange {
 
     async fn send(&self, peer: SocketAddr, m: &CoapMessage) -> Result<()> {
         let bytes = m.encode().map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.socket.send_to(&bytes, peer).await?;
+        self.transmit(&bytes, peer).await?;
         Ok(())
     }
 
@@ -137,7 +169,12 @@ impl Exchange {
         for _ in 0..=MAX_RETRANSMIT {
             self.send(peer, m).await?;
             tokio::select! {
-                r = &mut *rx => return r.context("the exchange was dropped"),
+                r = &mut *rx => {
+                    if r.is_err() && self.refused.load(Ordering::Relaxed) {
+                        bail!("{peer} refused: nothing listens on that port");
+                    }
+                    return r.context("the exchange was dropped");
+                }
                 a = &mut *ack_rx => {
                     if a.is_ok() {
                         return tokio::time::timeout(SEPARATE_WAIT, rx)
@@ -184,7 +221,7 @@ impl Exchange {
             payload,
         };
         let bytes = m.encode().map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.socket.send_to(&bytes, peer).await?;
+        self.transmit(&bytes, peer).await?;
         if request.mtype == MessageType::Confirmable {
             self.inflight
                 .lock()
@@ -229,9 +266,20 @@ impl Exchange {
     pub async fn run(self: Arc<Self>, requests: mpsc::Sender<(SocketAddr, CoapMessage)>) {
         let mut buf = vec![0u8; MAX_DATAGRAM + 1];
         loop {
-            let Ok((n, peer)) = self.socket.recv_from(&mut buf).await else {
-                continue;
+            let (n, peer) = match self.receive(&mut buf).await {
+                Ok(r) => r,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    // Only a connected socket hears this. Fail whoever waits, now.
+                    self.refused.store(true, Ordering::Relaxed);
+                    self.pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clear();
+                    continue;
+                }
+                Err(_) => continue,
             };
+            self.refused.store(false, Ordering::Relaxed);
             if n > MAX_DATAGRAM {
                 continue;
             }
@@ -248,7 +296,7 @@ impl Exchange {
                         .find(|(k, _)| *k == (peer, m.message_id))
                         .map(|(_, b)| b.clone());
                     if let Some(bytes) = cached {
-                        let _ = self.socket.send_to(&bytes, peer).await;
+                        let _ = self.transmit(&bytes, peer).await;
                         continue;
                     }
                     let mut inflight = self.inflight.lock().unwrap_or_else(|e| e.into_inner());
