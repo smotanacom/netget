@@ -304,9 +304,28 @@ code { font-family: var(--mono); }
 }
 
 .proto-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 0.9rem;
+    min-width: 0;
     color: var(--muted);
     padding: 0.5rem 0.8rem;
-    word-spacing: 0.45em;
+}
+
+.proto-list a,
+.proto-list a:visited,
+.proto-list a:hover,
+.proto-list a:active {
+    color: inherit;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.proto-list a:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 3px;
+    border-radius: 2px;
 }
 
 @media (max-width: 620px) {
