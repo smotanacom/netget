@@ -45,7 +45,7 @@ impl Protocol for CalDavProtocol {
         "CalDAV calendar server (RFC 4791): discovery, calendars, event and task CRUD, calendar-query and multiget REPORTs"
     }
     fn keywords(&self) -> Vec<&'static str> {
-        vec!["caldav", "calendar", "ical", "icalendar", "webdav"]
+        vec!["caldav", "calendar", "ical", "icalendar"]
     }
     fn get_async_actions(&self, _: &AppState) -> Vec<ActionDefinition> {
         vec![]
