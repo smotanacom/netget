@@ -557,6 +557,19 @@ Each was found by an agent working inside its own boundary, reported rather than
 reached outside to fix, and is small. Do them once the waves have landed, not
 during — every one touches a shared file.
 
+**Status, 7 October 2026: all five are resolved.**
+1 — `wireshark.rs` now covers every protocol named below; DHCPv6, Wake-on-LAN, EAPOL and
+NDP were the last four (`1c8c5f1d`, each name checked with tshark 4.6.8; WoL is a display
+filter because its dissector is heuristic). 2 — both startup gates ask
+`Protocol::startup_privilege_requirement`, which LLDP, STP, CDP, EAPOL, NDP, VRRP and raw IP
+relax only for their UDP test transport (`9a1a1251`, pinned by
+`tests/startup_privilege_transport_test.rs`, which fails with the refusal if either gate reads
+the declared requirement). 3 — `AGENTS.md` already used the right form; 236 lines in 109 other
+files did not and now do (`aaea81a3`; its message says 80 files). 4 — had already been fixed:
+`client_action_names_for_pattern` reads async ∪ sync ∪ the event's own actions. 5 — `stp`
+had already dropped `pnet`; `rawip` declared it and used nothing, and no longer does
+(`51290000`); LLDP, CDP, EAPOL and NDP use `pnet::datalink` for interface addresses.
+
 1. **`src/tui/wireshark.rs` has no entry for any protocol added here.**
    Two concrete instances confirmed by agents: DHCPv6 (`wireshark.rs:203` has
    `"dhcp" | "bootp" => udp("dhcp")` and no `dhcpv6` arm) and Wake-on-LAN.
