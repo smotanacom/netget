@@ -4461,7 +4461,7 @@ jobs:
           CARGO_BUILD_JOBS: 4
         run: |
           cargo test --locked --no-default-features --features adc_peer,dc_peer,soulseek_peer,gnutella,nntp --test server --test client -- --test-threads=8
-          cargo test --locked --no-default-features --features adc_peer,dc_peer,soulseek_peer,gnutella,nntp --test site_protocol_list_test --test protocol_startup_examples_test --test dual_protocol_test --test event_action_declarations_test --test protocol_name_resolution_test --test advertised_actions_test
+          cargo test --locked --no-default-features --features adc_peer,dc_peer,soulseek_peer,gnutella,nntp --test site_protocol_list_test --test protocol_startup_examples_test --test dual_protocol_test --test event_action_declarations_test --test protocol_name_resolution_test --test advertised_actions_test --test rustls_provider_gate_test
           for feature in adc adc_peer dc_peer soulseek soulseek_peer gnutella nntp; do
             cargo check --locked --no-default-features --features "$feature" --all-targets
           done

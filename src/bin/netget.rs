@@ -17,6 +17,12 @@ async fn main() -> Result<()> {
     // 15 before anyone noticed. `tests/rustls_provider_gate_test.rs` derives the true
     // set from Cargo.toml and fails if this list falls behind again.
     #[cfg(any(
+        feature = "adc",
+        feature = "adc_peer",
+        feature = "dc_peer",
+        feature = "gnutella",
+        feature = "nntp",
+        feature = "soulseek",
         feature = "bolt",
         feature = "dc",
         feature = "doh",
