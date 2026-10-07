@@ -1,6 +1,38 @@
 use crate::helpers::ics::*;
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+// Shutdown may send ERRF before FIN/reset. Bound the drain and still require closure.
+async fn assert_closed(socket: &mut tokio::net::TcpStream) {
+    let mut remaining = Vec::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        socket.take(1025).read_to_end(&mut remaining),
+    )
+    .await
+    .expect("OPC UA socket must close within the shutdown deadline");
+    assert!(remaining.len() <= 1024, "unbounded data after shutdown");
+    if let Err(error) = &result {
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            ),
+            "unexpected shutdown read error: {error}"
+        );
+    }
+    if !remaining.is_empty() {
+        let prefix_len = remaining.len().min(4);
+        assert_eq!(&remaining[..prefix_len], &b"ERRF"[..prefix_len]);
+        if result.is_ok() {
+            assert!(remaining.len() >= 8, "truncated shutdown error frame");
+            let size = u32::from_le_bytes(remaining[4..8].try_into().unwrap()) as usize;
+            assert_eq!(size, remaining.len(), "invalid shutdown error frame length");
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn independent_asyncua_browse_read_write_method_subscribe() {
     let s = state();
@@ -46,10 +78,7 @@ async fn malformed_hello_and_live_stop() {
     live.read_exact(&mut ack).await.unwrap();
     assert_eq!(&ack[..4], b"ACKF");
     s.remove_server(id).await;
-    let n = tokio::time::timeout(std::time::Duration::from_secs(5), live.read(&mut b))
-        .await
-        .unwrap();
-    assert!(n.is_err() || n.unwrap() == 0);
+    assert_closed(&mut live).await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if tokio::net::TcpListener::bind(a).await.is_ok() {
@@ -135,15 +164,9 @@ async fn connection_cap_and_all_live_sockets_close() {
         result,
         netget::state::client_handles::ClientSendOutcome::Disconnected
     ));
-    let n = tokio::time::timeout(std::time::Duration::from_secs(2), peers[0].read(&mut b))
-        .await
-        .unwrap();
-    assert!(n.is_err() || n.unwrap() == 0);
+    assert_closed(&mut peers[0]).await;
     s.remove_server(id).await;
     for mut c in peers {
-        let n = tokio::time::timeout(std::time::Duration::from_secs(2), c.read(&mut b))
-            .await
-            .unwrap();
-        assert!(n.is_err() || n.unwrap() == 0);
+        assert_closed(&mut c).await;
     }
 }
