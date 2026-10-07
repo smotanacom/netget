@@ -113,5 +113,5 @@ nothing expires, because nothing is stored — there is no test asserting expiry
 
 ```bash
 CARGO_TARGET_DIR=/tmp/tgt ./cargo-isolated.sh test --no-default-features --features memcached \
-    --test server::memcached -- --test-threads=100
+    --test server -- server::memcached --test-threads=100
 ```

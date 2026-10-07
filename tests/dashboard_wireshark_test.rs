@@ -388,7 +388,7 @@ fn the_vrrp_entry_warns_that_carp_needs_its_own_decode_as() {
 /// gets "expression rejects all packets" with no idea why.
 #[test]
 fn the_ethernet_only_filters_say_they_will_not_work_on_loopback() {
-    for name in ["stp", "lldp", "cdp"] {
+    for name in ["stp", "lldp", "cdp", "eapol"] {
         let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
         assert!(
             plan.notes.iter().any(|n| n.contains("loopback")),
@@ -449,5 +449,34 @@ fn new_web_rpc_and_v9_names_select_their_native_carriers() {
             plan.decode_as,
             Some(format!("{transport}.port=={port},{dissector}"))
         );
+    }
+}
+
+/// DHCPv6 and Wake-on-LAN were missing from the table and so read as plain TCP. DHCPv6 has a
+/// decode-as; WoL's dissector is heuristic (`udp.port==9,wol` is refused by tshark 4.6), so
+/// it gets UDP with a display filter and no decode-as.
+#[test]
+fn dhcpv6_and_wake_on_lan_are_udp_with_their_dissectors() {
+    let plan = CapturePlan::build(server("dhcpv6", "", 547), Platform::Linux);
+    assert_eq!(plan.wire.transport, Transport::Udp);
+    assert_eq!(plan.wire.decode_as, Some("dhcpv6"));
+    let plan = CapturePlan::build(server("wol", "", 9), Platform::Linux);
+    assert_eq!(plan.wire.transport, Transport::Udp);
+    assert_eq!(plan.wire.decode_as, None);
+    assert_eq!(plan.display_filter, "udp.port == 9 && wol");
+}
+
+/// EAPOL is an EtherType and NDP is ICMPv6, so both are a capture filter plus a display
+/// filter and never a decode-as. Every name was checked with tshark 4.6.8 `-Y`.
+#[test]
+fn eapol_and_ndp_filter_below_the_transport() {
+    for (name, filter, display) in [
+        ("eapol", "ether proto 0x888e", "eapol"),
+        ("ndp", "icmp6", "icmpv6.type >= 133 && icmpv6.type <= 137"),
+    ] {
+        let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
+        assert_eq!(plan.capture_filter, filter, "{name}");
+        assert_eq!(plan.display_filter, display, "{name}");
+        assert_eq!(plan.decode_as, None, "{name} needs no decode-as clause");
     }
 }

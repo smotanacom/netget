@@ -165,7 +165,7 @@ A test for it would have to deliberately crash the process, which is why there i
 
 ```bash
 ./cargo-isolated.sh build --release --all-features
-./cargo-isolated.sh test --features xmlrpc --test server::xmlrpc::test
+./cargo-isolated.sh test --features xmlrpc --test server -- server::xmlrpc::test
 ```
 
 ## Key Test Patterns

@@ -128,7 +128,7 @@ Tests are located in `tests/client/dhcp/e2e_test.rs` and are feature-gated with 
 **Workaround**: Run tests with sudo:
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test client::dhcp::e2e_test -- --ignored
+sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test client -- client::dhcp::e2e_test --ignored
 ```
 
 **Platform-specific**:
@@ -176,13 +176,13 @@ sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test clien
 ### Run with Root Privileges (Include Ignored Tests)
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test client::dhcp::e2e_test -- --ignored
+sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test client -- client::dhcp::e2e_test --ignored
 ```
 
 ### Run Specific Test
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test client::dhcp::e2e_test test_dhcp_client_discover_offer -- --ignored --nocapture
+sudo ./cargo-isolated.sh test --no-default-features --features dhcp --test client -- client::dhcp::e2e_test::test_dhcp_client_discover_offer --ignored --nocapture
 ```
 
 ## Test Infrastructure Dependencies

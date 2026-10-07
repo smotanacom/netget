@@ -71,5 +71,5 @@ strings.
 
 ```bash
 CARGO_TARGET_DIR=/tmp/tgt ./cargo-isolated.sh test --no-default-features --features tftp \
-    --test client::tftp -- --test-threads=100
+    --test client -- client::tftp --test-threads=100
 ```

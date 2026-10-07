@@ -91,7 +91,7 @@ async fn test_ospf_hello_exchange() {
 ./cargo-isolated.sh build --release --no-default-features --features ospf
 
 # Run E2E test
-./cargo-isolated.sh test --no-default-features --features ospf --test server::ospf::e2e_test
+./cargo-isolated.sh test --no-default-features --features ospf --test server -- server::ospf::e2e_test
 ```
 
 ## Debugging
@@ -99,7 +99,7 @@ async fn test_ospf_hello_exchange() {
 **Enable logging**:
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features ospf --test server::ospf::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features ospf --test server -- server::ospf::e2e_test
 ```
 
 **Check packet structure**:

@@ -97,19 +97,19 @@ to VNC servers, send pointer/key events, and handle framebuffer updates.
 ### Run all VNC client tests:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features vnc --test client::vnc::e2e_test
+./cargo-isolated.sh test --no-default-features --features vnc --test client -- client::vnc::e2e_test
 ```
 
 ### Run specific test:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features vnc --test client::vnc::e2e_test test_vnc_client_connect_to_server
+./cargo-isolated.sh test --no-default-features --features vnc --test client -- client::vnc::e2e_test::test_vnc_client_connect_to_server
 ```
 
 ### Run with ignored tests:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features vnc --test client::vnc::e2e_test -- --ignored
+./cargo-isolated.sh test --no-default-features --features vnc --test client -- client::vnc::e2e_test --ignored
 ```
 
 ## LLM Call Budget
@@ -164,7 +164,7 @@ Tests use the shared `helpers` module:
 ### Enable verbose logging:
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features vnc --test client::vnc::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features vnc --test client -- client::vnc::e2e_test
 ```
 
 ### View netget.log:

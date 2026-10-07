@@ -60,7 +60,7 @@ The path assertion is also what proves URL resolution worked end to end: the ser
 
 ```bash
 CARGO_TARGET_DIR=/tmp/tgt ./cargo-isolated.sh test --no-default-features --features rss \
-    --test client::rss -- --test-threads=100
+    --test client -- client::rss --test-threads=100
 ```
 
 ## `command_channel_test.rs`

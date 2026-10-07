@@ -137,13 +137,13 @@ event.
 **Feature-specific** (recommended):
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features ollama --test client::ollama::e2e_test
+./cargo-isolated.sh test --no-default-features --features ollama --test client -- client::ollama::e2e_test
 ```
 
 **All features** (slow):
 
 ```bash
-./cargo-isolated.sh test --all-features --test client::ollama::e2e_test
+./cargo-isolated.sh test --all-features --test client -- client::ollama::e2e_test
 ```
 
 ## Requirements
@@ -164,7 +164,7 @@ ollama serve
 ollama pull qwen2.5-coder:0.5b
 
 # 3. Run tests
-./cargo-isolated.sh test --features ollama --test client::ollama::e2e_test
+./cargo-isolated.sh test --features ollama --test client -- client::ollama::e2e_test
 ```
 
 ### Skip Behavior
@@ -264,7 +264,7 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 **Verbose output**:
 
 ```bash
-./cargo-isolated.sh test --features ollama --test client::ollama::e2e_test -- --nocapture
+./cargo-isolated.sh test --features ollama --test client -- client::ollama::e2e_test --nocapture
 ```
 
 **Check client logs**:
@@ -315,7 +315,7 @@ RUN ollama serve &
 RUN ollama pull qwen2.5-coder:0.5b
 
 # Run tests
-RUN cargo test --features ollama --test client::ollama::e2e_test
+RUN cargo test --features ollama --test client -- client::ollama::e2e_test
 ```
 
 ## Test Maintainability

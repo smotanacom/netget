@@ -247,13 +247,13 @@ let response = client
 ./cargo-isolated.sh build --release --all-features
 
 # Run all Elasticsearch tests
-./cargo-isolated.sh test --features elasticsearch --test server::elasticsearch::e2e_test
+./cargo-isolated.sh test --features elasticsearch --test server -- server::elasticsearch::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features elasticsearch --test server::elasticsearch::e2e_test test_elasticsearch_search
+./cargo-isolated.sh test --features elasticsearch --test server -- server::elasticsearch::e2e_test::test_elasticsearch_search
 
 # Run with output
-./cargo-isolated.sh test --features elasticsearch --test server::elasticsearch::e2e_test -- --nocapture
+./cargo-isolated.sh test --features elasticsearch --test server -- server::elasticsearch::e2e_test --nocapture
 ```
 
 ## Test Output Example

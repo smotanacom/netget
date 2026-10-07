@@ -392,7 +392,7 @@ ollama serve
 ollama pull qwen3-coder:30b
 
 # Run E2E tests for specific protocol (fast)
-./cargo-isolated.sh test --no-default-features --features tcp --test server::tcp::e2e_test
+./cargo-isolated.sh test --no-default-features --features tcp --test server -- server::tcp::e2e_test
 
 # Run all E2E tests for a protocol (server + client)
 ./cargo-isolated.sh test --no-default-features --features http

@@ -116,19 +116,19 @@ Black-box testing using the NetGet binary. Tests verify NFS client functionality
 ### Single Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test::nfs_client_tests::test_nfs_client_mount_and_read
+./cargo-isolated.sh test --no-default-features --features nfs --test client -- client::nfs::e2e_test::nfs_client_tests::test_nfs_client_mount_and_read
 ```
 
 ### Full Suite
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test
+./cargo-isolated.sh test --no-default-features --features nfs --test client -- client::nfs::e2e_test
 ```
 
 ### With Ollama Lock
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test -- --test-threads=1
+./cargo-isolated.sh test --no-default-features --features nfs --test client -- client::nfs::e2e_test --test-threads=1
 ```
 
 ## Test Infrastructure
@@ -241,10 +241,10 @@ Black-box testing using the NetGet binary. Tests verify NFS client functionality
 
 ```bash
 # Verbose test output
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test -- --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features nfs --test client -- client::nfs::e2e_test --nocapture
 
 # Single test with logging
-RUST_LOG=trace ./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test::nfs_client_tests::test_nfs_client_mount_and_read -- --nocapture
+RUST_LOG=trace ./cargo-isolated.sh test --no-default-features --features nfs --test client -- client::nfs::e2e_test::nfs_client_tests::test_nfs_client_mount_and_read --nocapture
 
 # Keep processes alive for inspection
 # (Modify test to add tokio::time::sleep(Duration::from_secs(60)) before cleanup)

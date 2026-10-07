@@ -248,10 +248,10 @@ and `--ollama-lock` is an accepted no-op that serialises nothing
 
 ```bash
 # View test output with tracing
-RUST_LOG=debug ./cargo-isolated.sh test --features rip --test rip::e2e_test -- --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --features rip --test server -- server::rip::e2e_test --nocapture
 
 # Run single test
-./cargo-isolated.sh test --features rip --test rip::e2e_test -- test_rip_routing_table_request --nocapture
+./cargo-isolated.sh test --features rip --test server -- server::rip::e2e_test::test_rip_routing_table_request --nocapture
 
 # Check server logs (written to working directory)
 tail -f netget.log

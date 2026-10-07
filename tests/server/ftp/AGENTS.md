@@ -48,7 +48,7 @@ All tests use mock LLM responses via `.with_mock()` builder:
 ./test-e2e.sh --use-ollama ftp
 
 # Run with cargo
-./cargo-isolated.sh test --no-default-features --features ftp --test server::ftp::test
+./cargo-isolated.sh test --no-default-features --features ftp --test server -- server::ftp::test
 ```
 
 ## Known Issues

@@ -438,6 +438,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mdns" => udp("mdns"),
         "ntp" => udp("ntp"),
         "dhcp" | "bootp" => udp("dhcp"),
+        "dhcpv6" => udp("dhcpv6"),
+        // The WoL dissector is heuristic: it finds a magic packet on any UDP port and cannot
+        // be named in a udp.port decode-as, so only the display filter selects it.
+        "wol" => with_display(PLAIN_UDP, "wol"),
         // `udp port 69` captures only the RRQ/WRQ: TFTP then moves to an ephemeral TID
         // port for DATA/ACK, so a port-69 filter shows the request and none of the transfer.
         "tftp" => with_note(udp("tftp"), TFTP_TID_NOTE),
@@ -490,6 +494,9 @@ pub fn wire_for(protocol: &str) -> Wire {
             L2_ETHER_ONLY_NOTE,
         ),
         "lldp" => with_note(raw("ether proto 0x88cc", "lldp"), L2_ETHER_ONLY_NOTE),
+        "eapol" => with_note(raw("ether proto 0x888e", "eapol"), L2_ETHER_ONLY_NOTE),
+        // Neighbor Discovery is ICMPv6 types 133-137 (RS, RA, NS, NA, Redirect).
+        "ndp" => raw("icmp6", "icmpv6.type >= 133 && icmpv6.type <= 137"),
         "cdp" => with_note(
             raw("ether dst 01:00:0c:cc:cc:cc", "cdp"),
             L2_ETHER_ONLY_NOTE,

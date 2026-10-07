@@ -106,7 +106,7 @@ This approach ensures:
 
 ```bash
 # Run OpenAI client tests (no API key needed)
-./cargo-isolated.sh test --no-default-features --features openai --test client::openai::e2e_test
+./cargo-isolated.sh test --no-default-features --features openai --test client -- client::openai::e2e_test
 
 # Run all client tests (includes OpenAI)
 ./cargo-isolated.sh test --features openai
@@ -232,7 +232,7 @@ Tests are deterministic and use mocks, so there are no flaky tests, network issu
 
 ```bash
 # Run with verbose output
-./cargo-isolated.sh test --no-default-features --features openai --test client::openai::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features openai --test client -- client::openai::e2e_test --nocapture
 
 # Check NetGet logs
 tail -f netget.log

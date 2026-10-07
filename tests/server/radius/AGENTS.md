@@ -141,5 +141,5 @@ appears in the event as hex" would read as coverage of CHAP and is worse than no
 
 ```bash
 CARGO_TARGET_DIR=/tmp/tgt ./cargo-isolated.sh test --no-default-features --features radius \
-    --test server::radius -- --test-threads=100
+    --test server -- server::radius --test-threads=100
 ```

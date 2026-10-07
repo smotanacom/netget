@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features oauth2 \
-//!       --test server::oauth2::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::oauth2::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "oauth2"))]
 mod oauth2_connection_bounds {

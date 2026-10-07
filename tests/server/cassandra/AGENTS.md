@@ -254,13 +254,13 @@ let session: Session = SessionBuilder::new()
 ./cargo-isolated.sh build --release --all-features
 
 # Run all Cassandra tests
-./cargo-isolated.sh test --features cassandra --test server::cassandra::e2e_test
+./cargo-isolated.sh test --features cassandra --test server -- server::cassandra::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features cassandra --test server::cassandra::e2e_test test_cassandra_connection
+./cargo-isolated.sh test --features cassandra --test server -- server::cassandra::e2e_test::test_cassandra_connection
 
 # Run with output
-./cargo-isolated.sh test --features cassandra --test server::cassandra::e2e_test -- --nocapture
+./cargo-isolated.sh test --features cassandra --test server -- server::cassandra::e2e_test --nocapture
 ```
 
 ## Test Output Example

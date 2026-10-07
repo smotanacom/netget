@@ -425,7 +425,7 @@ mod mongodb_server_tests {
 ./test-e2e.sh --use-ollama mongodb-server
 
 # With cargo (parallel)
-cargo test --features mongodb-server --test server::mongodb::e2e_test -- --test-threads=100
+cargo test --features mongodb-server --test server -- server::mongodb::e2e_test --test-threads=100
 ```
 
 ### Run All Database Tests
@@ -441,7 +441,7 @@ cargo test --features mysql,postgresql,redis,mongodb-server,cassandra -- --test-
 - name: Test MongoDB Server
   run: |
     ./cargo-isolated.sh test --no-default-features --features mongodb-server \
-      --test server::mongodb::e2e_test -- --test-threads=100
+      --test server -- server::mongodb::e2e_test --test-threads=100
 ```
 
 ## References

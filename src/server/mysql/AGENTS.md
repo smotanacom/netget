@@ -247,7 +247,7 @@ counters live and refresh `last_activity`. Proven with zero LLM calls by
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features mysql \
-    --test server::mysql::test -- --test-threads=100
+    --test server -- server::mysql::test --test-threads=100
 ```
 
 Real-client check by hand, with a static handler so no model is involved:

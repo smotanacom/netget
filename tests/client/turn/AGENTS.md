@@ -95,7 +95,7 @@ All tests wrapped in:
 
 ```bash
 # Run all TURN client E2E tests
-./cargo-isolated.sh test --no-default-features --features turn --test client::turn::e2e_test
+./cargo-isolated.sh test --no-default-features --features turn --test client -- client::turn::e2e_test
 
 # Run specific test
 ./cargo-isolated.sh test --no-default-features --features turn test_turn_client_allocate_relay

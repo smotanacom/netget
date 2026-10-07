@@ -148,13 +148,13 @@ For CI/CD environments without CUPS, consider:
 
 ```bash
 # All IPP client tests (requires CUPS and Ollama)
-./cargo-isolated.sh test --no-default-features --features ipp --test client::ipp::e2e_test -- --ignored
+./cargo-isolated.sh test --no-default-features --features ipp --test client -- client::ipp::e2e_test --ignored
 
 # Specific test
 ./cargo-isolated.sh test --no-default-features --features ipp test_ipp_get_printer_attributes -- --ignored
 
 # Without Ollama lock (faster, but may conflict)
-./cargo-isolated.sh test --no-default-features --features ipp --test client::ipp::e2e_test
+./cargo-isolated.sh test --no-default-features --features ipp --test client -- client::ipp::e2e_test
 ```
 
 **None of these tests is `#[ignore]`d and none needs CUPS.** This section described a state the

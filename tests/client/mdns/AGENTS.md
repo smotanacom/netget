@@ -154,7 +154,7 @@ found.
 ### With Feature Flag
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features mdns --test client::mdns::e2e_test
+./cargo-isolated.sh test --no-default-features --features mdns --test client -- client::mdns::e2e_test
 ```
 
 ### Prerequisites

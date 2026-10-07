@@ -214,13 +214,13 @@ and MX"
 ### Run All DoT Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features dot --test client::dot::e2e_test -- --ignored
+./cargo-isolated.sh test --no-default-features --features dot --test client -- client::dot::e2e_test --ignored
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features dot --test client::dot::e2e_test test_dot_client_basic_query -- --ignored
+./cargo-isolated.sh test --no-default-features --features dot --test client -- client::dot::e2e_test::test_dot_client_basic_query --ignored
 ```
 
 ### Prerequisites

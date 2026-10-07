@@ -283,7 +283,7 @@ See `tests/client/stomp/AGENTS.md`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features stomp \
-    --test client::stomp::e2e_test -- --test-threads=100
+    --test client -- client::stomp::e2e_test --test-threads=100
 ```
 
 ## References

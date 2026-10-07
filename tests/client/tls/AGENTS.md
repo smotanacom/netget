@@ -61,19 +61,19 @@ Black-box E2E tests using NetGet TLS server (self-signed certificates) and publi
 ### All TLS Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features tls --test client::tls::e2e_test
+./cargo-isolated.sh test --no-default-features --features tls --test client -- client::tls::e2e_test
 ```
 
 ### Single Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features tls --test client::tls::e2e_test -- test_tls_client_connect_to_server
+./cargo-isolated.sh test --no-default-features --features tls --test client -- client::tls::e2e_test::test_tls_client_connect_to_server
 ```
 
 ### With Real Ollama (No Mocks)
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features tls --test client::tls::e2e_test -- --use-ollama
+./cargo-isolated.sh test --no-default-features --features tls --test client -- client::tls::e2e_test --use-ollama
 ```
 
 ## Test Infrastructure
@@ -121,7 +121,7 @@ Tests connect to `example.com:443`:
 ### View TLS Logs
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features tls --test client::tls::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features tls --test client -- client::tls::e2e_test
 ```
 
 ### Inspect TLS Handshake
@@ -151,7 +151,7 @@ All tests use mocks by default (no Ollama required):
 
 Run with `--use-ollama` to test with real LLM:
 ```bash
-./cargo-isolated.sh test --no-default-features --features tls --test client::tls::e2e_test -- --use-ollama
+./cargo-isolated.sh test --no-default-features --features tls --test client -- client::tls::e2e_test --use-ollama
 ```
 
 ## Future Tests

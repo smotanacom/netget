@@ -125,10 +125,10 @@ the same day this said the opposite.)
 
 ```bash
 # Run all SIP client tests
-./cargo-isolated.sh test --no-default-features --features sip --test client::sip::e2e_test
+./cargo-isolated.sh test --no-default-features --features sip --test client -- client::sip::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --no-default-features --features sip --test client::sip::e2e_test -- test_sip_client_register --exact
+./cargo-isolated.sh test --no-default-features --features sip --test client -- client::sip::e2e_test::test_sip_client_register --exact
 ```
 
 ### Prerequisites
@@ -240,7 +240,7 @@ curl http://localhost:11434/api/version
 netstat -an | grep 5060
 
 # Run test with verbose output
-RUST_LOG=debug ./cargo-isolated.sh test --features sip --test client::sip::e2e_test -- test_sip_client_register --exact --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --features sip --test client -- client::sip::e2e_test::test_sip_client_register --exact --nocapture
 ```
 
 ### Assertion Failure
@@ -262,7 +262,7 @@ RUST_LOG=debug ./cargo-isolated.sh test --features sip --test client::sip::e2e_t
 tokio::time::sleep(Duration::from_millis(2000)).await;  # Increase from 1500ms
 
 # Run test multiple times to check for flakiness
-for i in {1..10}; do ./cargo-isolated.sh test --features sip --test client::sip::e2e_test -- test_sip_client_register --exact; done
+for i in {1..10}; do ./cargo-isolated.sh test --features sip --test client -- client::sip::e2e_test::test_sip_client_register --exact; done
 ```
 
 ### Server/Client Crash
@@ -278,7 +278,7 @@ for i in {1..10}; do ./cargo-isolated.sh test --features sip --test client::sip:
 
 ```bash
 # Run with backtrace
-RUST_BACKTRACE=1 ./cargo-isolated.sh test --features sip --test client::sip::e2e_test -- test_sip_client_register --exact --nocapture
+RUST_BACKTRACE=1 ./cargo-isolated.sh test --features sip --test client -- client::sip::e2e_test::test_sip_client_register --exact --nocapture
 
 # Check logs
 cat netget.log

@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features elasticsearch \
-//!       --test server::elasticsearch::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::elasticsearch::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "elasticsearch"))]
 mod elasticsearch_connection_bounds {

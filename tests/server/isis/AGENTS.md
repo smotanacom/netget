@@ -171,7 +171,7 @@ All tests stay well under the < 10 calls per suite guideline.
 
 ```bash
 # Run all tests (only non-ignored tests will run)
-cargo test --features isis --test server::isis::e2e_test
+cargo test --features isis --test server -- server::isis::e2e_test
 
 # Output:
 # - test_isis_pdu_structure: ✓ (runs)
@@ -185,7 +185,7 @@ cargo test --features isis --test server::isis::e2e_test
 
 ```bash
 # Must run as root for pcap
-sudo -E cargo test --features isis --test server::isis::e2e_test -- --ignored
+sudo -E cargo test --features isis --test server -- server::isis::e2e_test --ignored
 
 # Tests will fail at pcap.open() but mocks will be verified
 ```
@@ -199,7 +199,7 @@ sudo ip link set veth0 up
 sudo ip link set veth1 up
 
 # Run tests
-sudo -E cargo test --features isis --test server::isis::e2e_test -- --ignored --use-ollama
+sudo -E cargo test --features isis --test server -- server::isis::e2e_test --ignored --use-ollama
 
 # In another terminal, inject IS-IS PDUs on veth1
 ```
@@ -254,7 +254,7 @@ This is fundamentally different from TCP/HTTP tests that work on localhost witho
 **Option 1**: Use `setcap` to grant specific binary CAP_NET_RAW:
 ```bash
 sudo setcap cap_net_raw+ep target/debug/netget
-cargo test --features isis --test server::isis::e2e_test -- --ignored
+cargo test --features isis --test server -- server::isis::e2e_test --ignored
 ```
 
 **Option 2**: Run in Docker container with `--cap-add=NET_RAW`

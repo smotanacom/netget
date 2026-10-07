@@ -117,7 +117,7 @@ Once the NetGet client is fully integrated, tests will:
 java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb -inMemory -port 8000
 
 # Run DynamoDB client tests
-./cargo-isolated.sh test --no-default-features --features dynamo --test client::dynamodb::e2e_test
+./cargo-isolated.sh test --no-default-features --features dynamo --test client -- client::dynamodb::e2e_test
 ```
 
 ## Known Issues

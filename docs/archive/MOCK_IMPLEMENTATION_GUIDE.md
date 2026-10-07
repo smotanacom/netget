@@ -255,9 +255,9 @@ Client tests would follow the same pattern but:
 ./test-e2e.sh --use-ollama zookeeper
 
 # With cargo directly
-cargo test --features xmlrpc --test server::xmlrpc::test
-cargo test --features xmpp --test server::xmpp::test
-cargo test --features zookeeper --test server::zookeeper::e2e_test
+cargo test --features xmlrpc --test server -- server::xmlrpc::test
+cargo test --features xmpp --test server -- server::xmpp::test
+cargo test --features zookeeper --test server -- server::zookeeper::e2e_test
 ```
 
 ## Verification Checklist

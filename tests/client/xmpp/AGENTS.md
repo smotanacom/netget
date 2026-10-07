@@ -137,7 +137,7 @@ sudo systemctl start ejabberd
 ### All Tests (Ignored by Default)
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features xmpp --test client::xmpp::e2e_test -- --ignored
+./cargo-isolated.sh test --no-default-features --features xmpp --test client -- client::xmpp::e2e_test --ignored
 ```
 
 ### Specific Test
@@ -149,7 +149,7 @@ sudo systemctl start ejabberd
 ### With Logging
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features xmpp --test client::xmpp::e2e_test -- --ignored --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features xmpp --test client -- client::xmpp::e2e_test --ignored --nocapture
 ```
 
 ## Manual Verification

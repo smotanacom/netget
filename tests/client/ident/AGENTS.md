@@ -2,7 +2,7 @@
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features ident \
-    --test client::ident::e2e_test -- --test-threads=100
+    --test client -- client::ident::e2e_test --test-threads=100
 ```
 
 8 tests, all passing, **3 LLM calls total**.

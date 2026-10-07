@@ -296,16 +296,16 @@ test_state.stop().await?;
 
 ```bash
 # Run all STUN tests (requires Ollama + model)
-./cargo-isolated.sh test --features stun --test server::stun::e2e_test
+./cargo-isolated.sh test --features stun --test server -- server::stun::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features stun --test server::stun::e2e_test test_stun_basic_binding_request
+./cargo-isolated.sh test --features stun --test server -- server::stun::e2e_test::test_stun_basic_binding_request
 
 # Run with output
-./cargo-isolated.sh test --features stun --test server::stun::e2e_test -- --nocapture
+./cargo-isolated.sh test --features stun --test server -- server::stun::e2e_test --nocapture
 
 # Run with concurrency (uses Ollama lock)
-./cargo-isolated.sh test --features stun --test server::stun::e2e_test -- --test-threads=4
+./cargo-isolated.sh test --features stun --test server -- server::stun::e2e_test --test-threads=4
 ```
 
 ## Future Test Additions

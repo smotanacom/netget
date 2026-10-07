@@ -115,13 +115,13 @@ This ensures tests only compile when the `sqs` feature is enabled.
 ### Run All SQS Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features sqs --test client::sqs::e2e_test
+./cargo-isolated.sh test --no-default-features --features sqs --test client -- client::sqs::e2e_test
 ```
 
 ### Run Single Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features sqs --test client::sqs::e2e_test test_sqs_client_connect_and_send
+./cargo-isolated.sh test --no-default-features --features sqs --test client -- client::sqs::e2e_test::test_sqs_client_connect_and_send
 ```
 
 ### Run with LocalStack Test
@@ -134,7 +134,7 @@ docker run -d -p 4566:4566 localstack/localstack
 aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name NetGetTestQueue
 
 # Run test
-./cargo-isolated.sh test --no-default-features --features sqs --test client::sqs::e2e_test test_sqs_client_with_localstack -- --include-ignored
+./cargo-isolated.sh test --no-default-features --features sqs --test client -- client::sqs::e2e_test::test_sqs_client_with_localstack --include-ignored
 ```
 
 ## Known Issues

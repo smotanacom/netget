@@ -117,7 +117,7 @@ transparently.
 ### Run All HTTP/2 Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features http2 --test client::http2::e2e_test
+./cargo-isolated.sh test --no-default-features --features http2 --test client -- client::http2::e2e_test
 ```
 
 ### Run Single Test

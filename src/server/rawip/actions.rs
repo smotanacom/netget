@@ -276,6 +276,19 @@ impl Protocol for RawIpProtocol {
         ]
     }
 
+    fn startup_privilege_requirement(
+        &self,
+
+        startup_params: Option<&serde_json::Value>,
+    ) -> crate::protocol::metadata::PrivilegeRequirement {
+        // The UDP test transport carries the same frames over an ordinary socket.
+
+        crate::llm::actions::protocol_trait::unless_udp_transport(
+            self.metadata().privilege_requirement,
+            startup_params,
+        )
+    }
+
     fn metadata(&self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)

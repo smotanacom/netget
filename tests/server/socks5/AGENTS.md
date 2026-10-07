@@ -318,16 +318,16 @@ server.stop().await?;
 
 ```bash
 # Run all SOCKS5 tests (requires Ollama + model)
-./cargo-isolated.sh test --features socks5 --test server::socks5::e2e_test
+./cargo-isolated.sh test --features socks5 --test server -- server::socks5::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features socks5 --test server::socks5::e2e_test test_socks5_basic_connect
+./cargo-isolated.sh test --features socks5 --test server -- server::socks5::e2e_test::test_socks5_basic_connect
 
 # Run with output
-./cargo-isolated.sh test --features socks5 --test server::socks5::e2e_test -- --nocapture
+./cargo-isolated.sh test --features socks5 --test server -- server::socks5::e2e_test --nocapture
 
 # Run with concurrency (uses Ollama lock)
-./cargo-isolated.sh test --features socks5 --test server::socks5::e2e_test -- --test-threads=4
+./cargo-isolated.sh test --features socks5 --test server -- server::socks5::e2e_test --test-threads=4
 ```
 
 ## Future Test Additions

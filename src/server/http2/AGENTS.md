@@ -188,7 +188,7 @@ the same stream limit on the h2c upgrade path. All four files are declared in
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http2 \
-    --test server::http2::e2e_test -- --test-threads=100
+    --test server -- server::http2::e2e_test --test-threads=100
 ```
 
 **Gaps**: no coverage of server push, of the request filter on the HTTP/2 path, of

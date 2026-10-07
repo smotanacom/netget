@@ -178,10 +178,10 @@ step with `src/server/jsonrpc/mod.rs`.
 ./cargo-isolated.sh build --release --all-features
 
 # Run JSON-RPC tests
-./cargo-isolated.sh test --features jsonrpc --test server::jsonrpc::e2e_test
+./cargo-isolated.sh test --features jsonrpc --test server -- server::jsonrpc::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features jsonrpc --test server::jsonrpc::e2e_test test_jsonrpc_basic_method_call
+./cargo-isolated.sh test --features jsonrpc --test server -- server::jsonrpc::e2e_test::test_jsonrpc_basic_method_call
 ```
 
 ## Key Test Patterns

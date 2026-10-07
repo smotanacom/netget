@@ -178,13 +178,13 @@ let n = tokio::time::timeout(
 ### Run TLS tests only
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features tls --test tls::e2e_test
+./cargo-isolated.sh test --no-default-features --features tls --test server -- server::tls::e2e_test
 ```
 
 ### With logging
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features tls --test tls::e2e_test -- --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features tls --test server -- server::tls::e2e_test --nocapture
 ```
 
 ### Prerequisites
@@ -218,7 +218,7 @@ RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features tls --t
 ### Enable trace logging
 
 ```bash
-RUST_LOG=trace ./cargo-isolated.sh test --features tls --test tls::e2e_test -- --nocapture
+RUST_LOG=trace ./cargo-isolated.sh test --features tls --test server -- server::tls::e2e_test --nocapture
 ```
 
 ### Check TLS handshake

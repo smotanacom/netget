@@ -2,9 +2,9 @@
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features tuntap \
-    --test server::tuntap::e2e_test -- --test-threads=100
+    --test server -- server::tuntap::e2e_test --test-threads=100
 ./cargo-isolated.sh test --no-default-features --features tuntap \
-    --test server::tuntap::packet_test -- --test-threads=100
+    --test server -- server::tuntap::packet_test --test-threads=100
 ```
 
 51 tests (35 in `packet_test.rs`, 16 in `e2e_test.rs`), all passing, none `#[ignore]`d, none gated on a binary being installed.

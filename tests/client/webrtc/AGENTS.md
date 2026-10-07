@@ -25,7 +25,7 @@ and signaling requirements.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features webrtc \
-  --test client::webrtc::e2e_test test_webrtc_protocol_registered
+  --test client -- client::webrtc::e2e_test::test_webrtc_protocol_registered
 ```
 
 ### 2. E2E Tests (Ollama Required)
@@ -55,7 +55,7 @@ and signaling requirements.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features webrtc \
-  --test client::webrtc::e2e_test test_webrtc_client_offer_generation -- --ignored
+  --test client -- client::webrtc::e2e_test::test_webrtc_client_offer_generation --ignored
 ```
 
 ## Testing Challenges
@@ -291,15 +291,15 @@ and signaling requirements.
 ```bash
 # Unit tests only (no Ollama)
 ./cargo-isolated.sh test --no-default-features --features webrtc \
-  --test client::webrtc::e2e_test test_webrtc_protocol_registered
+  --test client -- client::webrtc::e2e_test::test_webrtc_protocol_registered
 
 # E2E tests (requires Ollama)
 ./cargo-isolated.sh test --no-default-features --features webrtc \
-  --test client::webrtc::e2e_test test_webrtc_client_offer_generation -- --ignored
+  --test client -- client::webrtc::e2e_test::test_webrtc_client_offer_generation --ignored
 
 # All tests (LLM budget: < 5 calls)
 ./cargo-isolated.sh test --no-default-features --features webrtc \
-  --test client::webrtc::e2e_test
+  --test client -- client::webrtc::e2e_test
 ```
 
 ## Test Maintenance

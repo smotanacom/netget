@@ -18,7 +18,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features tuntap \
-//!       --test server::tuntap::e2e_test -- --test-threads=100
+//!       --test server -- server::tuntap::e2e_test --test-threads=100
 
 #[cfg(all(test, feature = "tuntap"))]
 mod tests {

@@ -102,10 +102,10 @@ instances. This tests the full integration of the IRC protocol implementation.
 
 ```bash
 # Run IRC client tests only
-./cargo-isolated.sh test --no-default-features --features irc --test client::irc::e2e_test
+./cargo-isolated.sh test --no-default-features --features irc --test client -- client::irc::e2e_test
 
 # Run with verbose output
-./cargo-isolated.sh test --no-default-features --features irc --test client::irc::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features irc --test client -- client::irc::e2e_test --nocapture
 ```
 
 ## Future Enhancements

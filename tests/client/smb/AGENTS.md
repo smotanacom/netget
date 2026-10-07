@@ -257,7 +257,7 @@ docker exec samba-test sh -c "echo 'Test content' > /share/readme.txt"
 
 # Run SMB client tests (explicitly include ignored tests)
 ./cargo-isolated.sh test --no-default-features --features smb \
-  --test client::smb::e2e_test -- --include-ignored
+  --test client -- client::smb::e2e_test --include-ignored
 
 # Cleanup
 docker stop samba-test
@@ -269,7 +269,7 @@ docker rm samba-test
 ```bash
 # Run specific test
 ./cargo-isolated.sh test --no-default-features --features smb \
-  --test client::smb::e2e_test test_smb_client_connect_and_list -- --include-ignored
+  --test client -- client::smb::e2e_test::test_smb_client_connect_and_list --include-ignored
 ```
 
 ### Without External Server (compile check only)
@@ -277,7 +277,7 @@ docker rm samba-test
 ```bash
 # Compile tests without running
 ./cargo-isolated.sh test --no-default-features --features smb \
-  --test client::smb::e2e_test --no-run
+  --test client --no-run
 ```
 
 ## Expected Runtime

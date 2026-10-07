@@ -154,10 +154,10 @@ The hardcoded implementation eliminates most sources of flakiness found in LLM-d
 ./cargo-isolated.sh build --release --all-features
 
 # Run OpenAI tests
-./cargo-isolated.sh test --features openai --test server::openai::e2e_test
+./cargo-isolated.sh test --features openai --test server -- server::openai::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features openai --test server::openai::e2e_test test_openai_list_models
+./cargo-isolated.sh test --features openai --test server -- server::openai::e2e_test::test_openai_list_models
 ```
 
 ## Key Test Patterns

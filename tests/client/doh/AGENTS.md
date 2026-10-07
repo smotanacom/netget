@@ -202,13 +202,13 @@ Unlike other protocol tests that spin up local servers, DoH tests use **real pub
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features doh \
-  --test client::doh::e2e_test::doh_client_tests::test_doh_client_google_dns
+  --test client -- client::doh::e2e_test::doh_client_tests::test_doh_client_google_dns
 ```
 
 ### Full Suite
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features doh --test client::doh::e2e_test
+./cargo-isolated.sh test --no-default-features --features doh --test client -- client::doh::e2e_test
 ```
 
 ### Prerequisites
@@ -256,7 +256,7 @@ Unlike other protocol tests that spin up local servers, DoH tests use **real pub
 ### Verbose Logging
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features doh --test client::doh::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features doh --test client -- client::doh::e2e_test
 ```
 
 ### Specific DoH Server Testing
