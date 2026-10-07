@@ -1,6 +1,6 @@
 # @smotana/netget
 
-LLM-controlled network protocol server & client — 50+ protocols (HTTP, DNS, SSH, MySQL, Redis, WireGuard, …) driven by an LLM, with a built-in [MCP](https://modelcontextprotocol.io) server mode.
+LLM-controlled network protocol server & client — 234 protocol features (HTTP, DNS, SSH, MySQL, Redis, OPC UA, BACnet/IP, DNP3, IEC 104, EtherNet/IP, S7comm, …) driven by an LLM, with a built-in [MCP](https://modelcontextprotocol.io) server mode.
 
 This package is a small launcher that runs the platform-native `netget` binary. The binary itself is installed via a platform-specific optional dependency (e.g. `@smotana/netget-darwin-arm64`); if that is unavailable, the launcher downloads the matching binary from [GitHub Releases](https://github.com/smotanacom/netget/releases) into your user cache.
 
@@ -28,6 +28,10 @@ Or in `claude_desktop_config.json` / `.mcp.json`:
   }
 }
 ```
+
+Industrial protocols include both server and client roles and remain Experimental.
+Their selected operations, security policies, and exclusions are available through
+`list_protocols` in MCP mode.
 
 ## Runtime requirements
 

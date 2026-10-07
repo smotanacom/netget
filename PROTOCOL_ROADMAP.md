@@ -880,7 +880,7 @@ Requested 1 October 2026. This is the durable implementation checklist for the r
 
 The research counted 169 server registration sites and 103 client registration sites, including device profiles and partial implementations. These are source counts, not runtime counts or conformance claims. At that research snapshot, HTTP/3 had a real client but no matching server; the QUIC server handled raw streams. The generic gRPC server is unary-only and does not serve reflection. SSH already contains an SFTP server but its client lacks SFTP. Existing AMQP is 0-9-1, so AMQP 1.0 is distinct. OTLP currently has an HTTP receiver.
 
-Redfish was previously deferred on the assumption that suitable peers were Python-only. [Gofish](https://github.com/stmcginnis/gofish) supplies an independent Go client, so that rationale should not prevent implementing it. DNP3's prominent Rust library is commercial; dependency choice must be resolved before integration. Current repository pins (Hickory 0.24, russh 0.45, tonic 0.12/prost 0.13) make current-library compatibility an explicit check, not an assumption.
+Redfish was previously deferred on the assumption that suitable peers were Python-only. [Gofish](https://github.com/stmcginnis/gofish) supplies an independent Go client, so that rationale should not prevent implementing it. DNP3 dependency decision resolved (October 2026): use the self-contained bounded Rust subset, with Apache-2.0 OpenDNP3 3.1.2 as an external independent test peer. No commercial Step Function library is linked or required. Current repository pins (Hickory 0.24, russh 0.45, tonic 0.12/prost 0.13) make current-library compatibility an explicit check, not an assumption.
 
 Priority is an engineering judgment: **A** strongest general fit, **B** useful follow-on, **C** workload-specific. Effort **S/M/L** is comparative and covers both roles, a useful documented scope and interoperability tests. API profiles such as SCIM and Redfish add schema/state semantics over HTTP. Collector/exporter and peer roles count as the two natural protocol sides where client/server is not the native terminology.
 
@@ -1181,19 +1181,21 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 7 Thrift test functions pass. Unchanged thriftpy2 0.7.1 (IDL-driven, C codecs) calls NetGet's server over framed binary and buffered compact; Apache Thrift 0.25.0's own protocol classes, with no generated code and results read generically by field id, call it over buffered binary and framed compact. Between them: return values, structs, a list of structs from a set of enums, a struct argument, a declared exception in its throws field, an application error, oneway calls, and an unknown method refused with UNKNOWN_METHOD without reaching the handler. NetGet's client calls an unchanged thriftpy2 server over both pairings (results, declared exception, UNKNOWN_METHOD, a struct argument and oneway call the server prints) and refuses an argument missing a required field before the wire. Codec tests cover every value type in both protocols, every truncation reported incomplete, 10 000-level nesting bombs, IDL refusals, an oversized frame, a byte-at-a-time unframed call and pipelined calls. Unframed messages are decoded again only on half-again growth or a 20 ms pause, so a trickling peer cannot force a decode per read. The transport is detected from the first byte, so a non-strict binary client must be framed; no multiplexed, JSON, HTTP or THeader; Experimental. Source `f510ca3e`, CI `428fc7fb`.
 
-- [ ] **35. OPC UA** — B/L; proposed feature `opcua`. [Specification/reference](https://github.com/FreeOpcUa/async-opcua).
+- [x] **35. OPC UA** — B/L; proposed feature `opcua`. [Specification/reference](https://github.com/FreeOpcUa/async-opcua).
   - Scope: Device address space and client browse/read/write/method/subscription operations; declare security policies.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: OPC UA: async-opcua 0.19.0 with documented connection/service ownership and chunk-length patches; unchanged asyncua 1.1.8 validates browse, read, write, method, and data-change subscriptions in both directions. Six focused checks cover protocol statuses, malformed/oversized frames, 256 live connections, injected disconnect, owner stop, and remote transport failure. Only anonymous SecurityPolicy None / MessageSecurityMode None; fixed Device/Double Value/Double method metadata, handler-sourced values, initial and approved-write notifications. No secure policies, periodic sampling, history, or events. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **36. BACnet/IP** — B/M-L; proposed feature `bacnet`. [Specification/reference](https://github.com/bacnet-stack/bacnet-stack).
+- [x] **36. BACnet/IP** — B/M-L; proposed feature `bacnet`. [Specification/reference](https://github.com/bacnet-stack/bacnet-stack).
   - Scope: Device discovery and property reads/writes, correct BACnet framing/errors; document segmentation/COV scope.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: BACnet/IP: unchanged bacpypes3 0.0.102 validates WhoIs/IAm discovery, typed ReadProperty/WriteProperty, and protocol errors in both directions. Three checks include malformed framing, segmented-request Abort, unsupported-service Reject, and UDP stop/rebind. Local IPv4 NPDU and primitive values only; no segmentation, BBMD/routing, COV, or ReadPropertyMultiple. Handler values/approvals do not persist. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
 - [x] **37. MQTT-SN** — B/M; proposed feature `mqtt_sn`. [Specification/reference](https://mqtt.org/mqtt-specification/).
   - Scope: Gateway/sensor roles, discovery, topic registration/IDs, publish/subscribe, datagram and sleeping-client behavior.
@@ -1219,33 +1221,37 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
   - [x] Documentation, honest metadata and integrated commit recorded.
   - Validation: 8 checks pass. python ocpp 2.1.0 (schema-validating) as charge point against the CSMS over 1.6 and 2.0.1 (boot, heartbeat, status, authorize, transactions, meter values, NotSupported CALLERROR, accepted remote start) and as central system against the charge point (both workflows, Reset after boot); NetGet pair, subprotocol and frame refusals, handler-less InternalError. No charging database, security profiles or schema engine; Experimental. Source `fec07b02`, CI `54cd5707`.
 
-- [ ] **40. DNP3** — C/L; proposed feature `dnp3`. [Specification/reference](https://github.com/stepfunc/dnp3).
+- [x] **40. DNP3** — C/L; proposed feature `dnp3`. [Specification/reference](https://github.com/stepfunc/dnp3).
   - Scope: Outstation/master, typed measurements, events, polling and declared controls, deterministic timing.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: DNP3: dependency decision is the self-contained Rust selected codec, with unchanged Apache-2.0 OpenDNP3 3.1.2 as an external master/outstation peer. Four checks cover class polls, typed binary/float/counter measurements, confirmed timestamped events, binary direct-operate, CRC errors, bounds, and live stop/rebind. Fixed link addresses 1/10; unconfirmed link data, bounded transport assembly, deterministic handler timestamps and 10-second client deadlines. No commercial dependency, unsolicited reporting, SELECT/OPERATE, analog controls, serial, or Secure Authentication. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **41. IEC 60870-5-104** — C/L; proposed feature `iec104`. [Specification/reference](https://github.com/mz-automation/lib60870/blob/master/user_guide.adoc).
+- [x] **41. IEC 60870-5-104** — C/L; proposed feature `iec104`. [Specification/reference](https://github.com/mz-automation/lib60870/blob/master/user_guide.adoc).
   - Scope: Controlled/controlling stations, interrogation, telemetry, commands, sequence windows and timers.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: IEC 104: unchanged lib60870 2.3.4 validates controlled/controlling stations, GI telemetry and direct single commands. Six checks include invalid sequences, send-window exhaustion, t1 acknowledgment timeout, command bounds, and live stop/rebind. Selected ASDUs 1/13/45/100/102; k=12, immediate acknowledgments within w=8/t2, t1=15s and t3=20s. Client accepts spontaneous binary/float telemetry. Select commands, timestamps, files, clock sync and redundancy are outside this scope. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **42. EtherNet/IP CIP** — C/L; proposed feature `ethernet_ip`. [Specification/reference](https://github.com/EIPStackGroup/OpENer).
+- [x] **42. EtherNet/IP CIP** — C/L; proposed feature `ethernet_ip`. [Specification/reference](https://github.com/EIPStackGroup/OpENer).
   - Scope: Adapter/scanner discovery and explicit object messaging; cyclic I/O is a separately declared scope.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: EtherNet/IP CIP: unchanged cpppo 5.2.5 validates explicit GetAttributeSingle/SetAttributeSingle in both directions. Four checks cover typed attributes, refused/unknown operations, TCP/unicast UDP ListIdentity, invalid sessions, bounds and TCP/UDP owner stop/rebind. Both sockets are acquired before tasks start. Logical class/instance/attribute paths only; schema declares write types and handler values do not persist. No routing, symbolic tags, ForwardOpen, or cyclic I/O. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
-- [ ] **43. S7comm** — C/L; proposed feature `s7comm`. [Specification/reference](https://github.com/S7NetPlus/s7netplus).
+- [x] **43. S7comm** — C/L; proposed feature `s7comm`. [Specification/reference](https://github.com/S7NetPlus/s7netplus).
   - Scope: PLC simulator/client, TPKT/COTP, selected legacy data-area reads/writes and protocol errors.
-  - [ ] Server or listening/collector role implemented and registered.
-  - [ ] Client or connecting/exporter role implemented and registered.
-  - [ ] Independent interoperability, negative/lifecycle tests and feature build pass.
-  - [ ] Documentation, honest metadata and integrated commit recorded.
+  - [x] Server or listening/collector role implemented and registered.
+  - [x] Client or connecting/exporter role implemented and registered.
+  - [x] Independent interoperability, negative/lifecycle tests and feature build pass.
+  - [x] Documentation, honest metadata and integrated commit recorded.
+  - Validation: S7comm: unchanged python-snap7 3.2.1 validates PLC/client selected legacy reads and writes over TPKT/COTP. Four checks cover DB/input/output/marker bytes, write approval, protocol address errors, malformed framing, bounds and live stop/rebind. S7ANY byte items only, 480-byte negotiated PDU, 16 items and 200 bytes/item; no S7plus, authentication, bit/multi-byte items, PLC commands or file operations. Experimental. Source `571edcfc`, ownership/lifecycle corrections `068364f0`, integrated master merge `c4ccc5cb`. Standalone all-target feature build and blocking all-target clippy pass; reproducible peer setup and CI job are in `tests/helpers/ICS_PEERS.md`.
 
 - [x] **44. FastCGI** — B/M; proposed feature `fastcgi`. [Specification/reference](https://fastcgi-archives.github.io/FastCGI_Specification.html).
   - Scope: Application responder/client, parameters, input/output streams, request IDs, abort/end and bounded framing.
@@ -1544,3 +1550,5 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 11. OPC UA: evaluate async-opcua but validate with an independent stack. BACnet and IEC104 have independent reference tools linked above. LwM2M has [Eclipse Leshan](https://github.com/eclipse-leshan/leshan).
 
 Suggested scheduling order: bounded NUT/DoQ/StatsD work first; application Socket.IO/GraphQL and HTTP/3/SFTP/OTLP completion next; infrastructure NETCONF/gNMI/Redfish; then remaining messaging, identity, industrial and specialist families. All checklist entries remain in the authorized scope, regardless of research priority.
+
+- **ICS completion (October 2026):** all six remaining scopes are registered in both roles. Local evidence: 27 focused protocol checks (six independent stacks), 147 shared checks across 36 targets, six standalone all-target builds and blocking all-target clippy; one pre-existing all-protocol-only audit is intentionally ignored in the narrower shared run. Browser/site and native release builds are separate publication gates; no full remote CI green claim.

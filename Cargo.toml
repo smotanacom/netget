@@ -546,6 +546,7 @@ dist-darwin = [
 ]
 # Windows set: dist minus unix-gated features; refined by CI validation builds.
 dist-windows = [
+    "dep:openssl-sys", # OPC UA crypto: static vendored OpenSSL, no external DLL requirement
     "mcp-stdio",
     "mcp-http",
     "tcp",
