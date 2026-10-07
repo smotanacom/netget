@@ -197,7 +197,7 @@ Each LLM call takes ~1-2 seconds:
 ### Enable Trace Logging
 
 ```bash
-RUST_LOG=trace ./cargo-isolated.sh test --no-default-features --features igmp --test client::igmp::e2e_test -- --nocapture
+RUST_LOG=trace ./cargo-isolated.sh test --no-default-features --features igmp --test client -- client::igmp::e2e_test --nocapture
 ```
 
 ### Check Multicast Reception

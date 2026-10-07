@@ -32,5 +32,5 @@ Suite total ~9 LLM calls, under the ~10 budget. Localhost only; never contacts e
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features yarn \
-    --test server::yarn::e2e_test -- --test-threads=100
+    --test server -- server::yarn::e2e_test --test-threads=100
 ```

@@ -162,7 +162,7 @@ Client -> Proxy -> (tunnel) -> Raw data
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http_proxy \
-    --test client::http_proxy::e2e_test
+    --test client -- client::http_proxy::e2e_test
 ```
 
 ### With Debugging

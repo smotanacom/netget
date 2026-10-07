@@ -152,13 +152,13 @@ library functionality.
 ### Run All Git Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features git --test client::git::e2e_test -- --ignored
+./cargo-isolated.sh test --no-default-features --features git --test client -- client::git::e2e_test --ignored
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features git --test client::git::e2e_test test_git_clone -- --ignored
+./cargo-isolated.sh test --no-default-features --features git --test client -- client::git::e2e_test::test_git_clone --ignored
 ```
 
 ### Prerequisites
@@ -240,7 +240,7 @@ tempfile = "3.x"  # For temporary directories
   run: sudo apt-get install -y libgit2-dev
 
 - name: Run Git client tests
-  run: ./cargo-isolated.sh test --no-default-features --features git --test client::git::e2e_test -- --ignored
+  run: ./cargo-isolated.sh test --no-default-features --features git --test client -- client::git::e2e_test --ignored
 ```
 
 ## References

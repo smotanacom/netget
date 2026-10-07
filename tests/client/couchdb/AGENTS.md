@@ -110,13 +110,13 @@ None. All tests pass reliably with mocks.
 
 ```bash
 # Run all CouchDB client tests
-./cargo-isolated.sh test --no-default-features --features couchdb --test client::couchdb::e2e_test
+./cargo-isolated.sh test --no-default-features --features couchdb --test client -- client::couchdb::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --no-default-features --features couchdb --test client::couchdb::e2e_test test_couchdb_client_document_crud
+./cargo-isolated.sh test --no-default-features --features couchdb --test client -- client::couchdb::e2e_test::test_couchdb_client_document_crud
 
 # Run with parallel execution (default)
-./cargo-isolated.sh test --no-default-features --features couchdb --test client::couchdb::e2e_test -- --test-threads=100
+./cargo-isolated.sh test --no-default-features --features couchdb --test client -- client::couchdb::e2e_test --test-threads=100
 ```
 
 ## Test Execution Flow Example

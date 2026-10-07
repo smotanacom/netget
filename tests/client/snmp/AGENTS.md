@@ -156,19 +156,19 @@ UDP is inherently less reliable than TCP, but:
 ### Single Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features snmp --test client::snmp::e2e_test -- test_snmp_client_get_request
+./cargo-isolated.sh test --no-default-features --features snmp --test client -- client::snmp::e2e_test::test_snmp_client_get_request
 ```
 
 ### Full Suite
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features snmp --test client::snmp::e2e_test
+./cargo-isolated.sh test --no-default-features --features snmp --test client -- client::snmp::e2e_test
 ```
 
 ### With Logs
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features snmp --test client::snmp::e2e_test -- --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features snmp --test client -- client::snmp::e2e_test --nocapture
 ```
 
 ## Test Maintenance
@@ -212,13 +212,13 @@ If SNMP client implementation changes:
 
 ```bash
 # Show full client/server output
-RUST_LOG=trace ./cargo-isolated.sh test --features snmp --test client::snmp::e2e_test -- --nocapture test_snmp_client_get_request
+RUST_LOG=trace ./cargo-isolated.sh test --features snmp --test client -- client::snmp::e2e_test::test_snmp_client_get_request --nocapture
 
 # Check LLM API calls
-RUST_LOG=netget::llm=debug ./cargo-isolated.sh test --features snmp --test client::snmp::e2e_test
+RUST_LOG=netget::llm=debug ./cargo-isolated.sh test --features snmp --test client -- client::snmp::e2e_test
 
 # Run single test with timeout
-timeout 30 ./cargo-isolated.sh test --features snmp --test client::snmp::e2e_test -- test_snmp_client_timeout
+timeout 30 ./cargo-isolated.sh test --features snmp --test client -- client::snmp::e2e_test::test_snmp_client_timeout
 ```
 
 ## Future Enhancements

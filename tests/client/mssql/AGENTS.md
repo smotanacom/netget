@@ -88,7 +88,7 @@ End-to-end tests for the MSSQL client implementation. Tests validate that the Ne
 
 **Via cargo**:
 ```bash
-./cargo-isolated.sh test --no-default-features --features mssql --test client::mssql::e2e_test
+./cargo-isolated.sh test --no-default-features --features mssql --test client -- client::mssql::e2e_test
 ```
 
 ## Known Issues

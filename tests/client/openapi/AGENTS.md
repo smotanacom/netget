@@ -149,10 +149,10 @@ Potential future issues:
 ./test-e2e.sh --use-ollama openapi
 
 # Via cargo (mock mode)
-cargo test --no-default-features --features openapi --test client::openapi::e2e_test
+cargo test --no-default-features --features openapi --test client -- client::openapi::e2e_test
 
 # Via cargo (with Ollama)
-NETGET_USE_OLLAMA=1 cargo test --no-default-features --features openapi --test client::openapi::e2e_test
+NETGET_USE_OLLAMA=1 cargo test --no-default-features --features openapi --test client -- client::openapi::e2e_test
 ```
 
 ### Test Isolation

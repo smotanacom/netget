@@ -66,7 +66,7 @@ BOOTP clients traditionally bind to UDP port 68, which may require elevated priv
 **Option 1: Run tests with sudo**
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features bootp --test client::bootp::e2e_test
+sudo ./cargo-isolated.sh test --no-default-features --features bootp --test client -- client::bootp::e2e_test
 ```
 
 **Option 2: Grant CAP_NET_BIND_SERVICE capability**
@@ -125,10 +125,10 @@ Total budget: **< 10 LLM calls** across all tests
 ./cargo-isolated.sh build --no-default-features --features bootp
 
 # Run tests (requires BOOTP server running)
-sudo ./cargo-isolated.sh test --no-default-features --features bootp --test client::bootp::e2e_test -- --nocapture
+sudo ./cargo-isolated.sh test --no-default-features --features bootp --test client -- client::bootp::e2e_test --nocapture
 
 # Run specific test
-sudo ./cargo-isolated.sh test --no-default-features --features bootp --test client::bootp::e2e_test test_bootp_request_reply -- --nocapture
+sudo ./cargo-isolated.sh test --no-default-features --features bootp --test client -- client::bootp::e2e_test::test_bootp_request_reply --nocapture
 ```
 
 ### Expected Runtime

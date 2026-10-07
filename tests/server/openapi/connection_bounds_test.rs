@@ -12,7 +12,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features openapi \
-//!       --test server::openapi::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::openapi::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "openapi"))]
 mod openapi_connection_bounds {

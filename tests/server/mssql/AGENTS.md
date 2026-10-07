@@ -85,7 +85,7 @@ End-to-end tests for the MSSQL server implementation using the `tiberius` TDS cl
 
 **Via cargo**:
 ```bash
-./cargo-isolated.sh test --no-default-features --features mssql --test server::mssql::test
+./cargo-isolated.sh test --no-default-features --features mssql --test server -- server::mssql::test
 ```
 
 ## Known Issues

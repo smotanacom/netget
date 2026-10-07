@@ -153,19 +153,19 @@ Connect to 8.8.8.8:53 via DNS. First query A records for google.com, then query 
 ### Run all DNS client tests:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features dns --test client::dns::e2e_test
+./cargo-isolated.sh test --no-default-features --features dns --test client -- client::dns::e2e_test
 ```
 
 ### Run specific test:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features dns --test client::dns::e2e_test test_dns_client_a_record_query
+./cargo-isolated.sh test --no-default-features --features dns --test client -- client::dns::e2e_test::test_dns_client_a_record_query
 ```
 
 ### With detailed output:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features dns --test client::dns::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features dns --test client -- client::dns::e2e_test --nocapture
 ```
 
 ## Expected Runtime

@@ -431,7 +431,7 @@ mod mongodb_client_tests {
 ./test-e2e.sh --use-ollama mongodb
 
 # With cargo (parallel)
-cargo test --features mongodb --test client::mongodb::e2e_test -- --test-threads=100
+cargo test --features mongodb --test client -- client::mongodb::e2e_test --test-threads=100
 ```
 
 ### Run With Real MongoDB Server
@@ -441,7 +441,7 @@ cargo test --features mongodb --test client::mongodb::e2e_test -- --test-threads
 docker run -d -p 27017:27017 --name mongodb-test mongo:latest
 
 # Run tests
-cargo test --features mongodb --test client::mongodb::e2e_test
+cargo test --features mongodb --test client -- client::mongodb::e2e_test
 
 # Cleanup
 docker stop mongodb-test && docker rm mongodb-test
@@ -457,7 +457,7 @@ docker stop mongodb-test && docker rm mongodb-test
 - name: Test MongoDB Client
   run: |
     ./cargo-isolated.sh test --no-default-features --features mongodb \
-      --test client::mongodb::e2e_test -- --test-threads=100
+      --test client -- client::mongodb::e2e_test --test-threads=100
 
 - name: Stop MongoDB
   run: docker stop $(docker ps -q --filter ancestor=mongo:latest)

@@ -78,13 +78,13 @@ Breakdown:
 
 ```bash
 # Run NNTP E2E tests only
-./cargo-isolated.sh test --no-default-features --features nntp --test server::nntp::e2e_test
+./cargo-isolated.sh test --no-default-features --features nntp --test server -- server::nntp::e2e_test
 
 # With output
-./cargo-isolated.sh test --no-default-features --features nntp --test server::nntp::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features nntp --test server -- server::nntp::e2e_test --nocapture
 
 # Single test
-./cargo-isolated.sh test --no-default-features --features nntp --test server::nntp::e2e_test test_nntp_basic_newsgroups
+./cargo-isolated.sh test --no-default-features --features nntp --test server -- server::nntp::e2e_test::test_nntp_basic_newsgroups
 ```
 
 ### Expected Runtime

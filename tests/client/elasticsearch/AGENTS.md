@@ -88,7 +88,7 @@ Each test uses **real Ollama LLM calls** to control client behavior. Tests valid
 3. **Feature flag**: Tests are feature-gated
    ```bash
    ./cargo-isolated.sh test --no-default-features --features elasticsearch \
-     --test client::elasticsearch::e2e_test
+     --test client -- client::elasticsearch::e2e_test
    ```
 
 ### Test Data
@@ -154,21 +154,21 @@ Expected: LLM indexes, retrieves (verifying content), deletes, confirms deletion
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features elasticsearch \
-  --test client::elasticsearch::e2e_test -- test_elasticsearch_client_index_and_search
+  --test client -- client::elasticsearch::e2e_test::test_elasticsearch_client_index_and_search
 ```
 
 ### All Elasticsearch Client Tests
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features elasticsearch \
-  --test client::elasticsearch::e2e_test
+  --test client -- client::elasticsearch::e2e_test
 ```
 
 ### With Logs
 
 ```bash
 RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features elasticsearch \
-  --test client::elasticsearch::e2e_test -- --nocapture
+  --test client -- client::elasticsearch::e2e_test --nocapture
 ```
 
 ## Debugging

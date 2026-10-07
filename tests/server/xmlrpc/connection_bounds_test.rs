@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features xmlrpc \
-//!       --test server::xmlrpc::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::xmlrpc::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "xmlrpc"))]
 mod xmlrpc_connection_bounds {

@@ -128,10 +128,10 @@ response had already gone out on the wire. Give every rule something that distin
 
 ```bash
 # Run all CouchDB server tests
-./cargo-isolated.sh test --no-default-features --features couchdb --test server::couchdb::e2e_test
+./cargo-isolated.sh test --no-default-features --features couchdb --test server -- server::couchdb::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --no-default-features --features couchdb --test server::couchdb::e2e_test test_couchdb_document_crud
+./cargo-isolated.sh test --no-default-features --features couchdb --test server -- server::couchdb::e2e_test::test_couchdb_document_crud
 ```
 
 ## References

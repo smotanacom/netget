@@ -96,7 +96,7 @@ SSO URLs, and parse SAML responses.
 ### Single Protocol Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features saml --test client::saml::e2e_test
+./cargo-isolated.sh test --no-default-features --features saml --test client -- client::saml::e2e_test
 ```
 
 ### With Other Client Tests

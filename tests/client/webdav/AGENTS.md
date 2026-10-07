@@ -70,10 +70,10 @@ Tests use NetGet's built-in WebDAV server:
 
 ```bash
 # Run WebDAV client E2E tests
-./cargo-isolated.sh test --no-default-features --features webdav --test client::webdav::e2e_test
+./cargo-isolated.sh test --no-default-features --features webdav --test client -- client::webdav::e2e_test
 
 # With ollama lock (for concurrent tests)
-./cargo-isolated.sh test --no-default-features --features webdav --test client::webdav::e2e_test -- --test-threads=1
+./cargo-isolated.sh test --no-default-features --features webdav --test client -- client::webdav::e2e_test --test-threads=1
 ```
 
 ## Known Issues

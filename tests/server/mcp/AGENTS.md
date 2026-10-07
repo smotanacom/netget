@@ -205,10 +205,10 @@ over-limit body was answered 200 by the model.
 
 ```bash
 ./cargo-isolated.sh build --release --all-features
-./cargo-isolated.sh test --features mcp --test server::mcp::e2e_test
+./cargo-isolated.sh test --features mcp --test server -- server::mcp::e2e_test
 
 # Run specific capability test
-./cargo-isolated.sh test --features mcp --test server::mcp::e2e_test test_mcp_tools_list
+./cargo-isolated.sh test --features mcp --test server -- server::mcp::e2e_test::test_mcp_tools_list
 ```
 
 ## Key Test Patterns

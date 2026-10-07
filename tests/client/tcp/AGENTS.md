@@ -16,7 +16,7 @@ Black-box E2E tests using real TCP server (nc/netcat).
 nc -l 9000
 
 # Terminal 2: Run tests
-./cargo-isolated.sh test --no-default-features --features tcp --test client::tcp::e2e_test
+./cargo-isolated.sh test --no-default-features --features tcp --test client -- client::tcp::e2e_test
 ```
 
 ## Tests

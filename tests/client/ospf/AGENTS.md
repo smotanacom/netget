@@ -239,7 +239,7 @@ assert!(client_output.contains("Hello") || client_output.contains("received"));
 sudo -E ./cargo-isolated.sh test --no-default-features --features ospf
 
 # Just OSPF client tests
-sudo -E ./cargo-isolated.sh test --no-default-features --features ospf --test client::ospf::e2e_test
+sudo -E ./cargo-isolated.sh test --no-default-features --features ospf --test client -- client::ospf::e2e_test
 ```
 
 ### Full Test Suite

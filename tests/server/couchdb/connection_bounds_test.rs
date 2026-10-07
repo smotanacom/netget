@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features couchdb \
-//!       --test server::couchdb::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::couchdb::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "couchdb"))]
 mod couchdb_connection_bounds {

@@ -34,7 +34,7 @@ All tests use:
 ./test-e2e.sh --use-ollama ftp
 
 # Run with cargo
-./cargo-isolated.sh test --no-default-features --features ftp --test client::ftp::test
+./cargo-isolated.sh test --no-default-features --features ftp --test client -- client::ftp::test
 ```
 
 ## Known Issues

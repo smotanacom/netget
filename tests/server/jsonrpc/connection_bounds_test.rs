@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features jsonrpc \
-//!       --test server::jsonrpc::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::jsonrpc::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "jsonrpc"))]
 mod jsonrpc_connection_bounds {

@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features saml-sp \
-//!       --test server::saml_sp::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::saml_sp::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "saml-sp"))]
 mod saml_sp_connection_bounds {

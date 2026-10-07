@@ -192,7 +192,7 @@ Slightly over the < 10 guideline, but acceptable given client-server interaction
 
 ```bash
 # Run all tests (only non-ignored)
-cargo test --features isis --test client::isis::e2e_test
+cargo test --features isis --test client -- client::isis::e2e_test
 
 # Output:
 # - test_isis_pdu_parsing: ✓ (runs)
@@ -208,7 +208,7 @@ cargo test --features isis --test client::isis::e2e_test
 
 ```bash
 # Must run as root
-sudo -E cargo test --features isis --test client::isis::e2e_test -- --ignored
+sudo -E cargo test --features isis --test client -- client::isis::e2e_test --ignored
 
 # Will verify mocks but fail at pcap.open() without real traffic
 ```
@@ -222,7 +222,7 @@ sudo ip link set veth0 up
 sudo ip link set veth1 up
 
 # Run tests
-sudo -E cargo test --features isis --test client::isis::e2e_test -- --ignored --use-ollama
+sudo -E cargo test --features isis --test client -- client::isis::e2e_test --ignored --use-ollama
 
 # Inject traffic from another terminal
 ```
@@ -278,7 +278,7 @@ Unlike TCP client tests that work on localhost, IS-IS needs real Layer 2 setup.
 
 Run only non-ignored tests:
 ```bash
-cargo test --features isis --test client::isis::e2e_test
+cargo test --features isis --test client -- client::isis::e2e_test
 ```
 
 Tests LLM mock logic without network access.
@@ -287,7 +287,7 @@ Tests LLM mock logic without network access.
 
 Run with root but no traffic:
 ```bash
-sudo -E cargo test --features isis --test client::isis::e2e_test -- --ignored
+sudo -E cargo test --features isis --test client -- client::isis::e2e_test --ignored
 ```
 
 Tests startup logic, fails gracefully when no traffic.
@@ -316,7 +316,7 @@ write
 EOF
 
 # Run tests
-sudo -E cargo test --features isis --test client::isis::e2e_test -- --ignored --use-ollama
+sudo -E cargo test --features isis --test client -- client::isis::e2e_test --ignored --use-ollama
 ```
 
 ### Approach 4: Packet Injection (Controlled)

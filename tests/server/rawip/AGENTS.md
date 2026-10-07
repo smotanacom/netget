@@ -4,7 +4,7 @@
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features rawip \
-    --test server::rawip::e2e_test -- --test-threads=100
+    --test server -- server::rawip::e2e_test --test-threads=100
 ```
 
 20 tests, all passing, none `#[ignore]`d. **LLM call budget: 2** (one mocked call in

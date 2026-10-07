@@ -269,10 +269,10 @@ dependencies and rate limits. A mock server provides:
 
 ```bash
 # Run OAuth2 client E2E tests
-./cargo-isolated.sh test --no-default-features --features oauth2 --test client::oauth2::e2e_test
+./cargo-isolated.sh test --no-default-features --features oauth2 --test client -- client::oauth2::e2e_test
 
 # Run with verbose logging
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features oauth2 --test client::oauth2::e2e_test -- --nocapture
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features oauth2 --test client -- client::oauth2::e2e_test --nocapture
 ```
 
 ## Feature Gating

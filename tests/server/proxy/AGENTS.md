@@ -270,21 +270,21 @@ server.stop().await?;
 # Run all proxy tests in mock mode (no Ollama required, fast)
 ./test-e2e.sh proxy
 # OR
-./cargo-isolated.sh test --features proxy --test server::proxy::e2e_test
+./cargo-isolated.sh test --features proxy --test server -- server::proxy::e2e_test
 
 # Run with real Ollama (for validation)
 ./test-e2e.sh --use-ollama proxy
 # OR
-./cargo-isolated.sh test --features proxy --test server::proxy::e2e_test -- --use-ollama
+./cargo-isolated.sh test --features proxy --test server -- server::proxy::e2e_test --use-ollama
 
 # Run specific MITM test
-./cargo-isolated.sh test --features proxy --test server::proxy::e2e_test test_proxy_mitm_initialization
+./cargo-isolated.sh test --features proxy --test server -- server::proxy::e2e_test::test_proxy_mitm_initialization
 
 # Run with output
-./cargo-isolated.sh test --features proxy --test server::proxy::e2e_test -- --nocapture
+./cargo-isolated.sh test --features proxy --test server -- server::proxy::e2e_test --nocapture
 
 # Run with concurrency (mocks are thread-safe)
-./cargo-isolated.sh test --features proxy --test server::proxy::e2e_test -- --test-threads=100
+./cargo-isolated.sh test --features proxy --test server -- server::proxy::e2e_test --test-threads=100
 ```
 
 ## Future Test Additions

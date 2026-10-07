@@ -395,13 +395,13 @@ test_state.stop().await?;
 ./cargo-isolated.sh build --release --features arp
 
 # Run all ARP tests (requires root/CAP_NET_RAW + Ollama + model)
-sudo ./cargo-isolated.sh test --features arp --test server::arp::e2e_test
+sudo ./cargo-isolated.sh test --features arp --test server -- server::arp::e2e_test
 
 # Run with output
-sudo ./cargo-isolated.sh test --features arp --test server::arp::e2e_test -- --nocapture
+sudo ./cargo-isolated.sh test --features arp --test server -- server::arp::e2e_test --nocapture
 
 # Run with Ollama lock (prevent concurrent LLM overload)
-sudo ./cargo-isolated.sh test --features arp --test server::arp::e2e_test -- --test-threads=1
+sudo ./cargo-isolated.sh test --features arp --test server -- server::arp::e2e_test --test-threads=1
 ```
 
 **Important**: Must run with `sudo` or grant CAP_NET_RAW capability:

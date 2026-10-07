@@ -80,10 +80,10 @@ into this build" failure during a parallel wave is another agent rebuilding, not
 
 ```bash
 # Run socket file E2E tests
-./cargo-isolated.sh test --no-default-features --features socket_file --test server::socket_file::test
+./cargo-isolated.sh test --no-default-features --features socket_file --test server -- server::socket_file::test
 
 # With verbose output
-./cargo-isolated.sh test --no-default-features --features socket_file --test server::socket_file::test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features socket_file --test server -- server::socket_file::test --nocapture
 ```
 
 ### Test Output

@@ -155,7 +155,7 @@ was observed intermittently at `--test-threads=100` before the probe was added.
 
 ```bash
 ./cargo-isolated.sh build --release --all-features
-./cargo-isolated.sh test --features openapi --test server::openapi::e2e_test
+./cargo-isolated.sh test --features openapi --test server -- server::openapi::e2e_test
 ```
 
 ## Key Test Patterns

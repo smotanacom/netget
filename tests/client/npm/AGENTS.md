@@ -158,13 +158,13 @@ Black-box E2E tests using the **public NPM registry** (registry.npmjs.org). Test
 ### Run All NPM Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features npm --test client::npm::e2e_test -- --ignored
+./cargo-isolated.sh test --no-default-features --features npm --test client -- client::npm::e2e_test --ignored
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features npm --test client::npm::e2e_test test_npm_client_get_package_info -- --ignored
+./cargo-isolated.sh test --no-default-features --features npm --test client -- client::npm::e2e_test::test_npm_client_get_package_info --ignored
 ```
 
 ### Prerequisites

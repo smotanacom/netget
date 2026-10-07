@@ -411,7 +411,7 @@ Use NetGet NFS server as test target:
 netget
 
 # Terminal 2: Run client tests
-./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test
+./cargo-isolated.sh test --no-default-features --features nfs --test client -- client::nfs::e2e_test
 ```
 
 ### Test Scenarios

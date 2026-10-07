@@ -146,10 +146,10 @@ None currently identified.
 
 ```bash
 # Run RSS E2E tests
-./cargo-isolated.sh test --no-default-features --features rss --test server::rss::e2e_test
+./cargo-isolated.sh test --no-default-features --features rss --test server -- server::rss::e2e_test
 
 # With debug output to see LLM interactions
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features rss --test server::rss::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features rss --test server -- server::rss::e2e_test
 ```
 
 ## Dependencies

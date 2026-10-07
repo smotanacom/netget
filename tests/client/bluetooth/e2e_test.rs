@@ -1,7 +1,7 @@
 //! Bluetooth Low Energy (BLE) client E2E tests
 //!
 //! NOTE: These tests require real BLE hardware and are ignored by default.
-//! Run manually with: cargo test --features bluetooth-ble --test bluetooth::e2e_test -- --include-ignored
+//! Run manually with: cargo test --features bluetooth-ble --test client -- client::bluetooth::e2e_test --include-ignored
 //!
 //! Test device requirements:
 //! - Bluetooth 4.0+ adapter (built-in or USB dongle)
@@ -28,7 +28,7 @@ async fn test_bluetooth_scan() {
     println!("Bluetooth scan test requires real BLE hardware");
     println!("Setup:");
     println!("  1. Ensure BLE device is powered on and advertising");
-    println!("  2. Run: cargo test --features bluetooth --test bluetooth::e2e_test -- --include-ignored --nocapture");
+    println!("  2. Run: cargo test --features bluetooth --test client -- client::bluetooth::e2e_test --include-ignored --nocapture");
     println!("  3. Manual verification required");
 }
 

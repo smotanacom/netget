@@ -155,19 +155,19 @@ GreenMail or Docker.
 ### Single Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features imap --test client::imap::e2e_test test_imap_client_connect_and_authenticate
+./cargo-isolated.sh test --no-default-features --features imap --test client -- client::imap::e2e_test::test_imap_client_connect_and_authenticate
 ```
 
 ### Full Suite
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features imap --test client::imap::e2e_test
+./cargo-isolated.sh test --no-default-features --features imap --test client -- client::imap::e2e_test
 ```
 
 ### With Logging
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features imap --test client::imap::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features imap --test client -- client::imap::e2e_test
 ```
 
 ## Future Enhancements

@@ -269,13 +269,13 @@ explicit `encoding` (`"utf8"` by default, or `"hex"`), the `send_tcp_data` shape
 ### Run All SOCKS5 Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features socks5 --test client::socks5::e2e_test
+./cargo-isolated.sh test --no-default-features --features socks5 --test client -- client::socks5::e2e_test
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features socks5 --test client::socks5::e2e_test test_socks5_client_no_auth_basic -- --ignored
+./cargo-isolated.sh test --no-default-features --features socks5 --test client -- client::socks5::e2e_test::test_socks5_client_no_auth_basic --ignored
 ```
 
 ### Prerequisites
@@ -335,7 +335,7 @@ Still under reasonable budget for comprehensive testing.
 **Enable Trace Logging:**
 
 ```bash
-RUST_LOG=netget=trace ./cargo-isolated.sh test --no-default-features --features socks5 --test client::socks5::e2e_test -- --nocapture --ignored
+RUST_LOG=netget=trace ./cargo-isolated.sh test --no-default-features --features socks5 --test client -- client::socks5::e2e_test --nocapture --ignored
 ```
 
 **Check netget.log:**

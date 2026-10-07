@@ -102,19 +102,19 @@ Tests UDP client can change target address:
 ### Run All UDP Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features udp --test client::udp::e2e_test
+./cargo-isolated.sh test --no-default-features --features udp --test client -- client::udp::e2e_test
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features udp --test client::udp::e2e_test -- test_udp_client_connect_to_server
+./cargo-isolated.sh test --no-default-features --features udp --test client -- client::udp::e2e_test::test_udp_client_connect_to_server
 ```
 
 ### Run with Output
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features udp --test client::udp::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features udp --test client -- client::udp::e2e_test --nocapture
 ```
 
 ## Test Infrastructure
@@ -173,7 +173,7 @@ Tests UDP client can change target address:
 **View Test Output:**
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features udp --test client::udp::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features udp --test client -- client::udp::e2e_test --nocapture
 ```
 
 **Check NetGet Logs:**

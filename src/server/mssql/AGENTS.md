@@ -255,7 +255,7 @@ what a peer that is not trying to interoperate can do.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features mssql \
-    --test server::mssql::test -- --test-threads=100
+    --test server -- server::mssql::test --test-threads=100
 ```
 
 **Gap**: every case in that file — including `test_mssql_multi_row_query` —

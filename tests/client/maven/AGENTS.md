@@ -107,10 +107,10 @@ Tests are fully isolated:
 
 ```bash
 # Run all Maven client tests
-./cargo-isolated.sh test --no-default-features --features maven --test client::maven::e2e_test
+./cargo-isolated.sh test --no-default-features --features maven --test client -- client::maven::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --no-default-features --features maven --test client::maven::e2e_test test_maven_client_download_artifact
+./cargo-isolated.sh test --no-default-features --features maven --test client -- client::maven::e2e_test::test_maven_client_download_artifact
 ```
 
 ## Debugging Failed Tests

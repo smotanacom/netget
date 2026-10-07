@@ -353,16 +353,16 @@ test_state.stop().await?;
 ./cargo-isolated.sh build --release --features sip
 
 # Run all SIP tests (requires Ollama + model)
-./cargo-isolated.sh test --features sip --test server::sip::e2e_test
+./cargo-isolated.sh test --features sip --test server -- server::sip::e2e_test
 
 # Run specific test
-./cargo-isolated.sh test --features sip --test server::sip::e2e_test test_sip_comprehensive
+./cargo-isolated.sh test --features sip --test server -- server::sip::e2e_test::test_sip_comprehensive
 
 # Run with output
-./cargo-isolated.sh test --features sip --test server::sip::e2e_test -- --nocapture
+./cargo-isolated.sh test --features sip --test server -- server::sip::e2e_test --nocapture
 
 # Run with Ollama lock (prevent concurrent LLM overload)
-./cargo-isolated.sh test --features sip --test server::sip::e2e_test -- --test-threads=1
+./cargo-isolated.sh test --features sip --test server -- server::sip::e2e_test --test-threads=1
 ```
 
 ## Future Test Additions

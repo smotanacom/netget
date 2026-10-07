@@ -116,13 +116,13 @@ For the CLI integration test:
 ### Single Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features npm --test server::npm::e2e_test -- test_npm_package_metadata
+./cargo-isolated.sh test --no-default-features --features npm --test server -- server::npm::e2e_test::test_npm_package_metadata
 ```
 
 ### All NPM Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features npm --test server::npm::e2e_test
+./cargo-isolated.sh test --no-default-features --features npm --test server -- server::npm::e2e_test
 ```
 
 ### With npm CLI (if installed)
@@ -132,7 +132,7 @@ For the CLI integration test:
 which npm
 
 # Run all tests including CLI integration
-./cargo-isolated.sh test --no-default-features --features npm --test server::npm::e2e_test
+./cargo-isolated.sh test --no-default-features --features npm --test server -- server::npm::e2e_test
 ```
 
 ## Privacy & Offline Testing
@@ -148,7 +148,7 @@ which npm
 Enable debug output:
 
 ```bash
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features npm --test server::npm::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features npm --test server -- server::npm::e2e_test
 ```
 
 View NetGet logs during test:

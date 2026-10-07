@@ -105,13 +105,13 @@ black-box mode.
 
 ```bash
 # Single test
-./cargo-isolated.sh test --no-default-features --features cassandra --test client::cassandra::e2e_test -- test_cassandra_client_connect_and_query
+./cargo-isolated.sh test --no-default-features --features cassandra --test client -- client::cassandra::e2e_test::test_cassandra_client_connect_and_query
 
 # Full suite (recommended)
-./cargo-isolated.sh test --no-default-features --features cassandra --test client::cassandra::e2e_test
+./cargo-isolated.sh test --no-default-features --features cassandra --test client -- client::cassandra::e2e_test
 
 # With output
-./cargo-isolated.sh test --no-default-features --features cassandra --test client::cassandra::e2e_test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features cassandra --test client -- client::cassandra::e2e_test --nocapture
 ```
 
 **Build Time**: ~15-30s (cassandra feature only)

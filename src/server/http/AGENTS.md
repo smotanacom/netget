@@ -211,7 +211,7 @@ problems are logged at `error!` and pushed to the status stream as
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http \
-    --test server::http::test -- --test-threads=100
+    --test server -- server::http::test --test-threads=100
 ```
 
 **Gaps**: no test covers TLS/HTTPS, the h2c upgrade path, the request filter

@@ -104,7 +104,7 @@ Tests are gated with `#![cfg(feature = "pypi")]` to only compile when pypi featu
 Run tests with:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features pypi --test server::pypi::e2e_test
+./cargo-isolated.sh test --no-default-features --features pypi --test server -- server::pypi::e2e_test
 ```
 
 ## CI Considerations

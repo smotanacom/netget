@@ -156,10 +156,10 @@ However, E2E tests use raw UDP for more control over message format.
 
 ```bash
 # Run Syslog E2E test only (recommended)
-./cargo-isolated.sh test --no-default-features --features syslog --test server::syslog::e2e_test
+./cargo-isolated.sh test --no-default-features --features syslog --test server -- server::syslog::e2e_test
 
 # Or run with specific log level
-RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features syslog --test server::syslog::e2e_test
+RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features syslog --test server -- server::syslog::e2e_test
 ```
 
 ### Expected Output

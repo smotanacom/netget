@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features saml-idp \
-//!       --test server::saml_idp::connection_bounds_test -- --test-threads=100
+//!       --test server -- server::saml_idp::connection_bounds_test --test-threads=100
 
 #[cfg(all(test, feature = "saml-idp"))]
 mod saml_idp_connection_bounds {

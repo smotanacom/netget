@@ -143,13 +143,13 @@ With Ollama lock and serial execution, total suite runtime: **~20 seconds**
 ### Run All MCP Client Tests
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features mcp --test client::mcp::e2e_test
+./cargo-isolated.sh test --no-default-features --features mcp --test client -- client::mcp::e2e_test
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features mcp --test client::mcp::e2e_test test_mcp_client_initialize
+./cargo-isolated.sh test --no-default-features --features mcp --test client -- client::mcp::e2e_test::test_mcp_client_initialize
 ```
 
 ### Debug Output

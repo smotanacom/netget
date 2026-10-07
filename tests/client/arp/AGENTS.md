@@ -150,7 +150,7 @@ Tests use loopback interface for safety:
 ### 1. Root Privilege Requirement
 
 **Issue**: Tests skip if not running as root
-**Workaround**: Run with `sudo ./cargo-isolated.sh test --features arp --test client::arp::e2e_test`
+**Workaround**: Run with `sudo ./cargo-isolated.sh test --features arp --test client -- client::arp::e2e_test`
 **Impact**: CI/CD must run tests with elevated privileges
 
 ### 2. Platform-Specific Interface Names
@@ -221,7 +221,7 @@ Uses standard E2E helpers from `tests/helpers/`:
 ### Basic Test Run (as root)
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features arp --test client::arp::e2e_test
+sudo ./cargo-isolated.sh test --no-default-features --features arp --test client -- client::arp::e2e_test
 ```
 
 ### With Capability Grant (Linux, no sudo)
@@ -231,19 +231,19 @@ sudo ./cargo-isolated.sh test --no-default-features --features arp --test client
 sudo setcap cap_net_raw+ep target-claude/release/netget
 
 # Run tests without sudo
-./cargo-isolated.sh test --no-default-features --features arp --test client::arp::e2e_test
+./cargo-isolated.sh test --no-default-features --features arp --test client -- client::arp::e2e_test
 ```
 
 ### Individual Test
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features arp --test client::arp::e2e_test -- test_arp_client_start_on_interface
+sudo ./cargo-isolated.sh test --no-default-features --features arp --test client -- client::arp::e2e_test::test_arp_client_start_on_interface
 ```
 
 ### Verbose Output
 
 ```bash
-sudo ./cargo-isolated.sh test --no-default-features --features arp --test client::arp::e2e_test -- --nocapture
+sudo ./cargo-isolated.sh test --no-default-features --features arp --test client -- client::arp::e2e_test --nocapture
 ```
 
 ## CI/CD Considerations
@@ -254,7 +254,7 @@ sudo ./cargo-isolated.sh test --no-default-features --features arp --test client
 - name: Run ARP Client Tests
   run: |
     sudo setcap cap_net_raw+ep target-claude/release/netget
-    ./cargo-isolated.sh test --no-default-features --features arp --test client::arp::e2e_test
+    ./cargo-isolated.sh test --no-default-features --features arp --test client -- client::arp::e2e_test
 ```
 
 ### Docker
