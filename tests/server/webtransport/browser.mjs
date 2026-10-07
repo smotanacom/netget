@@ -24,7 +24,8 @@ let socket;
 const result = {ok: false};
 try {
   let active;
-  for (let i = 0; i < 200 && !active; i++) {
+  // Up to 60 s: a loaded CI runner has taken over 20 s to bring Chrome up.
+  for (let i = 0; i < 600 && !active; i++) {
     try {active = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')} catch {await new Promise(r => setTimeout(r, 100))}
   }
   if (!active) throw new Error(`Chrome did not start: ${diagnostic}`);
