@@ -90,11 +90,27 @@ jobs:
           'C:\Strawberry\perl\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build
+        env:
+          LZMA_API_STATIC: "1" # Bundle XZ instead of linking the runner's Homebrew installation.
         shell: bash
         run: |
           cargo build --release --locked \
             --no-default-features --features ${{ matrix.features }} \
             --target ${{ matrix.target }}
+
+      - name: Verify macOS runtime libraries
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          report="$RUNNER_TEMP/netget-runtime-libraries.txt"
+          otool -L "target/${{ matrix.target }}/release/netget" > "$report"
+          cat "$report"
+          while IFS= read -r library; do
+            case "$library" in
+              /System/Library/*|/usr/lib/*) ;;
+              *) echo "Unexpected non-system runtime library: $library" >&2; exit 1 ;;
+            esac
+          done < <(awk 'NR > 1 { print $1 }' "$report")
 
       - name: Package
         shell: bash
