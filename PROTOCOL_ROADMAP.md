@@ -1552,3 +1552,22 @@ Do not delete unrelated worktrees, artifacts, logs, source, Cargo caches or runn
 Suggested scheduling order: bounded NUT/DoQ/StatsD work first; application Socket.IO/GraphQL and HTTP/3/SFTP/OTLP completion next; infrastructure NETCONF/gNMI/Redfish; then remaining messaging, identity, industrial and specialist families. All checklist entries remain in the authorized scope, regardless of research priority.
 
 - **ICS completion (October 2026):** all six remaining scopes are registered in both roles. Local evidence: 27 focused protocol checks (six independent stacks), 147 shared checks across 36 targets, six standalone all-target builds and blocking all-target clippy; one pre-existing all-protocol-only audit is intentionally ignored in the narrower shared run. Browser/site and native release builds are separate publication gates; no full remote CI green claim.
+
+## Peer-to-peer and news expansion (October 2026)
+
+User-authorized extension of both DC++ hub and file-transfer scopes, NNTP and related peer protocols. New protocol features: `adc`, `dc_peer`, `adc_peer`, `soulseek`, `soulseek_peer`, `gnutella`; the existing `dc` and `nntp` features retain their names. The catalog now contains 240 features. All new roles remain Experimental and declare selected simulator scopes. `tests/peers/README.md` records pinned independent peers; each new source/test directory documents its scope.
+
+- NMDC key authentication now preserves binary octets, escapes all reserved key values and rejects invalid challenges. Hub client framing is bounded.
+- ADC/ADCS adds anonymous hub negotiation, handler-controlled identity/chat/search/results/rendezvous. Peer connectors can use a CID and hub token; listeners can advertise a handler-specified CID.
+- NMDC and ADC peer roles add handler-supplied compressed XML file lists and binary downloads with ranges, refusal codes and optional whole-payload Tiger-tree verification. No autonomous download scheduler or filesystem content store is claimed.
+- NNTP adds POST, IHAVE, sequential streaming feeds, verified implicit TLS and handler-approved AUTHINFO USER/PASS. No STARTTLS, SASL, compression or autonomous feed scheduler is claimed.
+- Soulseek central and P-peer browsing roles add selected login/rooms/chat/status/addresses/search announcements and shared-directory/user-info operations. No Soulseek F-file-transfer channel, distributed tree, obfuscation or public central-service replacement is claimed.
+- Gnutella adds a bounded 0.6 leaf-peer simulator with handshake, ping/pong, query/query-hit and push descriptors. No ultrapeer routing, public crawling, HTTP download service or push dialing is claimed.
+- Existing BitTorrent tracker (`torrent-tracker`), DHT (`torrent-dht`) and peer (`torrent-peer`) role pairs remain in the catalog. Their existing Experimental metadata and limitations remain applicable; this expansion does not claim new third-party compatibility evidence for them.
+
+- [x] All six new listening roles are implemented and registered.
+- [x] All six new connecting roles are implemented and registered.
+- [x] Independent exchanges, malformed/negative input and owner lifecycle checks pass. Local combined evidence: 80 server/client tests with no skips; final client event wiring: 26 passing; seven standalone all-target feature checks and blocking all-target clippy pass. Shared action/startup/event/task/site audits pass; the pre-existing all-features-only description report remains intentionally ignored in the narrow build. Existing BitTorrent review: 40 passing tests, one pre-existing ignored fixture. Static-bzip2 transfer checks also pass.
+- [x] Source/test documentation and honest Experimental metadata are committed in `17a20aae`, integrated into master by signed merge `47e01748` (NMDC key fix `c7978e42` included).
+
+Release preparation targets 0.3.3. Linux peer CI and native release publication are separate gates; publication results are recorded only after they complete. The site catalog has been checked at desktop/mobile widths in light/dark modes; its browser demo smoke test passes. Native release builds bundle bzip2 statically. The peer workflow offers a focused `p2p-news` dispatch without launching unrelated protocol families.

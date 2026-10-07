@@ -1,6 +1,6 @@
 [package]
 name = "netget"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/smotanacom/netget"
@@ -1041,7 +1041,7 @@ bytes = "1.8"
 hex = "0.4"
 base64 = "0.22"
 tiger = { version = "0.2", optional = true }
-bzip2 = { version = "0.5", optional = true }
+bzip2 = { version = "0.5", optional = true, features = ["static"] }
 serde_urlencoded = "0.7"  # query strings and form bodies on the browser HTTP transport (src/client/http_fetch)
 
 # Socket options (SO_REUSEADDR)

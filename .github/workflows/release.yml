@@ -11,6 +11,15 @@ permissions:
   contents: write
 
 jobs:
+  protocol-validation:
+    name: Peer and news release gate
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/protocol-pairs.yml
+    with:
+      suite: p2p-news
+    permissions:
+      contents: read
+
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -142,7 +151,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: build
+    needs: [build, protocol-validation]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
