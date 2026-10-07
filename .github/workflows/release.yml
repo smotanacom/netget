@@ -78,6 +78,17 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Select native Perl for vendored OpenSSL
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $perl = 'C:\Strawberry\perl\bin\perl.exe'
+          if (-not (Test-Path $perl)) { throw "Strawberry Perl is missing: $perl" }
+          & $perl -MLocale::Maketext::Simple -MIPC::Cmd -e 'print "OpenSSL Perl modules available\n"'
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL Perl modules are missing" }
+          "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'C:\Strawberry\perl\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Build
         shell: bash
         run: |
