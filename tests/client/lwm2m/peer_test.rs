@@ -111,7 +111,10 @@ async fn device_against_leshan_server() {
     assert!(matches!(r, ClientSendOutcome::Sent { .. }), "{r:?}");
     let mut seen = String::new();
     tokio::time::timeout(Duration::from_secs(20), async {
-        while !seen.contains("23.25") {
+        // Leshan streams its CoAP log of the incoming notification (which carries the value)
+        // as one event and the NOTIFICATION as another; stopping at the first can miss the
+        // second.
+        while !(seen.contains("NOTIFICATION") && seen.contains("23.25")) {
             match events.chunk().await {
                 Ok(Some(c)) => seen.push_str(&String::from_utf8_lossy(&c)),
                 _ => break,
