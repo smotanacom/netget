@@ -1,4 +1,4 @@
-"""ncdc file-list downloader, with a minimal hub rendezvous fixture."""
+"""ncdc file-list and content downloader, with a minimal hub rendezvous fixture."""
 import asyncio,json,os,pathlib,sys,tempfile,time
 if sys.argv[1]=='server':
  import runpy
@@ -44,6 +44,12 @@ async def main():
    await pump(1);p.sendline('/browse -f NetGet');await pump(4)
    lists=list(pathlib.Path(d,'fl').glob('*'));assert lists,[(f.name,f.read_text()) for f in pathlib.Path(d,'logs').glob('*.log')]+[('stderr',(pathlib.Path(d)/'stderr.log').read_text())]
    assert any(f.stat().st_size>0 for f in lists)
+   p.send('\x1b3');await pump(.2);p.send('d')
+   content=pathlib.Path(d,'dl','share','hello.txt')
+   deadline=time.monotonic()+8
+   while time.monotonic()<deadline and not content.exists():await pump(.1)
+   assert content.exists(),[(f.name,f.read_text(errors='replace')) for f in pathlib.Path(d,'logs').glob('*.log')]+[('stderr',(pathlib.Path(d)/'stderr.log').read_text(errors='replace'))]
+   assert content.read_bytes()==b'Hello',content.read_bytes()
    p.sendline('/quit');await pump(.3);p.close(force=True);print(json.dumps({'ok':True,'filelists':[f.name for f in lists]}))
   finally:p.close(force=True);srv.close();await srv.wait_closed()
 asyncio.run(main())

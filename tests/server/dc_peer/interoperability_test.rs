@@ -1,9 +1,10 @@
 use crate::helpers::p2p as h;
 use serde_json::json;
 #[tokio::test]
-async fn independent_ncdc_file_list_download() {
+async fn independent_ncdc_file_list_and_content_download() {
     let s = h::state();
-    let(id,addr)=h::server_in(&s,"dc_peer",vec![json!({"event_pattern":"dc_peer_request","handler":{"type":"static","actions":[{"type":"dc_peer_reply","file_list_xml":"<?xml version=\"1.0\" encoding=\"utf-8\"?><FileListing Version=\"1\" Base=\"/\" Generator=\"NetGet\"><Directory Name=\"share\"><File Name=\"hello.txt\" Size=\"5\" TTH=\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"/></Directory></FileListing>"}]}})],json!({})).await;
+    let code = "import json,sys\ne=json.load(sys.stdin)['event']\na={'type':'dc_peer_reply','file_list_xml':'<?xml version=\"1.0\" encoding=\"utf-8\"?><FileListing Version=\"1\" Base=\"/\" Generator=\"NetGet\"><Directory Name=\"share\"><File Name=\"hello.txt\" Size=\"5\" TTH=\"JLHVA72QC6WRSC6IV3E26LLC5JTEEACHS4ILZCY\"/></Directory></FileListing>'} if e['identifier']=='files.xml.bz2' else {'type':'dc_peer_reply','data_base64':'SGVsbG8='}\nprint(json.dumps({'actions':[a]}))";
+    let (id, addr) = h::server_in(&s, "dc_peer", vec![json!({"event_pattern":"dc_peer_request","handler":{"type":"script","language":"python","code":code}})], json!({})).await;
     assert_eq!(h::peer("dc_peer", "client", addr).await["ok"], true);
     s.remove_server(id).await;
 }
