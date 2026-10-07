@@ -501,10 +501,10 @@ pub mod ethernet_ip;
 pub mod dnp3;
 
 #[cfg(feature = "iec104")]
-mod iec104;
+pub mod iec104;
 
 #[cfg(feature = "bacnet")]
-mod bacnet;
+pub mod bacnet;
 
 #[cfg(feature = "opcua")]
-mod opcua;
+pub mod opcua;
