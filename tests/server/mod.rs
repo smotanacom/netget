@@ -508,3 +508,21 @@ pub mod bacnet;
 
 #[cfg(feature = "opcua")]
 pub mod opcua;
+
+#[cfg(feature = "soulseek")]
+pub mod soulseek;
+
+#[cfg(feature = "soulseek_peer")]
+pub mod soulseek_peer;
+
+#[cfg(feature = "adc")]
+pub mod adc;
+
+#[cfg(feature = "adc_peer")]
+pub mod adc_peer;
+
+#[cfg(feature = "dc_peer")]
+pub mod dc_peer;
+
+#[cfg(feature = "gnutella")]
+pub mod gnutella;

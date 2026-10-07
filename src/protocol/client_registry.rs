@@ -74,6 +74,36 @@ impl ClientRegistry {
             crate::client::datalink::DataLinkClientProtocol::new(),
         ));
 
+        #[cfg(feature = "dc_peer")]
+        self.register(Arc::new(
+            crate::client::dc_peer::actions::DcPeerClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "adc")]
+        self.register(Arc::new(
+            crate::client::adc::actions::AdcClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "adc_peer")]
+        self.register(Arc::new(
+            crate::client::adc_peer::actions::AdcPeerClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "soulseek")]
+        self.register(Arc::new(
+            crate::client::soulseek::actions::SoulseekClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "soulseek_peer")]
+        self.register(Arc::new(
+            crate::client::soulseek_peer::actions::SoulseekPeerClientProtocol::new(),
+        ));
+
+        #[cfg(feature = "gnutella")]
+        self.register(Arc::new(
+            crate::client::gnutella::actions::GnutellaClientProtocol::new(),
+        ));
+
         #[cfg(feature = "dc")]
         self.register(Arc::new(crate::client::dc::DcClientProtocol::new()));
 
@@ -986,6 +1016,12 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("BOOTP", "bootp"),
     ("Cassandra", "cassandra"),
     ("DataLink", "datalink"),
+    ("NMDC Peer", "dc_peer"),
+    ("ADC", "adc"),
+    ("ADC Peer", "adc_peer"),
+    ("Soulseek", "soulseek"),
+    ("Soulseek Peer", "soulseek_peer"),
+    ("Gnutella", "gnutella"),
     ("DC", "dc"),
     ("DHCP", "dhcp"),
     ("DNS", "dns"),

@@ -85,12 +85,34 @@ fn page_tokens() -> BTreeSet<String> {
         let after = &rest[i + "<span class=\"proto-list\">".len()..];
         let end = after.find("</span>").expect("proto-list closes");
         let inner = &after[..end];
-        assert!(
-            !inner.contains('<'),
-            "the protocol table holds bare names only, found markup: {inner}"
-        );
-        for tok in inner.split_whitespace() {
-            all.insert(tok.to_string());
+        let mut links = inner;
+        while let Some(start) = links.find("<a ") {
+            let link = &links[start..];
+            let tag_end = link.find('>').expect("protocol anchor opens");
+            let tag = &link[..tag_end];
+            assert!(
+                tag.contains("href=\"https://en.wikipedia.org/wiki/"),
+                "Wikipedia link: {tag}"
+            );
+            assert!(tag.contains("target=\"_blank\""), "opens a new tab: {tag}");
+            assert!(
+                tag.contains("rel=\"noopener noreferrer\""),
+                "safe external link: {tag}"
+            );
+            let (_, feature) = tag
+                .split_once(" · feature: ")
+                .expect("feature identity in title");
+            let feature = feature.split('"').next().unwrap();
+            assert!(
+                all.insert(feature.to_string()),
+                "duplicate protocol: {feature}"
+            );
+            let close = link.find("</a>").expect("protocol anchor closes");
+            assert!(
+                !link[tag_end + 1..close].trim().is_empty(),
+                "display name: {feature}"
+            );
+            links = &link[close + 4..];
         }
         rest = &after[end..];
     }

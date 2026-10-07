@@ -1,5 +1,6 @@
 //! NNTP server implementation
 pub mod actions;
+pub mod extensions;
 
 use crate::server::connection::ConnectionId;
 use anyhow::Result;
@@ -137,6 +138,8 @@ impl NntpServer {
         server_id: crate::state::ServerId,
         first_byte_timeout_secs: Option<u64>,
         idle_timeout_secs: Option<u64>,
+        tls: Option<tokio_rustls::TlsAcceptor>,
+        require_auth: bool,
     ) -> Result<SocketAddr> {
         // Both bounds are tunable because their right value is a property of who is on the
         // other end, which only the operator knows. The defaults serve NetGet's own NNTP
@@ -171,6 +174,7 @@ impl NntpServer {
                         let state_clone = app_state.clone();
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
+                        let tls = tls.clone();
 
                         // Tracked, not detached: stop_server must abort this task too.
                         let task_owner = app_state.clone();
@@ -180,6 +184,21 @@ impl NntpServer {
                                 // cap the accept rate rather than the number of live
                                 // connections.
                                 let _permit = permit;
+                                let secure = tls.is_some();
+                                let stream: crate::server::p2p_support::Stream =
+                                    if let Some(tls) = tls {
+                                        let Ok(Ok(stream)) = tokio::time::timeout(
+                                            Duration::from_secs(10),
+                                            tls.accept(stream),
+                                        )
+                                        .await
+                                        else {
+                                            return;
+                                        };
+                                        Box::new(stream)
+                                    } else {
+                                        Box::new(stream)
+                                    };
                                 Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -191,6 +210,8 @@ impl NntpServer {
                                     status_clone,
                                     protocol_clone,
                                     deadlines,
+                                    secure,
+                                    require_auth,
                                 )
                                 .await;
                             })
@@ -216,7 +237,7 @@ impl NntpServer {
     /// every exit path.
     #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
-        stream: tokio::net::TcpStream,
+        stream: crate::server::p2p_support::Stream,
         connection_id: ConnectionId,
         remote_addr: SocketAddr,
         local_addr: SocketAddr,
@@ -226,6 +247,8 @@ impl NntpServer {
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<NntpProtocol>,
         deadlines: ReadDeadlines,
+        secure: bool,
+        require_auth: bool,
     ) {
         use crate::state::server::{
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
@@ -284,6 +307,8 @@ impl NntpServer {
             &status_tx,
             &protocol,
             deadlines,
+            secure,
+            require_auth,
         )
         .await;
 
@@ -339,6 +364,8 @@ impl NntpServer {
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<NntpProtocol>,
         deadlines: ReadDeadlines,
+        secure: bool,
+        require_auth: bool,
     ) where
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
@@ -476,6 +503,13 @@ impl NntpServer {
         //
         // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer that
         // connects and never sends one was a one-connection OOM before any model call.
+        let mut extensions = extensions::State {
+            secure,
+            require_auth,
+            authenticated: !require_auth,
+            posting_allowed: greeting_code.as_deref() == Some("200"),
+            ..Default::default()
+        };
         let mut answered_one = false;
         loop {
             // The deadline wraps this read and nothing else. Everything that can legitimately
@@ -541,15 +575,62 @@ impl NntpServer {
 
             // Summary + payload FileOnly: the nntp_command_received
             // event template surfaces the command to the TUI.
-            let preview = crate::utils::truncate_for_log(&line, 100);
+            let safe_line = if line.to_ascii_uppercase().starts_with("AUTHINFO PASS ") {
+                "AUTHINFO PASS [redacted]"
+            } else {
+                &line
+            };
+            let preview = crate::utils::truncate_for_log(safe_line, 100);
             log.debug(format!(
                 "NNTP received {} bytes on connection {}: {}",
                 n,
                 connection_id,
                 preview.trim()
             ));
-            log.trace(format!("NNTP data (text): {:?}", line.trim()));
+            log.trace(format!("NNTP data (text): {:?}", safe_line.trim()));
 
+            let extension_ctx = extensions::ContextRefs {
+                llm: llm_client,
+                state: app_state,
+                server: server_id,
+                peer: connection_id,
+                protocol: protocol.as_ref(),
+            };
+            match extensions::handle(
+                &mut reader,
+                write_half_arc,
+                line.trim_end_matches(['\r', '\n']),
+                &mut extensions,
+                &extension_ctx,
+            )
+            .await
+            {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    log.warn(format!("NNTP extension ended: {e}"));
+                    break;
+                }
+            }
+            if line.trim().eq_ignore_ascii_case("CAPABILITIES") {
+                let mut reply = String::from_utf8_lossy(CAPABILITIES_REPLY).to_string();
+                if !extensions.posting_allowed {
+                    reply = reply.replace("POST\r\n", "");
+                }
+                if secure {
+                    reply = reply.replace(".\r\n", "AUTHINFO USER\r\n.\r\n");
+                }
+                Self::write_counted(
+                    write_half_arc,
+                    app_state,
+                    server_id,
+                    connection_id,
+                    reply.as_bytes(),
+                    false,
+                )
+                .await;
+                continue;
+            }
             if let Some(reply) = netget_answer(line.trim(), greeting_code.as_deref()) {
                 log.info(format!(
                     "NNTP {} on connection {} decision=netget_answer: answered by NetGet",
@@ -716,7 +797,7 @@ impl NntpServer {
 /// with the 200 greeting, and nntplib - which sends CAPABILITIES from its constructor - raised
 /// before the command under test was ever sent.
 pub const CAPABILITIES_REPLY: &[u8] =
-    b"101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\nOVER\r\n.\r\n";
+    b"101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\nOVER\r\nPOST\r\nIHAVE\r\nSTREAMING\r\n.\r\n";
 
 /// NetGet's answer to `MODE READER` (RFC 3977 5.3): the greeting's own status again, which is
 /// what the command reports. `201` (posting prohibited) unless the greeting said `200`.

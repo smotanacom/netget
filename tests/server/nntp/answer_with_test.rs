@@ -92,7 +92,7 @@ async fn mechanics_are_netgets_and_each_command_gets_one_answer() -> E2EResult<(
         }
     }
     assert_eq!(
-        capabilities, "101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\nOVER\r\n.\r\n",
+        capabilities, "101 Capability list:\r\nVERSION 2\r\nREADER\r\nLIST ACTIVE\r\nOVER\r\nIHAVE\r\nSTREAMING\r\n.\r\n",
         "CAPABILITIES got a stale reply or the model's: the second greeting reached the wire"
     );
 

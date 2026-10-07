@@ -90,6 +90,34 @@ impl ServerRegistry {
         #[cfg(feature = "icmp")]
         self.register(Arc::new(crate::server::IcmpProtocol::new()));
 
+        #[cfg(feature = "dc_peer")]
+        self.register(Arc::new(
+            crate::server::dc_peer::actions::DcPeerProtocol::new(),
+        ));
+
+        #[cfg(feature = "adc")]
+        self.register(Arc::new(crate::server::adc::actions::AdcProtocol::new()));
+
+        #[cfg(feature = "adc_peer")]
+        self.register(Arc::new(
+            crate::server::adc_peer::actions::AdcPeerProtocol::new(),
+        ));
+
+        #[cfg(feature = "soulseek")]
+        self.register(Arc::new(
+            crate::server::soulseek::actions::SoulseekProtocol::new(),
+        ));
+
+        #[cfg(feature = "soulseek_peer")]
+        self.register(Arc::new(
+            crate::server::soulseek_peer::actions::SoulseekPeerProtocol::new(),
+        ));
+
+        #[cfg(feature = "gnutella")]
+        self.register(Arc::new(
+            crate::server::gnutella::actions::GnutellaProtocol::new(),
+        ));
+
         #[cfg(feature = "dc")]
         self.register(Arc::new(crate::server::DcProtocol::new()));
 
@@ -1394,6 +1422,12 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("DataLink", "datalink"),
     ("ARP", "arp"),
     ("ICMP", "icmp"),
+    ("NMDC Peer", "dc_peer"),
+    ("ADC", "adc"),
+    ("ADC Peer", "adc_peer"),
+    ("Soulseek", "soulseek"),
+    ("Soulseek Peer", "soulseek_peer"),
+    ("Gnutella", "gnutella"),
     ("DC", "dc"),
     ("DNS", "dns"),
     ("DoT", "dot"),

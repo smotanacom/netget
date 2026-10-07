@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
 
+pub const DEFAULT_REQUIRE_AUTH: bool = false;
+
 /// NNTP protocol action handler
 pub struct NntpProtocol {
     /// Map of active connections to their state (if needed in future)
@@ -76,25 +78,27 @@ impl NntpProtocol {
             .context("Missing 'headers' field")?;
         let body = action.get("body").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Format: <code> [number] [message-id] article follows (multi-line)
-        let mut response = if message_id.is_empty() {
-            format!("{} article follows\r\n", code)
+        let number = action["number"].as_u64().unwrap_or(1);
+        let id = if message_id.is_empty() {
+            "<netget@localhost>"
         } else {
-            format!("{} {} article follows\r\n", code, message_id)
+            super::extensions::message_id(message_id)?
         };
-
-        response.push_str(headers);
-        if !headers.ends_with("\r\n") {
-            response.push_str("\r\n");
+        anyhow::ensure!((220..=223).contains(&code), "article code must be 220..223");
+        let mut response = format!("{code} {number} {id} article follows\r\n").into_bytes();
+        if code != 223 {
+            let payload = match code {
+                221 => headers.to_string(),
+                222 => body.to_string(),
+                _ => format!(
+                    "{}\n\n{}",
+                    headers.replace("\r\n", "\n").trim_end_matches('\n'),
+                    body
+                ),
+            };
+            response.extend(super::extensions::dot_block(&payload)?);
         }
-        response.push_str("\r\n"); // Blank line between headers and body
-        response.push_str(body);
-        if !body.ends_with("\r\n") {
-            response.push_str("\r\n");
-        }
-        response.push_str(".\r\n"); // End of multi-line response
-
-        Ok(ActionResult::Output(response.into_bytes()))
+        Ok(ActionResult::Output(response))
     }
 
     /// Execute send_nntp_list action
@@ -197,7 +201,7 @@ impl Protocol for NntpProtocol {
         // the other end, which only the operator knows. The defaults serve NetGet's own NNTP
         // client parked at the dashboard waiting for a person; a listener exposed to
         // strangers wants the first one much lower.
-        vec![
+        let mut fields = vec![
             crate::llm::actions::ParameterDefinition {
                 name: "first_byte_timeout_secs".to_string(),
                 type_hint: "number".to_string(),
@@ -230,14 +234,17 @@ impl Protocol for NntpProtocol {
                     super::IDLE_BETWEEN_COMMANDS_TIMEOUT.as_secs()
                 )),
             },
-        ]
+        ];
+        fields.extend(crate::server::p2p_support::tls_parameters(true));
+        fields.push(crate::llm::actions::ParameterDefinition{name:"require_auth".into(),type_hint:"boolean".into(),description:"Require handler-approved AUTHINFO authentication before reader/feed operations; requires TLS".into(),required:false,example:json!(true),default:Some(json!(DEFAULT_REQUIRE_AUTH))});
+        fields
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         // NNTP could have async actions like post_article in the future
         Vec::new()
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![
+        let mut actions = vec![
             send_nntp_message_action(),
             send_nntp_response_action(),
             send_nntp_article_action(),
@@ -246,7 +253,9 @@ impl Protocol for NntpProtocol {
             send_nntp_overview_action(),
             wait_for_more_action(),
             close_connection_action(),
-        ]
+        ];
+        actions.extend(super::extensions::server_actions());
+        actions
     }
     fn protocol_name(&self) -> &'static str {
         "NNTP"
@@ -266,11 +275,11 @@ impl Protocol for NntpProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .well_known_port(119)
-            .implementation("Manual line-based NNTP parsing (RFC 3977)")
-            .llm_control("All NNTP commands (LIST, GROUP, ARTICLE, POST)")
-            .e2e_testing("Raw TCP NNTP client")
-            .max_inbound_bytes(crate::server::nntp::MAX_COMMAND_BYTES)
-            .notes("No article storage, POST not implemented yet")
+            .implementation("Bounded NNTP reader, posting and sequential feed framing (RFC 3977/4643/4644); optional implicit TLS")
+            .llm_control("Reader content, authentication decisions and POST/IHAVE/TAKETHIS article acceptance")
+            .e2e_testing("Independent Python nntplib reader/post/feed and NNTP_SSL authentication; malformed input and owner shutdown")
+            .max_inbound_bytes(crate::server::nntp::extensions::MAX_ARTICLE)
+            .notes("Handler-owned articles and accounts; no persistent spool, STARTTLS, SASL or compression. Streaming commands are processed sequentially; credentials require TLS.")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -351,6 +360,18 @@ impl Server for NntpProtocol {
             let first_byte_timeout_secs = secs("first_byte_timeout_secs")?;
             let idle_timeout_secs = secs("idle_timeout_secs")?;
 
+            let tls = crate::server::p2p_support::server_tls(ctx.startup_params.as_ref())?;
+            let require_auth = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_bool("require_auth"))
+                .transpose()?
+                .flatten()
+                .unwrap_or(DEFAULT_REQUIRE_AUTH);
+            anyhow::ensure!(
+                !require_auth || tls.is_some(),
+                "require_auth requires implicit TLS"
+            );
             NntpServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
@@ -359,6 +380,8 @@ impl Server for NntpProtocol {
                 ctx.server_id,
                 first_byte_timeout_secs,
                 idle_timeout_secs,
+                tls,
+                require_auth,
             )
             .await
         })
@@ -369,6 +392,16 @@ impl Server for NntpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'type' field in action")?;
 
+        if matches!(
+            action_type,
+            "nntp_auth_result" | "nntp_check_result" | "nntp_article_result"
+        ) {
+            anyhow::ensure!(action["accepted"].is_boolean(), "accepted boolean required");
+            return Ok(ActionResult::Custom {
+                name: action_type.into(),
+                data: action,
+            });
+        }
         match action_type {
             "send_nntp_message" => self.execute_send_nntp_message(action),
             "send_nntp_response" => self.execute_send_nntp_response(action),
@@ -435,16 +468,21 @@ pub static NNTP_COMMAND_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     // All eight sync actions can answer this event - it is the protocol's only event and covers
     // every NNTP command. Without this list `call_llm` would offer the model none of them, since
     // it builds the model's tool list from the event type rather than from get_sync_actions().
-    .with_actions(vec![
-        send_nntp_response_action(),
-        send_nntp_group_action(),
-        send_nntp_list_action(),
-        send_nntp_article_action(),
-        send_nntp_overview_action(),
-        send_nntp_message_action(),
-        wait_for_more_action(),
-        close_connection_action(),
-    ])
+    .with_actions(
+        vec![
+            send_nntp_response_action(),
+            send_nntp_group_action(),
+            send_nntp_list_action(),
+            send_nntp_article_action(),
+            send_nntp_overview_action(),
+            send_nntp_message_action(),
+            wait_for_more_action(),
+            close_connection_action(),
+        ]
+        .into_iter()
+        .chain(super::extensions::server_actions())
+        .collect(),
+    )
     .with_log_template(
         LogTemplate::new()
             .with_info("NNTP command: {command}")

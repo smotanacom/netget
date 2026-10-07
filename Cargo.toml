@@ -84,6 +84,12 @@ portable-base = [
     "rdap",
     "hl7",
     "icap",
+    "dc_peer",
+    "adc",
+    "adc_peer",
+    "soulseek",
+    "soulseek_peer",
+    "gnutella",
     "s7comm",
     "ethernet_ip",
     "dnp3",
@@ -306,6 +312,12 @@ rpki_rtr = [] # RPKI-to-Router cache and router roles (RFC 8210/6810)
 rdap = [] # RDAP registration data server and client (RFC 7480/9082/9083)
 hl7 = [] # HL7 v2 over MLLP integration endpoint and sender
 icap = [] # ICAP content adaptation server and client (RFC 3507)
+dc_peer = ["dc", "dep:bzip2", "dep:tiger", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # NMDC peer file transfers
+adc = ["dep:tiger", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # ADC/ADCS hub and client
+adc_peer = ["adc", "dep:bzip2", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # ADC/ADCS peer file transfers
+soulseek_peer = ["soulseek"]
+soulseek = ["dep:md-5", "dep:flate2", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # Selected Soulseek server and peer operations
+gnutella = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"] # Gnutella 0.6 peer simulator and connector
 s7comm = [] # ISO-on-TCP legacy byte data-area PLC simulator and scanner
 ethernet_ip = [] # Selected EtherNet/IP device and scanner operations
 dnp3 = [] # Selected DNP3 device and scanner operations
@@ -394,7 +406,7 @@ hls = []  # HLS (RFC 8216) over minimal HTTP/1.1; no system library
 ldap = ["dep:ldap3_proto", "rasn", "dep:ldap3"]
 imap = ["imap-codec", "dep:async-imap", "dep:async-native-tls"]  # IMAP uses imap-codec for protocol parsing
 pop3 = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:rcgen"]  # POP3 email retrieval (manual implementation with TLS support)
-nntp = []  # NNTP (Network News Transfer Protocol) for Usenet, uses only TCP, no extra deps
+nntp = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:webpki-roots"]  # NNTP (Network News Transfer Protocol) for Usenet, uses only TCP, no extra deps
 mqtt = ["dep:rumqttd", "dep:rumqttc"]  # MQTT broker and client for IoT messaging
 modbus = []  # Modbus TCP server (ICS/SCADA) - hand-rolled MBAP+PDU codec, no extra deps
 coap = []  # CoAP server (RFC 7252, IoT over UDP) - hand-rolled codec, no extra deps
@@ -602,6 +614,12 @@ dist-windows = [
     "rdap",
     "hl7",
     "icap",
+    "dc_peer",
+    "adc",
+    "adc_peer",
+    "soulseek",
+    "soulseek_peer",
+    "gnutella",
     "s7comm",
     "ethernet_ip",
     "dnp3",
@@ -799,6 +817,12 @@ all-protocols = [
     "rdap",
     "hl7",
     "icap",
+    "dc_peer",
+    "adc",
+    "adc_peer",
+    "soulseek",
+    "soulseek_peer",
+    "gnutella",
     "s7comm",
     "ethernet_ip",
     "dnp3",
@@ -1016,6 +1040,8 @@ thiserror = "2.0"
 bytes = "1.8"
 hex = "0.4"
 base64 = "0.22"
+tiger = { version = "0.2", optional = true }
+bzip2 = { version = "0.5", optional = true }
 serde_urlencoded = "0.7"  # query strings and form bodies on the browser HTTP transport (src/client/http_fetch)
 
 # Socket options (SO_REUSEADDR)
@@ -1524,4 +1550,3 @@ tonic = { path = "vendor/tonic" }
 # See vendor/wtransport/README.netget.md and tests/vendored_wtransport_patch_test.rs.
 wtransport = { path = "vendor/wtransport" }
 wtransport-proto = { path = "vendor/wtransport-proto" }
-
