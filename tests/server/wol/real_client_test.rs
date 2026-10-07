@@ -139,7 +139,7 @@ async fn test_wol_decodes_a_packet_built_by_the_real_wakeonlan() -> E2EResult<()
     // `sync_offset=0` and `transport=udp` are part of it: wakeonlan sends the magic packet as
     // the entire UDP payload with no header of its own, so a decoder that only ever found the
     // sync stream because the test had placed it at a known offset would show up here.
-    server.wait_for_any(&["record_wake_request"], 30).await;
+    server.wait_for_any(&["decision=model_accept"], 30).await;
     server.wait_for_mocks(30).await;
 
     let log = server.get_output().await.join("\n");
@@ -149,7 +149,8 @@ async fn test_wol_decodes_a_packet_built_by_the_real_wakeonlan() -> E2EResult<()
          output, so the decoder did not recover it from the real packet"
     );
     assert!(
-        log.contains("transport=udp offset=0 password_length=0"),
+        // The decoder's own INFO line (`src/server/wol/mod.rs`): offset, transport, password.
+        log.contains("(offset 0, udp, password_length=0)"),
         "expected the event to describe wakeonlan's packet as a bare UDP payload at offset 0 \
          with no SecureON trailer"
     );
