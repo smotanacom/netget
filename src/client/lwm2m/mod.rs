@@ -174,8 +174,11 @@ pub async fn connect(ctx: ConnectContext) -> Result<SocketAddr> {
         })
         .await?,
     );
+    // Connected, so a server that is not there is reported now rather than after the CoAP
+    // retransmission schedule (about a minute and a half).
+    socket.connect(server).await?;
     let local = socket.local_addr()?;
-    let ex = Exchange::new(socket);
+    let ex = Exchange::connected(socket, server);
     let (req_tx, mut req_rx) = mpsc::channel(64);
     let runner = tokio::spawn(ex.clone().run(req_tx));
     let device = Arc::new(Device {

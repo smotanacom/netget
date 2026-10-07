@@ -76,6 +76,21 @@ const CONNECTIONLESS_EXCEPTIONS: &[&str] = &[
     // request visible; its template/session cache expires on a separate owned timer.
     #[cfg(feature = "netflow-v9")]
     "NetFlowV9",
+    // SRT is a connection protocol over UDP: a handshake, then ARQ and timestamped delivery
+    // owned by srt-tokio. Its row is closed when that connection ends; a quiet publisher
+    // between frames is still a live session.
+    #[cfg(feature = "srt")]
+    "SRT",
+    // An MQTT-SN client session: CONNECT, registered topic ids, subscriptions and sleep.
+    // The row closes on DISCONNECT, a lost keep-alive, or a will; a sleeping client is idle
+    // by design and must keep its session.
+    #[cfg(feature = "mqtt_sn")]
+    "MQTT-SN",
+    // An LwM2M registration lives for its declared lifetime and is closed on deregistration or
+    // expiry by the server's own timer; reaping it after ten quiet seconds would drop every
+    // registered device between updates.
+    #[cfg(feature = "lwm2m")]
+    "LwM2M",
 ];
 
 /// Registry names whose source directory does not follow any of the mechanical

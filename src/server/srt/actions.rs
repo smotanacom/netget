@@ -202,6 +202,7 @@ impl Protocol for SrtProtocol {
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::*;
         ProtocolMetadataV2::builder()
+            .port_transport(PortTransport::Udp)
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("srt-tokio 0.4.4 (pure-Rust SRT: handshake, ARQ, TSBPD, too-late drop, AES); stream-ID access-control parsing and the publish-to-readers relay are NetGet's")
