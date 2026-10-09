@@ -6,3 +6,5 @@ mod e2e_test;
 mod operation_events_test;
 #[cfg(all(test, feature = "git"))]
 mod sandbox_test;
+#[cfg(all(test, feature = "git"))]
+mod credential_scope_test;
