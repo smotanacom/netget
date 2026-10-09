@@ -8,3 +8,5 @@ pub mod e2e_test;
 pub mod peer_inject_test;
 #[cfg(all(test, feature = "kafka"))]
 pub mod real_client_test;
+#[cfg(all(test, feature = "kafka"))]
+pub mod declared_array_length_test;
