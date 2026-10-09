@@ -209,6 +209,22 @@ Added this pass:
 
 There are no `unwrap()`s on parsed bytes anywhere in the module.
 
+**The one bound that was not NetGet's to enforce lives in the decoder, and the decoder is
+vendored for it.** `kafka-protocol` 0.14.1 pre-allocated every array from the peer-supplied
+count — `Vec::with_capacity(n)` with no look at the bytes remaining — so a Metadata v1
+request of **18 bytes** whose topics array declares `0x7fffffff` entries asked for ~144 GiB
+before reading its first (absent) element. That is an allocator failure, which aborts the
+whole process: not a panic, so `tokio::spawn` cannot contain it and `panic_log` never sees
+it. The size prefix check above could not help because the frame was legitimately 14 bytes.
+Fetch, Produce and OffsetCommit have nested arrays with similar element sizes; the client
+decodes broker responses through the same code. `vendor/kafka-protocol` bounds both array
+decoders by `buf.remaining()` (every element costs at least one byte), with the diff and
+upgrade steps in its `README.netget.md`; `tests/vendored_kafka_protocol_patch_test.rs` fails
+if Cargo builds anything else or the bound goes missing, and
+`tests/server/kafka/declared_array_length_test.rs` sends the 18 bytes to a running broker.
+The reproduction is one `sed` away: removing the bound makes the ratchet's decode test die
+with `memory allocation of 154618822584 bytes failed`.
+
 ## Compression
 
 `RecordBatchDecoder::decode_with_custom_compression(.., None)` selects `kafka-protocol`'s
