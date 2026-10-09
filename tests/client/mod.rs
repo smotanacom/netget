@@ -368,6 +368,8 @@ pub mod lwm2m;
 pub mod epp;
 #[cfg(feature = "jmap")]
 pub mod jmap;
+#[cfg(feature = "lmtp")]
+pub mod lmtp;
 #[cfg(feature = "restconf")]
 pub mod restconf;
 #[cfg(feature = "webtransport")]
