@@ -1,6 +1,6 @@
 # NetGet in the browser
 
-The landing page (`site/index.html`, served at netget.net) runs NetGet itself: the dashboard,
+The demo page (`site/demo.html`, served at netget.net/demo.html) runs NetGet itself: the dashboard,
 the protocol servers and the LLM plumbing, compiled to `wasm32-unknown-unknown`. This
 directory holds the build script and the headless tests; the code is in `crates/`.
 
@@ -32,7 +32,7 @@ cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' C
 ./web/build.sh                              # -> site/demo/pkg/ (gitignored)
 node web/test/smoke.mjs                     # headless end-to-end check of the bundle
 python3 web/test/page_composer.py           # the real page in headless Chromium (Playwright; not in CI)
-cd site && python3 -m http.server 8000      # then open http://localhost:8000/
+cd site && python3 -m http.server 8000      # then open http://localhost:8000/demo.html
 ./site/deploy.sh                            # publish: S3 + CloudFront, see site/CLAUDE.md
 ```
 
@@ -92,20 +92,14 @@ dashboard's terminal is 13px wherever 80 columns fit; narrower, the dashboard st
 two columns (`src/tui/render/mod.rs`, from 40 columns up) and the page picks the largest font
 that fits 48 columns — 10.5px on a 390px phone, where squeezing in 80 columns meant 6.5px. The page
 around them carries no step list or notes: the machines are the explanation. Nothing needs a
-click:
+click. The dashboard has no extra listening-status row or keyboard-help footer.
 
 - About a second after `new NetGet(...)` the page calls `start_server` for a Telnet server on
-  2323 with a short BBS instruction and an `llm` rule on `telnet_connection_opened` that
-  asks for the welcome banner, so it is a normal instance on the dashboard. The
-  banner is a rule rather than a sentence in the instruction because every request carries
-  the instruction and one event with nothing said before it: "when a visitor connects, send a
-  banner asking for their name; after that, answer every line" had llama3.1:8b answer every
-  typed line (`hello`, `hi there`, `what is this place?`, `play`) with the banner again, 20
-  times in 20, and naming the events inside the instruction barely changed that (16 in 20).
-  With the rule it answers `hello` and `hi there` with a greeting of its own (such as
-  `Hello, how are you?`) 10 times in 10, and Gemini Nano with `Hi there!` / `Hello there!`.
+  2323 with a short BBS instruction. A static rule with no actions handles
+  `telnet_connection_opened`, so connecting or reconnecting makes no model request.
+  `send_first` does not suppress Telnet's connect event; the static rule is what skips the LLM.
 
-  The text adventure works the same way, with a second rule, on `telnet_message_received`
+  A separate LLM rule on `telnet_message_received`
   (`rules 2`), whose instruction is the game's: "play" describes the Gate, a game command is
   played in the room the server's memory names (the Gate if none), and a move ends with
   `set_memory`. The map is in the instruction. Before, the instruction said only "run a very
@@ -141,8 +135,8 @@ click:
   is '^]'.`; when the server hangs up, `Connection closed by foreign host.` and the prompt
   again, where Enter types the command again and reconnects. The client is line-mode: it
   edits and echoes the line locally (always; it refuses every option the server offers) and
-  sends it whole on Enter. The connection's `telnet_connection_opened` is the first model
-  request, so the greeting is the first thing anyone answers.
+  sends it whole on Enter. The model panel stays idle until the visitor sends a line;
+  that `telnet_message_received` event is the first model request.
 - Requests are answered one at a time and only the current one is on screen: the composer
   (below) while the visitor is the model, and what the model writes while a model answers.
   Its output streams into the LLM panel as it is generated (Prompt API `promptStreaming`,
@@ -185,17 +179,14 @@ click:
   visitor asked — the request **waits for it**, shown in the LLM panel as "waiting for Gemini
   Nano" / "Waiting for Gemini Nano to load… 40%", and goes to it the moment it is ready;
   otherwise (a model that needs a click to download, one that failed, or "You are the model")
-  the visitor answers. This is what keeps the page-load race from landing on the visitor: the
-  Telnet client connects about two seconds after NetGet boots, usually while the built-in
-  model's session is still being created or a cached WebLLM model is still loading, and its
-  connect request now waits for that model. If the load fails, a request that waited goes to
+  the visitor answers. Connecting stays idle; if the visitor sends a line before the
+  selected model finishes loading, that message waits for the model. If the load fails, a request that waited goes to
   the composer with the reason. A model already answering keeps answering while another
   loads. The status line under the select says which of these applies.
 
   The wait is bounded on the page, deliberately below NetGet's own bounds. NetGet waits for
   the page's answer to one request for `LLM_TIMEOUT` (900 s, `crates/netget-web/src/lib.rs`)
-  and then fails it closed — for the connect event that means no banner, silently
-  (`decision=connect_event_failed`) — and it hands the page one request at a time (the rate
+  and then fails it closed. It hands the page one request at a time (the rate
   limiter's single permit), so a second network request waits behind the first for at most
   the limiter's queue timeout (300 s) and then fails. So a request waits for a loading model
   for `MODEL_WAIT_MS` (two minutes) and then goes to the visitor, with a note saying so. A model
@@ -245,13 +236,14 @@ When the visitor is the model, `site/js/composer.js` turns `actions` into a form
 dashboard's intercept composer: a picker of the offered actions (the protocol's own first
 action preselected, not a `generic` one), one control per parameter by type, every field
 prefilled from the action's example, "Add another action", "Answer with nothing" (`{"actions":
-[]}`, a real answer), "Refuse (fail closed)", the schema behind a disclosure, and a Raw JSON
-tab that mirrors the form and is sent verbatim when used. Its reply is the JSON envelope as
+[]}`, a real answer), "Refuse (fail closed)", and the schema behind a disclosure. There is
+no reply heading or editor selector; requests with actions always use the form. Its reply is the JSON envelope as
 `content`, or `tool_calls` for a chat request whose entries are all native tools. A request
-without `actions` gets the raw editor alone. The top half of the file is DOM-free so
+without `actions` gets a plain reply field. The top half of the file is DOM-free so
 `smoke.mjs` builds the same default reply under Node; `web/test/page_composer.py` drives the
-page itself in headless Chromium: the Telnet server and client come up with no clicks, the
-visitor answers through the composer and the answers reach the Telnet terminal, no element of
+page itself in headless Chromium: the Telnet server and client come up with no clicks and
+no model calls, the first typed line opens a request, the visitor answers through the composer and the answers reach the Telnet terminal, startup and
+incoming requests preserve the visitor's focus, submitting a reply never focuses a terminal, no element of
 the demo has a scrollbar at 1280x800, 1440x900, 1920x1080 and 390x844, the terminal reads as
 a telnet session through a hang-up and a reconnect, the removed explanatory text stays
 removed, a stub model that follows the game's rule plays the adventure into the Hall through
@@ -260,7 +252,7 @@ labels (each measured to fit) and the stacked dashboard at 10px or more, and a s
 `available` (named first in the select, loads by itself, answers with no composer,
 constrained to the offered actions, falls back on an unparseable answer) and when it is
 `downloadable` (waits for the first keypress). A stub whose `create()` the test holds for
-seconds while the Telnet client connects proves the queue: the connect request shows as
+seconds while the Telnet client sends a line proves the queue: that message shows as
 waiting for the model, the composer never appears, and the model answers once `create()`
 resolves; with `create()` failing instead, that request goes to the composer. "You are the
 model" chosen with the stub loaded sends the next request to the composer, choosing the

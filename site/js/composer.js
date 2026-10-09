@@ -9,7 +9,7 @@
 // It is modelled on the dashboard's intercept composer (src/tui/modal/composer.rs). The
 // reply it builds is the one the plain textarea produced: `{content: '{"actions":[...]}'}`,
 // with tools under `"tools"`, or native `tool_calls` for a chat request that carries tool
-// schemas. Raw JSON stays one tab away and is sent verbatim.
+// schemas. The form is the only editor for requests with offered actions.
 //
 // The top half of this file is pure (no DOM) so web/test/smoke.mjs can build the same reply
 // under Node and check that NetGet accepts it.
@@ -107,7 +107,7 @@ export function buildAction(entry) {
             if (s === '') { if (f.required) errors.push({ field: f.name, message: 'required' }); break; }
             const n = Number(s);
             if (!Number.isFinite(n)) errors.push({ field: f.name, message: 'not a number' });
-            else if (Number.isInteger(n) && !Number.isSafeInteger(n)) errors.push({ field: f.name, message: 'integer is too large to represent exactly; use Raw JSON' });
+            else if (Number.isInteger(n) && !Number.isSafeInteger(n)) errors.push({ field: f.name, message: 'integer is too large to represent exactly' });
             else value[f.name] = n;
             break;
         }
@@ -210,8 +210,8 @@ let uid = 0;
 
 /**
  * Render the composer into `root` and resolve through `onSend(reply)` / `onRefuse()`.
- * Falls back to a plain JSON editor when the request offers no actions. `autofocus: false`
- * leaves the focus where it is (the page keeps it in its Telnet terminal); focusing never
+ * Falls back to a plain reply field when the request offers no actions. `autofocus: false`
+ * leaves the focus wherever the visitor put it; focusing never
  * scrolls the page.
  */
 export function mountComposer(root, req, { onSend, onRefuse, autofocus = true }) {
@@ -219,23 +219,11 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
     const id = 'cmp' + (++uid);
     const state = {
         entries: actions.length ? [newEntry(actions[defaultActionIndex(actions)])] : [],
-        tab: actions.length ? null : 'raw',
-        raw: '',
     };
 
     root.innerHTML = `
-      <div class="llm-reply-label">Your reply</div>
-      ${actions.length ? `
-      <div class="cmp-tabs" role="tablist" aria-label="How to write the reply">
-        <button type="button" role="tab" id="${id}-tab-form" aria-controls="${id}-form" data-tab="form">Form</button>
-        <button type="button" role="tab" id="${id}-tab-raw" aria-controls="${id}-raw" data-tab="raw">Raw JSON</button>
-      </div>` : `
-      <p class="llm-hint">This request offers no actions to pick from. Reply the way the prompt above asks — usually a JSON object with an "actions" array.</p>`}
-      <div class="cmp-form" id="${id}-form" role="tabpanel" aria-labelledby="${id}-tab-form"></div>
-      <div class="cmp-raw" id="${id}-raw" role="tabpanel" aria-labelledby="${id}-tab-raw">
-        <textarea class="llm-input cmp-raw-input" rows="8" spellcheck="false" aria-label="Reply as raw JSON" aria-describedby="${id}-raw-status"></textarea>
-        <div class="cmp-raw-status" id="${id}-raw-status" aria-live="polite"></div>
-      </div>
+      <div class="cmp-form" id="${id}-form"></div>
+      ${actions.length ? '' : `<textarea class="llm-input cmp-free-input" rows="8" spellcheck="false" aria-label="Reply"></textarea>`}
       <div class="cmp-error" role="alert"></div>
       <div class="llm-actions">
         <button type="button" class="btn btn-primary llm-send">Send reply</button>
@@ -245,77 +233,8 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
     `;
 
     const formEl = root.querySelector('.cmp-form');
-    const rawEl = root.querySelector('.cmp-raw');
-    const rawInput = root.querySelector('.cmp-raw-input');
-    const rawStatus = root.querySelector('.cmp-raw-status');
+    const freeInput = root.querySelector('.cmp-free-input');
     const errorEl = root.querySelector('.cmp-error');
-
-    function currentEnvelopeText() {
-        const built = buildEnvelope(actions, state.entries);
-        return built.ok ? JSON.stringify(built.envelope, null, 2) : null;
-    }
-
-    // The raw editor grows with its text instead of scrolling.
-    function fitRaw() {
-        if (rawEl.hidden) return;
-        rawInput.style.height = 'auto';
-        rawInput.style.height = rawInput.scrollHeight + 2 + 'px';
-    }
-
-    function validateRaw() {
-        fitRaw();
-        const text = rawInput.value;
-        if (!text.trim()) {
-            rawInput.removeAttribute('aria-invalid');
-            rawStatus.textContent = '';
-            return null;
-        }
-        let parsed;
-        try { parsed = JSON.parse(text); } catch (e) {
-            rawInput.setAttribute('aria-invalid', 'true');
-            rawStatus.textContent = 'Not valid JSON (' + e.message + '). It will be sent as typed.';
-            rawStatus.className = 'cmp-raw-status is-bad';
-            return null;
-        }
-        rawInput.removeAttribute('aria-invalid');
-        const entries = actions.length ? entriesFromEnvelope(actions, parsed) : null;
-        rawStatus.className = 'cmp-raw-status is-ok';
-        rawStatus.textContent = entries
-            ? 'Valid JSON. The form shows the same answer.'
-            : 'Valid JSON' + (actions.length ? ', but the form cannot show it (an unknown action or key); it will be sent as typed.' : '.');
-        return entries;
-    }
-
-    function showTab(tab) {
-        errorEl.textContent = '';
-        if (tab === state.tab) return;
-        if (tab === 'raw') {
-            const text = currentEnvelopeText();
-            if (text !== null) rawInput.value = text;
-            else if (!rawInput.value) rawInput.value = '{"actions": []}';
-            validateRaw();
-        } else {
-            if (state.tab === 'raw') {
-                const entries = validateRaw();
-                if (!entries) {
-                    errorEl.textContent = 'This answer cannot be represented by the form. Keep editing it in Raw JSON.';
-                    return;
-                }
-                state.entries = entries;
-            }
-            renderForm();
-        }
-        state.tab = tab;
-        formEl.hidden = tab !== 'form';
-        rawEl.hidden = tab !== 'raw';
-        fitRaw();
-        for (const b of root.querySelectorAll('[role=tab]')) {
-            const on = b.dataset.tab === tab;
-            b.setAttribute('aria-selected', on ? 'true' : 'false');
-            b.tabIndex = on ? 0 : -1;
-            b.classList.toggle('is-active', on);
-        }
-    }
 
     function renderField(entry, ei, f, fi, action) {
         const param = action.parameters[fi];
@@ -374,7 +293,7 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
                 </div>
                 <p class="cmp-about" id="${id}-e${ei}-about">${esc(action.description || '')}</p>
                 ${entry.fields.length ? entry.fields.map((f, fi) => renderField(entry, ei, f, fi, action)).join('') : '<p class="cmp-dim">No parameters.</p>'}
-                ${extras.length ? `<p class="cmp-dim">Also sends ${extras.map((k) => `<code>${esc(k)}</code>`).join(', ')} from the example (edit under Raw JSON).</p>` : ''}
+                ${extras.length ? `<p class="cmp-dim">Also sends ${extras.map((k) => `<code>${esc(k)}</code>`).join(', ')} from the example.</p>` : ''}
                 <details class="cmp-schema">
                   <summary>Schema and example</summary>
                   <pre>${esc(JSON.stringify(action.schema ?? {}, null, 2))}</pre>
@@ -452,23 +371,9 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
         }
     });
 
-    rawInput.addEventListener('input', validateRaw);
-
-    const tabs = [...root.querySelectorAll('[role=tab]')];
-    for (const b of tabs) {
-        b.addEventListener('click', () => showTab(b.dataset.tab));
-        b.addEventListener('keydown', (ev) => {
-            if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
-            const next = tabs[(tabs.indexOf(b) + 1) % tabs.length];
-            showTab(next.dataset.tab);
-            next.focus();
-            ev.preventDefault();
-        });
-    }
-
     function send() {
         errorEl.textContent = '';
-        if (state.tab === 'raw') { onSend({ content: rawInput.value }); return; }
+        if (freeInput) { onSend({ content: freeInput.value }); return; }
         const built = buildReply(req, actions, state.entries);
         if (!built.ok) {
             const ei = state.entries.indexOf(built.entry);
@@ -493,11 +398,13 @@ export function mountComposer(root, req, { onSend, onRefuse, autofocus = true })
 
     if (actions.length) {
         renderForm();
-        showTab('form');
         if (autofocus) formEl.querySelector('.cmp-picker')?.focus({ preventScroll: true });
     } else {
         formEl.hidden = true;
-        rawInput.placeholder = '{"actions": [ ... ]}';
-        if (autofocus) rawInput.focus({ preventScroll: true });
+        freeInput.addEventListener('input', () => {
+            freeInput.style.height = 'auto';
+            freeInput.style.height = freeInput.scrollHeight + 2 + 'px';
+        });
+        if (autofocus) freeInput.focus({ preventScroll: true });
     }
 }

@@ -11,7 +11,7 @@
 #
 # Caching is by URL, not by lifetime. css/, js/ and demo/ are published under
 # v/<hash>/, where <hash> is taken from their contents, and are immutable there;
-# index.html is rewritten to point at that prefix and is never cached. A browser
+# HTML pages are rewritten to point at that prefix and are never cached. A browser
 # therefore always gets a set of files from one deploy. Publishing them at fixed
 # URLs with a week's max-age let a browser pair a fresh demo.js and netget_web.js
 # with the previous deploy's .wasm, which fails at load with
@@ -31,6 +31,7 @@ BUCKET=netget.net
 DISTRIBUTION_ID=E2LPP647KD7BN2
 KEEP_VERSIONS=5
 VERSIONED_DIRS=(css js demo)
+HTML_PAGES=(index.html demo.html)
 
 cd "$(dirname "$0")"
 
@@ -47,21 +48,23 @@ version=$(find "${VERSIONED_DIRS[@]}" -type f ! -name '.DS_Store' ! -name '*.md'
 
 stage=${STAGE_DIR:-$(mktemp -d)}
 mkdir -p "$stage/v/$version"
-cp index.html favicon.svg "$stage/"
+cp "${HTML_PAGES[@]}" favicon.svg "$stage/"
 cp -R "${VERSIONED_DIRS[@]}" "$stage/v/$version/"
 find "$stage" \( -name '.DS_Store' -o -name '*.md' \) -delete
 
-# Point index.html at the versioned prefix. Every reference to these directories in
-# index.html is an attribute value starting with the directory name; the modules they
+# Point each HTML page at the versioned prefix. Every reference to these directories in
+# the pages is an attribute value starting with the directory name; the modules they
 # load (demo.js -> ../demo/pkg/, composer.js) are relative and move with them.
-sed -E -i.bak \
-  -e "s#(href|src)=\"(css|js|demo)/#\\1=\"v/$version/\\2/#g" \
-  "$stage/index.html"
-rm "$stage/index.html.bak"
-if grep -nE '(href|src)="(css|js|demo)/' "$stage/index.html"; then
-  echo "index.html still references an unversioned asset (above)" >&2
-  exit 1
-fi
+for page in "${HTML_PAGES[@]}"; do
+  sed -E -i.bak \
+    -e "s#(href|src)=\"(css|js|demo)/#\\1=\"v/$version/\\2/#g" \
+    "$stage/$page"
+  rm "$stage/$page.bak"
+  if grep -nE '(href|src)="(css|js|demo)/' "$stage/$page"; then
+    echo "$page still references an unversioned asset (above)" >&2
+    exit 1
+  fi
+done
 echo "version: $version (staged in $stage)"
 
 set -x
@@ -79,10 +82,12 @@ aws s3 cp "$stage/v/$version/demo/pkg/netget_web_bg.wasm" \
 # 2. The unversioned files. --delete also removes the fixed-URL css/, js/ and demo/
 #    earlier deploys published; v/ is managed below.
 aws s3 sync "$stage" "s3://$BUCKET/" --delete ${DRYRUN[@]+"${DRYRUN[@]}"} \
-  --exclude 'v/*' --exclude 'index.html' \
+  --exclude 'v/*' --exclude '*.html' \
   --cache-control "max-age=86400"
-aws s3 cp "$stage/index.html" "s3://$BUCKET/index.html" ${DRYRUN[@]+"${DRYRUN[@]}"} \
-  --cache-control "no-cache"
+for page in "${HTML_PAGES[@]}"; do
+  aws s3 cp "$stage/$page" "s3://$BUCKET/$page" ${DRYRUN[@]+"${DRYRUN[@]}"} \
+    --cache-control "no-cache"
+done
 
 set +x
 
@@ -98,7 +103,7 @@ done
 
 if [ ${#DRYRUN[@]} -eq 0 ]; then
   aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
-    --paths '/' '/index.html' '/favicon.svg'
+    --paths '/' '/index.html' '/demo.html' '/favicon.svg'
 fi
 
 if [ -z "${STAGE_DIR:-}" ]; then rm -rf "$stage"; fi
