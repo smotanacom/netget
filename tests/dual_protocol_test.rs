@@ -107,6 +107,7 @@ fn golden_duals_map() {
         "JMAP",
         "EPP",
         "LMTP",
+        "LPD",
         "Nostr",
         "Vault",
         "Bolt",
