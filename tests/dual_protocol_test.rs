@@ -119,6 +119,7 @@ fn golden_duals_map() {
         "Minecraft",
         "9P",
         "ZeroMQ",
+        "SMPP",
         "Nostr",
         "Vault",
         "Bolt",

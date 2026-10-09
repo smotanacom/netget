@@ -598,6 +598,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::zeromq::actions::ZeromqClientProtocol::new(),
         ));
+        #[cfg(feature = "smpp")]
+        self.register(Arc::new(
+            crate::client::smpp::actions::SmppClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1132,6 +1136,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Minecraft", "minecraft"),
     ("9P", "ninep"),
     ("ZeroMQ", "zeromq"),
+    ("SMPP", "smpp"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),
