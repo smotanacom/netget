@@ -198,13 +198,19 @@ status_tx.send("[CLIENT] HTTP request sent");                          // → TU
 - ✅ Request body (JSON, text, etc.)
 - ✅ Response parsing (status, headers, body)
 - ✅ Timeouts (30s default)
-- ✅ Automatic redirects (reqwest default)
+- ✅ Redirects, same origin only (`http_fetch::same_origin_redirects`, five hops)
 
 ### URL Handling
 
 - Base URL stored in `protocol_data`
-- Absolute URLs: `https://example.com/path`
 - Relative paths: `/api/users` → `{base_url}/api/users`
+- Absolute URLs: accepted only on the base URL's origin (`http_fetch::resolve_same_origin`).
+  The startup `default_headers` ride on every request, so until September 2026 a model
+  answering a prompt-injected "fetch http://attacker/" sent the operator's API key there,
+  and `http://169.254.169.254/` was reachable from wherever the client ran. Another origin
+  is refused by name — the repair loop sees it, and the operator can open a client for that
+  host on purpose. `tests/client/http/same_origin_test.rs` counts accepts on a foreign
+  listener and requires zero.
 
 ## Limitations
 
