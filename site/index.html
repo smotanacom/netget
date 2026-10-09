@@ -3,212 +3,113 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NetGet: Describe a server. Get a server.</title>
-    <meta name="description" content="NetGet puts an LLM behind 245 network protocols. Describe a mock server in plain English and it runs. Works standalone or as an MCP server for LLM agents.">
-
-    <meta property="og:title" content="NetGet: Describe a server. Get a server.">
-    <meta property="og:description" content="Put an LLM behind 245 network protocols. Plain English in, mock servers out. MCP built in.">
+    <title>NetGet — Describe a server. Get a server.</title>
+    <meta name="description" content="Low-level protocol access for LLMs.">
+    <meta property="og:title" content="NetGet — Describe a server. Get a server.">
+    <meta property="og:description" content="Low-level protocol access for LLMs.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://netget.net/">
-
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-
     <script>try { var t = localStorage.getItem('theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}</script>
-
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
-    <link rel="stylesheet" href="css/demo.css">
 </head>
 <body>
-
-    <nav class="nav">
-        <span class="logo">net<span class="logo-accent">get</span></span>
-        <span class="nav-right">
-            <a class="nav-link" href="https://github.com/smotanacom/netget">GitHub &nearr;</a>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <nav class="nav" aria-label="Main navigation">
+        <a class="logo" href="./" aria-label="NetGet home">net<span>get</span></a>
+        <div class="nav-right">
+            <a class="nav-link" href="https://github.com/smotanacom/netget">GitHub ↗</a>
+            <a class="button button-small" href="demo.html">Demo</a>
             <button class="theme-btn" id="theme-toggle" aria-label="Toggle color theme">◐</button>
-        </span>
+        </div>
     </nav>
 
-    <!-- Hero: NetGet itself, running in the page -->
-    <header class="hero hero-demo">
-        <h1>Describe a server.<br><span class="accent">Get a server.</span></h1>
-        <p class="hero-sub">
-            NetGet puts an LLM behind 245 network protocols.<br>
-            What follows is not a video: it is NetGet, compiled to WebAssembly, running in this tab.
-        </p>
-    </header>
+    <main id="main">
+        <header class="hero">
+            <h1>Describe a server.<br><span class="accent">Get a server.</span></h1>
+            <p>Low-level protocol access for LLMs.</p>
+        </header>
 
-        <!-- How it works -->
-        <section class="section section-how">
-            <h2>How it works</h2>
+        <section class="section" id="how-it-works" aria-label="Protocol stacks">
+            <figure class="protocol-landscape" aria-label="Protocol stacks controlled by an LLM">
+                <ol class="protocol-stack" aria-label="LLM over Ethernet">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-link">Ethernet</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over UDP over IP over Ethernet">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-transport">UDP</li>
+                    <li class="stack-network">IP</li>
+                    <li class="stack-link">Ethernet</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over DNS over UDP over IP over Ethernet">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-application">DNS</li>
+                    <li class="stack-transport">UDP</li>
+                    <li class="stack-network">IP</li>
+                    <li class="stack-link">Ethernet</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over HTTP over TLS over TCP over IP over Ethernet">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-application">HTTP</li>
+                    <li class="stack-application">TLS</li>
+                    <li class="stack-transport">TCP</li>
+                    <li class="stack-network">IP</li>
+                    <li class="stack-link">Ethernet</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over GATT over ATT over L2CAP over Bluetooth">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-application">GATT</li>
+                    <li class="stack-transport">ATT</li>
+                    <li class="stack-network">L2CAP</li>
+                    <li class="stack-link">Bluetooth</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over MQTT over TCP over IP over Ethernet">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-application">MQTT</li>
+                    <li class="stack-transport">TCP</li>
+                    <li class="stack-network">IP</li>
+                    <li class="stack-link">Ethernet</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over HID over USB">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-application">HID</li>
+                    <li class="stack-link">USB</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over USB">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-link">USB</li>
+                </ol>
+                <ol class="protocol-stack" aria-label="LLM over Bluetooth">
+                    <li class="stack-llm">LLM</li>
+                    <li class="stack-link">Bluetooth</li>
+                </ol>
+            </figure>
+        </section>
 
-            <div class="diagram">
-                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port for any protocol; clients on the network send requests; netget speaks the protocol and gets each answer from a static response, a script runtime, or an LLM">
-                    <defs>
-                        <marker id="arw" markerWidth="8" markerHeight="8" viewBox="0 0 10 10" refX="8" refY="5" orient="auto-start-reverse">
-                            <path d="M0,0 L10,5 L0,10 z" class="arw"/>
-                        </marker>
-                    </defs>
-
-                    <!-- left: who talks to netget -->
-                    <rect class="box" x="20" y="50" width="200" height="62" rx="10"/>
-                    <text class="icon" x="36" y="90">💻</text>
-                    <text class="t" x="68" y="77">you</text>
-                    <text class="s" x="68" y="95">netget CLI · TUI</text>
-
-                    <rect class="box" x="20" y="140" width="200" height="62" rx="10"/>
-                    <text class="icon" x="36" y="180">🤖</text>
-                    <text class="t" x="68" y="167">LLM agent</text>
-                    <text class="s" x="68" y="185">Claude · MCP STDIO</text>
-
-                    <rect class="box dashed client" x="20" y="330" width="200" height="62" rx="10"/>
-                    <text class="icon" x="36" y="370">🌐</text>
-                    <text class="t client-t" x="68" y="357">the network</text>
-                    <text class="s" x="68" y="375">telnet · dig · redis-cli</text>
-
-                    <!-- netget process -->
-                    <rect class="ngbox" x="350" y="40" width="270" height="380" rx="14"/>
-                    <text class="mg" x="374" y="70">netget</text>
-
-                    <rect class="box" x="395" y="120" width="200" height="62" rx="10"/>
-                    <text class="icon" x="411" y="160">⚡</text>
-                    <text class="t" x="443" y="147">static response</text>
-                    <text class="s" x="443" y="165">canned · zero latency</text>
-
-                    <!-- port on the process boundary -->
-                    <circle class="port" cx="350" cy="361" r="28"/>
-                    <text class="mc" x="350" y="358" text-anchor="middle">:port</text>
-                    <text class="xs" x="350" y="374" text-anchor="middle">TCP/UDP</text>
-                    <circle class="pulse-dot" cx="314" cy="404" r="4"/>
-                    <text class="lst" x="324" y="408">LISTENING</text>
-
-                    <!-- right: external handlers -->
-                    <rect class="box" x="710" y="150" width="210" height="62" rx="10"/>
-                    <text class="icon" x="722" y="190">📜</text>
-                    <text class="t" x="752" y="177">script runtime</text>
-                    <text class="s" x="752" y="195">JS / Python · deterministic</text>
-
-                    <rect class="box model" x="710" y="330" width="210" height="62" rx="10"/>
-                    <text class="icon" x="722" y="370">✨</text>
-                    <text class="t model-t" x="752" y="357">LLM</text>
-                    <text class="s" x="752" y="375">local or hosted · or you</text>
-
-                    <!-- arrows -->
-                    <path class="ln" d="M220,81 C280,81 305,90 344,98"/>
-                    <text class="m" x="284" y="66" text-anchor="middle">“SMTP on 2525”</text>
-
-                    <path class="ln" d="M220,171 C280,171 305,160 344,150"/>
-                    <text class="m" x="284" y="140" text-anchor="middle">start_server(dns)</text>
-
-                    <path class="ln" d="M220,361 L314,361"/>
-                    <text class="m" x="268" y="351" text-anchor="middle">request</text>
-
-                    <path class="ln" d="M377,350 C430,320 465,240 488,186"/>
-                    <text class="m" x="412" y="270" text-anchor="end">static</text>
-
-                    <path class="ln" d="M377,352 C520,310 610,230 705,185"/>
-                    <text class="m" x="560" y="240" text-anchor="middle">script</text>
-
-                    <path class="ln" d="M378,368 C490,385 600,372 705,362"/>
-                    <text class="m" x="560" y="393" text-anchor="middle">prompt</text>
-                </svg>
+        <section class="section" id="examples">
+            <h2>Example prompts</h2>
+            <div class="examples">
+                <article>
+                    <p>Respond on HTTP 8080 with cooking recipes</p>
+                </article>
+                <article>
+                    <p>Over DHCP advertise self as default gateway and DNS; listen on DNS 53 and resolve all to self; listen on HTTP 80 and respond with 'Hello World' to all</p>
+                </article>
+                <article>
+                    <p>Provide life coaching services over Telnet.</p>
+                </article>
+                <article>
+                    <p>You are an FTP server with a single file containing a zip bomb.</p>
+                </article>
             </div>
         </section>
 
-    <section class="demo" id="demo">
-        <div class="demo-banner" id="demo-banner">Loading NetGet…</div>
-
-        <div class="demo-grid">
-            <!-- The Telnet client -->
-            <div class="machine machine-client" id="machine-telnet">
-                <div class="machine-label"><span class="machine-dot"></span> Telnet <span class="muted">· a client on the virtual network</span><span class="spacer"></span><span class="conn-badge" id="telnet-state">not connected</span></div>
-                <div class="screen screen-client"><div class="term-host"><div id="telnet-term"></div></div></div>
-            </div>
-
-            <!-- The model: beside the Telnet client on a wide screen -->
-            <div class="machine machine-model">
-                <div class="machine-label llm-header">
-                    <span class="machine-dot"></span> LLM
-                    <select id="model-select" aria-label="Model"><option>Looking for a model this browser can run…</option></select>
-                    <button class="btn btn-primary" id="llm-load" hidden>Download</button>
-                </div>
-                <div class="llm-source" id="llm-source">
-                    <div class="llm-progress" id="llm-progress" hidden><span id="llm-progress-bar"></span></div>
-                    <div class="llm-status" id="llm-status"></div>
-                </div>
-                <div class="screen screen-model" id="llm-current">
-                    <div class="llm-idle">Nothing to answer yet.</div>
-                </div>
-            </div>
-
-            <!-- Both cables run down to NetGet (on a narrow screen: Telnet, NetGet, the model) -->
-            <div class="cable cable-client"><span class="cable-line"></span><span class="cable-tag">request</span></div>
-
-            <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
-
-            <!-- NetGet, under both -->
-            <div class="machine machine-netget">
-                <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· WASM demo in your tab</span></div>
-                <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
-                <div class="machine-base">
-                    <div class="base-row">
-                        <span class="base-key">listening</span>
-                        <span id="server-list" class="server-list"><span class="muted">nothing yet</span></span>
-                    </div>
-                    <div class="base-row keys">
-                        <span class="base-key">keys</span>
-                        <span><kbd>a</kbd> new server or client · <kbd>Tab</kbd> switch column · <kbd>↑</kbd><kbd>↓</kbd> walk rows · <kbd>Enter</kbd> act · <kbd>F1</kbd> everything · the box at the bottom right talks to the model in plain English</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <main>
-
-
-        <!-- Examples -->
-        <section class="section">
-            <h2>What you can build</h2>
-            <div class="grid">
-                <div class="card">
-                    <div class="card-icon">🧪</div>
-                    <h3>HTTP mock API</h3>
-                    <code class="card-prompt">"HTTP on 3000. GET /users returns fake JSON, POST /login always succeeds."</code>
-                    <p>Test frontends without a backend.</p>
-                </div>
-                <div class="card">
-                    <div class="card-icon">🗄️</div>
-                    <h3>Dummy database</h3>
-                    <code class="card-prompt">"MySQL server. Answer any SELECT with realistic data."</code>
-                    <p>No schema, no seed scripts.</p>
-                </div>
-                <div class="card">
-                    <div class="card-icon">🍯</div>
-                    <h3>Honeypot</h3>
-                    <code class="card-prompt">"SSH on 2222. Act like Ubuntu, accept any password, log everything."</code>
-                    <p>Watch attackers talk to an LLM.</p>
-                </div>
-                <div class="card">
-                    <div class="card-icon">⚡</div>
-                    <h3>Instant infra</h3>
-                    <code class="card-prompt">"DNS on 5353. Resolve *.local to 127.0.0.1."</code>
-                    <p>DNS, NTP, DHCP. One sentence each.</p>
-                </div>
-            </div>
-        </section>
-
-        <!-- Protocols -->
-        <section class="section">
-            <h2>Protocols</h2>
-            <p class="section-sub">
-                245 protocol features. Each name links to Wikipedia’s article on the protocol or its parent technology. Hover to see its Cargo feature; build with exactly what you need:
-                <code>--features tcp,http,dns</code>.
-            </p>
+        <section class="section" id="protocols">
+            <h2>245 Protocols</h2>
             <div class="proto-table">
                 <div class="proto-row"><span class="proto-cat">transport</span><span class="proto-list">
                     <a href="https://en.wikipedia.org/wiki/Transmission_Control_Protocol" target="_blank" rel="noopener noreferrer" title="Wikipedia: Transmission Control Protocol · feature: tcp">TCP</a>
@@ -508,28 +409,27 @@
                     <a href="https://en.wikipedia.org/wiki/OpenAI" target="_blank" rel="noopener noreferrer" title="Wikipedia: OpenAI · feature: openai">OpenAI API</a>
                 </span></div>
             </div>
-            <p class="section-desc">Industrial simulators now include OPC UA, BACnet/IP, DNP3, IEC 104, EtherNet/IP and S7comm, with server and client roles. These are Experimental and cover selected operations; each protocol’s metadata describes its supported security and transport features.</p>
         </section>
 
         <!-- Install -->
-        <section class="section">
+        <section class="section" id="install">
             <h2>Install</h2>
 
-            <h3 class="sub-h">As CLI</h3>
+            <h3 class="sub-h">CLI</h3>
             <div class="code-block">
                 <button class="copy-btn" data-target="cli">Copy</button>
-                <pre id="cli"><code><span class="c"># install</span>
-npm install -g @smotana/netget            <span class="c"># or grab a binary from GitHub Releases</span>
+                <pre id="cli"><code><span class="c"># run</span>
+npx -y @smotana/netget
 
-<span class="c"># run with local Ollama</span>
+<span class="c"># optional: local Ollama</span>
 ollama pull qwen3-coder:30b
-netget
+npx -y @smotana/netget
 
 <span class="c"># or run against any OpenAI-compatible API</span>
-netget --openai-url https://api.openai.com --model gpt-4o --api-key $OPENAI_API_KEY</code></pre>
+npx -y @smotana/netget --openai-url "$MODEL_ENDPOINT" --model "$MODEL_NAME" --api-key "$MODEL_API_KEY"</code></pre>
             </div>
 
-            <h3 class="sub-h">As Local STDIO MCP</h3>
+            <h3 class="sub-h">MCP</h3>
             <p class="caption">Add to <code>claude_desktop_config.json</code> or any MCP client config:</p>
             <div class="code-block">
                 <button class="copy-btn" data-target="mcp-json">Copy</button>
@@ -559,16 +459,11 @@ cargo build --release --no-default-features --features tcp,http,ssh,dns,mcp-stdi
         </section>
 
     </main>
-
     <footer class="footer">
         <a href="https://github.com/smotanacom/netget">GitHub</a>
-        <span class="sep">&middot;</span>
+        <span class="sep">/</span>
         <a href="https://github.com/smotanacom/netget/blob/master/LICENSE">AGPL-3.0</a>
     </footer>
-
     <script src="js/main.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
-    <script type="module" src="js/demo.js"></script>
 </body>
 </html>

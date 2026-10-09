@@ -1,6 +1,10 @@
 # netget.net — the landing page
 
-`index.html`, `css/`, `js/`, `favicon.svg`, and `demo/pkg/` — the NetGet-in-the-browser
+`index.html` is the landing page; `demo.html` is the standalone interactive demo. Only the
+demo loads xterm.js and the WebAssembly runtime. Terminal focus belongs to the visitor:
+startup, connection, incoming requests, and sending a composer reply must not focus a terminal.
+
+`css/`, `js/`, `favicon.svg`, and `demo/pkg/` — the NetGet-in-the-browser
 bundle, which is the one thing here that is built: `./web/build.sh` from the repository root
 writes it (gitignored), `web/README.md` explains it, and `./deploy.sh` refuses to run
 without it. `./deploy.sh` is the whole publishing pipeline.
@@ -10,6 +14,8 @@ form it opens for each model request (built from the request's offered `actions`
 `web/README.md`). `composer.js`'s pure half is imported by `web/test/smoke.mjs`, so keep
 DOM access out of module top level. `js/thinking.js` splits a thinking model's streamed
 `<think>` block from its answer for the LLM panel; it is pure and `smoke.mjs` imports it too.
+`js/adventure.js` keeps the Telnet adventure's room for each connection and adds it to every
+request, so no model has to remember where the visitor is; `web/test/adventure.mjs` tests it.
 
 What is in this directory is public, with one exception: `deploy.sh` and every `*.md` —
 this file included — are excluded from the sync, because this one names infrastructure IDs.
@@ -67,15 +73,15 @@ repository regardless of where the page is hosted.
 ```
 
 **Caching is by URL.** `css/`, `js/` and `demo/` are published under `v/<hash>/`, where
-`<hash>` comes from their contents, with `max-age=31536000, immutable`; `index.html` is
-rewritten to point at that prefix and goes up with `no-cache`. So a browser always loads one
+`<hash>` comes from their contents, with `max-age=31536000, immutable`; both `index.html` and
+`demo.html` are rewritten to point at that prefix and go up with `no-cache`. So a browser always loads one
 deploy's files together. Publishing them at fixed URLs with a week's `max-age` let a browser pair
 a fresh `demo.js` and `netget_web.js` with the previous deploy's `.wasm`, which fails at load
 with `wasm.<export> is not a function` — seen on 28 September 2026. Keep new assets inside one of
 the versioned directories, or add the directory to `VERSIONED_DIRS`.
 
-Order matters and the script keeps it: versioned assets first, then `index.html`, then the
-invalidation (`/`, `/index.html`, `/favicon.svg` — the versioned paths are new, so nothing needs
+Order matters and the script keeps it: versioned assets first, then both HTML pages, then the
+invalidation (`/`, `/index.html`, `/demo.html`, `/favicon.svg` — the versioned paths are new, so nothing needs
 invalidating there). Old `v/<hash>/` prefixes stay so a page already open keeps loading its
 modules; only the newest five are kept. The root sync uses `--delete` with `v/*` excluded, so a
 file removed from this directory is removed from the bucket — except an excluded one, which
