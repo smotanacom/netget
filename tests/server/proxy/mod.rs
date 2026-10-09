@@ -14,3 +14,6 @@ mod test;
 
 #[cfg(all(test, feature = "proxy"))]
 mod status_range_test;
+
+#[cfg(all(test, feature = "proxy"))]
+mod mitm_dial_order_test;
