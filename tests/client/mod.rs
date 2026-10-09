@@ -378,6 +378,8 @@ pub mod lmtp;
 pub mod lpd;
 #[cfg(feature = "minecraft")]
 pub mod minecraft;
+#[cfg(feature = "ninep")]
+pub mod ninep;
 #[cfg(feature = "rcon")]
 pub mod rcon;
 #[cfg(feature = "restconf")]

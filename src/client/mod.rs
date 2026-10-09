@@ -776,6 +776,8 @@ pub mod lpd;
 pub mod lwm2m;
 #[cfg(feature = "minecraft")]
 pub mod minecraft;
+#[cfg(feature = "ninep")]
+pub mod ninep;
 #[cfg(feature = "oci-registry")]
 pub mod oci_registry;
 #[cfg(feature = "rcon")]
