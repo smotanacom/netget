@@ -586,6 +586,10 @@ impl ClientRegistry {
         self.register(Arc::new(
             crate::client::a2s::actions::A2sClientProtocol::new(),
         ));
+        #[cfg(feature = "minecraft")]
+        self.register(Arc::new(
+            crate::client::minecraft::actions::MinecraftClientProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1117,6 +1121,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("Time", "inetd"),
     ("RCON", "rcon"),
     ("A2S", "a2s"),
+    ("Minecraft", "minecraft"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("HTTP3", "http3"),

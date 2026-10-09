@@ -207,6 +207,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "udp" | "statsd" | "dogstatsd" => PLAIN_UDP,
         // Steam server query has no dissector in this build (`tshark -G protocols` lists none);
         // it is UDP, so the TCP fallback would capture nothing.
+        "minecraft" => with_note(PLAIN_TCP, "Wireshark has no Minecraft Java Edition dissector (its mcpe is Bedrock over RakNet): each packet is a VarInt length, a VarInt id and the body; a legacy ping starts FE and is answered FF."),
         "a2s" => with_note(PLAIN_UDP, "Wireshark has no A2S dissector: each datagram starts FF FF FF FF (FE FF FF FF for split answers), then T/U/V for a query and A/I/D/E for a challenge or answer."),
         "gelf" | "graylog" => Wire {
             transport: Transport::TcpOrUdp,
