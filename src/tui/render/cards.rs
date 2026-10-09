@@ -155,6 +155,13 @@ fn row_line<'a>(
         },
     )];
     let mut used = indent.chars().count() + 2;
+    if row.busy {
+        spans.push(Span::styled(
+            format!("{} ", app.spinner()),
+            app.styles.reasoning,
+        ));
+        used += 2;
+    }
 
     // Buttons first, so the label yields to them rather than the reverse.
     let button_texts: Vec<String> = row

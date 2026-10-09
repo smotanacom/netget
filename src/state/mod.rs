@@ -7,6 +7,7 @@ pub mod client;
 pub mod client_handles;
 pub mod easy;
 pub mod intercepts;
+pub mod llm_activity;
 pub mod machine;
 pub mod server;
 pub mod server_handles;

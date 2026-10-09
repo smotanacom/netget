@@ -172,6 +172,151 @@ fn dump(lines: &[String]) -> String {
 }
 
 #[test]
+fn generating_indicators_animate_on_cards_chat_and_narrow_footers_then_clear() {
+    use netget::server::connection::ConnectionId;
+    use netget::state::app_state::ConversationSource;
+    use netget::state::llm_activity::LlmActivityTracker;
+    let tracker = LlmActivityTracker::default();
+    let server = tracker.begin(
+        ConversationSource::Network {
+            server_id: ServerId::new(1),
+            connection_id: Some(ConnectionId::new(7)),
+        },
+        "GET /answer".into(),
+    );
+    let user = tracker.begin(ConversationSource::User, "help".into());
+    let mut app = app();
+    let mut snapshot = populated();
+    snapshot.servers[0].intercepts.clear();
+    app.absorb_snapshot(snapshot);
+    app.tick_llm_activity(tracker.snapshot());
+    app.focus_card(UiKey::Server(ServerId::new(1)));
+
+    let first_spinner = app.spinner();
+    let first = dump(&frame(&mut app, 140, 46));
+    eprintln!("{first}");
+    assert!(first.contains(&format!("{first_spinner} #1")), "{first}");
+    assert!(
+        first.contains(&format!("{first_spinner} LLM generating")),
+        "{first}"
+    );
+    assert!(
+        first.contains(&format!("{first_spinner} Generating reply")),
+        "{first}"
+    );
+    assert!(
+        first.contains(&format!("{first_spinner} 2 generating")),
+        "{first}"
+    );
+    app.dirty = false;
+    app.tick_llm_activity(tracker.snapshot());
+    assert!(
+        app.dirty,
+        "animation must request a repaint without log traffic"
+    );
+    assert_ne!(app.spinner(), first_spinner);
+
+    for width in [40, 48, 80] {
+        let lines = frame(&mut app, width, 24);
+        assert!(
+            lines.last().unwrap().contains("2 generating"),
+            "{}",
+            dump(&lines)
+        );
+        assert!(
+            dump(&lines).contains("Generating reply"),
+            "{}",
+            dump(&lines)
+        );
+    }
+    app.cards
+        .state
+        .close(&netget::tui::cards::NodeId::Card(UiKey::Server(
+            ServerId::new(1),
+        )));
+    app.focus_card(UiKey::Server(ServerId::new(1)));
+    let folded = dump(&frame(&mut app, 80, 24));
+    assert!(
+        folded.contains(&format!("{} #1", app.spinner())),
+        "{folded}"
+    );
+
+    drop(server);
+    drop(user);
+    app.tick_llm_activity(tracker.snapshot());
+    let done = dump(&frame(&mut app, 140, 46));
+    assert!(
+        !done.contains("generating") && !done.contains("Generating reply"),
+        "{done}"
+    );
+    app.dirty = false;
+    app.tick_llm_activity(tracker.snapshot());
+    assert!(!app.dirty, "idle UI ticks need no animation repaint");
+}
+
+#[test]
+fn generation_rows_do_not_move_the_selected_send_button() {
+    use netget::state::app_state::ConversationSource;
+    let mut app = app();
+    app.absorb_snapshot(populated());
+    let send = InstanceAction::MessagePeer(7);
+    app.cards.row = app
+        .rows()
+        .iter()
+        .position(|r| r.buttons.iter().any(|b| b.action == send))
+        .unwrap();
+    app.cards.col = 0;
+    let tracker = netget::state::llm_activity::LlmActivityTracker::default();
+    let work = tracker.begin(
+        ConversationSource::Network {
+            server_id: ServerId::new(1),
+            connection_id: Some(netget::server::connection::ConnectionId::new(7)),
+        },
+        "request".into(),
+    );
+    app.tick_llm_activity(tracker.snapshot());
+    assert_eq!(
+        app.rows()[app.cards.row]
+            .button_at(app.cards.col)
+            .unwrap()
+            .action,
+        send
+    );
+    drop(work);
+    // A full stats/sentinel refresh can observe completion before the UI tick.
+    let mut refreshed = app.snapshot.clone();
+    refreshed.llm_activity = tracker.snapshot();
+    refreshed.active_conversations = 0;
+    app.absorb_snapshot(refreshed);
+    assert_eq!(
+        app.rows()[app.cards.row]
+            .button_at(app.cards.col)
+            .unwrap()
+            .action,
+        send
+    );
+}
+
+#[test]
+fn background_work_has_a_named_indicator_when_the_stream_is_empty() {
+    let tracker = netget::state::llm_activity::LlmActivityTracker::default();
+    let _work = tracker.begin(
+        netget::state::app_state::ConversationSource::Task {
+            task_name: "cleanup".into(),
+        },
+        "summarize".into(),
+    );
+    let mut app = app();
+    app.tick_llm_activity(tracker.snapshot());
+    let text = dump(&frame(&mut app, 40, 24));
+    assert!(
+        text.contains(&format!("{} [Task:cleanup]", app.spinner())),
+        "{text}"
+    );
+    assert!(text.contains("1 generating"), "{text}");
+}
+
+#[test]
 fn input_keeps_the_cursor_and_end_of_long_multiline_text_visible() {
     use netget::cli::input_state::InputState;
     use ratatui::backend::Backend;

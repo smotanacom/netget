@@ -17,6 +17,7 @@ pub mod driver;
 pub mod event_loop;
 pub mod hit;
 pub mod keymap;
+pub mod llm_activity;
 pub mod metrics;
 pub mod modal;
 pub mod modal_keys;

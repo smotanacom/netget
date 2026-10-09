@@ -56,6 +56,16 @@ the wheel scrolls back, ↑/↓ then walk lines and Enter opens what one points 
 
 Tab hops between the two columns. That is the only thing Tab does.
 
+**Live model work has a spinner.** Each in-progress generation appears below the owning
+server peer or client connection, after its messages and before `[ send message ]`, with
+elapsed time and the triggering event. Connectionless work gets a bucket even before its
+first request completes. Folded peers/sections and the card header still animate. Chat
+replies animate beside the input; global tasks appear above it in the stream. The footer
+puts the active count first so it survives narrow layouts. All use the same 100ms animation.
+`state/llm_activity.rs` tracks generation lifetimes with weak handles: success, errors and
+cancellation all clear the indicator, and scripts/recently completed conversations do not
+count. The UI tick polls only this small registry; full snapshots keep their 1s cadence.
+
 **Narrower than 80 columns the two columns stack** (`render::TWO_COLUMN_WIDTH`): the canvas
 on top (55% of the height, leaving the stream at least six rows), the stream and the input box
 under it, each the full width, and a modal takes the whole width. Below 40×24

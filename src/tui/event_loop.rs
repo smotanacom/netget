@@ -196,7 +196,9 @@ where
                 });
                 app.dirty = true;
             }
-            _ = ui_tick.tick() => {}
+            _ = ui_tick.tick() => {
+                app.tick_llm_activity(ctx.state.llm_activity.snapshot());
+            }
             _ = task_tick.tick() => {
                 // Load-bearing: without this scheduled tasks never fire.
                 crate::cli::execute_due_tasks_public(
@@ -264,5 +266,5 @@ async fn refresh_status(app: &mut DashboardApp, state: &AppState) {
     app.status.input_tokens = input;
     app.status.output_tokens = output;
     app.status.llm_calls = calls;
-    app.status.active_conversations = state.get_active_conversations().await.len();
+    app.status.active_conversations = state.llm_activity.snapshot().len();
 }

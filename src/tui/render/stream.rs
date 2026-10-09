@@ -63,9 +63,45 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     let block = pane_block(app, focused)
         .title(Line::from(title))
         .title_bottom(Span::styled(hint, app.styles.dimmed));
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(inner, HitTarget::Stream);
+    // Unscoped work (such as a global scheduled task) has no connection card.
+    // Keep its current status above the input even while the timeline is scrolled.
+    let background: Vec<_> = app
+        .snapshot
+        .llm_activity
+        .iter()
+        .filter(|work| {
+            crate::tui::llm_activity::owner(work).is_none()
+                && !matches!(
+                    work.source,
+                    crate::state::app_state::ConversationSource::User
+                )
+        })
+        .collect();
+    if let Some(work) = background.first().filter(|_| inner.height > 0) {
+        let extra = if background.len() > 1 {
+            format!(" (+{} more)", background.len() - 1)
+        } else {
+            String::new()
+        };
+        let text = format!(
+            "{} {} {}{extra}",
+            app.spinner(),
+            work.source.display_label(),
+            crate::tui::llm_activity::label(work)
+        );
+        frame.render_widget(
+            Paragraph::new(fit(&text, inner.width as usize)).style(app.styles.reasoning),
+            Rect {
+                y: inner.y + inner.height - 1,
+                height: 1,
+                ..inner
+            },
+        );
+        inner.height -= 1;
+    }
     if inner.height == 0 {
         return;
     }

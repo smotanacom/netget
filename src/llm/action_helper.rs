@@ -890,6 +890,16 @@ async fn call_llm_for_client_inner(
     .with_status_tx(status_tx.clone())
     .with_private_payloads(private_payloads);
 
+    if let Some(client_id) = crate::state::ClientId::from_string(&client_id) {
+        conversation = conversation.with_tracking(
+            state.clone(),
+            crate::state::app_state::ConversationSource::Client { client_id },
+            event
+                .map(|ev| ev.id().to_string())
+                .unwrap_or_else(|| "Client instructions".into()),
+        );
+    }
+
     // Add user message
     conversation.add_user_message(full_message);
 
@@ -1117,8 +1127,9 @@ pub async fn call_llm_for_feedback(
             server_id: sid,
             connection_id: None,
         }
+    } else if let Some(client_id) = client_id {
+        crate::state::app_state::ConversationSource::Client { client_id }
     } else {
-        // Client feedback source (use Task as placeholder since we don't have a Client variant yet)
         crate::state::app_state::ConversationSource::Task {
             task_name: format!("feedback-client-{}", instance_id),
         }
