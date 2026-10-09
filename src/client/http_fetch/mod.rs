@@ -171,6 +171,71 @@ pub fn check_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// `scheme://host[:port]` of `url`, host lowercased and a default port dropped, so two
+/// spellings of one origin compare equal and two origins never do.
+pub fn origin_of(url: &str) -> Result<String> {
+    let parsed = url::Url::parse(url).with_context(|| format!("{url:?} is not a URL"))?;
+    anyhow::ensure!(
+        matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some(),
+        "{url:?} is not an http(s) URL with a host"
+    );
+    Ok(parsed.origin().ascii_serialization())
+}
+
+/// Resolve an action's `path` against the client's base URL, refusing any other origin.
+///
+/// The HTTP-family clients accept an absolute `path`, and until September 2026 they sent
+/// it wherever it pointed — together with the startup `default_headers` (API keys,
+/// cookies) and, for WebDAV, the `auth` credential as `Authorization: Basic`. The model
+/// reads the peer's responses, so a prompt-injected "fetch http://attacker/" exfiltrated
+/// the operator's credential to any host in one request, and `http://169.254.169.254/`
+/// reached the metadata service from inside the network the client ran on. A client is
+/// bound to one origin: its `remote_addr`. An absolute `path` on that origin is accepted
+/// (it is what a model copying a `Location` header produces); any other origin is refused
+/// by name, so the repair loop can see it and the operator can open a client for that
+/// host on purpose. A `base_url` without a scheme is `http://`.
+pub fn resolve_same_origin(base_url: &str, path: &str) -> Result<String> {
+    let base = if base_url.contains("://") {
+        base_url.to_string()
+    } else {
+        format!("http://{base_url}")
+    };
+    let is_absolute = path.starts_with("http://") || path.starts_with("https://");
+    if !is_absolute {
+        return Ok(format!("{base}{path}"));
+    }
+    let bound = origin_of(&base)?;
+    let asked = origin_of(path)?;
+    anyhow::ensure!(
+        bound == asked,
+        "path {path:?} is on {asked}, but this client is bound to {bound}; use a path \
+         relative to that origin, or open a client for {asked}"
+    );
+    Ok(path.to_string())
+}
+
+/// A redirect policy that follows up to five hops, none of them to another origin.
+///
+/// reqwest's default follows ten and strips `Authorization` and `Cookie` on a host change,
+/// but not a startup `X-Api-Key`, and a redirect to an internal address is the second half
+/// of the SSRF that `resolve_same_origin` closes on the first request. A 3xx to another
+/// origin is returned to the model as the response it is.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let first = attempt
+            .previous()
+            .first()
+            .map(|u| u.origin().ascii_serialization());
+        let next = attempt.url().origin().ascii_serialization();
+        if attempt.previous().len() >= 5 || first.as_deref() != Some(next.as_str()) {
+            attempt.stop()
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 /// One request being built. Errors in a header or a body are held until [`Self::send`], as
 /// reqwest's builder does.
 pub struct FetchRequest {
