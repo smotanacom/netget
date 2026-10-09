@@ -392,6 +392,24 @@ impl ServerRegistry {
         self.register(Arc::new(crate::server::lmtp::actions::LmtpProtocol::new()));
         #[cfg(feature = "lpd")]
         self.register(Arc::new(crate::server::lpd::actions::LpdProtocol::new()));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(crate::server::inetd::actions::EchoProtocol::new()));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::server::inetd::actions::DiscardProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::server::inetd::actions::DaytimeProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(crate::server::inetd::actions::QotdProtocol::new()));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(
+            crate::server::inetd::actions::ChargenProtocol::new(),
+        ));
+        #[cfg(feature = "inetd")]
+        self.register(Arc::new(crate::server::inetd::actions::TimeProtocol::new()));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1601,6 +1619,12 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("EPP", "epp"),
     ("LMTP", "lmtp"),
     ("LPD", "lpd"),
+    ("Echo", "inetd"),
+    ("Discard", "inetd"),
+    ("Daytime", "inetd"),
+    ("QOTD", "inetd"),
+    ("Chargen", "inetd"),
+    ("Time", "inetd"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),

@@ -481,6 +481,8 @@ pub mod lwm2m;
 
 #[cfg(feature = "epp")]
 pub mod epp;
+#[cfg(feature = "inetd")]
+pub mod inetd;
 #[cfg(feature = "jmap")]
 pub mod jmap;
 #[cfg(feature = "lmtp")]
