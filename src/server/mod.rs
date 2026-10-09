@@ -1352,6 +1352,8 @@ pub mod restconf;
 pub mod webtransport;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
+#[cfg(feature = "zeromq")]
+pub mod zeromq;
 
 #[cfg(feature = "s7comm")]
 pub mod s7comm;

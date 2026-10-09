@@ -345,6 +345,7 @@ pub fn wire_for(protocol: &str) -> Wire {
         "lpd" => tcp("lpd"),
         // Wireshark's `9p` dissector decodes 9P2000 (and .u/.L) on TCP; checked with `tshark -d`.
         "9p" => tcp("9p"),
+        "zeromq" => with_note(PLAIN_TCP, "Wireshark ships no ZMTP dissector (the zeromq project publishes a Lua one): after a 64-byte greeting starting FF and ending the signature 7F, each frame is a flags byte (01 more, 02 long, 04 command) and a 1- or 8-byte size."),
         // The classic inetd services: Wireshark ships `echo`, `discard`, `daytime`, `chargen`
         // and `time` dissectors (checked with `tshark -G protocols`); qotd has none.
         "echo" => tcp("echo"),

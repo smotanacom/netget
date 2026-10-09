@@ -501,6 +501,8 @@ pub mod rcon;
 pub mod restconf;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
+#[cfg(feature = "zeromq")]
+pub mod zeromq;
 
 #[cfg(feature = "diameter")]
 pub mod diameter;

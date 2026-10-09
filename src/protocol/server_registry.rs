@@ -420,6 +420,10 @@ impl ServerRegistry {
         ));
         #[cfg(feature = "ninep")]
         self.register(Arc::new(crate::server::ninep::actions::NinepProtocol::new()));
+        #[cfg(feature = "zeromq")]
+        self.register(Arc::new(
+            crate::server::zeromq::actions::ZeromqProtocol::new(),
+        ));
 
         #[cfg(feature = "netflow-v9")]
         self.register(Arc::new(
@@ -1639,6 +1643,7 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("A2S", "a2s"),
     ("Minecraft", "minecraft"),
     ("9P", "ninep"),
+    ("ZeroMQ", "zeromq"),
     ("etcd", "etcd"),
     ("ZooKeeper", "zookeeper"),
     ("Tor Relay", "tor"),
